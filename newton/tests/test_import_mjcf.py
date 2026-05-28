@@ -17,7 +17,7 @@ import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
 from newton._src.sim.builder import ShapeFlags
-from newton._src.utils.import_mjcf import _load_and_expand_mjcf
+from newton._src.utils.import_mjcf import _load_and_expand_mjcf, parse_mjcf
 from newton.solvers import SolverMuJoCo
 
 
@@ -1735,7 +1735,7 @@ class TestImportMjcfGeometry(unittest.TestCase):
     </fixed>
   </tendon>
 </mujoco>
-        """
+"""
 
         builder = newton.ModelBuilder()
         builder.add_mjcf(mjcf)
@@ -4129,7 +4129,8 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         legacy_solver = SolverMuJoCo(legacy_model)
 
         converted_builder = newton.ModelBuilder()
-        converted_builder.add_mjcf(mjcf)
+        with self.assertWarnsRegex(UserWarning, "higher-order polycoef"):
+            converted_builder.add_mjcf(mjcf)
         converted_model = converted_builder.finalize()
         converted_solver = SolverMuJoCo(converted_model)
 
@@ -4151,6 +4152,45 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         np.testing.assert_allclose(converted_solver.mj_model.eq_data, legacy_solver.mj_model.eq_data, atol=1e-6)
         np.testing.assert_allclose(converted_solver.mj_model.eq_solref, legacy_solver.mj_model.eq_solref, atol=1e-6)
         np.testing.assert_allclose(converted_solver.mj_model.eq_solimp, legacy_solver.mj_model.eq_solimp, atol=1e-6)
+
+    def test_parse_mjcf_registers_converted_equality_attributes(self):
+        """Direct parse_mjcf() calls register MuJoCo preservation attributes."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="base">
+            <joint name="root" type="hinge" axis="0 0 1"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="link" pos="0 0 1">
+                <joint name="j1" type="hinge" axis="1 0 0"/>
+                <geom type="sphere" size="0.05"/>
+            </body>
+        </body>
+    </worldbody>
+    <equality>
+        <connect name="pin" body1="base" body2="link" anchor="0.1 0.2 0.3"/>
+        <weld name="lock" body1="link" active="false" torquescale="2.5"/>
+        <joint name="couple" joint1="j1" joint2="root" polycoef="0.5 1.5 0.1 0.05 0.02"/>
+    </equality>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "higher-order polycoef"):
+            parse_mjcf(builder, mjcf)
+        model = builder.finalize()
+
+        self.assertEqual(model.equality_constraint_count, 0)
+        self.assertEqual(model.constraint_mimic_count, 1)
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "joint_eq_type"))
+        self.assertTrue(hasattr(model.mujoco, "mimic_eq_polycoef"))
+        self.assertEqual(model.mujoco.joint_eq_type.numpy().tolist().count(int(newton.EqType.CONNECT)), 1)
+        self.assertEqual(model.mujoco.joint_eq_type.numpy().tolist().count(int(newton.EqType.WELD)), 1)
+        np.testing.assert_allclose(
+            model.mujoco.mimic_eq_polycoef.numpy()[0],
+            np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
+        )
 
     def test_parse_mujoco_options_disabled(self):
         """Test that solver options from <option> tag are not parsed when parse_mujoco_options=False."""

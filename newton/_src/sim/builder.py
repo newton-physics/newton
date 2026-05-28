@@ -8867,13 +8867,15 @@ class ModelBuilder:
                 new_end = max(old_end, max(joint_indices) + 1)
                 imported_joints = set(joint_indices)
                 for joint_idx in range(old_end, new_end):
-                    if joint_idx not in imported_joints and self.joint_articulation[joint_idx] == -1:
+                    if joint_idx not in imported_joints:
                         joint_name = (
                             self.joint_label[joint_idx] if joint_idx < len(self.joint_label) else f"#{joint_idx}"
                         )
+                        owner = self.joint_articulation[joint_idx]
+                        kind = "loop-closing joint" if owner == -1 else f"joint owned by articulation #{owner}"
                         raise ValueError(
                             f"Cannot attach imported joints to articulation #{parent_articulation}: "
-                            f"loop-closing joint '{joint_name}' at index {joint_idx} lies between the existing "
+                            f"{kind} '{joint_name}' at index {joint_idx} lies between the existing "
                             "regular joints and the imported joints."
                         )
                 # Mark all new joints as belonging to the parent's articulation

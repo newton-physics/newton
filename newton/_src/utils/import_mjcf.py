@@ -14,7 +14,7 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
-from ..core.types import Axis, AxisType, Sequence, Transform, vec5, vec10
+from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import Mesh, ShapeFlags
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
@@ -22,6 +22,12 @@ from ..sim import EqType, JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
+from ._mjc_equality import (
+    mjc_add_equality_loop_joint,
+    mjc_mimic_eq_custom_attrs,
+    mjc_parse_polycoef,
+    mjc_polycoef_has_higher_order,
+)
 from .heightfield import load_heightfield_elevation
 from .import_utils import (
     is_xml_content,
@@ -326,6 +332,9 @@ def parse_mjcf(
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
+
+    if convert_mjc_equality_constraints and "mujoco:joint_eq_type" not in builder.custom_attributes:
+        SolverMuJoCo.register_custom_attributes(builder)
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
@@ -1914,57 +1923,6 @@ def parse_mjcf(
                 return f"{articulation_label}/{common['name']}"
             return common["name"]
 
-        def eq_solref(custom_attrs: dict[str, Any]) -> wp.vec2:
-            return custom_attrs.get("mujoco:eq_solref", wp.vec2(0.02, 1.0))
-
-        def eq_solimp(custom_attrs: dict[str, Any]) -> vec5:
-            return custom_attrs.get("mujoco:eq_solimp", vec5(0.9, 0.95, 0.001, 0.5, 2.0))
-
-        def joint_eq_custom_attrs(
-            eq_type: EqType,
-            body1: int,
-            body2: int,
-            anchor: wp.vec3,
-            relpose: wp.transform | None,
-            torquescale: float,
-            custom_attrs: dict[str, Any],
-        ) -> dict[str, Any]:
-            return {
-                "mujoco:joint_eq_type": int(eq_type),
-                "mujoco:joint_eq_body1": body1,
-                "mujoco:joint_eq_body2": body2,
-                "mujoco:joint_eq_anchor": anchor,
-                "mujoco:joint_eq_relpose": relpose or wp.transform_identity(),
-                "mujoco:joint_eq_torquescale": torquescale,
-                "mujoco:joint_eq_solref": eq_solref(custom_attrs),
-                "mujoco:joint_eq_solimp": eq_solimp(custom_attrs),
-            }
-
-        def loop_joint_xforms(body1: int, body2: int, anchor: wp.vec3) -> tuple[int, int, wp.transform, wp.transform]:
-            if body2 >= 0:
-                parent = body1
-                child = body2
-            elif body1 >= 0:
-                parent = -1
-                child = body1
-            else:
-                raise ValueError("At least one body is required for converted MuJoCo equality constraints.")
-
-            body1_xform = builder.body_q[body1] if body1 >= 0 else wp.transform_identity()
-            child_xform_world = builder.body_q[child]
-            world_anchor = wp.transform_point(body1_xform, anchor) if body1 >= 0 else anchor
-            if parent >= 0:
-                parent_anchor = wp.transform_point(wp.transform_inverse(builder.body_q[parent]), world_anchor)
-            else:
-                parent_anchor = world_anchor
-            child_anchor = wp.transform_point(wp.transform_inverse(child_xform_world), world_anchor)
-            return (
-                parent,
-                child,
-                wp.transform(parent_anchor, wp.quat_identity()),
-                wp.transform(child_anchor, wp.quat_identity()),
-            )
-
         def add_converted_loop_joint(
             eq_type: EqType,
             body1: int,
@@ -1976,45 +1934,22 @@ def parse_mjcf(
             custom_attrs: dict[str, Any],
         ) -> None:
             try:
-                parent, child, parent_xform, child_xform = loop_joint_xforms(body1, body2, anchor)
+                mjc_add_equality_loop_joint(
+                    builder,
+                    eq_type,
+                    body1,
+                    body2,
+                    anchor,
+                    relpose,
+                    torquescale,
+                    equality_label(common),
+                    common["active"],
+                    custom_attrs,
+                )
             except ValueError:
                 if verbose:
                     print(f"Warning: Equality constraint '{common['name']}' has no valid body reference. Skipping.")
                 return
-
-            converted_attrs = joint_eq_custom_attrs(
-                eq_type,
-                body1,
-                body2,
-                anchor,
-                relpose,
-                torquescale,
-                custom_attrs,
-            )
-            add_joint = builder.add_joint_ball if eq_type == EqType.CONNECT else builder.add_joint_fixed
-            add_joint(
-                parent=parent,
-                child=child,
-                parent_xform=parent_xform,
-                child_xform=child_xform,
-                label=equality_label(common),
-                enabled=common["active"],
-                custom_attributes=converted_attrs,
-            )
-
-        def parse_polycoef(polycoef: str) -> list[float]:
-            values = [float(x) for x in polycoef.split()]
-            if len(values) < 5:
-                values.extend([0.0] * (5 - len(values)))
-            return values[:5]
-
-        def mimic_eq_custom_attrs(polycoef: list[float], custom_attrs: dict[str, Any]) -> dict[str, Any]:
-            return {
-                "mujoco:mimic_eq_preserve": True,
-                "mujoco:mimic_eq_polycoef": vec5(*polycoef),
-                "mujoco:mimic_eq_solref": eq_solref(custom_attrs),
-                "mujoco:mimic_eq_solimp": eq_solimp(custom_attrs),
-            }
 
         for connect in equality.findall("connect"):
             attribs = merge_equality_defaults(connect)
@@ -2207,9 +2142,16 @@ def parse_mjcf(
 
                 joint1_idx = joint_name_to_idx.get(joint1_name, -1) if joint1_name else -1
                 joint2_idx = joint_name_to_idx.get(joint2_name, -1) if joint2_name else -1
-                polycoef_values = parse_polycoef(polycoef)
+                polycoef_values = mjc_parse_polycoef(polycoef)
 
                 if convert_mjc_equality_constraints:
+                    if mjc_polycoef_has_higher_order(polycoef_values):
+                        warnings.warn(
+                            f"Warning: Joint equality '{common['name']}' uses higher-order polycoef terms. "
+                            "They are preserved for SolverMuJoCo, but generic Newton mimic constraints use "
+                            "only coef0/coef1.",
+                            stacklevel=2,
+                        )
                     builder.add_constraint_mimic(
                         joint0=joint1_idx,
                         joint1=joint2_idx,
@@ -2217,7 +2159,7 @@ def parse_mjcf(
                         coef1=polycoef_values[1],
                         label=equality_label(common),
                         enabled=common["active"],
-                        custom_attributes=mimic_eq_custom_attrs(polycoef_values, custom_attrs),
+                        custom_attributes=mjc_mimic_eq_custom_attrs(polycoef_values, custom_attrs),
                     )
                 else:
                     builder.add_equality_constraint_joint(

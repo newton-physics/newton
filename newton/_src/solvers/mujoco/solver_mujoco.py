@@ -72,6 +72,7 @@ from .kernels import (
     update_mocap_transforms_kernel,
     update_model_properties_kernel,
     update_pair_properties_kernel,
+    update_preserved_jnt_eq_data_and_active_kernel,
     update_shape_mappings_kernel,
     update_solver_options_kernel,
     update_tendon_properties_kernel,
@@ -3253,6 +3254,13 @@ class SolverMuJoCo(SolverBase):
         entry (either an explicit Newton equality constraint or a WELD).
 
         Shape [nworld, neq], dtype int32."""
+        self.mjc_eq_to_newton_preserved_jnt: wp.array2d[wp.int32] | None = None
+        """Mapping from MuJoCo [world, eq] to converted MJC CONNECT/WELD loop joint index.
+
+        These rows preserve authored MuJoCo equality metadata through joint custom
+        attributes and are restored separately from generic loop-joint synthesis.
+
+        Shape [nworld, neq], dtype int32."""
         self.mjc_eq_to_newton_mimic: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, eq] to Newton mimic constraint index.
 
@@ -3609,6 +3617,7 @@ class SolverMuJoCo(SolverBase):
             self._invalidate_contact_fast_path()
         if flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES:
             self._update_eq_properties()
+            self._update_preserved_jnt_eq_properties()
             self._update_mimic_eq_properties()
         if flags & SolverNotifyFlags.TENDON_PROPERTIES:
             self._update_tendon_properties()
@@ -5419,6 +5428,7 @@ class SolverMuJoCo(SolverBase):
         # add equality constraints for joints that are excluded from the articulation
         # (the UsdPhysics way of defining loop closures)
         mjc_eq_to_newton_jnt = {}
+        mjc_eq_to_newton_preserved_jnt = {}
         jnt_eq_anchor1_dict = {}  # mjc_eq_id -> anchor1 as [x, y, z] for CONNECT constraints from joints
         jnt_eq_anchor1_has_axis_offset = {}  # mjc_eq_id -> bool, True for the second hinge CONNECT
         for j in joints_loop:
@@ -5455,6 +5465,7 @@ class SolverMuJoCo(SolverBase):
                     eq.solref = joint_eq_solref[j]
                 if joint_eq_solimp is not None:
                     eq.solimp = joint_eq_solimp[j]
+                mjc_eq_to_newton_preserved_jnt[eq.id] = j
                 continue
 
             j_type = joint_type[j]
@@ -5894,6 +5905,7 @@ class SolverMuJoCo(SolverBase):
             eq_constraints_per_world = model.equality_constraint_count // model.world_count
             mjc_eq_to_newton_eq_np = np.full((nworld, neq), -1, dtype=np.int32)
             mjc_eq_to_newton_jnt_np = np.full((nworld, neq), -1, dtype=np.int32)
+            mjc_eq_to_newton_preserved_jnt_np = np.full((nworld, neq), -1, dtype=np.int32)
             for mjc_eq, newton_eq in enumerate(selected_constraints):
                 template_eq = newton_eq % eq_constraints_per_world if eq_constraints_per_world > 0 else newton_eq
                 for w in range(nworld):
@@ -5901,8 +5913,13 @@ class SolverMuJoCo(SolverBase):
             for mjc_eq, newton_jnt in mjc_eq_to_newton_jnt.items():
                 for w in range(nworld):
                     mjc_eq_to_newton_jnt_np[w, mjc_eq] = w * joints_per_world + newton_jnt
+            for mjc_eq, newton_jnt in mjc_eq_to_newton_preserved_jnt.items():
+                template_jnt = newton_jnt % joints_per_world if joints_per_world > 0 else newton_jnt
+                for w in range(nworld):
+                    mjc_eq_to_newton_preserved_jnt_np[w, mjc_eq] = w * joints_per_world + template_jnt
             self.mjc_eq_to_newton_eq = wp.array(mjc_eq_to_newton_eq_np, dtype=wp.int32)
             self.mjc_eq_to_newton_jnt = wp.array(mjc_eq_to_newton_jnt_np, dtype=wp.int32)
+            self.mjc_eq_to_newton_preserved_jnt = wp.array(mjc_eq_to_newton_preserved_jnt_np, dtype=wp.int32)
 
             # Build jnt_eq_anchor1 and jnt_eq_anchor1_has_axis_offset per [world, eq]
             # for joint-synthesized CONNECT constraints.
@@ -5920,7 +5937,13 @@ class SolverMuJoCo(SolverBase):
 
             # Ensure no eq is claimed by both the regular and joint-connect paths.
             assert not np.any((mjc_eq_to_newton_eq_np >= 0) & (mjc_eq_to_newton_jnt_np >= 0)), (
-                "mjc_eq_to_newton_eq and mjc_eq_to_newton_jnt overlap — both kernels would write to the same eq_data slot"
+                "mjc_eq_to_newton_eq and mjc_eq_to_newton_jnt overlap -- both kernels would write to the same eq_data slot"
+            )
+            assert not np.any((mjc_eq_to_newton_eq_np >= 0) & (mjc_eq_to_newton_preserved_jnt_np >= 0)), (
+                "mjc_eq_to_newton_eq and mjc_eq_to_newton_preserved_jnt overlap -- both kernels would write to the same eq_data slot"
+            )
+            assert not np.any((mjc_eq_to_newton_jnt_np >= 0) & (mjc_eq_to_newton_preserved_jnt_np >= 0)), (
+                "mjc_eq_to_newton_jnt and mjc_eq_to_newton_preserved_jnt overlap -- both kernels would write to the same eq_data slot"
             )
 
             # Create mjc_eq_to_newton_mimic: MuJoCo[world, eq] -> Newton mimic constraint
@@ -7040,6 +7063,52 @@ class SolverMuJoCo(SolverBase):
             ],
             outputs=[
                 self.mjw_model.eq_data,
+                self.mjw_data.eq_active,
+            ],
+            device=self.model.device,
+        )
+
+    def _update_preserved_jnt_eq_properties(self):
+        """Restore preserved MuJoCo CONNECT/WELD equality properties from converted loop joints."""
+        if self.mjc_eq_to_newton_preserved_jnt is None:
+            return
+
+        neq = self.mj_model.neq
+        if neq == 0:
+            return
+
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        if mujoco_attrs is None:
+            return
+
+        joint_eq_type = getattr(mujoco_attrs, "joint_eq_type", None)
+        if joint_eq_type is None:
+            return
+
+        world_count = self.mjc_eq_to_newton_preserved_jnt.shape[0]
+        joint_eq_anchor = getattr(mujoco_attrs, "joint_eq_anchor", None)
+        joint_eq_relpose = getattr(mujoco_attrs, "joint_eq_relpose", None)
+        joint_eq_torquescale = getattr(mujoco_attrs, "joint_eq_torquescale", None)
+        joint_eq_solref = getattr(mujoco_attrs, "joint_eq_solref", None)
+        joint_eq_solimp = getattr(mujoco_attrs, "joint_eq_solimp", None)
+
+        wp.launch(
+            update_preserved_jnt_eq_data_and_active_kernel,
+            dim=(world_count, neq),
+            inputs=[
+                self.mjc_eq_to_newton_preserved_jnt,
+                joint_eq_type,
+                joint_eq_anchor,
+                joint_eq_relpose,
+                joint_eq_torquescale,
+                joint_eq_solref,
+                joint_eq_solimp,
+                self.model.joint_enabled,
+            ],
+            outputs=[
+                self.mjw_model.eq_data,
+                self.mjw_model.eq_solref,
+                self.mjw_model.eq_solimp,
                 self.mjw_data.eq_active,
             ],
             device=self.model.device,

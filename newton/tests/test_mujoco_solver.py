@@ -11,7 +11,7 @@ import numpy as np  # For numerical operations and random values
 import warp as wp
 
 import newton
-from newton import BodyFlags, JointType, Mesh
+from newton import BodyFlags, EqType, JointType, Mesh
 from newton._src.core.types import vec5
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
@@ -6955,6 +6955,113 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # WELD entries from FIXED loop joints are excluded from mjc_eq_to_newton_jnt
         # (only CONNECT entries are tracked) so the weld slot should remain -1
         assert np.allclose(solver.mjc_eq_to_newton_jnt.numpy(), np.full((world_count, 3), -1, dtype=np.int32))
+
+    def test_preserved_loop_equality_runtime_update_keeps_per_world_mujoco_data(self):
+        """Preserved MuJoCo CONNECT/WELD loop equalities keep per-world metadata."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        connect_anchor = np.array([[0.1, 0.2, 0.3], [-0.4, 0.5, -0.6]], dtype=np.float32)
+        weld_anchor = np.array([[0.7, -0.8, 0.9], [-1.0, 1.1, -1.2]], dtype=np.float32)
+        weld_relpose_pos = np.array([[0.01, 0.02, 0.03], [-0.04, 0.05, -0.06]], dtype=np.float32)
+        weld_torquescale = np.array([0.37, 0.83], dtype=np.float32)
+        connect_solref = np.array([[0.04, 1.2], [0.08, 0.9]], dtype=np.float32)
+        weld_solref = np.array([[0.03, 1.4], [0.07, 0.6]], dtype=np.float32)
+        connect_solimp = np.array(
+            [[0.82, 0.91, 0.002, 0.45, 1.8], [0.75, 0.88, 0.004, 0.55, 1.6]],
+            dtype=np.float32,
+        )
+        weld_solimp = np.array(
+            [[0.66, 0.86, 0.006, 0.35, 1.4], [0.72, 0.9, 0.008, 0.65, 2.2]],
+            dtype=np.float32,
+        )
+        connect_enabled = np.array([True, False])
+        weld_enabled = np.array([False, True])
+        loop_joint_ids = []
+
+        for world in range(2):
+            builder.begin_world()
+            root = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+            mid = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+            tip = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+            j0 = builder.add_joint_revolute(-1, root, axis=(0.0, 0.0, 1.0))
+            j1 = builder.add_joint_revolute(root, mid, axis=(0.0, 1.0, 0.0))
+            j2 = builder.add_joint_revolute(mid, tip, axis=(1.0, 0.0, 0.0))
+            builder.add_shape_box(body=root, hx=0.1, hy=0.1, hz=0.1)
+            builder.add_shape_box(body=mid, hx=0.1, hy=0.1, hz=0.1)
+            builder.add_shape_box(body=tip, hx=0.1, hy=0.1, hz=0.1)
+            builder.add_articulation([j0, j1, j2])
+
+            connect_joint = builder.add_joint_ball(
+                parent=root,
+                child=mid,
+                enabled=bool(connect_enabled[world]),
+                custom_attributes={
+                    "mujoco:joint_eq_type": int(EqType.CONNECT),
+                    "mujoco:joint_eq_body1": root,
+                    "mujoco:joint_eq_body2": mid,
+                    "mujoco:joint_eq_anchor": wp.vec3(*connect_anchor[world]),
+                    "mujoco:joint_eq_relpose": wp.transform_identity(),
+                    "mujoco:joint_eq_torquescale": 0.0,
+                    "mujoco:joint_eq_solref": wp.vec2(*connect_solref[world]),
+                    "mujoco:joint_eq_solimp": vec5(*connect_solimp[world]),
+                },
+            )
+            weld_joint = builder.add_joint_fixed(
+                parent=mid,
+                child=tip,
+                enabled=bool(weld_enabled[world]),
+                custom_attributes={
+                    "mujoco:joint_eq_type": int(EqType.WELD),
+                    "mujoco:joint_eq_body1": mid,
+                    "mujoco:joint_eq_body2": tip,
+                    "mujoco:joint_eq_anchor": wp.vec3(*weld_anchor[world]),
+                    "mujoco:joint_eq_relpose": wp.transform(
+                        wp.vec3(*weld_relpose_pos[world]),
+                        wp.quat_identity(),
+                    ),
+                    "mujoco:joint_eq_torquescale": float(weld_torquescale[world]),
+                    "mujoco:joint_eq_solref": wp.vec2(*weld_solref[world]),
+                    "mujoco:joint_eq_solimp": vec5(*weld_solimp[world]),
+                },
+            )
+            loop_joint_ids.append([connect_joint, weld_joint])
+            builder.end_world()
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.neq, 2)
+        self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
+        self.assertEqual(int(solver.mj_model.eq_type[1]), int(solver._mujoco.mjtEq.mjEQ_WELD))
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_preserved_jnt.numpy(), np.array(loop_joint_ids))
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_eq.numpy(), np.full((2, 2), -1, dtype=np.int32))
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_jnt.numpy(), np.full((2, 2), -1, dtype=np.int32))
+
+        eq_data = solver.mjw_model.eq_data.numpy()
+        np.testing.assert_allclose(eq_data[:, 0, :3], connect_anchor, rtol=1e-5)
+        np.testing.assert_allclose(eq_data[:, 1, :3], weld_anchor, rtol=1e-5)
+        np.testing.assert_allclose(eq_data[:, 1, 3:6], weld_relpose_pos, rtol=1e-5)
+        np.testing.assert_allclose(eq_data[:, 1, 6:10], [[1.0, 0.0, 0.0, 0.0]] * 2, rtol=1e-5)
+        np.testing.assert_allclose(eq_data[:, 1, 10], weld_torquescale, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solref.numpy()[:, 0], connect_solref, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solref.numpy()[:, 1], weld_solref, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solimp.numpy()[:, 0], connect_solimp, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solimp.numpy()[:, 1], weld_solimp, rtol=1e-5)
+        np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 0], connect_enabled)
+        np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 1], weld_enabled)
+
+        joint_enabled = model.joint_enabled.numpy()
+        joint_enabled[loop_joint_ids[0][0]] = False
+        joint_enabled[loop_joint_ids[0][1]] = True
+        joint_enabled[loop_joint_ids[1][0]] = True
+        joint_enabled[loop_joint_ids[1][1]] = False
+        model.joint_enabled.assign(joint_enabled)
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy(), eq_data, rtol=1e-5)
+        np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 0], [False, True])
+        np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 1], [True, False])
 
     def test_loop_joint_coordinate_conversion_offset(self):
         """Verify coordinate conversion when revolute loop joints precede other joints.

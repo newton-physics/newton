@@ -29,7 +29,7 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
-from ..core.types import Axis, Transform, vec5
+from ..core.types import Axis, Transform
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
 from ..sim.enums import EqType, JointTargetMode
@@ -37,6 +37,11 @@ from ..sim.model import Model
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
+from ._mjc_equality import (
+    mjc_add_equality_loop_joint,
+    mjc_mimic_eq_custom_attrs,
+    mjc_polycoef_has_higher_order,
+)
 from .import_utils import should_show_collider
 
 AttributeFrequency = Model.AttributeFrequency
@@ -3180,57 +3185,6 @@ def parse_usd(
                 [AttributeFrequency.EQUALITY_CONSTRAINT]
             )
 
-        def eq_solref(custom_attrs: dict[str, Any]) -> wp.vec2:
-            return custom_attrs.get("mujoco:eq_solref", wp.vec2(0.02, 1.0))
-
-        def eq_solimp(custom_attrs: dict[str, Any]) -> vec5:
-            return custom_attrs.get("mujoco:eq_solimp", vec5(0.9, 0.95, 0.001, 0.5, 2.0))
-
-        def joint_eq_custom_attrs(
-            eq_type: EqType,
-            body1: int,
-            body2: int,
-            anchor: wp.vec3,
-            relpose: wp.transform | None,
-            torquescale: float,
-            custom_attrs: dict[str, Any],
-        ) -> dict[str, Any]:
-            return {
-                "mujoco:joint_eq_type": int(eq_type),
-                "mujoco:joint_eq_body1": body1,
-                "mujoco:joint_eq_body2": body2,
-                "mujoco:joint_eq_anchor": anchor,
-                "mujoco:joint_eq_relpose": relpose or wp.transform_identity(),
-                "mujoco:joint_eq_torquescale": torquescale,
-                "mujoco:joint_eq_solref": eq_solref(custom_attrs),
-                "mujoco:joint_eq_solimp": eq_solimp(custom_attrs),
-            }
-
-        def loop_joint_xforms(body1: int, body2: int, anchor: wp.vec3) -> tuple[int, int, wp.transform, wp.transform]:
-            if body2 >= 0:
-                parent = body1
-                child = body2
-            elif body1 >= 0:
-                parent = -1
-                child = body1
-            else:
-                raise ValueError("At least one body is required for converted MuJoCo equality constraints.")
-
-            body1_xform = builder.body_q[body1] if body1 >= 0 else wp.transform_identity()
-            child_xform_world = builder.body_q[child]
-            world_anchor = wp.transform_point(body1_xform, anchor) if body1 >= 0 else anchor
-            if parent >= 0:
-                parent_anchor = wp.transform_point(wp.transform_inverse(builder.body_q[parent]), world_anchor)
-            else:
-                parent_anchor = world_anchor
-            child_anchor = wp.transform_point(wp.transform_inverse(child_xform_world), world_anchor)
-            return (
-                parent,
-                child,
-                wp.transform(parent_anchor, wp.quat_identity()),
-                wp.transform(child_anchor, wp.quat_identity()),
-            )
-
         def add_converted_loop_joint(
             eq_type: EqType,
             body1: int,
@@ -3243,7 +3197,18 @@ def parse_usd(
             custom_attrs: dict[str, Any],
         ) -> None:
             try:
-                parent, child, parent_xform, child_xform = loop_joint_xforms(body1, body2, anchor)
+                joint_idx = mjc_add_equality_loop_joint(
+                    builder,
+                    eq_type,
+                    body1,
+                    body2,
+                    anchor,
+                    relpose,
+                    torquescale,
+                    joint_path,
+                    enabled,
+                    custom_attrs,
+                )
             except ValueError:
                 warnings.warn(
                     f"MuJoCo equality '{joint_path}' has no valid body reference; skipping.",
@@ -3251,34 +3216,7 @@ def parse_usd(
                 )
                 return
 
-            converted_attrs = joint_eq_custom_attrs(
-                eq_type,
-                body1,
-                body2,
-                anchor,
-                relpose,
-                torquescale,
-                custom_attrs,
-            )
-            add_joint = builder.add_joint_ball if eq_type == EqType.CONNECT else builder.add_joint_fixed
-            joint_idx = add_joint(
-                parent=parent,
-                child=child,
-                parent_xform=parent_xform,
-                child_xform=child_xform,
-                label=joint_path,
-                enabled=enabled,
-                custom_attributes=converted_attrs,
-            )
             path_joint_map[joint_path] = joint_idx
-
-        def mimic_eq_custom_attrs(polycoef: list[float], custom_attrs: dict[str, Any]) -> dict[str, Any]:
-            return {
-                "mujoco:mimic_eq_preserve": True,
-                "mujoco:mimic_eq_polycoef": vec5(*polycoef),
-                "mujoco:mimic_eq_solref": eq_solref(custom_attrs),
-                "mujoco:mimic_eq_solimp": eq_solimp(custom_attrs),
-            }
 
         for joint_path, joint_desc in joint_descriptions.items():
             joint_prim = stage.GetPrimAtPath(joint_path)
@@ -3428,6 +3366,13 @@ def parse_usd(
                     polycoef.append(float(attr.Get()) if attr and attr.HasValue() else default)
 
                 if convert_mjc_equality_constraints:
+                    if mjc_polycoef_has_higher_order(polycoef):
+                        warnings.warn(
+                            f"Warning: Joint equality '{joint_path}' uses higher-order polycoef terms. "
+                            "They are preserved for SolverMuJoCo, but generic Newton mimic constraints use "
+                            "only coef0/coef1.",
+                            stacklevel=2,
+                        )
                     builder.add_constraint_mimic(
                         joint0=joint1_idx,
                         joint1=joint2_idx,
@@ -3435,7 +3380,7 @@ def parse_usd(
                         coef1=polycoef[1],
                         label=joint_path,
                         enabled=enabled,
-                        custom_attributes=mimic_eq_custom_attrs(polycoef, eq_custom_attrs),
+                        custom_attributes=mjc_mimic_eq_custom_attrs(polycoef, eq_custom_attrs),
                     )
                 else:
                     builder.add_equality_constraint_joint(

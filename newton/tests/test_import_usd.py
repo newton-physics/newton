@@ -5697,7 +5697,8 @@ def Xform "Articulation" (
 
         converted_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(converted_builder)
-        converted_builder.add_usd(build_stage(), only_load_enabled_joints=False)
+        with self.assertWarnsRegex(UserWarning, "higher-order polycoef"):
+            converted_builder.add_usd(build_stage(), only_load_enabled_joints=False)
         converted_model = converted_builder.finalize()
         converted_solver = SolverMuJoCo(converted_model)
 

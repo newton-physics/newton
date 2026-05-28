@@ -583,7 +583,12 @@ class Model:
         """
 
         self.articulation_start: wp.array[wp.int32] | None = None
-        """Articulation start index plus sentinel, shape [articulation_count + 1], int."""
+        """Articulation start index plus sentinel, shape [articulation_count + 1], int.
+
+        The sentinel still bounds each articulation's full joint range, including
+        converted loop-closing joints. Use :attr:`articulation_end` for the
+        exclusive end of regular tree joints.
+        """
         self.articulation_end: wp.array[wp.int32] | None = None
         """Exclusive end index of regular tree joints per articulation, shape [articulation_count], int."""
         self.articulation_label: list[str] = []
