@@ -8,11 +8,24 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...geometry import Gaussian, GeoType
+from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
 from . import lighting, raytrace, textures, tiling
-from .types import MeshData, RenderOrder, TextureData
+from .types import ClearData, MeshData, RenderOrder, TextureData
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
+
+
+def _srgb_packed_rgba_to_linear(packed: int) -> int:
+    r = packed & 0xFF
+    g = (packed >> 8) & 0xFF
+    b = (packed >> 16) & 0xFF
+    a = (packed >> 24) & 0xFF
+    linear = color_srgb_to_linear((r / 255.0, g / 255.0, b / 255.0))
+    lr = min(max(int(linear[0] * 255.0), 0), 255)
+    lg = min(max(int(linear[1] * 255.0), 0), 255)
+    lb = min(max(int(linear[2] * 255.0), 0), 255)
+    return (a << 24) | (lb << 16) | (lg << 8) | lr
 
 
 def create_kernel(
@@ -20,10 +33,24 @@ def create_kernel(
 ) -> wp.kernel:
     compute_lighting = lighting.create_compute_lighting_function(config, state)
 
-    if state.render_color or state.render_normal:
+    if (
+        state.render_color
+        or state.render_hdr_color
+        or state.render_normal
+        or (state.render_albedo and config.enable_textures)
+    ):
         raytrace_closest_hit = raytrace.create_closest_hit_function(config, state)
     else:
         raytrace_closest_hit = raytrace.create_closest_hit_depth_only_function(config, state)
+
+    if config.output_color_space == ColorSpace.LINEAR:
+        clear_data = ClearData(
+            clear_color=_srgb_packed_rgba_to_linear(clear_data.clear_color),
+            clear_depth=clear_data.clear_depth,
+            clear_shape_index=clear_data.clear_shape_index,
+            clear_normal=clear_data.clear_normal,
+            clear_albedo=_srgb_packed_rgba_to_linear(clear_data.clear_albedo),
+        )
 
     @wp.kernel(enable_backward=False)
     def render_megakernel(
@@ -76,6 +103,7 @@ def create_kernel(
         out_shape_index: wp.array[wp.uint32],
         out_normal: wp.array[wp.vec3f],
         out_albedo: wp.array[wp.uint32],
+        out_hdr_color: wp.array[wp.vec3f],
     ):
         tid = wp.tid()
 
@@ -136,6 +164,8 @@ def create_kernel(
                 out_color[out_index] = wp.uint32(wp.static(clear_data.clear_color))
             if wp.static(state.render_albedo):
                 out_albedo[out_index] = wp.uint32(wp.static(clear_data.clear_albedo))
+            if wp.static(state.render_hdr_color):
+                out_hdr_color[out_index] = wp.vec3f(0.0)
             if wp.static(state.render_depth):
                 out_depth[out_index] = wp.float32(wp.static(clear_data.clear_depth))
             if wp.static(state.render_normal):
@@ -157,7 +187,11 @@ def create_kernel(
         if wp.static(state.render_shape_index):
             out_shape_index[out_index] = closest_hit.shape_index
 
-        if not wp.static(state.render_color) and not wp.static(state.render_albedo):
+        if (
+            not wp.static(state.render_color)
+            and not wp.static(state.render_albedo)
+            and not wp.static(state.render_hdr_color)
+        ):
             return
 
         is_gaussian = wp.bool(False)
@@ -172,7 +206,7 @@ def create_kernel(
 
             albedo_color = wp.vec3f(1.0)
             if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
-                albedo_color = shape_colors[closest_hit.shape_index]
+                albedo_color = srgb_to_linear_wp(shape_colors[closest_hit.shape_index])
 
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 texture_index = shape_texture_ids[closest_hit.shape_index]
@@ -191,12 +225,15 @@ def create_kernel(
                         closest_hit.face_idx,
                     )
 
-                    albedo_color = wp.cw_mul(albedo_color, tex_color)
+                    albedo_color = wp.cw_mul(albedo_color, srgb_to_linear_wp(tex_color))
 
         if wp.static(state.render_albedo):
-            out_albedo[out_index] = tiling.pack_rgba_to_uint32(albedo_color, 1.0)
+            packed_albedo = albedo_color
+            if wp.static(config.output_color_space == ColorSpace.SRGB):
+                packed_albedo = linear_to_srgb_wp(packed_albedo)
+            out_albedo[out_index] = tiling.pack_rgba_to_uint32(packed_albedo, 1.0)
 
-        if not wp.static(state.render_color):
+        if not wp.static(state.render_color) and not wp.static(state.render_hdr_color):
             return
 
         shaded_color = closest_hit.color
@@ -243,6 +280,13 @@ def create_kernel(
                 )
                 shaded_color = shaded_color + albedo_color * light_contribution
 
-        out_color[out_index] = tiling.pack_rgba_to_uint32(shaded_color, 1.0)
+        if wp.static(state.render_hdr_color):
+            out_hdr_color[out_index] = shaded_color
+
+        if wp.static(state.render_color and config.output_color_space == ColorSpace.SRGB):
+            shaded_color = linear_to_srgb_wp(shaded_color)
+
+        if wp.static(state.render_color):
+            out_color[out_index] = tiling.pack_rgba_to_uint32(shaded_color, 1.0)
 
     return render_megakernel

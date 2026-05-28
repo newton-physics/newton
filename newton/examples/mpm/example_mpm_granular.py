@@ -99,7 +99,7 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        if isinstance(self.viewer, newton.viewer.ViewerGL):
+        if hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(self.render_ui, position="side")
 
         self.viewer.show_particles = True
@@ -282,6 +282,4 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
 
     # Create example and run
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

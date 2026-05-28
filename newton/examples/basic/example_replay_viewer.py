@@ -195,7 +195,8 @@ class Example:
 
         # Add replay UI extension to the viewer
         self.replay_ui = ReplayUI(viewer)
-        self.viewer.register_ui_callback(self.replay_ui.render, "free")
+        if hasattr(self.viewer, "register_ui_callback"):
+            self.viewer.register_ui_callback(self.replay_ui.render, "free")
 
         # No simulation - this example is purely for replay
         self.sim_time = 0.0
@@ -220,6 +221,4 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init()
 
     # Create example and run
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

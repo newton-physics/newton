@@ -271,6 +271,4 @@ if __name__ == "__main__":
 
         torch.set_default_device(args.device)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

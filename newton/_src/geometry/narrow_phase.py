@@ -786,6 +786,8 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
     shape_gap: wp.array[float],  # Per-shape contact gaps
     shape_data: wp.array[wp.vec4],  # Shape data (scale xyz, margin w)
     shape_collision_radius: wp.array[float],
+    shape_collision_aabb_lower: wp.array[wp.vec3],  # Local-space AABB lower bounds
+    shape_collision_aabb_upper: wp.array[wp.vec3],  # Local-space AABB upper bounds
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
     shape_pairs_mesh: wp.array[wp.vec2i],
@@ -830,7 +832,9 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
                 shape_b,
                 hfd,
                 shape_transform,
-                shape_collision_radius,
+                shape_collision_aabb_lower,
+                shape_collision_aabb_upper,
+                shape_data,
                 shape_gap,
                 triangle_pairs,
                 triangle_pairs_count,
@@ -864,12 +868,16 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
         # Get non-mesh shape world transform
         X_ws = shape_transform[non_mesh_shape]
 
-        # Use per-shape contact gaps for consistent pairwise thresholding.
+        # Use the same margin+gap shell for triangle candidates that the
+        # narrow phase uses when accepting contacts.
         gap_non_mesh = shape_gap[non_mesh_shape]
         gap_mesh = shape_gap[mesh_shape]
         gap_sum = gap_non_mesh + gap_mesh
+        margin_non_mesh = shape_data[non_mesh_shape][3]
+        margin_mesh = shape_data[mesh_shape][3]
+        contact_threshold = gap_sum + margin_non_mesh + margin_mesh
 
-        # Call mesh_vs_convex_midphase with the shape_data and pair gap sum.
+        # Call mesh_vs_convex_midphase with the shape_data and pair contact threshold.
         mesh_vs_convex_midphase(
             j,
             mesh_shape,
@@ -880,7 +888,7 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
             shape_types,
             shape_data,
             shape_source,
-            gap_sum,
+            contact_threshold,
             triangle_pairs,
             triangle_pairs_count,
         )
@@ -1485,6 +1493,7 @@ class NarrowPhase:
         self.has_heightfields = has_heightfields
         self.deterministic = deterministic
         self.verify_buffers = verify_buffers
+        device_obj = wp.get_device(device)
 
         # Contact reduction requires either meshes or heightfields (the
         # mesh/heightfield-triangle path feeds the global reducer, so
@@ -1512,7 +1521,11 @@ class NarrowPhase:
         else:
             writer_func = contact_writer_warp_func
 
-        self.tile_size_mesh_convex = 128
+        # CPU kernels currently observe ``wp.block_dim() == 1`` regardless
+        # of the plain ``wp.launch(..., block_dim=N)`` parameter (Warp
+        # GH-1413). Keep the mesh-convex midphase launch grid, tile shape,
+        # and kernel-side ``wp.block_dim()`` in sync on CPU.
+        self.tile_size_mesh_convex = 1 if device_obj.is_cpu else 128
         # Must match ``MESH_SDF_BLOCK_DIM`` in sdf_contact.py: the mesh-SDF
         # kernels assume ``wp.block_dim()`` equals that constant so the
         # tile-stack overflow margin (``STACK_CAPACITY = 2 *
@@ -1526,7 +1539,12 @@ class NarrowPhase:
         # Generic block dim for non-tile-stack kernels (primitive /
         # GJK-MPR / export). Not used for the mesh-SDF tile launches,
         # which use ``self.tile_size_mesh_mesh`` above.
-        self.block_dim = 128
+        #
+        # Plain ``wp.launch`` does not auto-clamp ``block_dim`` on CPU like
+        # ``wp.launch_tiled`` does. Match the kernel-observed value so
+        # strided-loop and tile-index calculations cannot run past the CPU
+        # launch geometry.
+        self.block_dim = 1 if device_obj.is_cpu else 128
 
         # Create the appropriate kernel variants
         # Primitive kernel handles lightweight primitives and routes remaining pairs
@@ -1666,7 +1684,6 @@ class NarrowPhase:
         # 256 blocks provides good occupancy on most GPUs (2-4 blocks per SM).
 
         # Query GPU properties to compute appropriate thread limits
-        device_obj = wp.get_device(device)
         if device_obj.is_cuda:
             # Use 4 blocks per SM as a reasonable upper bound for occupancy
             # This balances parallelism with resource utilization
@@ -1869,6 +1886,8 @@ class NarrowPhase:
                     shape_gap,
                     shape_data,
                     shape_collision_radius,
+                    shape_collision_aabb_lower,
+                    shape_collision_aabb_upper,
                     shape_heightfield_index,
                     heightfield_data,
                     self.shape_pairs_mesh,

@@ -16,22 +16,25 @@ def _delay_buffer_state_kernel(
     feedforward_global: wp.array[float],
     pos_indices: wp.array[wp.uint32],
     vel_indices: wp.array[wp.uint32],
-    copy_idx: int,
-    write_idx: int,
     buf_depth: int,
     current_buffer_pos: wp.array2d[float],
     current_buffer_vel: wp.array2d[float],
     current_buffer_act: wp.array2d[float],
     current_num_pushes: wp.array[int],
+    current_write_idx: wp.array[int],
     next_buffer_pos: wp.array2d[float],
     next_buffer_vel: wp.array2d[float],
     next_buffer_act: wp.array2d[float],
     next_num_pushes: wp.array[int],
+    next_write_idx: wp.array[int],
 ):
-    """Update delay circular buffer: copy previous entry, write new entry, increment push count."""
+    """Update delay circular buffer: copy previous entry, write new entry, advance write pointer."""
     i = wp.tid()
     pos_idx = pos_indices[i]
     vel_idx = vel_indices[i]
+
+    copy_idx = current_write_idx[0]
+    write_idx = (copy_idx + 1) % buf_depth
 
     next_buffer_pos[copy_idx, i] = current_buffer_pos[copy_idx, i]
     next_buffer_vel[copy_idx, i] = current_buffer_vel[copy_idx, i]
@@ -47,12 +50,15 @@ def _delay_buffer_state_kernel(
 
     next_num_pushes[i] = wp.min(current_num_pushes[i] + 1, buf_depth)
 
+    if i == 0:
+        next_write_idx[0] = write_idx
+
 
 @wp.kernel
 def _delay_read_kernel(
     delays: wp.array[int],
     num_pushes: wp.array[int],
-    write_idx: int,
+    write_idx_arr: wp.array[int],
     buf_depth: int,
     buffer_pos: wp.array2d[float],
     buffer_vel: wp.array2d[float],
@@ -79,6 +85,7 @@ def _delay_read_kernel(
             act = current_act[vel_idx]
         out_act[i] = act
     else:
+        write_idx = write_idx_arr[0]
         lag = wp.min(delays[i] - 1, n - 1)
         read_idx = (write_idx - lag + buf_depth) % buf_depth
         out_pos[i] = buffer_pos[read_idx, i]
@@ -133,8 +140,8 @@ class Delay:
         """Delayed feedforward inputs [N or N·m], shape (buf_depth, N)."""
         num_pushes: wp.array[int] | None = None
         """Per-DOF count of writes since last reset, shape (N,)."""
-        write_idx: int = 0
-        """Current write position in the circular buffer."""
+        write_idx: wp.array[int] | None = None
+        """Current write position in the circular buffer, shape (1,). Device-side for graph capture."""
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
             """Reset delay buffer state.
@@ -149,7 +156,7 @@ class Delay:
                 self.buffer_vel.zero_()
                 self.buffer_act.zero_()
                 self.num_pushes.zero_()
-                self.write_idx = self.buffer_pos.shape[0] - 1
+                self.write_idx.fill_(self.buffer_pos.shape[0] - 1)
             else:
                 rows = self.buffer_pos.shape[0]
                 n = len(mask)
@@ -227,12 +234,13 @@ class Delay:
             Freshly allocated :class:`Delay.State`.
         """
         rg = self._requires_grad
+        write_idx_arr = wp.full(1, self.buf_depth - 1, dtype=int, device=device)
         return Delay.State(
             buffer_pos=wp.zeros((self.buf_depth, num_actuators), dtype=wp.float32, device=device, requires_grad=rg),
             buffer_vel=wp.zeros((self.buf_depth, num_actuators), dtype=wp.float32, device=device, requires_grad=rg),
             buffer_act=wp.zeros((self.buf_depth, num_actuators), dtype=wp.float32, device=device, requires_grad=rg),
             num_pushes=wp.zeros(num_actuators, dtype=int, device=device),
-            write_idx=self.buf_depth - 1,
+            write_idx=write_idx_arr,
         )
 
     def get_delayed_targets(
@@ -269,7 +277,7 @@ class Delay:
             inputs=[
                 self.delay_steps,
                 current_state.num_pushes,
-                current_state.write_idx,
+                current_state.write_idx,  # device-side array (1,)
                 self.buf_depth,
                 current_state.buffer_pos,
                 current_state.buffer_vel,
@@ -309,9 +317,6 @@ class Delay:
         if next_state is None:
             return
 
-        copy_idx = current_state.write_idx
-        write_idx = (current_state.write_idx + 1) % self.buf_depth
-
         wp.launch(
             kernel=_delay_buffer_state_kernel,
             dim=self._num_actuators,
@@ -321,21 +326,19 @@ class Delay:
                 feedforward,
                 pos_indices,
                 vel_indices,
-                copy_idx,
-                write_idx,
                 self.buf_depth,
                 current_state.buffer_pos,
                 current_state.buffer_vel,
                 current_state.buffer_act,
                 current_state.num_pushes,
+                current_state.write_idx,
             ],
             outputs=[
                 next_state.buffer_pos,
                 next_state.buffer_vel,
                 next_state.buffer_act,
                 next_state.num_pushes,
+                next_state.write_idx,
             ],
             device=self._device,
         )
-
-        next_state.write_idx = write_idx

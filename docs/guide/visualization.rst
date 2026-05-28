@@ -21,6 +21,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.end_frame` — finish the frame and present it
 - :meth:`~newton.viewer.ViewerBase.is_running` — check whether the viewer is still open (useful as a loop condition)
 - :meth:`~newton.viewer.ViewerBase.is_paused` — check whether the simulation is paused (toggled with ``SPACE`` in :class:`~newton.viewer.ViewerGL`)
+- :meth:`~newton.viewer.ViewerBase.should_step` — call exactly once per frame; returns ``True`` when running, or ``True`` once after a single-step request (triggered with ``.`` or the "Step" button in :class:`~newton.viewer.ViewerGL`) and ``False`` otherwise; prefer this over composing ``is_paused()`` manually
 - :meth:`~newton.viewer.ViewerBase.close` — close the viewer and release resources
 
 **Camera and layout:**
@@ -35,6 +36,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.log_contacts` — visualize :class:`~newton.Contacts` as normal lines at contact points
 - :meth:`~newton.viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
 - :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — log numeric data for backend-specific visualization (e.g. time-series plots in Rerun)
+- :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image as a dockable window in :class:`~newton.viewer.ViewerGL` (no-op on other backends)
 
 **Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance.
 All viewers support the ``max_worlds`` parameter to limit visualization to a subset of environments:
@@ -58,13 +60,6 @@ OpenGL Viewer
 Newton provides :class:`~newton.viewer.ViewerGL`, a simple OpenGL viewer for interactive real-time visualization of simulations.
 The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed.
 
-Constructor parameters:
-
-- ``width``: Window width in pixels (default: ``1920``)
-- ``height``: Window height in pixels (default: ``1080``)
-- ``vsync``: Enable vertical sync (default: ``False``)
-- ``headless``: Run without a visible window, useful for off-screen rendering (default: ``False``)
-
 .. code-block:: python
 
     viewer = newton.viewer.ViewerGL()
@@ -76,9 +71,9 @@ Constructor parameters:
     viewer.log_state(state)
     viewer.end_frame()
 
-    # check if the simulation is paused (toggled with SPACE key):
-    if viewer.is_paused():
-        pass  # simulation stepping is paused
+    # advance the simulation each frame, or step once when paused:
+    if viewer.should_step():
+        pass  # call solver.step(), example.step(), etc.
 
 **Interactive forces and input:**
 
@@ -157,6 +152,8 @@ Viewer controls:
       - Toggle the sidebar
     * - ``SPACE``
       - Pause or continue the simulation
+    * - ``.``
+      - Step the simulation by one frame while paused
     * - ``ESC``
       - Close the viewer
     * - Right click
@@ -179,6 +176,35 @@ Set the PyOpenGL platform before running:
     export PYOPENGL_PLATFORM=glx
 
 This is a known issue when running OpenGL applications on Wayland display servers.
+
+RTX Viewer
+~~~~~~~~~~
+
+:class:`~newton.viewer.ViewerRTX` provides real-time path-traced rendering using the NVIDIA OVRTX renderer.
+It builds a USD scene on the first frame and updates rigid-body transforms each frame via the OVRTX attribute API,
+presenting the result in a pyglet/OpenGL window.
+
+.. note::
+    The RTX viewer is experimental and may not have the same functionality as the OpenGL viewer.
+
+**Installation**: Requires the ``rtx`` dependency group:
+
+.. code-block:: bash
+
+    uv sync --extra rtx
+
+This installs ``ovrtx`` (the NVIDIA OVRTX renderer) and ``usd-core``, in addition to ``pyglet`` for the window.
+
+.. code-block:: python
+
+    viewer = newton.viewer.ViewerRTX(environment="studio")
+
+    viewer.set_model(model)
+
+    # at every frame:
+    viewer.begin_frame(sim_time)
+    viewer.log_state(state)
+    viewer.end_frame()
 
 Recording and Offline Viewers
 -----------------------------
@@ -256,25 +282,10 @@ Use :class:`~newton.viewer.ViewerFile` to load a recording, then restore the mod
 
 For a complete example with UI controls for scrubbing and playback, see ``newton/examples/basic/example_replay_viewer.py``.
 
-Key parameters:
-
-- ``output_path``: Path to the output file (format determined by extension: .json or .bin)
-- ``auto_save``: If True, automatically save periodically during recording (default: ``True``)
-- ``save_interval``: Number of frames between auto-saves when auto_save=True (default: ``100``)
-- ``max_history_size``: Maximum number of frames to keep in memory (default: ``None`` for unlimited)
-
 Rendering to USD
 ~~~~~~~~~~~~~~~~
 
 Instead of rendering in real-time, you can also render the simulation as a time-sampled USD stage to be visualized in Omniverse or other USD-compatible tools using the :class:`~newton.viewer.ViewerUSD` backend.
-
-Constructor parameters:
-
-- ``output_path``: Path to the output USD file
-- ``fps``: Frames per second for time sampling (default: ``60``)
-- ``up_axis``: USD up axis, ``"Y"`` or ``"Z"`` (default: ``"Z"``)
-- ``num_frames``: Maximum number of frames to record, or ``None`` for unlimited (default: ``100``)
-- ``scaling``: Uniform scaling applied to the scene root (default: ``1.0``)
 
 .. code-block:: python
 
@@ -304,17 +315,6 @@ enabling real-time or offline visualization with advanced features like time scr
 .. code-block:: bash
 
     pip install rerun-sdk
-
-Constructor parameters:
-
-- ``app_id``: Application ID for Rerun (default: ``"newton-viewer"``). Use different IDs to differentiate between parallel viewer instances.
-- ``address``: Optional server address to connect to a remote Rerun server. If provided, connects to the specified server.
-- ``serve_web_viewer``: Serve a web viewer over HTTP and open it in the browser (default: ``True``). If ``False``, spawns a native Rerun viewer.
-- ``web_port``: Port for the web viewer (default: ``9090``)
-- ``grpc_port``: Port for the gRPC server (default: ``9876``)
-- ``keep_historical_data``: Keep historical state data in the viewer for time scrubbing (default: ``False``)
-- ``keep_scalar_history``: Keep scalar time-series history (default: ``True``)
-- ``record_to_rrd``: Optional path to save a ``.rrd`` recording file
 
 **Usage**:
 
@@ -421,14 +421,6 @@ providing web-based 3D visualization that works in any browser and has native Ju
 
     # Close the viewer when done
     viewer.close()
-
-Key parameters:
-
-- ``port``: Port number for the web server (default: ``8080``)
-- ``label``: Optional label for the browser window title
-- ``verbose``: If True, print the server URL when starting (default: ``True``)
-- ``share``: If True, create a publicly accessible URL via viser's share feature
-- ``record_to_viser``: Path to record the visualization to a ``.viser`` file for later playback
 
 **Recording and playback**
 
@@ -572,6 +564,47 @@ Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gi
 
     viewer.log_gizmo("/debug/target_frame", wp.transform(pos, rot))
 
+**Logging images:**
+
+Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including batched/tiled
+outputs from :class:`~newton.sensors.SensorTiledCamera`) as dockable windows in
+:class:`~newton.viewer.ViewerGL`. Accepted shapes are ``(H, W)``, ``(H, W, C)``,
+``(N, H, W)``, and ``(N, H, W, C)`` with ``C in (1, 3, 4)``. Accepted dtypes are
+``uint8`` (values in ``[0, 255]``) and ``float32`` (values in ``[0, 1]``; values
+outside the range are clipped).
+
+.. testcode:: viewer-log-image
+
+    from newton.sensors import SensorTiledCamera
+
+    builder = newton.ModelBuilder()
+    builder.add_body(mass=1.0)
+    model = builder.finalize()
+
+    viewer = newton.viewer.ViewerNull()
+    viewer.set_model(model)
+
+    # Grayscale heatmap: normalize to [0, 1] before logging so float32
+    # values land in the accepted range.
+    depth_image = np.full((16, 16), 2.0, dtype=np.float32)
+    heatmap = depth_image / max(depth_image.max(), 1e-6)
+    viewer.log_image("heatmap", heatmap)
+
+    # Batched color tiles from a tiled-camera sensor. Allocate the sensor
+    # output once and reuse it every frame; the RGBA conversion is a
+    # zero-copy view.
+    sensor = SensorTiledCamera(model=model)
+    W, H, camera_count = 16, 16, 1
+    color_image = sensor.utils.create_color_image_output(W, H, camera_count)
+    # ... in a real pipeline, sensor.update(...) fills color_image each frame.
+    rgba = sensor.utils.to_rgba_from_color(color_image)
+    viewer.log_image("tiled_camera", rgba)
+
+For a 3D input, a last-axis of 1, 3, or 4 is interpreted as channel count
+for a single ``(H, W, C)`` image; otherwise the array is interpreted as a
+batch ``(N, H, W)`` of grayscale images. Pass a 4D array if the
+disambiguation matters.
+
 **Camera and world layout:**
 
 Set the camera programmatically with :meth:`~newton.viewer.ViewerBase.set_camera`:
@@ -601,6 +634,10 @@ Choosing the Right Viewer
       - Interactive development and debugging
       - Real-time display
       - pyglet, imgui_bundle
+    * - :class:`~newton.viewer.ViewerRTX`
+      - Path-traced real-time visualization on NVIDIA GPUs
+      - Real-time display
+      - ovrtx, usd-core, pyglet (``uv sync --extra rtx``)
     * - :class:`~newton.viewer.ViewerFile`
       - Recording for replay/sharing
       - .json or .bin files

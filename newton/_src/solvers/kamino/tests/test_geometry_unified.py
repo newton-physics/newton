@@ -123,7 +123,6 @@ def test_unified_pipeline(
             model=model,
             broadphase=bp_mode,
             default_gap=margin,
-            device=device,
         )
 
         # Create a contacts container using the worst-case capacity of NxN over model-wise geom pairs
@@ -245,7 +244,6 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         }
 
         # Retrieve the nominal expected contacts for the shape pair
-        # TODO: This should be =1, but generates =4
         expected_contacts = 1
 
         # Run the narrow-phase test on the shape pair
@@ -497,7 +495,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
             expected=expected,
             case="boxes_nunchaku",
             broadphase_modes=["explicit"],
-            margin=1e-6,
+            margin=1e-5,
             device=self.default_device,
         )
 
@@ -529,7 +527,6 @@ class TestUnifiedWriterContactDataRegression(unittest.TestCase):
             model=model,
             broadphase="explicit",
             default_gap=default_gap,
-            device=self.default_device,
         )
         n_geoms = builder.num_geoms
         capacity = 8 * ((n_geoms * (n_geoms - 1)) // 2)
@@ -572,7 +569,7 @@ class TestUnifiedWriterContactDataRegression(unittest.TestCase):
             shapes=("sphere", "sphere"),
             distance=separation,
         )
-        for geom in builder.geoms:
+        for geom in builder.all_geoms:
             geom.gap = 0.01
         contacts = self._run_pipeline(builder)
         active = contacts.model_active_contacts.numpy()[0]
@@ -585,7 +582,7 @@ class TestUnifiedWriterContactDataRegression(unittest.TestCase):
             shapes=("sphere", "sphere"),
             distance=separation,
         )
-        for geom in builder.geoms:
+        for geom in builder.all_geoms:
             geom.gap = 0.001
         contacts = self._run_pipeline(builder)
         active = contacts.model_active_contacts.numpy()[0]
@@ -689,7 +686,6 @@ class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
             model=model,
             broadphase="nxn",
             default_gap=1.0,
-            device=self.default_device,
         )
 
         n_geoms = builder.num_geoms
@@ -718,7 +714,6 @@ class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
             model=model,
             broadphase="nxn",
             default_gap=1.0,
-            device=self.default_device,
         )
 
         n_geoms = builder.num_geoms

@@ -12,7 +12,12 @@ import warp as wp
 
 from ...core.model import ModelKamino
 from ...core.time import TimeData
-from ...core.types import float32, int32
+from ...core.types import (
+    assign_to_warp_int32_array,
+    float32,
+    int32,
+    to_warp_int32_array,
+)
 
 ###
 # Module interface
@@ -146,13 +151,13 @@ class AnimationJointReferenceData:
 @wp.kernel
 def _advance_animation_frame(
     # Inputs
-    time_steps: wp.array(dtype=int32),
-    animation_length: wp.array(dtype=int32),
-    animation_decimation: wp.array(dtype=int32),
-    animation_rate: wp.array(dtype=int32),
-    animation_loop: wp.array(dtype=int32),
+    time_steps: wp.array[int32],
+    animation_length: wp.array[int32],
+    animation_decimation: wp.array[int32],
+    animation_rate: wp.array[int32],
+    animation_loop: wp.array[int32],
     # Outputs
-    animation_frame: wp.array(dtype=int32),
+    animation_frame: wp.array[int32],
 ):
     """
     A kernel to advance the animation frame index for each world
@@ -196,14 +201,14 @@ def _advance_animation_frame(
 @wp.kernel
 def _extract_animation_references(
     # Inputs
-    num_actuated_joint_dofs: wp.array(dtype=int32),
-    actuated_joint_dofs_offset: wp.array(dtype=int32),
-    animation_frame: wp.array(dtype=int32),
-    animation_q_j_ref: wp.array2d(dtype=float32),
-    animation_dq_j_ref: wp.array2d(dtype=float32),
+    num_actuated_joint_dofs: wp.array[int32],
+    actuated_joint_dofs_offset: wp.array[int32],
+    animation_frame: wp.array[int32],
+    animation_q_j_ref: wp.array2d[float32],
+    animation_dq_j_ref: wp.array2d[float32],
     # Outputs
-    q_j_ref_active: wp.array(dtype=float32),
-    dq_j_ref_active: wp.array(dtype=float32),
+    q_j_ref_active: wp.array[float32],
+    dq_j_ref_active: wp.array[float32],
 ):
     """
     A kernel to extract the active joint-space references from the animation data.
@@ -250,7 +255,6 @@ class AnimationJointReference:
         rate: int | list[int] = 1,
         loop: bool | list[bool] = True,
         use_fd: bool = False,
-        device: wp.DeviceLike = None,
     ):
         """
         Initialize the animation joint reference interface.
@@ -270,11 +274,10 @@ class AnimationJointReference:
                 the simulation step matches the set decimation. Defaults to 1 for all worlds.
             loop (bool | list[bool]): Flag(s) indicating whether the animation should loop.
             use_fd (bool): Whether to compute finite-difference velocities from the input coordinates.
-            device (wp.DeviceLike | None): Device to use for allocations and execution.
         """
 
-        # Cache the device
-        self._device: wp.DeviceLike = device
+        # Declare the device cache
+        self._device: wp.DeviceLike = None
 
         # Declare the model dimensions meta-data
         self._num_worlds: int = 0
@@ -295,7 +298,6 @@ class AnimationJointReference:
                 rate=rate,
                 loop=loop,
                 use_fd=use_fd,
-                device=device,
             )
 
     ###
@@ -439,7 +441,6 @@ class AnimationJointReference:
         rate: int | list[int] = 1,
         loop: bool | list[bool] = True,
         use_fd: bool = False,
-        device: wp.DeviceLike = None,
     ) -> None:
         """
         Allocate the animation joint reference data.
@@ -457,7 +458,6 @@ class AnimationJointReference:
                 the simulation step matches the set decimation. Defaults to 1 for all worlds.
             loop (bool | list[bool]): Flag(s) indicating whether the animation should loop.
             use_fd (bool): Whether to compute finite-difference velocities from the input coordinates.
-            device (wp.DeviceLike | None): Device to use for allocations and execution.
 
         Raises:
             ValueError: If the model is not valid or actuated DoFs are not properly configured.
@@ -556,9 +556,8 @@ class AnimationJointReference:
         rate_np = np.array(rate, dtype=np.int32)
         loop_np = np.array([1 if _l else 0 for _l in loop], dtype=np.int32)
 
-        # Override the device if provided
-        if device is not None:
-            self._device = device
+        # Use the model's device
+        self._device = model.device
 
         # Allocate the controller data
         with wp.ScopedDevice(self._device):
@@ -567,10 +566,10 @@ class AnimationJointReference:
                 actuated_joint_dofs_offset=model.info.joint_actuated_dofs_offset,
                 q_j_ref=wp.array(q_j_ref_np, dtype=float32),
                 dq_j_ref=wp.array(dq_j_ref_np, dtype=float32),
-                length=wp.array(length_np, dtype=int32),
-                decimation=wp.array(decimation_np, dtype=int32),
-                rate=wp.array(rate_np, dtype=int32),
-                loop=wp.array(loop_np, dtype=int32),
+                length=to_warp_int32_array(length_np),
+                decimation=to_warp_int32_array(decimation_np),
+                rate=to_warp_int32_array(rate_np),
+                loop=to_warp_int32_array(loop_np),
                 frame=wp.zeros(self._num_worlds, dtype=int32),
             )
 
@@ -623,10 +622,12 @@ class AnimationJointReference:
         if isinstance(enabled, list):
             if len(enabled) != self._num_worlds:
                 raise ValueError("Length of 'enabled' list must match the number of worlds.")
-            enabled_array = np.array([1 if e else 0 for e in enabled], dtype=np.int32)
-            self._data.loop.assign(enabled_array)
+            enabled_list = [1 if e else 0 for e in enabled]
         else:
-            self._data.loop = wp.array([1 if enabled else 0] * self._num_worlds, dtype=int32)
+            enabled_list = [1 if enabled else 0] * self._num_worlds
+
+        # Assign the loop flags to the animation data container
+        assign_to_warp_int32_array(self._data.loop, enabled_list)
 
     def advance(self, time: TimeData) -> None:
         """
