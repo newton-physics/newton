@@ -745,6 +745,15 @@ class Model:
         self.device: wp.Device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
+        import newton  # noqa: PLC0415
+
+        self.use_coord_layout_targets: bool = newton.use_coord_layout_targets
+        """Snapshot of :data:`newton.use_coord_layout_targets` captured at Model construction.
+        All Model-level layout decisions for ``joint_target_q`` and the deprecated
+        ``joint_target_pos`` / ``joint_target_vel`` aliases consult this attribute, so
+        toggling the global flag after :meth:`ModelBuilder.finalize` does not change
+        this Model's behavior."""
+
         self.attribute_frequency: dict[str, Model.AttributeFrequency | str] = {}
         """Classifies each attribute using Model.AttributeFrequency enum values (per body, per joint, per DOF, etc.)
         or custom frequencies for custom entity types (e.g., ``"mujoco:pair"``)."""
@@ -791,15 +800,14 @@ class Model:
 
         # attributes per joint coord
         self.attribute_frequency["joint_q"] = Model.AttributeFrequency.JOINT_COORD
-        import newton  # noqa: PLC0415
 
         target_q_freq = (
             Model.AttributeFrequency.JOINT_COORD
-            if newton.use_coord_layout_targets
+            if self.use_coord_layout_targets
             else Model.AttributeFrequency.JOINT_DOF
         )
         self.attribute_frequency["joint_target_q"] = target_q_freq
-        if not newton.use_coord_layout_targets:
+        if not self.use_coord_layout_targets:
             self.attribute_frequency["joint_target_pos"] = target_q_freq
 
         # attributes per joint dof
@@ -807,7 +815,7 @@ class Model:
         self.attribute_frequency["joint_f"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_armature"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_qd"] = Model.AttributeFrequency.JOINT_DOF
-        if not newton.use_coord_layout_targets:
+        if not self.use_coord_layout_targets:
             self.attribute_frequency["joint_target_vel"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_act"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_axis"] = Model.AttributeFrequency.JOINT_DOF
@@ -852,31 +860,28 @@ class Model:
         """Per-joint start index into :attr:`joint_target_q`, shape ``(joint_count + 1,)``.
 
         Aliases :attr:`joint_q_start` when
-        :attr:`newton.use_coord_layout_targets` is ``True`` and
+        :attr:`use_coord_layout_targets` (snapshot of
+        :data:`newton.use_coord_layout_targets` at construction) is ``True`` and
         :attr:`joint_qd_start` otherwise. Solvers and the actuator library
         should index :attr:`joint_target_q` via this array regardless of layout.
         """
-        import newton  # noqa: PLC0415
-
-        return self.joint_q_start if newton.use_coord_layout_targets else self.joint_qd_start
+        return self.joint_q_start if self.use_coord_layout_targets else self.joint_qd_start
 
     @property
     def joint_target_pos(self) -> wp.array | None:
         """Deprecated alias for :attr:`joint_target_q` (legacy DOF-shape only).
 
-        Raises :class:`AttributeError` when
-        :attr:`newton.use_coord_layout_targets` is ``True``.
+        Raises :class:`AttributeError` when this Model was built with
+        :attr:`use_coord_layout_targets` ``True``.
 
         .. deprecated::
             Use :attr:`joint_target_q`.
         """
         import warnings  # noqa: PLC0415
 
-        import newton  # noqa: PLC0415
-
         from .control import _JOINT_TARGET_POS_DEPRECATION_MSG, _JOINT_TARGET_POS_UNAVAILABLE_MSG  # noqa: PLC0415
 
-        if newton.use_coord_layout_targets:
+        if self.use_coord_layout_targets:
             raise AttributeError(_JOINT_TARGET_POS_UNAVAILABLE_MSG.replace("Control.", "Model."))
         warnings.warn(
             _JOINT_TARGET_POS_DEPRECATION_MSG.replace("Control.", "Model."),
@@ -889,11 +894,9 @@ class Model:
     def joint_target_pos(self, value: wp.array | None) -> None:
         import warnings  # noqa: PLC0415
 
-        import newton  # noqa: PLC0415
-
         from .control import _JOINT_TARGET_POS_DEPRECATION_MSG, _JOINT_TARGET_POS_UNAVAILABLE_MSG  # noqa: PLC0415
 
-        if newton.use_coord_layout_targets:
+        if self.use_coord_layout_targets:
             raise AttributeError(_JOINT_TARGET_POS_UNAVAILABLE_MSG.replace("Control.", "Model."))
         warnings.warn(
             _JOINT_TARGET_POS_DEPRECATION_MSG.replace("Control.", "Model."),
@@ -906,19 +909,17 @@ class Model:
     def joint_target_vel(self) -> wp.array | None:
         """Deprecated alias for :attr:`joint_target_qd`.
 
-        Raises :class:`AttributeError` when
-        :attr:`newton.use_coord_layout_targets` is ``True``.
+        Raises :class:`AttributeError` when this Model was built with
+        :attr:`use_coord_layout_targets` ``True``.
 
         .. deprecated::
             Use :attr:`joint_target_qd`.
         """
         import warnings  # noqa: PLC0415
 
-        import newton  # noqa: PLC0415
-
         from .control import _JOINT_TARGET_VEL_DEPRECATION_MSG, _JOINT_TARGET_VEL_UNAVAILABLE_MSG  # noqa: PLC0415
 
-        if newton.use_coord_layout_targets:
+        if self.use_coord_layout_targets:
             raise AttributeError(_JOINT_TARGET_VEL_UNAVAILABLE_MSG.replace("Control.", "Model."))
         warnings.warn(
             _JOINT_TARGET_VEL_DEPRECATION_MSG.replace("Control.", "Model."),
@@ -931,11 +932,9 @@ class Model:
     def joint_target_vel(self, value: wp.array | None) -> None:
         import warnings  # noqa: PLC0415
 
-        import newton  # noqa: PLC0415
-
         from .control import _JOINT_TARGET_VEL_DEPRECATION_MSG, _JOINT_TARGET_VEL_UNAVAILABLE_MSG  # noqa: PLC0415
 
-        if newton.use_coord_layout_targets:
+        if self.use_coord_layout_targets:
             raise AttributeError(_JOINT_TARGET_VEL_UNAVAILABLE_MSG.replace("Control.", "Model."))
         warnings.warn(
             _JOINT_TARGET_VEL_DEPRECATION_MSG.replace("Control.", "Model."),

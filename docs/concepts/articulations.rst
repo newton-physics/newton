@@ -356,6 +356,7 @@ For scalar-coordinate joints (for example this D6 joint), the positional coordin
 
     joint_q_start = model.joint_q_start.numpy()
     joint_qd_start = model.joint_qd_start.numpy()
+    joint_target_q_start = model.joint_target_q_start.numpy()
     joint_q = state.joint_q.numpy()
     joint_qd = state.joint_qd.numpy()
     joint_dof_dim = model.joint_dof_dim.numpy()
@@ -421,8 +422,9 @@ The same start index can be used to query other per-DOF arrays for that joint:
     num_angular_dofs = joint_dof_dim[joint_id, 1]
     # all per-DOF arrays for this joint start at this index:
     dof_start = joint_qd_start[joint_id]
-    # position targets follow joint_q under newton.use_coord_layout_targets:
-    target_q_start = joint_q_start[joint_id]
+    # position targets use the layout-aware mapping (aliases joint_q_start
+    # under newton.use_coord_layout_targets, joint_qd_start otherwise):
+    target_q_start = joint_target_q_start[joint_id]
     # the axis vector for the first linear DOF
     first_lin_axis = joint_axis[dof_start]
     # the position target for this linear DOF

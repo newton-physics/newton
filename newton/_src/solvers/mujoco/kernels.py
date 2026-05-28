@@ -1363,20 +1363,24 @@ def apply_mjc_control_kernel(
     if source == CTRL_SOURCE_JOINT_TARGET:
         if idx >= 0:
             target_q_idx = mjc_actuator_to_newton_target_q_idx[actuator]
+            if target_q_idx < 0:
+                return
             world_target_q = world * target_q_per_world + target_q_idx
             axis_idx = mjc_actuator_to_target_q_axis_idx[actuator]
             if axis_idx < 0:
-                mj_ctrl[world, actuator] = joint_target_q[world_target_q]
+                if world_target_q < joint_target_q.shape[0]:
+                    mj_ctrl[world, actuator] = joint_target_q[world_target_q]
             else:
                 # Ball-joint quaternion target: feed MuJoCo the matching component
                 # of the axis-angle 3-vector (matches mjc actuator_length units).
-                aa = _target_quat_to_axis_angle(
-                    joint_target_q[world_target_q + 0],
-                    joint_target_q[world_target_q + 1],
-                    joint_target_q[world_target_q + 2],
-                    joint_target_q[world_target_q + 3],
-                )
-                mj_ctrl[world, actuator] = aa[axis_idx]
+                if world_target_q + 3 < joint_target_q.shape[0]:
+                    aa = _target_quat_to_axis_angle(
+                        joint_target_q[world_target_q + 0],
+                        joint_target_q[world_target_q + 1],
+                        joint_target_q[world_target_q + 2],
+                        joint_target_q[world_target_q + 3],
+                    )
+                    mj_ctrl[world, actuator] = aa[axis_idx]
         elif idx == -1:
             return
         else:

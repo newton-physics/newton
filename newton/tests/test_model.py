@@ -92,17 +92,22 @@ class TestModelBuilderDeprecations(unittest.TestCase):
     def test_joint_target_pos_vel_aliases_warn(self):
         """Legacy ``joint_target_pos`` / ``joint_target_vel`` warn under the
         default flag and raise under ``use_coord_layout_targets=True``;
-        ``joint_target_q`` / ``joint_target_qd`` are always silent."""
-        builder = ModelBuilder()
-        base = builder.add_link(mass=1.0)
-        j = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z)
-        builder.add_articulation([j])
-        model = builder.finalize()
-        control = newton.Control()
+        ``joint_target_q`` / ``joint_target_qd`` are always silent. The Model
+        snapshot freezes the flag at construction, so each branch builds its
+        own model under the corresponding flag value."""
+
+        def _build_revolute_model():
+            builder = ModelBuilder()
+            base = builder.add_link(mass=1.0)
+            j = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z)
+            builder.add_articulation([j])
+            return builder.finalize()
 
         prev_flag = newton.use_coord_layout_targets
         try:
             newton.use_coord_layout_targets = False
+            model = _build_revolute_model()
+            control = newton.Control()
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 _ = control.joint_target_pos
@@ -117,6 +122,7 @@ class TestModelBuilderDeprecations(unittest.TestCase):
             self.assertTrue(any("Model.joint_target_vel" in str(w.message) for w in deprecations))
 
             newton.use_coord_layout_targets = True
+            model = _build_revolute_model()
             with self.assertRaises(AttributeError):
                 _ = control.joint_target_pos
             with self.assertRaises(AttributeError):
