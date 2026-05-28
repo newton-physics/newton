@@ -579,12 +579,7 @@ class TestModelMesh(unittest.TestCase):
         child = builder.add_link()
         parent_shape = builder.add_shape_sphere(body=parent, radius=0.5)
         child_shape = builder.add_shape_sphere(body=child, radius=0.5)
-        with warnings.catch_warnings():
-            # add_joint_free with a non-world parent emits a UserWarning about
-            # SolverMuJoCo incompatibility; that warning is orthogonal to what
-            # this test exercises.
-            warnings.simplefilter("ignore", UserWarning)
-            builder.add_joint_free(parent=parent, child=child)
+        builder.add_joint_free(parent=parent, child=child)
         pair = (min(parent_shape, child_shape), max(parent_shape, child_shape))
         self.assertEqual(builder.shape_collision_filter_pairs.count(pair), 1)
 
@@ -1533,32 +1528,6 @@ class TestModelJoints(unittest.TestCase):
 
         self.assertEqual(builder.joint_type[joint_id], newton.JointType.FIXED)
         self.assertEqual(builder.joint_parent[joint_id], parent_body)
-
-    def test_add_joint_free_world_parent_no_warning(self):
-        """Free joint with the world (parent=-1) must not emit any warnings."""
-        builder = ModelBuilder()
-        body = builder.add_body(wp.transform_identity(), mass=1.0)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            builder.add_joint_free(child=body)
-        self.assertFalse(
-            any(issubclass(w.category, UserWarning) for w in caught),
-            f"Unexpected warning for world-parent free joint: {[str(w.message) for w in caught]}",
-        )
-
-    def test_add_joint_non_free_non_world_parent_no_warning(self):
-        """The warning is specific to FREE joints; non-free joints with a
-        non-world parent are a normal articulation pattern and must not warn."""
-        builder = ModelBuilder()
-        parent = builder.add_body(wp.transform_identity(), mass=1.0)
-        child = builder.add_body(wp.transform_identity(), mass=1.0)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            builder.add_joint_revolute(parent=parent, child=child, axis=newton.Axis.Y)
-        self.assertFalse(
-            any("SolverMuJoCo" in str(w.message) for w in caught),
-            f"Unexpected MuJoCo-incompat warning on revolute joint: {[str(w.message) for w in caught]}",
-        )
 
 
 class TestModelWorld(unittest.TestCase):
