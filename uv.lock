@@ -3691,7 +3691,7 @@ requires-dist = [
     { name = "jupyterlab", marker = "extra == 'notebook'", specifier = ">=4.5.7" },
     { name = "meshio", marker = "extra == 'importers'", specifier = ">=5.3.5" },
     { name = "mujoco", marker = "extra == 'sim'", specifier = "~=3.9.0" },
-    { name = "mujoco-warp", marker = "extra == 'sim'", specifier = "~=3.9.0" },
+    { name = "mujoco-warp", marker = "extra == 'sim'", specifier = "~=3.9.0,>=3.9.0.1" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
     { name = "nbsphinx", marker = "extra == 'docs'", specifier = ">=0.9.0" },
     { name = "newton", extras = ["examples"], marker = "extra == 'dev'" },
