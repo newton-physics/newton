@@ -85,6 +85,48 @@ else:
     UsdStage = Any
 
 
+def _build_heightfield_warp_mesh(hf: Heightfield, device) -> wp.Mesh:
+    """Build a wp.Mesh from a Heightfield for BVH-accelerated ray queries.
+
+    Vertices use the Heightfield's unscaled extents (hx, hy, min_z, max_z);
+    per-instance scale is applied at query time by ray_intersect_mesh.
+    Winding matches the collision triangulation: two CCW triangles per cell.
+    """
+    nrow, ncol = hf.nrow, hf.ncol
+    dx = 2.0 * hf.hx / (ncol - 1)
+    dy = 2.0 * hf.hy / (nrow - 1)
+    z_range = hf.max_z - hf.min_z
+
+    verts = np.empty((nrow * ncol, 3), dtype=np.float32)
+    for r in range(nrow):
+        for c in range(ncol):
+            idx = r * ncol + c
+            verts[idx, 0] = -hf.hx + c * dx
+            verts[idx, 1] = -hf.hy + r * dy
+            verts[idx, 2] = hf.min_z + float(hf.data[r, c]) * z_range
+
+    num_cells = (nrow - 1) * (ncol - 1)
+    indices = np.empty(num_cells * 6, dtype=np.int32)
+    i = 0
+    for r in range(nrow - 1):
+        for c in range(ncol - 1):
+            v00 = r * ncol + c
+            v10 = r * ncol + (c + 1)
+            v01 = (r + 1) * ncol + c
+            v11 = (r + 1) * ncol + (c + 1)
+            # Triangle 0: (p00, p10, p11) — CCW from above
+            indices[i : i + 3] = [v00, v10, v11]
+            # Triangle 1: (p00, p11, p01) — CCW from above
+            indices[i + 3 : i + 6] = [v00, v11, v01]
+            i += 6
+
+    with wp.ScopedDevice(device):
+        points = wp.array(verts, dtype=wp.vec3)
+        velocities = wp.zeros_like(points)
+        idx_arr = wp.array(indices, dtype=wp.int32)
+        return wp.Mesh(points=points, velocities=velocities, indices=idx_arr)
+
+
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
 
@@ -9904,13 +9946,20 @@ class ModelBuilder:
             m.shape_flags = wp.array(self.shape_flags, dtype=wp.int32)
             m.body_shapes = self.body_shapes
 
-            # build list of ids for geometry sources (meshes, sdfs)
+            # build list of ids for geometry sources (meshes, sdfs, heightfields)
             geo_sources = []
             finalized_geos = {}  # do not duplicate geometry
             gaussians = []
+            heightfield_meshes = []
             for geo in self.shape_source:
                 geo_hash = hash(geo)  # avoid repeated hash computations
-                if geo and not isinstance(geo, Heightfield):
+                if isinstance(geo, Heightfield):
+                    if geo_hash not in finalized_geos:
+                        hf_mesh = _build_heightfield_warp_mesh(geo, device=device)
+                        heightfield_meshes.append(hf_mesh)
+                        finalized_geos[geo_hash] = hf_mesh.id
+                    geo_sources.append(finalized_geos[geo_hash])
+                elif geo:
                     if geo_hash not in finalized_geos:
                         if isinstance(geo, Mesh):
                             finalized_geos[geo_hash] = geo.finalize(device=device)
@@ -9921,11 +9970,11 @@ class ModelBuilder:
                             finalized_geos[geo_hash] = geo.finalize()
                     geo_sources.append(finalized_geos[geo_hash])
                 else:
-                    # add null pointer
                     geo_sources.append(0)
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
+            m.heightfield_meshes = heightfield_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
             m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)

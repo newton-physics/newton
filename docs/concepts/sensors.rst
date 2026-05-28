@@ -103,8 +103,6 @@ attributes, and usage examples.
   with optional per-counterpart breakdown.
 * :class:`~newton.sensors.SensorFrameTransform` -- relative transforms of shapes/sites with respect to reference sites.
 * :class:`~newton.sensors.SensorIMU` -- linear acceleration and angular velocity at site frames.
-* :class:`~newton.sensors.SensorRaycast` -- *(deprecated)* ray-based depth images from a virtual camera; use
-  :class:`~newton.sensors.SensorTiledCamera` instead.
 * :class:`~newton.sensors.SensorTiledCamera` -- raytraced color and depth rendering across multiple worlds.
 
 Extended Attributes
