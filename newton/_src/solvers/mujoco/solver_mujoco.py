@@ -3654,6 +3654,8 @@ class SolverMuJoCo(SolverBase):
                 update_connect_constraint_anchor_rel_xform_at_ref_pose,
                 update_connect_constraint_anchors,
             )
+            if flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES:
+                self._sync_equality_properties_to_mujoco_cpu()
 
         else:
             if (
@@ -3677,6 +3679,16 @@ class SolverMuJoCo(SolverBase):
                         update_connect_constraint_anchor_rel_xform_at_ref_pose,
                         update_connect_constraint_anchors,
                     )
+
+    def _sync_equality_properties_to_mujoco_cpu(self) -> None:
+        """Mirror equality properties from MJWarp buffers to MuJoCo-C CPU buffers."""
+        if self.mj_model.neq == 0:
+            return
+
+        self.mj_model.eq_data[:] = self.mjw_model.eq_data.numpy()[0]
+        self.mj_model.eq_solref[:] = self.mjw_model.eq_solref.numpy()[0]
+        self.mj_model.eq_solimp[:] = self.mjw_model.eq_solimp.numpy()[0]
+        self.mj_data.eq_active[:] = self.mjw_data.eq_active.numpy()[0]
 
     def _create_inverse_shape_mapping(self):
         """
