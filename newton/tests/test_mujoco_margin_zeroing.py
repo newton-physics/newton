@@ -11,6 +11,7 @@ and keep ``mjw_model.geom_margin`` zero when MuJoCo handles collisions.
 import unittest
 
 import numpy as np
+import warp as wp
 
 import newton
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
@@ -76,10 +77,9 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
             err_msg="geom_margin should remain zero after notify_model_changed",
         )
 
-    def test_pair_gap_not_zeroed_under_nativeccd(self):
-        """MuJoCo 3.9 accepts non-zero gap under NATIVECCD/MULTICCD because
-        gap no longer affects force generation. Newton must forward
-        authored pair_gap rather than zeroing it."""
+    @staticmethod
+    def _build_model_with_pair_gap(pair_gap: float) -> newton.Model:
+        """Build a model with one contact pair carrying a given pair_gap."""
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         cfg = newton.ModelBuilder.ShapeConfig(margin=0.0)
@@ -92,10 +92,16 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
                 "mujoco:pair_geom1": 0,
                 "mujoco:pair_geom2": 1,
                 "mujoco:pair_margin": 0.0,
-                "mujoco:pair_gap": 0.05,
+                "mujoco:pair_gap": pair_gap,
             }
         )
-        model = builder.finalize()
+        return builder.finalize()
+
+    def test_pair_gap_not_zeroed_under_nativeccd(self):
+        """MuJoCo 3.9 accepts non-zero gap under NATIVECCD/MULTICCD because
+        gap no longer affects force generation. Newton must forward
+        authored pair_gap rather than zeroing it."""
+        model = self._build_model_with_pair_gap(0.05)
         solver = SolverMuJoCo(model, use_mujoco_contacts=True)
         np.testing.assert_array_equal(
             solver.mjw_model.pair_margin.numpy(),
@@ -105,6 +111,30 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
             float(solver.mjw_model.pair_gap.numpy().max()),
             0.0,
             "pair_gap must be forwarded (not zeroed) under MuJoCo 3.9",
+        )
+
+    def test_pair_gap_runtime_update_under_mujoco_contacts(self):
+        """Runtime updates to model.mujoco.pair_gap must propagate to
+        mjw_model.pair_gap even when use_mujoco_contacts=True.
+        pair_margin remains suppressed at runtime under that flag for
+        NATIVECCD/MULTICCD compat (#2106); pair_gap is unconstrained."""
+        model = self._build_model_with_pair_gap(0.05)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+
+        new_gap = 0.123
+        model.mujoco.pair_gap.assign(wp.array([new_gap], dtype=wp.float32, device=model.device))
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+
+        self.assertAlmostEqual(
+            float(solver.mjw_model.pair_gap.numpy().max()),
+            new_gap,
+            places=5,
+            msg="pair_gap runtime update must reach mjw_model.pair_gap even with use_mujoco_contacts=True",
+        )
+        # margin stays zero under use_mujoco_contacts=True for NATIVECCD compat
+        np.testing.assert_array_equal(
+            solver.mjw_model.pair_margin.numpy(),
+            np.zeros_like(solver.mjw_model.pair_margin.numpy()),
         )
 
 
