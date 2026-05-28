@@ -945,17 +945,9 @@ without ever creating an equality constraint.
 
 .. note::
 
-   :class:`~newton.solvers.SolverMuJoCo` supports only ``FIXED``, ``REVOLUTE``,
-   and ``BALL`` as loop-closing (orphan) joint types, each synthesized into
-   one or more MuJoCo equality constraints at compile time. See
-   :ref:`mujoco-equality-constraints` for the per-type mapping. Other joint
-   types used as loop closures (``PRISMATIC``, ``FREE``, ``DISTANCE``, ``D6``,
-   ``CABLE``) emit a warning and are silently skipped — the loop is *not*
-   closed.
-
-   Because the joint is implemented as an equality constraint inside MuJoCo,
-   it loses everything that makes it joint-like: any drive
-   (``joint_target_pos``/``joint_target_vel``, PD gains, ``control.joint_f``),
-   joint limits, armature, friction, and effort/velocity limits authored on
-   ``j_loop`` are **ignored** by :class:`~newton.solvers.SolverMuJoCo`. Only
-   the kinematic coupling implied by the joint type is enforced.
+   :class:`~newton.solvers.SolverMuJoCo` supports only a subset of joint
+   types as loop closures, and the loop-closing joint loses its joint-level
+   features (drive, limits, armature, friction) because it is enforced as
+   an equality constraint rather than integrated as a joint. See
+   :ref:`mujoco-equality-constraints` for the supported types and
+   MuJoCo-specific behaviour.

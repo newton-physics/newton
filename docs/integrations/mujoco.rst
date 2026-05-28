@@ -212,6 +212,20 @@ solver synthesises MuJoCo equality constraints from them:
 - :attr:`~newton.JointType.BALL` → one ``mjEQ_CONNECT`` (3 translational
   DOFs constrained, all 3 rotational DOFs free).
 
+Other joint types used as loop closures
+(:attr:`~newton.JointType.PRISMATIC`, :attr:`~newton.JointType.FREE`,
+:attr:`~newton.JointType.DISTANCE`, :attr:`~newton.JointType.D6`,
+:attr:`~newton.JointType.CABLE`) emit a warning and are silently skipped —
+the loop is *not* closed.
+
+Because the loop-closing joint is implemented as an equality constraint
+inside MuJoCo, it loses everything that makes it joint-like: any drive
+(``joint_target_pos`` / ``joint_target_vel``, PD gains, ``control.joint_f``),
+joint limits, armature, friction, and effort/velocity limits authored on
+the loop-closing joint are **ignored** by
+:class:`~newton.solvers.SolverMuJoCo`. Only the kinematic coupling implied
+by the joint type is enforced.
+
 Loop-joint DOFs and coordinates are excluded from MuJoCo's ``nq`` / ``nv``.
 
 
