@@ -2431,6 +2431,7 @@ class ModelBuilder:
         schema_resolvers: list[SchemaResolver] | None = None,
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
+        legacy_margin_gap: bool = False,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
 
@@ -2554,6 +2555,10 @@ class ModelBuilder:
                 :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+            legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
+                where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
+                Use for USD files authored against MuJoCo <= 3.8. Defaults to
+                False (identity translation matching MuJoCo 3.9 semantics).
 
         Returns:
             The returned mapping has the following entries:
@@ -2626,6 +2631,7 @@ class ModelBuilder:
             schema_resolvers=schema_resolvers,
             force_position_velocity_actuation=force_position_velocity_actuation,
             override_root_xform=override_root_xform,
+            legacy_margin_gap=legacy_margin_gap,
         )
 
     def add_mjcf(

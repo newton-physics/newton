@@ -2552,11 +2552,11 @@ def PhysicsRevoluteJoint "Joint2"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_margin_gap_combined_conversion(self):
-        """Test MuJoCo->Newton conversion when both mjc:margin and mjc:gap are authored.
+        """Test legacy MuJoCo->Newton conversion via legacy_margin_gap=True.
 
-        Verifies that newton_margin = mjc_margin - mjc_gap when mjc:margin is
-        explicitly authored. Also tests the case where only mjc:margin is authored
-        (gap defaults to 0, so no conversion effect).
+        Verifies that newton_margin = mjc_margin - mjc_gap when legacy_margin_gap
+        is enabled.  Also tests the case where only mjc:margin is authored
+        (gap defaults to 0, so no subtraction effect).
         """
         from pxr import Sdf, Usd, UsdPhysics
 
@@ -2591,7 +2591,7 @@ def PhysicsRevoluteJoint "Joint2"
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()], legacy_margin_gap=True)
         model = builder.finalize()
 
         shape_margin = model.shape_margin.numpy()
@@ -2602,7 +2602,7 @@ def PhysicsRevoluteJoint "Joint2"
             abs(float(shape_margin[i]) - 0.3) < 1e-4 and abs(float(shape_gap[i]) - 0.2) < 1e-4
             for i in range(model.shape_count)
         )
-        self.assertTrue(found_combined, "Expected margin=0.3, gap=0.2 from combined conversion")
+        self.assertTrue(found_combined, "Expected margin=0.3, gap=0.2 from combined legacy conversion")
 
         # Body 2: mjc_margin=0.4, mjc_gap not authored -> gap defaults to 0.0
         # from SchemaResolverMjc, so newton_margin = 0.4 - 0 = 0.4, gap = 0.0
@@ -2611,6 +2611,74 @@ def PhysicsRevoluteJoint "Joint2"
             for i in range(model.shape_count)
         )
         self.assertTrue(found_margin_only, "Expected margin=0.4 with gap=0.0 when only margin authored")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_margin_gap_identity_import(self):
+        """USD import of mjc:margin and mjc:gap is identity under MuJoCo 3.9
+        semantics (margin/gap mean the same as Newton's shape_margin/shape_gap)."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = stage.DefinePrim("/Body", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(body)
+        UsdPhysics.ArticulationRootAPI.Apply(body)
+        col = stage.DefinePrim("/Body/Collision", "Cube")
+        UsdPhysics.CollisionAPI.Apply(col)
+        col.GetAttribute("size").Set(0.2)
+        col.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Float).Set(0.5)
+        col.CreateAttribute("mjc:gap", Sdf.ValueTypeNames.Float).Set(0.2)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        model = builder.finalize()
+
+        shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
+        found = any(
+            abs(float(shape_margin[i]) - 0.5) < 1e-5 and abs(float(shape_gap[i]) - 0.2) < 1e-5
+            for i in range(model.shape_count)
+        )
+        self.assertTrue(found, "Expected identity: margin=0.5, gap=0.2 (MuJoCo 3.9 default semantics)")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_legacy_margin_gap_subtracts(self):
+        """legacy_margin_gap=True restores pre-MuJoCo-3.9 translation
+        (newton_margin = mjc_margin - mjc_gap)."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = stage.DefinePrim("/Body", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(body)
+        UsdPhysics.ArticulationRootAPI.Apply(body)
+        col = stage.DefinePrim("/Body/Collision", "Cube")
+        UsdPhysics.CollisionAPI.Apply(col)
+        col.GetAttribute("size").Set(0.2)
+        col.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Float).Set(0.5)
+        col.CreateAttribute("mjc:gap", Sdf.ValueTypeNames.Float).Set(0.2)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()], legacy_margin_gap=True)
+        model = builder.finalize()
+
+        shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
+        found = any(
+            abs(float(shape_margin[i]) - 0.3) < 1e-5 and abs(float(shape_gap[i]) - 0.2) < 1e-5
+            for i in range(model.shape_count)
+        )
+        self.assertTrue(found, "Expected legacy: margin=0.3 (0.5-0.2), gap=0.2")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_actuator_mode_inference_from_drive(self):
