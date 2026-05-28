@@ -30,6 +30,7 @@ from ._src.geometry import (
     ParticleFlags,
     ShapeFlags,
     TetMesh,
+    intersect_ray,
 )
 
 __all__ += [
@@ -41,6 +42,7 @@ __all__ += [
     "ParticleFlags",
     "ShapeFlags",
     "TetMesh",
+    "intersect_ray",
 ]
 
 # ==================================================================================

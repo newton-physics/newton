@@ -21,6 +21,7 @@ from ._src.geometry import (
     collide_sphere_capsule,
     collide_sphere_cylinder,
     collide_sphere_sphere,
+    intersect_ray,
     refit_bvh_particle,
     refit_bvh_shape,
 )
@@ -55,6 +56,7 @@ __all__ = [
     "compute_inertia_shape",
     "compute_offset_mesh",
     "create_empty_sdf_data",
+    "intersect_ray",
     "refit_bvh_particle",
     "refit_bvh_shape",
     "sdf_box",

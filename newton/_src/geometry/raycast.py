@@ -1088,6 +1088,116 @@ _, raycast_kernel_no_hfield, sensor_raycast_kernel_no_hfield = _make_raycast_fun
 
 
 @wp.kernel
+def _intersect_ray(
+    bvh_id: wp.uint64,
+    bvh_shapes_group_roots: wp.array[wp.int32],
+    bvh_shape_enabled: wp.array[wp.uint32],
+    shape_transform_world: wp.array[wp.transform],
+    shape_type: wp.array[int],
+    shape_scale: wp.array[wp.vec3],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_heightfield_index: wp.array[wp.int32],
+    heightfield_data: wp.array[HeightfieldData],
+    heightfield_elevations: wp.array[wp.float32],
+    ray_origin: wp.array2d[wp.vec3],
+    ray_direction: wp.array2d[wp.vec3],
+    out_dist: wp.array2d[float],
+    out_shape_id: wp.array2d[wp.int32],
+    out_normal: wp.array2d[wp.vec3],
+):
+    worldid, rayid = wp.tid()
+
+    origin = ray_origin[worldid, rayid]
+    direction = ray_direction[worldid, rayid]
+
+    min_dist = float(1e10)
+    min_shape_id = wp.int32(-1)
+    min_normal = wp.vec3(0.0)
+
+    bvh_root = bvh_shapes_group_roots[worldid]
+
+    query = wp.bvh_query_ray(bvh_id, origin, direction, bvh_root)
+    bvh_shape_id = wp.int32(0)
+
+    while wp.bvh_query_next(query, bvh_shape_id, min_dist):
+        shape_id = wp.int32(bvh_shape_enabled[bvh_shape_id])
+        geom_type = shape_type[shape_id]
+        
+        mesh_id = wp.uint64(0)
+        if geom_type == GeoType.MESH or geom_type == GeoType.CONVEX_MESH:
+            mesh_id = shape_source_ptr[shape_id]
+
+        hit_dist, hit_normal = ray_intersect_geom(
+            shape_transform_world[shape_id],
+            shape_scale[shape_id],
+            geom_type,
+            origin,
+            direction,
+            mesh_id,
+            shape_id,
+            shape_heightfield_index,
+            heightfield_data,
+            heightfield_elevations,
+        )
+        if hit_dist >= 0.0 and hit_dist < min_dist:
+            min_dist = hit_dist
+            min_shape_id = shape_id
+            min_normal = hit_normal
+
+    if min_shape_id < 0:
+        out_dist[worldid, rayid] = -1.0
+    else:
+        out_dist[worldid, rayid] = min_dist
+    out_shape_id[worldid, rayid] = min_shape_id
+    out_normal[worldid, rayid] = min_normal
+
+
+def intersect_ray(
+    model,
+    ray_origins: wp.array2d[wp.vec3],
+    ray_directions: wp.array2d[wp.vec3],
+    out_dist: wp.array2d[float],
+    out_shape_id: wp.array2d[wp.int32],
+    out_normal: wp.array2d[wp.vec3],
+) -> None:
+    """Intersect rays with model shapes for all worlds.
+
+    Args:
+        model: Model containing the shapes to query.
+        state: State containing current body transforms.
+        ray_origins: Ray origins in world space [m].
+        ray_directions: Ray directions in world space. Values
+            must be normalized and nonzero.
+        out_dist: Output array of hit distances.
+        out_shape_id: Output array of hit shape indices.
+        out_normal: Output array of hit normals.
+    """
+
+    wp.launch(
+        kernel=_intersect_ray,
+        dim=(ray_origins.shape[0], ray_origins.shape[1]),
+        inputs=[
+            model.bvh_shapes.id,
+            model.bvh_shapes_group_roots,
+            model.bvh_shape_enabled,
+            model.bvh_shape_world_transforms,
+            model.shape_type,
+            model.shape_scale,
+            model.shape_source_ptr,
+            model.shape_heightfield_index,
+            model.heightfield_data,
+            model.heightfield_elevations,
+            ray_origins,
+            ray_directions,
+            out_dist,
+            out_shape_id,
+            out_normal,
+        ],
+        device=model.device,
+    )
+
+
+@wp.kernel
 def sensor_raycast_particles_kernel(
     grid: wp.uint64,
     particle_positions: wp.array[wp.vec3],

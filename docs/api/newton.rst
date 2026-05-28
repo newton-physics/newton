@@ -71,6 +71,7 @@ newton
    eval_ik
    eval_jacobian
    eval_mass_matrix
+   intersect_ray
 
 .. rubric:: Constants
 

@@ -15,6 +15,7 @@
 - Add `newton.utils.OnnxRuntime`, a graph-capturable ONNX inference engine backed solely by Warp kernels (no `onnxruntime` or `torch` runtime dependency); used by `ControllerNeuralMLP` and `ControllerNeuralLSTM` to load `.onnx` policies. To migrate a TorchScript policy, run `torch.onnx.export(model, dummy_input, "policy.onnx", opset_version=17)` once and point the controllers at the resulting `.onnx` file. The `onnx` package is now an optional extra (`pip install newton[onnx]`); install it explicitly to use the ONNX runtime.
 - Add USD parsing for `NewtonSiteAPI` to mark shapes as sites.
 - Add `ViewerRTX`, a real-time ray-traced viewer powered by NVIDIA OVRTX.
+- Add functional `newton.intersect_ray()` shape query helper for composing custom raycast sensors
 
 ### Changed
 
