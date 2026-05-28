@@ -6731,11 +6731,16 @@ class SolverMuJoCo(SolverBase):
         pair_solimp = getattr(mujoco_attrs, "pair_solimp", None)
         # Restore pair margin/gap at runtime so per-world variance reaches MuJoCo
         # (spec-level values only carry template-world data; MuJoCo replicates the
-        # template pair across worlds). pair_margin is suppressed when MuJoCo handles
-        # contacts to keep margins at zero for NATIVECCD/MULTICCD compat (#2106).
-        # pair_gap is always forwarded under MuJoCo 3.9 semantics (gap is accepted
-        # by put_model and used by the broadphase / CCD detection envelope).
-        pair_margin = None if self._use_mujoco_contacts else getattr(mujoco_attrs, "pair_margin", None)
+        # template pair across worlds). pair_margin is only suppressed when the
+        # NATIVECCD/MULTICCD upstream restriction is active (#2106); otherwise
+        # runtime updates flow through. pair_gap is always forwarded under
+        # MuJoCo 3.9 semantics (gap is accepted by put_model and used by the
+        # broadphase / CCD detection envelope).
+        pair_margin = (
+            None
+            if (self._use_mujoco_contacts and self._zero_margins_for_native_ccd)
+            else getattr(mujoco_attrs, "pair_margin", None)
+        )
         pair_gap = getattr(mujoco_attrs, "pair_gap", None)
         pair_friction = getattr(mujoco_attrs, "pair_friction", None)
 

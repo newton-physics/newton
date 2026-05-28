@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import math
 import warnings
 from collections.abc import Sequence
@@ -272,16 +273,15 @@ def _solref_to_damping_per_rad(solref: Sequence[float] | None) -> float | None:
     return d * _RAD_PER_DEG if d is not None else None
 
 
-# Module-level flag toggled by ``parse_usd`` to opt into the pre-MuJoCo-3.9
-# margin/gap translation. Module-level state is unusual but the USD schema
-# registration system caches one getter function per attribute, so per-call
-# parameterization requires a side channel. The toggle is set/cleared via
-# ``_legacy_margin_gap_scope``.
-#
-# Stored as a single-element list so the context manager can mutate it
-# in-place without requiring a ``global`` statement (which ruff PLW0603
-# disallows at nested scope).
-_LEGACY_MJC_MARGIN_GAP: list[bool] = [False]
+# Task-local flag toggled by ``parse_usd`` to opt into the pre-MuJoCo-3.9
+# margin/gap translation. A ContextVar is used so concurrent ``parse_usd`` calls
+# in different threads or asyncio tasks don't flip each other's mode mid-parse.
+# The USD schema registration system caches one getter function per attribute,
+# so per-call parameterization needs an out-of-band channel; this is it.
+_LEGACY_MJC_MARGIN_GAP: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_LEGACY_MJC_MARGIN_GAP",
+    default=False,
+)
 
 
 def _legacy_margin_gap_scope(enabled: bool):
@@ -289,12 +289,11 @@ def _legacy_margin_gap_scope(enabled: bool):
 
     @contextlib.contextmanager
     def _scope():
-        previous = _LEGACY_MJC_MARGIN_GAP[0]
-        _LEGACY_MJC_MARGIN_GAP[0] = enabled
+        token = _LEGACY_MJC_MARGIN_GAP.set(enabled)
         try:
             yield
         finally:
-            _LEGACY_MJC_MARGIN_GAP[0] = previous
+            _LEGACY_MJC_MARGIN_GAP.reset(token)
 
     return _scope()
 
@@ -306,7 +305,7 @@ def _mjc_margin_from_prim(prim: Usd.Prim) -> float | None:
     have the same meaning (surface-thickness / force-generation threshold);
     this function is therefore an identity passthrough.
 
-    When the module-level flag ``_LEGACY_MJC_MARGIN_GAP`` is set (via
+    When ``_LEGACY_MJC_MARGIN_GAP`` is True (via
     ``_legacy_margin_gap_scope(True)``), the pre-3.9 translation
     ``newton_margin = mjc_margin - mjc_gap`` is applied for backward
     compatibility with files authored against MuJoCo <= 3.8.
@@ -316,7 +315,7 @@ def _mjc_margin_from_prim(prim: Usd.Prim) -> float | None:
     mjc_margin = usd.get_attribute(prim, "mjc:margin")
     if mjc_margin is None:
         return None
-    if not _LEGACY_MJC_MARGIN_GAP[0]:
+    if not _LEGACY_MJC_MARGIN_GAP.get():
         return float(mjc_margin)
     mjc_gap = usd.get_attribute(prim, "mjc:gap")
     if mjc_gap is None:

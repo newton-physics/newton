@@ -96,16 +96,18 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
         """MuJoCo 3.9 accepts non-zero gap under NATIVECCD/MULTICCD because
         gap no longer affects force generation. Newton must forward
         authored pair_gap rather than zeroing it."""
-        model = self._build_model_with_pair_gap(0.05)
+        authored_gap = 0.05
+        model = self._build_model_with_pair_gap(authored_gap)
         solver = SolverMuJoCo(model, use_mujoco_contacts=True)
         np.testing.assert_array_equal(
             solver.mjw_model.pair_margin.numpy(),
             np.zeros_like(solver.mjw_model.pair_margin.numpy()),
         )
-        self.assertGreater(
+        self.assertAlmostEqual(
             float(solver.mjw_model.pair_gap.numpy().max()),
-            0.0,
-            "pair_gap must be forwarded (not zeroed) under MuJoCo 3.9",
+            authored_gap,
+            places=6,
+            msg="pair_gap must be forwarded exactly under MuJoCo 3.9",
         )
 
     def test_pair_gap_runtime_update_under_mujoco_contacts(self):
