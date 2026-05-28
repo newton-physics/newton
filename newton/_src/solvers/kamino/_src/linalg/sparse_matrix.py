@@ -185,6 +185,11 @@ class BlockSparseMatrices:
     Host-side cache of the maximum of the maximum matrix dimensions over all sparse matrices.
     """
 
+    sum_of_max_dims: tuple[int, int] = (0, 0)
+    """
+    Host-side cache of the sum of the maximum matrix dimensions over all sparse matrices.
+    """
+
     ###
     # On-device Data (Constant)
     ###
@@ -289,6 +294,7 @@ class BlockSparseMatrices:
             ptr=self.dims.ptr,
             strides=(2 * index_dtype_size_bytes,),
             copy=False,
+            device=self.device,
         )
 
     @property
@@ -301,6 +307,7 @@ class BlockSparseMatrices:
             ptr=self.dims.ptr + index_dtype_size_bytes,
             strides=(2 * index_dtype_size_bytes,),
             copy=False,
+            device=self.device,
         )
 
     @property
@@ -313,6 +320,7 @@ class BlockSparseMatrices:
             ptr=self.nzb_coords.ptr,
             strides=(2 * index_dtype_size_bytes,),
             copy=False,
+            device=self.device,
         )
 
     @property
@@ -325,6 +333,7 @@ class BlockSparseMatrices:
             ptr=self.nzb_coords.ptr + index_dtype_size_bytes,
             strides=(2 * index_dtype_size_bytes,),
             copy=False,
+            device=self.device,
         )
 
     ###
@@ -404,6 +413,7 @@ class BlockSparseMatrices:
         # Update memory allocation meta-data caches
         self.num_matrices = len(capacities)
         self.max_of_max_dims = tuple(max(x) for x in zip(*max_dims, strict=True))
+        self.sum_of_max_dims = tuple(sum(x) for x in zip(*max_dims, strict=True))
         self.sum_of_num_nzb = sum(capacities)
         self.max_of_num_nzb = max(capacities)
 
@@ -430,10 +440,25 @@ class BlockSparseMatrices:
         self.num_nzb.zero_()
         self.nzb_coords.zero_()
 
-    def zero(self):
-        """Sets all non-zero block data to zero."""
+    def zero(self, matrix_mask: wp.array | None = None):
+        """
+        Sets non-zero block data to zero, for all or a subset of the matrices.
+
+        Args:
+            matrix_mask (optional): Per-matrix 0-1 flag indicating if it should be set to zero.
+                                    If not provided, all matrices are set to zero.
+                                    Shape of ``(num_matrices,)`` and type :class:`int`.
+        """
         self._assert_is_finalized()
-        self.nzb_values.zero_()
+        if matrix_mask is not None:
+            wp.launch(
+                _make_masked_zero_kernel(self.nzb_dtype, self.index_dtype),
+                dim=(self.num_matrices, self.max_of_num_nzb),
+                inputs=[self.nzb_start, self.max_nzb, matrix_mask, self.nzb_values],
+                device=self.device,
+            )
+        else:
+            self.nzb_values.zero_()
 
     def assign(self, matrices: list[np.ndarray]):
         """
@@ -570,14 +595,39 @@ class BlockSparseMatrices:
 
 
 ###
+# Kernels
+###
+
+
+@functools.cache
+def _make_masked_zero_kernel(block_type: BlockDType, index_dtype: IntType):
+    @wp.kernel
+    def masked_zero_kernel(
+        # Inputs
+        nzb_start: wp.array[index_dtype],
+        max_nzb: wp.array[index_dtype],
+        matrix_mask: wp.array[int32],
+        # Outputs
+        nzb_values: wp.array[block_type.warp_type],
+    ):
+        mat_id, nzb_id_loc = wp.tid()
+        if matrix_mask[mat_id] == 0 or nzb_id_loc >= max_nzb[mat_id]:
+            return
+        nzb_id = nzb_start[mat_id] + nzb_id_loc
+        nzb_values[nzb_id] = block_type.warp_type(0.0)
+
+    return masked_zero_kernel
+
+
+###
 # Dense to Block-Sparse Conversion
 ###
 
 
 @wp.kernel
 def _copy_square_dims_kernel(
-    src_dim: wp.array(dtype=int32),
-    dst_dims: wp.array2d(dtype=int32),
+    src_dim: wp.array[int32],
+    dst_dims: wp.array2d[int32],
 ):
     """Copies square dimensions from 1D array to 2D (n, n) format."""
     wid = wp.tid()
@@ -596,15 +646,15 @@ def _make_dense_to_bsm_detect_kernel(block_size: int):
     @wp.kernel
     def kernel(
         # Dense matrix info
-        dense_dim: wp.array(dtype=int32),
-        dense_mio: wp.array(dtype=int32),
-        dense_mat: wp.array(dtype=float32),
+        dense_dim: wp.array[int32],
+        dense_mio: wp.array[int32],
+        dense_mat: wp.array[float32],
         # BSM info
-        max_nzb: wp.array(dtype=int32),
-        nzb_start: wp.array(dtype=int32),
+        max_nzb: wp.array[int32],
+        nzb_start: wp.array[int32],
         # Outputs
-        num_nzb: wp.array(dtype=int32),
-        nzb_coords: wp.array2d(dtype=int32),
+        num_nzb: wp.array[int32],
+        nzb_coords: wp.array2d[int32],
     ):
         wid, bi, bj = wp.tid()
 
@@ -655,15 +705,15 @@ def _make_dense_to_bsm_copy_kernel(block_size: int):
     @wp.kernel
     def kernel(
         # Dense matrix info
-        dense_dim: wp.array(dtype=int32),
-        dense_mio: wp.array(dtype=int32),
-        dense_mat: wp.array(dtype=float32),
+        dense_dim: wp.array[int32],
+        dense_mio: wp.array[int32],
+        dense_mat: wp.array[float32],
         # BSM info
-        nzb_start: wp.array(dtype=int32),
-        num_nzb: wp.array(dtype=int32),
-        nzb_coords: wp.array2d(dtype=int32),
+        nzb_start: wp.array[int32],
+        num_nzb: wp.array[int32],
+        nzb_coords: wp.array2d[int32],
         # Output
-        nzb_values: wp.array(dtype=mat_type),
+        nzb_values: wp.array[mat_type],
     ):
         wid, block_idx = wp.tid()
 

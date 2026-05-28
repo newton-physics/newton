@@ -1064,6 +1064,21 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
 
 class TestHydroelastic(unittest.TestCase):
+    def test_mc_edge_clamp_min_validation(self):
+        """``HydroelasticSDF.Config.mc_edge_clamp_min`` validates its range at construction.
+
+        The validator runs in ``Config.__post_init__`` and is host-side only,
+        so this test is device-independent and runs even on CPU-only CI.
+        """
+        # In-range values, including the boundaries, must construct cleanly.
+        for good_value in (0.0, 0.02, 0.5):
+            HydroelasticSDF.Config(mc_edge_clamp_min=good_value)
+
+        # Out-of-range values, including NaN, must raise ``ValueError``.
+        for bad_value in (-0.1, 0.51, float("nan")):
+            with self.assertRaises(ValueError, msg=f"Should reject mc_edge_clamp_min={bad_value}"):
+                HydroelasticSDF.Config(mc_edge_clamp_min=bad_value)
+
     @unittest.skip("Visual debugging - run manually to view simulation")
     def test_view_stacked_primitive_cubes(self):
         """View stacked primitive cubes simulation with hydroelastic contacts."""
@@ -1245,6 +1260,11 @@ def test_no_degenerate_triangles_deep_penetration(test, device):
     of degenerate (zero-area) triangles that arise from vertex collapse at
     SDF ridge boundaries.
 
+    The edge-interpolation clamp
+    (:attr:`HydroelasticSDF.Config.mc_edge_clamp_min`) is the mechanism that
+    prevents these vertex collapses, so this test is only meaningful when
+    ``mc_edge_clamp_min`` is non-zero.
+
     Args:
         test: Unittest-style assertion helper.
         device: Warp device under test.
@@ -1294,6 +1314,7 @@ def test_no_degenerate_triangles_deep_penetration(test, device):
             reduce_contacts=False,
             buffer_mult_iso=4,
             buffer_mult_contact=4,
+            mc_edge_clamp_min=0.02,
         )
         collision_pipeline = newton.CollisionPipeline(
             model,
@@ -1337,6 +1358,116 @@ add_function_test(
     TestHydroelastic,
     "test_no_degenerate_triangles_deep_penetration",
     test_no_degenerate_triangles_deep_penetration,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+
+def _build_two_box_hydro_pipeline(device, mc_edge_clamp_min: float):
+    """Build a deeply-overlapping two-box hydroelastic scene and return the live pipeline.
+
+    The pipeline (and its model) are kept alive by the caller so that the
+    Warp arrays referenced by the contact surface remain valid until
+    ``.numpy()`` reads have completed.
+    """
+    box_half = 0.1
+    narrow_band = box_half * 0.2
+    contact_gap = box_half * 0.2
+
+    cfg = newton.ModelBuilder.ShapeConfig(
+        mu=0.5,
+        kh=1e10,
+        sdf_max_resolution=64,
+        is_hydroelastic=True,
+        sdf_narrow_band_range=(-narrow_band, narrow_band),
+        gap=contact_gap,
+    )
+    builder = newton.ModelBuilder()
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, box_half), wp.quat_identity()))
+    builder.add_shape_box(body=body_a, hx=box_half, hy=box_half, hz=box_half, cfg=cfg)
+    overlap = 0.10
+    z_b = box_half + 2.0 * box_half - overlap
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, z_b), wp.quat_identity()))
+    builder.add_shape_box(body=body_b, hx=box_half, hy=box_half, hz=box_half, cfg=cfg)
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    hydro_config = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        buffer_mult_iso=4,
+        buffer_mult_contact=4,
+        mc_edge_clamp_min=mc_edge_clamp_min,
+    )
+    pipeline = newton.CollisionPipeline(
+        model,
+        rigid_contact_max=100000,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=hydro_config,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    return pipeline, model
+
+
+def _contact_surface_aggregates(cs):
+    """Return order-invariant scalar aggregates summarizing a contact surface.
+
+    Returns ``(face_count, total_triangle_area, sum_of_vertex_norms)``.  All
+    three are commutative reductions, so they are insensitive to the
+    ``wp.atomic_add`` ordering the contact writer uses to assign output
+    slots; comparing them across configs avoids false negatives from
+    atomic-ordering noise without depending on bit-exact reproducibility.
+    """
+    n = int(cs.face_contact_count.numpy()[0])
+    if n == 0:
+        return 0, 0.0, 0.0
+    verts = cs.contact_surface_point.numpy()[: n * 3].astype(np.float64).reshape(-1, 3)
+    e1 = verts[1::3] - verts[0::3]
+    e2 = verts[2::3] - verts[0::3]
+    total_area = 0.5 * float(np.linalg.norm(np.cross(e1, e2), axis=1).sum())
+    vertex_norm_sum = float(np.linalg.norm(verts, axis=1).sum())
+    return n, total_area, vertex_norm_sum
+
+
+def test_mc_edge_clamp_min_changes_contact_surface(test, device):
+    """Verify ``mc_edge_clamp_min`` actually flows through to vertex placement.
+
+    Builds the same two-box scene with ``mc_edge_clamp_min=0.02`` and with
+    ``mc_edge_clamp_min=0.0`` and asserts that at least one of three
+    order-invariant scalar aggregates (face count, total triangle area, sum
+    of vertex norms) differs by more than a relative tolerance.  A kernel
+    that ignored the parameter would produce identical aggregates and fail
+    the test.
+    """
+    pipe_clamped, _model_clamped = _build_two_box_hydro_pipeline(device, mc_edge_clamp_min=0.02)
+    pipe_unclamped, _model_unclamped = _build_two_box_hydro_pipeline(device, mc_edge_clamp_min=0.0)
+
+    n_c, area_c, norm_c = _contact_surface_aggregates(pipe_clamped.hydroelastic_sdf.get_contact_surface())
+    n_u, area_u, norm_u = _contact_surface_aggregates(pipe_unclamped.hydroelastic_sdf.get_contact_surface())
+
+    test.assertGreater(n_c, 0, "Expected non-empty contact surface for the clamped build")
+    test.assertGreater(n_u, 0, "Expected non-empty contact surface for the unclamped build")
+
+    rel_tol = 1e-3
+    differs = (
+        n_c != n_u
+        or abs(area_c - area_u) / max(area_c, area_u, 1e-12) > rel_tol
+        or abs(norm_c - norm_u) / max(norm_c, norm_u, 1e-12) > rel_tol
+    )
+    test.assertTrue(
+        differs,
+        f"mc_edge_clamp_min did not change the contact surface: "
+        f"n=({n_c},{n_u}) area=({area_c:.6f},{area_u:.6f}) "
+        f"norm_sum=({norm_c:.6f},{norm_u:.6f})",
+    )
+
+
+add_function_test(
+    TestHydroelastic,
+    "test_mc_edge_clamp_min_changes_contact_surface",
+    test_mc_edge_clamp_min_changes_contact_surface,
     devices=cuda_devices,
     check_output=False,
 )

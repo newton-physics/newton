@@ -184,7 +184,7 @@ def parse_usd(
         joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
         bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
         skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
-        load_sites: If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
+        load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         hide_collision_shapes: If True, collision shapes on bodies that already
             have visual-only geometry are hidden unconditionally, regardless of
@@ -205,8 +205,9 @@ def parse_usd(
             inspection, experimentation, or custom pipelines that read these values via
             ``result["schema_attrs"]`` returned from ``parse_usd()``.
 
-            .. note::
-                Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
+            .. experimental::
+
+                The ``schema_resolvers`` argument may change without prior notice.
         force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
             are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
             If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
@@ -409,6 +410,89 @@ def parse_usd(
         mesh_cache[key] = mesh
         return mesh
 
+    def _has_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
+        return bool(prim and prim.IsValid() and usd.has_applied_api_schema(prim, schema_name))
+
+    def _get_rigid_body_ancestor_path(prim: Usd.Prim) -> str | None:
+        current = prim
+        while current and current.IsValid():
+            current_path = str(current.GetPath())
+            if current_path in path_body_map:
+                return current_path
+            current = current.GetParent()
+        return None
+
+    def _get_target_body_and_local_pos(target_path: str) -> tuple[int, wp.vec3] | None:
+        if target_path in ("", "/"):
+            return (-1, wp.vec3())
+
+        target_prim = stage.GetPrimAtPath(target_path)
+        if not target_prim or not target_prim.IsValid():
+            return None
+
+        body_path = _get_rigid_body_ancestor_path(target_prim)
+        if body_path is None:
+            return None
+
+        body_idx = path_body_map.get(body_path, -1)
+        if body_idx < 0:
+            return None
+
+        if target_path == body_path:
+            return (body_idx, wp.vec3())
+
+        body_prim = stage.GetPrimAtPath(body_path)
+        body_world = usd.get_transform(body_prim, local=False, xform_cache=xform_cache)
+        target_world = usd.get_transform(target_prim, local=False, xform_cache=xform_cache)
+        local_tf = wp.transform_inverse(body_world) * target_world
+        return (body_idx, local_tf.p)
+
+    def _get_first_target(prim: Usd.Prim, rel_name: str) -> str:
+        """Return the first target path of *rel_name* on *prim*, or ``""`` for world."""
+        rel = prim.GetRelationship(rel_name)
+        targets = rel.GetTargets() if rel else []
+        return str(targets[0]) if targets else ""
+
+    def _resolve_equality_bodies(
+        joint_prim: Usd.Prim,
+        joint_path: str,
+        schema_name: str,
+    ) -> tuple[tuple[int, wp.vec3] | None, tuple[int, wp.vec3] | None]:
+        """Resolve body0 and body1 for a Connect/Weld equality joint prim.
+
+        Returns ``(body0_info, body1_info)`` where each is
+        ``(body_index, local_position)`` or ``None`` on failure.
+        An empty target list is interpreted as the world body (index -1).
+        """
+        target0 = _get_first_target(joint_prim, "physics:body0")
+        target1 = _get_first_target(joint_prim, "physics:body1")
+
+        if target0 == "" and target1 == "":
+            warnings.warn(
+                f"{schema_name} on '{joint_path}' has no physics:body0 or physics:body1 targets; skipping.",
+                stacklevel=3,
+            )
+            return None, None
+
+        # Empty target means world body (index -1).
+        body0_info = _get_target_body_and_local_pos(target0) if target0 else (-1, wp.vec3())
+        body1_info = _get_target_body_and_local_pos(target1) if target1 else (-1, wp.vec3())
+
+        if body0_info is None or body1_info is None:
+            failed_targets = []
+            if body0_info is None:
+                failed_targets.append(f"physics:body0='{target0}'")
+            if body1_info is None:
+                failed_targets.append(f"physics:body1='{target1}'")
+            warnings.warn(
+                f"{schema_name} on '{joint_path}' references unresolved body target(s) "
+                f"{', '.join(failed_targets)}; skipping.",
+                stacklevel=3,
+            )
+            return None, None
+
+        return body0_info, body1_info
+
     def _get_mesh_with_visual_material(prim: Usd.Prim, *, path_name: str) -> Mesh:
         """Load a renderable mesh without changing physics mass properties."""
         material_props = _get_material_props_cached(prim)
@@ -434,7 +518,7 @@ def parse_usd(
             mesh.has_inertia = physics_mesh.has_inertia
         else:
             mesh = physics_mesh.copy(recompute_inertia=False)
-        if texture:
+        if texture is not None:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
             warnings.warn(
@@ -546,7 +630,7 @@ def parse_usd(
 
         shape_id = -1
 
-        is_site = usd.has_applied_api_schema(prim, "MjcSiteAPI")
+        is_site = usd.has_applied_api_schema(prim, "NewtonSiteAPI") or usd.has_applied_api_schema(prim, "MjcSiteAPI")
 
         # Skip based on granular loading flags
         if is_site and not load_sites:
@@ -1614,6 +1698,9 @@ def parse_usd(
     builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.JOINT, AttributeFrequency.JOINT_DOF, AttributeFrequency.JOINT_COORD]
     )
+    builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [AttributeFrequency.EQUALITY_CONSTRAINT]
+    )
     builder_custom_attr_articulation: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.ARTICULATION]
     )
@@ -1753,6 +1840,16 @@ def parse_usd(
             for path, joint_spec in zip(paths, joint_specs, strict=False):
                 joint_descriptions[str(path)] = joint_spec
 
+    mjc_equality_connect_paths: set[str] = set()
+    mjc_equality_weld_paths: set[str] = set()
+    for joint_path in joint_descriptions:
+        joint_prim = stage.GetPrimAtPath(joint_path)
+        if _has_api_schema(joint_prim, "MjcEqualityConnectAPI"):
+            mjc_equality_connect_paths.add(joint_path)
+        if _has_api_schema(joint_prim, "MjcEqualityWeldAPI"):
+            mjc_equality_weld_paths.add(joint_path)
+    mjc_equality_connect_or_weld_paths = mjc_equality_connect_paths | mjc_equality_weld_paths
+
     # Track which joints have been processed during articulation parsing.
     # This allows us to parse orphan joints (joints not included in any articulation)
     # even when articulations are present in the USD.
@@ -1886,6 +1983,10 @@ def parse_usd(
             for p in desc.articulatedJoints:
                 joint_path = str(p)
                 joint_desc = joint_descriptions[joint_path]
+                if joint_path in mjc_equality_connect_or_weld_paths:
+                    if verbose:
+                        print(f"Skipping equality connect/weld joint '{joint_path}' from articulation joint graph")
+                    continue
                 # it may be possible that a joint is filtered out in the middle of
                 # a chain of joints, which results in a disconnected graph
                 # we should raise an error in this case
@@ -2208,6 +2309,7 @@ def parse_usd(
             and not any(re.match(p, joint_path) for p in ignore_paths)
             and str(joint_desc.body0) not in ignored_body_paths
             and str(joint_desc.body1) not in ignored_body_paths
+            and joint_path not in mjc_equality_connect_or_weld_paths
         )
         for joint_path, joint_desc in joint_descriptions.items()
     )
@@ -2231,6 +2333,10 @@ def parse_usd(
     for joint_path, joint_desc in joint_descriptions.items():
         # Skip joints that were already processed as part of an articulation
         if joint_path in processed_joints:
+            continue
+        if joint_path in mjc_equality_connect_or_weld_paths:
+            if verbose:
+                print(f"Skipping equality connect/weld joint '{joint_path}' from orphan joint parsing")
             continue
         # Skip disabled joints if only_load_enabled_joints is True
         if only_load_enabled_joints and not joint_desc.jointEnabled:
@@ -2799,6 +2905,7 @@ def parse_usd(
                 "scale": 1.0,
                 "vel": wp.vec3(0.0, 0.0, 0.0),
                 "mesh": tetmesh_for_builder,
+                "label": path,
             }
             if _is_uniform_scale(soft_mesh_scale):
                 add_soft_mesh_kwargs["scale"] = float(np.array(soft_mesh_scale, dtype=np.float32)[0])
@@ -3007,7 +3114,7 @@ def parse_usd(
                     _, _, I_default = compute_inertia_sphere(density, radius)
 
                     # Apply parallel axis theorem if center of mass is offset
-                    com = builder.body_com[body_id]
+                    com = np.array(builder.body_com[body_id], dtype=np.float32)
                     if np.linalg.norm(com) > 1e-6:
                         # I = I_cm + m * d² where d is distance from COM to body origin
                         d_squared = np.sum(com**2)
@@ -3056,6 +3163,141 @@ def parse_usd(
         else:
             builder._add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
 
+    # Parse MjcEquality constraints *before* collapsing fixed joints so that the
+    # builder's collapse logic can remap body/joint indices and adjust anchors/relposes
+    # for any bodies that get merged.
+    def _parse_mjc_equality_constraints():
+        for joint_path, joint_desc in joint_descriptions.items():
+            joint_prim = stage.GetPrimAtPath(joint_path)
+            if not joint_prim or not joint_prim.IsValid():
+                continue
+            if any(re.match(p, joint_path) for p in ignore_paths):
+                continue
+
+            is_connect = joint_path in mjc_equality_connect_paths
+            is_weld = joint_path in mjc_equality_weld_paths
+            is_eq_joint = _has_api_schema(joint_prim, "MjcEqualityJointAPI")
+            if not (is_connect or is_weld or is_eq_joint):
+                continue
+
+            if only_load_enabled_joints and not joint_desc.jointEnabled:
+                continue
+
+            if collect_schema_attrs and (is_connect or is_weld):
+                R.collect_prim_attrs(joint_prim)
+
+            eq_custom_attrs = usd.get_custom_attribute_values(
+                joint_prim, builder_custom_attr_eq, context={"builder": builder}
+            )
+            enabled = bool(joint_desc.jointEnabled)
+
+            if is_connect or is_weld:
+                schema_name = "MjcEqualityConnectAPI" if is_connect else "MjcEqualityWeldAPI"
+                body0_info, body1_info = _resolve_equality_bodies(joint_prim, joint_path, schema_name)
+                if body0_info is None or body1_info is None:
+                    continue
+
+                body0_idx, site0_local_pos = body0_info
+                body1_idx, site1_local_pos = body1_info
+                target0 = _get_first_target(joint_prim, "physics:body0")
+                target1 = _get_first_target(joint_prim, "physics:body1")
+
+                if is_connect:
+                    # Use the authored localPose0 when target0 is a known body or the world
+                    # (empty target means world); fall back to the site-derived local position
+                    # only when target0 is a site prim that is not itself a body.
+                    anchor = (
+                        wp.vec3(*joint_desc.localPose0Position)
+                        if (target0 in ("", "/") or target0 in path_body_map)
+                        else site0_local_pos
+                    )
+                    builder.add_equality_constraint_connect(
+                        body1=body0_idx,
+                        body2=body1_idx,
+                        anchor=anchor,
+                        label=joint_path,
+                        enabled=enabled,
+                        custom_attributes=eq_custom_attrs,
+                    )
+                else:
+                    local_rot0 = usd.value_to_warp(joint_desc.localPose0Orientation)
+                    local_rot1 = usd.value_to_warp(joint_desc.localPose1Orientation)
+                    local_pos0 = wp.vec3(*joint_desc.localPose0Position)
+                    local_pos1 = wp.vec3(*joint_desc.localPose1Position)
+                    # MuJoCo weld anchors are authored on the body1 side. Direct
+                    # body/world targets use localPose1; site targets use the site position.
+                    anchor = (
+                        wp.vec3(*joint_desc.localPose1Position)
+                        if (target1 in ("", "/") or target1 in path_body_map)
+                        else site1_local_pos
+                    )
+                    relpose_rot = local_rot0 * wp.quat_inverse(local_rot1)
+                    relpose_pos = local_pos0 - wp.quat_rotate(relpose_rot, local_pos1)
+                    torquescale_attr = joint_prim.GetAttribute("mjc:torqueScale")
+                    torquescale = (
+                        float(torquescale_attr.Get()) if torquescale_attr and torquescale_attr.HasValue() else 1.0
+                    )
+                    builder.add_equality_constraint_weld(
+                        body1=body0_idx,
+                        body2=body1_idx,
+                        anchor=anchor,
+                        relpose=wp.transform(relpose_pos, relpose_rot),
+                        torquescale=torquescale,
+                        label=joint_path,
+                        enabled=enabled,
+                        custom_attributes=eq_custom_attrs,
+                    )
+                continue
+
+            if is_eq_joint:
+                joint1_idx = path_joint_map.get(joint_path)
+                if joint1_idx is None:
+                    warnings.warn(
+                        f"MjcEqualityJointAPI on '{joint_path}' was not found in path_joint_map; skipping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                target_rel = joint_prim.GetRelationship("mjc:target")
+                targets = target_rel.GetTargets() if target_rel else []
+                if not targets:
+                    warnings.warn(
+                        f"MjcEqualityJointAPI on '{joint_path}' has no mjc:target relationship; skipping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                target_path = str(targets[0])
+                joint2_idx = path_joint_map.get(target_path)
+                if joint2_idx is None:
+                    warnings.warn(
+                        f"MjcEqualityJointAPI on '{joint_path}' references '{target_path}' which was not found in path_joint_map; skipping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                polycoef = []
+                for attr_name, default in (
+                    ("mjc:coef0", 0.0),
+                    ("mjc:coef1", 1.0),
+                    ("mjc:coef2", 0.0),
+                    ("mjc:coef3", 0.0),
+                    ("mjc:coef4", 0.0),
+                ):
+                    attr = joint_prim.GetAttribute(attr_name)
+                    polycoef.append(float(attr.Get()) if attr and attr.HasValue() else default)
+
+                builder.add_equality_constraint_joint(
+                    joint1=joint1_idx,
+                    joint2=joint2_idx,
+                    polycoef=polycoef,
+                    label=joint_path,
+                    enabled=enabled,
+                    custom_attributes=eq_custom_attrs,
+                )
+
+    _parse_mjc_equality_constraints()
+
     # collapsing fixed joints to reduce the number of simulated bodies connected by fixed joints.
     collapse_results = None
     path_body_relative_transform = {}
@@ -3065,9 +3307,6 @@ def parse_usd(
         body_merged_parent = collapse_results["body_merged_parent"]
         body_merged_transform = collapse_results["body_merged_transform"]
         body_remap = collapse_results["body_remap"]
-        # remap body ids in articulation bodies
-        for art_id, bodies in articulation_bodies.items():
-            articulation_bodies[art_id] = [body_remap[b] for b in bodies if b in body_remap]
 
         for path, body_id in path_body_map.items():
             if body_id in body_remap:
@@ -3112,6 +3351,9 @@ def parse_usd(
 
         # Skip if NewtonMimicAPI is present — it takes precedence over PhysxMimicJointAPI.
         if usd.has_applied_api_schema(joint_prim, "NewtonMimicAPI"):
+            continue
+        # Skip if MjcEqualityJointAPI is present — it creates equality constraints, not mimic.
+        if _has_api_schema(joint_prim, "MjcEqualityJointAPI"):
             continue
 
         schemas_listop = joint_prim.GetMetadata("apiSchemas")
@@ -3181,6 +3423,8 @@ def parse_usd(
         joint_prim = stage.GetPrimAtPath(joint_path)
         if not joint_prim.IsValid() or not joint_prim.HasAPI("NewtonMimicAPI"):
             continue
+        if _has_api_schema(joint_prim, "MjcEqualityJointAPI"):
+            continue
         mimic_enabled = usd.get_attribute(joint_prim, "newton:mimicEnabled", default=True)
         if not mimic_enabled:
             continue
@@ -3232,6 +3476,9 @@ def parse_usd(
         if idx < len(builder.joint_q_start)
     }
     for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+        prim_path = str(prim.GetPath())
+        if any(re.match(pattern, prim_path) for pattern in ignore_paths):
+            continue
         parsed = parse_actuator_prim(prim)
         if parsed is None:
             continue
@@ -3298,7 +3545,7 @@ def parse_usd(
     }
 
     # Process custom frequencies with USD prim filters
-    # Collect frequencies with filters and their attributes, then traverse stage once
+    # Collect frequencies with filters and their attributes, then traverse the imported subtree once
     frequencies_with_filters = []
     for freq_key, freq_obj in builder.custom_frequencies.items():
         if freq_obj.usd_prim_filter is None:
@@ -3308,10 +3555,10 @@ def parse_usd(
             continue
         frequencies_with_filters.append((freq_key, freq_obj, freq_attrs))
 
-    # Traverse stage once and check all filters for each prim
+    # Traverse the requested root subtree once and check all filters for each prim
     # Use TraverseInstanceProxies to include prims under instanceable prims
     if frequencies_with_filters:
-        for prim in stage.Traverse(Usd.TraverseInstanceProxies()):
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()):
             for freq_key, freq_obj, freq_attrs in frequencies_with_filters:
                 # Build per-frequency callback context and pass the same object to
                 # usd_prim_filter and usd_entry_expander.

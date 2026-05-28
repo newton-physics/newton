@@ -195,7 +195,6 @@ def _run_unified_pipeline(model, data, state, device):
     pipeline = CollisionPipelineUnifiedKamino(
         model=model,
         broadphase="nxn",
-        device=device,
     )
     contacts = ContactsKamino(capacity=[4096] * num_worlds, device=device)
     contacts.clear()

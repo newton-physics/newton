@@ -9,7 +9,9 @@ model builders to test and demonstrate all the types
 of joints and geometries supported by Kamino.
 """
 
+import copy
 import math
+import os
 
 import numpy as np
 import warp as wp
@@ -30,6 +32,7 @@ from ...core.shapes import (
 )
 from ...core.types import Axis, mat33f, transformf, vec3f, vec6f
 from ...utils import logger as msg
+from ...utils.io.usd import USDImporter
 from . import utils
 
 ###
@@ -39,7 +42,6 @@ from . import utils
 __all__ = [
     "build_binary_cartesian_joint_test",
     "build_binary_cylindrical_joint_test",
-    "build_binary_gimbal_joint_test",
     "build_binary_prismatic_joint_test",
     "build_binary_revolute_joint_test",
     "build_binary_spherical_joint_test",
@@ -47,7 +49,6 @@ __all__ = [
     "build_free_joint_test",
     "build_unary_cartesian_joint_test",
     "build_unary_cylindrical_joint_test",
-    "build_unary_gimbal_joint_test",
     "build_unary_prismatic_joint_test",
     "build_unary_revolute_joint_test",
     "build_unary_spherical_joint_test",
@@ -1121,193 +1122,6 @@ def build_binary_spherical_joint_test(
     return _builder
 
 
-def build_unary_gimbal_joint_test(
-    builder: ModelBuilderKamino | None = None,
-    z_offset: float = 0.0,
-    new_world: bool = True,
-    limits: bool = True,
-    ground: bool = True,
-    world_index: int = 0,
-) -> ModelBuilderKamino:
-    """
-    Builds a world to test unary gimbal joints.
-
-    This world consists of a single rigid body connected to the world via a unary
-    gimbal joint, with optional limits applied to the joint degrees of freedom.
-
-    Args:
-        builder (ModelBuilderKamino | None): An optional existing ModelBuilderKamino to which the entities will be added.
-        z_offset (float): A vertical offset to apply to the rigid body position.
-        ground (bool): Whether to include a ground plane in the world.
-        new_world (bool): Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
-            If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.
-        limits (bool): Whether to enable limits on the joint degrees of freedom.
-        world_index (int): The index of the world in the builder where the test model should be added.
-    """
-    # Create a new builder if none is provided
-    if builder is None:
-        _builder = ModelBuilderKamino(default_world=False)
-    else:
-        _builder = builder
-
-    # Create a new world in the builder if requested or if a new builder was created
-    if new_world or builder is None:
-        world_index = _builder.add_world(name="unary_gimbal_joint_test")
-
-    # Define test system
-    bid_F = _builder.add_rigid_body(
-        name="follower",
-        m_i=1.0,
-        i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.5, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-        world_index=world_index,
-    )
-    _builder.add_joint(
-        name="world_to_follower_gimbal",
-        dof_type=JointDoFType.GIMBAL,
-        act_type=JointActuationType.FORCE,
-        bid_B=-1,
-        bid_F=bid_F,
-        B_r_Bj=vec3f(0.25, -0.25, -0.25),
-        F_r_Fj=vec3f(-0.25, -0.25, -0.25),
-        X_j=Axis.X.to_mat33(),
-        # q_j_min=[-0.4 * math.pi, -0.4 * math.pi, -0.4 * math.pi] if limits else None,
-        # q_j_max=[0.4 * math.pi, 0.4 * math.pi, 0.4 * math.pi] if limits else None,
-        world_index=world_index,
-    )
-    _builder.add_geometry(
-        name="base/box",
-        body=-1,
-        shape=BoxShape(0.25, 0.25, 0.25),
-        world_index=world_index,
-        group=2,
-        collides=2,
-    )
-    _builder.add_geometry(
-        name="follower/box",
-        body=bid_F,
-        shape=BoxShape(0.25, 0.25, 0.25),
-        world_index=world_index,
-    )
-
-    # Add a static collision geometry for the plane
-    if ground:
-        _builder.add_geometry(
-            body=-1,
-            shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
-            world_index=world_index,
-        )
-
-    # Return the populated builder
-    return _builder
-
-
-def build_binary_gimbal_joint_test(
-    builder: ModelBuilderKamino | None = None,
-    z_offset: float = 0.0,
-    new_world: bool = True,
-    limits: bool = True,
-    ground: bool = True,
-    world_index: int = 0,
-) -> ModelBuilderKamino:
-    """
-    Builds a world to test binary gimbal joints.
-
-    This world consists of two rigid bodies connected via a binary gimbal
-    joint, with optional limits applied to the joint degrees of freedom.
-
-    Args:
-        builder (ModelBuilderKamino | None): An optional existing ModelBuilderKamino to which the entities will be added.
-        z_offset (float): A vertical offset to apply to the rigid body position.
-        ground (bool): Whether to include a ground plane in the world.
-        new_world (bool): Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
-            If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.
-        limits (bool): Whether to enable limits on the joint degrees of freedom.
-        world_index (int): The index of the world in the builder where the test model should be added.
-    """
-    # Create a new builder if none is provided
-    if builder is None:
-        _builder = ModelBuilderKamino(default_world=False)
-    else:
-        _builder = builder
-
-    # Create a new world in the builder if requested or if a new builder was created
-    if new_world or builder is None:
-        world_index = _builder.add_world(name="binary_gimbal_joint_test")
-
-    # Define test system
-    bid_B = _builder.add_rigid_body(
-        name="base",
-        m_i=1.0,
-        i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-        world_index=world_index,
-    )
-    bid_F = _builder.add_rigid_body(
-        name="follower",
-        m_i=1.0,
-        i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.5, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-        world_index=world_index,
-    )
-    _builder.add_joint(
-        name="world_to_base",
-        dof_type=JointDoFType.FIXED,
-        act_type=JointActuationType.PASSIVE,
-        bid_B=-1,
-        bid_F=bid_B,
-        B_r_Bj=vec3f(0.0, 0.0, z_offset),
-        F_r_Fj=vec3f(0.0, 0.0, 0.0),
-        X_j=Axis.Y.to_mat33(),
-        world_index=world_index,
-    )
-    _builder.add_joint(
-        name="base_to_follower_gimbal",
-        dof_type=JointDoFType.GIMBAL,
-        act_type=JointActuationType.FORCE,
-        bid_B=bid_B,
-        bid_F=bid_F,
-        B_r_Bj=vec3f(0.25, -0.25, -0.25),
-        F_r_Fj=vec3f(-0.25, -0.25, -0.25),
-        X_j=Axis.X.to_mat33(),
-        # q_j_min=[-0.4 * math.pi, -0.4 * math.pi, -0.4 * math.pi] if limits else None,
-        # q_j_max=[0.4 * math.pi, 0.4 * math.pi, 0.4 * math.pi] if limits else None,
-        world_index=world_index,
-    )
-    _builder.add_geometry(
-        name="base/box",
-        body=bid_B,
-        shape=BoxShape(0.25, 0.25, 0.25),
-        world_index=world_index,
-    )
-    _builder.add_geometry(
-        name="follower/box",
-        body=bid_F,
-        shape=BoxShape(0.25, 0.25, 0.25),
-        world_index=world_index,
-    )
-
-    # Add a static collision geometry for the plane
-    if ground:
-        _builder.add_geometry(
-            body=-1,
-            shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
-            world_index=world_index,
-        )
-
-    # Return the populated builder
-    return _builder
-
-
 def build_unary_cartesian_joint_test(
     builder: ModelBuilderKamino | None = None,
     z_offset: float = 0.0,
@@ -1438,7 +1252,7 @@ def build_binary_cartesian_joint_test(
 
     # Create a new world in the builder if requested or if a new builder was created
     if new_world or builder is None:
-        world_index = _builder.add_world(name="binary_gimbal_joint_test")
+        world_index = _builder.add_world(name="binary_cartesian_joint_test")
 
     # Define test system
     bid_B = _builder.add_rigid_body(
@@ -1512,38 +1326,72 @@ def build_binary_cartesian_joint_test(
 
 
 def build_all_joints_test_model(
-    z_offset: float = 0.0,
-    ground: bool = False,
+    unary_joints: bool = True,
+    binary_joints: bool = True,
 ) -> ModelBuilderKamino:
     """
     Constructs a model builder containing a world for each joint type.
 
     Args:
-        z_offset (float): A vertical offset to apply to the initial position of the box.
-        ground (bool): Whether to add a static ground plane to the model.
+        unary_joints (bool): Whether to include unary joints.
+        binary_joints (bool): Whether to include binary joints.
 
     Returns:
         ModelBuilderKamino: The populated model builder.
     """
+
+    def make_damped(builder: ModelBuilderKamino) -> ModelBuilderKamino:
+        """Returns a version of the single-joint example with added joint damping"""
+        assert builder.num_worlds == 1 and builder.num_bodies == 2 and builder.num_joints == 2
+        builder_damped = ModelBuilderKamino(default_world=True)
+        builder_damped.add_rigid_body_descriptor(copy.deepcopy(builder.bodies[0][0]))
+        builder_damped.add_rigid_body_descriptor(copy.deepcopy(builder.bodies[0][1]))
+        builder_damped.add_joint_descriptor(copy.deepcopy(builder.joints[0][0]))
+        joint = copy.deepcopy(builder.joints[0][1])
+        joint.b_j = joint.num_dofs * [5e-5]
+        builder_damped.add_joint_descriptor(joint)
+        for geom in builder.all_geoms:
+            geom_ = copy.deepcopy(geom)
+            geom_.shape = builder.shapes[geom.uid]
+            builder_damped.add_geometry_descriptor(geom_)
+        return builder_damped
+
+    def make_unary(builder: ModelBuilderKamino) -> ModelBuilderKamino:
+        """Returns a unary version of a single-joint, single-world example"""
+        assert builder.num_worlds == 1 and builder.num_bodies == 2 and builder.num_joints == 2
+        builder_unary = ModelBuilderKamino(default_world=True)
+        builder_unary.add_rigid_body_descriptor(copy.deepcopy(builder.bodies[0][1]))
+        joint = copy.deepcopy(builder.joints[0][1])
+        joint.bid_B = -1
+        joint.bid_F = 0
+        body_0_offset = wp.transform_get_translation(builder.bodies[0][0].q_i_0)
+        joint.B_r_Bj = body_0_offset + joint.B_r_Bj
+        builder_unary.add_joint_descriptor(joint)
+        for geom in builder.all_geoms:
+            geom_ = copy.deepcopy(geom)
+            geom_.shape = builder.shapes[geom.uid]
+            geom_.body = geom.body - 1
+            if geom_.body == -1:
+                # wp.transform_set_translation(geom_.offset, body_0_offset)
+                geom_.offset[0] = body_0_offset[0]
+                geom_.offset[1] = body_0_offset[1]
+                geom_.offset[2] = body_0_offset[2]
+            builder_unary.add_geometry_descriptor(geom_)
+        return builder_unary
+
     # Create a new builder to populate
     _builder = ModelBuilderKamino(default_world=False)
 
     # Add a new world for each joint type
-    _builder.add_builder(build_free_joint_test(z_offset=z_offset, ground=ground))
-    _builder.add_builder(build_unary_revolute_joint_test(z_offset=z_offset, ground=ground))
-    _builder.add_builder(build_binary_revolute_joint_test(z_offset=z_offset, ground=ground))
-    _builder.add_builder(build_unary_prismatic_joint_test(z_offset=z_offset, ground=ground))
-    _builder.add_builder(build_binary_prismatic_joint_test(z_offset=z_offset, ground=ground))
-    _builder.add_builder(build_unary_cylindrical_joint_test(z_offset=z_offset, ground=ground))
-    _builder.add_builder(build_binary_cylindrical_joint_test(z_offset=z_offset, ground=ground))
-    _builder.add_builder(build_unary_universal_joint_test(z_offset=z_offset, ground=ground))
-    _builder.add_builder(build_binary_universal_joint_test(z_offset=z_offset, ground=ground))
-    _builder.add_builder(build_unary_spherical_joint_test(z_offset=z_offset, ground=ground))
-    _builder.add_builder(build_binary_spherical_joint_test(z_offset=z_offset, ground=ground))
-    _builder.add_builder(build_unary_gimbal_joint_test(z_offset=z_offset, ground=ground))
-    _builder.add_builder(build_binary_gimbal_joint_test(z_offset=z_offset, ground=ground))
-    _builder.add_builder(build_unary_cartesian_joint_test(z_offset=z_offset, ground=ground))
-    _builder.add_builder(build_binary_cartesian_joint_test(z_offset=z_offset, ground=ground))
+    folder_path = os.path.join(utils.get_testing_usd_assets_path(), "joints")
+    joint_names = ["cartesian", "cylindrical", "fixed", "prismatic", "revolute", "spherical", "universal"]
+    for name in joint_names:
+        builder_in = USDImporter().import_from(source=os.path.join(folder_path, f"test_{name}/test_{name}.usda"))
+        builder_binary = make_damped(builder_in)  # Add slight damping to the joint to increase realism
+        if unary_joints:
+            _builder.add_builder(make_unary(builder_binary))
+        if binary_joints:
+            _builder.add_builder(builder_binary)
 
     # Return the lists of element indices
     return _builder
@@ -1585,9 +1433,9 @@ shape_default_dims: dict[GeoType, tuple] = {
     GeoType.CAPSULE: (0.5, 0.5),
     GeoType.BOX: (0.5, 0.5, 0.5),
     GeoType.ELLIPSOID: (1.0, 1.0, 0.5),
-    GeoType.PLANE: (0.0, 0.0, 1.0, 0.0),
+    GeoType.PLANE: (0.0, 0.0),
 }
-"""Mapping from GeoType enum to default dimensions (Newton convention: half-extents)."""
+"""Mapping from GeoType enum to default scale/dimensions (Newton convention: half-extents)."""
 
 
 def make_shape_initial_position(name: str, dims: tuple, is_top: bool = True) -> vec3f:
@@ -1622,7 +1470,7 @@ def make_shape_initial_position(name: str, dims: tuple, is_top: bool = True) -> 
         GeoType.CAPSULE: 2,
         GeoType.BOX: 3,
         GeoType.ELLIPSOID: 3,
-        GeoType.PLANE: 4,
+        GeoType.PLANE: 2,
     }.get(shape_type)
     if expected_len is not None and len(dims) != expected_len:
         raise ValueError(f"Invalid dimensions for shape '{name}': expected {expected_len} values, got {len(dims)}")
@@ -1642,7 +1490,7 @@ def make_shape_initial_position(name: str, dims: tuple, is_top: bool = True) -> 
     elif shape_type == GeoType.ELLIPSOID:
         r = vec3f(0.0, 0.0, dims[2])
     elif shape_type == GeoType.PLANE:
-        r = vec3f(0.0, 0.0, dims[3])
+        r = vec3f(0.0, 0.0, 0.0)
     else:
         raise ValueError(f"Unsupported shape type: {shape_type}")
 
@@ -1684,7 +1532,7 @@ def get_shape_bottom_position(center: vec3f, shape: ShapeDescriptorType) -> vec3
     elif shape.type == GeoType.ELLIPSOID:
         r_bottom = center - vec3f(0.0, 0.0, shape.params[2])
     elif shape.type == GeoType.PLANE:
-        r_bottom = center - vec3f(0.0, 0.0, shape.params[3])
+        r_bottom = center
     else:
         raise ValueError(f"Unsupported shape type: {shape.type}")
 
@@ -1785,11 +1633,11 @@ def make_single_shape_pair_builder(
     # Create the shape descriptors for bottom and top shapes
     # with special handling for PlaneShape
     if bottom_type == GeoType.PLANE:
-        bottom_shape = bottom_descriptor(vec3f(*bottom_dims[0:3]), bottom_dims[3])
+        bottom_shape = bottom_descriptor(width=bottom_dims[0], length=bottom_dims[1])
     else:
         bottom_shape = bottom_descriptor(*bottom_dims)
     if top_type == GeoType.PLANE:
-        top_shape = top_descriptor(vec3f(*top_dims[0:3]), top_dims[3])
+        top_shape = top_descriptor(width=top_dims[0], length=top_dims[1])
     else:
         top_shape = top_descriptor(*top_dims)
 

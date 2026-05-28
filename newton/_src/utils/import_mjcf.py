@@ -559,7 +559,8 @@ def parse_mjcf(
         if "xyaxes" in attrib:
             xyaxes = np.fromstring(attrib["xyaxes"], sep=" ")
             xaxis = wp.normalize(wp.vec3(*xyaxes[:3]))
-            zaxis = wp.normalize(wp.vec3(*xyaxes[3:]))
+            yaxis = wp.vec3(*xyaxes[3:])
+            zaxis = wp.normalize(wp.cross(xaxis, yaxis))
             yaxis = wp.normalize(wp.cross(zaxis, xaxis))
             rot_matrix = np.array([xaxis, yaxis, zaxis]).T
             return wp.quat_from_matrix(wp.mat33(rot_matrix))

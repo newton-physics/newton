@@ -24,6 +24,7 @@ from ..semi_implicit.kernels_particle import (
 from ..solver import SolverBase
 from .kernels import (
     accumulate_free_distance_joint_f_to_body_force,
+    compute_body_parent_f,
     compute_com_transforms,
     compute_spatial_inertia,
     convert_body_force_com_to_origin,
@@ -92,6 +93,24 @@ class SolverFeatherstone(SolverBase):
         - Equality and mimic constraints are not supported.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
+
+    Extended state attributes:
+        :attr:`~newton.State.body_parent_f` is populated when requested via
+        :meth:`~newton.ModelBuilder.request_state_attributes`. The reported
+        wrench is the per-body net spatial force from the RNEA backward pass
+        translated to the body's COM (linear ``[N]`` first, torque ``[N·m]``
+        in world frame at the COM), matching the wrench-transmitted-through-
+        the-inbound-joint convention used by :class:`~newton.solvers.SolverMuJoCo`'s
+        ``cfrc_int``. In equilibrium this reaction counters all forces acting
+        on the body's subtree (gravity, contacts, ``State.body_f``, and the
+        net effect of :attr:`~newton.Control.joint_f`) by Newton's third law.
+
+        Free-floating roots (bodies whose only inbound joint is FREE) are
+        not special-cased: the same RNEA sum is written, which for such
+        bodies is the residual force balance from the recursion (e.g.
+        contacts vs. gravity in equilibrium, or the gyroscopic
+        ``v x* (I*v)`` term during tumbling) rather than a true joint
+        reaction. Treat it as a diagnostic in that case.
 
     Example
     -------
@@ -593,6 +612,14 @@ class SolverFeatherstone(SolverBase):
                         device=model.device,
                     )
 
+                # ``body_parent_f`` is populated below from the RNEA
+                # backward-pass spatial forces. Zero it unconditionally so
+                # bodies that are not the child of any joint (or models
+                # without articulations) report a deterministic zero rather
+                # than stale buffer contents.
+                if state_out.body_parent_f is not None:
+                    state_out.body_parent_f.zero_()
+
                 if model.articulation_count:
                     # evaluate joint torques
                     state_aug.body_ft_s.zero_()
@@ -628,6 +655,24 @@ class SolverFeatherstone(SolverBase):
                         ],
                         device=model.device,
                     )
+
+                    # Optionally populate ``state_out.body_parent_f`` (incoming
+                    # joint wrench per body in world frame at COM) from the
+                    # RNEA backward-pass spatial forces. Only runs when the
+                    # extended state attribute has been requested.
+                    if state_out.body_parent_f is not None:
+                        wp.launch(
+                            compute_body_parent_f,
+                            dim=model.body_count,
+                            inputs=[
+                                state_aug.body_q_com,
+                                state_aug.body_f_s,
+                                state_aug.body_ft_s,
+                                body_f,
+                            ],
+                            outputs=[state_out.body_parent_f],
+                            device=model.device,
+                        )
 
                     # print("joint_tau:")
                     # print(state_aug.joint_tau.numpy())

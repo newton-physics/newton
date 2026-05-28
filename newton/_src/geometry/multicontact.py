@@ -14,6 +14,7 @@ multiple contact points between colliding shapes. It includes polygon clipping
 and contact point selection algorithms.
 """
 
+import math
 from typing import Any
 
 import warp as wp
@@ -27,11 +28,11 @@ from .mpr import create_support_map_function
 EPS = 0.00001
 # The tilt angle defines how much the search direction gets tilted while searching for
 # points on the contact manifold.
-TILT_ANGLE_RAD = wp.static(2.0 * wp.pi / 180.0)
-SIN_TILT_ANGLE = wp.static(wp.sin(TILT_ANGLE_RAD))
-COS_TILT_ANGLE = wp.static(wp.cos(TILT_ANGLE_RAD))
+TILT_ANGLE_RAD = wp.static(2.0 * math.pi / 180.0)
+SIN_TILT_ANGLE = wp.static(math.sin(TILT_ANGLE_RAD))
+COS_TILT_ANGLE = wp.static(math.cos(TILT_ANGLE_RAD))
 
-COS_DEEPEST_CONTACT_THRESHOLD_ANGLE = wp.static(wp.cos(0.1 * wp.pi / 180.0))
+COS_DEEPEST_CONTACT_THRESHOLD_ANGLE = wp.static(math.cos(0.1 * math.pi / 180.0))
 
 
 @wp.func
@@ -815,14 +816,14 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         # Precomputed cos/sin for 5 evenly spaced pentagonal angles (0, 72, 144, 216, 288 deg).
         PENT_COS_0 = float(1.0)
         PENT_SIN_0 = float(0.0)
-        PENT_COS_1 = wp.static(wp.cos(2.0 * wp.pi / 5.0))
-        PENT_SIN_1 = wp.static(wp.sin(2.0 * wp.pi / 5.0))
-        PENT_COS_2 = wp.static(wp.cos(4.0 * wp.pi / 5.0))
-        PENT_SIN_2 = wp.static(wp.sin(4.0 * wp.pi / 5.0))
-        PENT_COS_3 = wp.static(wp.cos(6.0 * wp.pi / 5.0))
-        PENT_SIN_3 = wp.static(wp.sin(6.0 * wp.pi / 5.0))
-        PENT_COS_4 = wp.static(wp.cos(8.0 * wp.pi / 5.0))
-        PENT_SIN_4 = wp.static(wp.sin(8.0 * wp.pi / 5.0))
+        PENT_COS_1 = wp.static(math.cos(2.0 * math.pi / 5.0))
+        PENT_SIN_1 = wp.static(math.sin(2.0 * math.pi / 5.0))
+        PENT_COS_2 = wp.static(math.cos(4.0 * math.pi / 5.0))
+        PENT_SIN_2 = wp.static(math.sin(4.0 * math.pi / 5.0))
+        PENT_COS_3 = wp.static(math.cos(6.0 * math.pi / 5.0))
+        PENT_SIN_3 = wp.static(math.sin(6.0 * math.pi / 5.0))
+        PENT_COS_4 = wp.static(math.cos(8.0 * math.pi / 5.0))
+        PENT_SIN_4 = wp.static(math.sin(8.0 * math.pi / 5.0))
 
         a_count = int(0)
         b_count = int(0)

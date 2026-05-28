@@ -44,7 +44,7 @@ class TestDualProblem(unittest.TestCase):
         builder = make_basics_heterogeneous_builder()
 
         # Create the model and containers from the builder
-        model, data, _state, limits, detector, _jacobians = make_containers(
+        model, data, _state, limits, detector, jacobians = make_containers(
             builder=builder, max_world_contacts=max_world_contacts, device=self.default_device
         )
 
@@ -54,8 +54,8 @@ class TestDualProblem(unittest.TestCase):
             data=data,
             limits=limits,
             contacts=detector.contacts,
+            jacobians=jacobians,
             solver=ConjugateGradientSolver,
-            device=self.default_device,
         )
 
         # Optional verbose output
@@ -124,8 +124,8 @@ class TestDualProblem(unittest.TestCase):
             data=data,
             limits=limits,
             contacts=detector.contacts,
+            jacobians=jacobians,
             solver=ConjugateGradientSolver,
-            device=self.default_device,
         )
 
         # Build the dual problem

@@ -44,12 +44,12 @@ def make_get_array_offset_ptr_func(dtype):
 
     # Define a Warp wrapper around a native C++ function to get the raw pointer of a warp array
     @wp.func_native(get_array_ptr_cpp)
-    def get_dtype_array_ptr(arr: wp.array(dtype=dtype)) -> wp.uint64: ...
+    def get_dtype_array_ptr(arr: wp.array[dtype]) -> wp.uint64: ...
 
     # Define a Warp function to get the raw pointer of a warp array with an offset
     @wp.func
-    def get_dtype_array_offset_ptr(arr: wp.array(dtype=dtype), start_index: int) -> wp.uint64:
-        return get_dtype_array_ptr(arr) + wp.uint64(start_index * wp.static(sizeof(dtype._type_)))
+    def get_dtype_array_offset_ptr(arr: wp.array[dtype], start_index: int) -> wp.uint64:
+        return get_dtype_array_ptr(arr) + wp.uint64(start_index) * wp.uint64(wp.static(sizeof(dtype._type_)))
 
     return get_dtype_array_offset_ptr
 
@@ -103,11 +103,11 @@ def make_llt_blocked_factorize_kernel(block_size: int):
     @wp.kernel(enable_backward=False)
     def llt_blocked_factorize_kernel(
         # Inputs:
-        dim: wp.array(dtype=int32),
-        mio: wp.array(dtype=int32),
-        A: wp.array(dtype=float32),
+        dim: wp.array[int32],
+        mio: wp.array[int32],
+        A: wp.array[float32],
         # Outputs:
-        L: wp.array(dtype=float32),
+        L: wp.array[float32],
     ):
         # Retrieve the thread index and thread-block configuration
         tid, tid_block = wp.tid()
@@ -209,14 +209,14 @@ def make_llt_blocked_solve_kernel(block_size: int):
     @wp.kernel(enable_backward=False)
     def llt_blocked_solve_kernel(
         # Inputs:
-        dim: wp.array(dtype=int32),
-        mio: wp.array(dtype=int32),
-        vio: wp.array(dtype=int32),
-        L: wp.array(dtype=float32),
-        b: wp.array(dtype=float32),
+        dim: wp.array[int32],
+        mio: wp.array[int32],
+        vio: wp.array[int32],
+        L: wp.array[float32],
+        b: wp.array[float32],
         # Outputs:
-        y: wp.array(dtype=float32),
-        x: wp.array(dtype=float32),
+        y: wp.array[float32],
+        x: wp.array[float32],
     ):
         # Retrieve the thread index and thread-block configuration
         tid, tid_block = wp.tid()
@@ -297,13 +297,13 @@ def make_llt_blocked_solve_inplace_kernel(block_size: int):
     @wp.kernel(enable_backward=False)
     def llt_blocked_solve_inplace_kernel(
         # Inputs:
-        dim: wp.array(dtype=int32),
-        mio: wp.array(dtype=int32),
-        vio: wp.array(dtype=int32),
-        L: wp.array(dtype=float32),
+        dim: wp.array[int32],
+        mio: wp.array[int32],
+        vio: wp.array[int32],
+        L: wp.array[float32],
         # Outputs:
-        y: wp.array(dtype=float32),
-        x: wp.array(dtype=float32),
+        y: wp.array[float32],
+        x: wp.array[float32],
     ):
         # Retrieve the thread index and thread-block configuration
         tid, tid_block = wp.tid()
@@ -381,16 +381,15 @@ def make_llt_blocked_solve_inplace_kernel(block_size: int):
 
 def llt_blocked_factorize(
     kernel,
-    dim: wp.array(dtype=int32),
-    mio: wp.array(dtype=int32),
-    A: wp.array(dtype=float32),
-    L: wp.array(dtype=float32),
+    dim: wp.array[int32],
+    mio: wp.array[int32],
+    A: wp.array[float32],
+    L: wp.array[float32],
     num_blocks: int = 1,
     # Empirically, 128 threads (4 warps) gives the best factor throughput for large
     # matrices with this kernel layout; small matrices prefer 64. Callers may override.
     # TODO: Rename this to be clearer that this is the number of threads per TILE block and not matrix block
     block_dim: int = 128,
-    device: wp.DeviceLike = None,
 ):
     """
     Launches the blocked Cholesky factorization kernel for a block partitioned matrix.
@@ -404,24 +403,23 @@ def llt_blocked_factorize(
         A (wp.array): The flat input array containing the input matrix blocks to be factorized.
         L (wp.array): The flat output array containing the factorization of each matrix block.
     """
-    wp.launch_tiled(kernel=kernel, dim=num_blocks, inputs=[dim, mio, A, L], block_dim=block_dim, device=device)
+    wp.launch_tiled(kernel=kernel, dim=num_blocks, inputs=[dim, mio, A, L], block_dim=block_dim, device=A.device)
 
 
 def llt_blocked_solve(
     kernel,
-    dim: wp.array(dtype=int32),
-    mio: wp.array(dtype=int32),
-    vio: wp.array(dtype=int32),
-    L: wp.array(dtype=float32),
-    b: wp.array(dtype=float32),
-    y: wp.array(dtype=float32),
-    x: wp.array(dtype=float32),
+    dim: wp.array[int32],
+    mio: wp.array[int32],
+    vio: wp.array[int32],
+    L: wp.array[float32],
+    b: wp.array[float32],
+    y: wp.array[float32],
+    x: wp.array[float32],
     num_blocks: int = 1,
     # Empirically, 128 threads per tile-block (4 warps) hides the gemm+trsm latency
     # better than 64 across the tested size range. Callers may override for batch
     # sweeps with very small matrices where 64 is marginally faster.
     block_dim: int = 128,
-    device: wp.DeviceLike = None,
 ):
     """
     Launches the blocked Cholesky solve kernel for a block partitioned matrix.
@@ -439,23 +437,22 @@ def llt_blocked_solve(
         block_dim (int): The dimension of the thread block to use for the kernel launch.
     """
     wp.launch_tiled(
-        kernel=kernel, dim=num_blocks, inputs=[dim, mio, vio, L, b, y, x], block_dim=block_dim, device=device
+        kernel=kernel, dim=num_blocks, inputs=[dim, mio, vio, L, b, y, x], block_dim=block_dim, device=L.device
     )
 
 
 def llt_blocked_solve_inplace(
     kernel,
-    dim: wp.array(dtype=int32),
-    mio: wp.array(dtype=int32),
-    vio: wp.array(dtype=int32),
-    L: wp.array(dtype=float32),
-    y: wp.array(dtype=float32),
-    x: wp.array(dtype=float32),
+    dim: wp.array[int32],
+    mio: wp.array[int32],
+    vio: wp.array[int32],
+    L: wp.array[float32],
+    y: wp.array[float32],
+    x: wp.array[float32],
     num_blocks: int = 1,
     # See ``llt_blocked_solve`` for rationale; 128 threads/tile-block is the best
     # default across size ranges.
     block_dim: int = 128,
-    device: wp.DeviceLike = None,
 ):
     """
     Launches the blocked Cholesky in-place solve kernel for a block partitioned matrix.
@@ -470,4 +467,6 @@ def llt_blocked_solve_inplace(
         kernel: The kernel function to use for the blocked in-place solve.
         block_dim (int): The dimension of the thread block to use for the kernel launch.
     """
-    wp.launch_tiled(kernel=kernel, dim=num_blocks, inputs=[dim, mio, vio, L, y, x], block_dim=block_dim, device=device)
+    wp.launch_tiled(
+        kernel=kernel, dim=num_blocks, inputs=[dim, mio, vio, L, y, x], block_dim=block_dim, device=L.device
+    )

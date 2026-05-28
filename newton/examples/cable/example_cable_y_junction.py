@@ -120,9 +120,14 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        # Set camera to be closer to the cable
+        if hasattr(self.viewer, "picking"):
+            pick_state = self.viewer.picking.pick_state.numpy()
+            pick_state[0]["pick_stiffness"] = 0.2
+            pick_state[0]["pick_damping"] = 0.0
+            self.viewer.picking.pick_state.assign(pick_state)
+
         self.viewer.set_camera(
-            pos=wp.vec3(6.0, 0.0, 1.5),
+            pos=wp.vec3(2.10, 0.0, z0 - 0.15),
             pitch=0.0,
             yaw=-180.0,
         )
@@ -214,5 +219,4 @@ class Example:
 
 if __name__ == "__main__":
     viewer, args = newton.examples.init()
-    example = Example(viewer, args)
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

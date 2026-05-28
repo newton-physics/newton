@@ -43,7 +43,7 @@ A typical example for using this module is:
     ...
 
     # Create a forward-dynamics DualProblem to be solved
-    dual = DualProblem(model, limits, contacts)
+    dual = DualProblem(model, limits, contacts, jacobians)
     dual.build(model, data, limits, contacts, jacobians)
 
     # Create a forward-dynamics PADMM solver
@@ -471,11 +471,11 @@ def compute_v_plus(
     vio: int32,
     mio: int32,
     sigma: float32,
-    P: wp.array(dtype=float32),
-    D_p: wp.array(dtype=float32),
-    v_f_p: wp.array(dtype=float32),
-    lambdas: wp.array(dtype=float32),
-    v_plus: wp.array(dtype=float32),
+    P: wp.array[float32],
+    D_p: wp.array[float32],
+    v_f_p: wp.array[float32],
+    lambdas: wp.array[float32],
+    v_plus: wp.array[float32],
 ):
     """
     Computes the post-event constraint-space velocity as:
@@ -501,13 +501,13 @@ def compute_v_plus(
         dim (int32): The active dimension of the matrix `A` and the vectors `x, b, c`.
         vio (int32): The vector index offset (i.e. start index) for the vectors `x, b, c`.
         mio (int32): The matrix index offset (i.e. start index) for the matrix `A`.
-        D_p (wp.array(dtype=float32)):
+        D_p (wp.array[float32]):
             Input preconditioned Delassus matrix stored in row-major order.
-        v_f_p (wp.array(dtype=float32)):
+        v_f_p (wp.array[float32]):
             Input preconditioned unconstrained constraint-space velocity vector.
-        lambdas (wp.array(dtype=float32)):
+        lambdas (wp.array[float32]):
             Input constraint reactions (i.e. Lagrange multipliers) vector.
-        v_plus (wp.array(dtype=float32)):
+        v_plus (wp.array[float32]):
             Output array to store the post-event constraint-space velocity vector.
     """
     v_f_p_i = float(0.0)
@@ -531,10 +531,10 @@ def compute_v_plus(
 def compute_v_plus_sparse(
     dim: int32,
     vio: int32,
-    P: wp.array(dtype=float32),
-    v_f_p: wp.array(dtype=float32),
-    D_p_lambdas: wp.array(dtype=float32),
-    v_plus: wp.array(dtype=float32),
+    P: wp.array[float32],
+    v_f_p: wp.array[float32],
+    D_p_lambdas: wp.array[float32],
+    v_plus: wp.array[float32],
 ):
     """
     Computes the post-event constraint-space velocity as:
@@ -553,12 +553,12 @@ def compute_v_plus_sparse(
     Args:
         dim (int32): The active dimension of the matrix `A` and the vectors `x, b, c`.
         vio (int32): The vector index offset (i.e. start index) for the vectors `x, b, c`.
-        v_f_p (wp.array(dtype=float32)):
+        v_f_p (wp.array[float32]):
             Input preconditioned unconstrained constraint-space velocity vector.
-        D_p_lambdas (wp.array(dtype=float32)):
+        D_p_lambdas (wp.array[float32]):
             Product of the Delassus matrix with the input constraint reactions
             (i.e. Lagrange multipliers) vector.
-        v_plus (wp.array(dtype=float32)):
+        v_plus (wp.array[float32]):
             Output array to store the post-event constraint-space velocity vector.
     """
     for i in range(dim):
@@ -570,8 +570,8 @@ def compute_v_plus_sparse(
 def compute_vector_difference_infnorm(
     dim: int32,
     vio: int32,
-    x: wp.array(dtype=float32),
-    y: wp.array(dtype=float32),
+    x: wp.array[float32],
+    y: wp.array[float32],
 ) -> tuple[float32, int32]:
     """
     Computes the sum of two vectors `x` and `y` and stores the result in vector `z`.\n
@@ -580,9 +580,9 @@ def compute_vector_difference_infnorm(
     Args:
         dim (int32): The dimension (i.e. size) of the vectors.
         vio (int32): The vector index offset (i.e. start index).
-        x (wp.array(dtype=float32)): The first vector.
-        y (wp.array(dtype=float32)): The second vector.
-        z (wp.array(dtype=float32)): The output vector where the sum is stored.
+        x (wp.array[float32]): The first vector.
+        y (wp.array[float32]): The second vector.
+        z (wp.array[float32]): The output vector where the sum is stored.
 
     Returns:
         None: The result is stored in the output vector `z`.
@@ -606,17 +606,17 @@ def compute_vector_difference_infnorm(
 @wp.kernel
 def _compute_eom_residual(
     # Inputs
-    model_time_dt: wp.array(dtype=float32),
-    model_gravity: wp.array(dtype=vec4f),
-    model_bodies_wid: wp.array(dtype=int32),
-    model_bodies_m_i: wp.array(dtype=float32),
-    state_bodies_I_i: wp.array(dtype=mat33f),
-    state_bodies_w_i: wp.array(dtype=vec6f),
-    state_bodies_u_i: wp.array(dtype=vec6f),
-    state_bodies_u_i_p: wp.array(dtype=vec6f),
+    model_time_dt: wp.array[float32],
+    model_gravity: wp.array[vec4f],
+    model_bodies_wid: wp.array[int32],
+    model_bodies_m_i: wp.array[float32],
+    state_bodies_I_i: wp.array[mat33f],
+    state_bodies_w_i: wp.array[vec6f],
+    state_bodies_u_i: wp.array[vec6f],
+    state_bodies_u_i_p: wp.array[vec6f],
     # Outputs
-    metric_r_eom: wp.array(dtype=float32),
-    metric_r_eom_argmax: wp.array(dtype=int64),
+    metric_r_eom: wp.array[float32],
+    metric_r_eom_argmax: wp.array[int64],
 ):
     # Retrieve the thread index as the body index
     bid = wp.tid()
@@ -662,20 +662,20 @@ def _compute_eom_residual(
 @wp.kernel
 def _compute_joint_kinematics_residual_dense(
     # Inputs:
-    model_info_num_body_dofs: wp.array(dtype=int32),
-    model_info_bodies_offset: wp.array(dtype=int32),
-    model_info_joint_kinematic_cts_group_offset: wp.array(dtype=int32),
-    model_joint_wid: wp.array(dtype=int32),
-    model_joint_num_kinematic_cts: wp.array(dtype=int32),
-    model_joint_kinematic_cts_offset: wp.array(dtype=int32),
-    model_joint_bid_B: wp.array(dtype=int32),
-    model_joint_bid_F: wp.array(dtype=int32),
-    data_bodies_u_i: wp.array(dtype=vec6f),
-    jacobian_cts_offset: wp.array(dtype=int32),
-    jacobian_cts_data: wp.array(dtype=float32),
+    model_info_bodies_offset: wp.array[int32],
+    model_info_total_cts_offset: wp.array[int32],
+    model_info_joint_kinematic_cts_group_offset: wp.array[int32],
+    model_joint_wid: wp.array[int32],
+    model_joint_num_kinematic_cts: wp.array[int32],
+    model_joint_kinematic_cts_offset_total_cts: wp.array[int32],
+    model_joint_bid_B: wp.array[int32],
+    model_joint_bid_F: wp.array[int32],
+    data_bodies_u_i: wp.array[vec6f],
+    jacobian_cts_offset: wp.array[int32],
+    jacobian_cts_data: wp.array[float32],
     # Outputs:
-    metric_r_kinematics: wp.array(dtype=float32),
-    metric_r_kinematics_argmax: wp.array(dtype=int64),
+    metric_r_kinematics: wp.array[float32],
+    metric_r_kinematics_argmax: wp.array[int64],
 ):
     # Retrieve the joint index from the thread index
     jid = wp.tid()
@@ -690,11 +690,11 @@ def _compute_joint_kinematics_residual_dense(
 
     # Retrieve the size and index offset of the joint constraint
     num_cts_j = model_joint_num_kinematic_cts[jid]
-    cts_offset_j = model_joint_kinematic_cts_offset[jid]
+    cts_offset_j = model_joint_kinematic_cts_offset_total_cts[jid] - model_info_total_cts_offset[wid]
 
     # Retrieve the world-specific info
-    nbd = model_info_num_body_dofs[wid]
     bio = model_info_bodies_offset[wid]
+    nbd = 6 * (model_info_bodies_offset[wid + 1] - bio)
     kgo = model_info_joint_kinematic_cts_group_offset[wid]
     mio = jacobian_cts_offset[wid]
 
@@ -703,42 +703,45 @@ def _compute_joint_kinematics_residual_dense(
     u_i_F = data_bodies_u_i[bid_F_j]
     dio_F = 6 * (bid_F_j - bio)
     for j in range(num_cts_j):
-        mio_j = mio + nbd * (kgo + cts_offset_j + j) + dio_F
+        mio_j = mio + nbd * (cts_offset_j + j) + dio_F
         for i in range(6):
             j_v_j[j] += jacobian_cts_data[mio_j + i] * u_i_F[i]
     if bid_B_j >= 0:
         u_i_B = data_bodies_u_i[bid_B_j]
         dio_B = 6 * (bid_B_j - bio)
         for j in range(num_cts_j):
-            mio_j = mio + nbd * (kgo + cts_offset_j + j) + dio_B
+            mio_j = mio + nbd * (cts_offset_j + j) + dio_B
             for i in range(6):
                 j_v_j[j] += jacobian_cts_data[mio_j + i] * u_i_B[i]
 
-    # Compute the per-joint kinematics residual
-    r_kinematics_j = wp.max(wp.abs(j_v_j))
+    # Compute the per-joint kinematics residual and local argmax
+    j_v_j_abs = wp.abs(j_v_j)
+    kin_argmax_local = wp.argmax(j_v_j_abs)
+    r_kinematics_j = j_v_j_abs[kin_argmax_local]
 
     # Update the per-world maximum residual and argmax index
     previous_max = wp.atomic_max(metric_r_kinematics, wid, r_kinematics_j)
     if r_kinematics_j >= previous_max:
-        argmax_key = int64(build_pair_key2(uint32(jid), uint32(cts_offset_j)))
+        argmax_key = int64(build_pair_key2(uint32(jid), uint32(cts_offset_j - kgo) + kin_argmax_local))
         wp.atomic_exch(metric_r_kinematics_argmax, wid, argmax_key)
 
 
 @wp.kernel
 def _compute_joint_kinematics_residual_sparse(
     # Inputs:
-    model_joint_wid: wp.array(dtype=int32),
-    model_joint_num_dynamic_cts: wp.array(dtype=int32),
-    model_joint_num_kinematic_cts: wp.array(dtype=int32),
-    model_joint_kinematic_cts_offset: wp.array(dtype=int32),
-    model_joint_bid_B: wp.array(dtype=int32),
-    model_joint_bid_F: wp.array(dtype=int32),
-    data_bodies_u_i: wp.array(dtype=vec6f),
-    jac_nzb_values: wp.array(dtype=vec6f),
-    jac_joint_nzb_offsets: wp.array(dtype=int32),
+    model_info_joint_kinematic_cts_offset: wp.array[int32],
+    model_joint_wid: wp.array[int32],
+    model_joint_num_dynamic_cts: wp.array[int32],
+    model_joint_num_kinematic_cts: wp.array[int32],
+    model_joint_kinematic_cts_offset: wp.array[int32],
+    model_joint_bid_B: wp.array[int32],
+    model_joint_bid_F: wp.array[int32],
+    data_bodies_u_i: wp.array[vec6f],
+    jac_nzb_values: wp.array[vec6f],
+    jac_joint_nzb_offsets: wp.array[int32],
     # Outputs:
-    metric_r_kinematics: wp.array(dtype=float32),
-    metric_r_kinematics_argmax: wp.array(dtype=int64),
+    metric_r_kinematics: wp.array[float32],
+    metric_r_kinematics_argmax: wp.array[int64],
 ):
     # Retrieve the joint index from the thread index
     jid = wp.tid()
@@ -754,7 +757,7 @@ def _compute_joint_kinematics_residual_sparse(
     # Retrieve the size and index offset of the joint constraint
     num_dyn_cts_j = model_joint_num_dynamic_cts[jid]
     num_kin_cts_j = model_joint_num_kinematic_cts[jid]
-    kin_cts_offset_j = model_joint_kinematic_cts_offset[jid]
+    kin_cts_offset_j = model_joint_kinematic_cts_offset[jid] - model_info_joint_kinematic_cts_offset[wid]
 
     # Retrieve the starting index for the non-zero blocks for the current joint
     jac_j_nzb_start = jac_joint_nzb_offsets[jid] + (2 * num_dyn_cts_j if bid_B_j >= 0 else num_dyn_cts_j)
@@ -771,28 +774,29 @@ def _compute_joint_kinematics_residual_sparse(
             jac_block = jac_nzb_values[jac_j_nzb_start + num_kin_cts_j + j]
             j_v_j[j] += wp.dot(jac_block, u_i_B)
 
-    # Compute the per-joint kinematics residual
-    r_kinematics_j = wp.max(wp.abs(j_v_j))
+    # Compute the per-joint kinematics residual and local argmax
+    j_v_j_abs = wp.abs(j_v_j)
+    kin_argmax_local = wp.argmax(j_v_j_abs)
+    r_kinematics_j = j_v_j_abs[kin_argmax_local]
 
     # Update the per-world maximum residual and argmax index
     previous_max = wp.atomic_max(metric_r_kinematics, wid, r_kinematics_j)
     if r_kinematics_j >= previous_max:
-        argmax_key = int64(build_pair_key2(uint32(jid), uint32(kin_cts_offset_j)))
+        argmax_key = int64(build_pair_key2(uint32(jid), uint32(kin_cts_offset_j) + kin_argmax_local))
         wp.atomic_exch(metric_r_kinematics_argmax, wid, argmax_key)
 
 
 @wp.kernel
 def _compute_cts_joints_residual(
     # Inputs:
-    model_info_joints_cts_offset: wp.array(dtype=int32),
-    model_info_joint_kinematic_cts_group_offset: wp.array(dtype=int32),
-    model_joint_wid: wp.array(dtype=int32),
-    model_joint_num_kinematic_cts: wp.array(dtype=int32),
-    model_joint_kinematic_cts_offset: wp.array(dtype=int32),
-    data_joints_r_j: wp.array(dtype=float32),
+    model_info_joint_kinematic_cts_offset: wp.array[int32],
+    model_joint_wid: wp.array[int32],
+    model_joint_num_kinematic_cts: wp.array[int32],
+    model_joint_kinematic_cts_offset: wp.array[int32],
+    data_joints_r_j: wp.array[float32],
     # Outputs:
-    metric_r_cts_joints: wp.array(dtype=float32),
-    metric_r_cts_joints_argmax: wp.array(dtype=int64),
+    metric_r_cts_joints: wp.array[float32],
+    metric_r_cts_joints_argmax: wp.array[int64],
 ):
     # Retrieve the joint index from the thread index
     jid = wp.tid()
@@ -800,38 +804,38 @@ def _compute_cts_joints_residual(
     # Retrieve the joint-specific model data
     wid = model_joint_wid[jid]
     num_cts_j = model_joint_num_kinematic_cts[jid]
-    cts_offset_j = model_joint_kinematic_cts_offset[jid]
+    cio_j = model_joint_kinematic_cts_offset[jid]
 
-    # Retrieve the joint-block constraint index offset of the world
-    world_joint_cts_offset = model_info_joints_cts_offset[wid]
-    world_joint_kinematic_cts_group_offset = model_info_joint_kinematic_cts_group_offset[wid]
-
-    # Compute the global constraint index offset for the specific joint
-    cio_j = world_joint_cts_offset + world_joint_kinematic_cts_group_offset + cts_offset_j
-
-    # Compute the per-joint constraint residual (infinity-norm)
+    # Compute the per-joint constraint residual (infinity-norm) and local argmax row
     r_cts_joints_j = float32(0.0)
-    for j in range(num_cts_j):
-        r_cts_joints_j = wp.max(r_cts_joints_j, wp.abs(data_joints_r_j[cio_j + j]))
+    argmax_j = int32(0)
+    if num_cts_j > 0:
+        r_cts_joints_j = wp.abs(data_joints_r_j[cio_j])
+        for j in range(1, num_cts_j):
+            v = wp.abs(data_joints_r_j[cio_j + j])
+            if v > r_cts_joints_j:
+                r_cts_joints_j = v
+                argmax_j = int32(j)
 
     # Update the per-world maximum residual and argmax index
     previous_max = wp.atomic_max(metric_r_cts_joints, wid, r_cts_joints_j)
     if r_cts_joints_j >= previous_max:
-        argmax_key = int64(build_pair_key2(uint32(jid), uint32(cts_offset_j)))
+        cio_j_loc = cio_j - model_info_joint_kinematic_cts_offset[wid]
+        argmax_key = int64(build_pair_key2(uint32(jid), uint32(cio_j_loc + argmax_j)))
         wp.atomic_exch(metric_r_cts_joints_argmax, wid, argmax_key)
 
 
 @wp.kernel
 def _compute_cts_limits_residual(
     # Inputs:
-    limit_model_num_limits: wp.array(dtype=int32),
-    limit_wid: wp.array(dtype=int32),
-    limit_lid: wp.array(dtype=int32),
-    limit_dof: wp.array(dtype=int32),
-    limit_r_q: wp.array(dtype=float32),
+    limit_model_num_limits: wp.array[int32],
+    limit_wid: wp.array[int32],
+    limit_lid: wp.array[int32],
+    limit_dof: wp.array[int32],
+    limit_r_q: wp.array[float32],
     # Outputs:
-    metric_r_cts_limits: wp.array(dtype=float32),
-    metric_r_cts_limits_argmax: wp.array(dtype=int64),
+    metric_r_cts_limits: wp.array[float32],
+    metric_r_cts_limits_argmax: wp.array[int64],
 ):
     # Retrieve the thread index as the limit index
     lid = wp.tid()
@@ -861,13 +865,13 @@ def _compute_cts_limits_residual(
 @wp.kernel
 def _compute_cts_contacts_residual(
     # Inputs:
-    contact_model_num_contacts: wp.array(dtype=int32),
-    contact_wid: wp.array(dtype=int32),
-    contact_cid: wp.array(dtype=int32),
-    contact_gapfunc: wp.array(dtype=vec4f),
+    contact_model_num_contacts: wp.array[int32],
+    contact_wid: wp.array[int32],
+    contact_cid: wp.array[int32],
+    contact_gapfunc: wp.array[vec4f],
     # Outputs:
-    metric_r_cts_contacts: wp.array(dtype=float32),
-    metric_r_cts_contacts_argmax: wp.array(dtype=int32),
+    metric_r_cts_contacts: wp.array[float32],
+    metric_r_cts_contacts_argmax: wp.array[int32],
 ):
     # Retrieve the thread index as the contact index
     cid = wp.tid()
@@ -896,37 +900,37 @@ def _compute_cts_contacts_residual(
 @wp.kernel
 def _compute_dual_problem_metrics(
     # Inputs:
-    problem_nl: wp.array(dtype=int32),
-    problem_nc: wp.array(dtype=int32),
-    problem_cio: wp.array(dtype=int32),
-    problem_lcgo: wp.array(dtype=int32),
-    problem_ccgo: wp.array(dtype=int32),
-    problem_dim: wp.array(dtype=int32),
-    problem_vio: wp.array(dtype=int32),
-    problem_mio: wp.array(dtype=int32),
-    problem_mu: wp.array(dtype=float32),
-    problem_v_f: wp.array(dtype=float32),
-    problem_D: wp.array(dtype=float32),
-    problem_P: wp.array(dtype=float32),
-    solution_sigma: wp.array(dtype=vec2f),
-    solution_lambdas: wp.array(dtype=float32),
-    solution_v_plus: wp.array(dtype=float32),
+    problem_nl: wp.array[int32],
+    problem_nc: wp.array[int32],
+    problem_cio: wp.array[int32],
+    problem_lcgo: wp.array[int32],
+    problem_ccgo: wp.array[int32],
+    problem_dim: wp.array[int32],
+    problem_vio: wp.array[int32],
+    problem_mio: wp.array[int32],
+    problem_mu: wp.array[float32],
+    problem_v_f: wp.array[float32],
+    problem_D: wp.array[float32],
+    problem_P: wp.array[float32],
+    solution_sigma: wp.array[vec2f],
+    solution_lambdas: wp.array[float32],
+    solution_v_plus: wp.array[float32],
     # Buffers:
-    buffer_s: wp.array(dtype=float32),
-    buffer_v: wp.array(dtype=float32),
+    buffer_s: wp.array[float32],
+    buffer_v: wp.array[float32],
     # Outputs:
-    metric_r_v_plus: wp.array(dtype=float32),
-    metric_r_v_plus_argmax: wp.array(dtype=int32),
-    metric_r_ncp_primal: wp.array(dtype=float32),
-    metric_r_ncp_primal_argmax: wp.array(dtype=int32),
-    metric_r_ncp_dual: wp.array(dtype=float32),
-    metric_r_ncp_dual_argmax: wp.array(dtype=int32),
-    metric_r_ncp_compl: wp.array(dtype=float32),
-    metric_r_ncp_compl_argmax: wp.array(dtype=int32),
-    metric_r_vi_natmap: wp.array(dtype=float32),
-    metric_r_vi_natmap_argmax: wp.array(dtype=int32),
-    metric_f_ncp: wp.array(dtype=float32),
-    metric_f_ccp: wp.array(dtype=float32),
+    metric_r_v_plus: wp.array[float32],
+    metric_r_v_plus_argmax: wp.array[int32],
+    metric_r_ncp_primal: wp.array[float32],
+    metric_r_ncp_primal_argmax: wp.array[int32],
+    metric_r_ncp_dual: wp.array[float32],
+    metric_r_ncp_dual_argmax: wp.array[int32],
+    metric_r_ncp_compl: wp.array[float32],
+    metric_r_ncp_compl_argmax: wp.array[int32],
+    metric_r_vi_natmap: wp.array[float32],
+    metric_r_vi_natmap_argmax: wp.array[int32],
+    metric_f_ncp: wp.array[float32],
+    metric_f_ccp: wp.array[float32],
 ):
     # Retrieve the thread index as the world index
     wid = wp.tid()
@@ -997,34 +1001,34 @@ def _compute_dual_problem_metrics(
 @wp.kernel
 def _compute_dual_problem_metrics_sparse(
     # Inputs:
-    problem_nl: wp.array(dtype=int32),
-    problem_nc: wp.array(dtype=int32),
-    problem_cio: wp.array(dtype=int32),
-    problem_lcgo: wp.array(dtype=int32),
-    problem_ccgo: wp.array(dtype=int32),
-    problem_dim: wp.array(dtype=int32),
-    problem_vio: wp.array(dtype=int32),
-    problem_mu: wp.array(dtype=float32),
-    problem_v_f: wp.array(dtype=float32),
-    problem_P: wp.array(dtype=float32),
-    solution_lambdas: wp.array(dtype=float32),
-    solution_v_plus: wp.array(dtype=float32),
+    problem_nl: wp.array[int32],
+    problem_nc: wp.array[int32],
+    problem_cio: wp.array[int32],
+    problem_lcgo: wp.array[int32],
+    problem_ccgo: wp.array[int32],
+    problem_dim: wp.array[int32],
+    problem_vio: wp.array[int32],
+    problem_mu: wp.array[float32],
+    problem_v_f: wp.array[float32],
+    problem_P: wp.array[float32],
+    solution_lambdas: wp.array[float32],
+    solution_v_plus: wp.array[float32],
     # Buffers:
-    buffer_s: wp.array(dtype=float32),
-    buffer_v: wp.array(dtype=float32),
+    buffer_s: wp.array[float32],
+    buffer_v: wp.array[float32],
     # Outputs:
-    metric_r_v_plus: wp.array(dtype=float32),
-    metric_r_v_plus_argmax: wp.array(dtype=int32),
-    metric_r_ncp_primal: wp.array(dtype=float32),
-    metric_r_ncp_primal_argmax: wp.array(dtype=int32),
-    metric_r_ncp_dual: wp.array(dtype=float32),
-    metric_r_ncp_dual_argmax: wp.array(dtype=int32),
-    metric_r_ncp_compl: wp.array(dtype=float32),
-    metric_r_ncp_compl_argmax: wp.array(dtype=int32),
-    metric_r_vi_natmap: wp.array(dtype=float32),
-    metric_r_vi_natmap_argmax: wp.array(dtype=int32),
-    metric_f_ncp: wp.array(dtype=float32),
-    metric_f_ccp: wp.array(dtype=float32),
+    metric_r_v_plus: wp.array[float32],
+    metric_r_v_plus_argmax: wp.array[int32],
+    metric_r_ncp_primal: wp.array[float32],
+    metric_r_ncp_primal_argmax: wp.array[int32],
+    metric_r_ncp_dual: wp.array[float32],
+    metric_r_ncp_dual_argmax: wp.array[int32],
+    metric_r_ncp_compl: wp.array[float32],
+    metric_r_ncp_compl_argmax: wp.array[int32],
+    metric_r_vi_natmap: wp.array[float32],
+    metric_r_vi_natmap_argmax: wp.array[int32],
+    metric_f_ncp: wp.array[float32],
+    metric_f_ccp: wp.array[float32],
 ):
     # Retrieve the thread index as the world index
     wid = wp.tid()
@@ -1109,21 +1113,16 @@ class SolutionMetrics:
     about the specific metrics computed, please refer to the documentation of that class.
     """
 
-    def __init__(self, model: ModelKamino | None = None, device: wp.DeviceLike = None):
+    def __init__(self, model: ModelKamino | None = None):
         """
         Initializes the solution metrics evaluator.
 
         Args:
             model (ModelKamino):
                 The model containing the time-invariant data of the simulation.
-            device (wp.DeviceLike, optional):
-                The device where the metrics data should be allocated.\n
-                If not specified, the model's device will be used by default.
         """
-        # Declare and initialize the target device
-        # NOTE: This can be overridden during a
-        # later call to `finalize()` if needed
-        self._device: wp.DeviceLike = device
+        # Declare the device cache
+        self._device: wp.DeviceLike = None
 
         # Declare the metrics data container
         self._data: SolutionMetricsData | None = None
@@ -1134,28 +1133,22 @@ class SolutionMetrics:
 
         # If a model is provided, finalize the metrics data allocations
         if model is not None:
-            self.finalize(model, device)
+            self.finalize(model)
 
-    def finalize(self, model: ModelKamino, device: wp.DeviceLike = None):
+    def finalize(self, model: ModelKamino):
         """
         Finalizes the metrics data allocations on the specified device.
 
         Args:
             model (ModelKamino):
                 The model containing the time-invariant data of the simulation.
-            device (wp.DeviceLike, optional):
-                The device where the metrics data should be allocated.\n
-                If not specified, the model's device will be used by default.
         """
         # Ensure the model is valid
         if not isinstance(model, ModelKamino):
             raise TypeError("Expected 'model' to be of type ModelKamino.")
 
-        # Set the target device for metrics data allocation and execution
-        # If no device is specified, use the model's device by default
-        self._device = device
-        if self._device is None:
-            self._device = model.device
+        # Use the model's device
+        self._device = model.device
 
         # Allocate metrics data on the target device
         with wp.ScopedDevice(self._device):
@@ -1305,8 +1298,7 @@ class SolutionMetrics:
                 dim=model.size.sum_of_num_joints,
                 inputs=[
                     # Inputs:
-                    model.info.joint_cts_offset,
-                    model.info.joint_kinematic_cts_group_offset,
+                    model.info.joint_kinematic_cts_offset,
                     model.joints.wid,
                     model.joints.num_kinematic_cts,
                     model.joints.kinematic_cts_offset,
@@ -1408,12 +1400,12 @@ class SolutionMetrics:
                     dim=model.size.sum_of_num_joints,
                     inputs=[
                         # Inputs:
-                        model.info.num_body_dofs,
                         model.info.bodies_offset,
+                        model.info.total_cts_offset,
                         model.info.joint_kinematic_cts_group_offset,
                         model.joints.wid,
                         model.joints.num_kinematic_cts,
-                        model.joints.kinematic_cts_offset,
+                        model.joints.kinematic_cts_offset_total_cts,
                         model.joints.bid_B,
                         model.joints.bid_F,
                         data.bodies.u_i,
@@ -1432,6 +1424,7 @@ class SolutionMetrics:
                     dim=model.size.sum_of_num_joints,
                     inputs=[
                         # Inputs:
+                        model.info.joint_kinematic_cts_offset,
                         model.joints.wid,
                         model.joints.num_dynamic_cts,
                         model.joints.num_kinematic_cts,

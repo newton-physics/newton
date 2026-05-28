@@ -31,6 +31,38 @@ MAX_PARTICLE_RAY_MARCH_STEPS = 1 << 20
 class SensorRaycast:
     """Raycast-based depth sensor for generating depth images.
 
+    .. deprecated:: 1.2
+
+        Use :class:`~newton.sensors.SensorTiledCamera` for single-camera depth rendering.
+        Migration example for a single-world model::
+
+            import numpy as np
+            import warp as wp
+            import newton
+            from newton.sensors import SensorTiledCamera
+
+            sensor = SensorTiledCamera(model)
+            rays = sensor.utils.compute_pinhole_camera_rays(width, height, fov_radians)
+            depth = sensor.utils.create_depth_image_output(width, height)
+
+            # Build camera-to-world transform from position / direction / up.
+            # SensorTiledCamera uses -Z as the camera forward axis.
+            d = np.asarray(camera_direction, np.float32)
+            d /= np.linalg.norm(d)
+            r = np.cross(d, np.asarray(camera_up, np.float32))
+            r /= np.linalg.norm(r)
+            u = np.cross(r, d)
+            R = np.column_stack([r, u, -d]).astype(np.float32)
+            t = wp.transformf(wp.vec3f(*camera_position), wp.quat_from_matrix(wp.mat33f(R)))
+            camera_transforms = wp.array([[t] * model.world_count], dtype=wp.transformf)
+
+            # Build BVH once; refit before frames where geometry changes.
+            newton.geometry.build_bvh_shape(model, state)
+            sensor.update(state, camera_transforms, rays, depth_image=depth)
+            # depth[0, 0] has shape (height, width) with 0.0 for no-hit by default.
+            # Pass clear_data=SensorTiledCamera.ClearData(clear_depth=-1.0) to use
+            # -1.0 as the no-hit sentinel, matching SensorRaycast's convention.
+
     The SensorRaycast simulates a depth camera by casting rays from a virtual camera through each pixel
     in an image. For each pixel, it finds the closest intersection with the scene geometry and records
     the distance as a depth value.
@@ -88,6 +120,12 @@ class SensorRaycast:
             height: Image height in pixels
             max_distance: Maximum ray distance; rays beyond this return no hit
         """
+        warnings.warn(
+            "SensorRaycast is deprecated; use SensorTiledCamera instead. "
+            "See the SensorRaycast class docstring for a migration example.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.model = model
         self.device = model.device
         self.width = width

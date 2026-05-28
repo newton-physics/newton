@@ -94,14 +94,14 @@ class BenchmarkSim:
         self.reset_graph = None
         self.step_graph = None
 
-        # Capture CUDA graph if requested and available
-        self._capture()
-
         # Warm-start the simulator before rendering
         # NOTE: This compiles and loads the warp kernels prior to execution
         msg.info("Warming up simulator...")
         self.step_once()
         self.reset()
+
+        # Capture CUDA graph if requested and available
+        self._capture()
 
     ###
     # Operations
