@@ -3841,7 +3841,7 @@ def Xform "ShellMarginMass" (
     float physics:mass = 10.0
 
     def Sphere "Collider" (
-        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonMassAPI"]
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "NewtonMassAPI"]
     )
     {
         double radius = 0.5
