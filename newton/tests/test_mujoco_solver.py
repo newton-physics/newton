@@ -7618,9 +7618,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 solver._update_mjc_data(solver.mj_data, model, state)
                 mujoco.mj_forward(solver.mj_model, solver.mj_data)
                 vel = np.zeros(6, dtype=np.float64)
-                mujoco.mj_objectVelocity(
-                    solver.mj_model, solver.mj_data, mujoco.mjtObj.mjOBJ_BODY, mj_body_id, vel, 0
-                )
+                mujoco.mj_objectVelocity(solver.mj_model, solver.mj_data, mujoco.mjtObj.mjOBJ_BODY, mj_body_id, vel, 0)
                 w_world_mj = vel[:3]
 
                 err = float(np.max(np.abs(w_world_newton - w_world_mj)))
@@ -7717,9 +7715,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 solver._update_mjc_data(solver.mj_data, model, state_out)
                 mujoco.mj_forward(solver.mj_model, solver.mj_data)
                 vel = np.zeros(6, dtype=np.float64)
-                mujoco.mj_objectVelocity(
-                    solver.mj_model, solver.mj_data, mujoco.mjtObj.mjOBJ_BODY, mj_body_id, vel, 0
-                )
+                mujoco.mj_objectVelocity(solver.mj_model, solver.mj_data, mujoco.mjtObj.mjOBJ_BODY, mj_body_id, vel, 0)
                 omega_world_mj = vel[:3]
 
                 expected = np.array([tau[0] * dt, tau[1] * dt, tau[2] * dt])
@@ -7734,6 +7730,98 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                     err_consistency,
                     1e-6,
                     f"newton vs mj omega_world disagree: newton={omega_world_newton}, mj={omega_world_mj}, err={err_consistency:.2e}",
+                )
+
+    def test_ball_joint_actuator_readback_rotated_child_anchor(self):
+        """``convert_qfrc_actuator_from_mj_kernel`` BALL maps MuJoCo's child-body-frame
+        ``qfrc_actuator`` back to Newton's parent anchor frame.
+
+        Seeds ``mj_data.qfrc_actuator`` with a known torque in MuJoCo's frame, runs
+        ``_update_newton_state``, and verifies the Newton-side ``qfrc_actuator`` matches
+        ``R(X_cj^{-1} * q_mj) * tau_mj``. This is the dual of the apply path verified
+        by :py:meth:`test_ball_joint_applied_torque_rotated_child_anchor_with_joint_q`;
+        the apply test cannot detect sign/transposition errors that only manifest in
+        the readback direction.
+        """
+        child_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 6.0)
+        identity = wp.quat_identity()
+        rx90 = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2.0)
+        compound = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 1.0, 1.0)), math.pi / 3.0)
+        cases = {
+            "identity_r": (identity, wp.vec3(1.0, 0.0, 0.0)),
+            "rx90_r": (rx90, wp.vec3(0.0, 1.0, 0.0)),
+            "compound_r": (compound, wp.vec3(0.3, -0.5, 0.7)),
+        }
+
+        builder = newton.ModelBuilder(gravity=0.0)
+        child = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        ball_j = builder.add_joint_ball(
+            -1,
+            child,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), child_rot),
+        )
+        builder.add_articulation([ball_j])
+        builder.request_state_attributes("mujoco:qfrc_actuator")
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        q_start = int(model.joint_q_start.numpy()[ball_j])
+        qd_start = int(model.joint_qd_start.numpy()[ball_j])
+
+        # Expected map: tau_newton = R(X_cj.rot^{-1} * q_mj) * tau_mj,
+        # where q_mj = X_cj.rot * r * X_cj.rot^{-1}.
+        def expected_newton_tau(r_wp, tau_mj_np):
+            r_np = np.array([r_wp[0], r_wp[1], r_wp[2], r_wp[3]], dtype=np.float64)
+            c = np.array([child_rot[0], child_rot[1], child_rot[2], child_rot[3]], dtype=np.float64)
+
+            def qmul(a, b):
+                ax, ay, az, aw = a
+                bx, by, bz, bw = b
+                return np.array(
+                    [
+                        aw * bx + ax * bw + ay * bz - az * by,
+                        aw * by - ax * bz + ay * bw + az * bx,
+                        aw * bz + ax * by - ay * bx + az * bw,
+                        aw * bw - ax * bx - ay * by - az * bz,
+                    ]
+                )
+
+            def qinv(q):
+                return np.array([-q[0], -q[1], -q[2], q[3]])
+
+            def qrot(q, v):
+                vq = np.array([v[0], v[1], v[2], 0.0])
+                return qmul(qmul(q, vq), qinv(q))[:3]
+
+            q_mj = qmul(qmul(c, r_np), qinv(c))
+            return qrot(qmul(qinv(c), q_mj), tau_mj_np)
+
+        for name, (r, tau_mj) in cases.items():
+            with self.subTest(case=name):
+                state = model.state()
+                q_np = state.joint_q.numpy().copy()
+                q_np[q_start : q_start + 4] = [r[0], r[1], r[2], r[3]]
+                wp.copy(state.joint_q, wp.array(q_np, dtype=wp.float32))
+
+                # Sync MuJoCo's qpos to this state.joint_q so the readback kernel reads
+                # the matching q_mj.
+                solver._update_mjc_data(solver.mj_data, model, state)
+
+                # Seed MuJoCo's qfrc_actuator with a known torque in the child body frame.
+                qfrc_np = np.array(solver.mj_data.qfrc_actuator, dtype=np.float32).copy()
+                qfrc_np[qd_start : qd_start + 3] = [tau_mj[0], tau_mj[1], tau_mj[2]]
+                solver.mj_data.qfrc_actuator[:] = qfrc_np
+
+                solver._update_newton_state(model, state, solver.mj_data, state_prev=state)
+
+                tau_newton = state.mujoco.qfrc_actuator.numpy()[qd_start : qd_start + 3]
+                expected = expected_newton_tau(r, np.array([tau_mj[0], tau_mj[1], tau_mj[2]], dtype=np.float64))
+                err = float(np.max(np.abs(tau_newton - expected)))
+                self.assertLess(
+                    err,
+                    1e-5,
+                    f"newton qfrc_actuator readback err={err:.2e}; got={tau_newton}, expected={expected}",
                 )
 
 

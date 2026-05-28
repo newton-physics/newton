@@ -4111,6 +4111,7 @@ class SolverMuJoCo(SolverBase):
                     model.joint_child,
                     model.joint_X_c,
                     model.body_com,
+                    model.body_flags,
                     self.mj_q_start,
                     self.mj_qd_start,
                 ],
