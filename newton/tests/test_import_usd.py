@@ -5205,6 +5205,182 @@ def Xform "Articulation" (
         self.assertAlmostEqual(model.shape_gap.numpy()[shape2_idx], 0.01, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_contact_response_parsing(self):
+        """Test ke/kd/kf/ka parsed from NewtonMaterialAPI on bound material."""
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Material with all contact response attrs authored
+        mat_all = UsdShade.Material.Define(stage, "/Materials/AllAuthored")
+        mat_all_prim = mat_all.GetPrim()
+        mat_all_prim.ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(mat_all_prim)
+        mat_all_prim.GetAttribute("newton:contactStiffness").Set(5000.0)
+        mat_all_prim.GetAttribute("newton:contactDamping").Set(200.0)
+        mat_all_prim.GetAttribute("newton:contactFrictionStiffness").Set(800.0)
+        mat_all_prim.GetAttribute("newton:contactAdhesion").Set(0.01)
+
+        # Material with only ke/kd authored (kf/ka use builder defaults)
+        mat_partial = UsdShade.Material.Define(stage, "/Materials/PartialAuthored")
+        mat_partial_prim = mat_partial.GetPrim()
+        mat_partial_prim.ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(mat_partial_prim)
+        mat_partial_prim.GetAttribute("newton:contactStiffness").Set(3000.0)
+        mat_partial_prim.GetAttribute("newton:contactDamping").Set(150.0)
+
+        articulation = UsdGeom.Xform.Define(stage, "/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/Articulation/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        # Shape bound to full material
+        col1 = UsdGeom.Cube.Define(stage, "/Articulation/Body/ColAll")
+        col1_prim = col1.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col1_prim)
+        UsdShade.MaterialBindingAPI.Apply(col1_prim).Bind(mat_all, "physics")
+
+        # Shape bound to partial material
+        col2 = UsdGeom.Cube.Define(stage, "/Articulation/Body/ColPartial")
+        col2_prim = col2.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col2_prim)
+        UsdShade.MaterialBindingAPI.Apply(col2_prim).Bind(mat_partial, "physics")
+
+        # Shape with no material binding
+        col3 = UsdGeom.Cube.Define(stage, "/Articulation/Body/ColNone")
+        col3_prim = col3.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col3_prim)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        model = builder.finalize()
+
+        idx_all = result["path_shape_map"]["/Articulation/Body/ColAll"]
+        idx_partial = result["path_shape_map"]["/Articulation/Body/ColPartial"]
+        idx_none = result["path_shape_map"]["/Articulation/Body/ColNone"]
+
+        # Full material: all four attrs from material
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[idx_all], 5000.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[idx_all], 200.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[idx_all], 800.0, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[idx_all], 0.01, places=4)
+
+        # Partial material: ke/kd from material, kf/ka from builder defaults
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[idx_partial], 3000.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[idx_partial], 150.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[idx_partial], builder.default_shape_cfg.kf, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[idx_partial], builder.default_shape_cfg.ka, places=4)
+
+        # No material: all from builder defaults
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[idx_none], builder.default_shape_cfg.ke, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[idx_none], builder.default_shape_cfg.kd, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[idx_none], builder.default_shape_cfg.kf, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[idx_none], builder.default_shape_cfg.ka, places=4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_contact_response_inf_sentinel(self):
+        """Test that -inf authored on material attrs yields builder defaults."""
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        mat = UsdShade.Material.Define(stage, "/Materials/InfMat")
+        mat_prim = mat.GetPrim()
+        mat_prim.ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(mat_prim)
+        mat_prim.GetAttribute("newton:contactStiffness").Set(float("-inf"))
+        mat_prim.GetAttribute("newton:contactDamping").Set(float("-inf"))
+        mat_prim.GetAttribute("newton:contactFrictionStiffness").Set(float("-inf"))
+        mat_prim.GetAttribute("newton:contactAdhesion").Set(float("-inf"))
+
+        articulation = UsdGeom.Xform.Define(stage, "/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/Articulation/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        col = UsdGeom.Cube.Define(stage, "/Articulation/Body/Col")
+        col_prim = col.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col_prim)
+        UsdShade.MaterialBindingAPI.Apply(col_prim).Bind(mat, "physics")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        model = builder.finalize()
+
+        idx = result["path_shape_map"]["/Articulation/Body/Col"]
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[idx], builder.default_shape_cfg.ke, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[idx], builder.default_shape_cfg.kd, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[idx], builder.default_shape_cfg.kf, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[idx], builder.default_shape_cfg.ka, places=4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_contact_response_legacy_shape_fallback(self):
+        """Test deprecated newton:contact_* attrs on shape prim as lowest-priority fallback."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Material with NO contact response attrs
+        mat = UsdShade.Material.Define(stage, "/Materials/PlainMat")
+        mat_prim = mat.GetPrim()
+        mat_prim.ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(mat_prim)
+
+        articulation = UsdGeom.Xform.Define(stage, "/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/Articulation/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        # Shape with legacy custom attrs and material binding
+        col_legacy = UsdGeom.Cube.Define(stage, "/Articulation/Body/ColLegacy")
+        col_legacy_prim = col_legacy.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col_legacy_prim)
+        UsdShade.MaterialBindingAPI.Apply(col_legacy_prim).Bind(mat, "physics")
+        col_legacy_prim.CreateAttribute("newton:contact_ke", Sdf.ValueTypeNames.Float).Set(9999.0)
+        col_legacy_prim.CreateAttribute("newton:contact_kd", Sdf.ValueTypeNames.Float).Set(777.0)
+
+        # Shape where material has ke authored AND legacy is also present — material wins
+        mat_authored = UsdShade.Material.Define(stage, "/Materials/AuthoredMat")
+        mat_authored_prim = mat_authored.GetPrim()
+        mat_authored_prim.ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(mat_authored_prim)
+        mat_authored_prim.GetAttribute("newton:contactStiffness").Set(4000.0)
+
+        col_both = UsdGeom.Cube.Define(stage, "/Articulation/Body/ColBoth")
+        col_both_prim = col_both.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col_both_prim)
+        UsdShade.MaterialBindingAPI.Apply(col_both_prim).Bind(mat_authored, "physics")
+        col_both_prim.CreateAttribute("newton:contact_ke", Sdf.ValueTypeNames.Float).Set(1111.0)
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = builder.add_usd(stage)
+            deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            self.assertTrue(len(deprecation_warnings) > 0, "Expected DeprecationWarning for legacy attrs")
+
+        model = builder.finalize()
+
+        idx_legacy = result["path_shape_map"]["/Articulation/Body/ColLegacy"]
+        idx_both = result["path_shape_map"]["/Articulation/Body/ColBoth"]
+
+        # Legacy fallback used when material has no contact attrs
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[idx_legacy], 9999.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[idx_legacy], 777.0, places=1)
+
+        # Material value wins over legacy attr
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[idx_both], 4000.0, places=1)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_constraint_parsing(self):
         """Test that NewtonMimicAPI on a joint is parsed into a mimic constraint."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics

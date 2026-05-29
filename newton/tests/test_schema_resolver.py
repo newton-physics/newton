@@ -1632,6 +1632,57 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(rolling, 0.1)
         self.assertAlmostEqual(torsional, 0.2)
 
+    def test_contact_response_attrs(self):
+        """Test ke/kd/kf/ka resolution on materials via PrimType.MATERIAL."""
+
+        stage = Usd.Stage.CreateInMemory()
+        material = UsdShade.Material.Define(stage, "/material").GetPrim()
+        material.ApplyAPI("NewtonMaterialAPI")
+
+        resolver = SchemaResolverManager([SchemaResolverNewton()])
+
+        # Unset attrs return the -inf sentinel default
+        for key in ("ke", "kd", "kf", "ka"):
+            val = resolver.get_value(material, PrimType.MATERIAL, key)
+            self.assertEqual(val, float("-inf"))
+
+        # Author explicit values
+        material.GetAttribute("newton:contactStiffness").Set(5000.0)
+        material.GetAttribute("newton:contactDamping").Set(200.0)
+        material.GetAttribute("newton:contactFrictionStiffness").Set(800.0)
+        material.GetAttribute("newton:contactAdhesion").Set(0.01)
+
+        self.assertAlmostEqual(resolver.get_value(material, PrimType.MATERIAL, "ke"), 5000.0)
+        self.assertAlmostEqual(resolver.get_value(material, PrimType.MATERIAL, "kd"), 200.0)
+        self.assertAlmostEqual(resolver.get_value(material, PrimType.MATERIAL, "kf"), 800.0)
+        self.assertAlmostEqual(resolver.get_value(material, PrimType.MATERIAL, "ka"), 0.01)
+
+    def test_contact_response_cross_resolver(self):
+        """Test that MuJoCo per-geom solref resolves ke/kd at SHAPE level."""
+
+        stage = Usd.Stage.CreateInMemory()
+        collider = UsdGeom.Cube.Define(stage, "/collider").GetPrim()
+        collider.CreateAttribute("mjc:solref", Sdf.ValueTypeNames.Float2Array).Set([(0.01, 0.5)])
+
+        resolver = SchemaResolverManager([SchemaResolverMjc()])
+        ke = resolver.get_value(collider, PrimType.SHAPE, "ke")
+        kd = resolver.get_value(collider, PrimType.SHAPE, "kd")
+        self.assertIsNotNone(ke)
+        self.assertIsNotNone(kd)
+        self.assertGreater(ke, 0)
+        self.assertGreater(kd, 0)
+
+    def test_contact_response_newton_not_on_shape(self):
+        """Verify Newton resolver has no ke/kd/kf/ka at SHAPE level."""
+
+        stage = Usd.Stage.CreateInMemory()
+        collider = UsdGeom.Cube.Define(stage, "/collider").GetPrim()
+
+        resolver = SchemaResolverManager([SchemaResolverNewton()])
+        for key in ("ke", "kd", "kf", "ka"):
+            val = resolver.get_value(collider, PrimType.SHAPE, key)
+            self.assertIsNone(val)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

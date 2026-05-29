@@ -1654,20 +1654,103 @@ Example:
 USD Integration
 ---------------
 
-Custom collision properties can be authored in USD:
+Newton provides several USD schema APIs for authoring collision and contact
+properties directly in ``.usda`` files.
+
+**NewtonCollisionAPI** — per-shape collision tuning (margin, gap):
 
 .. code-block:: usda
 
-    def Xform "Box" (
-        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+    def Cube "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI"]
+    ) {
+        float newton:contactMargin = 0.001
+        float newton:contactGap = 0.02
+    }
+
+.. list-table:: NewtonCollisionAPI Attributes
+   :header-rows: 1
+   :widths: 25 50 15 10
+
+   * - Attribute
+     - Description
+     - Default
+     - Unit
+   * - ``newton:contactMargin``
+     - Distance at which contact detection activates
+     - 0.0
+     - m
+   * - ``newton:contactGap``
+     - Additional separation maintained between shapes
+     - ``-inf`` (builder default)
+     - m
+
+**NewtonMaterialAPI** — contact response (ke/kd/kf/ka) authored on materials:
+
+.. code-block:: usda
+
+    def Material "RubberMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI", "NewtonMaterialAPI"]
+    ) {
+        float physics:staticFriction = 1.0
+        float physics:dynamicFriction = 0.8
+        float newton:torsionalFriction = 0.1
+        float newton:rollingFriction = 0.01
+        float newton:contactStiffness = 5000.0
+        float newton:contactDamping = 200.0
+        float newton:contactFrictionStiffness = 800.0
+        float newton:contactAdhesion = 0.0
+    }
+
+    def Cube "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    ) {
+        rel material:binding:physics = </RubberMaterial>
+    }
+
+.. list-table:: NewtonMaterialAPI Contact Response Attributes
+   :header-rows: 1
+   :widths: 25 50 15 10
+
+   * - Attribute
+     - Description
+     - Default
+     - Unit
+   * - ``newton:contactStiffness``
+     - Normal stiffness of the contact response
+     - ``-inf`` (builder default)
+     - N/m
+   * - ``newton:contactDamping``
+     - Normal damping of the contact response
+     - ``-inf`` (builder default)
+     - N·s/m
+   * - ``newton:contactFrictionStiffness``
+     - Stiffness of the tangential friction response
+     - ``-inf`` (builder default)
+     - N/m
+   * - ``newton:contactAdhesion``
+     - Adhesion distance; a value of 0 or less disables adhesion
+     - ``-inf`` (builder default)
+     - m
+
+A value of ``-inf`` means "use the builder default." See the `Contact Materials`_
+table above for the mapping between these USD attributes and the
+:class:`~ModelBuilder.ShapeConfig` / :class:`~Model` arrays.
+
+**NewtonMeshCollisionAPI** — mesh-specific collision settings:
+
+Applied on top of ``PhysicsMeshCollisionAPI`` to control mesh approximation.
+Currently exposes ``newton:maxHullVertices`` for convex hull generation.
+
+**Custom Properties** — additional per-shape attributes that Newton reads:
+
+.. code-block:: usda
+
+    def Cube "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
     ) {
         custom int newton:collision_group = 1
-        custom int newton:world = 0
-        custom float newton:contact_ke = 100000.0
-        custom float newton:contact_kd = 1000.0
-        custom float newton:contact_kf = 1000.0
-        custom float newton:contact_ka = 0.0
-        custom float newton:margin = 0.00001
+        custom bool newton:is_sensor = false
     }
 
 See :doc:`custom_attributes` and :doc:`usd_parsing` for details.
