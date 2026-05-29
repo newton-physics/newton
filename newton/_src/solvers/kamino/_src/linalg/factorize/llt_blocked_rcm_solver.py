@@ -26,7 +26,7 @@ from typing import Any
 
 import warp as wp
 
-from ...core.types import FloatType, float32, int32, override
+from ...core.types import FloatType, float32, int32, override, to_warp_int32_array
 from ..core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from ..linear import DirectSolver
 from . import rcm_batch as _rcm_batch
@@ -262,7 +262,7 @@ class LLTBlockedRCMSolver(DirectSolver):
 
             # Tile-pattern flat storage + offsets.
             self._tile_pattern = wp.zeros(shape=(total_tp_size,), dtype=int32)
-            self._tpo = wp.array(tp_offsets[:-1], dtype=int32)
+            self._tpo = to_warp_int32_array(tp_offsets[:-1])
 
             # Batched-RCM scratch. Owning these here matches how the other
             # linalg solvers hold their buffers and keeps the recorded-launch

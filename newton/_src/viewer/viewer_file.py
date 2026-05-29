@@ -612,8 +612,9 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
     The walk is source-driven: each non-private key in ``source_dict`` is matched against
     the corresponding slot on ``target_obj``. Source keys not declared on ``target_obj``
     are dropped, with one exception — ``Model.AttributeNamespace`` targets hold arbitrary
-    user-defined keys, and ``Model.AttributeNamespace`` values in the source are created
-    on the target if missing (so namespaces like ``model.mujoco`` roundtrip).
+    user-defined keys, so a namespace target accepts every source key. When the source
+    carries a ``Model.AttributeNamespace`` (reconstructed by :func:`deserialize`) that the
+    target lacks, it is installed wholesale so namespaces like ``model.mujoco`` roundtrip.
 
     Args:
         source_dict: Mapping-like decoded values to transfer from deserialization.
@@ -634,22 +635,24 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
             continue
         target_value = getattr(target_obj, attr_name, _MISSING)
 
-        # Source carries a serialized AttributeNamespace (e.g. ``model.mujoco``) that the
-        # target does not have yet. ``Model.AttributeNamespace`` serializes as a generic
-        # dict with a ``_name`` marker from ``self._name = name`` in ``__init__``.
-        if (
-            isinstance(source_value, Mapping)
-            and "_name" in source_value
-            and not isinstance(target_value, Model.AttributeNamespace)
-        ):
-            ns = Model.AttributeNamespace(source_value["_name"])
-            try:
-                setattr(target_obj, attr_name, ns)
-            except (AttributeError, TypeError):
-                continue
-            target_value = ns
+        # Source carries a reconstructed AttributeNamespace (e.g. ``model.mujoco``).
+        # Install it on the target only when the slot is empty; if the target already has
+        # a namespace there, merge attrs into it; otherwise skip rather than overwrite a
+        # non-namespace target.
+        if isinstance(source_value, Model.AttributeNamespace):
+            if target_value is _MISSING:
+                try:
+                    setattr(target_obj, attr_name, source_value)
+                except (AttributeError, TypeError):
+                    pass
+            elif isinstance(target_value, Model.AttributeNamespace):
+                for ns_attr, ns_value in vars(source_value).items():
+                    if ns_attr.startswith("_"):
+                        continue
+                    setattr(target_value, ns_attr, ns_value)
+            continue
 
-        # Recurse into sub-objects (namespaces and other custom objects with a __dict__).
+        # Recurse into sub-objects (custom objects with a __dict__) when source is a dict.
         if isinstance(source_value, Mapping) and target_value is not _MISSING and hasattr(target_value, "__dict__"):
             current_path = f"{_path}.{attr_name}" if _path else attr_name
             transfer_to_model(source_value, target_value, post_load_init_callback, current_path)
@@ -738,8 +741,28 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
 
     # Custom objects
     if "attributes" in data:
-        # For now, return a simple dict representation
-        # In a full implementation, you might want to reconstruct the actual class
+        # Reconstruct AttributeNamespace as a real instance so downstream consumers
+        # (notably ``transfer_to_model``) can identify it without resorting to a
+        # heuristic on serialized field names.
+        if type_name == "AttributeNamespace":
+            attrs_data = data["attributes"]
+            name_data = attrs_data.get("_name")
+            ns_name = (
+                deserialize(name_data, callback, f"{_path}._name" if _path else "_name", format_type, cache)
+                if name_data is not None
+                else ""
+            )
+            ns = Model.AttributeNamespace(ns_name)
+            for attr, value in attrs_data.items():
+                if attr == "_name":
+                    continue
+                setattr(
+                    ns,
+                    attr,
+                    deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache),
+                )
+            return ns
+        # Fallback: return a flat dict of decoded attributes for other custom classes.
         return {
             attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
             for attr, value in data["attributes"].items()
