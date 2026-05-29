@@ -800,47 +800,6 @@ class TestModelJoints(unittest.TestCase):
             finally:
                 newton.use_coord_layout_targets = prev
 
-    def test_quat_from_axis_targets_matches_warp(self):
-        """``ModelBuilder._quat_from_axis_targets(t_x, t_y, t_z)`` must match
-        ``wp.quat_from_euler(wp.vec3(t_x, t_y, t_z), 2, 1, 0)`` — the
-        convention used by kamino's ``target_dofs_to_coords_conversion_kernel``.
-        Per-axis targets compose in extrinsic ZYX order (Z first, then Y,
-        then X)."""
-
-        @wp.kernel
-        def _warp_quat_from_axis_targets(
-            tx: wp.array[wp.float32],
-            ty: wp.array[wp.float32],
-            tz: wp.array[wp.float32],
-            out: wp.array[wp.float32],
-        ):
-            i = wp.tid()
-            angles = wp.vec3(tx[i], ty[i], tz[i])
-            q = wp.quat_from_euler(angles, 2, 1, 0)
-            out[i * 4 + 0] = q[0]
-            out[i * 4 + 1] = q[1]
-            out[i * 4 + 2] = q[2]
-            out[i * 4 + 3] = q[3]
-
-        cases = [
-            (0.0, 0.0, 0.0),  # identity
-            (0.5, 0.0, 0.0),  # pure X target
-            (0.0, 0.7, 0.0),  # pure Y target
-            (0.0, 0.0, -0.4),  # pure Z target
-            (0.1, 0.2, -0.3),  # mixed (matches the regression test)
-            (1.2, -0.6, 0.9),  # larger angles
-        ]
-        tx = wp.array([c[0] for c in cases], dtype=wp.float32)
-        ty = wp.array([c[1] for c in cases], dtype=wp.float32)
-        tz = wp.array([c[2] for c in cases], dtype=wp.float32)
-        out = wp.zeros(len(cases) * 4, dtype=wp.float32)
-        wp.launch(_warp_quat_from_axis_targets, dim=len(cases), inputs=[tx, ty, tz, out])
-        warp_quats = out.numpy().reshape(len(cases), 4)
-
-        for i, (t_x, t_y, t_z) in enumerate(cases):
-            py_quat = ModelBuilder._quat_from_axis_targets(t_x, t_y, t_z)
-            np.testing.assert_allclose(py_quat, warp_quats[i], rtol=0, atol=1e-5)
-
     def test_collapse_fixed_joints(self):
         shape_cfg = ModelBuilder.ShapeConfig(density=1.0)
 

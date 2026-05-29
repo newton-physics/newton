@@ -3960,7 +3960,6 @@ class ModelBuilder:
             self.joint_q[-1] = 1.0
 
         if joint_type == JointType.BALL or joint_type == JointType.FREE or joint_type == JointType.DISTANCE:
-            # BALL: quat occupies slots 0..3.  FREE/DISTANCE: linear at 0..2, quat at 3..6.
             if joint_type == JointType.BALL:
                 quat_offset = target_q_offset
             else:
@@ -3971,10 +3970,6 @@ class ModelBuilder:
             import newton  # noqa: PLC0415
 
             if newton.use_coord_layout_targets:
-                # Convert the 3 per-axis angular targets into a unit quaternion
-                # via extrinsic ZYX composition — matches kamino's
-                # ``target_dofs_to_coords_conversion_kernel`` (which uses
-                # ``wp.quat_from_euler(angles, 2, 1, 0)``).
                 qx, qy, qz, qw = self._quat_from_axis_targets(
                     angular_axes[0].target_pos,
                     angular_axes[1].target_pos,
@@ -3985,9 +3980,6 @@ class ModelBuilder:
                 self.joint_target_q[quat_offset + 2] = qz
                 self.joint_target_q[quat_offset + 3] = qw
             else:
-                # Legacy DOF layout: keep the 3 raw per-axis targets in slots
-                # 0..2; ``_project_target_q_to_dof`` extracts them verbatim.
-                # The trailing w slot is unused (and dropped by the projection).
                 for i, dim in enumerate(angular_axes):
                     self.joint_target_q[quat_offset + i] = dim.target_pos
                 self.joint_target_q[quat_offset + 3] = 1.0
