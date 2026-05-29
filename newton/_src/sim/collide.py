@@ -417,6 +417,27 @@ def _compute_per_world_shape_pairs_max(model: Model) -> int:
     return max(0, total)
 
 
+def _resolve_shape_pairs_max(model: Model, override: int | None) -> int:
+    """Pick the broad-phase candidate-pair buffer capacity.
+
+    ``override`` lets the caller cap the SAP/NXN pair buffer, which is
+    otherwise sized to the worst-case ``N*(N-1)/2`` per-world bound.
+    SAP and NXN scenes with thousands of bodies typically emit only a
+    tiny fraction of that bound, so the default sizing is grossly
+    wasteful (multi-GB on 10k+ shape scenes). ``None`` keeps the legacy
+    behaviour; a positive integer overrides it. ``0`` is rejected --
+    use ``None`` instead.  Values larger than the natural bound are
+    accepted as-is: allocating beyond the bound never produces more
+    pairs, but we honour the user's explicit capacity request rather
+    than silently shrinking it.
+    """
+    if override is None:
+        return _compute_per_world_shape_pairs_max(model)
+    if override <= 0:
+        raise ValueError(f"shape_pairs_max must be a positive integer or None, got {override}")
+    return int(override)
+
+
 BROAD_PHASE_MODES = ("nxn", "sap", "explicit")
 
 
@@ -452,11 +473,13 @@ class CollisionPipeline:
 
     For most users, construct with ``CollisionPipeline(model, ...)``.
 
-    .. note::
+    .. experimental::
+
         Differentiable rigid contacts (the ``rigid_contact_diff_*`` arrays when
-        ``requires_grad`` is enabled) are **experimental**. The narrow phase stays
-        frozen and gradients are a tangent approximation; validate accuracy and
-        usefulness on your workflow before relying on them in optimization loops.
+        ``requires_grad`` is enabled) may change without prior notice. The
+        narrow phase stays frozen and gradients are a tangent approximation;
+        validate accuracy and usefulness on your workflow before relying on
+        them in optimization loops.
     """
 
     def __init__(
@@ -477,12 +500,14 @@ class CollisionPipeline:
         | None = None,
         narrow_phase: NarrowPhase | None = None,
         sdf_hydroelastic_config: HydroelasticSDF.Config | None = None,
+        shape_pairs_max: int | None = None,
         deterministic: bool = False,
         contact_matching: Literal["disabled", "latest", "sticky"] = "disabled",
         contact_matching_pos_threshold: float = 0.0005,
         contact_matching_normal_dot_threshold: float = 0.995,
         contact_report: bool = False,
         verify_buffers: bool = True,
+        contact_reduction_hashtable_size_factor: float = 0.25,
     ):
         """
         Initialize the CollisionPipeline (expert API).
@@ -500,6 +525,10 @@ class CollisionPipeline:
                 for mesh and heightfield collisions.  Increase this when
                 scenes with large/complex meshes or heightfields report
                 triangle-pair overflow warnings.
+            contact_reduction_hashtable_size_factor: Multiplier applied to
+                ``max_triangle_pairs`` when allocating the global contact
+                reduction hashtable. Increase this if hashtable fill/failure
+                warnings appear. Defaults to ``0.25`` for memory compatibility.
             soft_contact_max: Maximum number of soft contacts to allocate.
                 If None, computed as shape_count * particle_count.
             soft_contact_margin: Margin for soft contact generation. Defaults to 0.01.
@@ -512,8 +541,23 @@ class CollisionPipeline:
             shape_pairs_filtered: Precomputed shape pairs for EXPLICIT mode.
                 When broad_phase is "explicit", uses model.shape_contact_pairs if not provided. For
                 "nxn"/"sap" modes, ignored.
-            sdf_hydroelastic_config: Configuration for
-                hydroelastic collision handling. Defaults to None.
+            sdf_hydroelastic_config: Configuration for hydroelastic collision
+                handling. Defaults to None.
+            shape_pairs_max: Override for the broad-phase candidate-pair
+                buffer capacity used by the ``"nxn"`` and ``"sap"`` modes.
+                Defaults to the worst-case ``N*(N-1)/2`` per-world bound,
+                which is rarely hit by either ``"nxn"`` or ``"sap"`` in
+                practice -- ``"nxn"`` still applies AABB overlap, group,
+                and excluded-pair filtering inside ``BroadPhaseAllPairs``
+                before writing, and ``"sap"`` is sparse by design -- so
+                the default sizing is typically 10-100x larger than what
+                gets emitted on real scenes. Set this to a tighter value
+                (e.g. measured peak with ~25% headroom) to avoid multi-GB
+                allocations on large scenes; a too-small value triggers
+                a buffer overflow warning at runtime. Ignored for the
+                ``"explicit"`` mode (which uses the filtered pair list
+                length directly) and for expert paths that pass a
+                pre-built ``narrow_phase``.
             deterministic: Sort contacts after the narrow phase so that results
                 are independent of GPU thread scheduling.  Adds a radix sort +
                 gather pass.  Hydroelastic contacts are not yet covered.
@@ -542,10 +586,12 @@ class CollisionPipeline:
                 pass; disable in hot loops or CUDA graph capture once buffer
                 sizes are known to be adequate.
 
-        .. note::
-            When ``requires_grad`` is true (explicitly or via ``model.requires_grad``),
-            rigid-contact autodiff via ``rigid_contact_diff_*`` is **experimental**;
-            see :meth:`collide`.
+        .. experimental::
+
+            When ``requires_grad`` is true (explicitly or via
+            ``model.requires_grad``), rigid-contact autodiff via
+            ``rigid_contact_diff_*`` may change without prior notice; see
+            :meth:`collide`.
         """
         if contact_matching not in ("disabled", "latest", "sticky"):
             raise ValueError(
@@ -616,6 +662,11 @@ class CollisionPipeline:
                 raise ValueError("Provide both broad_phase and narrow_phase for expert component construction")
             if sdf_hydroelastic_config is not None:
                 raise ValueError("sdf_hydroelastic_config cannot be used when narrow_phase is provided")
+            if contact_reduction_hashtable_size_factor != 0.25:
+                raise ValueError(
+                    "contact_reduction_hashtable_size_factor cannot be used when narrow_phase is provided; "
+                    "construct the NarrowPhase with that value instead"
+                )
 
             inferred_mode = _infer_broad_phase_mode_from_instance(broad_phase_instance)
             self.broad_phase_mode = inferred_mode
@@ -675,7 +726,7 @@ class CollisionPipeline:
                     raise ValueError("model.shape_world is required for broad_phase=NXN")
                 self.broad_phase = BroadPhaseAllPairs(shape_world, shape_flags=shape_flags, device=device)
                 self.shape_pairs_filtered = None
-                self.shape_pairs_max = _compute_per_world_shape_pairs_max(model)
+                self.shape_pairs_max = _resolve_shape_pairs_max(model, shape_pairs_max)
                 self.shape_pairs_excluded = self._build_excluded_pairs(model)
                 self.shape_pairs_excluded_count = (
                     self.shape_pairs_excluded.shape[0] if self.shape_pairs_excluded is not None else 0
@@ -685,7 +736,7 @@ class CollisionPipeline:
                     raise ValueError("model.shape_world is required for broad_phase=SAP")
                 self.broad_phase = BroadPhaseSAP(shape_world, shape_flags=shape_flags, device=device)
                 self.shape_pairs_filtered = None
-                self.shape_pairs_max = _compute_per_world_shape_pairs_max(model)
+                self.shape_pairs_max = _resolve_shape_pairs_max(model, shape_pairs_max)
                 self.shape_pairs_excluded = self._build_excluded_pairs(model)
                 self.shape_pairs_excluded_count = (
                     self.shape_pairs_excluded.shape[0] if self.shape_pairs_excluded is not None else 0
@@ -724,6 +775,14 @@ class CollisionPipeline:
             # Initialize narrow phase with pre-allocated buffers
             # max_triangle_pairs is a conservative estimate for mesh collision triangle pairs
             # Pass write_contact as custom writer to write directly to final Contacts format
+            #
+            # contact_max is passed explicitly so NarrowPhase sizes its internal
+            # deterministic sort buffers to rigid_contact_max (the same capacity
+            # the Contacts buffer uses) rather than falling back to the default
+            # max_candidate_pairs.  On SAP/NXN scenes with thousands of shapes
+            # the candidate-pair bound (N*(N-1)/2 per world) is orders of
+            # magnitude larger than the neighbor-budget contact estimate and
+            # allocating sorter scratch at that size burns multi-GB of VRAM.
             self.narrow_phase = NarrowPhase(
                 max_candidate_pairs=self.shape_pairs_max,
                 max_triangle_pairs=max_triangle_pairs,
@@ -738,7 +797,9 @@ class CollisionPipeline:
                 has_heightfields=has_heightfields,
                 use_lean_gjk_mpr=use_lean_gjk_mpr,
                 deterministic=deterministic,
+                contact_max=rigid_contact_max,
                 verify_buffers=verify_buffers,
+                contact_reduction_hashtable_size_factor=contact_reduction_hashtable_size_factor,
             )
             self.hydroelastic_sdf = self.narrow_phase.hydroelastic_sdf
 
@@ -819,10 +880,11 @@ class CollisionPipeline:
         Returns:
             A newly allocated contacts buffer sized for this pipeline.
 
-        .. note::
+        .. experimental::
+
             If ``requires_grad`` is true, ``rigid_contact_diff_*`` arrays may be
-            allocated; rigid-contact differentiability is **experimental** (see
-            :meth:`collide`).
+            allocated; rigid-contact differentiability may change without prior
+            notice (see :meth:`collide`).
         """
         contacts = Contacts(
             self.rigid_contact_max,
@@ -874,9 +936,11 @@ class CollisionPipeline:
         augmentation kernel that reconstructs world-space contact points from
         the frozen narrow-phase output through the body transforms.
 
-        .. note::
-            This rigid-contact gradient path is **experimental**: usefulness and
-            numerical behaviour are still being assessed across real-world scenarios.
+        .. experimental::
+
+            This rigid-contact gradient path may change without prior notice.
+            Usefulness and numerical behaviour are still being assessed across
+            real-world scenarios.
 
         Args:
             state: The current simulation state.

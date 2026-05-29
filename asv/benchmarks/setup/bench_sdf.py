@@ -1,19 +1,65 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
+
 import numpy as np
 import warp as wp
 
 wp.config.enable_backward = False
-wp.config.quiet = True
+wp.config.log_level = wp.LOG_WARNING
 
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
 import newton
 
+# ``edge_lower_angle_threshold_rad`` was added to ``Mesh.build_sdf`` alongside
+# the edge-simplification pass that runs as part of the SDF build.  When asv
+# runs this benchmark against an older base commit (where the kwarg does not
+# exist yet), forwarding it unconditionally raises ``TypeError`` from
+# ``setup`` and the entire benchmark is marked ``failed`` on the base side,
+# which in turn makes ``asv continuous`` exit non-zero on this PR.  Detect
+# the kwarg once at import time and only forward it where supported; on
+# older commits this just measures the SDF cook + the (then-absent) edge
+# pass, matching pre-change behaviour.
+_BUILD_SDF_SUPPORTS_EDGE_THRESHOLD = (
+    "edge_lower_angle_threshold_rad" in inspect.signature(newton.Mesh.build_sdf).parameters
+)
+
+
+def _build_sdf(mesh: "newton.Mesh", *, max_resolution: int) -> "newton.SDF":
+    """Build an SDF for ``mesh`` and skip the edge-simplification pass when supported.
+
+    The edge-simplification pass is unrelated to what this benchmark
+    measures and would otherwise contribute (variable) wall time, so we
+    short-circuit it via ``edge_lower_angle_threshold_rad=-1.0`` when the
+    kwarg is available.
+    """
+    if _BUILD_SDF_SUPPORTS_EDGE_THRESHOLD:
+        return mesh.build_sdf(max_resolution=max_resolution, edge_lower_angle_threshold_rad=-1.0)
+    return mesh.build_sdf(max_resolution=max_resolution)
+
+
 # Subdivision 4 yields 20 * 4**4 = 5120 triangles, which is representative of
 # typical collision meshes used with SDF-based contact (YCB, nut-bolt, gears).
 _SPHERE_SUBDIVISIONS = 4
+
+# Number of SDFs built per timing sample, keyed by ``max_resolution``.
+# Measuring a batch rather than a single build amortizes GPU boost-clock and
+# thermal transients that otherwise make this benchmark bimodal across AWS CI
+# runs (see #2534).  Counts decrease with resolution so each sample takes
+# roughly the same wall time (~0.5 s); each SDF is released immediately after
+# construction so peak GPU memory stays bounded to one SDF at a time.
+_BUILDS_PER_SAMPLE = {
+    32: 20,
+    64: 20,
+    128: 10,
+    256: 5,
+}
+
+# Number of untimed warm-up builds in ``setup`` to push the GPU into a stable
+# boost-clock state before any timed iterations run.
+_WARMUP_BUILDS = 3
 
 
 def _create_icosphere(radius: float, subdivisions: int) -> tuple[np.ndarray, np.ndarray]:
@@ -104,32 +150,54 @@ class FastBuildSdf:
 
     Uses an icosphere with ~5120 triangles (subdivision 4), representative of
     typical collision meshes used with Newton's SDF contact path.
+
+    Each timed call builds :data:`_BUILDS_PER_SAMPLE` SDFs in a loop and
+    releases each immediately, reporting the total wall time.  The batch size
+    is scaled down at higher resolutions so every sample takes roughly the
+    same wall time.  This amortizes GPU boost-clock/thermal transients on AWS
+    CI runners that previously made single-build measurements bimodal across
+    runs (see #2534).
     """
 
     params = ([32, 64, 128, 256],)
     param_names = ["max_resolution"]
 
-    rounds = 1
-    repeat = 3
+    rounds = 2
+    repeat = 5
     number = 1
     min_run_count = 1
     timeout = 600
 
     def setup(self, max_resolution):
         wp.init()
-        self._vertices, self._indices = _create_icosphere(radius=0.5, subdivisions=_SPHERE_SUBDIVISIONS)
+        if wp.get_cuda_device_count() == 0:
+            # Matches the ``skip_benchmark_if`` guard on ``time_build_sdf``.
+            return
 
-        if wp.get_cuda_device_count() > 0:
-            warm_mesh = newton.Mesh(self._vertices, self._indices, compute_inertia=False)
-            warm_mesh.build_sdf(max_resolution=max_resolution)
-            wp.synchronize_device()
-            del warm_mesh
+        vertices, indices = _create_icosphere(radius=0.5, subdivisions=_SPHERE_SUBDIVISIONS)
+
+        # Build the Newton mesh (and its BVH) once in setup so the timed
+        # call measures only the SDF cook -- not mesh construction or BVH
+        # rebuilds.
+        self._mesh = newton.Mesh(vertices, indices, compute_inertia=False)
+
+        # Extended warmup: multiple builds push the GPU into a sustained
+        # boost-clock state, not just compile kernels.
+        for _ in range(_WARMUP_BUILDS):
+            self._mesh.clear_sdf()
+            _build_sdf(self._mesh, max_resolution=max_resolution)
+        self._mesh.clear_sdf()
+        wp.synchronize_device()
 
     # Disabled, see #2534.
     @skip_benchmark_if(True)
     def time_build_sdf(self, max_resolution):
-        mesh = newton.Mesh(self._vertices, self._indices, compute_inertia=False)
-        mesh.build_sdf(max_resolution=max_resolution)
+        for _ in range(_BUILDS_PER_SAMPLE[max_resolution]):
+            _build_sdf(self._mesh, max_resolution=max_resolution)
+            # Release the SDF before the next iteration: ``build_sdf``
+            # raises if the mesh already has one attached, and we want
+            # each timed call to start from the same state.
+            self._mesh.clear_sdf()
         wp.synchronize_device()
 
 

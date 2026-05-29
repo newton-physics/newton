@@ -369,6 +369,39 @@ def test_combined_velocity(
     test.assertLess(quat_diff, 0.9999, "Body should have rotated")
 
 
+def test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd(
+    test: TestBodyVelocity,
+    device,
+    solver_fn,
+):
+    """Root FREE joint with a rotated ``parent_xform`` must report ``joint_qd``
+    in the parent joint frame and ``body_qd`` in world frame at the COM
+    (regression for #2704 — the MuJoCo bridge previously wrote both in world
+    frame).
+    """
+    builder = newton.ModelBuilder(gravity=-10.0, up_axis=newton.Axis.Z)
+    parent_xform = wp.transform(wp.vec3(0.5, 0.6, 0.7), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 2.0))
+    body = builder.add_link(mass=1.0, inertia=wp.mat33(1, 0, 0, 0, 1, 0, 0, 0, 1))
+    joint = builder.add_joint_free(parent=-1, child=body, parent_xform=parent_xform)
+    builder.add_articulation([joint])
+
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+    state_0 = model.state()
+    state_1 = model.state()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    dt = 1e-2
+    solver.step(state_0, state_1, model.control(), model.contacts(), dt)
+
+    # World gravity along -Z rotated into the parent frame R(x, 90°) is along -Y.
+    np.testing.assert_allclose(state_1.joint_qd.numpy()[0:3], (0.0, -10.0 * dt, 0.0), atol=1e-5)
+    np.testing.assert_allclose(state_1.joint_qd.numpy()[3:6], (0.0, 0.0, 0.0), atol=1e-5)
+    # body_qd stays world-frame at the COM regardless of joint anchor rotations.
+    np.testing.assert_allclose(state_1.body_qd.numpy()[body, 0:3], (0.0, 0.0, -10.0 * dt), atol=1e-5)
+    np.testing.assert_allclose(state_1.body_qd.numpy()[body, 3:6], (0.0, 0.0, 0.0), atol=1e-5)
+
+
 def test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent(
     test: TestBodyVelocity,
     device,
@@ -791,6 +824,16 @@ for device in devices:
         test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent,
         devices=[device],
     )
+    for solver_name in ("featherstone", "mujoco_cpu", "mujoco_warp"):
+        if device.is_cuda and solver_name == "mujoco_cpu":
+            continue
+        add_function_test(
+            TestBodyVelocity,
+            f"test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd_{solver_name}",
+            test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd,
+            devices=[device],
+            solver_fn=solvers[solver_name][0],
+        )
     for joint_type in (newton.JointType.FREE, newton.JointType.DISTANCE):
         joint_name = _joint_type_name(joint_type)
         add_function_test(

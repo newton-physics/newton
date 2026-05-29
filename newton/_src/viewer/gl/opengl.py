@@ -977,7 +977,10 @@ class RendererGL:
         self.draw_wireframe = False
         self.wireframe_line_width = 1.5  # pixels
         self.line_width = 1.5  # pixels, for all log_lines batches
-        self.arrow_scale = 1.0  # uniform scale for arrow line width and head size
+        self.arrow_scale = 1.0  # screen-space multiplier on arrow line width and arrowhead size
+        self.arrow_length_scale = 1.0  # multiplier on contact-arrow world-space length
+        self.joint_scale = 1.0  # multiplier on joint-axis line length
+        self.com_scale = 1.0  # multiplier on COM sphere radius
         self.draw_edges = False
         self._edge_color = (0.05, 0.05, 0.05, 1.0)
 

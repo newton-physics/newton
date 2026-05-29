@@ -71,7 +71,14 @@ void main()
     LocalPos = aPos;
 
     mat3 rotation = mat3(transform);
-    Normal = mat3(transpose(inverse(rotation))) * aNormal;
+    // transpose(inverse(...)) handles non-uniform scale. The extra sign flip for
+    // det < 0 keeps shading normals outward when the viewer caches a winding-
+    // flipped variant of the source mesh for mirrored instances: the winding
+    // swap exposes the originally-back side of the mesh as front-facing, and
+    // negating here restores the outward-pointing normal in world space.
+    mat3 normalMatrix = transpose(inverse(rotation));
+    if (determinant(rotation) < 0.0) normalMatrix = -normalMatrix;
+    Normal = normalMatrix * aNormal;
     TexCoord = aTexCoord;
     ObjectColor = aObjectColor;
     FragPosLightSpace = light_space_matrix * worldPos;

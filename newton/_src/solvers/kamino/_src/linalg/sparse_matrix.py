@@ -440,10 +440,25 @@ class BlockSparseMatrices:
         self.num_nzb.zero_()
         self.nzb_coords.zero_()
 
-    def zero(self):
-        """Sets all non-zero block data to zero."""
+    def zero(self, matrix_mask: wp.array | None = None):
+        """
+        Sets non-zero block data to zero, for all or a subset of the matrices.
+
+        Args:
+            matrix_mask (optional): Per-matrix 0-1 flag indicating if it should be set to zero.
+                                    If not provided, all matrices are set to zero.
+                                    Shape of ``(num_matrices,)`` and type :class:`int`.
+        """
         self._assert_is_finalized()
-        self.nzb_values.zero_()
+        if matrix_mask is not None:
+            wp.launch(
+                _make_masked_zero_kernel(self.nzb_dtype, self.index_dtype),
+                dim=(self.num_matrices, self.max_of_num_nzb),
+                inputs=[self.nzb_start, self.max_nzb, matrix_mask, self.nzb_values],
+                device=self.device,
+            )
+        else:
+            self.nzb_values.zero_()
 
     def assign(self, matrices: list[np.ndarray]):
         """
@@ -577,6 +592,31 @@ class BlockSparseMatrices:
         else:
             raise RuntimeError("Unsupported block shape for NumPy conversion.")
         return block_nrows, block_ncols
+
+
+###
+# Kernels
+###
+
+
+@functools.cache
+def _make_masked_zero_kernel(block_type: BlockDType, index_dtype: IntType):
+    @wp.kernel
+    def masked_zero_kernel(
+        # Inputs
+        nzb_start: wp.array[index_dtype],
+        max_nzb: wp.array[index_dtype],
+        matrix_mask: wp.array[int32],
+        # Outputs
+        nzb_values: wp.array[block_type.warp_type],
+    ):
+        mat_id, nzb_id_loc = wp.tid()
+        if matrix_mask[mat_id] == 0 or nzb_id_loc >= max_nzb[mat_id]:
+            return
+        nzb_id = nzb_start[mat_id] + nzb_id_loc
+        nzb_values[nzb_id] = block_type.warp_type(0.0)
+
+    return masked_zero_kernel
 
 
 ###

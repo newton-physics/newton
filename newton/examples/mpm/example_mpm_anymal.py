@@ -11,16 +11,19 @@
 ###########################################################################
 
 import sys
-import warnings
 
 import numpy as np
-import torch
 import warp as wp
 
 import newton
 import newton.examples
 import newton.utils
-from newton.examples.robot.example_robot_anymal_c_walk import compute_obs, lab_to_mujoco, mujoco_to_lab
+from newton.examples.robot.example_robot_anymal_c_walk import (
+    _build_joint_target_pos_kernel,
+    _compute_obs_kernel,
+    lab_to_mujoco,
+    mujoco_to_lab,
+)
 from newton.solvers import SolverImplicitMPM
 
 
@@ -160,31 +163,28 @@ class Example:
         # Setup control policy
         self.control = self.model.control()
 
-        q0 = wp.to_torch(self.state_0.joint_q)
-        self.torch_device = q0.device
-        self.joint_pos_initial = q0[7:].unsqueeze(0).detach().clone()
-        self.act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
-        self.rearranged_act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
+        # Load the ONNX policy bundled with Newton (Warp-backed runtime, no torch dependency).
+        policy_path = str(asset_path / "rl_policies" / "anymal_walking_policy_physx.onnx")
+        self.policy = newton.utils.OnnxRuntime(policy_path, device=str(self.device))
+        self._policy_input_name = self.policy.input_names[0]
+        self._policy_output_name = self.policy.output_names[0]
 
-        # Download the policy from the newton-assets repository
-        policy_path = str(asset_path / "rl_policies" / "anymal_walking_policy_physx.pt")
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message=r"`torch\.jit\.load` is deprecated\. Please switch to `torch\.export`\.",
-                category=DeprecationWarning,
-            )
-            self.policy = torch.jit.load(policy_path, map_location=self.torch_device)
+        # Everything the policy step touches is on-device.  The host never
+        # syncs joint state, builds the obs vector, or copies the action back.
+        # Reference posture is sliced on-device to avoid a startup host sync.
+        self._joint_pos_initial_wp = wp.clone(self.state_0.joint_q[7:])
+        self._lab_to_mujoco_wp = wp.array(np.asarray(lab_to_mujoco, dtype=np.int32), dtype=wp.int32, device=self.device)
+        self._mujoco_to_lab_wp = wp.array(np.asarray(mujoco_to_lab, dtype=np.int32), dtype=wp.int32, device=self.device)
+        self._gravity_w = wp.vec3(0.0, 0.0, -1.0)
+        self._command = wp.vec3(0.0, 0.0, 0.0)
 
-        # Pre-compute tensors that don't change during simulation
-        self.lab_to_mujoco_indices = torch.tensor(
-            [lab_to_mujoco[i] for i in range(len(lab_to_mujoco))], device=self.torch_device
-        )
-        self.mujoco_to_lab_indices = torch.tensor(
-            [mujoco_to_lab[i] for i in range(len(mujoco_to_lab))], device=self.torch_device
-        )
-        self.gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.torch_device, dtype=torch.float32).unsqueeze(0)
-        self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
+        self._obs_wp = wp.zeros((1, 48), dtype=wp.float32, device=self.device)
+        self._prev_act_wp = wp.zeros((1, 12), dtype=wp.float32, device=self.device)
+
+        # joint_target_pos is allocated by self.model.control() above; ensure
+        # it lives on device so the kernel can write to it directly.
+        if self.control.joint_target_pos is None or self.control.joint_target_pos.device != self.device:
+            self.control.joint_target_pos = wp.zeros(18, dtype=wp.float32, device=self.device)
 
         self._auto_forward = True
 
@@ -207,23 +207,41 @@ class Example:
             self.sand_graph = capture.graph
 
     def apply_control(self):
-        obs = compute_obs(
-            self.act,
-            self.state_0,
-            self.joint_pos_initial,
-            self.torch_device,
-            self.lab_to_mujoco_indices,
-            self.gravity_vec,
-            self.command,
+        # Build obs -> run policy -> write joint_target_pos, all on device.
+        wp.launch(
+            _compute_obs_kernel,
+            dim=1,
+            inputs=[
+                self.state_0.joint_q,
+                self.state_0.joint_qd,
+                self._joint_pos_initial_wp,
+                self._lab_to_mujoco_wp,
+                self._gravity_w,
+                self._command,
+                self._prev_act_wp,
+                self._obs_wp,
+            ],
+            device=self.device,
         )
-        with torch.no_grad():
-            self.act = self.policy(obs)
-            self.rearranged_act = torch.gather(self.act, 1, self.mujoco_to_lab_indices.unsqueeze(0))
-            a = self.joint_pos_initial + 0.5 * self.rearranged_act
-            a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
-            a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
-            # copy action targets to control buffer
-            wp.copy(self.control.joint_target_pos, a_wp)
+        out = self.policy({self._policy_input_name: self._obs_wp})
+        act_wp = out[self._policy_output_name]
+
+        wp.launch(
+            _build_joint_target_pos_kernel,
+            dim=6 + 12,
+            inputs=[
+                act_wp,
+                self._joint_pos_initial_wp,
+                self._mujoco_to_lab_wp,
+                0.5,
+                6,
+                self.control.joint_target_pos,
+            ],
+            device=self.device,
+        )
+
+        # Stash the action for the *next* obs build, on device (no sync).
+        wp.copy(self._prev_act_wp, act_wp)
 
     def simulate_robot(self):
         # robot substeps
@@ -239,6 +257,9 @@ class Example:
 
     def step(self):
         # Build command from viewer keyboard
+        fwd = 0.0
+        lat = 0.0
+        rot = 0.0
         if hasattr(self.viewer, "is_key_down"):
             fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
             lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
@@ -248,12 +269,11 @@ class Example:
                 # disable forward motion
                 self._auto_forward = False
 
-            self.command[0, 0] = float(fwd)
-            self.command[0, 1] = float(lat)
-            self.command[0, 2] = float(rot)
-
         if self._auto_forward:
-            self.command[0, 0] = 1
+            fwd = 1.0
+        # ``wp.vec3`` is immutable; rebuild it so the next _compute_obs_kernel
+        # launch sees the latest command without touching device memory.
+        self._command = wp.vec3(float(fwd), float(lat), float(rot))
 
         # compute control before graph/step
         self.apply_control()

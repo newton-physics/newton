@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import warnings
-from enum import Enum
 from typing import Literal
 
 import numpy as np
@@ -14,7 +12,6 @@ from ..sim import Contacts, Model, State
 from ..utils.selection import match_labels
 
 # Object type constants used in the sensing-object transform kernel.
-_OBJ_TYPE_TOTAL = 0
 _OBJ_TYPE_SHAPE = 1
 _OBJ_TYPE_BODY = 2
 
@@ -279,18 +276,6 @@ class SensorContact:
         ValueError: If the configuration of sensing/counterpart objects is invalid.
     """
 
-    class ObjectType(Enum):
-        """Deprecated. Type tag for entries in legacy :attr:`~newton.sensors.SensorContact.sensing_objs` and :attr:`~newton.sensors.SensorContact.counterparts` properties."""
-
-        TOTAL = _OBJ_TYPE_TOTAL
-        """Total force entry."""
-
-        SHAPE = _OBJ_TYPE_SHAPE
-        """Individual shape."""
-
-        BODY = _OBJ_TYPE_BODY
-        """Individual body."""
-
     sensing_obj_type: Literal["body", "shape"]
     """Whether :attr:`sensing_obj_idx` contains body indices (``"body"``) or shape indices (``"shape"``)."""
 
@@ -338,8 +323,6 @@ class SensorContact:
         measure_total: bool = True,
         verbose: bool | None = None,
         request_contact_attributes: bool = True,
-        # deprecated
-        include_total: bool | None = None,
     ):
         """Initialize the SensorContact.
 
@@ -359,19 +342,11 @@ class SensorContact:
                 against shape labels, or list of patterns where any one matches.
             measure_total: If True (default), :attr:`total_force` and :attr:`total_force_friction` are allocated.
                 If False, both are None.
-            verbose: If True, print details. If None, uses ``wp.config.verbose``.
+            verbose: If True, print details. If False, suppress details. If None, print details when
+                ``wp.config.log_level`` is configured for debug logging.
             request_contact_attributes: If True (default), transparently request the extended contact attribute
                 ``force`` from the model.
-            include_total: Deprecated. Use ``measure_total`` instead.
         """
-        if include_total is not None:
-            warnings.warn(
-                "SensorContact: 'include_total' is deprecated, use 'measure_total' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            measure_total = include_total
-
         if (sensing_obj_bodies is None) == (sensing_obj_shapes is None):
             raise ValueError("Exactly one of `sensing_obj_bodies` and `sensing_obj_shapes` must be specified")
 
@@ -379,7 +354,7 @@ class SensorContact:
             raise ValueError("At most one of `counterpart_bodies` and `counterpart_shapes` may be specified.")
 
         self.device = model.device
-        self.verbose = verbose if verbose is not None else wp.config.verbose
+        self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
 
         # request contact force attribute
         if request_contact_attributes:
@@ -502,20 +477,16 @@ class SensorContact:
                 device=self.device,
             )
 
-        total_cols = int(measure_total) + max_readings
-        self._net_force = wp.zeros((n_rows, total_cols), dtype=wp.vec3, device=self.device)
-        self._net_friction_force = wp.zeros((n_rows, total_cols), dtype=wp.vec3, device=self.device)
-
         if measure_total:
-            self.total_force = self._net_force[:, 0]
-            self.total_force_friction = self._net_friction_force[:, 0]
+            self.total_force = wp.zeros(n_rows, dtype=wp.vec3, device=self.device)
+            self.total_force_friction = wp.zeros(n_rows, dtype=wp.vec3, device=self.device)
         else:
             self.total_force = None
             self.total_force_friction = None
 
         if max_readings > 0:
-            self.force_matrix = self._net_force[:, int(measure_total) :]
-            self.force_matrix_friction = self._net_friction_force[:, int(measure_total) :]
+            self.force_matrix = wp.zeros((n_rows, max_readings), dtype=wp.vec3, device=self.device)
+            self.force_matrix_friction = wp.zeros((n_rows, max_readings), dtype=wp.vec3, device=self.device)
         else:
             self.force_matrix = None
             self.force_matrix_friction = None
@@ -546,96 +517,6 @@ class SensorContact:
         obj_type = _OBJ_TYPE_BODY if sensing_is_body else _OBJ_TYPE_SHAPE
         self._sensing_obj_types = wp.full(n_rows, obj_type, dtype=wp.int32, device=self.device)
         self.sensing_obj_transforms = wp.zeros(n_rows, dtype=wp.transform, device=self.device)
-
-        self._init_deprecated_shims(measure_total, world_count, worlds)
-
-    def _init_deprecated_shims(self, measure_total: bool, world_count: int, sensing_obj_worlds: np.ndarray):
-        """Store data needed by deprecated backward-compatible properties.
-
-        The properties themselves are computed lazily on first access and cached.
-        """
-        self._measure_total = measure_total
-        self._world_count = world_count
-        self._sensing_obj_worlds = sensing_obj_worlds
-
-    @property
-    def shape(self) -> tuple[int, int]:
-        """Deprecated. Dimensions of :attr:`net_force`."""
-        warnings.warn(
-            "SensorContact.shape is deprecated. Use total_force.shape / force_matrix.shape instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return tuple(self._net_force.shape)
-
-    @property
-    def sensing_objs(self) -> list[list[tuple[int, ObjectType]]]:
-        """Deprecated. Use :attr:`sensing_obj_idx` and :attr:`sensing_obj_type` instead."""
-        warnings.warn(
-            "SensorContact.sensing_objs is deprecated. Use 'sensing_obj_idx' and 'sensing_obj_type' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if hasattr(self, "_deprecated_sensing_objs"):
-            return self._deprecated_sensing_objs
-        obj_type = self.ObjectType.BODY if self.sensing_obj_type == "body" else self.ObjectType.SHAPE
-        result: list[list[tuple[int, SensorContact.ObjectType]]] = [[] for _ in range(self._world_count)]
-        for i, idx in enumerate(self.sensing_obj_idx):
-            result[int(self._sensing_obj_worlds[i])].append((idx, obj_type))
-        self._deprecated_sensing_objs = result
-        return result
-
-    @property
-    def counterparts(self) -> list[list[tuple[int, ObjectType]]]:
-        """Deprecated. Use :attr:`counterpart_indices` and :attr:`counterpart_type` instead."""
-        warnings.warn(
-            "SensorContact.counterparts is deprecated. Use 'counterpart_indices' and 'counterpart_type' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if hasattr(self, "_deprecated_counterparts"):
-            return self._deprecated_counterparts
-        cp_type = (
-            self.ObjectType.BODY
-            if self.counterpart_type == "body"
-            else self.ObjectType.SHAPE
-            if self.counterpart_type == "shape"
-            else None
-        )
-        result: list[list[tuple[int, SensorContact.ObjectType]]] = [[] for _ in range(self._world_count)]
-        seen_worlds: set[int] = set()
-        for i in range(len(self.sensing_obj_idx)):
-            w = int(self._sensing_obj_worlds[i])
-            if w in seen_worlds:
-                continue
-            seen_worlds.add(w)
-            entries: list[tuple[int, SensorContact.ObjectType]] = []
-            if self._measure_total:
-                entries.append((-1, self.ObjectType.TOTAL))
-            if cp_type is not None:
-                for idx in self.counterpart_indices[i]:
-                    entries.append((idx, cp_type))
-            result[w] = entries
-        self._deprecated_counterparts = result
-        return result
-
-    @property
-    def reading_indices(self) -> list[list[list[int]]]:
-        """Deprecated. Active counterpart indices per sensing object, per world."""
-        warnings.warn(
-            "SensorContact.reading_indices is deprecated. Use 'counterpart_indices' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if hasattr(self, "_deprecated_reading_indices"):
-            return self._deprecated_reading_indices
-        result: list[list[list[int]]] = [[] for _ in range(self._world_count)]
-        for i in range(len(self.sensing_obj_idx)):
-            w = int(self._sensing_obj_worlds[i])
-            n_active = int(self._measure_total) + len(self.counterpart_indices[i])
-            result[w].append(list(range(n_active)))
-        self._deprecated_reading_indices = result
-        return result
 
     def update(self, state: State | None, contacts: Contacts):
         """Update the contact sensor readings based on the provided state and contacts.
@@ -678,21 +559,14 @@ class SensorContact:
             raise ValueError(f"Contacts device ({contacts.device}) does not match sensor device ({self.device}).")
         self._eval_forces(contacts)
 
-    @property
-    def net_force(self) -> wp.array2d:
-        """Deprecated. Use :attr:`total_force` and :attr:`force_matrix` instead."""
-        warnings.warn(
-            "SensorContact.net_force is deprecated. Use 'total_force' for total forces "
-            "and 'force_matrix' for per-counterpart forces.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._net_force
-
     def _eval_forces(self, contacts: Contacts):
         """Zero and recompute force and friction arrays from the given contacts."""
-        self._net_force.zero_()
-        self._net_friction_force.zero_()
+        if self.total_force is not None:
+            self.total_force.zero_()
+            self.total_force_friction.zero_()
+        if self.force_matrix is not None:
+            self.force_matrix.zero_()
+            self.force_matrix_friction.zero_()
         wp.launch(
             accumulate_contact_forces_kernel,
             dim=contacts.rigid_contact_max,

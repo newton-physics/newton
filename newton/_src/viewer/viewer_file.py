@@ -235,7 +235,7 @@ def _get_serialization_format(file_path: str) -> str:
         return "json"
     elif ext == ".bin":
         if not HAS_CBOR2:
-            raise ImportError("cbor2 library is required for .bin files. Install with: pip install 'cbor2>=5.7.0,<6'")
+            raise ImportError("cbor2 library is required for .bin files. Install with: pip install 'cbor2>=5.7.0'")
         return "cbor2"
     else:
         raise ValueError(f"Unsupported file extension '{ext}'. Supported extensions: .json, .bin")
@@ -341,12 +341,14 @@ def serialize_ndarray(arr: np.ndarray, format_type: str = "json", cache: ArrayCa
         raise ValueError(f"Unsupported format_type: {format_type}")
 
 
-def deserialize_ndarray(data: dict, format_type: str = "json", cache: ArrayCache | None = None) -> np.ndarray:
+def deserialize_ndarray(
+    data: Mapping[str, Any], format_type: str = "json", cache: ArrayCache | None = None
+) -> np.ndarray:
     """
-    Deserialize a dictionary representation back to a numpy ndarray.
+    Deserialize a mapping representation back to a numpy ndarray.
 
     Args:
-        data: Dictionary containing the serialized array data.
+        data: Mapping-like decoded serialized array data.
         format_type: The serialization format ('json' or 'cbor2').
 
     Returns:
@@ -600,91 +602,96 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
     return serialize(obj, callback, format_type=format_type, cache=cache)
 
 
-def transfer_to_model(source_dict, target_obj, post_load_init_callback=None, _path=""):
+_MISSING = object()
+
+
+def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init_callback=None, _path=""):
     """
-    Recursively transfer values from source_dict to target_obj, respecting the tree structure.
-    Only transfers values where both source and target have matching attributes.
+    Recursively transfer values from ``source_dict`` into ``target_obj``.
+
+    The walk is source-driven: each non-private key in ``source_dict`` is matched against
+    the corresponding slot on ``target_obj``. Source keys not declared on ``target_obj``
+    are dropped, with one exception — ``Model.AttributeNamespace`` targets hold arbitrary
+    user-defined keys, so a namespace target accepts every source key. When the source
+    carries a ``Model.AttributeNamespace`` (reconstructed by :func:`deserialize`) that the
+    target lacks, it is installed wholesale so namespaces like ``model.mujoco`` roundtrip.
 
     Args:
-        source_dict: Dictionary containing the values to transfer (from deserialization).
+        source_dict: Mapping-like decoded values to transfer from deserialization.
         target_obj: Target object to receive the values.
-        post_load_init_callback: Optional function taking (target_obj, path) called after all children are processed.
+        post_load_init_callback: Optional function taking (target_obj, path) called after
+            all children are processed.
         _path: Internal parameter tracking the current path.
     """
     if not hasattr(target_obj, "__dict__"):
         return
-
-    # Handle case where source_dict is not a dict (primitive value)
-    if not isinstance(source_dict, dict):
+    if not isinstance(source_dict, Mapping):
         return
 
-    # Iterate through all attributes of the target object
-    for attr_name in dir(target_obj):
-        # Skip private/magic methods and properties
+    target_is_namespace = isinstance(target_obj, Model.AttributeNamespace)
+
+    for attr_name, source_value in source_dict.items():
         if attr_name.startswith("_"):
             continue
+        target_value = getattr(target_obj, attr_name, _MISSING)
 
-        # Skip if attribute doesn't exist in target or is not settable
-        try:
-            target_value = getattr(target_obj, attr_name)
-        except (AttributeError, TypeError, RuntimeError):
-            # Skip attributes that can't be accessed (including CUDA stream on CPU devices)
-            continue
-
-        # Skip methods and non-data attributes
-        if callable(target_value):
-            continue
-
-        # Check if source_dict has this attribute (optimization: single dict lookup)
-        source_value = source_dict.get(attr_name, _MISSING := object())
-        if source_value is _MISSING:
-            continue
-
-        # Handle different types of values
-        if hasattr(target_value, "__dict__") and isinstance(source_value, dict):
-            # Recursively transfer for custom objects
-            # Build path only when needed (optimization: lazy string formatting)
-            current_path = f"{_path}.{attr_name}" if _path else attr_name
-            transfer_to_model(source_value, target_value, post_load_init_callback, current_path)
-        elif isinstance(source_value, list | tuple) and hasattr(target_value, "__len__"):
-            # Handle sequences - try to transfer if lengths match or target is empty
-            try:
-                # Optimization: cache len() call to avoid redundant computation
-                target_len = len(target_value)
-                if target_len == 0 or target_len == len(source_value):
-                    # For now, just assign the value directly
-                    # In a more sophisticated implementation, you might want to handle
-                    # element-wise transfer for lists of objects
-                    setattr(target_obj, attr_name, source_value)
-            except (TypeError, AttributeError):
-                # If we can't handle the sequence, try direct assignment
+        # Source carries a reconstructed AttributeNamespace (e.g. ``model.mujoco``).
+        # Install it on the target only when the slot is empty; if the target already has
+        # a namespace there, merge attrs into it; otherwise skip rather than overwrite a
+        # non-namespace target.
+        if isinstance(source_value, Model.AttributeNamespace):
+            if target_value is _MISSING:
                 try:
                     setattr(target_obj, attr_name, source_value)
                 except (AttributeError, TypeError):
-                    # Skip if we can't set the attribute
                     pass
-        else:
-            # Direct assignment for primitive types and other values
-            try:
-                setattr(target_obj, attr_name, source_value)
-            except (AttributeError, TypeError):
-                # Skip if we can't set the attribute (e.g., read-only property)
-                pass
+            elif isinstance(target_value, Model.AttributeNamespace):
+                for ns_attr, ns_value in vars(source_value).items():
+                    if ns_attr.startswith("_"):
+                        continue
+                    setattr(target_value, ns_attr, ns_value)
+            continue
 
-    # Call post_load_init_callback after all children have been processed
+        # Recurse into sub-objects (custom objects with a __dict__) when source is a dict.
+        if isinstance(source_value, Mapping) and target_value is not _MISSING and hasattr(target_value, "__dict__"):
+            current_path = f"{_path}.{attr_name}" if _path else attr_name
+            transfer_to_model(source_value, target_value, post_load_init_callback, current_path)
+            continue
+
+        # Drop source keys not declared on the target. AttributeNamespace targets hold
+        # arbitrary user-defined keys by design, so they bypass this guard.
+        if target_value is _MISSING and not target_is_namespace:
+            continue
+
+        # Length-match guard for Python sequences: refuse to overwrite a populated target
+        # list/array with a mismatched-length source list.
+        if isinstance(source_value, list | tuple) and target_value is not _MISSING and hasattr(target_value, "__len__"):
+            try:
+                target_len = len(target_value)
+            except TypeError:
+                target_len = None
+            if target_len is not None and target_len != 0 and target_len != len(source_value):
+                continue
+
+        try:
+            setattr(target_obj, attr_name, source_value)
+        except (AttributeError, TypeError):
+            pass
+
     if post_load_init_callback is not None:
         post_load_init_callback(target_obj, _path)
 
 
 def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache | None = None):
     """
-    Recursively deserialize a dict back into objects, handling primitives,
+    Recursively deserialize mapping-like data back into objects, handling primitives,
     containers, and custom class instances. Calls callback(obj, path) for every object
     and replaces obj with the callback's return value before continuing.
 
     Args:
         data: The serialized data to deserialize.
-        callback: A function taking two arguments (the data dict and current path) and returning the (possibly transformed) object.
+        callback: A function taking two arguments (the decoded data and current path) and returning the
+            (possibly transformed) object.
         _path: Internal parameter tracking the current path/member name.
         format_type: The serialization format ('json' or 'cbor2').
     """
@@ -693,8 +700,8 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
     if result is not data:
         return result
 
-    # If not a dict with __type__, return as-is
-    if not isinstance(data, dict) or "__type__" not in data:
+    # If not mapping-like with __type__, return as-is
+    if not isinstance(data, Mapping) or "__type__" not in data:
         return data
 
     type_name = data["__type__"]
@@ -734,15 +741,35 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
 
     # Custom objects
     if "attributes" in data:
-        # For now, return a simple dict representation
-        # In a full implementation, you might want to reconstruct the actual class
+        # Reconstruct AttributeNamespace as a real instance so downstream consumers
+        # (notably ``transfer_to_model``) can identify it without resorting to a
+        # heuristic on serialized field names.
+        if type_name == "AttributeNamespace":
+            attrs_data = data["attributes"]
+            name_data = attrs_data.get("_name")
+            ns_name = (
+                deserialize(name_data, callback, f"{_path}._name" if _path else "_name", format_type, cache)
+                if name_data is not None
+                else ""
+            )
+            ns = Model.AttributeNamespace(ns_name)
+            for attr, value in attrs_data.items():
+                if attr == "_name":
+                    continue
+                setattr(
+                    ns,
+                    attr,
+                    deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache),
+                )
+            return ns
+        # Fallback: return a flat dict of decoded attributes for other custom classes.
         return {
             attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
             for attr, value in data["attributes"].items()
         }
 
     # Unknown type - return the data as-is
-    return data["value"] if isinstance(data, dict) and "value" in data else data
+    return data["value"] if isinstance(data, Mapping) and "value" in data else data
 
 
 def extract_type_path(class_str: str) -> str:
@@ -806,7 +833,11 @@ _NUMPY_TO_WARP_SCALAR = {
 }
 
 
-def _resolve_warp_dtype(dtype_str: str, serialized_data: dict | None = None, np_arr: np.ndarray | None = None):
+def _resolve_warp_dtype(
+    dtype_str: str,
+    serialized_data: Mapping[str, Any] | None = None,
+    np_arr: np.ndarray | None = None,
+):
     """
     Resolve a dtype string to a warp dtype, with backwards compatibility.
 
@@ -815,7 +846,7 @@ def _resolve_warp_dtype(dtype_str: str, serialized_data: dict | None = None, np_
 
     Args:
         dtype_str: The dtype name extracted from serialized data.
-        serialized_data: Optional dict containing dtype metadata (__scalar_type__, __type_length__, __type_shape__).
+        serialized_data: Optional mapping containing dtype metadata (__scalar_type__, __type_length__, __type_shape__).
         np_arr: Optional numpy array to infer shape for generic types (fallback for old recordings).
 
     Returns:
@@ -896,12 +927,12 @@ def _resolve_warp_dtype(dtype_str: str, serialized_data: dict | None = None, np_
 
 
 # returns a model and a state history
-def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | None = None):
+def depointer_as_key(data: Mapping[str, Any], format_type: str = "json", cache: ArrayCache | None = None):
     """
     Deserialize Newton simulation data using callback approach.
 
     Args:
-        data: The serialized data containing model and states.
+        data: Mapping-like serialized data containing model and states.
         format_type: The serialization format ('json' or 'cbor2').
 
     Returns:
@@ -910,7 +941,7 @@ def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | 
 
     def callback(x, path):
         # Optimization: extract type once to avoid repeated isinstance and dict lookups
-        x_type = x.get("__type__") if isinstance(x, dict) else None
+        x_type = x.get("__type__") if isinstance(x, Mapping) else None
 
         if x_type == "warp.array_ref":
             if cache is None:
@@ -997,7 +1028,7 @@ def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | 
     result = deserialize(data, callback, format_type=format_type, cache=cache)
 
     def _resolve_cache_refs(obj):
-        if isinstance(obj, dict):
+        if isinstance(obj, Mapping):
             # Optimization: single dict lookup instead of checking membership then accessing
             cache_ref = obj.get("__cache_ref__")
             if cache_ref is not None:

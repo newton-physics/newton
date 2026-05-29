@@ -1464,3 +1464,239 @@ def solidify_mesh(
     faces = out_faces.numpy()
     vertices = out_vertices.numpy()
     return faces, vertices
+
+
+def validate_triangle_mesh(
+    vertices: np.ndarray,
+    indices: np.ndarray,
+    *,
+    min_area: float = 1e-6,
+    max_aspect_ratio: float = 20.0,
+    min_angle_deg: float = 5.0,
+    label: str | None = None,
+    stacklevel: int = 2,
+) -> None:
+    """Check a triangle mesh for quality issues and emit warnings.
+
+    Inspects the input triangle mesh for degenerate or sliver triangles
+    and extreme interior angles. Non-manifold-edge detection is *not*
+    performed here; :class:`MeshAdjacency` emits its own warning during
+    construction and is built by every builder path that accepts a
+    triangle mesh, so going through ``add_cloth_mesh`` /
+    ``add_soft_mesh`` already covers it. Standalone callers who need a
+    non-manifold check should construct ``MeshAdjacency(indices)``
+    themselves. Each detected problem is reported via
+    :func:`warnings.warn`.
+
+    Args:
+        vertices: Vertex positions [m], shape ``(N, 3)``.
+        indices: Triangle vertex indices, shape ``(F, 3)``.
+        min_area: Minimum triangle area [m²]. Default ``1e-6`` (1 mm²).
+        max_aspect_ratio: Maximum longest-edge / shortest-altitude ratio.
+            Default ``20.0`` — flags slivers whose worst interior angle
+            is below ~3° while staying quiet on rough-but-fine
+            production meshes.
+        min_angle_deg: Minimum interior angle [deg]. Default ``5.0``.
+        label: Optional name included in the warning message so callers
+            can identify which mesh tripped the warning when validating
+            many meshes.
+        stacklevel: Passed to :func:`warnings.warn` so the warning points at
+            the caller's frame.
+    """
+    vertices = np.asarray(vertices, dtype=float)
+    raw = np.asarray(indices, dtype=np.intp)
+    if raw.size > 0 and raw.ndim == 1 and raw.size % 3 != 0:
+        warnings.warn("Triangle index array length is not a multiple of 3.", stacklevel=stacklevel)
+        return
+    try:
+        indices = raw.reshape(-1, 3)
+    except ValueError:
+        warnings.warn("Triangle index array must be flat or have shape (N, 3).", stacklevel=stacklevel)
+        return
+    n_verts = len(vertices)
+    n_faces = len(indices)
+
+    if n_faces == 0:
+        warnings.warn("Cloth mesh has no triangles.", stacklevel=stacklevel)
+        return
+
+    if n_verts > 0 and (indices.min() < 0 or indices.max() >= n_verts):
+        warnings.warn(f"Triangle indices out of range for {n_verts} vertices.", stacklevel=stacklevel)
+        return
+
+    v0 = vertices[indices[:, 0]]
+    v1 = vertices[indices[:, 1]]
+    v2 = vertices[indices[:, 2]]
+
+    e01 = v1 - v0
+    e12 = v2 - v1
+    e20 = v0 - v2
+
+    len01 = np.linalg.norm(e01, axis=1)
+    len12 = np.linalg.norm(e12, axis=1)
+    len20 = np.linalg.norm(e20, axis=1)
+    longest = np.maximum(len01, np.maximum(len12, len20))
+
+    cross = np.cross(e01, -e20)
+    area = 0.5 * np.linalg.norm(cross, axis=1)
+
+    eps = 1e-20
+    shortest_alt = 2.0 * area / np.maximum(longest, eps)
+    aspect = longest / np.maximum(shortest_alt, eps)
+
+    def _ang(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        an = np.maximum(np.linalg.norm(a, axis=1), eps)
+        bn = np.maximum(np.linalg.norm(b, axis=1), eps)
+        cos = np.einsum("ij,ij->i", a, b) / (an * bn)
+        return np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
+
+    min_angle_arr = np.minimum(_ang(e01, -e20), np.minimum(_ang(-e01, e12), _ang(-e12, e20)))
+
+    issues: list[str] = []
+
+    n_degen = int(np.sum(area < min_area))
+    if n_degen > 0:
+        issues.append(f"{n_degen} triangle(s) with area < {min_area} m\u00b2")
+
+    n_sliver = int(np.sum(aspect > max_aspect_ratio))
+    if n_sliver > 0:
+        issues.append(
+            f"{n_sliver} sliver triangle(s) with aspect ratio > {max_aspect_ratio} (worst: {float(aspect.max()):.1f})"
+        )
+
+    n_small_angle = int(np.sum(min_angle_arr < min_angle_deg))
+    if n_small_angle > 0:
+        issues.append(
+            f"{n_small_angle} triangle(s) with minimum angle < {min_angle_deg}\u00b0"
+            f" (smallest: {float(min_angle_arr.min()):.1f}\u00b0)"
+        )
+
+    if not issues:
+        return
+
+    prefix = "Mesh quality warning"
+    if label is not None:
+        prefix += f" [{label}]"
+    msg = (
+        f"{prefix} ({n_verts} vertices, {n_faces} triangles):\n"
+        + "\n".join(f"  - {issue}" for issue in issues)
+        + "\nConsider remeshing the input geometry."
+    )
+    warnings.warn(msg, stacklevel=stacklevel)
+
+
+def validate_tet_mesh(
+    vertices: np.ndarray,
+    indices: np.ndarray,
+    *,
+    min_volume: float = 1e-9,
+    min_eta: float = 0.01,
+    label: str | None = None,
+    stacklevel: int = 2,
+) -> None:
+    """Check a tetrahedral mesh for quality issues and emit warnings.
+
+    Inspects the input tet mesh for inverted elements, small volumes,
+    sliver tetrahedra, and non-manifold faces. Each detected problem is
+    reported via :func:`warnings.warn`.
+
+    The shape quality metric used is:
+
+    .. math::
+
+        \\eta = \\frac{12\\,(3\\,|V|)^{2/3}}{\\sum_i l_i^2}
+
+    where *V* is the signed volume and *l_i* are the six edge lengths.
+    For a regular tetrahedron :math:`\\eta = 1`; degenerate elements
+    approach zero.
+
+    Args:
+        vertices: Vertex positions [m], shape ``(N, 3)``.
+        indices: Tetrahedron vertex indices, shape ``(T, 4)``.
+        min_volume: Minimum absolute tet volume [m³]. Default ``1e-9``
+            (1 mm³).
+        min_eta: Minimum shape quality eta. Default ``0.01``.
+        label: Optional name included in the warning message so callers
+            can identify which mesh tripped the warning when validating
+            many meshes.
+        stacklevel: Passed to :func:`warnings.warn`.
+    """
+    vertices = np.asarray(vertices, dtype=float)
+    raw = np.asarray(indices, dtype=np.intp)
+    if raw.size > 0 and raw.ndim == 1 and raw.size % 4 != 0:
+        warnings.warn("Tet index array length is not a multiple of 4.", stacklevel=stacklevel)
+        return
+    try:
+        indices = raw.reshape(-1, 4)
+    except ValueError:
+        warnings.warn("Tet index array must be flat or have shape (N, 4).", stacklevel=stacklevel)
+        return
+    n_tets = len(indices)
+
+    if n_tets == 0:
+        warnings.warn("Soft mesh has no tetrahedra.", stacklevel=stacklevel)
+        return
+
+    n_verts = len(vertices)
+    if n_verts > 0 and (indices.min() < 0 or indices.max() >= n_verts):
+        warnings.warn(f"Tet indices out of range for {n_verts} vertices.", stacklevel=stacklevel)
+        return
+
+    v0 = vertices[indices[:, 0]]
+    v1 = vertices[indices[:, 1]]
+    v2 = vertices[indices[:, 2]]
+    v3 = vertices[indices[:, 3]]
+
+    d1 = v1 - v0
+    d2 = v2 - v0
+    d3 = v3 - v0
+    vol = np.einsum("ij,ij->i", d1, np.cross(d2, d3)) / 6.0
+
+    issues: list[str] = []
+
+    n_inverted = int(np.sum(vol < 0))
+    if n_inverted > 0:
+        issues.append(f"{n_inverted}/{n_tets} inverted tetrahedron(s) (negative volume)")
+
+    n_degen = int(np.sum(np.abs(vol) < min_volume))
+    if n_degen > 0:
+        issues.append(f"{n_degen}/{n_tets} tetrahedron(s) with volume < {min_volume} m\u00b3")
+
+    e01 = v1 - v0
+    e02 = v2 - v0
+    e03 = v3 - v0
+    e12 = v2 - v1
+    e13 = v3 - v1
+    e23 = v3 - v2
+    l_sq_sum = (
+        np.sum(e01**2, axis=1)
+        + np.sum(e02**2, axis=1)
+        + np.sum(e03**2, axis=1)
+        + np.sum(e12**2, axis=1)
+        + np.sum(e13**2, axis=1)
+        + np.sum(e23**2, axis=1)
+    )
+    eps = 1e-30
+    abs_vol = np.abs(vol)
+    eta = 12.0 * np.cbrt(3.0 * abs_vol) ** 2 / np.maximum(l_sq_sum, eps)
+    n_sliver = int(np.sum(eta < min_eta))
+    if n_sliver > 0:
+        issues.append(
+            f"{n_sliver}/{n_tets} sliver tetrahedron(s) (shape quality eta < {min_eta}; worst: {float(eta.min()):.4f})"
+        )
+
+    face_combos = [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)]
+    all_faces = np.concatenate([np.sort(indices[:, combo], axis=1) for combo in face_combos])
+    _, counts = np.unique(all_faces, axis=0, return_counts=True)
+    n_nonmanifold = int(np.sum(counts > 2))
+    if n_nonmanifold > 0:
+        issues.append(f"{n_nonmanifold} non-manifold face(s) shared by more than 2 tetrahedra")
+
+    if not issues:
+        return
+
+    prefix = "Tet mesh quality warning"
+    if label is not None:
+        prefix += f" [{label}]"
+    msg = f"{prefix} ({len(vertices)} vertices, {n_tets} tetrahedra):\n" + "\n".join(f"  - {issue}" for issue in issues)
+    warnings.warn(msg, stacklevel=stacklevel)
