@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 
 from ...core.types import Transform, Vec3, axis_to_vec3
-from ...sim.enums import EqType
+from ...sim.enums import EqObjType, EqType
 
 if TYPE_CHECKING:
     from ...sim.builder import ModelBuilder
@@ -71,10 +71,12 @@ def add_equality_constraint(
         torquescale_value = 1.0 if constraint_type == EqType.WELD else 0.0
     else:
         torquescale_value = float(torquescale)
+    objtype = EqObjType.JOINT if constraint_type == EqType.JOINT else EqObjType.BODY
 
     indices = builder.add_custom_values(
         **{
             "mujoco:equality_constraint_type": int(constraint_type),
+            "mujoco:equality_constraint_objtype": int(objtype),
             "mujoco:equality_constraint_body1": body1,
             "mujoco:equality_constraint_body2": body2,
             "mujoco:equality_constraint_anchor": anchor_vec,

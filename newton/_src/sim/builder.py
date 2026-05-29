@@ -55,6 +55,8 @@ from ..utils import compute_world_offsets
 from ..utils.mesh import MeshAdjacency
 from .enums import (
     BodyFlags,
+    EqObjType,
+    EqTarget,
     EqType,
     JointTargetMode,
     JointType,
@@ -1343,7 +1345,7 @@ class ModelBuilder:
     def _declare_mujoco_equality_constraint_attributes(builder: ModelBuilder) -> None:
         """Declare the ``model.mujoco.equality_constraint_*`` :class:`CustomAttribute` rows.
 
-        Adds the 12 per-equality-constraint custom attributes that back the values populated
+        Adds the 15 per-equality-constraint custom attributes that back the values populated
         through :meth:`add_custom_values` (with ``mujoco:equality_constraint_*`` keys) and
         surfaced on :class:`~newton.Model` under the ``mujoco`` namespace by :meth:`finalize`.
 
@@ -1486,6 +1488,41 @@ class ModelBuilder:
                 dtype=wp.int32,
                 default=0,
                 references="world",
+                namespace="mujoco",
+            )
+        )
+        # ``objtype`` disambiguates the body*/joint* references (see :class:`EqObjType`) so
+        # the table can grow to site- and tendon-anchored equalities without a layout change.
+        builder.add_custom_attribute(
+            ca(
+                name="equality_constraint_objtype",
+                frequency=eq_freq,
+                assignment=model_assignment,
+                dtype=wp.int32,
+                default=int(EqObjType.BODY),
+                namespace="mujoco",
+            )
+        )
+        # ``target_kind`` / ``target`` link a row to the native entity it was projected onto
+        # (loop joint or mimic) for solver portability; ``EqTarget.NONE`` / ``-1`` mark a pure
+        # equality row. Populated by the MJCF/USD equality-to-joint conversion.
+        builder.add_custom_attribute(
+            ca(
+                name="equality_constraint_target_kind",
+                frequency=eq_freq,
+                assignment=model_assignment,
+                dtype=wp.int32,
+                default=int(EqTarget.NONE),
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ca(
+                name="equality_constraint_target",
+                frequency=eq_freq,
+                assignment=model_assignment,
+                dtype=wp.int32,
+                default=-1,
                 namespace="mujoco",
             )
         )
