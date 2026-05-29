@@ -117,9 +117,9 @@ states:
 Here, **feature** includes functionality, public API, defaults, support
 targets, and simulation behavior that user code or simulations may rely on.
 
-* **Experimental**: A feature still under active development.  May
-  change without notice, including in micro releases.  Experimental
-  features are available for early adopters who can tolerate breakage.
+* **Experimental**: A feature still under active development and available
+  for early adopters who can tolerate breakage. API, behavior, defaults, and
+  supported use cases may change without prior notice.
 * **Stable**: The default state for most features.  Changes follow the
   :ref:`deprecation-policy`.
 * **Deprecated**: A feature scheduled for removal in a future release.

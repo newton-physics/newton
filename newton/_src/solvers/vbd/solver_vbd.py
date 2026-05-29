@@ -100,7 +100,10 @@ class SolverVBD(SolverBase):
 
     Non-cable structural joint slots default to **hard mode** (augmented Lagrangian
     with persistent lambda and C0 stabilization). Cable stretch and bend default to
-    **soft mode**. The hard/soft mode can be changed per slot via :meth:`set_joint_constraint_mode`.
+    **soft mode**. Joint hard/soft mode is initialized from the optional
+    ``model.vbd.joint_is_hard`` custom attribute; author values at joint creation,
+    before constructing the solver. The hard/soft mode can also be changed per
+    slot at runtime via :meth:`set_joint_constraint_mode`.
 
     Joint limitations:
         - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, CABLE.
@@ -235,7 +238,7 @@ class SolverVBD(SolverBase):
         rigid_joint_angular_k_start: float = 1.0e1,  # Angular penalty seed (used when angular beta > 0)
         rigid_joint_linear_kd: float = 0.0,  # Rayleigh damping for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Rayleigh damping for non-cable angular joint constraints
-        rigid_enable_dahl_friction: bool | None = None,  # Deprecated: auto-detected from model attributes
+        rigid_enable_dahl_friction: bool | None = None,  # Deprecated: controlled by model attributes
     ):
         """
         Args:
@@ -343,8 +346,8 @@ class SolverVBD(SolverBase):
                 Negative values are clamped to 0.
             rigid_joint_angular_kd: Rayleigh damping coefficient for non-cable angular joint constraints.
                 Negative values are clamped to 0.
-            rigid_enable_dahl_friction: Deprecated and ignored. Dahl friction is auto-detected
-                from ``model.vbd.dahl_eps_max`` / ``model.vbd.dahl_tau``.
+            rigid_enable_dahl_friction: Deprecated and ignored. Dahl friction is controlled
+                by ``model.vbd.dahl_eps_max`` / ``model.vbd.dahl_tau``.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
@@ -356,17 +359,18 @@ class SolverVBD(SolverBase):
               Setting them too small may result in undetected collisions (particles) or contact overflow (rigid body
               contacts).
               Setting them excessively large may increase memory usage and degrade performance.
-            - Dahl hysteresis friction for cable bending is auto-detected from custom model attributes
-              ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` (set via
-              ``SolverVBD.register_custom_attributes``).
+            - Dahl hysteresis friction for cable bending is controlled by custom model attributes
+              ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau``. Register them with
+              ``SolverVBD.register_custom_attributes`` before building the model. Dahl friction is
+              enabled only when positive Dahl parameters are authored.
 
         """
         if rigid_enable_dahl_friction is not None:
             warnings.warn(
                 "rigid_enable_dahl_friction is deprecated and ignored. "
-                "Dahl friction is now auto-detected from model attributes "
+                "Dahl friction is now controlled by model attributes "
                 "(model.vbd.dahl_eps_max / model.vbd.dahl_tau). "
-                "To disable for a joint, set dahl_eps_max=0.",
+                "It is enabled only where both values are positive.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -711,8 +715,7 @@ class SolverVBD(SolverBase):
             self.joint_sigma_start = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_C_fric = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
 
-            # Dahl friction: auto-detected from model.vbd custom attributes.
-            # Enabled when model has dahl_eps_max and dahl_tau (set via register_custom_attributes).
+            # Dahl friction: registered custom attributes are inert until enabled by positive values.
             vbd_attrs: Any = getattr(model, "vbd", None)
             has_dahl = (
                 model.joint_count > 0
@@ -720,13 +723,16 @@ class SolverVBD(SolverBase):
                 and hasattr(vbd_attrs, "dahl_eps_max")
                 and hasattr(vbd_attrs, "dahl_tau")
             )
-            self.enable_dahl_friction = has_dahl
             if has_dahl:
                 self.joint_dahl_eps_max = vbd_attrs.dahl_eps_max
                 self.joint_dahl_tau = vbd_attrs.dahl_tau
+                dahl_eps_max = self._to_numpy(self.joint_dahl_eps_max, dtype=float)
+                dahl_tau = self._to_numpy(self.joint_dahl_tau, dtype=float)
+                self.enable_dahl_friction = bool(np.any((dahl_eps_max > 0.0) & (dahl_tau > 0.0)))
             else:
                 self.joint_dahl_eps_max = wp.zeros(model.joint_count, dtype=float, device=self.device)
                 self.joint_dahl_tau = wp.zeros(model.joint_count, dtype=float, device=self.device)
+                self.enable_dahl_friction = False
 
         # -------------------------------------------------------------
         # Body-particle interaction shared state.
@@ -1105,23 +1111,41 @@ class SolverVBD(SolverBase):
 
     @override
     @classmethod
-    def register_custom_attributes(cls, builder: ModelBuilder) -> None:
-        """Register solver-specific custom Model attributes for SolverVBD.
+    def register_custom_attributes(cls, builder: ModelBuilder, *, dahl_defaults_enabled: bool = True) -> None:
+        """Register SolverVBD custom Model attributes.
 
-        Currently used for:
-          - Cable bending plasticity/hysteresis (Dahl friction model)
-          - Per-joint structural constraint mode (hard/soft)
+        Currently registers:
+          - ``vbd:joint_is_hard`` for per-joint hard/soft constraint mode
+          - ``vbd:dahl_eps_max`` and ``vbd:dahl_tau`` for optional Dahl cable friction
 
-        Attributes are declared in the ``vbd`` namespace so they can be authored in scenes
-        and in USD as ``newton:vbd:<attr>``.
+        Attributes are declared in the ``vbd`` namespace so they can be authored
+        in scenes and in USD as ``newton:vbd:<attr>``.
+
+        Args:
+            builder: Model builder to register attributes on.
+            dahl_defaults_enabled: Deprecated compatibility mode. When True, Dahl parameters
+                default to positive values. Prefer passing ``False`` and explicitly authoring
+                positive Dahl values only when Dahl cable friction is desired.
         """
+        dahl_eps_default = 0.5 if dahl_defaults_enabled else 0.0
+        dahl_tau_default = 1.0 if dahl_defaults_enabled else 0.0
+        if dahl_defaults_enabled:
+            warnings.warn(
+                "Implicit positive Dahl defaults in SolverVBD.register_custom_attributes() are deprecated "
+                "and will be disabled by default in a future release. Pass dahl_defaults_enabled=False and "
+                "explicitly author positive model.vbd.dahl_eps_max and model.vbd.dahl_tau values to enable "
+                "Dahl cable friction.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dahl_eps_max",
                 frequency=Model.AttributeFrequency.JOINT,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
-                default=0.5,
+                default=dahl_eps_default,
                 namespace="vbd",
             )
         )
@@ -1131,7 +1155,7 @@ class SolverVBD(SolverBase):
                 frequency=Model.AttributeFrequency.JOINT,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
-                default=1.0,
+                default=dahl_tau_default,
                 namespace="vbd",
             )
         )
@@ -1479,21 +1503,21 @@ class SolverVBD(SolverBase):
         By default, cable stretch and bend slots are soft, while non-cable
         structural slots are hard.
 
-        For bulk initialization of non-cable joints at build time (avoids
-        per-joint roundtrips), use the ``joint_is_hard`` model custom attribute::
+        Hard/soft mode can also be authored per joint at build time via the
+        ``vbd:joint_is_hard`` custom attribute, avoiding a runtime
+        :meth:`set_joint_constraint_mode` call::
 
-            SolverVBD.register_custom_attributes(builder)  # before adding joints
-            ...
+            SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)  # before adding joints
+            builder.add_joint_fixed(..., custom_attributes={"vbd:joint_is_hard": 0})
             model = builder.finalize()
-            model.vbd.joint_is_hard.numpy()[j] = 0  # set joint j to soft
             solver = SolverVBD(model, ...)
 
         Args:
             joint_index: Index of the joint to modify.
             hard: True for hard mode (AL), False for soft mode (penalty-only).
             slot: Specific slot index to set. If None, sets all structural slots.
-                  Use JointSlot.LINEAR / JointSlot.ANGULAR (equivalently
-                  JointSlot.STRETCH / JointSlot.BEND for cables).
+                Use JointSlot.LINEAR / JointSlot.ANGULAR (equivalently
+                JointSlot.STRETCH / JointSlot.BEND for cables).
 
         Raises:
             ValueError: If the joint index is out of range, or the slot is a
