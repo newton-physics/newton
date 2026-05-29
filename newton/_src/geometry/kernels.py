@@ -1105,7 +1105,13 @@ def create_soft_contacts(
         # regardless of mirror parity.
         min_scale = wp.min(wp.min(wp.abs(geo_scale[0]), wp.abs(geo_scale[1])), wp.abs(geo_scale[2]))
         if wp.mesh_query_point_sign_normal(
-            mesh, wp.cw_div(x_local, geo_scale), margin + s_margin / min_scale + radius / min_scale, sign, face_index, face_u, face_v
+            mesh,
+            wp.cw_div(x_local, geo_scale),
+            margin + s_margin / min_scale + radius / min_scale,
+            sign,
+            face_index,
+            face_u,
+            face_v,
         ):
             shape_p = wp.mesh_eval_position(mesh, face_index, face_u, face_v)
             shape_v = wp.mesh_eval_velocity(mesh, face_index, face_u, face_v)
