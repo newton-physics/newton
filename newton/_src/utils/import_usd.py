@@ -2835,7 +2835,7 @@ def parse_usd(
                 # Restore the real collision margin when shell thickness was substituted.
                 # TODO: Consider adding a dedicated shell_thickness field to ShapeConfig
                 # so inertia thickness and collision margin don't share the same slot.
-                if shell_thickness_val is not None and shape_id >= 0:
+                if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)) and shape_id >= 0:
                     builder.shape_margin[shape_id] = margin_val
 
                 if body_path in bodies_requiring_mass_properties_fallback:
