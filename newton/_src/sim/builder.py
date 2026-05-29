@@ -6502,9 +6502,8 @@ class ModelBuilder:
                 if stype == GeoType.MESH and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
             ]
 
-        # These methods rewrite shape_type away from MESH; finalize() then has
-        # no valid path for the shape's SDF/hydroelastic intent and would
-        # silently emit empty or wrong SDF data.
+        # These methods rewrite shape_type away from MESH; any SDF/hydro state
+        # would be silently dropped or invalidated.
         _METHODS_REPLACING_MESH = {
             "coacd",
             "vhacd",
@@ -6513,29 +6512,49 @@ class ModelBuilder:
             "bounding_sphere",
         }
 
-        def _shape_has_sdf_intent(shape: int) -> bool:
+        def _shape_has_deferred_sdf_config(shape: int) -> bool:
             return (
                 self.shape_sdf_max_resolution[shape] is not None
                 or self.shape_sdf_target_voxel_size[shape] is not None
                 or self.shape_sdf_padding[shape] is not None
-                or bool(self.shape_flags[shape] & ShapeFlags.HYDROELASTIC)
             )
+
+        def _shape_has_attached_sdf(shape: int) -> bool:
+            src = self.shape_source[shape]
+            return src is not None and getattr(src, "sdf", None) is not None
+
+        def _shape_is_hydroelastic(shape: int) -> bool:
+            return bool(self.shape_flags[shape] & ShapeFlags.HYDROELASTIC)
 
         if method in _METHODS_REPLACING_MESH:
             for shape in shape_indices:
-                if _shape_has_sdf_intent(shape):
+                if (
+                    _shape_has_deferred_sdf_config(shape)
+                    or _shape_has_attached_sdf(shape)
+                    or _shape_is_hydroelastic(shape)
+                ):
                     raise ValueError(
-                        f"Shape {shape} has SDF or hydroelastic configuration and cannot be "
-                        f"approximated with method '{method}' (which replaces the mesh with a "
-                        f"non-mesh shape). Use method='quadratic' to simplify the mesh while "
-                        f"preserving SDF generation, or drop the SDF / hydroelastic configuration."
+                        f"Shape {shape}: method '{method}' replaces the mesh with a non-mesh "
+                        f"geometry; SDF / hydroelastic configuration cannot be preserved. "
+                        f"Use method='quadratic' to simplify while preserving the mesh path, "
+                        f"or drop the SDF / hydroelastic configuration."
                     )
         else:
-            affected = [s for s in shape_indices if _shape_has_sdf_intent(s)]
-            if affected:
+            # Mesh-preserving methods replace topology via Mesh.copy(), which
+            # discards mesh.sdf; deferred config can be rebuilt on the new
+            # topology, but an attached mesh.sdf cannot.
+            for shape in shape_indices:
+                if _shape_has_attached_sdf(shape):
+                    raise ValueError(
+                        f"Shape {shape}: method '{method}' replaces the mesh topology; the "
+                        f"attached mesh.sdf would be invalidated. Drop the SDF on the mesh, "
+                        f"or skip this shape via shape_indices."
+                    )
+            rebuilt = [s for s in shape_indices if _shape_has_deferred_sdf_config(s) or _shape_is_hydroelastic(s)]
+            if rebuilt:
                 warnings.warn(
-                    f"approximate_meshes(method={method!r}): {len(affected)} shape(s) with SDF "
-                    f"or hydroelastic configuration will have their SDFs built from the "
+                    f"approximate_meshes(method={method!r}): {len(rebuilt)} shape(s) with SDF "
+                    f"or hydroelastic configuration will have their SDFs rebuilt from the "
                     f"{method}-modified mesh, not the original.",
                     stacklevel=2,
                 )

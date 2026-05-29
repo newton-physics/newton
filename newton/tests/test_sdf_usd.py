@@ -476,7 +476,7 @@ class TestSDFUSDParsing(unittest.TestCase):
         )
         shape_id = builder.add_shape_mesh(body, mesh=mesh)
         builder.shape_sdf_max_resolution[shape_id] = 64
-        with self.assertRaisesRegex(ValueError, "SDF or hydroelastic configuration"):
+        with self.assertRaisesRegex(ValueError, "SDF / hydroelastic configuration cannot be preserved"):
             builder.approximate_meshes(method="convex_hull")
 
     def test_approximate_meshes_rejects_hydroelastic_flag(self):
@@ -489,7 +489,7 @@ class TestSDFUSDParsing(unittest.TestCase):
         )
         shape_id = builder.add_shape_mesh(body, mesh=mesh)
         builder.shape_flags[shape_id] |= newton.ShapeFlags.HYDROELASTIC
-        with self.assertRaisesRegex(ValueError, "SDF or hydroelastic configuration"):
+        with self.assertRaisesRegex(ValueError, "SDF / hydroelastic configuration cannot be preserved"):
             builder.approximate_meshes(method="bounding_box")
 
     def test_usd_sdf_mesh_uses_simplified_collision_edges(self, device=None):
@@ -528,6 +528,33 @@ class TestSDFUSDParsing(unittest.TestCase):
                 full_edge_count,
                 f"Expected simplified edges < full edges, got {simplified_edge_count} >= {full_edge_count}",
             )
+
+    def test_approximate_meshes_rejects_attached_mesh_sdf_for_replacing_method(self):
+        """approximate_meshes must raise when a mesh-replacing method runs on a shape whose source Mesh has an attached SDF."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        mesh = newton.Mesh(
+            vertices=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
+            indices=[0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3],
+        )
+        shape_id = builder.add_shape_mesh(body, mesh=mesh)
+        # Stand in for a Mesh.build_sdf() result; guard only checks `is not None`.
+        builder.shape_source[shape_id].sdf = object()
+        with self.assertRaisesRegex(ValueError, "SDF / hydroelastic configuration cannot be preserved"):
+            builder.approximate_meshes(method="bounding_box")
+
+    def test_approximate_meshes_rejects_attached_mesh_sdf_for_preserving_method(self):
+        """approximate_meshes must raise when a mesh-preserving method runs on a shape whose source Mesh has an attached SDF (topology change invalidates it)."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        mesh = newton.Mesh(
+            vertices=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
+            indices=[0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3],
+        )
+        shape_id = builder.add_shape_mesh(body, mesh=mesh)
+        builder.shape_source[shape_id].sdf = object()
+        with self.assertRaisesRegex(ValueError, "attached mesh.sdf would be invalidated"):
+            builder.approximate_meshes(method="quadratic")
 
     def test_approximate_meshes_warns_on_mesh_preserving_method_with_sdf(self):
         """approximate_meshes must warn (not raise) when a MESH-preserving method is used on a shape with SDF state."""
@@ -574,7 +601,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with self.assertRaisesRegex(ValueError, "SDF or hydroelastic configuration"):
+            with self.assertRaisesRegex(ValueError, "SDF / hydroelastic configuration cannot be preserved"):
                 parse_usd(builder, str(usd_path))
 
     def test_usd_sdf_api_applied_hydroelastic_schema_default_wins(self, device=None):
