@@ -294,6 +294,10 @@ def parse_usd(
         rollingFriction: float = builder.default_shape_cfg.mu_rolling
         restitution: float = builder.default_shape_cfg.restitution
         density: float = builder.default_shape_cfg.density
+        ke: float | None = None
+        kd: float | None = None
+        kf: float | None = None
+        ka: float | None = None
 
     # load joint defaults
     default_joint_friction = builder.default_joint_cfg.friction
@@ -1985,6 +1989,13 @@ def parse_usd(
         if warn_invalid_desc(sdf_path, desc):
             continue
         prim = stage.GetPrimAtPath(sdf_path)
+
+        def _resolve_contact_attr(key, _prim=prim):
+            val = R.get_value(_prim, prim_type=PrimType.MATERIAL, key=key, verbose=verbose)
+            if val is None:
+                return None
+            return float(val)
+
         material_specs[str(sdf_path)] = PhysicsMaterial(
             staticFriction=desc.staticFriction,
             dynamicFriction=desc.dynamicFriction,
@@ -2006,6 +2017,10 @@ def parse_usd(
             # Treat non-positive/unauthored material density as "use importer default".
             # Authored collider/body MassAPI mass+inertia is handled later.
             density=desc.density if desc.density > 0.0 else default_shape_density,
+            ke=_resolve_contact_attr("ke"),
+            kd=_resolve_contact_attr("kd"),
+            kf=_resolve_contact_attr("kf"),
+            ka=_resolve_contact_attr("ka"),
         )
 
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
@@ -2829,7 +2844,6 @@ def parse_usd(
                     shape_density = material.density
                 else:
                     shape_density = default_shape_density
-                prim_and_scene = (prim, physics_scene_prim)
                 local_xform = wp.transform(shape_spec.localPos, usd.value_to_warp(shape_spec.localRot))
                 if body_id == -1:
                     shape_xform = incoming_world_xform * local_xform
@@ -2876,22 +2890,22 @@ def parse_usd(
                 ) and not hide_collider_for_body
                 collider_is_visible = collider_is_visible and _is_effectively_visible(prim)
 
-                shape_ke = R.get_value(
-                    prim,
-                    prim_type=PrimType.SHAPE,
-                    key="ke",
-                    verbose=verbose,
-                )
-                if shape_ke is None:
-                    shape_ke = builder.default_shape_cfg.ke
-                shape_kd = R.get_value(
-                    prim,
-                    prim_type=PrimType.SHAPE,
-                    key="kd",
-                    verbose=verbose,
-                )
-                if shape_kd is None:
-                    shape_kd = builder.default_shape_cfg.kd
+                # Contact response: material (if authored) > per-shape resolver > builder default.
+                _default = builder.default_shape_cfg
+                shape_ke = material.ke if material.ke is not None and math.isfinite(material.ke) else _default.ke
+                shape_kd = material.kd if material.kd is not None and math.isfinite(material.kd) else _default.kd
+                shape_kf = material.kf if material.kf is not None and math.isfinite(material.kf) else _default.kf
+                shape_ka = material.ka if material.ka is not None and math.isfinite(material.ka) else _default.ka
+
+                for attr_key in ("ke", "kd"):
+                    if getattr(material, attr_key) is not None:
+                        continue
+                    per_shape_val = R.get_value(prim, prim_type=PrimType.SHAPE, key=attr_key, verbose=verbose)
+                    if per_shape_val is not None and math.isfinite(float(per_shape_val)):
+                        if attr_key == "ke":
+                            shape_ke = float(per_shape_val)
+                        else:
+                            shape_kd = float(per_shape_val)
 
                 shape_color = material_props.get("color")
 
@@ -3073,12 +3087,8 @@ def parse_usd(
                     "cfg": ModelBuilder.ShapeConfig(
                         ke=shape_ke,
                         kd=shape_kd,
-                        kf=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_kf", builder.default_shape_cfg.kf
-                        ),
-                        ka=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_ka", builder.default_shape_cfg.ka
-                        ),
+                        kf=shape_kf,
+                        ka=shape_ka,
                         margin=inertia_margin,
                         gap=gap_val,
                         mu=material.dynamicFriction,
