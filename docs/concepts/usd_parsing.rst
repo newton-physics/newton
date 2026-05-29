@@ -844,25 +844,18 @@ doubles as an end-to-end regression against Newton's importer.
                                               op.orderedItems) if items)
 
    def _bbox_diag(prim) -> float | None:
-       """Compute the local-space AABB diagonal [m] of a USD prim, applying
-       ``physics:meshScale`` (and ``physxSDFMeshCollision:meshScale`` as a
-       fallback) component-wise when authored. PhysX's fractional SDF
-       distances are fractions of the scaled collision shape's diagonal,
-       not the unscaled mesh diagonal — ``UsdGeom.BBoxCache`` does not see
-       physics scaling attributes, so we apply them here. Returns ``None``
-       if the bbox is empty."""
+       """Compute the world-space AABB diagonal [m] of a USD prim, or ``None``
+       if the bbox is empty. PhysX's fractional SDF distances are fractions of
+       the AABB of the SCALED collision shape, so we use ``ComputeWorldBound``
+       (which captures all ancestor xformOps, including scale) rather than
+       ``ComputeLocalBound`` (which would miss ancestor scaling)."""
        cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(),
                                  includedPurposes=[UsdGeom.Tokens.default_])
-       rng = cache.ComputeLocalBound(prim).ComputeAlignedRange()
+       rng = cache.ComputeWorldBound(prim).ComputeAlignedRange()
        if rng.IsEmpty():
            return None
        size = rng.GetSize()
-       scale = _get(prim, "physics:meshScale")
-       if scale is None:
-           scale = _get(prim, "physxSDFMeshCollision:meshScale")
-       sx, sy, sz = (float(scale[0]), float(scale[1]), float(scale[2])) if scale is not None else (1.0, 1.0, 1.0)
-       dx, dy, dz = size[0] * sx, size[1] * sy, size[2] * sz
-       diag = math.sqrt(dx * dx + dy * dy + dz * dz)
+       diag = size.GetLength()
        return float(diag) if diag > 0 else None
 
    def port_physx_sdf_to_newton(
@@ -1014,11 +1007,14 @@ doubles as an end-to-end regression against Newton's importer.
    assert _get(p3, "newton:sdfPadding") is None
    assert _has_applied_schema(p3, "NewtonSDFCollisionAPI")
 
-   # physics:meshScale demo: PhysX applies the mesh scale to the collision
-   # shape, so its fractional SDF distances are fractions of the SCALED
-   # diagonal. The helper picks up physics:meshScale and applies it
-   # component-wise before converting to absolute distances.
+   # Xform-scale demo: when a parent Xform carries a non-unit scale, PhysX
+   # treats the collision shape as scaled, so fractional SDF distances are
+   # fractions of the SCALED diagonal. ComputeLocalBound would return the
+   # unscaled bbox here; ComputeWorldBound captures the ancestor scale.
+   import pxr.Gf as _Gf  # noqa: PLC0415
    stage4 = Usd.Stage.CreateInMemory()
+   parent = UsdGeom.Xform.Define(stage4, "/Body")
+   parent.AddScaleOp().Set(_Gf.Vec3f(2.0, 3.0, 1.0))
    mesh4 = UsdGeom.Mesh.Define(stage4, "/Body/CollisionMesh")
    mesh4.CreatePointsAttr([(-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (0.5, 0.5, -0.5),
                            (-0.5, 0.5, -0.5), (-0.5, -0.5, 0.5), (0.5, -0.5, 0.5),
@@ -1028,10 +1024,9 @@ doubles as an end-to-end regression against Newton's importer.
                                       2, 3, 7, 6, 0, 3, 7, 4, 1, 2, 6, 5])
    p4 = mesh4.GetPrim()
    p4.AddAppliedSchema("PhysxSDFMeshCollisionAPI")
-   p4.CreateAttribute("physics:meshScale", Sdf.ValueTypeNames.Float3).Set((2.0, 3.0, 1.0))
    p4.CreateAttribute("physxSDFMeshCollision:sdfMargin", Sdf.ValueTypeNames.Float).Set(0.01)
    assert port_physx_sdf_to_newton(stage4) == 1
-   # Scaled diagonal: sqrt((1*2)^2 + (1*3)^2 + (1*1)^2) = sqrt(14)
+   # Scaled world-space diagonal: sqrt((1*2)^2 + (1*3)^2 + (1*1)^2) = sqrt(14)
    _scaled_diag = math.sqrt(14.0)
    assert _close(_get(p4, "newton:sdfPadding"), 0.01 * _scaled_diag, tol=1e-5)
 
