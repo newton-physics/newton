@@ -78,6 +78,12 @@ STATS_LAST_PLATE_TORQUE_NM = 2
 STATS_LAST_ELASTIC_ENERGY_J = 3
 STATS_PEAK_ELASTIC_ENERGY_J = 4
 STATS_LAST_DISSIPATED_ENERGY_J = 5
+SURFACE_TOP_AREA = 0
+SURFACE_TOP_DISP_AREA = 1
+SURFACE_TOP_VEL_AREA = 2
+SURFACE_GROUND_AREA = 3
+SURFACE_GROUND_DISP_AREA = 4
+SURFACE_GROUND_VEL_AREA = 5
 PLATE_ACCUM_REAR_DISP = 0
 PLATE_ACCUM_REAR_COUNT = 1
 PLATE_ACCUM_REAR_Y = 2
@@ -379,6 +385,122 @@ def apply_non_contact_forces_kernel(
 
 
 @wp.kernel
+def accumulate_hydro_surface_state_kernel(
+    points: wp.array[wp.vec3f],
+    depths: wp.array[wp.float32],
+    shape_pairs: wp.array[wp.vec2i],
+    face_count_ptr: wp.array[wp.int32],
+    foot_shape_idx: int,
+    midsole_shape_idx: int,
+    ground_shape_idx: int,
+    foot_body_idx: int,
+    midsole_body_idx: int,
+    body_com: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    spring_xy: wp.array[wp.vec2],
+    num_springs: int,
+    surface_state: wp.array[float],
+):
+    tid = wp.tid()
+    face_count = face_count_ptr[0]
+    if tid >= face_count:
+        return
+
+    pair = shape_pairs[tid]
+    is_foot_midsole = False
+    is_midsole_ground = False
+
+    if (pair[0] == foot_shape_idx and pair[1] == midsole_shape_idx) or (
+        pair[1] == foot_shape_idx and pair[0] == midsole_shape_idx
+    ):
+        is_foot_midsole = True
+    elif (pair[0] == midsole_shape_idx and pair[1] == ground_shape_idx) or (
+        pair[1] == midsole_shape_idx and pair[0] == ground_shape_idx
+    ):
+        is_midsole_ground = True
+
+    if not is_foot_midsole and not is_midsole_ground:
+        return
+    if is_foot_midsole:
+        return
+
+    v0 = wp.vec3(points[3 * tid])
+    v1 = wp.vec3(points[3 * tid + 1])
+    v2 = wp.vec3(points[3 * tid + 2])
+    centroid = (v0 + v1 + v2) / 3.0
+
+    e1 = v1 - v0
+    e2 = v2 - v0
+    n = wp.cross(e1, e2)
+    n_sq = wp.dot(n, n)
+    if n_sq < 1e-12:
+        return
+
+    normal = n / wp.sqrt(n_sq)
+    area = wp.sqrt(n_sq) / 2.0
+    if area <= 0.0:
+        return
+    if normal[2] < 0.0:
+        normal = -normal
+
+    displacement = -2.0 * depths[tid]
+    if displacement <= 0.0:
+        return
+
+    nearest = find_nearest_spring(centroid, spring_xy, num_springs)
+    if nearest == -1:
+        return
+
+    comp_vel = float(0.0)
+    if is_foot_midsole:
+        return
+    else:
+        midsole_com = wp.transform_point(body_q[midsole_body_idx], body_com[midsole_body_idx])
+        qd_midsole = body_qd[midsole_body_idx]
+        v_midsole_c = wp.spatial_top(qd_midsole) + wp.cross(wp.spatial_bottom(qd_midsole), centroid - midsole_com)
+        comp_vel = -wp.dot(v_midsole_c, normal)
+
+        wp.atomic_add(surface_state, nearest * 6 + SURFACE_GROUND_AREA, area)
+        wp.atomic_add(surface_state, nearest * 6 + SURFACE_GROUND_DISP_AREA, displacement * area)
+        wp.atomic_add(surface_state, nearest * 6 + SURFACE_GROUND_VEL_AREA, comp_vel * area)
+
+
+@wp.kernel
+def accumulate_bonded_top_state_kernel(
+    top_m: wp.array[float],
+    foot_sole_z_m: wp.array[float],
+    foot_contact_valid: wp.array[wp.int32],
+    slack_length_m: wp.array[float],
+    spring_count: int,
+    foot_z: float,
+    midsole_z: float,
+    foot_vz: float,
+    midsole_vz: float,
+    spacing_m: float,
+    surface_state: wp.array[float],
+    foot_displacement_out: wp.array[float],
+):
+    spring = wp.tid()
+    if spring >= spring_count:
+        return
+    if foot_contact_valid[spring] == 0:
+        return
+
+    slack = wp.max(slack_length_m[spring], 1.0e-6)
+    top_world_z = midsole_z + top_m[spring]
+    foot_sole_world_z = foot_z + foot_sole_z_m[spring]
+    displacement = wp.clamp(top_world_z - foot_sole_world_z, 0.0, slack)
+    comp_vel = midsole_vz - foot_vz
+    area = spacing_m * spacing_m
+
+    wp.atomic_add(surface_state, spring * 6 + SURFACE_TOP_AREA, area)
+    wp.atomic_add(surface_state, spring * 6 + SURFACE_TOP_DISP_AREA, displacement * area)
+    wp.atomic_add(surface_state, spring * 6 + SURFACE_TOP_VEL_AREA, comp_vel * area)
+    foot_displacement_out[spring] = displacement
+
+
+@wp.kernel
 def evaluate_hydroelastic_ogden_kernel(
     points: wp.array[wp.vec3f],  # World-space positions of contact surface triangle vertices (3 per face)
     depths: wp.array[wp.float32],  # Penetration depth at each face centroid
@@ -395,6 +517,7 @@ def evaluate_hydroelastic_ogden_kernel(
     spring_xy: wp.array[wp.vec2],
     spring_slack: wp.array[float],
     num_springs: int,
+    coupled_surface_state: wp.array[float],
     params: wp.array[float],
     body_f: wp.array[wp.spatial_vector],  # Output accumulated body forces
     wrench_out: wp.array[float],  # Output accumulated wrench (midsole-ground)
@@ -405,6 +528,8 @@ def evaluate_hydroelastic_ogden_kernel(
     foot_pressure_kpa_out: wp.array[float],
     ground_displacement_out: wp.array[float],
     ground_pressure_kpa_out: wp.array[float],
+    stack_displacement_out: wp.array[float],
+    stack_pressure_kpa_out: wp.array[float],
 ):
     tid = wp.tid()
     face_count = face_count_ptr[0]
@@ -461,7 +586,22 @@ def evaluate_hydroelastic_ogden_kernel(
         return
 
     slack = wp.max(local_thick, 1.0e-6)
-    strain = wp.clamp(displacement / slack, 0.0, 0.99)
+    stack_displacement = displacement
+    stack_comp_vel = float(0.0)
+    coupled_energy_scale = float(1.0)
+    if nearest != -1:
+        top_area = coupled_surface_state[nearest * 6 + SURFACE_TOP_AREA]
+        ground_area = coupled_surface_state[nearest * 6 + SURFACE_GROUND_AREA]
+        if top_area > 0.0 and ground_area > 0.0:
+            top_displacement = coupled_surface_state[nearest * 6 + SURFACE_TOP_DISP_AREA] / top_area
+            ground_displacement = coupled_surface_state[nearest * 6 + SURFACE_GROUND_DISP_AREA] / ground_area
+            top_comp_vel = coupled_surface_state[nearest * 6 + SURFACE_TOP_VEL_AREA] / top_area
+            ground_comp_vel = coupled_surface_state[nearest * 6 + SURFACE_GROUND_VEL_AREA] / ground_area
+            stack_displacement = wp.clamp(top_displacement + ground_displacement, 0.0, slack)
+            stack_comp_vel = top_comp_vel + ground_comp_vel
+            coupled_energy_scale = 0.5
+
+    strain = wp.clamp(stack_displacement / slack, 0.0, 0.99)
 
     # 3. Calculate compressive velocity at contact point
     comp_vel = float(0.0)
@@ -494,6 +634,9 @@ def evaluate_hydroelastic_ogden_kernel(
         comp_vel = -wp.dot(v_midsole_c, normal)
 
     # 4. Evaluate contact stress and force
+    if stack_comp_vel != 0.0:
+        comp_vel = stack_comp_vel
+
     stress = evaluate_contact_stress(strain, comp_vel, params)
     force_magnitude = stress * area * wp.max(params[PARAM_HYDRO_FORCE_SCALE], 0.0)
     force_vec = normal * force_magnitude
@@ -510,14 +653,16 @@ def evaluate_hydroelastic_ogden_kernel(
         wp.atomic_add(body_f, foot_body_idx, wp.spatial_vector(force_vec, wp.cross(r_foot, force_vec)))
         wp.atomic_sub(body_f, midsole_body_idx, wp.spatial_vector(force_vec, wp.cross(r_midsole, force_vec)))
 
-        dissipated_energy = evaluate_dissipated_energy_rate(strain, comp_vel, area, params) * sim_dt
-        wp.atomic_add(energy_out, 0, evaluate_elastic_energy(displacement, slack, area, params))
+        dissipated_energy = evaluate_dissipated_energy_rate(strain, comp_vel, area, params) * sim_dt * coupled_energy_scale
+        wp.atomic_add(energy_out, 0, evaluate_elastic_energy(stack_displacement, slack, area, params) * coupled_energy_scale)
         wp.atomic_add(energy_out, 2, dissipated_energy)
         wp.atomic_add(dissipated_energy_total_out, 0, dissipated_energy)
 
         if nearest != -1:
             wp.atomic_max(foot_displacement_out, nearest, displacement)
             wp.atomic_max(foot_pressure_kpa_out, nearest, stress * 0.001)
+            wp.atomic_max(stack_displacement_out, nearest, stack_displacement)
+            wp.atomic_max(stack_pressure_kpa_out, nearest, stress * 0.001)
     else:
         # Midsole-ground contact: push midsole UP
         midsole_com = wp.transform_point(body_q[midsole_body_idx], body_com[midsole_body_idx])
@@ -535,14 +680,92 @@ def evaluate_hydroelastic_ogden_kernel(
         wp.atomic_add(wrench_out, 4, torque[1])
         wp.atomic_add(wrench_out, 5, torque[2])
 
-        dissipated_energy = evaluate_dissipated_energy_rate(strain, comp_vel, area, params) * sim_dt
-        wp.atomic_add(energy_out, 1, evaluate_elastic_energy(displacement, slack, area, params))
+        dissipated_energy = evaluate_dissipated_energy_rate(strain, comp_vel, area, params) * sim_dt * coupled_energy_scale
+        wp.atomic_add(energy_out, 1, evaluate_elastic_energy(stack_displacement, slack, area, params) * coupled_energy_scale)
         wp.atomic_add(energy_out, 3, dissipated_energy)
         wp.atomic_add(dissipated_energy_total_out, 0, dissipated_energy)
 
         if nearest != -1:
             wp.atomic_max(ground_displacement_out, nearest, displacement)
             wp.atomic_max(ground_pressure_kpa_out, nearest, stress * 0.001)
+            wp.atomic_max(stack_displacement_out, nearest, stack_displacement)
+            wp.atomic_max(stack_pressure_kpa_out, nearest, stress * 0.001)
+
+
+@wp.kernel
+def apply_bonded_top_forces_kernel(
+    grid_xy: wp.array[wp.vec2],
+    top_m: wp.array[float],
+    slack_length_m: wp.array[float],
+    foot_contact_valid: wp.array[wp.int32],
+    spring_count: int,
+    midsole_z: float,
+    body_com: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    foot_body_idx: int,
+    midsole_body_idx: int,
+    coupled_surface_state: wp.array[float],
+    params: wp.array[float],
+    body_f: wp.array[wp.spatial_vector],
+    energy_out: wp.array[float],
+    dissipated_energy_total_out: wp.array[float],
+    sim_dt: float,
+    foot_pressure_kpa_out: wp.array[float],
+    stack_displacement_out: wp.array[float],
+    stack_pressure_kpa_out: wp.array[float],
+):
+    spring = wp.tid()
+    if spring >= spring_count:
+        return
+    if foot_contact_valid[spring] == 0:
+        return
+
+    top_area = coupled_surface_state[spring * 6 + SURFACE_TOP_AREA]
+    if top_area <= 0.0:
+        return
+
+    top_displacement = coupled_surface_state[spring * 6 + SURFACE_TOP_DISP_AREA] / top_area
+    top_comp_vel = coupled_surface_state[spring * 6 + SURFACE_TOP_VEL_AREA] / top_area
+    stack_displacement = top_displacement
+    stack_comp_vel = top_comp_vel
+    coupled_energy_scale = float(1.0)
+
+    ground_area = coupled_surface_state[spring * 6 + SURFACE_GROUND_AREA]
+    if ground_area > 0.0:
+        ground_displacement = coupled_surface_state[spring * 6 + SURFACE_GROUND_DISP_AREA] / ground_area
+        ground_comp_vel = coupled_surface_state[spring * 6 + SURFACE_GROUND_VEL_AREA] / ground_area
+        stack_displacement = top_displacement + ground_displacement
+        stack_comp_vel = top_comp_vel + ground_comp_vel
+        coupled_energy_scale = 0.5
+
+    slack = wp.max(slack_length_m[spring], 1.0e-6)
+    stack_displacement = wp.clamp(stack_displacement, 0.0, slack)
+    if stack_displacement <= 0.0:
+        return
+
+    strain = wp.clamp(stack_displacement / slack, 0.0, 0.99)
+    stress = evaluate_contact_stress(strain, stack_comp_vel, params)
+    force_magnitude = stress * top_area * wp.max(params[PARAM_HYDRO_FORCE_SCALE], 0.0)
+    force_vec = wp.vec3(0.0, 0.0, force_magnitude)
+
+    xy = grid_xy[spring]
+    point = wp.vec3(xy[0], xy[1], midsole_z + top_m[spring])
+    foot_com = wp.transform_point(body_q[foot_body_idx], body_com[foot_body_idx])
+    midsole_com = wp.transform_point(body_q[midsole_body_idx], body_com[midsole_body_idx])
+    r_foot = point - foot_com
+    r_midsole = point - midsole_com
+
+    wp.atomic_add(body_f, foot_body_idx, wp.spatial_vector(force_vec, wp.cross(r_foot, force_vec)))
+    wp.atomic_sub(body_f, midsole_body_idx, wp.spatial_vector(force_vec, wp.cross(r_midsole, force_vec)))
+
+    dissipated_energy = evaluate_dissipated_energy_rate(strain, stack_comp_vel, top_area, params) * sim_dt
+    dissipated_energy *= coupled_energy_scale
+    wp.atomic_add(energy_out, 0, evaluate_elastic_energy(stack_displacement, slack, top_area, params) * coupled_energy_scale)
+    wp.atomic_add(energy_out, 2, dissipated_energy)
+    wp.atomic_add(dissipated_energy_total_out, 0, dissipated_energy)
+    foot_pressure_kpa_out[spring] = stress * 0.001
+    stack_displacement_out[spring] = stack_displacement
+    stack_pressure_kpa_out[spring] = stress * 0.001
 
 
 @wp.kernel
@@ -631,6 +854,10 @@ def update_peak_maps_kernel(
     foot_pressure: wp.array[float],
     peak_foot_displacement: wp.array[float],
     peak_foot_pressure: wp.array[float],
+    stack_displacement: wp.array[float],
+    stack_pressure: wp.array[float],
+    peak_stack_displacement: wp.array[float],
+    peak_stack_pressure: wp.array[float],
     size: int,
 ):
     tid = wp.tid()
@@ -640,6 +867,8 @@ def update_peak_maps_kernel(
     peak_pressure[tid] = wp.max(peak_pressure[tid], pressure[tid])
     peak_foot_displacement[tid] = wp.max(peak_foot_displacement[tid], foot_displacement[tid])
     peak_foot_pressure[tid] = wp.max(peak_foot_pressure[tid], foot_pressure[tid])
+    peak_stack_displacement[tid] = wp.max(peak_stack_displacement[tid], stack_displacement[tid])
+    peak_stack_pressure[tid] = wp.max(peak_stack_pressure[tid], stack_pressure[tid])
 
 
 @wp.kernel
@@ -969,6 +1198,17 @@ class Example:
             foot_v_transformed[:, 2] += Z_offset + args.foot_offset_z_mm * 0.001
             z_foot_sole[valid] += Z_offset + args.foot_offset_z_mm * 0.001
 
+            missing = ~valid
+            if np.any(missing):
+                grid_xy = self.spring_grid.grid_uv_m
+                valid_xy = grid_xy[valid]
+                missing_xy = grid_xy[missing]
+                nearest = np.argmin(np.sum((missing_xy[:, None, :] - valid_xy[None, :, :]) ** 2, axis=2), axis=1)
+                nearest_dist = np.linalg.norm(missing_xy - valid_xy[nearest], axis=1)
+                fill_mask = nearest_dist <= max(2.5 * spacing, 0.012)
+                missing_indices = np.flatnonzero(missing)
+                z_foot_sole[missing_indices[fill_mask]] = z_foot_sole[np.flatnonzero(valid)[nearest[fill_mask]]]
+
         self.foot_sole_z_m = z_foot_sole
         self.foot_contact_valid = np.isfinite(self.foot_sole_z_m)
         if self.debug:
@@ -1024,7 +1264,7 @@ class Example:
 
         # Build SDF for foot mesh
         foot_mesh.build_sdf(
-            max_resolution=64,
+            max_resolution=128,
             narrow_band_range=(-narrow_band, narrow_band),
             margin=contact_gap,
             device=viewer.device,
@@ -1063,6 +1303,33 @@ class Example:
         midsole_f_transformed = midsole_f.copy()
         # Since we swapped Y and Z (odd permutation), swap face indices 1 and 2 to preserve winding
         midsole_f_transformed[:, [1, 2]] = midsole_f_transformed[:, [2, 1]]
+        midsole_tri = midsole_v_transformed[midsole_f_transformed]
+        midsole_face_centroids = np.mean(midsole_tri, axis=1)
+        midsole_face_normals = np.cross(
+            midsole_tri[:, 1] - midsole_tri[:, 0],
+            midsole_tri[:, 2] - midsole_tri[:, 0],
+        )
+        midsole_face_normal_norm = np.linalg.norm(midsole_face_normals, axis=1)
+        midsole_face_nz = np.divide(
+            midsole_face_normals[:, 2],
+            midsole_face_normal_norm,
+            out=np.zeros_like(midsole_face_normal_norm),
+            where=midsole_face_normal_norm > 0.0,
+        )
+        self.bonded_top_surface_xy = midsole_face_centroids[
+            (midsole_face_nz > 0.35) & (midsole_face_centroids[:, 2] > np.percentile(midsole_face_centroids[:, 2], 45.0)),
+            :2,
+        ].astype(np.float32)
+        if len(self.bonded_top_surface_xy) > 0:
+            self.bonded_top_surface_nearest = np.argmin(
+                np.sum(
+                    (self.bonded_top_surface_xy[:, None, :] - self.spring_grid.grid_uv_m[None, :, :]) ** 2,
+                    axis=2,
+                ),
+                axis=1,
+            )
+        else:
+            self.bonded_top_surface_nearest = np.zeros(0, dtype=np.int64)
 
         midsole_mesh = newton.Mesh(midsole_v_transformed, midsole_f_transformed.reshape(-1))
         if self.debug:
@@ -1073,7 +1340,7 @@ class Example:
 
         # Build SDF for midsole mesh
         midsole_mesh.build_sdf(
-            max_resolution=64,
+            max_resolution=128,
             narrow_band_range=(-narrow_band, narrow_band),
             margin=contact_gap,
             device=viewer.device,
@@ -1144,7 +1411,7 @@ class Example:
 
         # Finalize model with Hydroelastic config
         self.sdf_config = HydroelasticSDF.Config(
-            reduce_contacts=True,
+            reduce_contacts=False,
             pre_prune_contacts=False,
             output_contact_surface=True,
             anchor_contact=True,
@@ -1204,7 +1471,7 @@ class Example:
         # Instantiate the collision pipeline
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            rigid_contact_max=2000,
+            rigid_contact_max=20000,
             sdf_hydroelastic_config=self.sdf_config,
         )
         self.contacts = self.collision_pipeline.contacts()
@@ -1290,7 +1557,6 @@ class Example:
         self.current_midsole_vz = 0.0
         self.previous_midsole_z = self.start_z
         self.save_plots = bool(args.save_plots)
-        self.use_hydro_surface_wrench = bool(args.use_hydro_surface_wrench)
 
         # Initialize body and free-joint positions.
         wp.launch(
@@ -1353,14 +1619,21 @@ class Example:
         self.peak_foot_top_pressure_kpa = np.zeros_like(self.spring_grid.slack_length_m)
         self.peak_ground_bottom_displacement_m = np.zeros_like(self.spring_grid.slack_length_m)
         self.peak_ground_bottom_pressure_kpa = np.zeros_like(self.spring_grid.slack_length_m)
+        self.peak_stack_displacement_m = np.zeros_like(self.spring_grid.slack_length_m)
+        self.peak_stack_pressure_kpa = np.zeros_like(self.spring_grid.slack_length_m)
         self.wp_foot_top_displacement = wp.zeros(self.num_springs, dtype=float, device=self.device)
         self.wp_foot_top_pressure_kpa = wp.zeros(self.num_springs, dtype=float, device=self.device)
         self.wp_ground_bottom_displacement = wp.zeros(self.num_springs, dtype=float, device=self.device)
         self.wp_ground_bottom_pressure_kpa = wp.zeros(self.num_springs, dtype=float, device=self.device)
+        self.wp_stack_displacement = wp.zeros(self.num_springs, dtype=float, device=self.device)
+        self.wp_stack_pressure_kpa = wp.zeros(self.num_springs, dtype=float, device=self.device)
+        self.wp_coupled_surface_state = wp.zeros(self.num_springs * 6, dtype=float, device=self.device)
         self.wp_peak_foot_top_displacement = wp.zeros(self.num_springs, dtype=float, device=self.device)
         self.wp_peak_foot_top_pressure_kpa = wp.zeros(self.num_springs, dtype=float, device=self.device)
         self.wp_peak_ground_bottom_displacement = wp.zeros(self.num_springs, dtype=float, device=self.device)
         self.wp_peak_ground_bottom_pressure_kpa = wp.zeros(self.num_springs, dtype=float, device=self.device)
+        self.wp_peak_stack_displacement = wp.zeros(self.num_springs, dtype=float, device=self.device)
+        self.wp_peak_stack_pressure_kpa = wp.zeros(self.num_springs, dtype=float, device=self.device)
         self.wp_contact_wrench = wp.zeros(6, dtype=float, device=self.device)
         self.wp_contact_energy = wp.zeros(4, dtype=float, device=self.device)
         self.wp_dissipated_energy_total = wp.zeros(1, dtype=float, device=self.device)
@@ -1383,6 +1656,10 @@ class Example:
         self.history_foot_pres = []
         self.history_ground_disp = []
         self.history_ground_pres = []
+        self.history_stack_disp = []
+        self.history_stack_pres = []
+        self.history_top_surface_samples = []
+        self.history_ground_surface_samples = []
         self.history_elastic_energy = []
         self.history_dissipated_energy = []
 
@@ -1412,6 +1689,10 @@ class Example:
                     self.wp_foot_top_pressure_kpa,
                     self.wp_peak_foot_top_displacement,
                     self.wp_peak_foot_top_pressure_kpa,
+                    self.wp_stack_displacement,
+                    self.wp_stack_pressure_kpa,
+                    self.wp_peak_stack_displacement,
+                    self.wp_peak_stack_pressure_kpa,
                     self.num_springs,
                 ],
                 device=self.device,
@@ -1428,8 +1709,10 @@ class Example:
         self.peak_foot_top_pressure_kpa = self.wp_peak_foot_top_pressure_kpa.numpy()
         self.peak_ground_bottom_displacement_m = self.wp_peak_ground_bottom_displacement.numpy()
         self.peak_ground_bottom_pressure_kpa = self.wp_peak_ground_bottom_pressure_kpa.numpy()
-        self.peak_compression_m = self.peak_ground_bottom_displacement_m
-        self.peak_pressure_kpa = self.peak_ground_bottom_pressure_kpa
+        self.peak_stack_displacement_m = self.wp_peak_stack_displacement.numpy()
+        self.peak_stack_pressure_kpa = self.wp_peak_stack_pressure_kpa.numpy()
+        self.peak_compression_m = self.peak_stack_displacement_m
+        self.peak_pressure_kpa = self.peak_stack_pressure_kpa
 
     def _sync_step_stats_from_warp(self):
         stats = self.wp_step_stats.numpy()
@@ -1439,6 +1722,75 @@ class Example:
         self.last_elastic_energy_j = float(stats[STATS_LAST_ELASTIC_ENERGY_J])
         self.peak_elastic_energy_j = float(stats[STATS_PEAK_ELASTIC_ENERGY_J])
         self.dissipated_energy_j = float(stats[STATS_LAST_DISSIPATED_ENERGY_J])
+
+    def _surface_samples_from_hydro(self, contact_surface, face_count: int) -> tuple[np.ndarray, np.ndarray]:
+        if contact_surface is None or face_count <= 0:
+            return self._bonded_top_surface_samples(), np.empty((0, 5), dtype=np.float32)
+
+        points = contact_surface.contact_surface_point.numpy()[: 3 * face_count].reshape(face_count, 3, 3)
+        pairs = contact_surface.contact_surface_shape_pair.numpy()[:face_count]
+        depths = contact_surface.contact_surface_depth.numpy()[:face_count]
+        centroids = np.mean(points, axis=1)
+        face_displacement_m = np.maximum(-2.0 * depths, 0.0)
+
+        is_ground = ((pairs[:, 0] == self.midsole_shape_id) & (pairs[:, 1] == self.ground_shape_id)) | (
+            (pairs[:, 1] == self.midsole_shape_id) & (pairs[:, 0] == self.ground_shape_id)
+        )
+
+        stack_displacement_m = self.wp_stack_displacement.numpy()
+        stack_pressure_kpa = self.wp_stack_pressure_kpa.numpy()
+        grid_xy = self.spring_grid.grid_uv_m
+
+        def build_samples(mask: np.ndarray) -> np.ndarray:
+            if not np.any(mask):
+                return np.empty((0, 5), dtype=np.float32)
+
+            xy = centroids[mask, :2]
+            nearest = np.argmin(np.sum((xy[:, None, :] - grid_xy[None, :, :]) ** 2, axis=2), axis=1)
+            return np.column_stack(
+                (
+                    xy[:, 0],
+                    xy[:, 1],
+                    face_displacement_m[mask],
+                    stack_displacement_m[nearest],
+                    stack_pressure_kpa[nearest],
+                )
+            ).astype(np.float32)
+
+        return self._bonded_top_surface_samples(), build_samples(is_ground)
+
+    def _bonded_top_surface_samples(self) -> np.ndarray:
+        if len(self.bonded_top_surface_xy) == 0:
+            return np.empty((0, 5), dtype=np.float32)
+
+        nearest = self.bonded_top_surface_nearest
+        foot_displacement_m = self.wp_foot_top_displacement.numpy()
+        stack_displacement_m = self.wp_stack_displacement.numpy()
+        stack_pressure_kpa = self.wp_stack_pressure_kpa.numpy()
+        return np.column_stack(
+            (
+                self.bonded_top_surface_xy[:, 0],
+                self.bonded_top_surface_xy[:, 1],
+                foot_displacement_m[nearest],
+                stack_displacement_m[nearest],
+                stack_pressure_kpa[nearest],
+            )
+        ).astype(np.float32)
+
+    def _bonded_top_surface_peak_samples(self) -> np.ndarray:
+        if len(self.bonded_top_surface_xy) == 0:
+            return np.empty((0, 5), dtype=np.float32)
+
+        nearest = self.bonded_top_surface_nearest
+        return np.column_stack(
+            (
+                self.bonded_top_surface_xy[:, 0],
+                self.bonded_top_surface_xy[:, 1],
+                self.peak_foot_top_displacement_m[nearest],
+                self.peak_stack_displacement_m[nearest],
+                self.peak_stack_pressure_kpa[nearest],
+            )
+        ).astype(np.float32)
 
     def _body_com_world(self, body_q: np.ndarray) -> np.ndarray:
         origin = body_q[self.foot_body_id, :3]
@@ -1526,6 +1878,8 @@ class Example:
             body_qd = self.state_0.body_qd.numpy()
             foot_z = float(body_q[self.foot_body_id, 2])
             midsole_z = float(body_q[self.midsole_body_id, 2])
+            foot_vz = float(body_qd[self.foot_body_id, 2])
+            midsole_vz = float(body_qd[self.midsole_body_id, 2])
             pitch_rate = float(body_qd[self.foot_body_id, 4])
 
             # Apply non-contact forces (gravity, external forces, plate bending torque)
@@ -1563,12 +1917,57 @@ class Example:
 
             self.wp_contact_wrench.zero_()
             self.wp_contact_energy.zero_()
+            self.wp_coupled_surface_state.zero_()
             self.wp_foot_top_displacement.zero_()
             self.wp_foot_top_pressure_kpa.zero_()
             self.wp_ground_bottom_displacement.zero_()
             self.wp_ground_bottom_pressure_kpa.zero_()
+            self.wp_stack_displacement.zero_()
+            self.wp_stack_pressure_kpa.zero_()
+
+            wp.launch(
+                accumulate_bonded_top_state_kernel,
+                dim=self.num_springs,
+                inputs=[
+                    self.wp_spring_top,
+                    self.wp_foot_sole_z,
+                    self.wp_foot_contact_valid,
+                    self.wp_spring_slack,
+                    self.num_springs,
+                    float(foot_z),
+                    float(midsole_z),
+                    float(foot_vz),
+                    float(midsole_vz),
+                    float(self.spring_grid.spacing_m),
+                    self.wp_coupled_surface_state,
+                    self.wp_foot_top_displacement,
+                ],
+                device=self.device,
+            )
 
             if face_count > 0:
+                wp.launch(
+                    accumulate_hydro_surface_state_kernel,
+                    dim=face_count,
+                    inputs=[
+                        contact_surface.contact_surface_point,
+                        contact_surface.contact_surface_depth,
+                        contact_surface.contact_surface_shape_pair,
+                        contact_surface.face_contact_count,
+                        self.foot_shape_id,
+                        self.midsole_shape_id,
+                        self.ground_shape_id,
+                        self.foot_body_id,
+                        self.midsole_body_id,
+                        self.model.body_com,
+                        self.state_0.body_q,
+                        self.state_0.body_qd,
+                        self.wp_spring_xy,
+                        self.num_springs,
+                        self.wp_coupled_surface_state,
+                    ],
+                    device=self.device,
+                )
                 wp.launch(
                     evaluate_hydroelastic_ogden_kernel,
                     dim=face_count,
@@ -1588,6 +1987,7 @@ class Example:
                         self.wp_spring_xy,
                         self.wp_spring_slack,
                         self.num_springs,
+                        self.wp_coupled_surface_state,
                         self.wp_params,
                         self.state_0.body_f,
                         self.wp_contact_wrench,
@@ -1598,9 +1998,38 @@ class Example:
                         self.wp_foot_top_pressure_kpa,
                         self.wp_ground_bottom_displacement,
                         self.wp_ground_bottom_pressure_kpa,
+                        self.wp_stack_displacement,
+                        self.wp_stack_pressure_kpa,
                     ],
                     device=self.device,
                 )
+
+            wp.launch(
+                apply_bonded_top_forces_kernel,
+                dim=self.num_springs,
+                inputs=[
+                    self.wp_spring_xy,
+                    self.wp_spring_top,
+                    self.wp_spring_slack,
+                    self.wp_foot_contact_valid,
+                    self.num_springs,
+                    float(midsole_z),
+                    self.model.body_com,
+                    self.state_0.body_q,
+                    self.foot_body_id,
+                    self.midsole_body_id,
+                    self.wp_coupled_surface_state,
+                    self.wp_params,
+                    self.state_0.body_f,
+                    self.wp_contact_energy,
+                    self.wp_dissipated_energy_total,
+                    float(self.sim_dt),
+                    self.wp_foot_top_pressure_kpa,
+                    self.wp_stack_displacement,
+                    self.wp_stack_pressure_kpa,
+                ],
+                device=self.device,
+            )
 
             wp.launch(
                 update_shoe_stats_kernel,
@@ -1641,6 +2070,7 @@ class Example:
 
             if self.save_plots:
                 self._sync_step_stats_from_warp()
+                top_surface_samples, ground_surface_samples = self._surface_samples_from_hydro(contact_surface, face_count)
                 self.history_z.append(foot_z)
                 self.history_foot_z.append(foot_z)
                 self.history_midsole_z.append(midsole_z)
@@ -1651,6 +2081,10 @@ class Example:
                 self.history_foot_pres.append(self.wp_foot_top_pressure_kpa.numpy().copy())
                 self.history_ground_disp.append(self.wp_ground_bottom_displacement.numpy().copy())
                 self.history_ground_pres.append(self.wp_ground_bottom_pressure_kpa.numpy().copy())
+                self.history_stack_disp.append(self.wp_stack_displacement.numpy().copy())
+                self.history_stack_pres.append(self.wp_stack_pressure_kpa.numpy().copy())
+                self.history_top_surface_samples.append(top_surface_samples)
+                self.history_ground_surface_samples.append(ground_surface_samples)
 
             # Advance simulation time
             self.sim_time += self.sim_dt
@@ -1849,6 +2283,7 @@ class Example:
 
         disp_foot_mm = (self.start_z - pos_foot_z) * 1000.0
         disp_midsole_mm = (self.start_z - pos_midsole_z) * 1000.0
+        stack_disp_mm = np.asarray([np.max(frame) * 1000.0 for frame in self.history_stack_disp], dtype=np.float32)
 
         _fig, axs = plt.subplots(1, 2, figsize=(12, 5))
 
@@ -1863,12 +2298,14 @@ class Example:
         axs0_twin.set_ylabel("Displacement [mm]")
         axs0_twin.plot(time, disp_foot_mm, color="tab:blue", linewidth=2, label="Foot")
         axs0_twin.plot(time, disp_midsole_mm, color="tab:cyan", linewidth=2, linestyle="--", label="Midsole")
+        axs0_twin.plot(time, stack_disp_mm, color="tab:green", linewidth=2, linestyle=":", label="Stack")
         axs0_twin.tick_params(axis="y")
         axs0_twin.legend(loc="upper right")
         axs0_twin.set_title("Force & Displacement vs Time")
 
         axs[1].plot(disp_foot_mm, force_n, color="purple", linewidth=2.5, label="Foot")
         axs[1].plot(disp_midsole_mm, force_n, color="green", linewidth=2.0, linestyle="--", label="Midsole")
+        axs[1].plot(stack_disp_mm, force_n, color="black", linewidth=2.0, linestyle=":", label="Coupled Stack")
         axs[1].set_xlabel("Displacement [mm]")
         axs[1].set_ylabel("Force [N]")
         axs[1].set_title("Force-Displacement Hysteresis Loops")
@@ -1881,59 +2318,103 @@ class Example:
         print(f"Hysteresis plot saved to {plot_path}")
         plt.close()
 
-        fig2, axs2 = plt.subplots(2, 2, figsize=(12, 10))
-
-        sc1 = axs2[0, 0].scatter(
-            self.spring_grid.grid_uv_m[:, 0] * 1000.0,
-            self.spring_grid.grid_uv_m[:, 1] * 1000.0,
-            c=self.peak_foot_top_displacement_m * 1000.0,
-            s=18,
-            cmap="inferno",
+        top_surface = self._bonded_top_surface_peak_samples()
+        ground_surface = (
+            np.concatenate([s for s in self.history_ground_surface_samples if len(s) > 0], axis=0)
+            if any(len(s) > 0 for s in self.history_ground_surface_samples)
+            else np.empty((0, 5), dtype=np.float32)
         )
-        axs2[0, 0].set_title("Peak Top Displacement from Foot Mesh")
-        axs2[0, 0].set_aspect("equal", adjustable="box")
-        axs2[0, 0].set_xlabel("Width [mm]")
-        axs2[0, 0].set_ylabel("Length [mm]")
-        fig2.colorbar(sc1, ax=axs2[0, 0], label="Displacement [mm]")
-
-        sc2 = axs2[0, 1].scatter(
-            self.spring_grid.grid_uv_m[:, 0] * 1000.0,
-            self.spring_grid.grid_uv_m[:, 1] * 1000.0,
-            c=self.peak_foot_top_pressure_kpa,
-            s=18,
-            cmap="jet",
+        stack_surface = (
+            np.concatenate([top_surface, ground_surface], axis=0)
+            if len(top_surface) > 0 or len(ground_surface) > 0
+            else np.empty((0, 5), dtype=np.float32)
         )
-        axs2[0, 1].set_title("Peak Top Pressure from Foot Mesh")
-        axs2[0, 1].set_aspect("equal", adjustable="box")
-        axs2[0, 1].set_xlabel("Width [mm]")
-        axs2[0, 1].set_ylabel("Length [mm]")
-        fig2.colorbar(sc2, ax=axs2[0, 1], label="Pressure [kPa]")
 
-        sc3 = axs2[1, 0].scatter(
-            self.spring_grid.grid_uv_m[:, 0] * 1000.0,
-            self.spring_grid.grid_uv_m[:, 1] * 1000.0,
-            c=self.peak_ground_bottom_displacement_m * 1000.0,
-            s=18,
-            cmap="inferno",
+        fig2, axs2 = plt.subplots(3, 2, figsize=(12, 14))
+        pressure_vmax = (
+            float(np.percentile(stack_surface[:, 4], 99.0))
+            if len(stack_surface) > 0 and np.max(stack_surface[:, 4]) > 0.0
+            else 1.0
         )
-        axs2[1, 0].set_title("Peak Bottom Displacement from Ground")
-        axs2[1, 0].set_aspect("equal", adjustable="box")
-        axs2[1, 0].set_xlabel("Width [mm]")
-        axs2[1, 0].set_ylabel("Length [mm]")
-        fig2.colorbar(sc3, ax=axs2[1, 0], label="Displacement [mm]")
 
-        sc4 = axs2[1, 1].scatter(
-            self.spring_grid.grid_uv_m[:, 0] * 1000.0,
-            self.spring_grid.grid_uv_m[:, 1] * 1000.0,
-            c=self.peak_ground_bottom_pressure_kpa,
-            s=18,
-            cmap="jet",
+        def plot_surface(ax, samples, value_col, title, cmap, label, vmax=None):
+            if len(samples) == 0:
+                ax.set_title(f"{title} (no hydro faces)")
+                ax.set_aspect("equal", adjustable="box")
+                ax.set_xlabel("Width [mm]")
+                ax.set_ylabel("Length [mm]")
+                return None
+
+            samples = samples[np.argsort(samples[:, value_col])]
+            scatter = ax.scatter(
+                samples[:, 0] * 1000.0,
+                samples[:, 1] * 1000.0,
+                c=samples[:, value_col],
+                s=8,
+                cmap=cmap,
+                vmin=0.0,
+                vmax=vmax,
+                linewidths=0.0,
+                alpha=0.72,
+            )
+            ax.set_title(title)
+            ax.set_aspect("equal", adjustable="box")
+            ax.set_xlabel("Width [mm]")
+            ax.set_ylabel("Length [mm]")
+            fig2.colorbar(scatter, ax=ax, label=label)
+            return scatter
+
+        plot_surface(
+            axs2[0, 0],
+            top_surface * np.array([1.0, 1.0, 1000.0, 1.0, 1.0], dtype=np.float32),
+            2,
+            "Hydro Top Face Displacement Samples",
+            "inferno",
+            "Face displacement [mm]",
         )
-        axs2[1, 1].set_title("Peak Bottom Pressure from Ground")
-        axs2[1, 1].set_aspect("equal", adjustable="box")
-        axs2[1, 1].set_xlabel("Width [mm]")
-        axs2[1, 1].set_ylabel("Length [mm]")
-        fig2.colorbar(sc4, ax=axs2[1, 1], label="Pressure [kPa]")
+        plot_surface(
+            axs2[0, 1],
+            top_surface,
+            4,
+            "Hydro Top Face Coupled Pressure",
+            "jet",
+            "Pressure [kPa]",
+            vmax=pressure_vmax,
+        )
+        plot_surface(
+            axs2[1, 0],
+            ground_surface * np.array([1.0, 1.0, 1000.0, 1.0, 1.0], dtype=np.float32),
+            2,
+            "Hydro Bottom Face Displacement Samples",
+            "inferno",
+            "Face displacement [mm]",
+        )
+        plot_surface(
+            axs2[1, 1],
+            ground_surface,
+            4,
+            "Hydro Bottom Face Coupled Pressure",
+            "jet",
+            "Pressure [kPa]",
+            vmax=pressure_vmax,
+        )
+        plot_surface(
+            axs2[2, 0],
+            stack_surface * np.array([1.0, 1.0, 1.0, 1000.0, 1.0], dtype=np.float32),
+            3,
+            "Hydro Coupled Stack Displacement Samples",
+            "inferno",
+            "Stack displacement [mm]",
+        )
+        plot_surface(
+            axs2[2, 1],
+            stack_surface,
+            4,
+            "Hydro Coupled Stack Pressure Samples",
+            "jet",
+            "Pressure [kPa]",
+            vmax=pressure_vmax,
+        )
 
         plt.tight_layout()
         heatmap_path = "foot_shoe_peak_heatmap.png"
@@ -1952,81 +2433,73 @@ class Example:
 
             fig_anim, axs_anim = plt.subplots(2, 2, figsize=(12, 10))
 
-            foot_disp_init = self.history_foot_disp[indices[0]]
-            foot_pressure_init = self.history_foot_pres[indices[0]]
-            ground_disp_init = self.history_ground_disp[indices[0]]
-            ground_pressure_init = self.history_ground_pres[indices[0]]
-
             foot_disp_vmax = (
-                np.max(self.peak_foot_top_displacement_m * 1000.0)
-                if np.max(self.peak_foot_top_displacement_m) > 0.0
+                np.max(top_surface[:, 2] * 1000.0)
+                if len(top_surface) > 0 and np.max(top_surface[:, 2]) > 0.0
                 else 1.0
             )
             ground_disp_vmax = (
-                np.max(self.peak_ground_bottom_displacement_m * 1000.0)
-                if np.max(self.peak_ground_bottom_displacement_m) > 0.0
+                np.max(ground_surface[:, 2] * 1000.0)
+                if len(ground_surface) > 0 and np.max(ground_surface[:, 2]) > 0.0
                 else 1.0
             )
-
-            sc_foot_disp = axs_anim[0, 0].scatter(
-                self.spring_grid.grid_uv_m[:, 0] * 1000.0,
-                self.spring_grid.grid_uv_m[:, 1] * 1000.0,
-                c=foot_disp_init * 1000.0,
-                s=18,
-                cmap="inferno",
-                vmin=0.0,
-                vmax=foot_disp_vmax,
+            all_anim_samples = (
+                np.concatenate([top_surface, ground_surface], axis=0)
+                if len(top_surface) > 0 or len(ground_surface) > 0
+                else np.column_stack(
+                    (
+                        self.spring_grid.grid_uv_m[:, 0],
+                        self.spring_grid.grid_uv_m[:, 1],
+                        np.zeros(self.num_springs),
+                        np.zeros(self.num_springs),
+                        np.zeros(self.num_springs),
+                    )
+                ).astype(np.float32)
             )
-            axs_anim[0, 0].set_title("Top Displacement from Foot [mm]")
-            axs_anim[0, 0].set_aspect("equal", adjustable="box")
-            axs_anim[0, 0].set_xlabel("Width [mm]")
-            axs_anim[0, 0].set_ylabel("Length [mm]")
-            fig_anim.colorbar(sc_foot_disp, ax=axs_anim[0, 0], label="Displacement [mm]")
+            xlim = (float(np.min(all_anim_samples[:, 0]) * 1000.0), float(np.max(all_anim_samples[:, 0]) * 1000.0))
+            ylim = (float(np.min(all_anim_samples[:, 1]) * 1000.0), float(np.max(all_anim_samples[:, 1]) * 1000.0))
 
-            sc_foot_pres = axs_anim[0, 1].scatter(
-                self.spring_grid.grid_uv_m[:, 0] * 1000.0,
-                self.spring_grid.grid_uv_m[:, 1] * 1000.0,
-                c=foot_pressure_init,
-                s=18,
-                cmap="jet",
-                vmin=0.0,
-                vmax=self.max_display_pressure_kpa,
-            )
-            axs_anim[0, 1].set_title("Top Pressure from Foot [kPa]")
-            axs_anim[0, 1].set_aspect("equal", adjustable="box")
-            axs_anim[0, 1].set_xlabel("Width [mm]")
-            axs_anim[0, 1].set_ylabel("Length [mm]")
-            fig_anim.colorbar(sc_foot_pres, ax=axs_anim[0, 1], label="Pressure [kPa]")
+            def init_surface_scatter(ax, title_text, cmap, vmax, label):
+                scatter = ax.scatter(
+                    [],
+                    [],
+                    c=[],
+                    s=10,
+                    cmap=cmap,
+                    vmin=0.0,
+                    vmax=vmax,
+                    linewidths=0.0,
+                    alpha=0.78,
+                )
+                ax.set_title(title_text)
+                ax.set_aspect("equal", adjustable="box")
+                ax.set_xlim(xlim)
+                ax.set_ylim(ylim)
+                ax.set_xlabel("Width [mm]")
+                ax.set_ylabel("Length [mm]")
+                fig_anim.colorbar(scatter, ax=ax, label=label)
+                return scatter
 
-            sc_ground_disp = axs_anim[1, 0].scatter(
-                self.spring_grid.grid_uv_m[:, 0] * 1000.0,
-                self.spring_grid.grid_uv_m[:, 1] * 1000.0,
-                c=ground_disp_init * 1000.0,
-                s=18,
-                cmap="inferno",
-                vmin=0.0,
-                vmax=ground_disp_vmax,
+            sc_foot_disp = init_surface_scatter(
+                axs_anim[0, 0], "Hydro Top Face Displacement [mm]", "inferno", foot_disp_vmax, "Displacement [mm]"
             )
-            axs_anim[1, 0].set_title("Bottom Displacement from Ground [mm]")
-            axs_anim[1, 0].set_aspect("equal", adjustable="box")
-            axs_anim[1, 0].set_xlabel("Width [mm]")
-            axs_anim[1, 0].set_ylabel("Length [mm]")
-            fig_anim.colorbar(sc_ground_disp, ax=axs_anim[1, 0], label="Displacement [mm]")
-
-            sc_ground_pres = axs_anim[1, 1].scatter(
-                self.spring_grid.grid_uv_m[:, 0] * 1000.0,
-                self.spring_grid.grid_uv_m[:, 1] * 1000.0,
-                c=ground_pressure_init,
-                s=18,
-                cmap="jet",
-                vmin=0.0,
-                vmax=self.max_display_pressure_kpa,
+            sc_foot_pres = init_surface_scatter(
+                axs_anim[0, 1], "Hydro Top Face Coupled Pressure [kPa]", "jet", pressure_vmax, "Pressure [kPa]"
             )
-            axs_anim[1, 1].set_title("Bottom Pressure from Ground [kPa]")
-            axs_anim[1, 1].set_aspect("equal", adjustable="box")
-            axs_anim[1, 1].set_xlabel("Width [mm]")
-            axs_anim[1, 1].set_ylabel("Length [mm]")
-            fig_anim.colorbar(sc_ground_pres, ax=axs_anim[1, 1], label="Pressure [kPa]")
+            sc_ground_disp = init_surface_scatter(
+                axs_anim[1, 0],
+                "Hydro Bottom Face Displacement [mm]",
+                "inferno",
+                ground_disp_vmax,
+                "Displacement [mm]",
+            )
+            sc_ground_pres = init_surface_scatter(
+                axs_anim[1, 1],
+                "Hydro Bottom Face Coupled Pressure [kPa]",
+                "jet",
+                pressure_vmax,
+                "Pressure [kPa]",
+            )
 
             title = fig_anim.suptitle("")
 
@@ -2035,15 +2508,16 @@ class Example:
                 t_val = time[idx]
                 f_val = force_n[idx]
 
-                foot_disp = self.history_foot_disp[idx]
-                foot_pressure = self.history_foot_pres[idx]
-                ground_disp = self.history_ground_disp[idx]
-                ground_pressure = self.history_ground_pres[idx]
-
-                sc_foot_disp.set_array(foot_disp * 1000.0)
-                sc_foot_pres.set_array(foot_pressure)
-                sc_ground_disp.set_array(ground_disp * 1000.0)
-                sc_ground_pres.set_array(ground_pressure)
+                top_samples = self.history_top_surface_samples[idx]
+                ground_samples = self.history_ground_surface_samples[idx]
+                sc_foot_disp.set_offsets(top_samples[:, :2] * 1000.0)
+                sc_foot_disp.set_array(top_samples[:, 2] * 1000.0)
+                sc_foot_pres.set_offsets(top_samples[:, :2] * 1000.0)
+                sc_foot_pres.set_array(top_samples[:, 4])
+                sc_ground_disp.set_offsets(ground_samples[:, :2] * 1000.0)
+                sc_ground_disp.set_array(ground_samples[:, 2] * 1000.0)
+                sc_ground_pres.set_offsets(ground_samples[:, :2] * 1000.0)
+                sc_ground_pres.set_array(ground_samples[:, 4])
                 title.set_text(f"Foot-Shoe Impact | t={t_val:.3f} s | Force={f_val:.1f} N")
                 return sc_foot_disp, sc_foot_pres, sc_ground_disp, sc_ground_pres, title
 
@@ -2299,15 +2773,6 @@ class Example:
             action=argparse.BooleanOptionalAction,
             default=False,
             help="Write hysteresis and heatmap plot artifacts during test_final.",
-        )
-        parser.add_argument(
-            "--use-hydro-surface-wrench",
-            action=argparse.BooleanOptionalAction,
-            default=True,
-            help=(
-                "Use Newton's extracted hydroelastic contact surface for the custom material wrench. "
-                "The default Warp foundation grid is better conditioned for this shoe stack-height model."
-            ),
         )
         parser.add_argument(
             "--enable-plate",
