@@ -474,7 +474,7 @@ def accumulate_bonded_top_state_kernel(
     slack_length_m: wp.array[float],
     spring_count: int,
     foot_z: float,
-    midsole_z: float,
+    top_reference_z: float,
     foot_vz: float,
     midsole_vz: float,
     spacing_m: float,
@@ -488,7 +488,7 @@ def accumulate_bonded_top_state_kernel(
         return
 
     slack = wp.max(slack_length_m[spring], 1.0e-6)
-    top_world_z = midsole_z + top_m[spring]
+    top_world_z = top_reference_z + top_m[spring]
     foot_sole_world_z = foot_z + foot_sole_z_m[spring]
     displacement = wp.clamp(top_world_z - foot_sole_world_z, 0.0, slack)
     comp_vel = midsole_vz - foot_vz
@@ -1935,7 +1935,7 @@ class Example:
                     self.wp_spring_slack,
                     self.num_springs,
                     float(foot_z),
-                    float(midsole_z),
+                    float(self.start_z),
                     float(foot_vz),
                     float(midsole_vz),
                     float(self.spring_grid.spacing_m),
