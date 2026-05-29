@@ -100,7 +100,6 @@
 - Change implicit MPM default `collider_basis` from `"Q1"` to `"S2"` for improved contact quality; set `collider_basis="Q1"` explicitly to restore the previous behavior.
 - Change GL viewer scroll to dolly toward the orbit pivot; use Ctrl+scroll for FOV zoom
 - Render all GL viewer lines (joints, contacts, wireframes) as geometry-shader quads instead of ``GL_LINES`` for uniform width across zoom levels and non-square viewports
-- Pin `mujoco` and `mujoco-warp` dependencies to `~=3.6.0`
 - Make `SolverFeatherstone` consume the public Newton FREE/DISTANCE `joint_qd` convention directly; callers should pass six values per FREE/DISTANCE joint as child-COM linear velocity followed by angular velocity, both expressed in the joint parent frame
 - Adjust grouping of `reset`, `step`, and `pause` controls so they appear together
 - Bump `Pillow` floor to `>=11.3.0`
