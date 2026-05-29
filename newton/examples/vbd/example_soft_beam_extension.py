@@ -5,10 +5,11 @@
 # Example Soft Beam Extension
 #
 # A vertical tetrahedral beam pinned at the top and hanging under gravity.
-# At equilibrium the bottom-layer displacement is compared to an empirical
-# baseline calibrated against the stable Neo-Hookean material in VBD. The
-# test also validates that the beam's center of mass drops monotonically
-# along Z (no lateral drift) and that all velocities remain bounded.
+# At equilibrium the bottom-layer extension is compared to the analytical
+# linear-elastic self-weight prediction delta = W*L/(2*A*E), derived from the
+# material parameters (the stable Neo-Hookean material is calibrated to the
+# linear Lame parameters). The test also checks there is no lateral drift
+# (center of mass stays centered in X/Y) and that velocities stay bounded.
 #
 # Command: python -m newton.examples vbd.example_soft_beam_extension
 #
@@ -32,18 +33,24 @@ class Example:
     K_LAMBDA = 5.0e4
     K_DAMP = 0.1
 
-    # Empirical equilibrium extension of the bottom layer (m), calibrated on
-    # L40 with VBD iterations=20, substeps=5, 300 frames.
-    EXPECTED_DELTA = 0.10
-    TOLERANCE = 0.15  # relative
+    # Tolerance on the relative error between the measured tip extension and the
+    # analytical linear-elastic prediction (see test_final). The small residual is
+    # finite-strain softening at ~7% strain.
+    TOLERANCE = 0.10  # relative
 
     def __init__(self, viewer, args=None):
         self.viewer = viewer
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 5
+        # Even substep count keeps the CUDA-graph capture parity-safe: with an
+        # odd count the state_0/state_1 ping-pong leaves the graph replaying
+        # from the wrong start buffer, under-integrating each replayed frame.
+        self.sim_substeps = 6
         self.sim_dt = self.frame_dt / self.sim_substeps
-        self.iterations = 20
+        # High iteration count so the stiff beam converges to its static equilibrium;
+        # this lets the analytical linear-elastic check in test_final be tight (an
+        # under-converged solve leaves the beam too soft and over-extended).
+        self.iterations = 100
         self.sim_time = 0.0
 
         builder = newton.ModelBuilder()
@@ -109,10 +116,10 @@ class Example:
             self.graph = None
 
     def simulate(self):
+        self.model.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -134,11 +141,24 @@ class Example:
         bottom_z = q[self.bottom_indices, 2]
         measured_delta = self.rest_bottom_z - float(np.mean(bottom_z))
 
-        rel_error = abs(measured_delta - self.EXPECTED_DELTA) / self.EXPECTED_DELTA
+        # Analytical expectation from linear elasticity: a prismatic bar of length L
+        # and cross-section A, fixed at the top and hanging under its own weight,
+        # extends by W * L / (2 * A * E), where W = M * g is the total weight. The
+        # stable Neo-Hookean material is calibrated to the linear Lame parameters
+        # (mu_NH = mu, lambda_NH = lambda + mu; Smith et al. 2018), so its Young's
+        # modulus is E = mu (3*lambda + 2*mu) / (lambda + mu). Mass is read from the
+        # model because add_soft_grid lumps a full cell's mass onto every grid vertex.
+        total_mass = float(np.sum(self.model.particle_mass.numpy()))
+        gravity_z = abs(float(self.model.gravity.numpy().reshape(-1)[2]))
+        young = self.K_MU * (3.0 * self.K_LAMBDA + 2.0 * self.K_MU) / (self.K_LAMBDA + self.K_MU)
+        area = (self.DIM_X * self.CELL) * (self.DIM_Y * self.CELL)
+        expected_delta = total_mass * gravity_z * self.rest_length / (2.0 * area * young)
+
+        rel_error = abs(measured_delta - expected_delta) / expected_delta
         if rel_error > self.TOLERANCE:
             raise ValueError(
-                f"Extension regression: measured {measured_delta:.4f} m, "
-                f"expected {self.EXPECTED_DELTA:.4f} m (error {rel_error:.1%}, tolerance {self.TOLERANCE:.0%})"
+                f"Extension does not match linear-elastic theory: measured {measured_delta:.4f} m, "
+                f"analytical {expected_delta:.4f} m (error {rel_error:.1%}, tolerance {self.TOLERANCE:.0%})"
             )
 
         # No lateral drift: X and Y center of mass should stay near beam center
