@@ -2665,7 +2665,14 @@ def parse_usd(
                 # Schema sentinel is -inf meaning "use sdfMaxResolution instead";
                 # the <= 0 check also rejects any authored non-positive value as
                 # out of the documented (0, inf) range.
-                if sdf_target_voxel_size is not None and sdf_target_voxel_size <= 0:
+                if sdf_target_voxel_size == float("-inf"):
+                    sdf_target_voxel_size = None
+                elif sdf_target_voxel_size is not None and sdf_target_voxel_size <= 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfTargetVoxelSize={sdf_target_voxel_size!r} is invalid "
+                        f"(must be > 0); falling back to default.",
+                        stacklevel=2,
+                    )
                     sdf_target_voxel_size = None
                 if sdf_target_voxel_size is None:
                     sdf_target_voxel_size = builder.default_shape_cfg.sdf_target_voxel_size
@@ -2673,6 +2680,13 @@ def parse_usd(
                 sdf_max_resolution = R.get_value(
                     prim, prim_type=PrimType.SHAPE, key="sdf_max_resolution", verbose=verbose
                 )
+                if sdf_max_resolution is not None and sdf_max_resolution <= 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} is invalid "
+                        f"(must be > 0); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_max_resolution = None
                 if sdf_max_resolution is None:
                     # When the API is applied but neither attribute is authored,
                     # fall back to the schema default (64). When target voxel
@@ -2706,6 +2720,13 @@ def parse_usd(
                     # Schema sentinel: builder.finalize falls back to shape_gap
                     # when ShapeConfig.sdf_padding is None.
                     sdf_padding = None
+                elif sdf_padding is not None and sdf_padding < 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfPadding={sdf_padding!r} is invalid "
+                        f"(must be >= 0); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_padding = None
 
                 # Hydroelastic is opt-in via newton:hydroelasticEnabled on the
                 # NewtonSDFCollisionAPI. newton:hydroelasticStiffness alone is
@@ -2715,6 +2736,13 @@ def parse_usd(
                     prim, prim_type=PrimType.SHAPE, key="hydroelastic_enabled", verbose=verbose
                 )
                 kh = R.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
+                if kh is not None and kh <= 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:hydroelasticStiffness={kh!r} is invalid "
+                        f"(must be > 0); falling back to default.",
+                        stacklevel=2,
+                    )
+                    kh = None
                 if hydroelastic_enabled is True:
                     is_hydroelastic = True
                 elif hydroelastic_enabled is False:
