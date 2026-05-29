@@ -189,7 +189,8 @@ class FastBuildSdf:
         self._mesh.clear_sdf()
         wp.synchronize_device()
 
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    # Disabled, see #2534.
+    @skip_benchmark_if(True)
     def time_build_sdf(self, max_resolution):
         for _ in range(_BUILDS_PER_SAMPLE[max_resolution]):
             _build_sdf(self._mesh, max_resolution=max_resolution)
