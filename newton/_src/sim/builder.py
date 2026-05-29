@@ -1206,8 +1206,6 @@ class ModelBuilder:
         """Per-world joint starts accumulated for :attr:`Model.joint_world_start`."""
         self.articulation_world_start: list[int] = []
         """Per-world articulation starts accumulated for :attr:`Model.articulation_world_start`."""
-        self.equality_constraint_world_start: list[int] = []
-        """Per-world equality-constraint starts accumulated for ``model.mujoco.equality_constraint_world_start``."""
         self.joint_dof_world_start: list[int] = []
         """Per-world joint DoF starts accumulated for :attr:`Model.joint_dof_world_start`."""
         self.joint_coord_world_start: list[int] = []
@@ -1753,6 +1751,26 @@ class ModelBuilder:
         """
         self._warn_deprecated_builder_equality_constraint_field("equality_constraint_world")
         return self._eq_list("equality_constraint_world")
+
+    @property
+    def equality_constraint_world_start(self) -> list[int]:
+        """Per-world equality-constraint start indices.
+
+        .. deprecated:: 1.3
+            Equality constraints are a ``mujoco:equality_constraint`` custom frequency and,
+            like tendons or pairs, carry no per-world start array. Derive per-world bounds from
+            the ``mujoco:equality_constraint_world`` values if needed. Scheduled for removal in
+            Newton 1.5; this property now always returns an empty list.
+        """
+        warnings.warn(
+            "ModelBuilder.equality_constraint_world_start is deprecated in Newton 1.3 and is "
+            "scheduled for removal in Newton 1.5. Equality constraints are a custom frequency "
+            "and have no per-world start array; derive per-world bounds from the per-row "
+            "``mujoco:equality_constraint_world`` values instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return []
 
     def add_custom_frequency(self, frequency: CustomFrequency) -> None:
         """
@@ -10092,12 +10110,6 @@ class ModelBuilder:
             (self.shape_world_start, self.shape_count, self.shape_world, "shape"),
             (self.joint_world_start, self.joint_count, self.joint_world, "joint"),
             (self.articulation_world_start, self.articulation_count, self.articulation_world, "articulation"),
-            (
-                self.equality_constraint_world_start,
-                self._equality_constraint_count,
-                self._eq_list("equality_constraint_world"),
-                "equality constraint",
-            ),
         ]
 
         def build_entity_start_array(
@@ -11129,7 +11141,6 @@ class ModelBuilder:
             m.shape_world_start = wp.array(self.shape_world_start, dtype=wp.int32)
             m.joint_world_start = wp.array(self.joint_world_start, dtype=wp.int32)
             m.articulation_world_start = wp.array(self.articulation_world_start, dtype=wp.int32)
-            m.mujoco.equality_constraint_world_start = wp.array(self.equality_constraint_world_start, dtype=wp.int32)
             m.joint_dof_world_start = wp.array(self.joint_dof_world_start, dtype=wp.int32)
             m.joint_coord_world_start = wp.array(self.joint_coord_world_start, dtype=wp.int32)
             m.joint_constraint_world_start = wp.array(self.joint_constraint_world_start, dtype=wp.int32)

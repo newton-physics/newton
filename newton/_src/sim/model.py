@@ -40,7 +40,6 @@ _EQUALITY_CONSTRAINT_MODEL_FIELDS = frozenset(
         "equality_constraint_label",
         "equality_constraint_enabled",
         "equality_constraint_world",
-        "equality_constraint_world_start",
     )
 )
 
@@ -1435,19 +1434,29 @@ class Model:
 
     @property
     def equality_constraint_world_start(self) -> wp.array[wp.int32] | None:
-        """Start index of the first equality constraint per world, shape [world_count + 2], int.
-
-        The entries at indices ``0`` to ``world_count - 1`` store the start index of
-        the equality constraints belonging to that world. The second-last element
-        (accessible via index ``-2``) stores the start index of the global equality
-        constraints (i.e. with world index ``-1``) added to the end of the model,
-        and the last element stores the total equality constraint count.
+        """Per-world equality-constraint start indices.
 
         .. deprecated:: 1.3
-            Use ``model.mujoco.equality_constraint_world_start`` instead. Scheduled for removal in Newton 1.5.
+            Removed concept: equality constraints are a ``mujoco:equality_constraint`` custom
+            frequency and, like tendons, carry no per-world start array. Derive per-world bounds
+            from ``model.mujoco.equality_constraint_world`` if needed. Scheduled for removal in
+            Newton 1.5; this property now always returns ``None``.
         """
-        return self._get_deprecated_equality_constraint_model_field("equality_constraint_world_start")
+        warnings.warn(
+            "Model.equality_constraint_world_start is deprecated in Newton 1.3 and is scheduled "
+            "for removal in Newton 1.5. Equality constraints are a custom frequency and have no "
+            "per-world start array; derive per-world bounds from the per-row "
+            "``model.mujoco.equality_constraint_world`` values instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return None
 
     @equality_constraint_world_start.setter
     def equality_constraint_world_start(self, value: wp.array[wp.int32] | None) -> None:
-        self._set_deprecated_equality_constraint_model_field("equality_constraint_world_start", value)
+        warnings.warn(
+            "Model.equality_constraint_world_start is deprecated in Newton 1.3 and is scheduled "
+            "for removal in Newton 1.5; it no longer stores a value.",
+            DeprecationWarning,
+            stacklevel=2,
+        )

@@ -982,11 +982,6 @@ class TestModelJoints(unittest.TestCase):
         articulation_world_start = (
             model.articulation_world_start.numpy() if model.articulation_world_start is not None else []
         )
-        equality_constraint_world_start = (
-            model.mujoco.equality_constraint_world_start.numpy()
-            if model.mujoco.equality_constraint_world_start is not None
-            else []
-        )
         joint_dof_world_start = model.joint_dof_world_start.numpy() if model.joint_dof_world_start is not None else []
         joint_coord_world_start = (
             model.joint_coord_world_start.numpy() if model.joint_coord_world_start is not None else []
@@ -1002,7 +997,6 @@ class TestModelJoints(unittest.TestCase):
             print(f"shape_world_start: {shape_world_start}")
             print(f"joint_world_start: {joint_world_start}")
             print(f"articulation_world_start: {articulation_world_start}")
-            print(f"equality_constraint_world_start: {equality_constraint_world_start}")
             print(f"joint_dof_world_start: {joint_dof_world_start}")
             print(f"joint_coord_world_start: {joint_coord_world_start}")
             print(f"joint_constraint_world_start: {joint_constraint_world_start}")
@@ -1022,7 +1016,6 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(shape_world_start[-1], builder.shape_count)
         self.assertEqual(joint_world_start[-1], builder.joint_count)
         self.assertEqual(articulation_world_start[-1], builder.articulation_count)
-        self.assertEqual(equality_constraint_world_start[-1], builder._equality_constraint_count)
         self.assertEqual(joint_dof_world_start[-1], builder.joint_dof_count)
         self.assertEqual(joint_coord_world_start[-1], builder.joint_coord_count)
         self.assertEqual(joint_constraint_world_start[-1], builder.joint_constraint_count)
@@ -1033,7 +1026,6 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(shape_world_start.size, model.world_count + 2)
         self.assertEqual(joint_world_start.size, model.world_count + 2)
         self.assertEqual(articulation_world_start.size, model.world_count + 2)
-        self.assertEqual(equality_constraint_world_start.size, model.world_count + 2)
         self.assertEqual(joint_dof_world_start.size, model.world_count + 2)
         self.assertEqual(joint_coord_world_start.size, model.world_count + 2)
         self.assertEqual(joint_constraint_world_start.size, model.world_count + 2)
@@ -1044,7 +1036,6 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(shape_world_start[-1], model.shape_count)
         self.assertEqual(joint_world_start[-1], model.joint_count)
         self.assertEqual(articulation_world_start[-1], model.articulation_count)
-        self.assertEqual(equality_constraint_world_start[-1], model.mujoco.equality_constraint_count)
         self.assertEqual(joint_dof_world_start[-1], model.joint_dof_count)
         self.assertEqual(joint_coord_world_start[-1], model.joint_coord_count)
         self.assertEqual(joint_constraint_world_start[-1], model.joint_constraint_count)
@@ -1056,7 +1047,6 @@ class TestModelJoints(unittest.TestCase):
             self.assertLessEqual(shape_world_start[i], shape_world_start[i + 1])
             self.assertLessEqual(joint_world_start[i], joint_world_start[i + 1])
             self.assertLessEqual(articulation_world_start[i], articulation_world_start[i + 1])
-            self.assertLessEqual(equality_constraint_world_start[i], equality_constraint_world_start[i + 1])
             self.assertLessEqual(joint_dof_world_start[i], joint_dof_world_start[i + 1])
             self.assertLessEqual(joint_coord_world_start[i], joint_coord_world_start[i + 1])
             self.assertLessEqual(joint_constraint_world_start[i], joint_constraint_world_start[i + 1])
@@ -1067,7 +1057,6 @@ class TestModelJoints(unittest.TestCase):
         self.assertTrue(np.array_equal(shape_world_start, np.array([0, 0, 0, 0])))
         self.assertTrue(np.array_equal(joint_world_start, np.array([0, 2, 4, 5])))
         self.assertTrue(np.array_equal(articulation_world_start, np.array([0, 1, 2, 3])))
-        self.assertTrue(np.array_equal(equality_constraint_world_start, np.array([0, 0, 0, 0])))
         self.assertTrue(np.array_equal(joint_dof_world_start, np.array([0, 2, 4, 10])))
         self.assertTrue(np.array_equal(joint_coord_world_start, np.array([0, 2, 4, 11])))
         self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 10, 20, 20])))
@@ -1823,11 +1812,6 @@ class TestModelWorld(unittest.TestCase):
         articulation_world_start = (
             model.articulation_world_start.numpy() if model.articulation_world_start is not None else []
         )
-        equality_constraint_world_start = (
-            model.mujoco.equality_constraint_world_start.numpy()
-            if model.mujoco.equality_constraint_world_start is not None
-            else []
-        )
         joint_dof_world_start = model.joint_dof_world_start.numpy() if model.joint_dof_world_start is not None else []
         joint_coord_world_start = (
             model.joint_coord_world_start.numpy() if model.joint_coord_world_start is not None else []
@@ -1843,7 +1827,6 @@ class TestModelWorld(unittest.TestCase):
             print(f"shape_world_start: {shape_world_start}")
             print(f"joint_world_start: {joint_world_start}")
             print(f"articulation_world_start: {articulation_world_start}")
-            print(f"equality_constraint_world_start: {equality_constraint_world_start}")
             print(f"joint_dof_world_start: {joint_dof_world_start}")
             print(f"joint_coord_world_start: {joint_coord_world_start}")
             print(f"joint_constraint_world_start: {joint_constraint_world_start}")
@@ -1854,7 +1837,6 @@ class TestModelWorld(unittest.TestCase):
         self.assertEqual(shape_world_start.size, model.world_count + 2)
         self.assertEqual(joint_world_start.size, model.world_count + 2)
         self.assertEqual(articulation_world_start.size, model.world_count + 2)
-        self.assertEqual(equality_constraint_world_start.size, model.world_count + 2)
         self.assertEqual(joint_dof_world_start.size, model.world_count + 2)
         self.assertEqual(joint_coord_world_start.size, model.world_count + 2)
         self.assertEqual(joint_constraint_world_start.size, model.world_count + 2)
@@ -1865,7 +1847,6 @@ class TestModelWorld(unittest.TestCase):
         self.assertEqual(shape_world_start[-1], model.shape_count)
         self.assertEqual(joint_world_start[-1], model.joint_count)
         self.assertEqual(articulation_world_start[-1], model.articulation_count)
-        self.assertEqual(equality_constraint_world_start[-1], model.mujoco.equality_constraint_count)
         self.assertEqual(joint_dof_world_start[-1], model.joint_dof_count)
         self.assertEqual(joint_coord_world_start[-1], model.joint_coord_count)
         self.assertEqual(joint_constraint_world_start[-1], model.joint_constraint_count)
@@ -1877,7 +1858,6 @@ class TestModelWorld(unittest.TestCase):
             self.assertLessEqual(shape_world_start[i], shape_world_start[i + 1])
             self.assertLessEqual(joint_world_start[i], joint_world_start[i + 1])
             self.assertLessEqual(articulation_world_start[i], articulation_world_start[i + 1])
-            self.assertLessEqual(equality_constraint_world_start[i], equality_constraint_world_start[i + 1])
             self.assertLessEqual(joint_dof_world_start[i], joint_dof_world_start[i + 1])
             self.assertLessEqual(joint_coord_world_start[i], joint_coord_world_start[i + 1])
             self.assertLessEqual(joint_constraint_world_start[i], joint_constraint_world_start[i + 1])
@@ -1888,7 +1868,6 @@ class TestModelWorld(unittest.TestCase):
         self.assertTrue(np.array_equal(shape_world_start, np.array([1, 4, 7, 10, 12])))
         self.assertTrue(np.array_equal(joint_world_start, np.array([1, 3, 5, 7, 9])))
         self.assertTrue(np.array_equal(articulation_world_start, np.array([1, 2, 3, 4, 6])))
-        self.assertTrue(np.array_equal(equality_constraint_world_start, np.array([0, 0, 0, 0, 0])))
         self.assertTrue(np.array_equal(joint_dof_world_start, np.array([6, 8, 10, 12, 24])))
         self.assertTrue(np.array_equal(joint_coord_world_start, np.array([7, 9, 11, 13, 27])))
         self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 10, 20, 30, 30])))
