@@ -5288,6 +5288,29 @@ def Xform "Articulation" (
             ).Set([(0.0, 0.0)])
         self.assertTrue(has_orphan_subset_primvars(orphan.GetPrim()))
 
+        # A non-face subset (e.g. point/edge) should not disqualify the orphan pattern, since
+        # only face subsets bind per-subset UV primvars.
+        with_point_subset = _make_mesh("/WithPointSubset")
+        for name in ("st", "st_1"):
+            UsdGeom.PrimvarsAPI(with_point_subset).CreatePrimvar(
+                name, Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
+            ).Set([(0.0, 0.0)])
+        point_subset = UsdGeom.Subset.Define(stage, "/WithPointSubset/points")
+        point_subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.point)
+        point_subset.CreateIndicesAttr().Set([0])
+        self.assertTrue(has_orphan_subset_primvars(with_point_subset.GetPrim()))
+
+        # Primvar names that merely start with "st" (e.g. "stiffness") must not be counted as
+        # UV subset primvars.
+        st_prefixed = _make_mesh("/StPrefixed")
+        UsdGeom.PrimvarsAPI(st_prefixed).CreatePrimvar(
+            "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
+        ).Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)])
+        UsdGeom.PrimvarsAPI(st_prefixed).CreatePrimvar(
+            "stiffness", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant
+        ).Set([1.0])
+        self.assertFalse(has_orphan_subset_primvars(st_prefixed.GetPrim()))
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_orphan_subset_primvars_demotes_uv_warnings(self):
         """When a mesh has orphan `st_N` primvars without subsets, importer should not warn."""

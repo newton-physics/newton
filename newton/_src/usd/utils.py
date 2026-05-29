@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import warnings
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, overload
@@ -149,29 +150,38 @@ def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
     return prim.HasAPI(schema_name) or schema_name in _get_raw_api_schemas(prim)
 
 
+_ST_SUBSET_PRIMVAR_RE = re.compile(r"^st(?:_\d+)?$")
+
+
 def has_orphan_subset_primvars(prim: Usd.Prim) -> bool:
     """Detect the malformed "GeomSubsets stripped but per-subset primvars retained" pattern.
 
     Some USD assets (e.g. Isaac Sim's Boston Dynamics Spot lower-leg meshes) carry sibling
     ``st_N`` primvars (``st``, ``st_1``, ``st_2``, ...) that were originally each bound to a
-    separate ``UsdGeom.Subset``, but the subsets were later removed in authoring while the
-    primvars were left in place. Without subsets there is no way to map the primvars back to
+    separate face-based ``UsdGeom.Subset``, but the subsets were later removed in authoring while
+    the primvars were left in place. Without subsets there is no way to map the primvars back to
     faces, so the importer cannot recover UVs even though the data is present.
+
+    Args:
+        prim: The USD prim to inspect for the orphan-primvar pattern.
 
     Returns:
         True when the prim has no face-based ``UsdGeom.Subset`` children but does carry more
-        than one ``st``-prefixed primvar (i.e. ``st`` plus at least one ``st_N`` sibling).
+        than one UV-shaped primvar (``st`` plus at least one ``st_N`` sibling).
     """
     if not prim or not prim.IsValid():
         return False
     for child in prim.GetChildren():
         try:
-            if child.IsA(UsdGeom.Subset):
-                return False
+            if not child.IsA(UsdGeom.Subset):
+                continue
+            element_type = UsdGeom.Subset(child).GetElementTypeAttr().Get()
         except Exception:
             continue
+        if element_type == UsdGeom.Tokens.face:
+            return False
     primvars_api = UsdGeom.PrimvarsAPI(prim)
-    st_count = sum(1 for pv in primvars_api.GetPrimvars() if pv.GetPrimvarName().startswith("st"))
+    st_count = sum(1 for pv in primvars_api.GetPrimvars() if _ST_SUBSET_PRIMVAR_RE.match(pv.GetPrimvarName()))
     return st_count > 1
 
 
