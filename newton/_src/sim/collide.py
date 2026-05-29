@@ -473,11 +473,13 @@ class CollisionPipeline:
 
     For most users, construct with ``CollisionPipeline(model, ...)``.
 
-    .. note::
+    .. experimental::
+
         Differentiable rigid contacts (the ``rigid_contact_diff_*`` arrays when
-        ``requires_grad`` is enabled) are **experimental**. The narrow phase stays
-        frozen and gradients are a tangent approximation; validate accuracy and
-        usefulness on your workflow before relying on them in optimization loops.
+        ``requires_grad`` is enabled) may change without prior notice. The
+        narrow phase stays frozen and gradients are a tangent approximation;
+        validate accuracy and usefulness on your workflow before relying on
+        them in optimization loops.
     """
 
     def __init__(
@@ -579,10 +581,12 @@ class CollisionPipeline:
                 pass; disable in hot loops or CUDA graph capture once buffer
                 sizes are known to be adequate.
 
-        .. note::
-            When ``requires_grad`` is true (explicitly or via ``model.requires_grad``),
-            rigid-contact autodiff via ``rigid_contact_diff_*`` is **experimental**;
-            see :meth:`collide`.
+        .. experimental::
+
+            When ``requires_grad`` is true (explicitly or via
+            ``model.requires_grad``), rigid-contact autodiff via
+            ``rigid_contact_diff_*`` may change without prior notice; see
+            :meth:`collide`.
         """
         if contact_matching not in ("disabled", "latest", "sticky"):
             raise ValueError(
@@ -865,10 +869,11 @@ class CollisionPipeline:
         Returns:
             A newly allocated contacts buffer sized for this pipeline.
 
-        .. note::
+        .. experimental::
+
             If ``requires_grad`` is true, ``rigid_contact_diff_*`` arrays may be
-            allocated; rigid-contact differentiability is **experimental** (see
-            :meth:`collide`).
+            allocated; rigid-contact differentiability may change without prior
+            notice (see :meth:`collide`).
         """
         contacts = Contacts(
             self.rigid_contact_max,
@@ -920,9 +925,11 @@ class CollisionPipeline:
         augmentation kernel that reconstructs world-space contact points from
         the frozen narrow-phase output through the body transforms.
 
-        .. note::
-            This rigid-contact gradient path is **experimental**: usefulness and
-            numerical behaviour are still being assessed across real-world scenarios.
+        .. experimental::
+
+            This rigid-contact gradient path may change without prior notice.
+            Usefulness and numerical behaviour are still being assessed across
+            real-world scenarios.
 
         Args:
             state: The current simulation state.

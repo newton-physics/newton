@@ -2547,8 +2547,9 @@ class ModelBuilder:
                 inspection, experimentation, or custom pipelines that read these values via
                 ``result["schema_attrs"]`` returned from ``parse_usd()``.
 
-                .. note::
-                    Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
+                .. experimental::
+
+                    The ``schema_resolvers`` argument may change without prior notice.
             force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
                 are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
                 If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:

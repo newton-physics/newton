@@ -110,9 +110,9 @@ Schema Resolvers
 
 Schema resolvers bridge the gap between solver-specific USD schemas and Newton's internal representation. They remap attributes authored for PhysX, MuJoCo, or other solvers to the equivalent Newton properties, handle priority-based resolution when multiple solvers define the same attribute, and collect solver-native attributes for inspection or custom pipelines.
 
-.. note::
+.. experimental::
 
-   The ``schema_resolvers`` argument in :meth:`newton.ModelBuilder.add_usd` is an experimental feature that may be removed or changed significantly in the future.
+   The ``schema_resolvers`` argument in :meth:`newton.ModelBuilder.add_usd` may change without prior notice.
 
 Solver Attribute Remapping
 ~~~~~~~~~~~~~~~~~~~~~~~~~~

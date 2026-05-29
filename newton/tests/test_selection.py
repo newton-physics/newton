@@ -113,6 +113,33 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(len(view.joint_template_labels), view.joint_count)
         self.assertEqual(view.body_template_labels, view.link_template_labels)
 
+    def test_duplicate_joint_child_is_one_link(self):
+        """BODY-frequency link axis uses unique physical bodies, not joint slots."""
+        builder = newton.ModelBuilder()
+        root = builder.add_link(label="root")
+        tip = builder.add_link(label="tip")
+        builder.add_shape_box(body=tip, hx=0.01, hy=0.01, hz=0.01, label="tip_shape")
+
+        j_root = builder.add_joint_free(parent=-1, child=root, label="root_joint")
+        j_tip = builder.add_joint_revolute(parent=root, child=tip, axis=wp.vec3(0.0, 0.0, 1.0), label="tip_joint")
+        j_tip_duplicate = builder.add_joint_fixed(parent=root, child=tip, label="tip_duplicate_joint")
+        builder.add_articulation([j_root, j_tip, j_tip_duplicate], label="robot")
+        model = builder.finalize()
+
+        view = ArticulationView(model, "robot")
+
+        self.assertEqual(list(model.body_label), ["root", "tip"])
+        self.assertEqual(view.link_count, 2)
+        self.assertEqual(view.link_names, ["root", "tip"])
+        self.assertEqual(view.link_template_labels, ["root", "tip"])
+        self.assertEqual(view.shape_count, 1)
+        self.assertEqual(view.shape_template_labels, ["tip_shape"])
+
+        body_layout = view.frequency_layouts[newton.Model.AttributeFrequency.BODY]
+        self.assertEqual(body_layout.value_count, len(model.body_label))
+        self.assertEqual(view.get_link_transforms(model).shape, (1, 1, 2))
+        self.assertEqual(view.get_link_velocities(model).shape, (1, 1, 2))
+
     def _test_selection_shapes(self, floating: bool):
         # load articulation
         ant = newton.ModelBuilder()
