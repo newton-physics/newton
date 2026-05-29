@@ -2000,6 +2000,104 @@ class TestUrdfJointFriction(unittest.TestCase):
         for val in friction_values:
             self.assertAlmostEqual(float(val), 0.0, places=5)
 
+    def test_named_material_color_on_primitive(self):
+        """Robot-level named materials should resolve to colors on primitive shapes."""
+        urdf = """
+<robot name="named_mat_test">
+    <material name="red"><color rgba="1.0 0.0 0.0 1.0"/></material>
+    <link name="base_link">
+        <visual>
+            <geometry><sphere radius="0.5"/></geometry>
+            <material name="red"/>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(tuple(builder.shape_color[0]), (1.0, 0.0, 0.0))
+
+    def test_inline_material_color_on_primitive(self):
+        """Inline material color should apply to primitive shapes."""
+        urdf = """
+<robot name="inline_mat_test">
+    <link name="base_link">
+        <visual>
+            <geometry><box size="1 1 1"/></geometry>
+            <material name="green"><color rgba="0.0 1.0 0.0 1.0"/></material>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(tuple(builder.shape_color[0]), (0.0, 1.0, 0.0))
+
+    def test_named_material_color_multiple_primitives(self):
+        """Named materials should resolve for all primitive shape types."""
+        urdf = """
+<robot name="multi_prim_test">
+    <material name="blue"><color rgba="0.0 0.0 1.0 1.0"/></material>
+    <link name="base_link">
+        <visual>
+            <geometry><box size="1 1 1"/></geometry>
+            <material name="blue"/>
+        </visual>
+        <visual>
+            <geometry><cylinder radius="0.5" length="1.0"/></geometry>
+            <material name="blue"/>
+        </visual>
+        <visual>
+            <geometry><sphere radius="0.5"/></geometry>
+            <material name="blue"/>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder)
+        self.assertEqual(builder.shape_count, 3)
+        for i in range(3):
+            self.assertEqual(tuple(builder.shape_color[i]), (0.0, 0.0, 1.0), f"shape {i}")
+
+    def test_inline_overrides_named_material(self):
+        """Inline color on a named material should override the robot-level definition."""
+        urdf = """
+<robot name="override_test">
+    <material name="red"><color rgba="1.0 0.0 0.0 1.0"/></material>
+    <link name="base_link">
+        <visual>
+            <geometry><sphere radius="0.5"/></geometry>
+            <material name="red"><color rgba="0.0 1.0 0.0 1.0"/></material>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(tuple(builder.shape_color[0]), (0.0, 1.0, 0.0))
+
+    def test_named_material_color_on_mesh(self):
+        """Robot-level named materials should resolve to colors on mesh shapes."""
+        urdf = """
+<robot name="mesh_named_mat_test">
+    <material name="red"><color rgba="1.0 0.0 0.0 1.0"/></material>
+    <link name="base_link">
+        <visual>
+            <geometry><mesh filename="cube.obj"/></geometry>
+            <material name="red"/>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder, {"cube.obj": MESH_OBJ})
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(tuple(builder.shape_color[0]), (1.0, 0.0, 0.0))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
