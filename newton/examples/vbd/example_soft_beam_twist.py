@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example Soft Beam Twist — 180° Twist Stability
+# Example Soft Beam Twist — 360° Twist Stability
 #
 # A vertical tetrahedral beam with its bottom face pinned and top face
-# twisted 180° around the Z-axis over a linear ramp. The stable
+# twisted 360° around the Z-axis over a linear ramp. The stable
 # Neo-Hookean material handles this extreme rotation without inversion
 # (unlike StVK). The test validates volume preservation and stability.
 #
@@ -119,10 +119,10 @@ class Example:
         self.viewer.set_model(self.model)
 
     def simulate(self):
+        self.model.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 

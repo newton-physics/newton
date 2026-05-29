@@ -61,13 +61,16 @@ def _run_extension(dim_xy: int, dim_z: int, cell: float, n_frames: int) -> float
     s1 = model.state()
     ctrl = model.control()
     contacts = model.contacts()
-    dt = 1.0 / 60 / 5
+    # Even substep count keeps the CUDA-graph capture parity-safe: an odd count
+    # leaves the state_0/state_1 ping-pong replaying from the wrong start buffer,
+    # under-integrating each replayed frame and skewing the convergence metric.
+    dt = 1.0 / 60 / 6
 
     if wp.get_device().is_cuda:
         with wp.ScopedCapture() as capture:
-            for _ in range(5):
+            model.collide(s0, contacts)
+            for _ in range(6):
                 s0.clear_forces()
-                model.collide(s0, contacts)
                 solver.step(s0, s1, ctrl, contacts, dt)
                 s0, s1 = s1, s0
         graph = capture.graph
@@ -75,9 +78,9 @@ def _run_extension(dim_xy: int, dim_z: int, cell: float, n_frames: int) -> float
             wp.capture_launch(graph)
     else:
         for _ in range(n_frames):
-            for _ in range(5):
+            model.collide(s0, contacts)
+            for _ in range(6):
                 s0.clear_forces()
-                model.collide(s0, contacts)
                 solver.step(s0, s1, ctrl, contacts, dt)
                 s0, s1 = s1, s0
 
@@ -92,7 +95,8 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 5
+        # Even substep count keeps the CUDA-graph capture parity-safe (state ping-pong).
+        self.sim_substeps = 6
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.iterations = 20
 
@@ -158,10 +162,10 @@ class Example:
             self.graph = None
 
     def simulate(self):
+        self.model.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
