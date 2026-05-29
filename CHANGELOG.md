@@ -21,6 +21,7 @@
 
 ### Changed
 
+- Make `SolverFeatherstone` consume the public Newton FREE/DISTANCE `joint_qd` convention directly; callers should pass six values per FREE/DISTANCE joint as child-COM linear velocity followed by angular velocity, both expressed in the joint parent frame
 - Remove the `cbor2` `<6` dependency ceiling after updating recorder deserialization to accept mapping-like decoded containers
 - Switch the SDF-mesh narrow phase to hardware-filtered SDF texture sampling with centred-difference gradients. Hydroelastic SDF sampling is unchanged. Resulting contact distances and normals shift well below typical `contact_threshold` and `shape_margin` settings, so no user action is required; pass a negative `edge_lower_angle_threshold_rad` (e.g. `-1.0`) to `Mesh.build_sdf()` to disable the new edge-simplification pass and reproduce the pre-optimisation behaviour with the full edge set
 - Require Warp 1.14 and configure Warp logging through `warp.config.log_level`; use Newton's `--quiet` flag or `--warp-config log_level=...` instead of legacy `verbose` or `quiet` config keys
@@ -120,7 +121,6 @@
 - Change implicit MPM default `collider_basis` from `"Q1"` to `"S2"` for improved contact quality; set `collider_basis="Q1"` explicitly to restore the previous behavior.
 - Change GL viewer scroll to dolly toward the orbit pivot; use Ctrl+scroll for FOV zoom
 - Render all GL viewer lines (joints, contacts, wireframes) as geometry-shader quads instead of ``GL_LINES`` for uniform width across zoom levels and non-square viewports
-- Make `SolverFeatherstone` consume the public Newton FREE/DISTANCE `joint_qd` convention directly; callers should pass six values per FREE/DISTANCE joint as child-COM linear velocity followed by angular velocity, both expressed in the joint parent frame
 - Adjust grouping of `reset`, `step`, and `pause` controls so they appear together
 - Bump `Pillow` floor to `>=11.3.0`
 - Bump `jupyterlab` lower bound to `>=4.5.7` to pick up the fix for CVE-2026-40171
