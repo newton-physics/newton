@@ -123,6 +123,8 @@ def mjc_add_equality_loop_joint(
         label=label,
         enabled=enabled,
     )
+    # For WELD, relpose/torquescale remain on the equality row; the loop joint only
+    # gives Newton a projected simulation object.
     eq_idx = builder.add_equality_constraint(
         constraint_type=eq_type,
         body1=body1,

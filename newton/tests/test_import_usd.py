@@ -339,6 +339,65 @@ def Xform "Root" (
         self.assertEqual(model.body_count, 3)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_orphan_world_fixed_joint_respects_env_offset_and_xform(self):
+        """Orphan body-to-world fixed joints must FK to env-origin + spawn xform."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        local_pose0 = wp.transform(wp.vec3(0.1, 0.2, 0.3), wp.quat(0.0, 0.0, 0.7071068, 0.7071068))  # 90deg about z
+        local_pose1 = wp.transform(wp.vec3(-0.2, 0.05, 0.4), wp.quat(0.7071068, 0.0, 0.0, 0.7071068))  # 90deg about x
+
+        for side in ["body0", "body1"]:  # Test the world being on either body0 or body1
+            with self.subTest(side=side):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+                env = UsdGeom.Xform.Define(stage, "/World/env")
+                env.AddTranslateOp().Set(Gf.Vec3d(100.0, 200.0, 0.0))
+
+                link = UsdGeom.Xform.Define(stage, "/World/env/PinnedLink")
+                UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+
+                fixed = UsdPhysics.FixedJoint.Define(stage, "/World/env/PinnedLink/FixedJoint")
+                if side == "body0":
+                    fixed.CreateBody0Rel().SetTargets([link.GetPath()])
+                else:
+                    fixed.CreateBody1Rel().SetTargets([link.GetPath()])
+                p0, q0 = local_pose0.p, local_pose0.q
+                p1, q1 = local_pose1.p, local_pose1.q
+                fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(float(p0[0]), float(p0[1]), float(p0[2])))
+                fixed.CreateLocalRot0Attr().Set(Gf.Quatf(float(q0[3]), float(q0[0]), float(q0[1]), float(q0[2])))
+                fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(float(p1[0]), float(p1[1]), float(p1[2])))
+                fixed.CreateLocalRot1Attr().Set(Gf.Quatf(float(q1[3]), float(q1[0]), float(q1[1]), float(q1[2])))
+
+                builder = newton.ModelBuilder()
+                builder.add_usd(stage, xform=wp.transform(wp.vec3(5.0, 0.0, 0.0), wp.quat_identity()))
+
+                link_idx = builder.body_label.index("/World/env/PinnedLink")
+                joint_idx = builder.joint_label.index("/World/env/PinnedLink/FixedJoint")
+                self.assertEqual(builder.joint_type[joint_idx], newton.JointType.FIXED)
+                self.assertEqual(builder.joint_parent[joint_idx], -1)
+
+                # Check the fixed joint frame by validating the joint_X_c.
+                # Checking joint_X_p is left to the FK check below, which implicitly validates it.
+                expected_X_c = local_pose0 if side == "body0" else local_pose1
+                joint_X_c = builder.joint_X_c[joint_idx]
+                assert_np_equal(np.array(joint_X_c.p), np.array(expected_X_c.p), tol=1e-4)
+                # Compare rotations by the angle between them (q and -q are equal).
+                q_err = joint_X_c.q * wp.quat_inverse(expected_X_c.q)
+                self.assertLessEqual(2.0 * math.acos(min(1.0, abs(q_err[3]))), 1e-4)
+
+                model = builder.finalize()
+                state = model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                # Check that the body is in the right pose: FK reproduces spawn * USD child world pose
+                # (env origin + spawn translation, identity rotation).
+                body_q = state.body_q.numpy()[link_idx]
+                assert_np_equal(body_q[:3], np.array([105.0, 200.0, 0.0]), tol=1e-4)
+                q_err = wp.quat(*body_q[3:7]) * wp.quat_inverse(wp.quat_identity())
+                self.assertLessEqual(2.0 * math.acos(min(1.0, abs(q_err[3]))), 1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collapse_fixed_joints_preserves_orphan_joints(self):
         """collapse_fixed_joints must not drop orphan joints or their bodies."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
