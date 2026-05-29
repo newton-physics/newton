@@ -1351,7 +1351,13 @@ class ModelBuilder:
         finalizer: Callable[[ModelBuilder, Model, ModelBuilder.CustomAttribute], None],
     ) -> None:
         """Register a callback that finalizes a model custom attribute itself."""
-        self._custom_attribute_model_finalizers.setdefault(key, finalizer)
+        existing = self._custom_attribute_model_finalizers.get(key)
+        if existing is not None and existing is not finalizer:
+            raise ValueError(
+                f"Custom attribute finalizer '{key}' is already registered with a different callback "
+                f"({existing!r} != {finalizer!r})."
+            )
+        self._custom_attribute_model_finalizers[key] = finalizer
 
     def add_custom_frequency(self, frequency: CustomFrequency) -> None:
         """
@@ -3474,7 +3480,7 @@ class ModelBuilder:
 
         # Carry over custom attribute finalizers from the source builder.
         for key, finalizer in builder._custom_attribute_model_finalizers.items():
-            self._custom_attribute_model_finalizers.setdefault(key, finalizer)
+            self._add_custom_attribute_model_finalizer(key, finalizer)
 
         # Merge actuator entries from the sub-builder with offset DOF indices
         for entry_key, sub_entry in builder.actuator_entries.items():

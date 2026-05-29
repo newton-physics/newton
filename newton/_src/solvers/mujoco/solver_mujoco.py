@@ -93,6 +93,51 @@ else:
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
 
+_DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE = (
+    "Model.mujoco.dof_passive_damping is deprecated and will be removed in a future release. "
+    "Use Model.joint_damping instead."
+)
+
+
+def _finalize_deprecated_dof_passive_damping(
+    _builder: ModelBuilder, model: Model, custom_attr: ModelBuilder.CustomAttribute
+) -> None:
+    if custom_attr.values:
+        joint_damping = model.joint_damping.numpy()
+        if isinstance(custom_attr.values, dict):
+            damping_items = custom_attr.values.items()
+        else:
+            damping_items = enumerate(custom_attr.values)
+
+        for index, value in damping_items:
+            if value is None:
+                continue
+            damping_index = int(index)
+            alias_value = float(value)
+            canonical_value = float(joint_damping[damping_index])
+            if canonical_value != 0.0 and not np.isclose(canonical_value, alias_value):
+                raise ValueError(
+                    "Model.mujoco.dof_passive_damping conflicts with Model.joint_damping "
+                    f"at DOF {damping_index}: {alias_value} != {canonical_value}."
+                )
+            joint_damping[damping_index] = alias_value
+        model.joint_damping.assign(joint_damping)
+
+    if custom_attr.namespace is None:
+        raise ValueError(f"Deprecated attribute alias '{custom_attr.name}' requires a namespace")
+
+    if not hasattr(model, custom_attr.namespace):
+        setattr(model, custom_attr.namespace, Model.AttributeNamespace(custom_attr.namespace))
+
+    ns_obj = getattr(model, custom_attr.namespace)
+    ns_obj.add_deprecated_alias(
+        custom_attr.name,
+        lambda model=model: model.joint_damping,
+        _DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE,
+    )
+    model.attribute_frequency[custom_attr.key] = custom_attr.frequency
+    model.attribute_assignment[custom_attr.key] = custom_attr.assignment
+
 
 def _required_specifier(package: str, requirements: Iterable[str]) -> str | None:
     pattern = re.compile(rf"^{re.escape(package)}(?=[<>=!~])([^;]+)")
@@ -586,41 +631,6 @@ class SolverMuJoCo(SolverBase):
         # This is required as custom frequencies must be registered before use
 
         # Note: only attributes with usd_attribute_name defined are parsed from USD at the moment.
-        deprecated_dof_passive_damping_message = (
-            "Model.mujoco.dof_passive_damping is deprecated and will be removed in a future release. "
-            "Use Model.joint_damping instead."
-        )
-
-        def finalize_deprecated_dof_passive_damping(
-            _builder: ModelBuilder, model: Model, custom_attr: ModelBuilder.CustomAttribute
-        ) -> None:
-            if custom_attr.values:
-                joint_damping = model.joint_damping.numpy()
-                if isinstance(custom_attr.values, dict):
-                    damping_items = custom_attr.values.items()
-                else:
-                    damping_items = enumerate(custom_attr.values)
-
-                for index, value in damping_items:
-                    if value is None:
-                        continue
-                    joint_damping[int(index)] = float(value)
-                model.joint_damping.assign(joint_damping)
-
-            if custom_attr.namespace is None:
-                raise ValueError(f"Deprecated attribute alias '{custom_attr.name}' requires a namespace")
-
-            if not hasattr(model, custom_attr.namespace):
-                setattr(model, custom_attr.namespace, Model.AttributeNamespace(custom_attr.namespace))
-
-            ns_obj = getattr(model, custom_attr.namespace)
-            ns_obj.add_deprecated_alias(
-                custom_attr.name,
-                lambda model=model: model.joint_damping,
-                deprecated_dof_passive_damping_message,
-            )
-            model.attribute_frequency[custom_attr.key] = custom_attr.frequency
-            model.attribute_assignment[custom_attr.key] = custom_attr.assignment
 
         # region custom frequencies
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="pair", namespace="mujoco"))
@@ -787,7 +797,7 @@ class SolverMuJoCo(SolverBase):
         )
         builder._add_custom_attribute_model_finalizer(
             "mujoco:dof_passive_damping",
-            finalize_deprecated_dof_passive_damping,
+            _finalize_deprecated_dof_passive_damping,
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(

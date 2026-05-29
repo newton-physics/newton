@@ -3302,6 +3302,21 @@ class TestImportMjcfSolverParams(unittest.TestCase):
             model.mujoco.dof_passive_damping = updated_damping
         self.assertAlmostEqual(float(model.joint_damping.numpy()[0]), 1.25, places=6)
 
+    def test_joint_damping_deprecated_mujoco_alias_rejects_canonical_conflict(self):
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        parent = builder.add_body()
+        child = builder.add_body()
+        builder.add_joint_revolute(
+            parent,
+            child,
+            damping=2.0,
+            custom_attributes={"mujoco:dof_passive_damping": 3.0},
+        )
+
+        with self.assertRaisesRegex(ValueError, "dof_passive_damping.*joint_damping"):
+            builder.finalize()
+
     def test_jnt_actgravcomp_parsing(self):
         """Test parsing of actuatorgravcomp from MJCF"""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
