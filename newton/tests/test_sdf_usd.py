@@ -492,6 +492,40 @@ class TestSDFUSDParsing(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "SDF or hydroelastic configuration"):
             builder.approximate_meshes(method="bounding_box")
 
+    def test_usd_sdf_mesh_uses_simplified_collision_edges(self, device=None):
+        """Deferred-built SDF on a USD mesh must surface its simplified collision edges to finalize."""
+        if device is None or not wp.get_device(device).is_cuda:
+            self.skipTest("SDF tests require CUDA device")
+
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "test_sdf_edges.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            _add_rigid_body(stage, "/World/Body1")
+            m1 = _add_collision_mesh(stage, "/World/Body1/CollisionMesh")
+            m1.GetPrim().CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, custom=True).Set(64)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = parse_usd(builder, str(usd_path))
+            s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
+            # shape_source still has no collision edges before finalize (the
+            # deferred build runs inside finalize on a Mesh clone).
+            self.assertIsNone(builder.shape_source[s1]._collision_edges)
+            full_edge_count = len(builder.shape_source[s1].edges)
+
+            model = builder.finalize(device=device)
+            simplified_edge_count = int(model.edge_count)
+            # The simplified set is strictly smaller than the full edge list on
+            # a typical cube (default 0.1° threshold drops co-planar edges).
+            self.assertLess(
+                simplified_edge_count,
+                full_edge_count,
+                f"Expected simplified edges < full edges, got {simplified_edge_count} >= {full_edge_count}",
+            )
+
     def test_approximate_meshes_warns_on_mesh_preserving_method_with_sdf(self):
         """approximate_meshes must warn (not raise) when a MESH-preserving method is used on a shape with SDF state."""
         builder = newton.ModelBuilder()
@@ -706,6 +740,12 @@ class TestSDFUSDParsing(unittest.TestCase):
 devices = get_selected_cuda_test_devices()
 add_function_test(
     TestSDFUSDParsing, "test_usd_sdf_mesh_attributes", TestSDFUSDParsing.test_usd_sdf_mesh_attributes, devices=devices
+)
+add_function_test(
+    TestSDFUSDParsing,
+    "test_usd_sdf_mesh_uses_simplified_collision_edges",
+    TestSDFUSDParsing.test_usd_sdf_mesh_uses_simplified_collision_edges,
+    devices=devices,
 )
 add_function_test(TestSDFUSDParsing, "test_usd_sdf_defaults", TestSDFUSDParsing.test_usd_sdf_defaults, devices=devices)
 add_function_test(
