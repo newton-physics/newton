@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.metadata as importlib_metadata
+import math
 import os
 import re
 import warnings
@@ -100,10 +101,10 @@ _DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE = (
 
 
 def _finalize_deprecated_dof_passive_damping(
-    _builder: ModelBuilder, model: Model, custom_attr: ModelBuilder.CustomAttribute
+    builder: ModelBuilder, model: Model, custom_attr: ModelBuilder.CustomAttribute
 ) -> None:
     if custom_attr.values:
-        joint_damping = model.joint_damping.numpy()
+        updated_joint_damping = None
         if isinstance(custom_attr.values, dict):
             damping_items = custom_attr.values.items()
         else:
@@ -113,15 +114,23 @@ def _finalize_deprecated_dof_passive_damping(
             if value is None:
                 continue
             damping_index = int(index)
+            canonical_value = builder.joint_damping[damping_index]
+            if canonical_value == value:
+                continue
+
             alias_value = float(value)
-            canonical_value = float(joint_damping[damping_index])
-            if canonical_value != 0.0 and not np.isclose(canonical_value, alias_value):
+            canonical_value = float(canonical_value)
+            if canonical_value != 0.0 and not math.isclose(canonical_value, alias_value, rel_tol=1e-05, abs_tol=1e-08):
                 raise ValueError(
                     "Model.mujoco.dof_passive_damping conflicts with Model.joint_damping "
                     f"at DOF {damping_index}: {alias_value} != {canonical_value}."
                 )
-            joint_damping[damping_index] = alias_value
-        model.joint_damping.assign(joint_damping)
+            if updated_joint_damping is None:
+                updated_joint_damping = list(builder.joint_damping)
+            updated_joint_damping[damping_index] = alias_value
+
+        if updated_joint_damping is not None:
+            model.joint_damping.assign(np.asarray(updated_joint_damping, dtype=np.float32))
 
     if custom_attr.namespace is None:
         raise ValueError(f"Deprecated attribute alias '{custom_attr.name}' requires a namespace")
