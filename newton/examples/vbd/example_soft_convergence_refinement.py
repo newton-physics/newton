@@ -4,11 +4,20 @@
 ###########################################################################
 # Example Soft Convergence Under Refinement
 #
-# Runs the same gravity-extension scenario at three mesh resolutions
-# (coarse, medium, fine) to validate that the Neo-Hookean volumetric
-# solver produces physically reasonable results regardless of mesh
-# density. All three meshes should produce a positive downward
-# displacement that stays within the same order of magnitude.
+# Runs the same gravity-extension scenario (a beam pinned at the top and
+# hanging under its own weight) at three mesh resolutions that all discretize
+# the same 1 m beam. As the mesh refines, the discrete tip extension must
+# converge to the continuum linear-elastic self-weight solution
+# delta = rho * g * L^2 / (2 E): the per-vertex mass lumping in add_soft_grid
+# over-counts the load by (dim+1)^3 / dim^3, a factor that vanishes with
+# refinement, so the extension converges DOWN to the continuum value. The test
+# asserts the extension decreases monotonically toward that value and that
+# successive refinement steps shrink (Cauchy convergence).
+#
+# Each resolution is solved with iterations proportional to its resolution:
+# VBD's Gauss-Seidel sweep propagates information ~one element per iteration, so
+# stress needs O(dim_z) iterations to reach the free end of the beam. The
+# refinement study runs in test_final so interactive viewing stays fast.
 #
 # Command: python -m newton.examples vbd.example_soft_convergence_refinement
 #
@@ -21,9 +30,24 @@ import newton
 import newton.examples
 from newton import ParticleFlags
 
+# Shared material parameters. The stable Neo-Hookean material is calibrated to
+# these linear Lame parameters (see
+# particle_vbd_kernels.evaluate_volumetric_neo_hookean_force_and_hessian), so the
+# Young's modulus used for the continuum prediction is E = mu(3*lambda+2*mu)/(lambda+mu).
+_DENSITY = 1000.0
+_K_MU = 5.0e4
+_K_LAMBDA = 5.0e4
 
-def _run_extension(dim_xy: int, dim_z: int, cell: float, n_frames: int) -> float:
-    """Run gravity extension and return bottom-layer displacement."""
+# Mesh resolutions: each discretizes the same 1 m beam (dim_z * cell == 1.0).
+_REFINEMENT_CONFIGS = (
+    {"name": "coarse", "dim_xy": 2, "dim_z": 10, "cell": 0.10},
+    {"name": "medium", "dim_xy": 4, "dim_z": 20, "cell": 0.05},
+    {"name": "fine", "dim_xy": 8, "dim_z": 40, "cell": 0.025},
+)
+
+
+def _run_extension(dim_xy: int, dim_z: int, cell: float, n_frames: int, iterations: int) -> float:
+    """Run gravity extension to equilibrium and return the bottom-layer displacement."""
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
     builder.add_soft_grid(
@@ -36,9 +60,9 @@ def _run_extension(dim_xy: int, dim_z: int, cell: float, n_frames: int) -> float
         cell_x=cell,
         cell_y=cell,
         cell_z=cell,
-        density=1000.0,
-        k_mu=5.0e4,
-        k_lambda=5.0e4,
+        density=_DENSITY,
+        k_mu=_K_MU,
+        k_lambda=_K_LAMBDA,
         k_damp=0.1,
     )
     builder.color()
@@ -56,7 +80,7 @@ def _run_extension(dim_xy: int, dim_z: int, cell: float, n_frames: int) -> float
         flags[i] = flags[i] & ~int(ParticleFlags.ACTIVE)
     model.particle_flags = wp.array(flags)
 
-    solver = newton.solvers.SolverVBD(model=model, iterations=20, particle_enable_self_contact=False)
+    solver = newton.solvers.SolverVBD(model=model, iterations=iterations, particle_enable_self_contact=False)
     s0 = model.state()
     s1 = model.state()
     ctrl = model.control()
@@ -98,22 +122,11 @@ class Example:
         # Even substep count keeps the CUDA-graph capture parity-safe (state ping-pong).
         self.sim_substeps = 6
         self.sim_dt = self.frame_dt / self.sim_substeps
-        self.iterations = 20
+        # The visual mesh is the medium resolution; match the iteration count the
+        # refinement study uses for it (5 * dim_z) so the displayed beam is converged.
+        self.iterations = 100
 
-        configs = [
-            {"name": "coarse", "dim_xy": 2, "dim_z": 10, "cell": 0.10},
-            {"name": "medium", "dim_xy": 4, "dim_z": 20, "cell": 0.05},
-            {"name": "fine", "dim_xy": 8, "dim_z": 40, "cell": 0.025},
-        ]
-
-        self.deltas: list[float] = []
-        self.config_names: list[str] = []
-        for cfg in configs:
-            delta = _run_extension(cfg["dim_xy"], cfg["dim_z"], cfg["cell"], n_frames=300)
-            self.deltas.append(delta)
-            self.config_names.append(cfg["name"])
-
-        # Visual: medium mesh
+        # Visual: medium mesh. The refinement study itself runs in test_final.
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
         builder.add_soft_grid(
@@ -126,9 +139,9 @@ class Example:
             cell_x=0.05,
             cell_y=0.05,
             cell_z=0.05,
-            density=1000.0,
-            k_mu=5e4,
-            k_lambda=5e4,
+            density=_DENSITY,
+            k_mu=_K_MU,
+            k_lambda=_K_LAMBDA,
             k_damp=0.1,
         )
         builder.color()
@@ -141,7 +154,9 @@ class Example:
             flags[i] = flags[i] & ~int(ParticleFlags.ACTIVE)
         self.model.particle_flags = wp.array(flags)
 
-        self.solver = newton.solvers.SolverVBD(model=self.model, iterations=20, particle_enable_self_contact=False)
+        self.solver = newton.solvers.SolverVBD(
+            model=self.model, iterations=self.iterations, particle_enable_self_contact=False
+        )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
@@ -177,19 +192,44 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        for name, delta in zip(self.config_names, self.deltas, strict=True):
-            if delta <= 0:
-                raise ValueError(f"{name}: non-positive displacement {delta:.4f}")
-            if delta > 1.0:
-                raise ValueError(f"{name}: excessive displacement {delta:.4f}")
+        # Refinement study: solve each resolution to equilibrium with iterations
+        # scaled to the resolution (VBD propagates ~one element per iteration, so
+        # the beam needs O(dim_z) iterations to converge).
+        names: list[str] = []
+        deltas: list[float] = []
+        for cfg in _REFINEMENT_CONFIGS:
+            delta = _run_extension(cfg["dim_xy"], cfg["dim_z"], cfg["cell"], n_frames=150, iterations=5 * cfg["dim_z"])
+            names.append(cfg["name"])
+            deltas.append(delta)
 
-        # All should be same order of magnitude (within 3x)
-        d_min = min(self.deltas)
-        d_max = max(self.deltas)
-        if d_max / d_min > 3.0:
+        for name, delta in zip(names, deltas, strict=True):
+            if not np.isfinite(delta) or delta <= 0.0:
+                raise ValueError(f"{name}: invalid displacement {delta}")
+
+        # Continuum (linear-elastic) self-weight extension of the 1 m beam. The
+        # discrete results over-shoot it because add_soft_grid lumps a full cell's
+        # mass onto every vertex (over-load (dim+1)^3 / dim^3 -> 1 as the mesh
+        # refines), so the extension must converge DOWN to this value.
+        young = _K_MU * (3.0 * _K_LAMBDA + 2.0 * _K_MU) / (_K_LAMBDA + _K_MU)
+        gravity_z = abs(float(self.model.gravity.numpy().reshape(-1)[2]))
+        length = 1.0
+        continuum = _DENSITY * gravity_z * length**2 / (2.0 * young)
+
+        # Convergence to the continuum: the extension decreases monotonically toward
+        # it from above as the mesh refines.
+        if not (deltas[0] > deltas[1] > deltas[2] > continuum):
             raise ValueError(
-                "Displacement spread too large: "
-                + ", ".join(f"{n}={d:.4f}" for n, d in zip(self.config_names, self.deltas, strict=True))
+                f"extension does not converge monotonically toward the continuum ({continuum:.4f} m): "
+                + ", ".join(f"{n}={d:.4f}" for n, d in zip(names, deltas, strict=True))
+            )
+
+        # Successive refinement steps must shrink (Cauchy convergence under refinement).
+        step_coarse_medium = deltas[0] - deltas[1]
+        step_medium_fine = deltas[1] - deltas[2]
+        if step_medium_fine >= step_coarse_medium:
+            raise ValueError(
+                f"refinement steps do not shrink: coarse->medium {step_coarse_medium:.4f} m, "
+                f"medium->fine {step_medium_fine:.4f} m"
             )
 
     def render(self):
