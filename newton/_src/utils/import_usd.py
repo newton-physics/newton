@@ -2356,34 +2356,32 @@ def parse_usd(
         free_joints_auto_inserted = not (no_articulations and has_joints)
         if is_body_to_world and free_joints_auto_inserted and not is_fixed_joint:
             continue
-        # For body-to-world joints, `body0` is empty so there is no world-side
-        # prim to inherit a frame from. Authoring tools commonly write
-        # `localPose0` relative to the joint prim's USD ancestor Xform rather
-        # than in world coords, leaving the joint anchor offset by that
-        # ancestor's world transform. Recover the missing world-side frame
-        # from the child body's world pose and the joint's local poses so the
-        # joint chain FK reproduces the imported child world pose:
-        #   joint chain: child_world = orphan_incoming_xform * parent_tf * inv(child_tf)
-        #   ⇒ orphan_incoming_xform = child_world * child_tf * inv(parent_tf)
-        # Algebraically degenerates to identity when `localPose0` is already in
-        # world coords (then child_world * child_tf == parent_tf).
-        orphan_incoming_xform = incoming_world_xform
-        if is_body_to_world:
-            _, _, parent_tf_o, child_tf_o = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
-                joint_desc, path_body_map, get_transforms=True
-            )
-            child_path_o = body1_path if body0_path in ("", "/") else body0_path
-            child_prim_o = stage.GetPrimAtPath(child_path_o) if child_path_o else None
-            if (
-                parent_tf_o is not None
-                and child_tf_o is not None
-                and child_prim_o is not None
-                and child_prim_o.IsValid()
-            ):
-                child_world_xform_o = usd.get_transform(child_prim_o, local=False, xform_cache=xform_cache)
-                world_body_xform_o = child_world_xform_o * child_tf_o * wp.transform_inverse(parent_tf_o)
-                orphan_incoming_xform = incoming_world_xform * world_body_xform_o
         try:
+            # Body-to-world joints (the world side may be body0 or body1) have no
+            # world-side prim to inherit a frame from, and authoring tools often
+            # write the world-side localPose relative to a USD ancestor Xform
+            # instead of in world coords. Recover the missing world-side frame from
+            # the child body's world pose and the joint local poses so the joint
+            # chain FK reproduces the imported child world pose:
+            #   world_body = child_world * child_tf * inv(parent_tf)
+            # The world-side localPose cancels, so the joint anchors at the
+            # USD-authored child body pose however that pose was authored.
+            orphan_incoming_xform = incoming_world_xform
+            if is_body_to_world:
+                _, _, parent_tf_o, child_tf_o = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
+                    joint_desc, path_body_map, get_transforms=True
+                )
+                child_path_o = body1_path if body0_path in ("", "/") else body0_path
+                child_prim_o = stage.GetPrimAtPath(child_path_o) if child_path_o else None
+                if (
+                    parent_tf_o is not None
+                    and child_tf_o is not None
+                    and child_prim_o is not None
+                    and child_prim_o.IsValid()
+                ):
+                    child_world_xform_o = usd.get_transform(child_prim_o, local=False, xform_cache=xform_cache)
+                    world_body_xform_o = child_world_xform_o * child_tf_o * wp.transform_inverse(parent_tf_o)
+                    orphan_incoming_xform = incoming_world_xform * world_body_xform_o
             joint_index = parse_joint(joint_desc, incoming_xform=orphan_incoming_xform)
             # Handle body-to-world FIXED joints separately to ensure proper welding.
             # Creates an articulation for the body-to-world FIXED joint (consistent with MuJoCo approach)
