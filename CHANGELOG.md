@@ -40,6 +40,7 @@
 - Remove `include_total` parameter from `SensorContact` (deprecated in 1.1.0); use `measure_total` instead
 - Remove `SensorContact.sensing_objs` (deprecated in 1.1.0); use `SensorContact.sensing_obj_idx` and `SensorContact.sensing_obj_type` instead
 - Remove `SensorContact.counterparts` and `SensorContact.reading_indices` (deprecated in 1.1.0); use `SensorContact.counterpart_indices` and `SensorContact.counterpart_type` instead
+- Remove `newton-actuators` package dependency and the legacy `ModelBuilder.add_actuator(actuator_class, input_indices=..., output_indices=..., **kwargs)` calling convention (deprecated in 1.2.0); use `newton.actuators` controller classes (e.g. `ControllerPD`, `ControllerPID`) with the per-DOF signature `ModelBuilder.add_actuator(controller_class, index=..., clamping=[...], delay_steps=..., **ctrl_kwargs)` instead
 - Remove `SensorContact.shape` (deprecated in 1.1.0); use `total_force.shape` / `force_matrix.shape` instead
 - Remove `SensorContact.ObjectType` enum (deprecated in 1.1.0); use the `sensing_obj_type` and `counterpart_type` attributes instead
 

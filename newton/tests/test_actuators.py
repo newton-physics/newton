@@ -41,13 +41,6 @@ try:
 except ImportError:
     HAS_USD = False
 
-try:
-    from newton_actuators import ActuatorDelayedPD, ActuatorPD, ActuatorPID
-
-    _HAS_LEGACY_ACTUATORS = True
-except ImportError:
-    _HAS_LEGACY_ACTUATORS = False
-
 _HAS_ONNX = importlib.util.find_spec("onnx") is not None
 _HAS_TORCH = importlib.util.find_spec("torch") is not None
 
@@ -1178,110 +1171,7 @@ class TestActuatorBuilder(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 6. Legacy newton_actuators backward compatibility
-# ---------------------------------------------------------------------------
-
-
-@unittest.skipUnless(_HAS_LEGACY_ACTUATORS, "newton_actuators not installed")
-class TestLegacyActuatorCompat(unittest.TestCase):
-    """Deprecated ``newton_actuators`` calling conventions must still work."""
-
-    def _make_builder(self, n_joints=2):
-        builder = newton.ModelBuilder()
-        links = [builder.add_link() for _ in range(n_joints)]
-        joints = []
-        for i, link in enumerate(links):
-            parent = -1 if i == 0 else links[i - 1]
-            joints.append(builder.add_joint_revolute(parent=parent, child=link, axis=newton.Axis.Z))
-        builder.add_articulation(joints)
-        dofs = [builder.joint_qd_start[j] for j in joints]
-        return builder, dofs
-
-    def test_legacy_positional_list(self):
-        """add_actuator(ActuatorPD, [dof], kp=...) — old positional style."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPD, [dofs[0]], kp=50.0, kd=5.0)
-        model = builder.finalize()
-        self.assertEqual(len(model.actuators), 1)
-        self.assertIsInstance(model.actuators[0].controller, ControllerPD)
-        np.testing.assert_array_almost_equal(model.actuators[0].controller.kp.numpy(), [50.0])
-
-    def test_legacy_keyword_input_indices(self):
-        """add_actuator(ActuatorPD, input_indices=[dof], kp=...)."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
-        model = builder.finalize()
-        self.assertEqual(len(model.actuators), 1)
-        np.testing.assert_array_almost_equal(model.actuators[0].controller.kp.numpy(), [100.0])
-
-    def test_legacy_keyword_actuator_class(self):
-        """add_actuator(actuator_class=ActuatorPD, input_indices=[dof], kp=...)."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(actuator_class=ActuatorPD, input_indices=[dofs[0]], kp=75.0)
-        model = builder.finalize()
-        self.assertEqual(len(model.actuators), 1)
-        np.testing.assert_array_almost_equal(model.actuators[0].controller.kp.numpy(), [75.0])
-
-    def test_legacy_delayed_pd(self):
-        """ActuatorDelayedPD maps to ControllerPD + delay."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[0]], kp=200.0, delay=3)
-        model = builder.finalize()
-        act = model.actuators[0]
-        self.assertIsInstance(act.controller, ControllerPD)
-        self.assertIsNotNone(act.delay)
-        np.testing.assert_array_equal(act.delay.delay_steps.numpy(), [3])
-
-    def test_legacy_pid(self):
-        """ActuatorPID maps to ControllerPID."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPID, [dofs[0]], kp=100.0, ki=10.0, kd=20.0)
-        model = builder.finalize()
-        act = model.actuators[0]
-        self.assertIsInstance(act.controller, ControllerPID)
-        np.testing.assert_array_almost_equal(act.controller.ki.numpy(), [10.0])
-
-    def test_legacy_max_force_becomes_clamping(self):
-        """max_force kwarg creates a ClampingMaxEffort on the new actuator."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=150.0, max_force=50.0)
-        model = builder.finalize()
-        act = model.actuators[0]
-        self.assertEqual(len(act.clamping), 1)
-        self.assertIsInstance(act.clamping[0], ClampingMaxEffort)
-        np.testing.assert_array_almost_equal(act.clamping[0].max_effort.numpy(), [50.0])
-
-    def test_legacy_output_indices_warns(self):
-        """output_indices != input_indices emits extra deprecation warning."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPD, [dofs[0]], [dofs[1]], kp=50.0)
-
-    def test_legacy_gear_warns(self):
-        """Non-unity gear emits a deprecation warning."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=50.0, gear=2.0)
-
-    def test_new_api_no_warning(self):
-        """New-style calls must not emit DeprecationWarning."""
-        builder, dofs = self._make_builder()
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            builder.add_actuator(ControllerPD, index=dofs[0], kp=50.0)
-        dep = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        self.assertEqual(len(dep), 0, f"Unexpected warnings: {[str(x.message) for x in dep]}")
-
-
-# ---------------------------------------------------------------------------
-# 7. Parameter access via ArticulationView
+# 6. Parameter access via ArticulationView
 # ---------------------------------------------------------------------------
 
 
