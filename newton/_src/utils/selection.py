@@ -594,7 +594,7 @@ class ArticulationView:
             arti_link_ids.append(link_id)
 
         # use link order as they appear in the model
-        arti_link_ids = sorted(arti_link_ids)
+        arti_link_ids = sorted(set(arti_link_ids))
         arti_link_count = len(arti_link_ids)
         for link_id in arti_link_ids:
             arti_link_template_labels.append(model.body_label[link_id])
@@ -617,6 +617,7 @@ class ArticulationView:
         joint_coord_counts = list_of_lists(world_count)
         root_joint_types = list_of_lists(world_count)
         link_starts = list_of_lists(world_count)
+        link_counts = list_of_lists(world_count)
         shape_starts = list_of_lists(world_count)
         shape_counts = list_of_lists(world_count)
         for world_id in range(world_count):
@@ -644,9 +645,12 @@ class ArticulationView:
                 for j in range(joint_start, joint_end):
                     link_id = int(model_joint_child[j])
                     link_ids.append(link_id)
+                link_ids = sorted(set(link_ids))
+                for link_id in link_ids:
                     link_shapes = model.body_shapes.get(link_id, [])
                     shape_ids.extend(link_shapes)
                 link_starts[world_id].append(min(link_ids))
+                link_counts[world_id].append(len(link_ids))
                 num_shapes = len(shape_ids)
                 if num_shapes > 0:
                     shape_starts[world_id].append(min(shape_ids))
@@ -655,12 +659,12 @@ class ArticulationView:
                 shape_counts[world_id].append(num_shapes)
 
         # make sure counts are the same for all articulations
-        # NOTE: we currently assume that link count is the same as joint count
         if not (
             all_equal(joint_counts)
             and all_equal(joint_dof_counts)
             and all_equal(joint_coord_counts)
             and all_equal(root_joint_types)
+            and all_equal(link_counts)
             and all_equal(shape_counts)
         ):
             raise ValueError("Articulations are not identical")

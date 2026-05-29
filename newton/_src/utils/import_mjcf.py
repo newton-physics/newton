@@ -442,7 +442,7 @@ def parse_mjcf(
                 mesh_attrib = merge_attrib(mesh_defaults, mesh.attrib)
                 name = mesh.attrib.get("name", ".".join(os.path.basename(fname).split(".")[:-1]))
                 s = mesh_attrib.get("scale", "1.0 1.0 1.0")
-                s = np.fromstring(s, sep=" ", dtype=np.float32)
+                s = np.array(s.split(), dtype=np.float32)
                 # parse maxhullvert attribute, default to mesh_maxhullvert if not specified
                 maxhullvert = int(mesh_attrib.get("maxhullvert", str(mesh_maxhullvert)))
                 mesh_assets[name] = {"file": fname, "scale": s, "maxhullvert": maxhullvert}
@@ -471,7 +471,7 @@ def parse_mjcf(
             nrow = int(hfield.attrib.get("nrow", "100"))
             ncol = int(hfield.attrib.get("ncol", "100"))
             size_str = hfield.attrib.get("size", "1 1 1 0")
-            size_arr = np.fromstring(size_str, sep=" ", dtype=np.float32)
+            size_arr = np.array(size_str.split(), dtype=np.float32)
             if size_arr.size < 4:
                 size_arr = np.pad(size_arr, (0, 4 - size_arr.size), constant_values=0.0)
             size = tuple(size_arr[:4])
@@ -484,7 +484,7 @@ def parse_mjcf(
             elevation_str = hfield.attrib.get("elevation")
             elevation_data = None
             if elevation_str and not file_attr:
-                elevation_arr = np.fromstring(elevation_str, sep=" ", dtype=np.float32)
+                elevation_arr = np.array(elevation_str.split(), dtype=np.float32)
                 if elevation_arr.size == nrow * ncol:
                     elevation_data = elevation_arr.reshape(nrow, ncol)
                 elif verbose:
@@ -511,7 +511,7 @@ def parse_mjcf(
 
     def parse_vec(attrib, key, default):
         if key in attrib:
-            out = np.fromstring(attrib[key], sep=" ", dtype=np.float32)
+            out = np.array(attrib[key].split(), dtype=np.float32)
         else:
             out = np.array(default, dtype=np.float32)
 
@@ -541,23 +541,23 @@ def parse_mjcf(
 
     def parse_orientation(attrib) -> wp.quat:
         if "quat" in attrib:
-            wxyz = np.fromstring(attrib["quat"], sep=" ")
+            wxyz = np.array(attrib["quat"].split(), dtype=float)
             return wp.normalize(wp.quat(*wxyz[1:], wxyz[0]))
         if "euler" in attrib:
-            euler = np.fromstring(attrib["euler"], sep=" ")
+            euler = np.array(attrib["euler"].split(), dtype=float)
             if use_degrees:
                 euler *= np.pi / 180
             # Keep MuJoCo-compatible semantics for non-XYZ sequences.
             return quat_from_euler_mjcf(wp.vec3(euler), *euler_seq)
         if "axisangle" in attrib:
-            axisangle = np.fromstring(attrib["axisangle"], sep=" ")
+            axisangle = np.array(attrib["axisangle"].split(), dtype=float)
             angle = axisangle[3]
             if use_degrees:
                 angle *= np.pi / 180
             axis = wp.normalize(wp.vec3(*axisangle[:3]))
             return wp.quat_from_axis_angle(axis, float(angle))
         if "xyaxes" in attrib:
-            xyaxes = np.fromstring(attrib["xyaxes"], sep=" ")
+            xyaxes = np.array(attrib["xyaxes"].split(), dtype=float)
             xaxis = wp.normalize(wp.vec3(*xyaxes[:3]))
             yaxis = wp.vec3(*xyaxes[3:])
             zaxis = wp.normalize(wp.cross(xaxis, yaxis))
@@ -565,7 +565,7 @@ def parse_mjcf(
             rot_matrix = np.array([xaxis, yaxis, zaxis]).T
             return wp.quat_from_matrix(wp.mat33(rot_matrix))
         if "zaxis" in attrib:
-            zaxis = np.fromstring(attrib["zaxis"], sep=" ")
+            zaxis = np.array(attrib["zaxis"].split(), dtype=float)
             zaxis = wp.normalize(wp.vec3(*zaxis))
             xaxis = wp.normalize(wp.cross(wp.vec3(0, 0, 1), zaxis))
             yaxis = wp.normalize(wp.cross(zaxis, xaxis))
@@ -648,7 +648,7 @@ def parse_mjcf(
             # Parse MJCF friction: "slide [torsion [roll]]"
             # Can't use parse_vec - it would replicate single values to all dimensions
             if "friction" in geom_attrib:
-                friction_values = np.fromstring(geom_attrib["friction"], sep=" ", dtype=np.float32)
+                friction_values = np.array(geom_attrib["friction"].split(), dtype=np.float32)
 
                 if len(friction_values) >= 1:
                     shape_cfg.mu = float(friction_values[0])
@@ -704,7 +704,7 @@ def parse_mjcf(
             rgba = geom_attrib.get("rgba", material_info.get("rgba"))
             material_color = None
             if rgba is not None:
-                rgba_values = np.fromstring(rgba, sep=" ", dtype=np.float32)
+                rgba_values = np.array(rgba.split(), dtype=np.float32)
                 if len(rgba_values) >= 3:
                     material_color = (
                         float(rgba_values[0]),
@@ -1130,7 +1130,7 @@ def parse_mjcf(
             # Note: This differs from parse_vec which would replicate single values
             site_size = np.array([0.005, 0.005, 0.005], dtype=np.float32)
             if "size" in site_attrib:
-                size_values = np.fromstring(site_attrib["size"], sep=" ", dtype=np.float32)
+                size_values = np.array(site_attrib["size"].split(), dtype=np.float32)
                 for i, val in enumerate(size_values):
                     if i < 3:
                         site_size[i] = val
@@ -1803,7 +1803,7 @@ def parse_mjcf(
             else:
                 fullinertia = inertial_attrib.get("fullinertia")
                 assert fullinertia is not None
-                fullinertia = np.fromstring(fullinertia, sep=" ", dtype=np.float32)
+                fullinertia = np.array(fullinertia.split(), dtype=np.float32)
                 I_m = np.zeros((3, 3))
                 I_m[0, 0] = fullinertia[0] * scale**2
                 I_m[1, 1] = fullinertia[1] * scale**2
