@@ -10,6 +10,10 @@
 # without NaN or inversion, and recover toward the rest height after
 # release.
 #
+# The test additionally drives a near-flat (90%) compression that inverts
+# elements, then checks the cube springs back to its rest height and volume
+# once released, exercising inversion recovery directly.
+#
 # Command: python -m newton.examples vbd.example_soft_cube_compression
 #
 ###########################################################################
@@ -32,6 +36,98 @@ def _compute_tet_volume(q: np.ndarray, tet_indices: np.ndarray) -> float:
     d3 = v3 - v0
     volumes = np.einsum("ij,ij->i", d1, np.cross(d2, d3)) / 6.0
     return float(np.sum(np.abs(volumes)))
+
+
+def _run_compression(
+    compress_ratio: float,
+    n_compress: int = 150,
+    n_settle: int = 250,
+    dim: int = 6,
+    cell: float = 0.05,
+    density: float = 1000.0,
+    k_mu: float = 1.0e4,
+    k_lambda: float = 1.0e4,
+    k_damp: float = 1.0e-2,
+    iterations: int = 30,
+    substeps: int = 5,
+) -> tuple[float, float, bool]:
+    """Headless compress-then-release run used to probe extreme-deformation recovery.
+
+    Drives the pinned cube's top face down to ``compress_ratio`` of the rest height,
+    releases it, and lets the cube settle under zero gravity. Returns the recovered
+    height ratio, the recovered volume ratio, and whether any NaN appeared.
+    """
+    builder = newton.ModelBuilder()
+    cube_size = dim * cell
+    base_z = 1.0
+    builder.add_soft_grid(
+        pos=wp.vec3(0.0, 0.0, base_z),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=dim,
+        dim_y=dim,
+        dim_z=dim,
+        cell_x=cell,
+        cell_y=cell,
+        cell_z=cell,
+        density=density,
+        k_mu=k_mu,
+        k_lambda=k_lambda,
+        k_damp=k_damp,
+    )
+    builder.color()
+    model = builder.finalize()
+    model.set_gravity((0.0, 0.0, 0.0))
+
+    q0 = model.particle_q.numpy()
+    bot_mask = np.abs(q0[:, 2] - base_z) < 1e-6
+    top_mask = np.abs(q0[:, 2] - (base_z + cube_size)) < 1e-6
+    top_indices = np.where(top_mask)[0]
+    flags = model.particle_flags.numpy()
+    for i in np.where(bot_mask | top_mask)[0]:
+        flags[i] = flags[i] & ~int(ParticleFlags.ACTIVE)
+    model.particle_flags = wp.array(flags)
+
+    solver = newton.solvers.SolverVBD(model=model, iterations=iterations, particle_enable_self_contact=False)
+    s0 = model.state()
+    s1 = model.state()
+    ctrl = model.control()
+    contacts = model.contacts()
+    dt = 1.0 / 60 / substeps
+
+    tet_indices = model.tet_indices.numpy()
+    rest_volume = _compute_tet_volume(q0, tet_indices)
+
+    # Drive the top face down to compress_ratio of the rest height.
+    for f in range(n_compress):
+        t = min(f / max(n_compress - 1, 1), 1.0)
+        target_z = base_z + (1.0 - t * (1.0 - compress_ratio)) * cube_size
+        q = s0.particle_q.numpy()
+        q[top_indices, 2] = target_z
+        s0.particle_q.assign(q)
+        model.collide(s0, contacts)
+        for _ in range(substeps):
+            s0.clear_forces()
+            solver.step(s0, s1, ctrl, contacts, dt)
+            s0, s1 = s1, s0
+
+    # Release the top face and let the cube spring back.
+    flags = model.particle_flags.numpy()
+    for i in top_indices:
+        flags[i] = flags[i] | int(ParticleFlags.ACTIVE)
+    model.particle_flags = wp.array(flags)
+    for _ in range(n_settle):
+        model.collide(s0, contacts)
+        for _ in range(substeps):
+            s0.clear_forces()
+            solver.step(s0, s1, ctrl, contacts, dt)
+            s0, s1 = s1, s0
+
+    q = s0.particle_q.numpy()
+    has_nan = bool(np.any(np.isnan(q)))
+    recovered_height = (float(np.mean(q[top_indices, 2])) - base_z) / cube_size
+    recovered_volume = _compute_tet_volume(q, tet_indices) / rest_volume
+    return recovered_height, recovered_volume, has_nan
 
 
 class Example:
@@ -114,10 +210,10 @@ class Example:
         self.viewer.set_model(self.model)
 
     def simulate(self):
+        self.model.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -131,7 +227,8 @@ class Example:
                 self._released = True
             return
 
-        t = self._frame_index / self.COMPRESS_FRAMES
+        denom = max(self.COMPRESS_FRAMES - 1, 1)
+        t = min(self._frame_index / denom, 1.0)
         target_ratio = 1.0 - t * (1.0 - self.COMPRESS_RATIO)
         target_z = self.base_z + target_ratio * self.cube_size
 
@@ -172,6 +269,17 @@ class Example:
         volume_ratio = final_volume / self.rest_volume
         if volume_ratio < 0.50:
             raise ValueError(f"Volume collapsed: ratio {volume_ratio:.3f}")
+
+        # Extreme robustness: a near-flat (90%) compression inverts elements, and the
+        # stable Neo-Hookean material should un-invert them so the cube springs back to
+        # its rest height and volume once released.
+        rec, vol, has_nan = _run_compression(compress_ratio=0.10)
+        if has_nan:
+            raise ValueError("NaN during near-flat (90%) compression recovery")
+        if rec < 0.90:
+            raise ValueError(f"Near-flat cube failed to recover height: {rec:.1%} of rest")
+        if vol < 0.90:
+            raise ValueError(f"Near-flat cube failed to recover volume: ratio {vol:.3f}")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
