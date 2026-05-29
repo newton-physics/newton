@@ -1698,6 +1698,12 @@ class TestSchemaResolver(unittest.TestCase):
         for key in ("ke", "kd", "kf", "ka"):
             self.assertIsNone(resolver.get_value(material, PrimType.MATERIAL, key))
 
+        # Authored -inf is returned as-is (not None), so callers can distinguish
+        # "use engine default" from "unset"
+        material.GetAttribute("newton:contactStiffness").Set(float("-inf"))
+        self.assertEqual(resolver.get_value(material, PrimType.MATERIAL, "ke"), float("-inf"))
+        material.GetAttribute("newton:contactStiffness").Clear()
+
         # Author Newton material values
         material.GetAttribute("newton:contactStiffness").Set(5000.0)
         material.GetAttribute("newton:contactDamping").Set(200.0)
@@ -1821,7 +1827,7 @@ class TestSchemaResolver(unittest.TestCase):
             warnings.simplefilter("always")
             legacy_ke = resolver_newton_mjc.get_value(collider, PrimType.SHAPE, "ke")
             self.assertAlmostEqual(legacy_ke, 1111.0)
-            deprecation_msgs = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            deprecation_msgs = [str(x.message) for x in w if issubclass(x.category, DeprecationWarning)]
             self.assertEqual(len(deprecation_msgs), 1)
 
 
