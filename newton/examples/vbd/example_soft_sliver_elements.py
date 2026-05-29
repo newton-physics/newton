@@ -37,7 +37,10 @@ class Example:
         self.viewer = viewer
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 5
+        # Even substep count keeps the CUDA-graph capture parity-safe: with an
+        # odd count the state_0/state_1 ping-pong leaves the graph replaying
+        # from the wrong start buffer, under-integrating each replayed frame.
+        self.sim_substeps = 6
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.iterations = 20
         self.sim_time = 0.0
@@ -100,10 +103,10 @@ class Example:
             self.graph = None
 
     def simulate(self):
+        self.model.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
