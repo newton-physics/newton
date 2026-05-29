@@ -7,7 +7,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.mujoco.equality import add_equality_constraint as _add_equality_constraint
+from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 

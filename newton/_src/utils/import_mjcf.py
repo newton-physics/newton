@@ -29,7 +29,7 @@ from ..solvers.mujoco.constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
-from ..solvers.mujoco.equality import add_equality_constraint as _add_equality_constraint
+from ..solvers.mujoco.equality import _add_equality_constraint
 from ..usd.schemas import solref_to_stiffness_damping
 from .heightfield import load_heightfield_elevation
 from .import_utils import (

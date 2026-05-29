@@ -22,7 +22,7 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
-from newton._src.solvers.mujoco.equality import add_equality_constraint as _add_equality_constraint
+from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
 

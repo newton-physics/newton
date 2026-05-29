@@ -9,7 +9,7 @@ import warp as wp
 
 import newton
 from newton._src.sim.enums import EqObjType, EqTarget
-from newton._src.solvers.mujoco.equality import add_equality_constraint as _add_equality_constraint
+from newton._src.solvers.mujoco.equality import _add_equality_constraint
 
 
 def _eq_value(builder, name, idx):

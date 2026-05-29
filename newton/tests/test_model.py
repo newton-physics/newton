@@ -14,7 +14,7 @@ import warp as wp
 import newton
 from newton import ModelBuilder
 from newton._src.geometry.utils import transform_points
-from newton._src.solvers.mujoco.equality import add_equality_constraint as _add_equality_constraint
+from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton.tests.unittest_utils import assert_np_equal
 
 

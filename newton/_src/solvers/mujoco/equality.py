@@ -27,11 +27,11 @@ if TYPE_CHECKING:
     from ...sim.builder import ModelBuilder
 
 
-def register_equality_constraint_attributes(builder: ModelBuilder) -> None:
+def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     """Declare the ``model.mujoco.equality_constraint_*`` custom-attribute rows on ``builder``.
 
     Registers the 15 per-equality-constraint custom attributes (the ``mujoco:equality_constraint``
-    frequency) that back :func:`add_equality_constraint` and surface on :class:`~newton.Model`
+    frequency) that back :func:`_add_equality_constraint` and surface on :class:`~newton.Model`
     under the ``mujoco`` namespace after :meth:`~newton.ModelBuilder.finalize`.
 
     Idempotent: re-registration with the same spec is a no-op. Called from
@@ -212,7 +212,7 @@ def register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     )
 
 
-def add_equality_constraint(
+def _add_equality_constraint(
     builder: ModelBuilder,
     constraint_type: EqType,
     body1: int = -1,

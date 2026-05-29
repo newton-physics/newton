@@ -34,7 +34,7 @@ from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute
 from ..sim.builder import ModelBuilder
 from ..sim.enums import EqType, JointTargetMode
 from ..sim.model import Model
-from ..solvers.mujoco.equality import add_equality_constraint as _add_equality_constraint
+from ..solvers.mujoco.equality import _add_equality_constraint
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton

@@ -1233,9 +1233,9 @@ class ModelBuilder:
         # MuJoCo equality helpers; lazy-import it to keep ``ModelBuilder`` construction free of
         # solver imports. Once the legacy properties are removed, delete this call and let
         # ``SolverMuJoCo.register_custom_attributes`` be the sole registration site.
-        from ..solvers.mujoco.equality import register_equality_constraint_attributes  # noqa: PLC0415
+        from ..solvers.mujoco.equality import _register_equality_constraint_attributes  # noqa: PLC0415
 
-        register_equality_constraint_attributes(self)
+        _register_equality_constraint_attributes(self)
 
     # region deprecated equality-constraint accumulators (removal in a future release)
     # The legacy ``ModelBuilder.equality_constraint_*`` lists are now thin read-only views over
@@ -4633,7 +4633,7 @@ class ModelBuilder:
             Constraint index
         """
         self._warn_deprecated_builder_add_equality_constraint("add_equality_constraint")
-        from ..solvers.mujoco.equality import add_equality_constraint as _add  # noqa: PLC0415
+        from ..solvers.mujoco.equality import _add_equality_constraint as _add  # noqa: PLC0415
 
         return _add(
             self,
@@ -4680,7 +4680,7 @@ class ModelBuilder:
             Constraint index
         """
         self._warn_deprecated_builder_add_equality_constraint("add_equality_constraint_connect")
-        from ..solvers.mujoco.equality import add_equality_constraint as _add  # noqa: PLC0415
+        from ..solvers.mujoco.equality import _add_equality_constraint as _add  # noqa: PLC0415
 
         return _add(
             self,
@@ -4722,7 +4722,7 @@ class ModelBuilder:
             Constraint index
         """
         self._warn_deprecated_builder_add_equality_constraint("add_equality_constraint_joint")
-        from ..solvers.mujoco.equality import add_equality_constraint as _add  # noqa: PLC0415
+        from ..solvers.mujoco.equality import _add_equality_constraint as _add  # noqa: PLC0415
 
         return _add(
             self,
@@ -4768,7 +4768,7 @@ class ModelBuilder:
             Constraint index
         """
         self._warn_deprecated_builder_add_equality_constraint("add_equality_constraint_weld")
-        from ..solvers.mujoco.equality import add_equality_constraint as _add  # noqa: PLC0415
+        from ..solvers.mujoco.equality import _add_equality_constraint as _add  # noqa: PLC0415
 
         return _add(
             self,

@@ -45,7 +45,7 @@ from .constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
-from .equality import register_equality_constraint_attributes
+from .equality import _register_equality_constraint_attributes
 from .kernels import (
     _snapshot_nacon_count,
     apply_mjc_body_f_kernel,
@@ -600,7 +600,7 @@ class SolverMuJoCo(SolverBase):
         # ``Model.equality_constraint_*`` deprecation window; once those properties are removed
         # in a future release the call from ``__init__`` goes away and this site becomes the only
         # registration entry point.
-        register_equality_constraint_attributes(builder)
+        _register_equality_constraint_attributes(builder)
 
         def parse_solreflimit_mode_usd(_value: Any, context: dict[str, Any]) -> int | None:
             prim = context.get("prim")

@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.mujoco.equality import add_equality_constraint as _add_equality_constraint
+from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.solver_mujoco import HINGE_CONNECT_AXIS_OFFSET
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 
