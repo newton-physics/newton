@@ -3188,7 +3188,6 @@ class ModelBuilder:
         start_joint_coord_idx = self.joint_coord_count
         start_joint_constraint_idx = self.joint_constraint_count
         start_articulation_idx = self.articulation_count
-        start_equality_constraint_idx = self._equality_constraint_count
         start_constraint_mimic_idx = len(self.constraint_mimic_joint0)
         start_edge_idx = self.edge_count
         start_triangle_idx = self.tri_count
@@ -3458,7 +3457,6 @@ class ModelBuilder:
             "joint_coord": start_joint_coord_idx,
             "joint_constraint": start_joint_constraint_idx,
             "articulation": start_articulation_idx,
-            "equality_constraint": start_equality_constraint_idx,
             "constraint_mimic": start_constraint_mimic_idx,
             "particle": start_particle_idx,
             "edge": start_edge_idx,
@@ -3579,10 +3577,10 @@ class ModelBuilder:
         if label_prefix and builder._equality_constraint_count > 0:
             label_attr = self.custom_attributes.get("mujoco:equality_constraint_label")
             if label_attr is not None and label_attr.values:
-                for i in range(
-                    start_equality_constraint_idx,
-                    start_equality_constraint_idx + builder._equality_constraint_count,
-                ):
+                # The frequency count is bumped further below, so it still reads the pre-merge
+                # start index of the rows just appended from ``builder``.
+                start = self._equality_constraint_count
+                for i in range(start, start + builder._equality_constraint_count):
                     if i < len(label_attr.values):
                         lbl = label_attr.values[i]
                         if lbl:
