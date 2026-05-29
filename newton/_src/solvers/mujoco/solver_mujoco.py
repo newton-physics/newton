@@ -5946,13 +5946,12 @@ class SolverMuJoCo(SolverBase):
                 # ``joint_limit_ke``/``kd`` (and the FORCE_SPACE mode) on
                 # the rebuilt model.
                 jnt_to_newton_dof = self.mjc_jnt_to_newton_dof.numpy()[0]
-                solreflimit_mode_np = joint_solref_limit_mode if "joint_solref_limit_mode" in locals() else None
-                if solreflimit_mode_np is None:
-                    mujoco_attrs = getattr(self.model, "mujoco", None)
-                    solreflimit_mode_attr = (
-                        getattr(mujoco_attrs, "solreflimit_mode", None) if mujoco_attrs is not None else None
-                    )
-                    solreflimit_mode_np = solreflimit_mode_attr.numpy() if solreflimit_mode_attr is not None else None
+                # ``joint_solref_limit_mode`` is the per-DOF
+                # ``mujoco.solreflimit_mode`` array fetched at the start of
+                # ``_convert_to_mjc`` (see the ``get_custom_attribute`` block).
+                # It is ``None`` only when the custom attribute is not
+                # registered, in which case every joint defaults to the
+                # FORCE_SPACE branch below.
                 for mjc_jnt, solref in enumerate(self.mj_model.jnt_solref):
                     if not self.mj_model.jnt_limited[mjc_jnt]:
                         continue
@@ -5960,8 +5959,8 @@ class SolverMuJoCo(SolverBase):
                     if newton_dof < 0:
                         continue
                     mode = (
-                        int(solreflimit_mode_np[newton_dof])
-                        if solreflimit_mode_np is not None
+                        int(joint_solref_limit_mode[newton_dof])
+                        if joint_solref_limit_mode is not None
                         else SOLREF_MODE_FORCE_SPACE
                     )
                     if mode == SOLREF_MODE_RAW:
