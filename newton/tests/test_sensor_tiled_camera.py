@@ -89,6 +89,64 @@ class TestSensorTiledCamera(unittest.TestCase):
             f"Images differ more than {allowed_difference:.2f}%, total difference is {percentage_diff:.2f}%",
         )
 
+    @staticmethod
+    def _build_single_sphere_scene(color: tuple[float, float, float]) -> newton.Model:
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -2.0), q=wp.quat_identity()))
+        builder.add_shape_sphere(body, radius=0.75, color=color)
+        return builder.finalize(device="cpu")
+
+    @staticmethod
+    def _unpack_rgba(packed: int) -> np.ndarray:
+        value = int(packed)
+        return np.array(
+            [
+                value & 0xFF,
+                (value >> 8) & 0xFF,
+                (value >> 16) & 0xFF,
+                (value >> 24) & 0xFF,
+            ],
+            dtype=np.uint8,
+        )
+
+    def test_render_config_uses_utils_color_space_enum(self) -> None:
+        self.assertEqual(SensorTiledCamera.RenderConfig().output_color_space, newton.utils.ColorSpace.SRGB)
+        config = SensorTiledCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)
+        self.assertEqual(config.output_color_space, newton.utils.ColorSpace.LINEAR)
+
+        linear = newton.utils.color_srgb_to_linear((0.5, 0.25, 0.1))
+        np.testing.assert_allclose(newton.utils.color_linear_to_srgb(linear), (0.5, 0.25, 0.1), atol=1e-6)
+
+    def test_albedo_output_follows_output_color_space(self) -> None:
+        color = (0.25, 0.5, 0.75)
+        model = self._build_single_sphere_scene(color)
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        state = model.state()
+        newton.geometry.build_bvh_shape(model, state)
+
+        for output_color_space in (newton.utils.ColorSpace.SRGB, newton.utils.ColorSpace.LINEAR):
+            sensor = SensorTiledCamera(
+                model=model,
+                config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
+            )
+            camera_rays = sensor.utils.compute_pinhole_camera_rays(1, 1, math.radians(30.0))
+            albedo_image = sensor.utils.create_albedo_image_output(1, 1, camera_count=1)
+
+            sensor.update(state, camera_transforms, camera_rays, albedo_image=albedo_image)
+
+            packed = self._unpack_rgba(albedo_image.numpy()[0, 0, 0, 0])
+            expected_rgb = (
+                np.array([63, 127, 191], dtype=np.uint8)
+                if output_color_space == newton.utils.ColorSpace.SRGB
+                else np.array([12, 54, 133], dtype=np.uint8)
+            )
+            np.testing.assert_array_equal(packed[:3], expected_rgb)
+            self.assertEqual(packed[3], 255)
+
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_golden_image(self):
         model = self._shared_model

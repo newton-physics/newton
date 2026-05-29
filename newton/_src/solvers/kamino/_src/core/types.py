@@ -404,3 +404,74 @@ FloatArrayLike = np.ndarray | list[float] | list[list[float]]
 
 IntArrayLike = np.ndarray | list[int] | list[list[int]]
 """An Array-like structure for aliasing various integer data types compatible with numpy."""
+
+
+###
+# Array constructors
+###
+
+_INT32_INFO = np.iinfo(np.int32)
+
+
+def _check_int32_range(data: IntArrayLike, func_name: str) -> np.ndarray:
+    arr = np.asarray(data)
+    if arr.size > 0 and not np.issubdtype(arr.dtype, np.integer):
+        raise TypeError(f"{func_name} expected integer data, got dtype={arr.dtype}")
+    if arr.size > 0:
+        v_min = int(arr.min())
+        v_max = int(arr.max())
+        if v_min < _INT32_INFO.min or v_max > _INT32_INFO.max:
+            raise OverflowError(
+                f"int32 overflow: values in [{v_min}, {v_max}] outside [{_INT32_INFO.min}, {_INT32_INFO.max}]"
+            )
+    return arr
+
+
+def to_warp_int32_array(
+    data: IntArrayLike,
+    device: wp.DeviceLike | None = None,
+) -> wp.array:
+    """Convert ``data`` to a Warp ``int32`` array, asserting all values fit in ``int32``.
+
+    Use this helper in place of ``wp.array(data, dtype=int32)`` and
+    ``wp.from_numpy(data, dtype=wp.int32)`` whenever ``data`` originates from
+    Python ints or NumPy integers. Direct ``wp.array`` / ``wp.from_numpy`` calls
+    silently truncate values that do not fit in ``int32``; this helper raises
+    instead.
+
+    Args:
+        data: Integer array-like (Python list, tuple, numpy array, or scalar).
+        device: Warp device to allocate on. Defaults to the current scoped device.
+
+    Returns:
+        A Warp array with dtype :data:`int32` containing the values of ``data``.
+
+    Raises:
+        TypeError: if ``data`` is not integer-typed.
+        OverflowError: if any value falls outside ``[-2**31, 2**31 - 1]``.
+    """
+    arr = _check_int32_range(data, "to_warp_int32_array")
+    return wp.array(arr.astype(np.int32, copy=False), dtype=wp.int32, device=device)
+
+
+def assign_to_warp_int32_array(dst: wp.array, data: IntArrayLike) -> None:
+    """Assign ``data`` into an existing Warp ``int32`` array ``dst``, asserting no overflow.
+
+    Use this helper in place of ``dst.assign(data)`` whenever ``dst`` is an
+    ``int32`` Warp array and ``data`` originates from NumPy integers. Warp's
+    ``.assign(np.ndarray)`` silently truncates NumPy ints that do not fit in
+    the target dtype; this helper raises instead.
+
+    Args:
+        dst: Pre-allocated Warp array with dtype :data:`int32`.
+        data: Integer array-like (Python list, tuple, numpy array, or scalar).
+
+    Raises:
+        TypeError: if ``dst`` does not have dtype :data:`int32`, or if ``data``
+            is not integer-typed.
+        OverflowError: if any value falls outside ``[-2**31, 2**31 - 1]``.
+    """
+    if dst.dtype is not wp.int32:
+        raise TypeError(f"assign_to_warp_int32_array expected destination with dtype wp.int32, got dtype={dst.dtype}")
+    arr = _check_int32_range(data, "assign_to_warp_int32_array")
+    dst.assign(arr.astype(np.int32, copy=False))
