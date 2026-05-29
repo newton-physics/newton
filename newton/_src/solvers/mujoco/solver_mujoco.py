@@ -3270,6 +3270,11 @@ class SolverMuJoCo(SolverBase):
         self._last_rigid_contact_max: int | None = None
         self._last_naconmax: int | None = None
 
+        # One-shot dedup for ``_update_solref_from_invweight0``'s authored
+        # ``mujoco.solreflimit`` domain validator. Re-armed by
+        # ``notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)``.
+        self._raw_solreflimit_validated: bool = False
+
         with wp.ScopedTimer("convert_model_to_mujoco", active=False):
             self._convert_to_mjc(
                 model,
@@ -4455,18 +4460,6 @@ class SolverMuJoCo(SolverBase):
             if joint_solref_limit_mode is not None:
                 return int(joint_solref_limit_mode[dof_idx]) == SOLREF_MODE_RAW
             return bool(np.any(joint_solref_limit[dof_idx] != 0.0))
-
-        def joint_uses_mjcf_default_limit_solref(dof_idx: int) -> bool:
-            if joint_solref_limit_mode is None:
-                return False
-            # MJCF import cannot store MuJoCo's implicit default in
-            # ``mujoco.solreflimit`` without shadowing later Newton gain
-            # edits. The mode carries the missing "implicit default" bit.
-            return (
-                int(joint_solref_limit_mode[dof_idx]) == SOLREF_MODE_MJCF_DEFAULT
-                and np.isclose(joint_limit_ke[dof_idx], DEFAULT_LIMIT_KE, rtol=DEFAULT_LIMIT_GAIN_RTOL, atol=0.0)
-                and np.isclose(joint_limit_kd[dof_idx], DEFAULT_LIMIT_KD, rtol=DEFAULT_LIMIT_GAIN_RTOL, atol=0.0)
-            )
 
         eq_constraint_type = model.equality_constraint_type.numpy()
         eq_constraint_body1 = model.equality_constraint_body1.numpy()
@@ -6937,7 +6930,7 @@ class SolverMuJoCo(SolverBase):
         if (
             joint_limit_solref_mode is not None
             and joint_limit_solref is not None
-            and not getattr(self, "_raw_solreflimit_validated", False)
+            and not self._raw_solreflimit_validated
         ):
             mode_np = joint_limit_solref_mode.numpy()
             raw_np = joint_limit_solref.numpy()
@@ -6954,9 +6947,13 @@ class SolverMuJoCo(SolverBase):
                         "silently misbehave (divide-by-zero or disabled limit) until corrected.",
                         stacklevel=2,
                     )
-            # One-shot guard: model edits trigger a fresh notify which will
-            # reset this flag via ``_invalidate_contact_fast_path`` callers,
-            # but for steady-state callers this avoids warning every step.
+            # One-shot guard: avoids warning every step for the steady-state
+            # callers. The flag is re-armed only by ``notify_model_changed``
+            # under ``SolverNotifyFlags.JOINT_DOF_PROPERTIES``, which is where
+            # ``mujoco.solreflimit`` reassignments arrive; other
+            # ``need_const_0`` notifies (BODY_INERTIAL_PROPERTIES, etc.) do
+            # not reset it because they cannot change the authored solreflimit
+            # values themselves.
             self._raw_solreflimit_validated = True
 
         if self.use_mujoco_cpu:

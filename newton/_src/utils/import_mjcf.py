@@ -534,7 +534,10 @@ def parse_mjcf(
             out = np.array(default, dtype=np.float32)
 
         length = len(out)
-        if length == 1 and len(default) != 1:
+        # ``default`` can be ``None`` for callers that don't have a fixed
+        # length (e.g. ``actuatorfrcrange``); in that case there's nothing
+        # to pad against, so just return the parsed vector as-is.
+        if length == 1 and default is not None and len(default) != 1:
             if key in _SOLREF_SHORTHAND_KEYS and len(default) >= 2:
                 # MuJoCo's solref-style shorthand: trailing components fall
                 # back to the registered default (e.g. dampratio=1.0).

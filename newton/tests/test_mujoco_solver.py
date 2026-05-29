@@ -5,6 +5,7 @@ import os
 import tempfile
 import time
 import unittest
+import warnings
 import xml.etree.ElementTree as ET
 
 import numpy as np  # For numerical operations and random values
@@ -10151,6 +10152,135 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         # broadcasting a single DOF's gain across the joint.
         self.assertFalse(np.allclose(jnt_solref[0], jnt_solref[1]))
         self.assertFalse(np.allclose(jnt_solref[1], jnt_solref[2]))
+
+    def test_invalid_raw_solreflimit_warns_in_update_solref(self):
+        """``_update_solref_from_invweight0`` warns once on invalid RAW solreflimit and re-arms after JOINT_DOF_PROPERTIES."""
+        builder = newton.ModelBuilder(gravity=0.0)
+        SolverMuJoCo.register_custom_attributes(builder)
+        inertia = wp.mat33(np.eye(3) * 0.5)
+        link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia)
+        joint = builder.add_joint_revolute(
+            parent=-1,
+            child=link,
+            axis=wp.vec3(0.0, 1.0, 0.0),
+            limit_lower=-1.0,
+            limit_upper=1.0,
+            limit_ke=2500.0,
+            limit_kd=100.0,
+        )
+        builder.add_articulation([joint])
+        model = builder.finalize()
+
+        # Promote to RAW with a mixed-sign solref — MuJoCo would silently
+        # treat the timeconst as 2500s and effectively disable the limit.
+        model.mujoco.solreflimit_mode.assign(np.array([SOLREF_MODE_RAW], dtype=np.int32))
+        model.mujoco.solreflimit.assign(
+            wp.array(np.array([[-2500.0, 1.0]], dtype=np.float32), dtype=wp.vec2, device=model.device)
+        )
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        messages = [str(w.message) for w in caught]
+        self.assertTrue(
+            any("invalid components" in m and "DOF indices" in m for m in messages),
+            f"Expected RAW solreflimit domain warning, got: {messages}",
+        )
+
+        # Second notify with no change must not re-warn — the one-shot flag
+        # is sticky outside JOINT_DOF_PROPERTIES.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+        self.assertFalse(
+            any("invalid components" in str(w.message) for w in caught),
+            "RAW solreflimit warn must not re-fire on BODY_INERTIAL_PROPERTIES",
+        )
+
+        # JOINT_DOF_PROPERTIES re-arms the validator.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+        self.assertTrue(
+            any("invalid components" in str(w.message) for w in caught),
+            "JOINT_DOF_PROPERTIES must re-arm the RAW solreflimit validator",
+        )
+
+    def test_mjcf_invalid_solreflimit_emits_import_warning(self):
+        """MJCF importer warns when ``solref_to_stiffness_damping`` rejects an authored solreflimit."""
+        mjcf_source = """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1" solreflimit="-1 1"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_mjcf(mjcf_source, ignore_inertial_definitions=False)
+        messages = [str(w.message) for w in caught]
+        self.assertTrue(
+            any("invalid solreflimit" in m and "joint" in m.lower() for m in messages),
+            f"Expected MJCF importer warning for invalid solreflimit, got: {messages}",
+        )
+
+    def test_parse_vec_unknown_shorthand_warns(self):
+        """``parse_vec`` warns when a non-whitelisted multi-component MJCF attribute gets a single value.
+
+        ``solreflimit="0.04"`` (whitelisted) must round-trip silently; an
+        unrelated multi-component attribute like ``actuatorfrcrange="1"``
+        gets replicate semantics with a warning.
+        """
+        # Whitelisted: no warning, shorthand pads from default.
+        mjcf_whitelisted = """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1" solreflimit="0.04"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            newton.ModelBuilder().add_mjcf(mjcf_whitelisted, ignore_inertial_definitions=False)
+        self.assertFalse(
+            any("provided a single value" in str(w.message) for w in caught),
+            "Whitelisted solreflimit shorthand must not warn",
+        )
+
+        # Non-whitelisted multi-component shorthand: ``range`` is a vec2
+        # joint attribute that's not on the solref whitelist. A single
+        # value should trigger the warn-and-replicate fallback so the
+        # semantic drift surfaces.
+        mjcf_unexpected = """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="0.5"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            newton.ModelBuilder().add_mjcf(mjcf_unexpected, ignore_inertial_definitions=False)
+        self.assertTrue(
+            any("provided a single value" in str(w.message) and "range" in str(w.message) for w in caught),
+            f"Non-whitelisted multi-component shorthand must warn; got: {[str(w.message) for w in caught]}",
+        )
 
 
 if __name__ == "__main__":
