@@ -34,6 +34,7 @@ from ...utils.benchmark import event_scope
 from ...utils.import_utils import string_to_warp
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
+from .equality import register_equality_constraint_attributes
 from .kernels import (
     _snapshot_nacon_count,
     apply_mjc_body_f_kernel,
@@ -592,7 +593,7 @@ class SolverMuJoCo(SolverBase):
         # ``Model.equality_constraint_*`` deprecation window; once those properties are removed
         # in Newton 1.5 the call from ``__init__`` goes away and this site becomes the only
         # registration entry point.
-        ModelBuilder._declare_mujoco_equality_constraint_attributes(builder)
+        register_equality_constraint_attributes(builder)
 
         # region custom frequencies
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="pair", namespace="mujoco"))

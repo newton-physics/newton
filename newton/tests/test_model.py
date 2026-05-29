@@ -18,6 +18,16 @@ from newton._src.solvers.mujoco.equality import add_equality_constraint as _add_
 from newton.tests.unittest_utils import assert_np_equal
 
 
+def _eq_set_value(builder, name, idx, value):
+    """Inject ``value`` at ``idx`` into the equality-constraint custom-attr table (padding with None)."""
+    attr = builder.custom_attributes[f"mujoco:{name}"]
+    if attr.values is None:
+        attr.values = []
+    while len(attr.values) <= idx:
+        attr.values.append(None)
+    attr.values[idx] = value
+
+
 class TestModelBuilderDeprecations(unittest.TestCase):
     def test_equality_constraint_model_fields_warn_and_forward_to_mujoco_namespace(self):
         builder = ModelBuilder()
@@ -2084,7 +2094,7 @@ class TestModelValidation(unittest.TestCase):
         )
 
         # Manually set invalid body reference
-        builder._eq_set_value("equality_constraint_body1", 0, 999)
+        _eq_set_value(builder, "equality_constraint_body1", 0, 999)
 
         with self.assertRaises(ValueError) as context:
             builder.finalize()
@@ -2113,7 +2123,7 @@ class TestModelValidation(unittest.TestCase):
         )
 
         # Manually set invalid joint reference
-        builder._eq_set_value("equality_constraint_joint1", 0, 999)
+        _eq_set_value(builder, "equality_constraint_joint1", 0, 999)
 
         with self.assertRaises(ValueError) as context:
             builder.finalize()

@@ -55,8 +55,6 @@ from ..utils import compute_world_offsets
 from ..utils.mesh import MeshAdjacency
 from .enums import (
     BodyFlags,
-    EqObjType,
-    EqTarget,
     EqType,
     JointTargetMode,
     JointType,
@@ -1229,12 +1227,15 @@ class ModelBuilder:
         """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by controller class and shared params."""
 
         # Deprecation shim: while ``Model.equality_constraint_*`` properties are being phased out
-        # (removal in Newton 1.5), the builder auto-registers the namespaced equality-constraint
-        # CustomAttributes so users that never call ``SolverMuJoCo.register_custom_attributes``
-        # still get ``model.mujoco.equality_constraint_*`` populated. Once the legacy properties
-        # are removed, this call moves to ``SolverMuJoCo.register_custom_attributes`` and explicit
-        # registration becomes the user's responsibility.
-        ModelBuilder._declare_mujoco_equality_constraint_attributes(self)
+        # (removal in Newton 1.5), auto-register the namespaced equality-constraint CustomAttributes
+        # so users that never call ``SolverMuJoCo.register_custom_attributes`` still get
+        # ``model.mujoco.equality_constraint_*`` populated. The declaration lives with the other
+        # MuJoCo equality helpers; lazy-import it to keep ``ModelBuilder`` construction free of
+        # solver imports. Once the legacy properties are removed, delete this call and let
+        # ``SolverMuJoCo.register_custom_attributes`` be the sole registration site.
+        from ..solvers.mujoco.equality import register_equality_constraint_attributes  # noqa: PLC0415
+
+        register_equality_constraint_attributes(self)
 
     def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
         """Add a collision filter pair in canonical order.
@@ -1339,192 +1340,6 @@ class ModelBuilder:
 
         self.custom_attributes[key] = attribute
 
-    @staticmethod
-    def _declare_mujoco_equality_constraint_attributes(builder: ModelBuilder) -> None:
-        """Declare the ``model.mujoco.equality_constraint_*`` :class:`CustomAttribute` rows.
-
-        Adds the 15 per-equality-constraint custom attributes that back the values populated
-        through :meth:`add_custom_values` (with ``mujoco:equality_constraint_*`` keys) and
-        surfaced on :class:`~newton.Model` under the ``mujoco`` namespace by :meth:`finalize`.
-
-        This helper is idempotent: re-registration with the same spec is a no-op (see
-        :meth:`add_custom_attribute`). It is invoked from :meth:`ModelBuilder.__init__` for
-        the duration of the ``Model.equality_constraint_*`` deprecation window (removal in
-        Newton 1.5) and from :meth:`SolverMuJoCo.register_custom_attributes` to keep the
-        canonical declaration site co-located with the other ``mujoco``-namespaced custom
-        attributes.
-        """
-        ca = ModelBuilder.CustomAttribute
-        eq_freq = "mujoco:equality_constraint"
-        model_assignment = Model.AttributeAssignment.MODEL
-
-        # Register the custom frequency before any custom attributes that use it.
-        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="equality_constraint", namespace="mujoco"))
-
-        builder.add_custom_attribute(
-            ca(
-                name="equality_constraint_type",
-                frequency=eq_freq,
-                assignment=model_assignment,
-                dtype=wp.int32,
-                default=int(EqType.CONNECT),
-                namespace="mujoco",
-            )
-        )
-        builder.add_custom_attribute(
-            ca(
-                name="equality_constraint_body1",
-                frequency=eq_freq,
-                assignment=model_assignment,
-                dtype=wp.int32,
-                default=-1,
-                references="body",
-                namespace="mujoco",
-            )
-        )
-        builder.add_custom_attribute(
-            ca(
-                name="equality_constraint_body2",
-                frequency=eq_freq,
-                assignment=model_assignment,
-                dtype=wp.int32,
-                default=-1,
-                references="body",
-                namespace="mujoco",
-            )
-        )
-        builder.add_custom_attribute(
-            ca(
-                name="equality_constraint_anchor",
-                frequency=eq_freq,
-                assignment=model_assignment,
-                dtype=wp.vec3,
-                default=wp.vec3(),
-                namespace="mujoco",
-            )
-        )
-        builder.add_custom_attribute(
-            ca(
-                name="equality_constraint_torquescale",
-                frequency=eq_freq,
-                assignment=model_assignment,
-                dtype=wp.float32,
-                default=0.0,
-                namespace="mujoco",
-            )
-        )
-        builder.add_custom_attribute(
-            ca(
-                name="equality_constraint_relpose",
-                frequency=eq_freq,
-                assignment=model_assignment,
-                dtype=wp.transform,
-                default=wp.transform_identity(),
-                namespace="mujoco",
-            )
-        )
-        builder.add_custom_attribute(
-            ca(
-                name="equality_constraint_joint1",
-                frequency=eq_freq,
-                assignment=model_assignment,
-                dtype=wp.int32,
-                default=-1,
-                references="joint",
-                namespace="mujoco",
-            )
-        )
-        builder.add_custom_attribute(
-            ca(
-                name="equality_constraint_joint2",
-                frequency=eq_freq,
-                assignment=model_assignment,
-                dtype=wp.int32,
-                default=-1,
-                references="joint",
-                namespace="mujoco",
-            )
-        )
-        # polycoef is materialized as ``wp.array2d[wp.float32]`` with shape
-        # ``[equality_constraint_count, 5]``; the value stored per entry is a
-        # 5-element list of floats so the standard pipeline yields the expected 2D layout.
-        builder.add_custom_attribute(
-            ca(
-                name="equality_constraint_polycoef",
-                frequency=eq_freq,
-                assignment=model_assignment,
-                dtype=wp.float32,
-                default=[0.0, 0.0, 0.0, 0.0, 0.0],
-                namespace="mujoco",
-            )
-        )
-        builder.add_custom_attribute(
-            ca(
-                name="equality_constraint_label",
-                frequency=eq_freq,
-                assignment=model_assignment,
-                dtype=str,
-                default="",
-                namespace="mujoco",
-            )
-        )
-        builder.add_custom_attribute(
-            ca(
-                name="equality_constraint_enabled",
-                frequency=eq_freq,
-                assignment=model_assignment,
-                dtype=wp.bool,
-                default=True,
-                namespace="mujoco",
-            )
-        )
-        builder.add_custom_attribute(
-            ca(
-                name="equality_constraint_world",
-                frequency=eq_freq,
-                assignment=model_assignment,
-                dtype=wp.int32,
-                default=0,
-                references="world",
-                namespace="mujoco",
-            )
-        )
-        # ``objtype`` disambiguates the body*/joint* references (see :class:`EqObjType`) so
-        # the table can grow to site- and tendon-anchored equalities without a layout change.
-        builder.add_custom_attribute(
-            ca(
-                name="equality_constraint_objtype",
-                frequency=eq_freq,
-                assignment=model_assignment,
-                dtype=wp.int32,
-                default=int(EqObjType.BODY),
-                namespace="mujoco",
-            )
-        )
-        # ``target_kind`` / ``target`` link a row to the native entity it was projected onto
-        # (loop joint or mimic) for solver portability; ``EqTarget.NONE`` / ``-1`` mark a pure
-        # equality row. Populated by the MJCF/USD equality-to-joint conversion.
-        builder.add_custom_attribute(
-            ca(
-                name="equality_constraint_target_kind",
-                frequency=eq_freq,
-                assignment=model_assignment,
-                dtype=wp.int32,
-                default=int(EqTarget.NONE),
-                namespace="mujoco",
-            )
-        )
-        builder.add_custom_attribute(
-            ca(
-                name="equality_constraint_target",
-                frequency=eq_freq,
-                assignment=model_assignment,
-                dtype=wp.int32,
-                default=-1,
-                namespace="mujoco",
-            )
-        )
-
     def _eq_attr(self, name: str) -> ModelBuilder.CustomAttribute:
         """Return the per-equality-constraint :class:`CustomAttribute` for the bare ``name``.
 
@@ -1540,23 +1355,6 @@ class ModelBuilder:
         maintained by :meth:`add_custom_values`.
         """
         return self._custom_frequency_counts.get("mujoco:equality_constraint", 0)
-
-    def _eq_value(self, name: str, idx: int) -> Any:
-        """Read the equality-constraint value stored at ``idx`` for attribute ``name``."""
-        attr = self._eq_attr(name)
-        if not attr.values or idx >= len(attr.values):
-            return attr.default
-        value = attr.values[idx]
-        return attr.default if value is None else value
-
-    def _eq_set_value(self, name: str, idx: int, value: Any) -> None:
-        """Write ``value`` at ``idx`` for the equality-constraint attribute ``name``."""
-        attr = self._eq_attr(name)
-        if attr.values is None:
-            attr.values = []
-        while len(attr.values) <= idx:
-            attr.values.append(None)
-        attr.values[idx] = value
 
     def _eq_list(self, name: str) -> list[Any]:
         """Return a dense Python list of equality-constraint ``name`` values.

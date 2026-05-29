@@ -12,6 +12,15 @@ from newton._src.sim.enums import EqObjType, EqTarget
 from newton._src.solvers.mujoco.equality import add_equality_constraint as _add_equality_constraint
 
 
+def _eq_value(builder, name, idx):
+    """Read the equality-constraint value at ``idx`` (default-filled) from the custom-attr table."""
+    attr = builder.custom_attributes[f"mujoco:{name}"]
+    if not attr.values or idx >= len(attr.values):
+        return attr.default
+    value = attr.values[idx]
+    return attr.default if value is None else value
+
+
 class TestEqualityConstraints(unittest.TestCase):
     def test_multiple_constraints(self):
         self.sim_time = 0.0
@@ -383,15 +392,15 @@ class TestEqualityConstraints(unittest.TestCase):
 
         self.assertNotEqual(new_joint1, -1)
         self.assertNotEqual(new_joint3, -1)
-        self.assertEqual(builder._eq_value("equality_constraint_joint1", eq_joint), new_joint1)
-        self.assertEqual(builder._eq_value("equality_constraint_joint2", eq_joint), new_joint3)
-        self.assertEqual(builder._eq_value("equality_constraint_body1", eq_connect), new_base)
-        self.assertEqual(builder._eq_value("equality_constraint_body2", eq_connect), new_link3)
-        self.assertEqual(builder._eq_value("equality_constraint_body1", eq_weld), new_link1)
-        self.assertEqual(builder._eq_value("equality_constraint_body2", eq_weld), new_link3)
+        self.assertEqual(_eq_value(builder, "equality_constraint_joint1", eq_joint), new_joint1)
+        self.assertEqual(_eq_value(builder, "equality_constraint_joint2", eq_joint), new_joint3)
+        self.assertEqual(_eq_value(builder, "equality_constraint_body1", eq_connect), new_base)
+        self.assertEqual(_eq_value(builder, "equality_constraint_body2", eq_connect), new_link3)
+        self.assertEqual(_eq_value(builder, "equality_constraint_body1", eq_weld), new_link1)
+        self.assertEqual(_eq_value(builder, "equality_constraint_body2", eq_weld), new_link3)
 
         # Verify anchor was transformed correctly
-        actual_anchor = builder._eq_value("equality_constraint_anchor", eq_weld)
+        actual_anchor = _eq_value(builder, "equality_constraint_anchor", eq_weld)
         np.testing.assert_allclose(
             [actual_anchor[0], actual_anchor[1], actual_anchor[2]],
             [expected_anchor[0], expected_anchor[1], expected_anchor[2]],
@@ -400,7 +409,7 @@ class TestEqualityConstraints(unittest.TestCase):
         )
 
         # Verify relpose was transformed correctly
-        actual_relpose = builder._eq_value("equality_constraint_relpose", eq_weld)
+        actual_relpose = _eq_value(builder, "equality_constraint_relpose", eq_weld)
         expected_p = wp.transform_get_translation(expected_relpose)
         expected_q = wp.transform_get_rotation(expected_relpose)
         actual_p = wp.transform_get_translation(actual_relpose)
