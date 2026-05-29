@@ -23,6 +23,20 @@ import newton.utils
 from newton.sensors import SensorContact
 from newton.utils import EventTracer
 
+_NEW_LAYOUT_AVAILABLE = hasattr(newton, "use_coord_layout_targets")
+
+
+def _target_q(obj):
+    """Resolve the joint-position-target array across pre/post #2556 layouts.
+
+    On pre-PR Newton (no ``joint_target_q``) falls back to ``joint_target_pos``.
+    Used by the benchmark harness so ``asv compare`` works against both refs.
+    """
+    target = getattr(obj, "joint_target_q", None)
+    if target is None:
+        target = getattr(obj, "joint_target_pos", None)
+    return target
+
 ROBOT_CONFIGS = {
     "humanoid": {
         "solver": "newton",
@@ -241,7 +255,7 @@ def _setup_allegro(articulation_builder):
     for i in range(articulation_builder.joint_dof_count):
         articulation_builder.joint_target_ke[i] = 150
         articulation_builder.joint_target_kd[i] = 5
-    articulation_builder.joint_target_q[:] = articulation_builder.joint_q
+    _target_q(articulation_builder)[:] = articulation_builder.joint_q
     root_dofs = 1
 
     return root_dofs
@@ -289,7 +303,8 @@ class Example:
         ls_parallel=None,
         cone=None,
     ):
-        newton.use_coord_layout_targets = True
+        if _NEW_LAYOUT_AVAILABLE:
+            newton.use_coord_layout_targets = True
         fps = 600
         self.sim_time = 0.0
         self.benchmark_time = 0.0
@@ -342,7 +357,8 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self._quat_target_q_offsets: list[int] = []
-        if self.model.joint_target_q is not None and self.model.joint_target_q.shape[0] == self.model.joint_coord_count:
+        target_q = _target_q(self.model)
+        if target_q is not None and target_q.shape[0] == self.model.joint_coord_count:
             joint_types = self.model.joint_type.numpy()
             q_starts = self.model.joint_q_start.numpy()
             for j, jt in enumerate(joint_types):
@@ -384,12 +400,13 @@ class Example:
 
     def step(self):
         if self.actuation == "random":
-            target_size = self.control.joint_target_q.shape[0]
+            target_q = _target_q(self.control)
+            target_size = target_q.shape[0]
             samples = self.rng.uniform(-1.0, 1.0, size=target_size).astype(np.float32)
             for offset in self._quat_target_q_offsets:
                 samples[offset : offset + 4] = (0.0, 0.0, 0.0, 1.0)
             joint_target = wp.array(samples, dtype=wp.float32)
-            wp.copy(self.control.joint_target_q, joint_target)
+            wp.copy(target_q, joint_target)
 
         wp.synchronize_device()
         start_time = time.time()

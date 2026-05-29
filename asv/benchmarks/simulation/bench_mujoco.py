@@ -14,7 +14,7 @@ from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
-from benchmark_mujoco import Example
+from benchmark_mujoco import Example, _target_q
 
 import newton
 from newton.utils import EventTracer
@@ -41,7 +41,8 @@ def _free_ball_quat_offsets(model) -> list[int]:
     """Coord-space indices of the quaternion slot of every FREE/BALL/DISTANCE
     joint in ``model.joint_target_q`` (empty under the legacy DOF layout)."""
     offsets: list[int] = []
-    if model.joint_target_q is None or model.joint_target_q.shape[0] != model.joint_coord_count:
+    target_q = _target_q(model)
+    if target_q is None or target_q.shape[0] != model.joint_coord_count:
         return offsets
     joint_types = model.joint_type.numpy()
     q_starts = model.joint_q_start.numpy()
@@ -90,7 +91,7 @@ class _FastBenchmark:
             raise SkipNotImplemented
         else:
             state = wp.rand_init(self.example.seed)
-            target_q = self.example.control.joint_target_q
+            target_q = _target_q(self.example.control)
             quat_offsets = _free_ball_quat_offsets(self.example.model)
             quat_offsets_wp = wp.array(quat_offsets, dtype=int, device=target_q.device) if quat_offsets else None
             with wp.ScopedCapture() as capture:
