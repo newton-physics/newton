@@ -11,8 +11,9 @@ import numpy as np  # For numerical operations and random values
 import warp as wp
 
 import newton
-from newton import BodyFlags, EqType, JointType, Mesh
+from newton import BodyFlags, JointType, Mesh
 from newton._src.core.types import vec5
+from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
 
@@ -6977,7 +6978,6 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         )
         connect_enabled = np.array([True, False])
         weld_enabled = np.array([False, True])
-        loop_joint_ids = []
 
         for world in range(2):
             builder.begin_world()
@@ -6996,36 +6996,43 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 parent=root,
                 child=mid,
                 enabled=bool(connect_enabled[world]),
+            )
+            builder.add_equality_constraint_connect(
+                body1=root,
+                body2=mid,
+                anchor=wp.vec3(*connect_anchor[world]),
+                enabled=bool(connect_enabled[world]),
                 custom_attributes={
-                    "mujoco:joint_eq_type": int(EqType.CONNECT),
-                    "mujoco:joint_eq_body1": root,
-                    "mujoco:joint_eq_body2": mid,
-                    "mujoco:joint_eq_anchor": wp.vec3(*connect_anchor[world]),
-                    "mujoco:joint_eq_relpose": wp.transform_identity(),
-                    "mujoco:joint_eq_torquescale": 0.0,
-                    "mujoco:joint_eq_solref": wp.vec2(*connect_solref[world]),
-                    "mujoco:joint_eq_solimp": vec5(*connect_solimp[world]),
+                    "mujoco:eq_solref": wp.vec2(*connect_solref[world]),
+                    "mujoco:eq_solimp": vec5(*connect_solimp[world]),
+                    "mujoco:equality_constraint_target_kind": int(MjcEqualityTargetKind.JOINT),
+                    "mujoco:equality_constraint_target": connect_joint,
+                    "mujoco:equality_constraint_objtype": MJC_OBJ_BODY,
                 },
             )
             weld_joint = builder.add_joint_fixed(
                 parent=mid,
                 child=tip,
                 enabled=bool(weld_enabled[world]),
+            )
+            builder.add_equality_constraint_weld(
+                body1=mid,
+                body2=tip,
+                anchor=wp.vec3(*weld_anchor[world]),
+                relpose=wp.transform(
+                    wp.vec3(*weld_relpose_pos[world]),
+                    wp.quat_identity(),
+                ),
+                torquescale=float(weld_torquescale[world]),
+                enabled=bool(weld_enabled[world]),
                 custom_attributes={
-                    "mujoco:joint_eq_type": int(EqType.WELD),
-                    "mujoco:joint_eq_body1": mid,
-                    "mujoco:joint_eq_body2": tip,
-                    "mujoco:joint_eq_anchor": wp.vec3(*weld_anchor[world]),
-                    "mujoco:joint_eq_relpose": wp.transform(
-                        wp.vec3(*weld_relpose_pos[world]),
-                        wp.quat_identity(),
-                    ),
-                    "mujoco:joint_eq_torquescale": float(weld_torquescale[world]),
-                    "mujoco:joint_eq_solref": wp.vec2(*weld_solref[world]),
-                    "mujoco:joint_eq_solimp": vec5(*weld_solimp[world]),
+                    "mujoco:eq_solref": wp.vec2(*weld_solref[world]),
+                    "mujoco:eq_solimp": vec5(*weld_solimp[world]),
+                    "mujoco:equality_constraint_target_kind": int(MjcEqualityTargetKind.JOINT),
+                    "mujoco:equality_constraint_target": weld_joint,
+                    "mujoco:equality_constraint_objtype": MJC_OBJ_BODY,
                 },
             )
-            loop_joint_ids.append([connect_joint, weld_joint])
             builder.end_world()
 
         model = builder.finalize()
@@ -7034,8 +7041,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         self.assertEqual(solver.mj_model.neq, 2)
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
         self.assertEqual(int(solver.mj_model.eq_type[1]), int(solver._mujoco.mjtEq.mjEQ_WELD))
-        np.testing.assert_array_equal(solver.mjc_eq_to_newton_preserved_jnt.numpy(), np.array(loop_joint_ids))
-        np.testing.assert_array_equal(solver.mjc_eq_to_newton_eq.numpy(), np.full((2, 2), -1, dtype=np.int32))
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_eq.numpy(), np.array([[0, 1], [2, 3]]))
         np.testing.assert_array_equal(solver.mjc_eq_to_newton_jnt.numpy(), np.full((2, 2), -1, dtype=np.int32))
 
         eq_data = solver.mjw_model.eq_data.numpy()
@@ -7051,12 +7057,12 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 0], connect_enabled)
         np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 1], weld_enabled)
 
-        joint_enabled = model.joint_enabled.numpy()
-        joint_enabled[loop_joint_ids[0][0]] = False
-        joint_enabled[loop_joint_ids[0][1]] = True
-        joint_enabled[loop_joint_ids[1][0]] = True
-        joint_enabled[loop_joint_ids[1][1]] = False
-        model.joint_enabled.assign(joint_enabled)
+        eq_enabled = model.equality_constraint_enabled.numpy()
+        eq_enabled[0] = False
+        eq_enabled[1] = True
+        eq_enabled[2] = True
+        eq_enabled[3] = False
+        model.equality_constraint_enabled.assign(eq_enabled)
         solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         np.testing.assert_allclose(solver.mjw_model.eq_data.numpy(), eq_data, rtol=1e-5)
@@ -7698,17 +7704,24 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
             builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
             builder.add_articulation([j1, j2])
-            builder.add_constraint_mimic(
+            mimic = builder.add_constraint_mimic(
                 joint0=j2,
                 joint1=j1,
                 coef0=10.0 + world,
                 coef1=20.0 + world,
                 enabled=world == 0,
+            )
+            builder.add_equality_constraint_joint(
+                joint1=j2,
+                joint2=j1,
+                polycoef=polycoef[world].tolist(),
+                enabled=world == 0,
                 custom_attributes={
-                    "mujoco:mimic_eq_preserve": True,
-                    "mujoco:mimic_eq_polycoef": vec5(*polycoef[world]),
-                    "mujoco:mimic_eq_solref": wp.vec2(*solref[world]),
-                    "mujoco:mimic_eq_solimp": vec5(*solimp[world]),
+                    "mujoco:eq_solref": wp.vec2(*solref[world]),
+                    "mujoco:eq_solimp": vec5(*solimp[world]),
+                    "mujoco:equality_constraint_target_kind": int(MjcEqualityTargetKind.MIMIC),
+                    "mujoco:equality_constraint_target": mimic,
+                    "mujoco:equality_constraint_objtype": MJC_OBJ_JOINT,
                 },
             )
             builder.end_world()
@@ -7717,7 +7730,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
         self.assertEqual(solver.mj_model.neq, 1)
-        np.testing.assert_array_equal(solver.mjc_eq_to_newton_mimic.numpy()[:, 0], [0, 1])
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_eq.numpy()[:, 0], [0, 1])
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_mimic.numpy(), np.full((2, 1), -1, dtype=np.int32))
         np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :5], polycoef, rtol=1e-5)
         np.testing.assert_allclose(solver.mjw_model.eq_solref.numpy()[:, 0], solref, rtol=1e-5)
         np.testing.assert_allclose(solver.mjw_model.eq_solimp.numpy()[:, 0], solimp, rtol=1e-5)
@@ -7727,6 +7741,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         model.constraint_mimic_coef0.assign(np.array([100.0, 200.0], dtype=np.float32))
         model.constraint_mimic_coef1.assign(np.array([300.0, 400.0], dtype=np.float32))
         model.constraint_mimic_enabled.assign(np.array([False, True], dtype=bool))
+        model.equality_constraint_enabled.assign(np.array([False, True], dtype=bool))
         solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :5], polycoef, rtol=1e-5)
@@ -7746,17 +7761,24 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([j1, j2])
-        builder.add_constraint_mimic(
+        mimic = builder.add_constraint_mimic(
             joint0=j2,
             joint1=j1,
             coef0=10.0,
             coef1=20.0,
             enabled=True,
+        )
+        builder.add_equality_constraint_joint(
+            joint1=j2,
+            joint2=j1,
+            polycoef=[0.25, 1.5, -0.2, 0.05, 0.01],
+            enabled=True,
             custom_attributes={
-                "mujoco:mimic_eq_preserve": True,
-                "mujoco:mimic_eq_polycoef": vec5(0.25, 1.5, -0.2, 0.05, 0.01),
-                "mujoco:mimic_eq_solref": wp.vec2(0.04, 1.2),
-                "mujoco:mimic_eq_solimp": vec5(0.82, 0.91, 0.002, 0.45, 1.8),
+                "mujoco:eq_solref": wp.vec2(0.04, 1.2),
+                "mujoco:eq_solimp": vec5(0.82, 0.91, 0.002, 0.45, 1.8),
+                "mujoco:equality_constraint_target_kind": int(MjcEqualityTargetKind.MIMIC),
+                "mujoco:equality_constraint_target": mimic,
+                "mujoco:equality_constraint_objtype": MJC_OBJ_JOINT,
             },
         )
 
@@ -7770,9 +7792,10 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         model.constraint_mimic_coef0.assign(np.array([100.0], dtype=np.float32))
         model.constraint_mimic_coef1.assign(np.array([300.0], dtype=np.float32))
         model.constraint_mimic_enabled.assign(np.array([False], dtype=bool))
-        model.mujoco.mimic_eq_polycoef.assign(wp.array(updated_polycoef, dtype=vec5, device=model.device))
-        model.mujoco.mimic_eq_solref.assign(wp.array(updated_solref, dtype=wp.vec2, device=model.device))
-        model.mujoco.mimic_eq_solimp.assign(wp.array(updated_solimp, dtype=vec5, device=model.device))
+        model.equality_constraint_polycoef.assign(updated_polycoef)
+        model.equality_constraint_enabled.assign(np.array([False], dtype=bool))
+        model.mujoco.eq_solref.assign(wp.array(updated_solref, dtype=wp.vec2, device=model.device))
+        model.mujoco.eq_solimp.assign(wp.array(updated_solimp, dtype=vec5, device=model.device))
         solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         np.testing.assert_allclose(solver.mj_model.eq_data[:, :5], updated_polycoef, rtol=1e-5)

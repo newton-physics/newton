@@ -23,7 +23,7 @@ from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
-    mjc_mimic_eq_custom_attrs,
+    mjc_add_equality_mimic,
     mjc_parse_polycoef,
     mjc_polycoef_has_higher_order,
 )
@@ -333,7 +333,7 @@ def parse_mjcf(
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
 
-    if convert_mjc_equality_constraints and "mujoco:joint_eq_type" not in builder.custom_attributes:
+    if convert_mjc_equality_constraints and "mujoco:equality_constraint_target_kind" not in builder.custom_attributes:
         SolverMuJoCo.register_custom_attributes(builder)
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
@@ -2152,14 +2152,14 @@ def parse_mjcf(
                             "only coef0/coef1.",
                             stacklevel=2,
                         )
-                    builder.add_constraint_mimic(
-                        joint0=joint1_idx,
-                        joint1=joint2_idx,
-                        coef0=polycoef_values[0],
-                        coef1=polycoef_values[1],
-                        label=equality_label(common),
-                        enabled=common["active"],
-                        custom_attributes=mjc_mimic_eq_custom_attrs(polycoef_values, custom_attrs),
+                    mjc_add_equality_mimic(
+                        builder,
+                        joint1_idx,
+                        joint2_idx,
+                        polycoef_values,
+                        equality_label(common),
+                        common["active"],
+                        custom_attrs,
                     )
                 else:
                     builder.add_equality_constraint_joint(

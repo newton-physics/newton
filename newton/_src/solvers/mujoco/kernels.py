@@ -2532,86 +2532,21 @@ def update_eq_data_and_active_kernel(
 
 
 @wp.kernel
-def update_preserved_jnt_eq_data_and_active_kernel(
-    mjc_eq_to_newton_preserved_jnt: wp.array2d[wp.int32],
-    joint_eq_type: wp.array[wp.int32],
-    joint_eq_anchor: wp.array[wp.vec3],
-    joint_eq_relpose: wp.array[wp.transform],
-    joint_eq_torquescale: wp.array[wp.float32],
-    joint_eq_solref: wp.array[wp.vec2],
-    joint_eq_solimp: wp.array[vec5],
-    joint_enabled: wp.array[wp.bool],
-    # outputs
-    eq_data_out: wp.array2d[vec11],
-    eq_solref_out: wp.array2d[wp.vec2],
-    eq_solimp_out: wp.array2d[vec5],
-    eq_active_out: wp.array2d[wp.bool],
-):
-    """Restore converted MuJoCo CONNECT/WELD equality metadata from loop joints."""
-    world, mjc_eq = wp.tid()
-    newton_jnt = mjc_eq_to_newton_preserved_jnt[world, mjc_eq]
-    if newton_jnt < 0:
-        return
-
-    data = eq_data_out[world, mjc_eq]
-    eq_type = joint_eq_type[newton_jnt]
-
-    if eq_type == EqType.CONNECT:
-        if joint_eq_anchor:
-            anchor = joint_eq_anchor[newton_jnt]
-            data[0] = anchor[0]
-            data[1] = anchor[1]
-            data[2] = anchor[2]
-    elif eq_type == EqType.WELD:
-        if joint_eq_anchor:
-            anchor = joint_eq_anchor[newton_jnt]
-            data[0] = anchor[0]
-            data[1] = anchor[1]
-            data[2] = anchor[2]
-        if joint_eq_relpose:
-            relpose = joint_eq_relpose[newton_jnt]
-            pos = wp.transform_get_translation(relpose)
-            data[3] = pos[0]
-            data[4] = pos[1]
-            data[5] = pos[2]
-            quat = quat_xyzw_to_wxyz(wp.transform_get_rotation(relpose))
-            for i in range(4):
-                data[6 + i] = quat[i]
-        if joint_eq_torquescale:
-            data[10] = joint_eq_torquescale[newton_jnt]
-
-    if joint_eq_solref:
-        eq_solref_out[world, mjc_eq] = joint_eq_solref[newton_jnt]
-    if joint_eq_solimp:
-        eq_solimp_out[world, mjc_eq] = joint_eq_solimp[newton_jnt]
-
-    eq_data_out[world, mjc_eq] = data
-    eq_active_out[world, mjc_eq] = joint_enabled[newton_jnt]
-
-
-@wp.kernel
 def update_mimic_eq_data_and_active_kernel(
     mjc_eq_to_newton_mimic: wp.array2d[wp.int32],
     # Newton mimic constraint data
     constraint_mimic_coef0: wp.array[wp.float32],
     constraint_mimic_coef1: wp.array[wp.float32],
     constraint_mimic_enabled: wp.array[wp.bool],
-    mimic_eq_preserve: wp.array[wp.bool],
-    mimic_eq_polycoef: wp.array[vec5],
-    mimic_eq_solref: wp.array[wp.vec2],
-    mimic_eq_solimp: wp.array[vec5],
     # outputs
     eq_data_out: wp.array2d[vec11],
-    eq_solref_out: wp.array2d[wp.vec2],
-    eq_solimp_out: wp.array2d[vec5],
     eq_active_out: wp.array2d[wp.bool],
 ):
     """Update MuJoCo equality constraint data and active status from Newton mimic constraint properties.
 
     Iterates over MuJoCo equality constraints [world, eq], looks up Newton mimic constraint,
     and copies:
-    - eq_data: polycoef = [coef0, coef1, 0, 0, 0] for normal Newton mimic constraints
-    - preserved MuJoCo eq_data/solref/solimp for imported MJC JOINT equalities
+    - eq_data: polycoef = [coef0, coef1, 0, 0, 0] for Newton mimic constraints
     - eq_active from constraint_mimic_enabled
     """
     world, mjc_eq = wp.tid()
@@ -2621,26 +2556,12 @@ def update_mimic_eq_data_and_active_kernel(
 
     data = eq_data_out[world, mjc_eq]
 
-    preserve_mjc_eq = False
-    if mimic_eq_preserve:
-        preserve_mjc_eq = mimic_eq_preserve[newton_mimic]
-
-    if preserve_mjc_eq:
-        if mimic_eq_polycoef:
-            polycoef = mimic_eq_polycoef[newton_mimic]
-            for i in range(5):
-                data[i] = polycoef[i]
-        if mimic_eq_solref:
-            eq_solref_out[world, mjc_eq] = mimic_eq_solref[newton_mimic]
-        if mimic_eq_solimp:
-            eq_solimp_out[world, mjc_eq] = mimic_eq_solimp[newton_mimic]
-    else:
-        # polycoef: data[0] + data[1]*q2 - q1 = 0  =>  q1 = coef0 + coef1*q2
-        data[0] = constraint_mimic_coef0[newton_mimic]
-        data[1] = constraint_mimic_coef1[newton_mimic]
-        data[2] = 0.0
-        data[3] = 0.0
-        data[4] = 0.0
+    # polycoef: data[0] + data[1]*q2 - q1 = 0  =>  q1 = coef0 + coef1*q2
+    data[0] = constraint_mimic_coef0[newton_mimic]
+    data[1] = constraint_mimic_coef1[newton_mimic]
+    data[2] = 0.0
+    data[3] = 0.0
+    data[4] = 0.0
 
     eq_data_out[world, mjc_eq] = data
     eq_active_out[world, mjc_eq] = constraint_mimic_enabled[newton_mimic]

@@ -36,7 +36,7 @@ from ..sim.enums import EqType, JointTargetMode
 from ..sim.model import Model
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
-    mjc_mimic_eq_custom_attrs,
+    mjc_add_equality_mimic,
     mjc_polycoef_has_higher_order,
 )
 from ..usd import utils as usd
@@ -3177,7 +3177,10 @@ def parse_usd(
     # for any bodies that get merged.
     def _parse_mjc_equality_constraints():
         local_builder_custom_attr_eq = builder_custom_attr_eq
-        if convert_mjc_equality_constraints and "mujoco:joint_eq_type" not in builder.custom_attributes:
+        if (
+            convert_mjc_equality_constraints
+            and "mujoco:equality_constraint_target_kind" not in builder.custom_attributes
+        ):
             from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
             SolverMuJoCo.register_custom_attributes(builder)
@@ -3197,7 +3200,7 @@ def parse_usd(
             custom_attrs: dict[str, Any],
         ) -> None:
             try:
-                joint_idx = mjc_add_equality_loop_joint(
+                _, joint_idx = mjc_add_equality_loop_joint(
                     builder,
                     eq_type,
                     body1,
@@ -3373,14 +3376,14 @@ def parse_usd(
                             "only coef0/coef1.",
                             stacklevel=2,
                         )
-                    builder.add_constraint_mimic(
-                        joint0=joint1_idx,
-                        joint1=joint2_idx,
-                        coef0=polycoef[0],
-                        coef1=polycoef[1],
-                        label=joint_path,
-                        enabled=enabled,
-                        custom_attributes=mjc_mimic_eq_custom_attrs(polycoef, eq_custom_attrs),
+                    mjc_add_equality_mimic(
+                        builder,
+                        joint1_idx,
+                        joint2_idx,
+                        polycoef,
+                        joint_path,
+                        enabled,
+                        eq_custom_attrs,
                     )
                 else:
                     builder.add_equality_constraint_joint(

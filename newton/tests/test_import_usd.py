@@ -17,6 +17,7 @@ import newton.usd as usd
 from newton import BodyFlags, JointType
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.utils import transform_points
+from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
@@ -5702,13 +5703,19 @@ def Xform "Articulation" (
         converted_model = converted_builder.finalize()
         converted_solver = SolverMuJoCo(converted_model)
 
-        self.assertEqual(converted_model.equality_constraint_count, 0)
+        self.assertEqual(converted_model.equality_constraint_count, 3)
         self.assertEqual(converted_model.constraint_mimic_count, 1)
-        self.assertEqual(converted_model.mujoco.joint_eq_type.numpy().tolist().count(int(newton.EqType.CONNECT)), 1)
-        self.assertEqual(converted_model.mujoco.joint_eq_type.numpy().tolist().count(int(newton.EqType.WELD)), 1)
-        self.assertTrue(bool(converted_model.mujoco.mimic_eq_preserve.numpy()[0]))
+        eq_types = converted_model.equality_constraint_type.numpy()
+        target_kinds = converted_model.mujoco.equality_constraint_target_kind.numpy()
+        self.assertEqual(eq_types.tolist().count(int(newton.EqType.CONNECT)), 1)
+        self.assertEqual(eq_types.tolist().count(int(newton.EqType.WELD)), 1)
+        self.assertEqual(eq_types.tolist().count(int(newton.EqType.JOINT)), 1)
+        self.assertEqual(target_kinds.tolist().count(int(MjcEqualityTargetKind.JOINT)), 2)
+        self.assertEqual(target_kinds.tolist().count(int(MjcEqualityTargetKind.MIMIC)), 1)
+        joint_eq = int(np.flatnonzero(eq_types == int(newton.EqType.JOINT))[0])
+        self.assertEqual(target_kinds[joint_eq], int(MjcEqualityTargetKind.MIMIC))
         np.testing.assert_allclose(
-            converted_model.mujoco.mimic_eq_polycoef.numpy()[0],
+            converted_model.equality_constraint_polycoef.numpy()[joint_eq],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
         )
 

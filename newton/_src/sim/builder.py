@@ -3395,6 +3395,36 @@ class ModelBuilder:
             # Value transformation based on references
             use_current_world = attr.references == "world"
             value_offset = 0 if use_current_world else get_offset(attr.references)
+            is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
+
+            def transform_equality_target_value(entity_idx: int, value: Any) -> Any:
+                try:
+                    target = int(value)
+                except (TypeError, ValueError):
+                    return value
+                if target < 0:
+                    return value
+
+                target_kind_attr = builder.custom_attributes.get("mujoco:equality_constraint_target_kind")
+                target_kind = 0
+                if target_kind_attr is not None and isinstance(target_kind_attr.values, dict):
+                    try:
+                        target_kind = int(target_kind_attr.values.get(entity_idx, 0))
+                    except (TypeError, ValueError):
+                        target_kind = 0
+
+                if target_kind == 1:
+                    return target + start_joint_idx
+                if target_kind == 2:
+                    return target + start_constraint_mimic_idx
+                return value
+
+            def transform_enum_value(
+                entity_idx: int, value: Any, is_equality_target_attr: bool = is_equality_target_attr
+            ) -> Any:
+                if is_equality_target_attr:
+                    return transform_equality_target_value(entity_idx, value)
+                return transform_value(value)
 
             def transform_value(v, offset=value_offset, replace_with_world=use_current_world):
                 if replace_with_world:
@@ -3422,7 +3452,9 @@ class ModelBuilder:
                     mapped_values = [transform_value(value) for value in attr.values]
                 else:
                     # Enum frequency: remap dict indices with offset
-                    mapped_values = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
+                    mapped_values = {
+                        index_offset + idx: transform_enum_value(idx, value) for idx, value in attr.values.items()
+                    }
                 self.custom_attributes[full_key] = replace(attr, values=mapped_values)
                 continue
 
@@ -3453,7 +3485,9 @@ class ModelBuilder:
                 merged.values.extend(new_values)
             else:
                 # Enum frequency: update dict with remapped indices
-                new_indices = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
+                new_indices = {
+                    index_offset + idx: transform_enum_value(idx, value) for idx, value in attr.values.items()
+                }
                 merged.values.update(new_indices)
 
         # Carry over custom frequency registrations (including usd_prim_filter) from the source builder.
@@ -5407,6 +5441,32 @@ class ModelBuilder:
                 if verbose:
                     print(f"Warning: Mimic constraint references removed joint {old_joint1}, disabling constraint")
                 self.constraint_mimic_enabled[i] = False
+
+        target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
+        target_attr = self.custom_attributes.get("mujoco:equality_constraint_target")
+        if (
+            target_kind_attr is not None
+            and target_attr is not None
+            and isinstance(target_kind_attr.values, dict)
+            and isinstance(target_attr.values, dict)
+        ):
+            for eq_idx, target in list(target_attr.values.items()):
+                try:
+                    target_kind = int(target_kind_attr.values.get(eq_idx, 0))
+                    old_target = int(target)
+                except (TypeError, ValueError):
+                    continue
+                if old_target < 0:
+                    continue
+                if target_kind == 1:
+                    if old_target in joint_remap:
+                        target_attr.values[eq_idx] = joint_remap[old_target]
+                    else:
+                        target_attr.values[eq_idx] = -1
+                        target_kind_attr.values[eq_idx] = 0
+                elif target_kind == 2 and old_target >= len(self.constraint_mimic_joint0):
+                    target_attr.values[eq_idx] = -1
+                    target_kind_attr.values[eq_idx] = 0
 
         # Rebuild parent/child lookups
         self.joint_parents.clear()

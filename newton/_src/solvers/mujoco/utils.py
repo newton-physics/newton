@@ -4,12 +4,26 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from enum import IntEnum
 from typing import Any
 
 import warp as wp
 
 from ...core.types import vec5
 from ...sim.enums import EqType
+
+
+class MjcEqualityTargetKind(IntEnum):
+    """How a MuJoCo equality row is projected into Newton."""
+
+    NONE = 0  # Pure equality row; no projected Newton object, target is -1.
+    JOINT = 1  # Target is a Newton joint, used by converted CONNECT/WELD loop joints.
+    MIMIC = 2  # Target is a Newton mimic constraint, used by converted JOINT equalities.
+
+
+MJC_OBJ_UNKNOWN = -1
+MJC_OBJ_BODY = 1
+MJC_OBJ_JOINT = 3
 
 
 def mjc_eq_solref(custom_attrs: dict[str, Any]) -> wp.vec2:
@@ -22,35 +36,19 @@ def mjc_eq_solimp(custom_attrs: dict[str, Any]) -> vec5:
     return custom_attrs.get("mujoco:eq_solimp", vec5(0.9, 0.95, 0.001, 0.5, 2.0))
 
 
-def mjc_joint_eq_custom_attrs(
-    eq_type: EqType,
-    body1: int,
-    body2: int,
-    anchor: wp.vec3,
-    relpose: wp.transform | None,
-    torquescale: float,
+def mjc_eq_custom_attrs(
     custom_attrs: dict[str, Any],
+    target_kind: MjcEqualityTargetKind = MjcEqualityTargetKind.NONE,
+    target: int = -1,
+    objtype: int = MJC_OBJ_UNKNOWN,
 ) -> dict[str, Any]:
-    """Build custom attributes that preserve a converted MuJoCo CONNECT/WELD equality."""
+    """Build MuJoCo equality-row custom attributes."""
     return {
-        "mujoco:joint_eq_type": int(eq_type),
-        "mujoco:joint_eq_body1": body1,
-        "mujoco:joint_eq_body2": body2,
-        "mujoco:joint_eq_anchor": anchor,
-        "mujoco:joint_eq_relpose": relpose or wp.transform_identity(),
-        "mujoco:joint_eq_torquescale": torquescale,
-        "mujoco:joint_eq_solref": mjc_eq_solref(custom_attrs),
-        "mujoco:joint_eq_solimp": mjc_eq_solimp(custom_attrs),
-    }
-
-
-def mjc_mimic_eq_custom_attrs(polycoef: Sequence[float], custom_attrs: dict[str, Any]) -> dict[str, Any]:
-    """Build custom attributes that preserve a converted MuJoCo JOINT equality."""
-    return {
-        "mujoco:mimic_eq_preserve": True,
-        "mujoco:mimic_eq_polycoef": vec5(*polycoef),
-        "mujoco:mimic_eq_solref": mjc_eq_solref(custom_attrs),
-        "mujoco:mimic_eq_solimp": mjc_eq_solimp(custom_attrs),
+        "mujoco:eq_solref": mjc_eq_solref(custom_attrs),
+        "mujoco:eq_solimp": mjc_eq_solimp(custom_attrs),
+        "mujoco:equality_constraint_target_kind": int(target_kind),
+        "mujoco:equality_constraint_target": target,
+        "mujoco:equality_constraint_objtype": objtype,
     }
 
 
@@ -113,24 +111,66 @@ def mjc_add_equality_loop_joint(
     label: str | None,
     enabled: bool,
     custom_attrs: dict[str, Any],
-) -> int:
-    """Add a Newton loop joint that preserves a MuJoCo CONNECT or WELD equality."""
+) -> tuple[int, int]:
+    """Add a Newton loop joint and its authoritative MuJoCo equality row."""
     parent, child, parent_xform, child_xform = mjc_loop_joint_xforms(builder, body1, body2, anchor)
     add_joint = builder.add_joint_ball if eq_type == EqType.CONNECT else builder.add_joint_fixed
-    return add_joint(
+    joint_idx = add_joint(
         parent=parent,
         child=child,
         parent_xform=parent_xform,
         child_xform=child_xform,
         label=label,
         enabled=enabled,
-        custom_attributes=mjc_joint_eq_custom_attrs(
-            eq_type,
-            body1,
-            body2,
-            anchor,
-            relpose,
-            torquescale,
+    )
+    eq_idx = builder.add_equality_constraint(
+        constraint_type=eq_type,
+        body1=body1,
+        body2=body2,
+        anchor=anchor,
+        relpose=relpose,
+        torquescale=torquescale,
+        label=label,
+        enabled=enabled,
+        custom_attributes=mjc_eq_custom_attrs(
             custom_attrs,
+            target_kind=MjcEqualityTargetKind.JOINT,
+            target=joint_idx,
+            objtype=MJC_OBJ_BODY,
         ),
     )
+    return eq_idx, joint_idx
+
+
+def mjc_add_equality_mimic(
+    builder: Any,
+    joint1: int,
+    joint2: int,
+    polycoef: Sequence[float],
+    label: str | None,
+    enabled: bool,
+    custom_attrs: dict[str, Any],
+) -> tuple[int, int]:
+    """Add a Newton mimic constraint and its authoritative MuJoCo equality row."""
+    mimic_idx = builder.add_constraint_mimic(
+        joint0=joint1,
+        joint1=joint2,
+        coef0=polycoef[0],
+        coef1=polycoef[1],
+        label=label,
+        enabled=enabled,
+    )
+    eq_idx = builder.add_equality_constraint_joint(
+        joint1=joint1,
+        joint2=joint2,
+        polycoef=list(polycoef),
+        label=label,
+        enabled=enabled,
+        custom_attributes=mjc_eq_custom_attrs(
+            custom_attrs,
+            target_kind=MjcEqualityTargetKind.MIMIC,
+            target=mimic_idx,
+            objtype=MJC_OBJ_JOINT,
+        ),
+    )
+    return eq_idx, mimic_idx

@@ -17,6 +17,7 @@ import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
 from newton._src.sim.builder import ShapeFlags
+from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
 from newton._src.utils.import_mjcf import _load_and_expand_mjcf, parse_mjcf
 from newton.solvers import SolverMuJoCo
 
@@ -4134,13 +4135,24 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         converted_model = converted_builder.finalize()
         converted_solver = SolverMuJoCo(converted_model)
 
-        self.assertEqual(converted_model.equality_constraint_count, 0)
+        self.assertEqual(converted_model.equality_constraint_count, 3)
         self.assertEqual(converted_model.constraint_mimic_count, 1)
-        self.assertEqual(converted_model.mujoco.joint_eq_type.numpy().tolist().count(int(newton.EqType.CONNECT)), 1)
-        self.assertEqual(converted_model.mujoco.joint_eq_type.numpy().tolist().count(int(newton.EqType.WELD)), 1)
-        self.assertTrue(bool(converted_model.mujoco.mimic_eq_preserve.numpy()[0]))
+        np.testing.assert_array_equal(
+            converted_model.equality_constraint_type.numpy(),
+            np.array([int(newton.EqType.CONNECT), int(newton.EqType.WELD), int(newton.EqType.JOINT)]),
+        )
+        np.testing.assert_array_equal(
+            converted_model.mujoco.equality_constraint_target_kind.numpy(),
+            np.array(
+                [
+                    int(MjcEqualityTargetKind.JOINT),
+                    int(MjcEqualityTargetKind.JOINT),
+                    int(MjcEqualityTargetKind.MIMIC),
+                ]
+            ),
+        )
         np.testing.assert_allclose(
-            converted_model.mujoco.mimic_eq_polycoef.numpy()[0],
+            converted_model.equality_constraint_polycoef.numpy()[2],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
         )
 
@@ -4180,15 +4192,23 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             parse_mjcf(builder, mjcf)
         model = builder.finalize()
 
-        self.assertEqual(model.equality_constraint_count, 0)
+        self.assertEqual(model.equality_constraint_count, 3)
         self.assertEqual(model.constraint_mimic_count, 1)
         self.assertTrue(hasattr(model, "mujoco"))
-        self.assertTrue(hasattr(model.mujoco, "joint_eq_type"))
-        self.assertTrue(hasattr(model.mujoco, "mimic_eq_polycoef"))
-        self.assertEqual(model.mujoco.joint_eq_type.numpy().tolist().count(int(newton.EqType.CONNECT)), 1)
-        self.assertEqual(model.mujoco.joint_eq_type.numpy().tolist().count(int(newton.EqType.WELD)), 1)
+        self.assertTrue(hasattr(model.mujoco, "equality_constraint_target_kind"))
+        self.assertTrue(hasattr(model.mujoco, "equality_constraint_target"))
+        np.testing.assert_array_equal(
+            model.mujoco.equality_constraint_target_kind.numpy(),
+            np.array(
+                [
+                    int(MjcEqualityTargetKind.JOINT),
+                    int(MjcEqualityTargetKind.JOINT),
+                    int(MjcEqualityTargetKind.MIMIC),
+                ]
+            ),
+        )
         np.testing.assert_allclose(
-            model.mujoco.mimic_eq_polycoef.numpy()[0],
+            model.equality_constraint_polycoef.numpy()[2],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
         )
 
