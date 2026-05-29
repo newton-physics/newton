@@ -1854,6 +1854,11 @@ class RendererGL:
         # Edge overlay: redraw the same geometry as lines with polygon offset
         # to avoid z-fighting (per @mmacklin review on #2300).
         if self.draw_edges:
+            # Skip objects that opted out of the edge overlay (e.g. ground
+            # planes) via the per-object draw_edge flag. Mirrors the cast_shadow
+            # filter in _render_shadow_map and keeps the decision off the checker
+            # material bit (see #2808 review).
+            edge_objects = {k: v for k, v in objects.items() if getattr(v, "draw_edge", True)}
             self._edge_shader.update(
                 view_matrix=self._view_matrix,
                 projection_matrix=self._projection_matrix,
@@ -1864,7 +1869,7 @@ class RendererGL:
             gl.glPolygonOffset(-1.0, -1.0)
             gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
             with self._edge_shader:
-                self._draw_objects(objects)
+                self._draw_objects(edge_objects)
             gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
             gl.glDisable(gl.GL_POLYGON_OFFSET_LINE)
 

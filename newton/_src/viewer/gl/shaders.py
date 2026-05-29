@@ -956,12 +956,9 @@ class ShaderArrow(ShaderGL):
 edge_fragment_shader = """
 #version 330 core
 out vec4 FragColor;
-in vec4 Material;
 uniform vec4 edge_color;
 void main()
 {
-    if (Material.z > 0.0)
-        discard;
     FragColor = edge_color;
 }
 """
