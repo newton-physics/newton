@@ -10864,13 +10864,14 @@ class ModelBuilder:
 
             # When no equality constraints exist, the standard custom-attribute pipeline (below)
             # skips materialization because the ``mujoco:equality_constraint`` frequency count
-            # is 0. Allocate empty arrays explicitly so downstream code (e.g.
+            # is 0. Allocate empty arrays explicitly so every ``model.mujoco.equality_constraint_*``
+            # field can be read unconditionally (e.g.
             # ``model.mujoco.equality_constraint_world.numpy()`` in
-            # :meth:`SolverMuJoCo._validate_model_for_separate_worlds`) can read these
-            # unconditionally. Other zero-count custom-frequency attributes intentionally remain
-            # absent from the model — only equality_constraint_* are surfaced because they used
-            # to be direct fields on :class:`Model` and the deprecated properties are expected
-            # to return an empty array rather than raising ``AttributeError``.
+            # :meth:`SolverMuJoCo._validate_model_for_separate_worlds`), and so the deprecated
+            # top-level ``Model.equality_constraint_*`` properties return an empty array rather
+            # than raising ``AttributeError``. Other zero-count custom-frequency attributes
+            # intentionally remain absent from the model. Keep this list in sync with
+            # :func:`~newton._src.solvers.mujoco.equality._register_equality_constraint_attributes`.
             if self._equality_constraint_count == 0:
                 for _eq_name in (
                     "equality_constraint_type",
@@ -10885,6 +10886,9 @@ class ModelBuilder:
                     "equality_constraint_label",
                     "equality_constraint_enabled",
                     "equality_constraint_world",
+                    "equality_constraint_objtype",
+                    "equality_constraint_target_kind",
+                    "equality_constraint_target",
                 ):
                     _eq_custom_attr = self.custom_attributes[f"mujoco:{_eq_name}"]
                     m.add_attribute(

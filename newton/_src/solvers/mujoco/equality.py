@@ -188,8 +188,8 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
         )
     )
     # ``target_kind`` / ``target`` link a row to the native entity it was projected onto
-    # (loop joint or mimic) for solver portability; ``EqTarget.NONE`` / ``-1`` mark a pure
-    # equality row. Populated by the MJCF/USD equality-to-joint conversion.
+    # (loop joint or mimic) for solver portability. Reserved for the MJCF/USD
+    # equality-to-joint conversion; until that lands every row keeps ``EqTarget.NONE`` / ``-1``.
     builder.add_custom_attribute(
         ca(
             name="equality_constraint_target_kind",
