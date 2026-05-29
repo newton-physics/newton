@@ -37,6 +37,7 @@ def _target_q(obj):
         target = getattr(obj, "joint_target_pos", None)
     return target
 
+
 ROBOT_CONFIGS = {
     "humanoid": {
         "solver": "newton",
@@ -255,7 +256,11 @@ def _setup_allegro(articulation_builder):
     for i in range(articulation_builder.joint_dof_count):
         articulation_builder.joint_target_ke[i] = 150
         articulation_builder.joint_target_kd[i] = 5
-    _target_q(articulation_builder)[:] = articulation_builder.joint_q
+    if _NEW_LAYOUT_AVAILABLE:
+        articulation_builder.joint_target_q[:] = articulation_builder.joint_q
+    else:
+        for i in range(articulation_builder.joint_dof_count):
+            articulation_builder.joint_target_pos[i] = 0.0
     root_dofs = 1
 
     return root_dofs
