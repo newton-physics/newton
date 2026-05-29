@@ -136,20 +136,15 @@ class ControlKamino:
         if device is None:
             device = model.device
 
-        needs_conversion = (
+        self._needs_coord_conversion = (
             not newton.use_coord_layout_targets
             and model.size.sum_of_num_joint_dofs != model.size.sum_of_num_joint_coords
         )
-        if needs_conversion:
-            self._needs_coord_conversion = True
-            self._q_j_ref_coords_space = wp.zeros(
-                shape=model.size.sum_of_num_joint_coords,
-                dtype=float32,
-                device=device,
-            )
-        else:
-            self._needs_coord_conversion = False
-            self._q_j_ref_coords_space = None
+        self._q_j_ref_coords_space = (
+            wp.zeros(shape=model.size.sum_of_num_joint_coords, dtype=float32, device=device)
+            if self._needs_coord_conversion
+            else None
+        )
 
     def from_newton(self, control: Control, model: ModelKamino) -> None:
         """
