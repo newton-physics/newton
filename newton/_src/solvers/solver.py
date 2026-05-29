@@ -362,6 +362,9 @@ class SolverBase:
         ``SolverModelFlags.BODY_INERTIAL_PROPERTIES``    Rigid-body mass or inertia tensors have changed.
         ``SolverModelFlags.SHAPE_PROPERTIES``            Shape transforms or geometry have changed.
         ``SolverModelFlags.MODEL_PROPERTIES``            Model global properties (e.g., gravity) have changed.
+        ``SolverModelFlags.CONSTRAINT_PROPERTIES``       Constraint definitions, coefficients, or enable flags have changed.
+        ``SolverModelFlags.TENDON_PROPERTIES``           Tendon stiffness or related tendon properties have changed.
+        ``SolverModelFlags.ACTUATOR_PROPERTIES``         Actuator gains, biases, limits, or force properties have changed.
         ==============================================  =============================================================
 
         Args:
