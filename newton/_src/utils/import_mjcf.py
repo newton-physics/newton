@@ -22,6 +22,13 @@ from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.enums import EqType
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
+from ..solvers.mujoco.constants import (
+    DEFAULT_LIMIT_KD,
+    DEFAULT_LIMIT_KE,
+    DEFAULT_LIMIT_SOLREF,
+    SOLREF_MODE_MJCF_DEFAULT,
+    SOLREF_MODE_RAW,
+)
 from ..solvers.mujoco.equality import add_equality_constraint as _add_equality_constraint
 from ..usd.schemas import solref_to_stiffness_damping
 from .heightfield import load_heightfield_elevation
@@ -338,6 +345,8 @@ def parse_mjcf(
     builder_custom_attr_dof: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.JOINT_DOF]
     )
+    solreflimit_mode_key = "mujoco:solreflimit_mode"
+    has_solreflimit_mode = solreflimit_mode_key in builder.custom_attributes
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         ["mujoco:equality_constraint"]
     )
@@ -511,6 +520,15 @@ def parse_mjcf(
         else:
             return default
 
+    # Whitelist of MJCF attributes whose ``mujoco.MjSpec.to_xml()`` can emit a
+    # one-value shorthand for an otherwise multi-component vector (e.g.
+    # ``solreflimit="0.02"`` for the ``(0.02, 1.0)`` default). For these keys
+    # ``parse_vec`` pads the remaining components from the registered default
+    # so the ``save_to_mjcf`` → re-import round-trip works. All other
+    # multi-component callers keep the historical "replicate" semantics so a
+    # ``vec5`` or ``vec6`` attribute does not silently change meaning.
+    _SOLREF_SHORTHAND_KEYS = frozenset({"solref", "solreflimit", "solrefcontact", "solreffriction"})
+
     def parse_vec(attrib, key, default):
         if key in attrib:
             out = np.array(attrib[key].split(), dtype=np.float32)
@@ -518,8 +536,29 @@ def parse_mjcf(
             out = np.array(default, dtype=np.float32)
 
         length = len(out)
-        if length == 1:
-            return wp.types.vector(len(default), wp.float32)(out[0], out[0], out[0])
+        # ``default`` can be ``None`` for callers that don't have a fixed
+        # length (e.g. ``actuatorfrcrange``); in that case there's nothing
+        # to pad against, so just return the parsed vector as-is.
+        if length == 1 and default is not None and len(default) != 1:
+            if key in _SOLREF_SHORTHAND_KEYS and len(default) >= 2:
+                # MuJoCo's solref-style shorthand: trailing components fall
+                # back to the registered default (e.g. dampratio=1.0).
+                padded = (out[0], *(float(default[i]) for i in range(1, len(default))))
+                return wp.types.vector(len(default), wp.float32)(*padded)
+            # Legacy "replicate to fill" behaviour for vec3 attributes that
+            # accept a single value (e.g. ``size="0.05"`` for a sphere).
+            if len(default) == 3:
+                return wp.types.vector(3, wp.float32)(out[0], out[0], out[0])
+            # Unexpected shorthand on a multi-component attribute: warn so
+            # silent semantic drift is visible in CI, and replicate to keep
+            # the historical behaviour.
+            warnings.warn(
+                f"MJCF attribute {key!r} provided a single value but expects "
+                f"{len(default)} components; replicating to fill. If this is a "
+                f"MuJoCo shorthand please extend ``parse_vec``'s whitelist.",
+                stacklevel=2,
+            )
+            return wp.types.vector(len(default), wp.float32)(*([float(out[0])] * len(default)))
 
         return wp.types.vector(length, wp.float32)(out)
 
@@ -1525,6 +1564,19 @@ def parse_mjcf(
                             dof_custom_attributes[key] = {}
                         for dof_offset in range(3):
                             dof_custom_attributes[key][current_dof_index + dof_offset] = value
+                    if has_solreflimit_mode:
+                        # The raw vec2 cannot distinguish authored
+                        # solreflimit="0 0" from the "not authored" sentinel.
+                        # Track whether MJCF provided a raw value or merely
+                        # inherited MuJoCo's implicit default.
+                        solreflimit_mode = (
+                            SOLREF_MODE_RAW if "solreflimit" in joint_attrib else SOLREF_MODE_MJCF_DEFAULT
+                        )
+                        dof_custom_attributes.setdefault(solreflimit_mode_key, {})
+                        for dof_offset in range(3):
+                            dof_custom_attributes[solreflimit_mode_key][current_dof_index + dof_offset] = (
+                                solreflimit_mode
+                            )
                     # Lift frictionloss into the builder's per-DOF friction array so it
                     # reaches the MuJoCo spec (joint_friction[qd_start]) on export.
                     ball_friction = parse_float(joint_attrib, "frictionloss", 0.0)
@@ -1540,13 +1592,45 @@ def parse_mjcf(
                 limit_upper = np.deg2rad(joint_range[1]) if has_range and is_angular and use_degrees else joint_range[1]
 
                 # Parse solreflimit for joint limit stiffness and damping
-                solreflimit = parse_vec(joint_attrib, "solreflimit", (0.02, 1.0))
+                solreflimit = parse_vec(joint_attrib, "solreflimit", DEFAULT_LIMIT_SOLREF)
                 limit_ke, limit_kd = solref_to_stiffness_damping(solreflimit)
-                # Handle None return values (invalid solref)
+                # MuJoCo's solref domain is ``(timeconst > 0, dampratio > 0)``
+                # for the standard mode or ``(< 0, < 0)`` for direct mode;
+                # mixed signs are rejected by ``solref_to_stiffness_damping``
+                # which returns ``(None, None)``. The ``"0 0"`` sentinel is
+                # also rejected by the conversion but is intentionally used by
+                # MJCF authors as a marker preserved verbatim through the
+                # ``mujoco.solreflimit`` custom attribute (see
+                # ``test_mjcf_authored_zero_solreflimit_is_preserved_as_native_parameter``),
+                # so we keep ``SOLREF_MODE_RAW`` semantics for the runtime
+                # ``jnt_solref`` path. Newton-side ``joint_limit_ke``/``kd``
+                # fall back to the MuJoCo defaults; warn so authors of
+                # genuinely malformed configurations notice the mismatch
+                # between the Newton gains (defaults) and the raw solref
+                # (forwarded verbatim) before they switch the mode to
+                # ``SOLREF_MODE_FORCE_SPACE``.
+                if (
+                    "solreflimit" in joint_attrib
+                    and (limit_ke is None or limit_kd is None)
+                    and not (float(solreflimit[0]) == 0.0 and float(solreflimit[1]) == 0.0)
+                ):
+                    warnings.warn(
+                        f"MJCF joint {joint_attrib.get('name', 'unnamed')!r}: invalid "
+                        f"solreflimit={joint_attrib['solreflimit']!r} (expected two "
+                        "same-sign non-zero components or the '0 0' sentinel); "
+                        f"joint_limit_ke/kd fall back to ({DEFAULT_LIMIT_KE}, "
+                        f"{DEFAULT_LIMIT_KD}) while the raw value is forwarded to "
+                        "MuJoCo via mujoco.solreflimit (SOLREF_MODE_RAW). MuJoCo may "
+                        "silently disable the limit or divide by zero — fix the "
+                        "authored solreflimit or set "
+                        "model.mujoco.solreflimit_mode = SOLREF_MODE_FORCE_SPACE "
+                        "to switch to the Newton force-space scaling.",
+                        stacklevel=2,
+                    )
                 if limit_ke is None:
-                    limit_ke = 2500.0  # From MuJoCo's default solref (0.02, 1.0)
+                    limit_ke = DEFAULT_LIMIT_KE  # From MuJoCo's default solref.
                 if limit_kd is None:
-                    limit_kd = 100.0  # From MuJoCo's default solref (0.02, 1.0)
+                    limit_kd = DEFAULT_LIMIT_KD  # From MuJoCo's default solref.
 
                 effort_limit = default_joint_effort_limit
                 if "actuatorfrcrange" in joint_attrib:
@@ -1596,11 +1680,20 @@ def parse_mjcf(
                     context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                 )
                 # assemble custom attributes for each DOF (dict mapping DOF index to value)
-                # Only store values that were explicitly specified in the source
+                # Only store values that were explicitly specified in the source.
                 for key, value in dof_attr.items():
                     if key not in dof_custom_attributes:
                         dof_custom_attributes[key] = {}
                     dof_custom_attributes[key][current_dof_index] = value
+                if has_solreflimit_mode:
+                    # The mode keeps native MJCF semantics separate from
+                    # Newton-authored force-space ``joint_limit_ke``/``kd``:
+                    # authored solreflimit is raw MuJoCo data, while an
+                    # unauthored limit starts from MuJoCo's implicit default
+                    # and only switches to Newton scaling after the gains move
+                    # away from their imported default values.
+                    solreflimit_mode = SOLREF_MODE_RAW if "solreflimit" in joint_attrib else SOLREF_MODE_MJCF_DEFAULT
+                    dof_custom_attributes.setdefault(solreflimit_mode_key, {})[current_dof_index] = solreflimit_mode
 
                 # Track this MJCF joint's name and DOF offset within the combined Newton joint
                 mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))
