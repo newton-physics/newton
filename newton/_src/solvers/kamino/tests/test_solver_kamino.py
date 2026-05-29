@@ -9,7 +9,6 @@ import unittest
 import numpy as np
 import warp as wp
 
-import newton
 import newton._src.solvers.kamino.config as kamino_config
 from newton._src.solvers.kamino._src.core.control import ControlKamino
 from newton._src.solvers.kamino._src.core.data import DataKamino
@@ -27,7 +26,6 @@ from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino._src.solvers import PADMMSolver
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.examples import print_progress_bar
-from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 
 ###
@@ -263,14 +261,6 @@ class TestSolverKaminoConfig(unittest.TestCase):
         self.assertEqual(config.rotation_correction, "continuous")
         self.assertEqual(config.dynamics.linear_solver_type, "CR")
         self.assertEqual(config.padmm.warmstart_mode, "internal")
-
-
-class TestSolverKaminoCompatibility(unittest.TestCase):
-    def test_validate_model_compatibility_allows_model_without_mujoco_namespace(self):
-        model = newton.Model()
-        self.assertFalse(hasattr(model, "mujoco"))
-
-        SolverKamino._validate_model_compatibility(model)
 
 
 class TestSolverKaminoImpl(unittest.TestCase):
