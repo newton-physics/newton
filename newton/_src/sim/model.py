@@ -24,7 +24,6 @@ if TYPE_CHECKING:
 
 
 _EQUALITY_CONSTRAINT_DEPRECATED_IN = "1.3"
-_EQUALITY_CONSTRAINT_REMOVAL_VERSION = "1.5"
 _EQUALITY_CONSTRAINT_MODEL_FIELDS = frozenset(
     (
         "equality_constraint_count",
@@ -126,7 +125,7 @@ class Model:
             Use the string frequency ``"mujoco:equality_constraint"`` instead.
             :meth:`ModelBuilder.add_custom_attribute` translates this enum value to the
             string form for the duration of the deprecation window. Scheduled for removal
-            in Newton 1.5.
+            in a future release.
         """
         PARTICLE = 9
         """Attribute frequency follows the number of particles (see :attr:`~newton.Model.particle_count`)."""
@@ -820,7 +819,7 @@ class Model:
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
 
-    # region deprecated equality-constraint arrays (removal in Newton 1.5)
+    # region deprecated equality-constraint arrays (removal in a future release)
     # The legacy top-level ``Model.equality_constraint_*`` arrays are now read-only forwards to
     # the ``model.mujoco.equality_constraint_*`` namespace (the source of truth). Delete this
     # whole region when the deprecation window closes.
@@ -829,7 +828,7 @@ class Model:
     def _deprecated_equality_constraint_model_field_message(name: str) -> str:
         return (
             f"Model.{name} is deprecated in Newton {_EQUALITY_CONSTRAINT_DEPRECATED_IN} "
-            f"and is scheduled for removal in Newton {_EQUALITY_CONSTRAINT_REMOVAL_VERSION}. "
+            f"and will be removed in a future release. "
             f"Use model.mujoco.{name} instead. ModelBuilder.finalize() populates "
             "the namespaced fields. The namespaced attribute is the source of truth "
             "and the deprecated top-level property forwards to it."
@@ -866,7 +865,7 @@ class Model:
 
     @property
     def equality_constraint_count(self) -> int:
-        """Deprecated (removal in Newton 1.5); use ``model.mujoco.equality_constraint_count``."""
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_count``."""
         return self._get_deprecated_equality_constraint_model_field("equality_constraint_count")
 
     @equality_constraint_count.setter
@@ -875,7 +874,7 @@ class Model:
 
     @property
     def equality_constraint_type(self) -> wp.array[wp.int32] | None:
-        """Deprecated (removal in Newton 1.5); use ``model.mujoco.equality_constraint_type``."""
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_type``."""
         return self._get_deprecated_equality_constraint_model_field("equality_constraint_type")
 
     @equality_constraint_type.setter
@@ -884,7 +883,7 @@ class Model:
 
     @property
     def equality_constraint_body1(self) -> wp.array[wp.int32] | None:
-        """Deprecated (removal in Newton 1.5); use ``model.mujoco.equality_constraint_body1``."""
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_body1``."""
         return self._get_deprecated_equality_constraint_model_field("equality_constraint_body1")
 
     @equality_constraint_body1.setter
@@ -893,7 +892,7 @@ class Model:
 
     @property
     def equality_constraint_body2(self) -> wp.array[wp.int32] | None:
-        """Deprecated (removal in Newton 1.5); use ``model.mujoco.equality_constraint_body2``."""
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_body2``."""
         return self._get_deprecated_equality_constraint_model_field("equality_constraint_body2")
 
     @equality_constraint_body2.setter
@@ -902,7 +901,7 @@ class Model:
 
     @property
     def equality_constraint_anchor(self) -> wp.array[wp.vec3] | None:
-        """Deprecated (removal in Newton 1.5); use ``model.mujoco.equality_constraint_anchor``."""
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_anchor``."""
         return self._get_deprecated_equality_constraint_model_field("equality_constraint_anchor")
 
     @equality_constraint_anchor.setter
@@ -911,7 +910,7 @@ class Model:
 
     @property
     def equality_constraint_torquescale(self) -> wp.array[wp.float32] | None:
-        """Deprecated (removal in Newton 1.5); use ``model.mujoco.equality_constraint_torquescale``."""
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_torquescale``."""
         return self._get_deprecated_equality_constraint_model_field("equality_constraint_torquescale")
 
     @equality_constraint_torquescale.setter
@@ -920,7 +919,7 @@ class Model:
 
     @property
     def equality_constraint_relpose(self) -> wp.array[wp.transform] | None:
-        """Deprecated (removal in Newton 1.5); use ``model.mujoco.equality_constraint_relpose``."""
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_relpose``."""
         return self._get_deprecated_equality_constraint_model_field("equality_constraint_relpose")
 
     @equality_constraint_relpose.setter
@@ -929,7 +928,7 @@ class Model:
 
     @property
     def equality_constraint_joint1(self) -> wp.array[wp.int32] | None:
-        """Deprecated (removal in Newton 1.5); use ``model.mujoco.equality_constraint_joint1``."""
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_joint1``."""
         return self._get_deprecated_equality_constraint_model_field("equality_constraint_joint1")
 
     @equality_constraint_joint1.setter
@@ -938,7 +937,7 @@ class Model:
 
     @property
     def equality_constraint_joint2(self) -> wp.array[wp.int32] | None:
-        """Deprecated (removal in Newton 1.5); use ``model.mujoco.equality_constraint_joint2``."""
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_joint2``."""
         return self._get_deprecated_equality_constraint_model_field("equality_constraint_joint2")
 
     @equality_constraint_joint2.setter
@@ -947,7 +946,7 @@ class Model:
 
     @property
     def equality_constraint_polycoef(self) -> wp.array2d[wp.float32] | None:
-        """Deprecated (removal in Newton 1.5); use ``model.mujoco.equality_constraint_polycoef``."""
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_polycoef``."""
         return self._get_deprecated_equality_constraint_model_field("equality_constraint_polycoef")
 
     @equality_constraint_polycoef.setter
@@ -956,7 +955,7 @@ class Model:
 
     @property
     def equality_constraint_label(self) -> list[str]:
-        """Deprecated (removal in Newton 1.5); use ``model.mujoco.equality_constraint_label``."""
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_label``."""
         return self._get_deprecated_equality_constraint_model_field("equality_constraint_label")
 
     @equality_constraint_label.setter
@@ -965,7 +964,7 @@ class Model:
 
     @property
     def equality_constraint_enabled(self) -> wp.array[wp.bool] | None:
-        """Deprecated (removal in Newton 1.5); use ``model.mujoco.equality_constraint_enabled``."""
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_enabled``."""
         return self._get_deprecated_equality_constraint_model_field("equality_constraint_enabled")
 
     @equality_constraint_enabled.setter
@@ -974,7 +973,7 @@ class Model:
 
     @property
     def equality_constraint_world(self) -> wp.array[wp.int32] | None:
-        """Deprecated (removal in Newton 1.5); use ``model.mujoco.equality_constraint_world``."""
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_world``."""
         return self._get_deprecated_equality_constraint_model_field("equality_constraint_world")
 
     @equality_constraint_world.setter
@@ -983,13 +982,13 @@ class Model:
 
     @property
     def equality_constraint_world_start(self) -> wp.array[wp.int32] | None:
-        """Deprecated (removal in Newton 1.5); equality constraints have no per-world start array.
+        """Deprecated in Newton 1.3; will be removed in a future release. Equality constraints have no per-world start array.
 
         Derive per-world bounds from ``model.mujoco.equality_constraint_world``.
         """
         warnings.warn(
             "Model.equality_constraint_world_start is deprecated in Newton 1.3 and is scheduled "
-            "for removal in Newton 1.5. Equality constraints are a custom frequency and have no "
+            "for removal in a future release. Equality constraints are a custom frequency and have no "
             "per-world start array; derive per-world bounds from the per-row "
             "``model.mujoco.equality_constraint_world`` values instead.",
             DeprecationWarning,
@@ -1001,7 +1000,7 @@ class Model:
     def equality_constraint_world_start(self, value: wp.array[wp.int32] | None) -> None:
         warnings.warn(
             "Model.equality_constraint_world_start is deprecated in Newton 1.3 and is scheduled "
-            "for removal in Newton 1.5; it no longer stores a value.",
+            "for removal in a future release; it no longer stores a value.",
             DeprecationWarning,
             stacklevel=2,
         )

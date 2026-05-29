@@ -36,7 +36,7 @@ def register_equality_constraint_attributes(builder: ModelBuilder) -> None:
 
     Idempotent: re-registration with the same spec is a no-op. Called from
     :meth:`SolverMuJoCo.register_custom_attributes`, and — for the duration of the
-    ``Model.equality_constraint_*`` deprecation window (removal in Newton 1.5) — lazily from
+    ``Model.equality_constraint_*`` deprecation window (removal in a future release) — lazily from
     :meth:`ModelBuilder.__init__`, so the namespaced fields exist even for builders that never
     register ``SolverMuJoCo``.
     """

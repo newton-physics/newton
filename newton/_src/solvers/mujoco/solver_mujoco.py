@@ -598,7 +598,7 @@ class SolverMuJoCo(SolverBase):
         # Per-equality-constraint arrays (``model.mujoco.equality_constraint_*``). The call is
         # idempotent — ``ModelBuilder.__init__`` already invokes this helper during the
         # ``Model.equality_constraint_*`` deprecation window; once those properties are removed
-        # in Newton 1.5 the call from ``__init__`` goes away and this site becomes the only
+        # in a future release the call from ``__init__`` goes away and this site becomes the only
         # registration entry point.
         register_equality_constraint_attributes(builder)
 

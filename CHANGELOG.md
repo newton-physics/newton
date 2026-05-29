@@ -158,7 +158,7 @@
   `_polycoef`, `_label`, `_enabled`, `_world`) are also deprecated; read-only access forwards to a snapshot of the namespaced storage
   and writes raise `AttributeError`. The `Model.AttributeFrequency.EQUALITY_CONSTRAINT` enum value is deprecated as well —
   `ModelBuilder.add_custom_attribute` and `get_custom_attributes_by_frequency` translate it to `"mujoco:equality_constraint"` with a
-  `DeprecationWarning`; the enum member is scheduled for removal in Newton 1.5. During the deprecation window the builder auto-registers
+  `DeprecationWarning`; the enum member is scheduled for removal in a future release. During the deprecation window the builder auto-registers
   both the custom frequency and the declarations from its constructor so existing code that never called
   `SolverMuJoCo.register_custom_attributes(builder)` keeps working; after the deprecated properties are removed, explicit registration
   via the solver will be required. Downstream code should migrate reads and writes to `model.mujoco.equality_constraint_*`; the
