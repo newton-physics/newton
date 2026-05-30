@@ -641,6 +641,7 @@ def compute_link_transform(
 @wp.kernel
 def eval_rigid_fk(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     joint_type: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
@@ -660,7 +661,7 @@ def eval_rigid_fk(
     index = wp.tid()
 
     start = articulation_start[index]
-    end = articulation_start[index + 1]
+    end = articulation_end[index]
 
     for i in range(start, end):
         compute_link_transform(
@@ -1032,6 +1033,7 @@ def convert_free_distance_joint_f_public_to_internal(
 @wp.kernel
 def eval_rigid_id(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     joint_type: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
@@ -1056,7 +1058,7 @@ def eval_rigid_id(
     index = wp.tid()
 
     start = articulation_start[index]
-    end = articulation_start[index + 1]
+    end = articulation_end[index]
 
     # compute link velocities and coriolis forces
     for i in range(start, end):
@@ -1086,6 +1088,7 @@ def eval_rigid_id(
 @wp.kernel
 def eval_rigid_tau(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     joint_type: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
@@ -1114,7 +1117,7 @@ def eval_rigid_tau(
     index = wp.tid()
 
     start = articulation_start[index]
-    end = articulation_start[index + 1]
+    end = articulation_end[index]
     count = end - start
 
     # compute joint forces
@@ -1168,6 +1171,7 @@ def eval_rigid_tau(
 @wp.kernel
 def eval_rigid_jacobian(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     articulation_J_start: wp.array[int],
     joint_ancestor: wp.array[int],
     joint_qd_start: wp.array[int],
@@ -1179,7 +1183,7 @@ def eval_rigid_jacobian(
     index = wp.tid()
 
     joint_start = articulation_start[index]
-    joint_end = articulation_start[index + 1]
+    joint_end = articulation_end[index]
     joint_count = joint_end - joint_start
 
     J_offset = articulation_J_start[index]
@@ -1228,6 +1232,7 @@ def spatial_mass(
 @wp.kernel
 def eval_rigid_mass(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     articulation_M_start: wp.array[int],
     body_I_s: wp.array[wp.spatial_matrix],
     # outputs
@@ -1237,7 +1242,7 @@ def eval_rigid_mass(
     index = wp.tid()
 
     joint_start = articulation_start[index]
-    joint_end = articulation_start[index + 1]
+    joint_end = articulation_end[index]
     joint_count = joint_end - joint_start
 
     M_offset = articulation_M_start[index]
@@ -1896,6 +1901,7 @@ def eval_single_articulation_fk_with_velocity_conversion(
 @wp.kernel
 def eval_articulation_fk_with_velocity_conversion(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     articulation_count: int,  # total number of articulations
     articulation_mask: wp.array[
         bool
@@ -1937,7 +1943,7 @@ def eval_articulation_fk_with_velocity_conversion(
             return
 
     joint_start = articulation_start[articulation_id]
-    joint_end = articulation_start[articulation_id + 1]
+    joint_end = articulation_end[articulation_id]
 
     eval_single_articulation_fk_with_velocity_conversion(
         joint_start,
@@ -1963,6 +1969,7 @@ def eval_articulation_fk_with_velocity_conversion(
 @wp.kernel
 def eval_articulation_fk_with_velocity_conversion_from_joint(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     articulation_indices: wp.array[int],
     articulation_joint_start: wp.array[int],
     joint_q: wp.array[float],
@@ -1984,7 +1991,7 @@ def eval_articulation_fk_with_velocity_conversion_from_joint(
     tid = wp.tid()
     articulation_id = articulation_indices[tid]
     joint_start = articulation_joint_start[tid]
-    joint_end = articulation_start[articulation_id + 1]
+    joint_end = articulation_end[articulation_id]
 
     eval_single_articulation_fk_with_velocity_conversion(
         joint_start,
@@ -2046,6 +2053,7 @@ def eval_fk_with_velocity_conversion(
         dim=num_articulations,
         inputs=[
             model.articulation_start,
+            model.articulation_end,
             model.articulation_count,
             mask,
             indices,
@@ -2085,6 +2093,7 @@ def eval_fk_with_velocity_conversion_from_joint_starts(
         dim=len(articulation_indices),
         inputs=[
             model.articulation_start,
+            model.articulation_end,
             articulation_indices,
             articulation_joint_start,
             joint_q,

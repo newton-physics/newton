@@ -496,6 +496,7 @@ class ArticulationView:
         exclude_links (list[str] | list[int] | None): List of link names, patterns, or indices to exclude.
         include_joint_types (list[int] | None): List of joint types to include.
         exclude_joint_types (list[int] | None): List of joint types to exclude.
+        include_loop_closing_joints (bool): If True, include converted loop-closing joints.
         verbose (bool | None): If True, prints selection summary.
     """
 
@@ -509,6 +510,7 @@ class ArticulationView:
         exclude_links: list[str] | list[int] | None = None,
         include_joint_types: list[int] | None = None,
         exclude_joint_types: list[int] | None = None,
+        include_loop_closing_joints: bool = False,
         verbose: bool | None = None,
     ):
         self.model = model
@@ -519,6 +521,7 @@ class ArticulationView:
 
         # FIXME: avoid/reduce this readback?
         model_articulation_start = model.articulation_start.numpy()
+        model_articulation_end = model.articulation_end.numpy()
         model_articulation_world = model.articulation_world.numpy()
         model_joint_type = model.joint_type.numpy()
         model_joint_child = model.joint_child.numpy()
@@ -576,7 +579,10 @@ class ArticulationView:
 
         # gather joint info
         arti_joint_begin = int(model_articulation_start[arti_0])
-        arti_joint_end = int(model_articulation_start[arti_0 + 1])
+        if include_loop_closing_joints:
+            arti_joint_end = int(model_articulation_start[arti_0 + 1])
+        else:
+            arti_joint_end = int(model_articulation_end[arti_0])
         arti_joint_count = arti_joint_end - arti_joint_begin
         arti_joint_dof_begin = int(model_joint_qd_start[arti_joint_begin])
         arti_joint_dof_end = int(model_joint_qd_start[arti_joint_end])
@@ -624,7 +630,10 @@ class ArticulationView:
             for arti_id in articulation_ids[world_id]:
                 # joints
                 joint_start = int(model_articulation_start[arti_id])
-                joint_end = int(model_articulation_start[arti_id + 1])
+                if include_loop_closing_joints:
+                    joint_end = int(model_articulation_start[arti_id + 1])
+                else:
+                    joint_end = int(model_articulation_end[arti_id])
                 joint_starts[world_id].append(joint_start)
                 joint_counts[world_id].append(joint_end - joint_start)
                 # joint dofs
@@ -641,11 +650,11 @@ class ArticulationView:
                 root_joint_types[world_id].append(int(model_joint_type[joint_start]))
                 # links and shapes
                 link_ids = []
-                shape_ids = []
                 for j in range(joint_start, joint_end):
                     link_id = int(model_joint_child[j])
                     link_ids.append(link_id)
                 link_ids = sorted(set(link_ids))
+                shape_ids = []
                 for link_id in link_ids:
                     link_shapes = model.body_shapes.get(link_id, [])
                     shape_ids.extend(link_shapes)
@@ -943,10 +952,11 @@ class ArticulationView:
 
             if total_tendon_count > 0:
                 # Build a mapping from joint index to articulation index
+                # Loop-closing joints live after articulation_end and are deliberately excluded from tendon discovery.
                 joint_to_articulation = {}
                 for arti_idx in range(len(model_articulation_start) - 1):
                     joint_begin = int(model_articulation_start[arti_idx])
-                    joint_end = int(model_articulation_start[arti_idx + 1])
+                    joint_end = int(model_articulation_end[arti_idx])
                     for j in range(joint_begin, joint_end):
                         joint_to_articulation[j] = arti_idx
 

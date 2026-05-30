@@ -17,6 +17,7 @@ import newton.usd as usd
 from newton import BodyFlags, JointType
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.utils import transform_points
+from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
@@ -3771,6 +3772,453 @@ def Xform "TestBody" (
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_mass_api_parsing(self):
+        """Exhaustive test of NewtonMassAPI mass/inertia combinations.
+
+        Axes tested:
+          Mass source:    explicit physics:mass  vs  density-derived
+          Inertia source: newton:inertia  vs  physics:diagonalInertia  vs  density-derived
+          Shape mode:     solid  vs  shell+thickness  vs  shell+margin-fallback
+        """
+        from pxr import Usd
+
+        R = 0.5
+        density = 1000.0
+        shell_t = 0.05
+        margin_t = 0.03
+        authored_mass = 10.0
+
+        solid_mass = 4.0 / 3.0 * np.pi * R**3 * density
+        solid_I = 2.0 / 5.0 * solid_mass * R**2
+
+        def _shell_mass(t):
+            return 4.0 / 3.0 * np.pi * (R**3 - (R - t) ** 3) * density
+
+        def _shell_I(t):
+            m_outer = solid_mass
+            m_inner = 4.0 / 3.0 * np.pi * (R - t) ** 3 * density
+            return 2.0 / 5.0 * m_outer * R**2 - 2.0 / 5.0 * m_inner * (R - t) ** 2
+
+        def _scaled_I(shape_I, shape_mass, target_mass):
+            return shape_I * target_mass / shape_mass
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+# 1) Shell + thickness + authored mass, no inertia → shell-derived inertia scaled to mass
+def Xform "ShellThicknessMass" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 10.0
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonMassAPI"]
+    )
+    {
+        double radius = 0.5
+        uniform token newton:massModel = "shell"
+        float newton:shellThickness = 0.05
+    }
+}
+
+# 2) Shell + margin fallback + authored mass, no inertia → margin used as thickness
+def Xform "ShellMarginMass" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (2, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 10.0
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI", "NewtonMassAPI"]
+    )
+    {
+        double radius = 0.5
+        uniform token newton:massModel = "shell"
+        float newton:contactMargin = 0.03
+    }
+}
+
+# 3) Solid + authored mass, no inertia → solid inertia scaled to mass
+def Xform "SolidMass" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (4, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 10.0
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+
+# 4) Explicit mass + newton:inertia tensor + shell collider
+def Xform "ExplicitTensor" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (6, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 5.0
+    double[] newton:inertia = [1.0, 2.0, 3.0, 0.1, 0.2, 0.3]
+    float3 physics:diagonalInertia = (9.0, 9.0, 9.0)
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonMassAPI"]
+    )
+    {
+        double radius = 0.5
+        uniform token newton:massModel = "shell"
+        float newton:shellThickness = 0.01
+    }
+}
+
+# 5) Explicit mass + diagonalInertia (no newton:inertia)
+def Xform "ExplicitDiag" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (8, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 3.0
+    float3 physics:diagonalInertia = (0.5, 1.0, 1.5)
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+
+# 6) Solid, no authored mass or inertia (all density-derived via mass computer)
+def Xform "SolidDensity" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (10, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+
+# 7) Shell, no authored mass or inertia (all density-derived via mass computer)
+def Xform "ShellDensity" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (12, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonMassAPI"]
+    )
+    {
+        double radius = 0.5
+        uniform token newton:massModel = "shell"
+        float newton:shellThickness = 0.05
+    }
+}
+
+# 8) Shell with negative thickness → warning, falls back to margin
+def Xform "NegativeThickness" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (14, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 10.0
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonMassAPI", "NewtonCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+        uniform token newton:massModel = "shell"
+        float newton:shellThickness = -0.5
+        float newton:contactMargin = 0.03
+    }
+}
+
+# 9) Singular PSD inertia tensor (valid but non-invertible)
+def Xform "SingularTensor" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (16, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 2.0
+    double[] newton:inertia = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+
+# 10) newton:inertia without physics:diagonalInertia
+def Xform "TensorOnly" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "NewtonMassAPI", "PhysicsMassAPI"]
+)
+{
+    double3 xformOp:translate = (18, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    float physics:mass = 4.0
+    double[] newton:inertia = [1.0, 2.0, 3.0, 0.1, 0.2, 0.3]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+
+        self.assertEqual(builder.body_count, 10)
+        self.assertEqual(builder.shape_count, 10)
+
+        # --- 1) Shell + thickness + authored mass: inertia from shell geometry, scaled ---
+        body_id = builder.body_label.index("/ShellThicknessMass")
+        shape_idx = builder.shape_label.index("/ShellThicknessMass/Collider")
+        self.assertFalse(builder.shape_is_solid[shape_idx])
+        self.assertAlmostEqual(builder.body_mass[body_id], authored_mass, places=5)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        expected_shell_I = _scaled_I(_shell_I(shell_t), _shell_mass(shell_t), authored_mass)
+        np.testing.assert_allclose(np.diag(inertia), [expected_shell_I] * 3, rtol=1e-4)
+
+        # --- 2) Shell + margin fallback: different thickness → different inertia ---
+        body_id = builder.body_label.index("/ShellMarginMass")
+        shape_idx = builder.shape_label.index("/ShellMarginMass/Collider")
+        self.assertFalse(builder.shape_is_solid[shape_idx])
+        self.assertAlmostEqual(builder.body_mass[body_id], authored_mass, places=5)
+        inertia2 = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        expected_margin_I = _scaled_I(_shell_I(margin_t), _shell_mass(margin_t), authored_mass)
+        np.testing.assert_allclose(np.diag(inertia2), [expected_margin_I] * 3, rtol=1e-4)
+        # Thinner shell → higher I/m ratio → different inertia than body 1
+        self.assertFalse(
+            np.allclose(np.diag(inertia), np.diag(inertia2), atol=1e-3),
+            "Shell thickness vs margin fallback should produce different inertia",
+        )
+
+        # --- 3) Solid + authored mass: solid inertia, scaled ---
+        body_id = builder.body_label.index("/SolidMass")
+        shape_idx = builder.shape_label.index("/SolidMass/Collider")
+        self.assertTrue(builder.shape_is_solid[shape_idx])
+        self.assertAlmostEqual(builder.body_mass[body_id], authored_mass, places=5)
+        inertia3 = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        expected_solid_I = _scaled_I(solid_I, solid_mass, authored_mass)
+        np.testing.assert_allclose(np.diag(inertia3), [expected_solid_I] * 3, rtol=1e-4)
+        # Shell inertia/mass ratio > solid inertia/mass ratio at same authored mass
+        self.assertGreater(np.diag(inertia)[0], np.diag(inertia3)[0])
+
+        # --- 4) Explicit mass + newton:inertia tensor + shell collider ---
+        body_id = builder.body_label.index("/ExplicitTensor")
+        shape_idx = builder.shape_label.index("/ExplicitTensor/Collider")
+        self.assertFalse(builder.shape_is_solid[shape_idx])
+        self.assertAlmostEqual(builder.body_mass[body_id], 5.0, places=5)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        expected = np.array([[1.0, 0.1, 0.2], [0.1, 2.0, 0.3], [0.2, 0.3, 3.0]])
+        np.testing.assert_allclose(inertia, expected, atol=1e-5)
+
+        # --- 5) Explicit mass + diagonalInertia ---
+        body_id = builder.body_label.index("/ExplicitDiag")
+        self.assertAlmostEqual(builder.body_mass[body_id], 3.0, places=5)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        np.testing.assert_allclose(np.diag(inertia), [0.5, 1.0, 1.5], atol=1e-5)
+        np.testing.assert_allclose(inertia - np.diag(np.diag(inertia)), np.zeros((3, 3)), atol=1e-7)
+
+        # --- 6) Solid, density-derived mass & inertia (no authored values) ---
+        body_id = builder.body_label.index("/SolidDensity")
+        shape_idx = builder.shape_label.index("/SolidDensity/Collider")
+        self.assertTrue(builder.shape_is_solid[shape_idx])
+        self.assertGreater(builder.body_mass[body_id], 0.0)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        self.assertGreater(np.trace(inertia), 0.0)
+
+        # --- 7) Shell, density-derived mass & inertia (no authored values) ---
+        body_id = builder.body_label.index("/ShellDensity")
+        shape_idx = builder.shape_label.index("/ShellDensity/Collider")
+        self.assertFalse(builder.shape_is_solid[shape_idx])
+        solid_density_id = builder.body_label.index("/SolidDensity")
+        self.assertLess(builder.body_mass[body_id], builder.body_mass[solid_density_id])
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        self.assertGreater(np.trace(inertia), 0.0)
+
+        # --- 8) Negative shell thickness: warning, falls back to margin, inertia matches margin path ---
+        body_id = builder.body_label.index("/NegativeThickness")
+        shape_idx = builder.shape_label.index("/NegativeThickness/Collider")
+        self.assertFalse(builder.shape_is_solid[shape_idx])
+        self.assertAlmostEqual(builder.body_mass[body_id], 10.0, places=5)
+        inertia_neg = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        expected_neg_I = _scaled_I(_shell_I(margin_t), _shell_mass(margin_t), 10.0)
+        np.testing.assert_allclose(np.diag(inertia_neg), [expected_neg_I] * 3, rtol=1e-4)
+        warning_messages = [str(w.message) for w in caught]
+        self.assertTrue(any("negative shell thickness" in m and "NegativeThickness" in m for m in warning_messages))
+
+        # --- 9) Singular PSD tensor: valid but non-invertible, inv_inertia set to zero ---
+        body_id = builder.body_label.index("/SingularTensor")
+        self.assertAlmostEqual(builder.body_mass[body_id], 2.0, places=5)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        expected = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+        np.testing.assert_allclose(inertia, expected, atol=1e-5)
+        inv_inertia = np.array(builder.body_inv_inertia[body_id]).reshape(3, 3)
+        np.testing.assert_allclose(inv_inertia, np.zeros((3, 3)), atol=1e-7)
+
+        # --- 10) newton:inertia without physics:diagonalInertia ---
+        body_id = builder.body_label.index("/TensorOnly")
+        self.assertAlmostEqual(builder.body_mass[body_id], 4.0, places=5)
+        inertia = np.array(builder.body_inertia[body_id]).reshape(3, 3)
+        expected = np.array([[1.0, 0.1, 0.2], [0.1, 2.0, 0.3], [0.2, 0.3, 3.0]])
+        np.testing.assert_allclose(inertia, expected, atol=1e-5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_inertia_tensor_validation(self):
+        """Malformed newton:inertia tensors emit warnings and fall back to shape-derived values."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "NonFinite" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    double[] newton:inertia = [1.0, 2.0, inf, 0.0, 0.0, 0.0]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+
+def Xform "NegativeDiag" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (2, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    double[] newton:inertia = [-1.0, 2.0, 3.0, 0.0, 0.0, 0.0]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+
+def Xform "WrongLength" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (4, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    double[] newton:inertia = [1.0, 2.0, 3.0]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+
+def Xform "NotPSD" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "NewtonMassAPI"]
+)
+{
+    double3 xformOp:translate = (6, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    double[] newton:inertia = [1.0, 1.0, 1.0, 5.0, 5.0, 5.0]
+
+    def Sphere "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+
+        self.assertEqual(builder.body_count, 4)
+
+        body_id = builder.body_label.index("/NonFinite")
+        self.assertGreater(builder.body_mass[body_id], 0.0)
+
+        body_id = builder.body_label.index("/NegativeDiag")
+        self.assertGreater(builder.body_mass[body_id], 0.0)
+
+        body_id = builder.body_label.index("/WrongLength")
+        self.assertGreater(builder.body_mass[body_id], 0.0)
+
+        body_id = builder.body_label.index("/NotPSD")
+        self.assertGreater(builder.body_mass[body_id], 0.0)
+
+        warning_messages = [str(w.message) for w in caught]
+        self.assertTrue(any("non-finite" in m and "NonFinite" in m for m in warning_messages))
+        self.assertTrue(any("negative diagonal" in m and "NegativeDiag" in m for m in warning_messages))
+        self.assertTrue(any("expected 6" in m and "WrongLength" in m for m in warning_messages))
+        self.assertTrue(any("not positive semidefinite" in m and "NotPSD" in m for m in warning_messages))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_usd_gravcomp(self):
         """Test parsing of gravcomp from USD"""
         from pxr import Sdf, Usd, UsdPhysics
@@ -5388,7 +5836,7 @@ def Xform "Articulation" (
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        result = builder.add_usd(stage)
+        result = builder.add_usd(stage, convert_mjc_equality_constraints=False)
         model = builder.finalize()
 
         self.assertEqual(model.equality_constraint_count, 2)
@@ -5473,7 +5921,12 @@ def Xform "Articulation" (
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        result = builder.add_usd(stage, load_sites=False, schema_resolvers=[usd.SchemaResolverMjc()])
+        result = builder.add_usd(
+            stage,
+            load_sites=False,
+            schema_resolvers=[usd.SchemaResolverMjc()],
+            convert_mjc_equality_constraints=False,
+        )
         self.assertEqual(builder.body_count, 2)
         self.assertEqual(builder.joint_count, 2)
         self.assertEqual(builder.joint_type.count(newton.JointType.FREE), 2)
@@ -5547,14 +6000,14 @@ def Xform "Articulation" (
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage)
+        builder.add_usd(stage, convert_mjc_equality_constraints=False)
         model = builder.finalize()
 
         self.assertEqual(model.equality_constraint_count, 0)
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage, only_load_enabled_joints=False)
+        builder.add_usd(stage, only_load_enabled_joints=False, convert_mjc_equality_constraints=False)
         model = builder.finalize()
 
         self.assertEqual(model.equality_constraint_count, 1)
@@ -5602,7 +6055,12 @@ def Xform "Articulation" (
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        result = builder.add_usd(stage, load_sites=False, schema_resolvers=[usd.SchemaResolverMjc()])
+        result = builder.add_usd(
+            stage,
+            load_sites=False,
+            schema_resolvers=[usd.SchemaResolverMjc()],
+            convert_mjc_equality_constraints=False,
+        )
         self.assertEqual(builder.body_count, 2)
         self.assertEqual(builder.joint_count, 2)
         self.assertEqual(builder.joint_type.count(newton.JointType.FREE), 2)
@@ -5640,6 +6098,160 @@ def Xform "Articulation" (
             model.mujoco.eq_solimp.numpy()[weld_eq],
             np.array([0.9, 0.95, 0.001, 0.5, 2.0], dtype=np.float32),
         )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mjc_equality_conversion_roundtrips_to_mujoco(self):
+        """Converted USD MJC equalities recreate the same MuJoCo equality constraints."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        def build_stage():
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+            articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+            UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+            root = UsdGeom.Cube.Define(stage, "/World/Articulation/Root")
+            root.CreateSizeAttr(0.2)
+            UsdPhysics.RigidBodyAPI.Apply(root.GetPrim())
+            UsdPhysics.CollisionAPI.Apply(root.GetPrim())
+
+            link1 = UsdGeom.Cube.Define(stage, "/World/Articulation/Link1")
+            link1.CreateSizeAttr(0.2)
+            UsdPhysics.RigidBodyAPI.Apply(link1.GetPrim())
+            UsdPhysics.CollisionAPI.Apply(link1.GetPrim())
+
+            link2 = UsdGeom.Cube.Define(stage, "/World/Articulation/Link2")
+            link2.CreateSizeAttr(0.2)
+            UsdPhysics.RigidBodyAPI.Apply(link2.GetPrim())
+            UsdPhysics.CollisionAPI.Apply(link2.GetPrim())
+
+            fixed = UsdPhysics.FixedJoint.Define(stage, "/World/Articulation/RootToWorld")
+            fixed.CreateBody0Rel().SetTargets([root.GetPath()])
+            fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+            joint1 = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Joint1")
+            joint1.CreateBody0Rel().SetTargets([root.GetPath()])
+            joint1.CreateBody1Rel().SetTargets([link1.GetPath()])
+            joint1.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            joint1.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            joint1.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            joint1.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            joint1.CreateAxisAttr().Set("Z")
+
+            joint2 = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Joint2")
+            joint2.CreateBody0Rel().SetTargets([link1.GetPath()])
+            joint2.CreateBody1Rel().SetTargets([link2.GetPath()])
+            joint2.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            joint2.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            joint2.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            joint2.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            joint2.CreateAxisAttr().Set("Z")
+            joint2_prim = joint2.GetPrim()
+            joint2_prim.SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityJointAPI"]))
+            joint2_prim.CreateRelationship("mjc:target").SetTargets([joint1.GetPrim().GetPath()])
+            joint2_prim.CreateAttribute("mjc:coef0", Sdf.ValueTypeNames.Double).Set(0.5)
+            joint2_prim.CreateAttribute("mjc:coef1", Sdf.ValueTypeNames.Double).Set(1.5)
+            joint2_prim.CreateAttribute("mjc:coef2", Sdf.ValueTypeNames.Double).Set(0.1)
+            joint2_prim.CreateAttribute("mjc:coef3", Sdf.ValueTypeNames.Double).Set(0.05)
+            joint2_prim.CreateAttribute("mjc:coef4", Sdf.ValueTypeNames.Double).Set(0.02)
+            joint2_prim.CreateAttribute("mjc:solref", Sdf.ValueTypeNames.DoubleArray).Set([0.03, 0.8])
+            joint2_prim.CreateAttribute("mjc:solimp", Sdf.ValueTypeNames.DoubleArray).Set([0.6, 0.7, 0.004, 0.5, 1.5])
+
+            connect = UsdPhysics.SphericalJoint.Define(stage, "/World/Articulation/EqualityConnect")
+            connect.CreateBody0Rel().SetTargets([link1.GetPath()])
+            connect.CreateBody1Rel().SetTargets([link2.GetPath()])
+            connect.CreateLocalPos0Attr().Set(Gf.Vec3f(0.1, 0.2, 0.3))
+            connect.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            connect.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            connect.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            connect.CreateExcludeFromArticulationAttr().Set(True)
+            connect_prim = connect.GetPrim()
+            connect_prim.SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityConnectAPI"]))
+            connect_prim.CreateAttribute("mjc:solref", Sdf.ValueTypeNames.DoubleArray).Set([0.04, 0.7])
+            connect_prim.CreateAttribute("mjc:solimp", Sdf.ValueTypeNames.DoubleArray).Set([0.8, 0.9, 0.002, 0.6, 3.0])
+
+            sqrt_half = math.sqrt(0.5)
+            weld = UsdPhysics.FixedJoint.Define(stage, "/World/Articulation/EqualityWeld")
+            weld.CreateBody0Rel().SetTargets([link2.GetPath()])
+            weld.CreateLocalPos0Attr().Set(Gf.Vec3f(0.2, 0.3, 0.4))
+            weld.CreateLocalPos1Attr().Set(Gf.Vec3f(0.05, -0.1, 0.2))
+            weld.CreateLocalRot0Attr().Set(Gf.Quatf(sqrt_half, 0.0, 0.0, sqrt_half))
+            weld.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            weld.CreateExcludeFromArticulationAttr().Set(True)
+            weld.CreateJointEnabledAttr().Set(False)
+            weld_prim = weld.GetPrim()
+            weld_prim.SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityWeldAPI"]))
+            weld_prim.CreateAttribute("mjc:torqueScale", Sdf.ValueTypeNames.Float).Set(2.5)
+            weld_prim.CreateAttribute("mjc:solref", Sdf.ValueTypeNames.DoubleArray).Set([0.05, 1.2])
+            weld_prim.CreateAttribute("mjc:solimp", Sdf.ValueTypeNames.DoubleArray).Set([0.7, 0.8, 0.003, 0.4, 2.0])
+            return stage
+
+        legacy_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(legacy_builder)
+        legacy_builder.add_usd(
+            build_stage(),
+            only_load_enabled_joints=False,
+            convert_mjc_equality_constraints=False,
+        )
+        legacy_model = legacy_builder.finalize()
+        legacy_solver = SolverMuJoCo(legacy_model)
+
+        converted_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(converted_builder)
+        with self.assertWarnsRegex(UserWarning, "higher-order polycoef"):
+            converted_builder.add_usd(build_stage(), only_load_enabled_joints=False)
+        converted_model = converted_builder.finalize()
+        converted_solver = SolverMuJoCo(converted_model)
+
+        self.assertEqual(converted_model.equality_constraint_count, 3)
+        self.assertEqual(converted_model.constraint_mimic_count, 1)
+        eq_types = converted_model.equality_constraint_type.numpy()
+        target_kinds = converted_model.mujoco.equality_constraint_target_kind.numpy()
+        self.assertEqual(eq_types.tolist().count(int(newton.EqType.CONNECT)), 1)
+        self.assertEqual(eq_types.tolist().count(int(newton.EqType.WELD)), 1)
+        self.assertEqual(eq_types.tolist().count(int(newton.EqType.JOINT)), 1)
+        self.assertEqual(target_kinds.tolist().count(int(MjcEqualityTargetKind.JOINT)), 2)
+        self.assertEqual(target_kinds.tolist().count(int(MjcEqualityTargetKind.MIMIC)), 1)
+        joint_eq = int(np.flatnonzero(eq_types == int(newton.EqType.JOINT))[0])
+        self.assertEqual(target_kinds[joint_eq], int(MjcEqualityTargetKind.MIMIC))
+        np.testing.assert_allclose(
+            converted_model.equality_constraint_polycoef.numpy()[joint_eq],
+            np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
+        )
+
+        self.assertEqual(converted_solver.mj_model.neq, legacy_solver.mj_model.neq)
+
+        def equality_rows(solver):
+            rows = []
+            for i in range(solver.mj_model.neq):
+                rows.append(
+                    (
+                        int(solver.mj_model.eq_type[i]),
+                        bool(solver.mj_model.eq_active0[i]),
+                        int(solver.mj_model.eq_obj1id[i]),
+                        int(solver.mj_model.eq_obj2id[i]),
+                        np.array(solver.mj_model.eq_data[i], dtype=np.float32),
+                        np.array(solver.mj_model.eq_solref[i], dtype=np.float32),
+                        np.array(solver.mj_model.eq_solimp[i], dtype=np.float32),
+                    )
+                )
+            return sorted(rows, key=lambda row: (row[0], row[1], row[2], row[3], tuple(np.round(row[4], 8))))
+
+        for converted_row, legacy_row in zip(
+            equality_rows(converted_solver),
+            equality_rows(legacy_solver),
+            strict=True,
+        ):
+            self.assertEqual(converted_row[:4], legacy_row[:4])
+            np.testing.assert_allclose(converted_row[4], legacy_row[4], atol=1e-6)
+            np.testing.assert_allclose(converted_row[5], legacy_row[5], atol=1e-6)
+            np.testing.assert_allclose(converted_row[6], legacy_row[6], atol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_ordering_cycle_raises(self):
