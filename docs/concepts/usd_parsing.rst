@@ -588,6 +588,15 @@ schema covers two related but distinct concerns:
 Collision margin and gap are inherited from ``NewtonCollisionAPI`` and
 covered alongside the SDF mapping below.
 
+.. note::
+
+   ``NewtonSDFCollisionAPI`` and ``NewtonMeshCollisionAPI`` are **independent
+   collision representations** and should not be applied to the same prim. If
+   both are present, the importer emits a warning and uses the SDF
+   configuration. Because ``physics:approximation`` is inherited from
+   ``PhysicsMeshCollisionAPI``, it is a mesh-collider concept and is ignored
+   (with a warning) on prims that apply ``NewtonSDFCollisionAPI``.
+
 Newton's USD importer reads only the ``newton:*`` attributes. ``physx*:*``
 attributes are collected by the schema resolver (see :ref:`schema_resolvers`)
 but not applied. To make a PhysX-authored asset work in Newton, author the

@@ -2692,6 +2692,16 @@ def parse_usd(
                 # SDF parameters. Applying NewtonSDFCollisionAPI is the canonical
                 # signal that SDF generation is configured for this shape.
                 has_sdf_api = prim.HasAPI("NewtonSDFCollisionAPI")
+                # NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are independent
+                # collision representations and should not be co-applied. SDF wins
+                # when both are present.
+                if has_sdf_api and prim.HasAPI("NewtonMeshCollisionAPI"):
+                    warnings.warn(
+                        f"{prim.GetPath()}: NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are "
+                        f"independent collision representations and should not be co-applied; "
+                        f"SDF configuration will be used.",
+                        stacklevel=2,
+                    )
 
                 # Resolve target_voxel_size first because it overrides
                 # sdf_max_resolution and the two are mutually exclusive in
@@ -2974,16 +2984,25 @@ def parse_usd(
                     if not skip_mesh_approximation:
                         approximation = usd.get_attribute(prim, "physics:approximation", None)
                         if approximation is not None:
-                            remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
-                            if remeshing_method is None:
-                                if verbose:
-                                    print(
-                                        f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
-                                    )
+                            if has_sdf_api and approximation.lower() != "none":
+                                # physics:approximation belongs to PhysicsMeshCollisionAPI;
+                                # it has no meaning on a NewtonSDFCollisionAPI prim.
+                                warnings.warn(
+                                    f"{prim.GetPath()}: physics:approximation={approximation!r} is "
+                                    f"ignored on a shape with NewtonSDFCollisionAPI applied.",
+                                    stacklevel=2,
+                                )
                             else:
-                                if remeshing_method not in remeshing_queue:
-                                    remeshing_queue[remeshing_method] = []
-                                remeshing_queue[remeshing_method].append(shape_id)
+                                remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
+                                if remeshing_method is None:
+                                    if verbose:
+                                        print(
+                                            f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
+                                        )
+                                else:
+                                    if remeshing_method not in remeshing_queue:
+                                        remeshing_queue[remeshing_method] = []
+                                    remeshing_queue[remeshing_method].append(shape_id)
 
                 elif key == UsdPhysics.ObjectType.PlaneShape:
                     # Warp uses +Z convention for planes
