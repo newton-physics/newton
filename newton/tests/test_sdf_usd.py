@@ -17,7 +17,6 @@
 
 import tempfile
 import unittest
-import warnings
 from pathlib import Path
 
 import warp as wp
