@@ -8,7 +8,7 @@ from .kamino import SolverKamino
 from .mujoco import SolverMuJoCo
 from .semi_implicit import SolverSemiImplicit
 from .solver import SolverBase
-from .sph import SolverSPH
+from .sph import SolverPBF, SolverSPH
 from .style3d.solver_style3d import SolverStyle3D
 from .vbd import SolverVBD
 from .xpbd import SolverXPBD
@@ -21,6 +21,7 @@ __all__ = [
     "SolverMuJoCo",
     "SolverNotifyFlags",
     "SolverSemiImplicit",
+    "SolverPBF",
     "SolverSPH",
     "SolverStyle3D",
     "SolverVBD",
