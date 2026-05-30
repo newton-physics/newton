@@ -3495,6 +3495,55 @@ class SolverMuJoCo(SolverBase):
             device=model.device,
         )
 
+    @staticmethod
+    def _quat_wxyz_to_rotmat(q: np.ndarray) -> np.ndarray:
+        q = np.asarray(q, dtype=np.float64)
+        q_norm = np.linalg.norm(q)
+        if q_norm == 0.0:
+            return np.eye(3, dtype=np.float64)
+        w, x, y, z = q / q_norm
+        return np.array(
+            [
+                [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+                [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+                [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+            ],
+            dtype=np.float64,
+        )
+
+    def _update_mjc_cpu_body_inertias(self) -> None:
+        """Synchronize CPU MuJoCo inertia without needlessly changing inertia frames."""
+        if self.mjc_body_to_newton is None:
+            return
+
+        mjc_body_to_newton = self.mjc_body_to_newton.numpy()[0]
+        newton_body_inertia = self.model.body_inertia.numpy()
+        mjw_body_inertia = self.mjw_model.body_inertia.numpy()[0]
+        mjw_body_iquat = self.mjw_model.body_iquat.numpy()[0]
+
+        for mjc_body, newton_body in enumerate(mjc_body_to_newton):
+            if newton_body < 0:
+                continue
+
+            desired_inertia = np.asarray(newton_body_inertia[newton_body], dtype=np.float64)
+            current_inertia = np.asarray(self.mj_model.body_inertia[mjc_body], dtype=np.float64)
+            current_frame = self._quat_wxyz_to_rotmat(self.mj_model.body_iquat[mjc_body])
+            current_tensor = current_frame @ np.diag(current_inertia) @ current_frame.T
+
+            tensor_scale = max(float(np.max(np.abs(desired_inertia))), 1.0)
+            tensor_atol = 1.0e-6 * tensor_scale
+            if np.allclose(current_tensor, desired_inertia, rtol=1.0e-5, atol=tensor_atol):
+                continue
+
+            desired_in_current_frame = current_frame.T @ desired_inertia @ current_frame
+            offdiag = desired_in_current_frame - np.diag(np.diag(desired_in_current_frame))
+            if np.max(np.abs(offdiag)) <= tensor_atol:
+                self.mj_model.body_inertia[mjc_body] = np.diag(desired_in_current_frame)
+                continue
+
+            self.mj_model.body_inertia[mjc_body] = mjw_body_inertia[mjc_body]
+            self.mj_model.body_iquat[mjc_body] = mjw_body_iquat[mjc_body]
+
     @override
     def notify_model_changed(self, flags: int) -> None:
         need_const_fixed = False
@@ -3562,17 +3611,7 @@ class SolverMuJoCo(SolverBase):
                 self.mj_model.body_ipos[:] = self.mjw_model.body_ipos.numpy()[0]
                 self.mj_model.body_mass[:] = self.mjw_model.body_mass.numpy()[0]
                 self.mj_model.body_gravcomp[:] = self.mjw_model.body_gravcomp.numpy()[0]
-                self.mj_model.body_inertia[:] = self.mjw_model.body_inertia.numpy()[0]
-                # Do not overwrite ``mj_model.body_iquat``: MuJoCo's compiler
-                # picks a canonical principal-axes basis (including a stable
-                # choice in degenerate sub-spaces of repeated eigenvalues) and
-                # the C solver's internal state is consistent with it. Newton's
-                # ``wp.eig3()`` may return an arbitrary valid basis for
-                # repeated eigenvalues, and replacing the compiled basis at
-                # runtime can destabilise stiff constraints (e.g. WELD loops
-                # on thin rods). Mass/density randomization scales principal
-                # moments without rotating the principal-axes frame, so the
-                # compiled ``body_iquat`` remains correct.
+                self._update_mjc_cpu_body_inertias()
             if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
                 self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
                 self.mj_model.dof_frictionloss[:] = self.mjw_model.dof_frictionloss.numpy()[0]
