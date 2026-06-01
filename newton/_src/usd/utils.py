@@ -19,7 +19,7 @@ from ..sim.model import Model
 from ..utils.color import color_linear_to_srgb
 from ..utils.texture import linear_texture_to_srgb, load_texture
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("newton")
 
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency

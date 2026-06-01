@@ -46,7 +46,7 @@ from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManage
 from ..usd.schemas import SchemaResolverNewton
 from .import_utils import should_show_collider
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("newton")
 
 AttributeFrequency = Model.AttributeFrequency
 
