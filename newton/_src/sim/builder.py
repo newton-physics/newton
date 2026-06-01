@@ -1228,13 +1228,10 @@ class ModelBuilder:
         self.actuator_entries: dict[tuple, ModelBuilder.ActuatorEntry] = {}
         """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by controller class and shared params."""
 
-        # Deprecation shim: while ``Model.equality_constraint_*`` properties are being phased out
-        # (removal in a future release), auto-register the namespaced equality-constraint CustomAttributes
-        # so users that never call ``SolverMuJoCo.register_custom_attributes`` still get
-        # ``model.mujoco.equality_constraint_*`` populated. The declaration lives with the other
-        # MuJoCo equality helpers; lazy-import it to keep ``ModelBuilder`` construction free of
-        # solver imports. Once the legacy properties are removed, delete this call and let
-        # ``SolverMuJoCo.register_custom_attributes`` be the sole registration site.
+        # Deprecation shim (removal in a future release): auto-register the namespaced
+        # equality-constraint attributes so models built without ``SolverMuJoCo`` still expose
+        # ``model.mujoco.equality_constraint_*``. Lazy-import keeps ``ModelBuilder`` construction
+        # free of solver imports.
         from ..solvers.mujoco.equality import _register_equality_constraint_attributes  # noqa: PLC0415
 
         _register_equality_constraint_attributes(self)
