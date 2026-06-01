@@ -36,8 +36,8 @@ dependencies = [
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp>=3.8.0.3,~=3.8.0",  # MuJoCo, warp-accelerated (3.8.0 was broken)
-    "mujoco~=3.8.0",        # MuJoCo physics engine
+    "mujoco-warp~=3.9.0,>=3.9.0.1",  # MuJoCo, warp-accelerated
+    "mujoco~=3.9.0",        # MuJoCo physics engine
     "newton-actuators>=0.1.0",  # deprecated — kept for backward compat, will be removed
 ]
 

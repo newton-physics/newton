@@ -43,7 +43,7 @@ from ..solvers.mujoco.utils import (
 )
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
-from ..usd.schemas import SchemaResolverNewton
+from ..usd.schemas import SchemaResolverNewton, _legacy_margin_gap_scope
 from .import_utils import should_show_collider
 
 logger = logging.getLogger("newton")
@@ -99,6 +99,7 @@ def parse_usd(
     force_position_velocity_actuation: bool = False,
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
+    legacy_margin_gap: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
 
@@ -227,6 +228,10 @@ def parse_usd(
             :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
             damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+        legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
+            where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
+            Use for USD files authored against MuJoCo <= 3.8. Defaults to
+            False (identity translation matching MuJoCo 3.9 semantics).
 
     Returns:
         The returned mapping has the following entries:
@@ -272,6 +277,77 @@ def parse_usd(
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
 
+    # Activate the legacy margin/gap scope for the duration of this parse so
+    # that _mjc_margin_from_prim applies the pre-MuJoCo-3.9 subtraction when
+    # requested.  We enter/exit manually to avoid reindenting the entire
+    # function body.
+    _margin_scope = _legacy_margin_gap_scope(legacy_margin_gap)
+    _margin_scope.__enter__()
+    try:
+        return _parse_usd_body(
+            builder=builder,
+            source=source,
+            xform=xform,
+            floating=floating,
+            base_joint=base_joint,
+            parent_body=parent_body,
+            only_load_enabled_rigid_bodies=only_load_enabled_rigid_bodies,
+            only_load_enabled_joints=only_load_enabled_joints,
+            joint_drive_gains_scaling=joint_drive_gains_scaling,
+            verbose=verbose,
+            ignore_paths=ignore_paths,
+            collapse_fixed_joints=collapse_fixed_joints,
+            enable_self_collisions=enable_self_collisions,
+            apply_up_axis_from_stage=apply_up_axis_from_stage,
+            root_path=root_path,
+            joint_ordering=joint_ordering,
+            bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+            skip_mesh_approximation=skip_mesh_approximation,
+            load_sites=load_sites,
+            load_visual_shapes=load_visual_shapes,
+            hide_collision_shapes=hide_collision_shapes,
+            force_show_colliders=force_show_colliders,
+            parse_mujoco_options=parse_mujoco_options,
+            mesh_maxhullvert=mesh_maxhullvert,
+            schema_resolvers=schema_resolvers,
+            force_position_velocity_actuation=force_position_velocity_actuation,
+            override_root_xform=override_root_xform,
+        )
+    finally:
+        _margin_scope.__exit__(None, None, None)
+
+
+def _parse_usd_body(
+    builder: ModelBuilder,
+    source,
+    *,
+    xform,
+    floating,
+    base_joint,
+    parent_body,
+    only_load_enabled_rigid_bodies,
+    only_load_enabled_joints,
+    joint_drive_gains_scaling,
+    verbose,
+    ignore_paths,
+    collapse_fixed_joints,
+    enable_self_collisions,
+    apply_up_axis_from_stage,
+    root_path,
+    joint_ordering,
+    bodies_follow_joint_ordering,
+    skip_mesh_approximation,
+    load_sites,
+    load_visual_shapes,
+    hide_collision_shapes,
+    force_show_colliders,
+    parse_mujoco_options,
+    mesh_maxhullvert,
+    schema_resolvers,
+    force_position_velocity_actuation,
+    override_root_xform,
+):
+    """Inner implementation of parse_usd, called after scope setup."""
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
 

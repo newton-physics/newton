@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import math
 import warnings
 from collections.abc import Sequence
@@ -285,27 +287,58 @@ def _solref_to_damping_per_rad(solref: Sequence[float] | None) -> float | None:
     return d * _RAD_PER_DEG if d is not None else None
 
 
+# Task-local flag toggled by ``parse_usd`` to opt into the pre-MuJoCo-3.9
+# margin/gap translation. A ContextVar is used so concurrent ``parse_usd`` calls
+# in different threads or asyncio tasks don't flip each other's mode mid-parse.
+# The USD schema registration system caches one getter function per attribute,
+# so per-call parameterization needs an out-of-band channel; this is it.
+_LEGACY_MJC_MARGIN_GAP: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_LEGACY_MJC_MARGIN_GAP",
+    default=False,
+)
+
+
+def _legacy_margin_gap_scope(enabled: bool):
+    """Context manager toggling the legacy MuJoCo margin/gap translation."""
+
+    @contextlib.contextmanager
+    def _scope():
+        token = _LEGACY_MJC_MARGIN_GAP.set(enabled)
+        try:
+            yield
+        finally:
+            _LEGACY_MJC_MARGIN_GAP.reset(token)
+
+    return _scope()
+
+
 def _mjc_margin_from_prim(prim: Usd.Prim) -> float | None:
-    """Compute Newton margin from MuJoCo: margin - gap [m].
+    """Return Newton shape_margin from a USD prim's ``mjc:margin`` attribute.
 
-    MuJoCo uses ``margin`` as the full contact detection envelope and ``gap``
-    as a sub-threshold that suppresses constraint activation.  Newton stores
-    them separately, so: ``newton_margin = mjc_margin - mjc_gap``.
+    Under MuJoCo 3.9 semantics, ``mjc:margin`` and Newton's ``shape_margin``
+    have the same meaning (surface-thickness / force-generation threshold);
+    this function is therefore an identity passthrough.
 
-    Returns None if the MuJoCo margin attribute is not authored.
+    When ``_LEGACY_MJC_MARGIN_GAP`` is True (via
+    ``_legacy_margin_gap_scope(True)``), the pre-3.9 translation
+    ``newton_margin = mjc_margin - mjc_gap`` is applied for backward
+    compatibility with files authored against MuJoCo <= 3.8.
+
+    Returns None if ``mjc:margin`` is not authored.
     """
     mjc_margin = usd.get_attribute(prim, "mjc:margin")
     if mjc_margin is None:
         return None
+    if not _LEGACY_MJC_MARGIN_GAP.get():
+        return float(mjc_margin)
     mjc_gap = usd.get_attribute(prim, "mjc:gap")
     if mjc_gap is None:
         mjc_gap = 0.0
     result = float(mjc_margin) - float(mjc_gap)
     if result < 0.0:
         warnings.warn(
-            f"Prim '{prim.GetPath()}': MuJoCo gap ({mjc_gap}) exceeds margin ({mjc_margin}), "
-            f"resulting Newton margin is negative ({result}). "
-            f"This may indicate an invalid MuJoCo model.",
+            f"Prim '{prim.GetPath()}': legacy translation yields negative "
+            f"margin (mjc_margin={mjc_margin}, mjc_gap={mjc_gap}).",
             stacklevel=4,
         )
     return result
@@ -348,8 +381,9 @@ class SchemaResolverMjc(SchemaResolver):
         PrimType.SHAPE: {
             # Mesh
             "max_hull_vertices": SchemaAttribute("mjc:maxhullvert", -1),
-            # Collisions: MuJoCo -> Newton conversion applied via getter.
-            # newton_margin = mjc_margin - mjc_gap (see _mjc_margin_from_prim).
+            # Collisions: MuJoCo -> Newton conversion via getter. Default is
+            # identity (MuJoCo 3.9 semantics). Legacy `mjc_margin - mjc_gap`
+            # translation activates via _legacy_margin_gap_scope.
             "margin": SchemaAttribute(
                 "mjc:margin",
                 0.0,

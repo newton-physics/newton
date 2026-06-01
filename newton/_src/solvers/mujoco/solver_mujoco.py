@@ -2318,17 +2318,20 @@ class SolverMuJoCo(SolverBase):
             authored_margin = float(pair_margin[i]) if pair_margin is not None else 0.0
             authored_gap = float(pair_gap[i]) if pair_gap is not None else 0.0
             if self._zero_margins_for_native_ccd:
-                # Zeroed in the spec for NATIVECCD/MULTICCD compatibility (#2106).
-                # When use_mujoco_contacts=False, real values are written back
-                # at runtime via notify_model_changed -> _update_pair_properties().
+                # mujoco_warp's NATIVECCD/MULTICCD pipelines reject non-zero
+                # margin at put_model() time (#2106). gap is unrestricted
+                # under MuJoCo 3.9 (gap no longer affects force generation),
+                # so we forward authored values.
                 pair_kwargs["margin"] = 0.0
-                pair_kwargs["gap"] = 0.0
-                if self._use_mujoco_contacts and (authored_margin > 0.0 or authored_gap > 0.0):
+                if pair_gap is not None:
+                    pair_kwargs["gap"] = authored_gap
+                if self._use_mujoco_contacts and authored_margin > 0.0:
                     warnings.warn(
-                        f"Pair ({geom_name1}, {geom_name2}): authored margin={authored_margin}, "
-                        f"gap={authored_gap} zeroed for NATIVECCD/MULTICCD compatibility (#2106). "
-                        f"To honor these values, switch to Newton's collision pipeline by "
-                        f"constructing the solver with use_mujoco_contacts=False and feeding "
+                        f"Pair ({geom_name1}, {geom_name2}): authored margin="
+                        f"{authored_margin} zeroed for NATIVECCD/MULTICCD "
+                        f"compatibility (#2106). To honor this value, switch "
+                        f"to Newton's collision pipeline by constructing the "
+                        f"solver with use_mujoco_contacts=False and feeding "
                         f"Newton-generated contacts into step().",
                         stacklevel=2,
                     )
@@ -4476,6 +4479,7 @@ class SolverMuJoCo(SolverBase):
         shape_mu_torsional = model.shape_material_mu_torsional.numpy()
         shape_mu_rolling = model.shape_material_mu_rolling.numpy()
         shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
 
         # retrieve MuJoCo-specific attributes
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -4949,8 +4953,8 @@ class SolverMuJoCo(SolverBase):
                     geom_params["solimp"] = shape_geom_solimp[shape]
                 if shape_geom_solmix is not None:
                     geom_params["solmix"] = shape_geom_solmix[shape]
-                # Newton does not use the MuJoCo `gap` concept, always zero.
-                geom_params["gap"] = 0.0
+                # MuJoCo 3.9 gap semantics match Newton's shape_gap; forward it.
+                geom_params["gap"] = float(shape_gap[shape])
                 authored_margin = float(shape_margin[shape])
                 if self._zero_margins_for_native_ccd:
                     # Zeroed in the spec for NATIVECCD/MULTICCD compatibility (#2106).
@@ -6945,6 +6949,7 @@ class SolverMuJoCo(SolverBase):
                 shape_geom_solimp,
                 shape_geom_solmix,
                 self.model.shape_margin,
+                self.model.shape_gap,
                 int(self._use_mujoco_contacts and self._zero_margins_for_native_ccd),
             ],
             outputs=[
@@ -7149,12 +7154,19 @@ class SolverMuJoCo(SolverBase):
         pair_solref = getattr(mujoco_attrs, "pair_solref", None)
         pair_solreffriction = getattr(mujoco_attrs, "pair_solreffriction", None)
         pair_solimp = getattr(mujoco_attrs, "pair_solimp", None)
-        # Restore pair margin/gap at runtime when Newton is handling contacts.
-        # Spec-level values only carry template-world data (MuJoCo replicates the
-        # template pair across worlds), so the kernel applies per-world variance.
-        # When MuJoCo handles contacts, keep margins at zero for NATIVECCD compat (#2106).
-        pair_margin = None if self._use_mujoco_contacts else getattr(mujoco_attrs, "pair_margin", None)
-        pair_gap = None if self._use_mujoco_contacts else getattr(mujoco_attrs, "pair_gap", None)
+        # Restore pair margin/gap at runtime so per-world variance reaches MuJoCo
+        # (spec-level values only carry template-world data; MuJoCo replicates the
+        # template pair across worlds). pair_margin is only suppressed when the
+        # NATIVECCD/MULTICCD upstream restriction is active (#2106); otherwise
+        # runtime updates flow through. pair_gap is always forwarded under
+        # MuJoCo 3.9 semantics (gap is accepted by put_model and used by the
+        # broadphase / CCD detection envelope).
+        pair_margin = (
+            None
+            if (self._use_mujoco_contacts and self._zero_margins_for_native_ccd)
+            else getattr(mujoco_attrs, "pair_margin", None)
+        )
+        pair_gap = getattr(mujoco_attrs, "pair_gap", None)
         pair_friction = getattr(mujoco_attrs, "pair_friction", None)
 
         # Only launch kernel if at least one attribute is defined
