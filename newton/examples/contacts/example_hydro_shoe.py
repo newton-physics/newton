@@ -74,22 +74,15 @@ PARAM_UPPER_FRACTION = 8
 PARAM_HYDRO_FORCE_SCALE = 9
 STATS_LAST_FORCE_N = 0
 STATS_PEAK_FORCE_N = 1
-STATS_LAST_PLATE_TORQUE_NM = 2
-STATS_LAST_ELASTIC_ENERGY_J = 3
-STATS_PEAK_ELASTIC_ENERGY_J = 4
-STATS_LAST_DISSIPATED_ENERGY_J = 5
+STATS_LAST_ELASTIC_ENERGY_J = 2
+STATS_PEAK_ELASTIC_ENERGY_J = 3
+STATS_LAST_DISSIPATED_ENERGY_J = 4
 SURFACE_TOP_AREA = 0
 SURFACE_TOP_DISP_AREA = 1
 SURFACE_TOP_VEL_AREA = 2
 SURFACE_GROUND_AREA = 3
 SURFACE_GROUND_DISP_AREA = 4
 SURFACE_GROUND_VEL_AREA = 5
-PLATE_ACCUM_REAR_DISP = 0
-PLATE_ACCUM_REAR_COUNT = 1
-PLATE_ACCUM_REAR_Y = 2
-PLATE_ACCUM_FORE_DISP = 3
-PLATE_ACCUM_FORE_COUNT = 4
-PLATE_ACCUM_FORE_Y = 5
 
 
 def _kim_material_to_foundation(material: KimHyperfoamMaterial, damping_pa_s: float) -> FoundationMaterial:
@@ -368,14 +361,12 @@ def apply_non_contact_forces_kernel(
     midsole_mass: float,
     gravity: float,
     ext_force: float,
-    plate_torque: wp.array[float],
     kinematic: int,
 ):
-    # Foot body: apply gravity, external force, and plate torque (if not kinematic)
+    # Foot body: apply gravity and the vertical test load in dynamic mode.
     if kinematic == 0:
         foot_grav = foot_mass * gravity - ext_force
-        torque = wp.vec3(plate_torque[0], plate_torque[1], plate_torque[2])
-        body_f[foot_body_id] = wp.spatial_vector(wp.vec3(0.0, 0.0, foot_grav), torque)
+        body_f[foot_body_id] = wp.spatial_vector(wp.vec3(0.0, 0.0, foot_grav), wp.vec3(0.0))
     else:
         body_f[foot_body_id] = wp.spatial_vector(wp.vec3(0.0), wp.vec3(0.0))
 
@@ -385,15 +376,13 @@ def apply_non_contact_forces_kernel(
 
 
 @wp.kernel
-def accumulate_hydro_surface_state_kernel(
+def accumulate_bottom_hydro_state_kernel(
     points: wp.array[wp.vec3f],
     depths: wp.array[wp.float32],
     shape_pairs: wp.array[wp.vec2i],
     face_count_ptr: wp.array[wp.int32],
-    foot_shape_idx: int,
     midsole_shape_idx: int,
     ground_shape_idx: int,
-    foot_body_idx: int,
     midsole_body_idx: int,
     body_com: wp.array[wp.vec3],
     body_q: wp.array[wp.transform],
@@ -408,21 +397,11 @@ def accumulate_hydro_surface_state_kernel(
         return
 
     pair = shape_pairs[tid]
-    is_foot_midsole = False
-    is_midsole_ground = False
-
-    if (pair[0] == foot_shape_idx and pair[1] == midsole_shape_idx) or (
-        pair[1] == foot_shape_idx and pair[0] == midsole_shape_idx
-    ):
-        is_foot_midsole = True
-    elif (pair[0] == midsole_shape_idx and pair[1] == ground_shape_idx) or (
+    is_midsole_ground = (pair[0] == midsole_shape_idx and pair[1] == ground_shape_idx) or (
         pair[1] == midsole_shape_idx and pair[0] == ground_shape_idx
-    ):
-        is_midsole_ground = True
+    )
 
-    if not is_foot_midsole and not is_midsole_ground:
-        return
-    if is_foot_midsole:
+    if not is_midsole_ground:
         return
 
     v0 = wp.vec3(points[3 * tid])
@@ -452,18 +431,14 @@ def accumulate_hydro_surface_state_kernel(
     if nearest == -1:
         return
 
-    comp_vel = float(0.0)
-    if is_foot_midsole:
-        return
-    else:
-        midsole_com = wp.transform_point(body_q[midsole_body_idx], body_com[midsole_body_idx])
-        qd_midsole = body_qd[midsole_body_idx]
-        v_midsole_c = wp.spatial_top(qd_midsole) + wp.cross(wp.spatial_bottom(qd_midsole), centroid - midsole_com)
-        comp_vel = -wp.dot(v_midsole_c, normal)
+    midsole_com = wp.transform_point(body_q[midsole_body_idx], body_com[midsole_body_idx])
+    qd_midsole = body_qd[midsole_body_idx]
+    v_midsole_c = wp.spatial_top(qd_midsole) + wp.cross(wp.spatial_bottom(qd_midsole), centroid - midsole_com)
+    comp_vel = -wp.dot(v_midsole_c, normal)
 
-        wp.atomic_add(surface_state, nearest * 6 + SURFACE_GROUND_AREA, area)
-        wp.atomic_add(surface_state, nearest * 6 + SURFACE_GROUND_DISP_AREA, displacement * area)
-        wp.atomic_add(surface_state, nearest * 6 + SURFACE_GROUND_VEL_AREA, comp_vel * area)
+    wp.atomic_add(surface_state, nearest * 6 + SURFACE_GROUND_AREA, area)
+    wp.atomic_add(surface_state, nearest * 6 + SURFACE_GROUND_DISP_AREA, displacement * area)
+    wp.atomic_add(surface_state, nearest * 6 + SURFACE_GROUND_VEL_AREA, comp_vel * area)
 
 
 @wp.kernel
@@ -494,6 +469,7 @@ def accumulate_bonded_top_state_kernel(
     comp_vel = midsole_vz - foot_vz
     area = spacing_m * spacing_m
 
+    # The top interface is a bonded spring-grid constraint, not an SDF contact surface.
     wp.atomic_add(surface_state, spring * 6 + SURFACE_TOP_AREA, area)
     wp.atomic_add(surface_state, spring * 6 + SURFACE_TOP_DISP_AREA, displacement * area)
     wp.atomic_add(surface_state, spring * 6 + SURFACE_TOP_VEL_AREA, comp_vel * area)
@@ -501,15 +477,13 @@ def accumulate_bonded_top_state_kernel(
 
 
 @wp.kernel
-def evaluate_hydroelastic_ogden_kernel(
+def evaluate_bottom_hydroelastic_ogden_kernel(
     points: wp.array[wp.vec3f],  # World-space positions of contact surface triangle vertices (3 per face)
     depths: wp.array[wp.float32],  # Penetration depth at each face centroid
     shape_pairs: wp.array[wp.vec2i],  # Shape pair indices (shape_a, shape_b) for each face
     face_count_ptr: wp.array[wp.int32],  # Active face count
-    foot_shape_idx: int,
     midsole_shape_idx: int,
     ground_shape_idx: int,
-    foot_body_idx: int,
     midsole_body_idx: int,
     body_com: wp.array[wp.vec3],
     body_q: wp.array[wp.transform],
@@ -524,8 +498,6 @@ def evaluate_hydroelastic_ogden_kernel(
     energy_out: wp.array[float],
     dissipated_energy_total_out: wp.array[float],
     sim_dt: float,
-    foot_displacement_out: wp.array[float],
-    foot_pressure_kpa_out: wp.array[float],
     ground_displacement_out: wp.array[float],
     ground_pressure_kpa_out: wp.array[float],
     stack_displacement_out: wp.array[float],
@@ -536,21 +508,14 @@ def evaluate_hydroelastic_ogden_kernel(
     if tid >= face_count:
         return
 
-    # Filter for contact pair
+    # Filter for bottom hydroelastic contact only. The top interface is applied by
+    # apply_bonded_top_forces_kernel() from the spring-grid state.
     pair = shape_pairs[tid]
-    is_foot_midsole = False
-    is_midsole_ground = False
-
-    if (pair[0] == foot_shape_idx and pair[1] == midsole_shape_idx) or (
-        pair[1] == foot_shape_idx and pair[0] == midsole_shape_idx
-    ):
-        is_foot_midsole = True
-    elif (pair[0] == midsole_shape_idx and pair[1] == ground_shape_idx) or (
+    is_midsole_ground = (pair[0] == midsole_shape_idx and pair[1] == ground_shape_idx) or (
         pair[1] == midsole_shape_idx and pair[0] == ground_shape_idx
-    ):
-        is_midsole_ground = True
+    )
 
-    if not is_foot_midsole and not is_midsole_ground:
+    if not is_midsole_ground:
         return
 
     # 1. Retrieve triangle vertices and calculate centroid, normal, and area
@@ -604,34 +569,12 @@ def evaluate_hydroelastic_ogden_kernel(
     strain = wp.clamp(stack_displacement / slack, 0.0, 0.99)
 
     # 3. Calculate compressive velocity at contact point
-    comp_vel = float(0.0)
-    if is_foot_midsole:
-        foot_com = wp.transform_point(body_q[foot_body_idx], body_com[foot_body_idx])
-        midsole_com = wp.transform_point(body_q[midsole_body_idx], body_com[midsole_body_idx])
-
-        qd_foot = body_qd[foot_body_idx]
-        w_foot = wp.spatial_bottom(qd_foot)
-        v_foot = wp.spatial_top(qd_foot)
-
-        qd_midsole = body_qd[midsole_body_idx]
-        w_midsole = wp.spatial_bottom(qd_midsole)
-        v_midsole = wp.spatial_top(qd_midsole)
-
-        v_foot_c = v_foot + wp.cross(w_foot, centroid - foot_com)
-        v_midsole_c = v_midsole + wp.cross(w_midsole, centroid - midsole_com)
-
-        v_rel = v_foot_c - v_midsole_c
-        comp_vel = -wp.dot(v_rel, normal)
-    else:
-        # Midsole-ground contact (ground is static)
-        midsole_com = wp.transform_point(body_q[midsole_body_idx], body_com[midsole_body_idx])
-
-        qd_midsole = body_qd[midsole_body_idx]
-        w_midsole = wp.spatial_bottom(qd_midsole)
-        v_midsole = wp.spatial_top(qd_midsole)
-
-        v_midsole_c = v_midsole + wp.cross(w_midsole, centroid - midsole_com)
-        comp_vel = -wp.dot(v_midsole_c, normal)
+    midsole_com = wp.transform_point(body_q[midsole_body_idx], body_com[midsole_body_idx])
+    qd_midsole = body_qd[midsole_body_idx]
+    w_midsole = wp.spatial_bottom(qd_midsole)
+    v_midsole = wp.spatial_top(qd_midsole)
+    v_midsole_c = v_midsole + wp.cross(w_midsole, centroid - midsole_com)
+    comp_vel = -wp.dot(v_midsole_c, normal)
 
     # 4. Evaluate contact stress and force
     if stack_comp_vel != 0.0:
@@ -641,55 +584,30 @@ def evaluate_hydroelastic_ogden_kernel(
     force_magnitude = stress * area * wp.max(params[PARAM_HYDRO_FORCE_SCALE], 0.0)
     force_vec = normal * force_magnitude
 
-    # 5. Apply forces and torques to the bodies
-    if is_foot_midsole:
-        foot_com = wp.transform_point(body_q[foot_body_idx], body_com[foot_body_idx])
-        midsole_com = wp.transform_point(body_q[midsole_body_idx], body_com[midsole_body_idx])
+    # 5. Apply bottom contact force: midsole-ground contact pushes the midsole up.
+    r_midsole = centroid - midsole_com
+    wp.atomic_add(body_f, midsole_body_idx, wp.spatial_vector(force_vec, wp.cross(r_midsole, force_vec)))
 
-        r_foot = centroid - foot_com
-        r_midsole = centroid - midsole_com
+    # Accumulate to wrench_out for stats (midsole-ground contact)
+    wp.atomic_add(wrench_out, 0, force_vec[0])
+    wp.atomic_add(wrench_out, 1, force_vec[1])
+    wp.atomic_add(wrench_out, 2, force_vec[2])
 
-        # Push foot UP (+force_vec), push midsole DOWN (-force_vec)
-        wp.atomic_add(body_f, foot_body_idx, wp.spatial_vector(force_vec, wp.cross(r_foot, force_vec)))
-        wp.atomic_sub(body_f, midsole_body_idx, wp.spatial_vector(force_vec, wp.cross(r_midsole, force_vec)))
+    torque = wp.cross(r_midsole, force_vec)
+    wp.atomic_add(wrench_out, 3, torque[0])
+    wp.atomic_add(wrench_out, 4, torque[1])
+    wp.atomic_add(wrench_out, 5, torque[2])
 
-        dissipated_energy = evaluate_dissipated_energy_rate(strain, comp_vel, area, params) * sim_dt * coupled_energy_scale
-        wp.atomic_add(energy_out, 0, evaluate_elastic_energy(stack_displacement, slack, area, params) * coupled_energy_scale)
-        wp.atomic_add(energy_out, 2, dissipated_energy)
-        wp.atomic_add(dissipated_energy_total_out, 0, dissipated_energy)
+    dissipated_energy = evaluate_dissipated_energy_rate(strain, comp_vel, area, params) * sim_dt * coupled_energy_scale
+    wp.atomic_add(energy_out, 1, evaluate_elastic_energy(stack_displacement, slack, area, params) * coupled_energy_scale)
+    wp.atomic_add(energy_out, 3, dissipated_energy)
+    wp.atomic_add(dissipated_energy_total_out, 0, dissipated_energy)
 
-        if nearest != -1:
-            wp.atomic_max(foot_displacement_out, nearest, displacement)
-            wp.atomic_max(foot_pressure_kpa_out, nearest, stress * 0.001)
-            wp.atomic_max(stack_displacement_out, nearest, stack_displacement)
-            wp.atomic_max(stack_pressure_kpa_out, nearest, stress * 0.001)
-    else:
-        # Midsole-ground contact: push midsole UP
-        midsole_com = wp.transform_point(body_q[midsole_body_idx], body_com[midsole_body_idx])
-        r_midsole = centroid - midsole_com
-
-        wp.atomic_add(body_f, midsole_body_idx, wp.spatial_vector(force_vec, wp.cross(r_midsole, force_vec)))
-
-        # Accumulate to wrench_out for stats (midsole-ground contact)
-        wp.atomic_add(wrench_out, 0, force_vec[0])
-        wp.atomic_add(wrench_out, 1, force_vec[1])
-        wp.atomic_add(wrench_out, 2, force_vec[2])
-
-        torque = wp.cross(r_midsole, force_vec)
-        wp.atomic_add(wrench_out, 3, torque[0])
-        wp.atomic_add(wrench_out, 4, torque[1])
-        wp.atomic_add(wrench_out, 5, torque[2])
-
-        dissipated_energy = evaluate_dissipated_energy_rate(strain, comp_vel, area, params) * sim_dt * coupled_energy_scale
-        wp.atomic_add(energy_out, 1, evaluate_elastic_energy(stack_displacement, slack, area, params) * coupled_energy_scale)
-        wp.atomic_add(energy_out, 3, dissipated_energy)
-        wp.atomic_add(dissipated_energy_total_out, 0, dissipated_energy)
-
-        if nearest != -1:
-            wp.atomic_max(ground_displacement_out, nearest, displacement)
-            wp.atomic_max(ground_pressure_kpa_out, nearest, stress * 0.001)
-            wp.atomic_max(stack_displacement_out, nearest, stack_displacement)
-            wp.atomic_max(stack_pressure_kpa_out, nearest, stress * 0.001)
+    if nearest != -1:
+        wp.atomic_max(ground_displacement_out, nearest, displacement)
+        wp.atomic_max(ground_pressure_kpa_out, nearest, stress * 0.001)
+        wp.atomic_max(stack_displacement_out, nearest, stack_displacement)
+        wp.atomic_max(stack_pressure_kpa_out, nearest, stress * 0.001)
 
 
 @wp.kernel
@@ -769,82 +687,6 @@ def apply_bonded_top_forces_kernel(
 
 
 @wp.kernel
-def accumulate_plate_bending_kernel(
-    grid_xy: wp.array[wp.vec2],
-    top_m: wp.array[float],
-    foot_sole_z_m: wp.array[float],
-    foot_contact_valid: wp.array[wp.int32],
-    slack_length_m: wp.array[float],
-    spring_count: int,
-    body_z: float,
-    start_z: float,
-    rear_cut_y: float,
-    fore_cut_y: float,
-    accum: wp.array[float],
-):
-    spring = wp.tid()
-    if spring >= spring_count:
-        return
-    if foot_contact_valid[spring] == 0:
-        return
-
-    xy = grid_xy[spring]
-    y = xy[1]
-    if y >= rear_cut_y and y <= fore_cut_y:
-        return
-
-    top_rest_world = start_z + top_m[spring]
-    foot_sole_world = body_z + foot_sole_z_m[spring]
-    displacement = wp.clamp(top_rest_world - foot_sole_world, 0.0, wp.max(slack_length_m[spring], 1.0e-6))
-
-    if y < rear_cut_y:
-        wp.atomic_add(accum, PLATE_ACCUM_REAR_DISP, displacement)
-        wp.atomic_add(accum, PLATE_ACCUM_REAR_COUNT, 1.0)
-        wp.atomic_add(accum, PLATE_ACCUM_REAR_Y, y)
-    else:
-        wp.atomic_add(accum, PLATE_ACCUM_FORE_DISP, displacement)
-        wp.atomic_add(accum, PLATE_ACCUM_FORE_COUNT, 1.0)
-        wp.atomic_add(accum, PLATE_ACCUM_FORE_Y, y)
-
-
-@wp.kernel
-def finalize_plate_bending_kernel(
-    accum: wp.array[float],
-    pitch_rate: float,
-    plate_params: wp.array[float],
-    torque_out: wp.array[float],
-):
-    rear_count = accum[PLATE_ACCUM_REAR_COUNT]
-    fore_count = accum[PLATE_ACCUM_FORE_COUNT]
-    if rear_count <= 0.0 or fore_count <= 0.0:
-        torque_out[0] = 0.0
-        torque_out[1] = 0.0
-        torque_out[2] = 0.0
-        return
-
-    rear_disp = accum[PLATE_ACCUM_REAR_DISP] / rear_count
-    fore_disp = accum[PLATE_ACCUM_FORE_DISP] / fore_count
-    rear_y = accum[PLATE_ACCUM_REAR_Y] / rear_count
-    fore_y = accum[PLATE_ACCUM_FORE_Y] / fore_count
-    lever = wp.max(fore_y - rear_y, 1.0e-4)
-    theta = wp.atan2(fore_disp - rear_disp, lever)
-
-    young_pa = plate_params[0]
-    thickness_m = plate_params[1]
-    poisson = plate_params[2]
-    width_m = plate_params[3]
-    length_m = plate_params[4]
-    damping_ratio = plate_params[5]
-    plate_d = young_pa * thickness_m * thickness_m * thickness_m / (12.0 * (1.0 - poisson * poisson))
-    pitch_stiffness = plate_d * width_m / wp.max(length_m, 1.0e-4)
-    damping = damping_ratio * pitch_stiffness
-
-    torque_out[0] = 0.0
-    torque_out[1] = -pitch_stiffness * theta - damping * pitch_rate
-    torque_out[2] = 0.0
-
-
-@wp.kernel
 def update_peak_maps_kernel(
     displacement: wp.array[float],
     pressure: wp.array[float],
@@ -869,19 +711,6 @@ def update_peak_maps_kernel(
     peak_foot_pressure[tid] = wp.max(peak_foot_pressure[tid], foot_pressure[tid])
     peak_stack_displacement[tid] = wp.max(peak_stack_displacement[tid], stack_displacement[tid])
     peak_stack_pressure[tid] = wp.max(peak_stack_pressure[tid], stack_pressure[tid])
-
-
-@wp.kernel
-def apply_shoe_body_force_kernel(
-    body_f: wp.array[wp.spatial_vector],
-    body_index: int,
-    wrench: wp.array[float],
-    plate_torque: wp.array[float],
-    gravity_force_z: float,
-):
-    force = wp.vec3(wrench[0], wrench[1], wrench[2] + gravity_force_z)
-    torque = wp.vec3(wrench[3] + plate_torque[0], wrench[4] + plate_torque[1], wrench[5] + plate_torque[2])
-    body_f[body_index] = wp.spatial_vector(force, torque)
 
 
 @wp.kernel
@@ -932,7 +761,6 @@ def set_prismatic_joint_state_kernel(
 @wp.kernel
 def update_shoe_stats_kernel(
     wrench: wp.array[float],
-    plate_torque: wp.array[float],
     elastic_energy: wp.array[float],
     dissipated_energy_total: wp.array[float],
     stats: wp.array[float],
@@ -941,7 +769,6 @@ def update_shoe_stats_kernel(
     last_elastic_energy = elastic_energy[0] + elastic_energy[1]
     stats[STATS_LAST_FORCE_N] = last_force
     stats[STATS_PEAK_FORCE_N] = wp.max(stats[STATS_PEAK_FORCE_N], last_force)
-    stats[STATS_LAST_PLATE_TORQUE_NM] = plate_torque[1]
     stats[STATS_LAST_ELASTIC_ENERGY_J] = last_elastic_energy
     stats[STATS_PEAK_ELASTIC_ENERGY_J] = wp.max(stats[STATS_PEAK_ELASTIC_ENERGY_J], last_elastic_energy)
     stats[STATS_LAST_DISSIPATED_ENERGY_J] = dissipated_energy_total[0]
@@ -1059,12 +886,6 @@ class Example:
             self.min_peak_force_n = 0.5 if self.contact_law in ("kim-hyperfoam", "kim-layered") else 500.0
         else:
             self.min_peak_force_n = args.min_peak_force_n
-        self.enable_plate = bool(args.enable_plate)
-        self.plate_thickness_m = args.plate_thickness_mm * 0.001
-        self.plate_width_m = args.plate_width_mm * 0.001
-        self.plate_length_m = args.plate_length_mm * 0.001
-        self.plate_young_pa = args.plate_young_gpa * 1.0e9
-        self.plate_poisson = args.plate_poisson
         self.hydro_force_scale = float(args.hydro_force_scale)
         self.shoe_attach_mode = args.shoe_attach_mode
         self.shoe_compression_limit_m = args.shoe_compression_limit_mm * 0.001
@@ -1497,13 +1318,6 @@ class Example:
             device=self.device,
         )
         self.num_springs = len(self.spring_grid.slack_length_m)
-        valid_y = self.spring_grid.grid_uv_m[self.foot_contact_valid, 1]
-        if len(valid_y) > 0:
-            self.plate_rear_cut_y = float(np.percentile(valid_y, 35.0))
-            self.plate_fore_cut_y = float(np.percentile(valid_y, 65.0))
-        else:
-            self.plate_rear_cut_y = 0.0
-            self.plate_fore_cut_y = 0.0
         law_mode = CONTACT_LAW_CALIBRATED_OGDEN
         upper_bulk_or_stiffness = self.material.stiffness_pa
         upper_alpha = self.material.ogden_alpha
@@ -1538,19 +1352,6 @@ class Example:
             dtype=float,
             device=self.device,
         )
-        self.wp_plate_params = wp.array(
-            [
-                self.plate_young_pa,
-                self.plate_thickness_m,
-                self.plate_poisson,
-                self.plate_width_m,
-                self.plate_length_m,
-                0.05,
-            ],
-            dtype=float,
-            device=self.device,
-        )
-
         self.current_z = self.start_z
         self.current_vz = 0.0
         self.current_midsole_z = self.start_z
@@ -1609,7 +1410,6 @@ class Example:
         self.history_z = []
         self.history_force = []
         self.last_force_n = 0.0
-        self.last_plate_torque_nm = 0.0
         self.last_elastic_energy_j = 0.0
         self.peak_elastic_energy_j = 0.0
         self.dissipated_energy_j = 0.0
@@ -1637,9 +1437,7 @@ class Example:
         self.wp_contact_wrench = wp.zeros(6, dtype=float, device=self.device)
         self.wp_contact_energy = wp.zeros(4, dtype=float, device=self.device)
         self.wp_dissipated_energy_total = wp.zeros(1, dtype=float, device=self.device)
-        self.wp_plate_accum = wp.zeros(6, dtype=float, device=self.device)
-        self.wp_plate_torque = wp.zeros(3, dtype=float, device=self.device)
-        self.wp_step_stats = wp.zeros(6, dtype=float, device=self.device)
+        self.wp_step_stats = wp.zeros(5, dtype=float, device=self.device)
         self.foot_body_com_local = (
             self.model.body_com.numpy()[self.foot_body_id].copy()
             if hasattr(self.model, "body_com")
@@ -1718,7 +1516,6 @@ class Example:
         stats = self.wp_step_stats.numpy()
         self.last_force_n = float(stats[STATS_LAST_FORCE_N])
         self.peak_force_n = float(stats[STATS_PEAK_FORCE_N])
-        self.last_plate_torque_nm = float(stats[STATS_LAST_PLATE_TORQUE_NM])
         self.last_elastic_energy_j = float(stats[STATS_LAST_ELASTIC_ENERGY_J])
         self.peak_elastic_energy_j = float(stats[STATS_PEAK_ELASTIC_ENERGY_J])
         self.dissipated_energy_j = float(stats[STATS_LAST_DISSIPATED_ENERGY_J])
@@ -1802,41 +1599,6 @@ class Example:
             return origin
         return origin + _rotate_vec_by_quat(body_com, body_q[self.foot_body_id, 3:7])
 
-    def _update_plate_bending_torque(self, body_z_m: float, pitch_rate: float) -> wp.array:
-        self.wp_plate_torque.zero_()
-        if not self.enable_plate:
-            return self.wp_plate_torque
-
-        if not np.any(self.foot_contact_valid):
-            return self.wp_plate_torque
-
-        self.wp_plate_accum.zero_()
-        wp.launch(
-            accumulate_plate_bending_kernel,
-            dim=self.num_springs,
-            inputs=[
-                self.wp_spring_xy,
-                self.wp_spring_top,
-                self.wp_foot_sole_z,
-                self.wp_foot_contact_valid,
-                self.wp_spring_slack,
-                self.num_springs,
-                float(body_z_m),
-                float(self.start_z),
-                self.plate_rear_cut_y,
-                self.plate_fore_cut_y,
-                self.wp_plate_accum,
-            ],
-            device=self.device,
-        )
-        wp.launch(
-            finalize_plate_bending_kernel,
-            dim=1,
-            inputs=[self.wp_plate_accum, float(pitch_rate), self.wp_plate_params, self.wp_plate_torque],
-            device=self.device,
-        )
-        return self.wp_plate_torque
-
     def simulate(self):
         if not self.gui_simulate_enabled:
             self.update_foot_visual_pose()
@@ -1880,15 +1642,13 @@ class Example:
             midsole_z = float(body_q[self.midsole_body_id, 2])
             foot_vz = float(body_qd[self.foot_body_id, 2])
             midsole_vz = float(body_qd[self.midsole_body_id, 2])
-            pitch_rate = float(body_qd[self.foot_body_id, 4])
 
-            # Apply non-contact forces (gravity, external forces, plate bending torque)
+            # Apply non-contact forces for the one-dimensional vertical test.
             ext_force = 0.0
             if not self.kinematic:
                 omega = 2.0 * np.pi * 1.0
                 ext_force = 1000.0 * max(np.sin(omega * self.sim_time * 0.5), 0.0)
 
-            plate_torque = self._update_plate_bending_torque(foot_z, pitch_rate)
             wp.launch(
                 apply_non_contact_forces_kernel,
                 dim=1,
@@ -1900,7 +1660,6 @@ class Example:
                     2.0,  # Midsole mass
                     self.gravity,
                     ext_force,
-                    plate_torque,
                     int(self.kinematic),
                 ],
                 device=self.device,
@@ -1947,17 +1706,15 @@ class Example:
 
             if face_count > 0:
                 wp.launch(
-                    accumulate_hydro_surface_state_kernel,
+                    accumulate_bottom_hydro_state_kernel,
                     dim=face_count,
                     inputs=[
                         contact_surface.contact_surface_point,
                         contact_surface.contact_surface_depth,
                         contact_surface.contact_surface_shape_pair,
                         contact_surface.face_contact_count,
-                        self.foot_shape_id,
                         self.midsole_shape_id,
                         self.ground_shape_id,
-                        self.foot_body_id,
                         self.midsole_body_id,
                         self.model.body_com,
                         self.state_0.body_q,
@@ -1969,17 +1726,15 @@ class Example:
                     device=self.device,
                 )
                 wp.launch(
-                    evaluate_hydroelastic_ogden_kernel,
+                    evaluate_bottom_hydroelastic_ogden_kernel,
                     dim=face_count,
                     inputs=[
                         contact_surface.contact_surface_point,
                         contact_surface.contact_surface_depth,
                         contact_surface.contact_surface_shape_pair,
                         contact_surface.face_contact_count,
-                        self.foot_shape_id,
                         self.midsole_shape_id,
                         self.ground_shape_id,
-                        self.foot_body_id,
                         self.midsole_body_id,
                         self.model.body_com,
                         self.state_0.body_q,
@@ -1994,8 +1749,6 @@ class Example:
                         self.wp_contact_energy,
                         self.wp_dissipated_energy_total,
                         float(self.sim_dt),
-                        self.wp_foot_top_displacement,
-                        self.wp_foot_top_pressure_kpa,
                         self.wp_ground_bottom_displacement,
                         self.wp_ground_bottom_pressure_kpa,
                         self.wp_stack_displacement,
@@ -2036,7 +1789,6 @@ class Example:
                 dim=1,
                 inputs=[
                     self.wp_contact_wrench,
-                    self.wp_plate_torque,
                     self.wp_contact_energy,
                     self.wp_dissipated_energy_total,
                     self.wp_step_stats,
@@ -2293,7 +2045,6 @@ class Example:
                         else 0.0
                     ),
                     float(face_count),
-                    float(self.last_plate_torque_nm),
                     float(self.state_0.joint_q.numpy()[self.midsole_joint_q_start]),
                 ],
                 dtype=np.float32,
@@ -2419,7 +2170,7 @@ class Example:
             axs2[0, 0],
             top_surface * np.array([1.0, 1.0, 1000.0, 1.0, 1.0], dtype=np.float32),
             2,
-            "Hydro Top Face Displacement Samples",
+            "Bonded Top Interface Displacement Samples",
             "inferno",
             "Face displacement [mm]",
         )
@@ -2427,7 +2178,7 @@ class Example:
             axs2[0, 1],
             top_surface,
             4,
-            "Hydro Top Face Coupled Pressure",
+            "Bonded Top Interface Coupled Pressure",
             "jet",
             "Pressure [kPa]",
             vmax=pressure_vmax,
@@ -2532,10 +2283,18 @@ class Example:
                 return scatter
 
             sc_foot_disp = init_surface_scatter(
-                axs_anim[0, 0], "Hydro Top Face Displacement [mm]", "inferno", foot_disp_vmax, "Displacement [mm]"
+                axs_anim[0, 0],
+                "Bonded Top Interface Displacement [mm]",
+                "inferno",
+                foot_disp_vmax,
+                "Displacement [mm]",
             )
             sc_foot_pres = init_surface_scatter(
-                axs_anim[0, 1], "Hydro Top Face Coupled Pressure [kPa]", "jet", pressure_vmax, "Pressure [kPa]"
+                axs_anim[0, 1],
+                "Bonded Top Interface Coupled Pressure [kPa]",
+                "jet",
+                pressure_vmax,
+                "Pressure [kPa]",
             )
             sc_ground_disp = init_surface_scatter(
                 axs_anim[1, 0],
@@ -2825,23 +2584,6 @@ class Example:
             default=False,
             help="Write hysteresis and heatmap plot artifacts during test_final.",
         )
-        parser.add_argument(
-            "--enable-plate",
-            action=argparse.BooleanOptionalAction,
-            default=False,
-            help="Add a lightweight carbon-plate longitudinal bending torque approximation.",
-        )
-        parser.add_argument(
-            "--plate-thickness-mm",
-            type=float,
-            choices=(0.75, 1.0, 1.5, 2.25, 3.0),
-            default=1.5,
-            help="Carbon plate thickness level [mm] from the Kim et al. design sweep.",
-        )
-        parser.add_argument("--plate-width-mm", type=float, default=70.0, help="Effective carbon plate width [mm].")
-        parser.add_argument("--plate-length-mm", type=float, default=150.0, help="Effective bending span [mm].")
-        parser.add_argument("--plate-young-gpa", type=float, default=33.0, help="Carbon plate Young's modulus [GPa].")
-        parser.add_argument("--plate-poisson", type=float, default=0.4, help="Carbon plate Poisson's ratio.")
         parser.add_argument("--foot-mesh", default="FeetFinder/0002-B.obj", help="Foot OBJ mesh path")
         parser.add_argument(
             "--mirror-foot",
