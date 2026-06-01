@@ -849,10 +849,6 @@ class SolverMuJoCo(SolverBase):
         )
         # endregion body and joint attributes
 
-        # All equality-constraint custom attributes (incl. eq_solref/eq_solimp and the
-        # target_kind/target/objtype projection fields) are declared by
-        # _register_equality_constraint_attributes (called above), so none are registered here.
-
         # region solver options
         # Solver options (frequency WORLD for per-world values)
         builder.add_custom_attribute(
