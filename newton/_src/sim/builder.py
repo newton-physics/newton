@@ -302,6 +302,12 @@ class ModelBuilder:
             For MuJoCo, stiffness values will internally be scaled by masses.
             Users should choose kh to match their desired force-to-penetration ratio.
         """
+        sdf_padding: float | None = None
+        """SDF AABB padding [m] for primitive texture SDFs. Falls back to
+        :attr:`gap` when ``None``. Distinct from :attr:`gap` (broad-phase
+        inflation) and :attr:`margin` (contact-surface inflation). Rejected on
+        ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
+        :meth:`~newton.geometry.Mesh.build_sdf` instead."""
 
         def configure_sdf(
             self,
@@ -959,6 +965,9 @@ class ModelBuilder:
         """Per-shape SDF maximum resolutions retained until :meth:`finalize <ModelBuilder.finalize>`."""
         self.shape_sdf_texture_format: list[str] = []
         """Per-shape SDF texture format retained until :meth:`finalize <ModelBuilder.finalize>`."""
+        self.shape_sdf_padding: list[float | None] = []
+        """Per-shape SDF generation margins [m] retained until :meth:`finalize <ModelBuilder.finalize>`.
+        When ``None``, :attr:`shape_gap` is used for primitive texture SDF generation."""
 
         # Mesh SDF storage (texture SDF arrays created at finalize)
 
@@ -3417,6 +3426,7 @@ class ModelBuilder:
             "shape_sdf_max_resolution",
             "shape_sdf_target_voxel_size",
             "shape_sdf_texture_format",
+            "shape_sdf_padding",
             "particle_qd",
             "particle_mass",
             "particle_radius",
@@ -5787,20 +5797,35 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
         cfg.validate(shape_type=type)
-        if type == GeoType.MESH:
+        # Both raw meshes and convex-mesh approximations share the mesh-backed
+        # SDF code path; cfg.sdf_* fields belong on Mesh.build_sdf, not the
+        # ShapeConfig, so reject them for both shape types up front instead of
+        # producing empty texture data later in finalize().
+        if type in (GeoType.MESH, GeoType.CONVEX_MESH):
             if (
                 cfg.sdf_max_resolution is not None
                 or cfg.sdf_target_voxel_size is not None
                 or cfg.sdf_narrow_band_range != (-0.1, 0.1)
                 or cfg.sdf_texture_format != "uint16"
+                or cfg.sdf_padding is not None
             ):
                 raise ValueError(
-                    "Mesh shapes do not use cfg.sdf_* for SDF generation. "
+                    "Mesh-backed shapes do not use cfg.sdf_* for SDF generation. "
                     "Build and attach an SDF on the mesh via mesh.build_sdf()."
+                )
+            if type == GeoType.CONVEX_MESH and cfg.is_hydroelastic:
+                # finalize() only consumes mesh-attached SDFs for GeoType.MESH;
+                # a hydroelastic CONVEX_MESH would fall into the primitive
+                # branch where _create_primitive_mesh returns None, leaving an
+                # invalid shape_sdf_index entry. Reject up front.
+                raise ValueError(
+                    "Hydroelastic is not supported on GeoType.CONVEX_MESH. "
+                    "Use add_shape_mesh() with a watertight Mesh whose mesh.sdf "
+                    "was built via Mesh.build_sdf()."
                 )
             if cfg.is_hydroelastic and (src is None or getattr(src, "sdf", None) is None):
                 raise ValueError(
-                    "Hydroelastic mesh shapes require mesh.sdf. "
+                    "Hydroelastic mesh-backed shapes require mesh.sdf. "
                     "Call mesh.build_sdf() before add_shape_mesh(..., cfg=...)."
                 )
         if scale is None:
@@ -5915,6 +5940,7 @@ class ModelBuilder:
         self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
         self.shape_sdf_max_resolution.append(cfg.sdf_max_resolution)
         self.shape_sdf_texture_format.append(cfg.sdf_texture_format)
+        self.shape_sdf_padding.append(cfg.sdf_padding)
 
         if cfg.has_shape_collision and cfg.collision_filter_parent:
             for parent_body, joint_idx in self.joint_parents.get(body, ()):
@@ -6761,6 +6787,23 @@ class ModelBuilder:
                 for i, stype in enumerate(self.shape_type)
                 if stype == GeoType.MESH and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
             ]
+
+        # These methods rewrite shape_type away from MESH; any SDF/hydro state
+        # would be silently dropped at finalize. The USD importer intercepts
+        # this earlier; this guard catches direct Python API misuse.
+        if method in {"coacd", "vhacd", "convex_hull", "bounding_box", "bounding_sphere"}:
+            for shape in shape_indices:
+                has_sdf_state = (
+                    self.shape_sdf_max_resolution[shape] is not None
+                    or self.shape_sdf_target_voxel_size[shape] is not None
+                    or self.shape_sdf_padding[shape] is not None
+                    or bool(self.shape_flags[shape] & ShapeFlags.HYDROELASTIC)
+                )
+                if has_sdf_state:
+                    raise ValueError(
+                        f"Shape {shape}: method '{method}' replaces the mesh with non-mesh "
+                        f"geometry; SDF / hydroelastic configuration cannot be preserved."
+                    )
 
         if keep_visual_shapes:
             # if keeping visual shapes, first copy input shapes, mark the copies as visual-only,
@@ -10463,14 +10506,32 @@ class ModelBuilder:
                 and getattr(ssrc, "sdf", None) is not None
                 for stype, ssrc, sflags in zip(self.shape_type, self.shape_source, self.shape_flags, strict=True)
             )
+            # Catch meshes whose SDF is still deferred (built during finalize) so
+            # the CPU-runs-into-build_sdf path also raises here, not deeper down.
+            has_deferred_mesh_sdf = any(
+                stype == GeoType.MESH
+                and ssrc is not None
+                and sflags & ShapeFlags.COLLIDE_SHAPES
+                and getattr(ssrc, "sdf", None) is None
+                and (smax is not None or svox is not None)
+                for stype, ssrc, sflags, smax, svox in zip(
+                    self.shape_type,
+                    self.shape_source,
+                    self.shape_flags,
+                    self.shape_sdf_max_resolution,
+                    self.shape_sdf_target_voxel_size,
+                    strict=True,
+                )
+            )
             has_hydroelastic_shapes = any(
                 (sflags & ShapeFlags.HYDROELASTIC) and (sflags & ShapeFlags.COLLIDE_SHAPES)
                 for sflags in self.shape_flags
             )
-            if (has_mesh_sdf or has_hydroelastic_shapes) and not is_gpu:
+            if (has_mesh_sdf or has_deferred_mesh_sdf or has_hydroelastic_shapes) and not is_gpu:
                 raise ValueError(
-                    "SDF collision paths require a CUDA-capable GPU device. "
-                    "Texture SDFs (used for SDF collision) only support CUDA."
+                    "Building texture SDFs requires a CUDA-capable GPU device. "
+                    "The texture SDF build path uses wp.Volume.allocate_by_tiles "
+                    "and wp.Texture3D, which are CUDA-only."
                 )
 
             sdf_block_coords = []
@@ -10494,6 +10555,14 @@ class ModelBuilder:
             compact_texture_sdf_subgrid_start_slots = []
             shape_sdf_index = [-1] * len(self.shape_type)
             sdf_cache = {}
+            # Deferred-mesh SDFs are built into a temporary Mesh clone keyed by
+            # the parameter tuple. This avoids mutating the user's shared Mesh
+            # while still deduplicating identical (Mesh, params) combinations.
+            deferred_mesh_sdf_cache = {}
+            # Forward simplified collision edges from the deferred SDF clone to
+            # the edge-consumption loop below.
+            deferred_collision_edges_cache: dict[tuple, Any] = {}
+            deferred_collision_edges: dict[int, Any] = {}
 
             for i in range(len(self.shape_type)):
                 shape_type = self.shape_type[i]
@@ -10505,6 +10574,9 @@ class ModelBuilder:
                 sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
                 sdf_tex_fmt = self.shape_sdf_texture_format[i]
+                sdf_padding = self.shape_sdf_padding[i]
+                # Fall back to shape_gap when sdf_padding is unset (see ShapeConfig.sdf_padding).
+                sdf_gen_margin = sdf_padding if sdf_padding is not None else shape_gap
                 is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
@@ -10514,6 +10586,36 @@ class ModelBuilder:
 
                 if shape_type == GeoType.MESH and has_shape_collision and shape_src is not None:
                     mesh_sdf = getattr(shape_src, "sdf", None)
+                    # Build on a Mesh clone so shapes sharing one Mesh at different
+                    # scale/margin/resolution end up with distinct SDFs.
+                    if mesh_sdf is None and (sdf_max_resolution is not None or sdf_target_voxel_size is not None):
+                        sdf_kwargs = {"narrow_band_range": tuple(sdf_narrow_band_range)}
+                        if sdf_max_resolution is not None:
+                            sdf_kwargs["max_resolution"] = sdf_max_resolution
+                        if sdf_target_voxel_size is not None:
+                            sdf_kwargs["target_voxel_size"] = sdf_target_voxel_size
+                        sdf_kwargs["margin"] = sdf_gen_margin
+                        sdf_kwargs["scale"] = tuple(shape_scale)
+                        sdf_kwargs["texture_format"] = sdf_tex_fmt
+                        deferred_key = (
+                            id(shape_src),
+                            tuple(shape_scale),
+                            tuple(sdf_narrow_band_range),
+                            sdf_target_voxel_size,
+                            sdf_max_resolution,
+                            sdf_tex_fmt,
+                            sdf_gen_margin,
+                        )
+                        mesh_sdf = deferred_mesh_sdf_cache.get(deferred_key)
+                        if mesh_sdf is None:
+                            mesh_copy = shape_src.copy()
+                            mesh_copy.build_sdf(**sdf_kwargs)
+                            mesh_sdf = mesh_copy.sdf
+                            deferred_mesh_sdf_cache[deferred_key] = mesh_sdf
+                            if getattr(mesh_copy, "_collision_edges", None) is not None:
+                                deferred_collision_edges_cache[deferred_key] = mesh_copy._collision_edges
+                        if deferred_key in deferred_collision_edges_cache:
+                            deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
                         cache_key = ("mesh_sdf", id(mesh_sdf))
                         if mesh_sdf.texture_block_coords is not None:
@@ -10529,7 +10631,7 @@ class ModelBuilder:
                     cache_key = (
                         "primitive_generated",
                         shape_type,
-                        shape_gap,
+                        sdf_gen_margin,
                         tuple(sdf_narrow_band_range),
                         sdf_target_voxel_size,
                         effective_max_resolution,
@@ -10571,7 +10673,7 @@ class ModelBuilder:
                                 try:
                                     tex_data, c_tex, s_tex, tex_bc = create_texture_sdf_from_mesh(
                                         prim_wp_mesh,
-                                        margin=shape_gap,
+                                        margin=sdf_gen_margin,
                                         narrow_band_range=tuple(sdf_narrow_band_range),
                                         max_resolution=effective_max_resolution,
                                         target_voxel_size=sdf_target_voxel_size,
@@ -10693,14 +10795,20 @@ class ModelBuilder:
                     and (self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES)
                 ):
                     mesh = self.shape_source[i]
-                    mesh_key = id(mesh)
+                    deferred_edges = deferred_collision_edges.get(i)
+                    if deferred_edges is not None:
+                        mesh_key = ("deferred", id(deferred_edges))
+                    else:
+                        mesh_key = id(mesh)
                     if mesh_key in edge_cache:
                         shape_edge_ranges.append(edge_cache[mesh_key])
                     else:
                         # ``Mesh.build_sdf()`` caches a simplified edge set on
                         # the mesh for SDF-mesh contact generation; fall back
                         # to the full edge list otherwise.
-                        if mesh._collision_edges is not None:
+                        if deferred_edges is not None:
+                            edges = deferred_edges
+                        elif mesh._collision_edges is not None:
                             edges = mesh._collision_edges
                         else:
                             edges = mesh.edges  # lazily computed and cached on the Mesh

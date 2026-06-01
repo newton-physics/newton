@@ -8,12 +8,13 @@ import copy
 import datetime
 import inspect
 import itertools
+import logging
 import math
 import os
 import posixpath
 import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urljoin
 
@@ -45,6 +46,8 @@ from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
 from .import_utils import should_show_collider
+
+logger = logging.getLogger("newton")
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -532,10 +535,7 @@ def parse_usd(
         if texture is not None:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
-            warnings.warn(
-                f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
-                stacklevel=2,
-            )
+            logger.info("Mesh %s: dropping texture because UVs could not be recovered.", path_name)
             mesh.texture = None
         if material_props.get("color") is not None and mesh.texture is None:
             mesh.color = material_props["color"]
@@ -544,6 +544,186 @@ def parse_usd(
         if material_props.get("metallic") is not None:
             mesh.metallic = material_props["metallic"]
         return mesh
+
+    def _get_face_material_subsets(prim: Usd.Prim) -> list[Usd.Prim]:
+        """Return face-based material subsets authored directly under a mesh prim."""
+        subsets = []
+        for child in prim.GetChildren():
+            try:
+                is_subset = child.IsA(UsdGeom.Subset)
+            except Exception:
+                is_subset = False
+            if not is_subset:
+                continue
+
+            subset = UsdGeom.Subset(child)
+            element_type = subset.GetElementTypeAttr().Get()
+            if element_type != UsdGeom.Tokens.face:
+                continue
+            family_name = subset.GetFamilyNameAttr().Get()
+            if family_name and family_name != "materialBind":
+                continue
+            indices = subset.GetIndicesAttr().Get()
+            if not indices:
+                continue
+            subsets.append(child)
+        return subsets
+
+    def _get_subset_uvs(prim: Usd.Prim, used_vertices: np.ndarray, expected_count: int) -> np.ndarray | None:
+        """Return UVs for a material subset when a matching primvar is authored."""
+        max_used_vertex = int(np.max(used_vertices, initial=-1))
+        full_mesh_uvs = None
+        for primvar in UsdGeom.PrimvarsAPI(prim).GetPrimvars():
+            name = primvar.GetBaseName()
+            if not name.startswith("st"):
+                continue
+            values = primvar.Get()
+            if values is None:
+                continue
+            uvs = np.asarray(values, dtype=np.float32)
+            if primvar.IsIndexed():
+                indices = primvar.GetIndices()
+                if indices is None:
+                    continue
+                indices = np.asarray(indices, dtype=np.int32)
+                if len(indices) == expected_count:
+                    uvs = uvs[indices]
+                    if len(uvs) == expected_count:
+                        return uvs
+                    continue
+                if len(indices) > max_used_vertex:
+                    uvs = uvs[indices]
+                else:
+                    continue
+            if len(uvs) == expected_count:
+                return uvs
+            if full_mesh_uvs is None and len(uvs) > max_used_vertex:
+                full_mesh_uvs = uvs[used_vertices]
+        return full_mesh_uvs
+
+    def _make_visual_submesh(
+        mesh: Mesh,
+        triangle_indices: np.ndarray,
+        material_props: dict[str, Any],
+        *,
+        prim: Usd.Prim,
+        path_name: str,
+    ) -> Mesh | None:
+        """Create a render-only mesh slice for the selected triangle rows."""
+        if len(triangle_indices) == 0:
+            return None
+
+        triangles = mesh.indices.reshape(-1, 3)[triangle_indices]
+        used_vertices = np.unique(triangles)
+        vertex_remap = np.full(len(mesh.vertices), -1, dtype=np.int32)
+        vertex_remap[used_vertices] = np.arange(len(used_vertices), dtype=np.int32)
+
+        normals = None
+        if mesh.normals is not None and len(mesh.normals) == len(mesh.vertices):
+            normals = mesh.normals[used_vertices]
+
+        uvs = None
+        if mesh.uvs is not None and len(mesh.uvs) == len(mesh.vertices):
+            uvs = mesh.uvs[used_vertices]
+        elif material_props.get("texture") is not None:
+            uvs = _get_subset_uvs(prim, used_vertices, len(used_vertices))
+
+        submesh = Mesh(
+            mesh.vertices[used_vertices],
+            vertex_remap[triangles].reshape(-1),
+            normals=normals,
+            uvs=uvs,
+            compute_inertia=False,
+            is_solid=mesh.is_solid,
+            maxhullvert=mesh.maxhullvert,
+        )
+
+        texture = material_props.get("texture")
+        if texture:
+            submesh.texture = texture
+        if submesh.texture is not None and submesh.uvs is None:
+            logger.info("Mesh material subset %s: dropping texture because UVs could not be recovered.", path_name)
+            submesh.texture = None
+
+        color = material_props.get("color")
+        if color is not None:
+            submesh.color = color
+        elif submesh.texture is not None:
+            submesh.color = (1.0, 1.0, 1.0)
+        if material_props.get("roughness") is not None:
+            submesh.roughness = material_props["roughness"]
+        if material_props.get("metallic") is not None:
+            submesh.metallic = material_props["metallic"]
+        return submesh
+
+    def _get_visual_material_subset_meshes(prim: Usd.Prim) -> list[tuple[str, Mesh]]:
+        """Load one render mesh per USD material subset when subsets are authored."""
+        subsets = _get_face_material_subsets(prim)
+        if not subsets:
+            return []
+
+        mesh_schema = UsdGeom.Mesh(prim)
+        face_counts = mesh_schema.GetFaceVertexCountsAttr().Get()
+        if face_counts is None:
+            return []
+        face_counts = np.asarray(face_counts, dtype=np.int32)
+        if len(face_counts) == 0 or np.any(face_counts < 3):
+            return []
+
+        subset_props = [(str(subset.GetPath()), usd.resolve_material_properties_for_prim(subset)) for subset in subsets]
+        mesh = _get_mesh_cached(prim)
+        triangle_face_indices = np.repeat(np.arange(len(face_counts), dtype=np.int32), face_counts - 2)
+        covered_faces = np.zeros(len(face_counts), dtype=bool)
+
+        submeshes = []
+        for subset_path, material_props in subset_props:
+            # `resolve_material_properties_for_prim` does not fall back from a subset to its parent mesh
+            # (see `newton/_src/usd/utils.py` resolve_material_properties_for_prim). If a subset binds no
+            # visible material, let the uncovered-faces fallback below apply the parent mesh material
+            # instead of producing a materialless submesh and hiding the parent material on those faces.
+            if not any(value is not None for value in material_props.values()):
+                continue
+            subset = UsdGeom.Subset(stage.GetPrimAtPath(subset_path))
+            subset_indices = np.asarray(subset.GetIndicesAttr().Get(), dtype=np.int32)
+            valid = (subset_indices >= 0) & (subset_indices < len(face_counts))
+            if not np.all(valid):
+                logger.info(
+                    "Mesh material subset %s: face indices outside the mesh face range; "
+                    "out-of-range indices will be ignored.",
+                    subset_path,
+                )
+                subset_indices = subset_indices[valid]
+            if len(subset_indices) == 0:
+                continue
+
+            face_mask = np.zeros(len(face_counts), dtype=bool)
+            face_mask[subset_indices] = True
+            triangle_indices = np.nonzero(face_mask[triangle_face_indices])[0]
+            submesh = _make_visual_submesh(mesh, triangle_indices, material_props, prim=prim, path_name=subset_path)
+            if submesh is None:
+                continue
+            covered_faces[subset_indices] = True
+            submeshes.append((subset_path, submesh))
+
+        if not submeshes:
+            return []
+
+        uncovered_faces = np.nonzero(~covered_faces)[0]
+        if len(uncovered_faces) > 0:
+            face_mask = np.zeros(len(face_counts), dtype=bool)
+            face_mask[uncovered_faces] = True
+            triangle_indices = np.nonzero(face_mask[triangle_face_indices])[0]
+            fallback_mesh = _make_visual_submesh(
+                mesh,
+                triangle_indices,
+                _get_material_props_cached(prim),
+                prim=prim,
+                path_name=str(prim.GetPath()),
+            )
+            if fallback_mesh is not None:
+                submeshes.insert(0, (str(prim.GetPath()), fallback_mesh))
+
+        return submeshes
 
     def _get_tetmesh_cached(prim: Usd.Prim) -> TetMesh:
         """Load and cache TetMesh data to avoid repeated USD extraction."""
@@ -747,16 +927,38 @@ def parse_usd(
                     label=path_name,
                 )
             elif type_name == "mesh":
-                mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
-                shape_id = builder.add_shape_mesh(
-                    parent_body_id,
-                    xform,
-                    scale=scale,
-                    mesh=mesh,
-                    cfg=visual_shape_cfg_for_prim,
-                    color=shape_color,
-                    label=path_name,
-                )
+                subset_meshes = _get_visual_material_subset_meshes(prim)
+                if subset_meshes:
+                    for subset_path, subset_mesh in subset_meshes:
+                        subset_shape_id = builder.add_shape_mesh(
+                            parent_body_id,
+                            xform,
+                            scale=scale,
+                            mesh=subset_mesh,
+                            cfg=visual_shape_cfg_for_prim,
+                            color=None,
+                            label=subset_path,
+                        )
+                        path_shape_map[subset_path] = subset_shape_id
+                        path_shape_scale[subset_path] = scale
+                        if shape_id < 0:
+                            shape_id = subset_shape_id
+                        if verbose:
+                            print(
+                                f"Added visual shape {subset_path} ({type_name} material subset) "
+                                f"with id {subset_shape_id}."
+                            )
+                else:
+                    mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
+                    shape_id = builder.add_shape_mesh(
+                        parent_body_id,
+                        xform,
+                        scale=scale,
+                        mesh=mesh,
+                        cfg=visual_shape_cfg_for_prim,
+                        color=shape_color,
+                        label=path_name,
+                    )
             elif type_name == "particlefield3dgaussiansplat":
                 gaussian = usd.get_gaussian(prim)
                 shape_id = builder.add_shape_gaussian(
@@ -768,7 +970,11 @@ def parse_usd(
                     color=shape_color,
                     label=path_name,
                 )
-            elif len(type_name) > 0 and type_name not in {"xform", "tetmesh"} and verbose:
+            elif (
+                len(type_name) > 0
+                and type_name not in {"geomsubset", "material", "scope", "shader", "xform", "tetmesh"}
+                and verbose
+            ):
                 print(f"Warning: Unsupported geometry type {type_name} at {path_name} while loading visual shapes.")
 
             if shape_id >= 0:
@@ -2690,6 +2896,160 @@ def parse_usd(
 
                 shape_color = material_props.get("color")
 
+                # SDF parameters. Applying NewtonSDFCollisionAPI is the canonical
+                # signal that SDF generation is configured for this shape.
+                has_sdf_api = prim.HasAPI("NewtonSDFCollisionAPI")
+                # NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are independent
+                # collision representations and should not be co-applied. SDF wins
+                # when both are present.
+                if has_sdf_api and prim.HasAPI("NewtonMeshCollisionAPI"):
+                    warnings.warn(
+                        f"{prim.GetPath()}: NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are "
+                        f"independent collision representations and should not be co-applied; "
+                        f"SDF configuration will be used.",
+                        stacklevel=2,
+                    )
+
+                # Resolve target_voxel_size first because it overrides
+                # sdf_max_resolution and the two are mutually exclusive in
+                # ShapeConfig.validate().
+                sdf_target_voxel_size = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_target_voxel_size", verbose=verbose
+                )
+                if sdf_target_voxel_size == float("-inf"):
+                    sdf_target_voxel_size = None
+                elif sdf_target_voxel_size is not None and sdf_target_voxel_size <= 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfTargetVoxelSize={sdf_target_voxel_size!r} is invalid "
+                        f"(must be > 0); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_target_voxel_size = None
+                if sdf_target_voxel_size is None:
+                    sdf_target_voxel_size = builder.default_shape_cfg.sdf_target_voxel_size
+
+                sdf_max_resolution = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_max_resolution", verbose=verbose
+                )
+                if sdf_max_resolution == float("-inf"):
+                    sdf_max_resolution = None
+                elif sdf_max_resolution is not None and sdf_max_resolution <= 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} is invalid "
+                        f"(must be > 0); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_max_resolution = None
+                elif sdf_max_resolution is not None and sdf_max_resolution % 8 != 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} must be "
+                        f"divisible by 8 (SDF volumes are allocated in 8x8x8 tiles); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_max_resolution = None
+                if sdf_target_voxel_size is not None and sdf_max_resolution is not None:
+                    warnings.warn(
+                        f"{prim.GetPath()}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution "
+                        f"are set; sdfTargetVoxelSize takes precedence.",
+                        stacklevel=2,
+                    )
+                    sdf_max_resolution = None
+                if sdf_max_resolution is None:
+                    # When the API is applied but neither attribute is authored,
+                    # fall back to the schema default (64). When target voxel
+                    # size already drives the resolution, leave max_resolution
+                    # unset so the two don't conflict in ShapeConfig.validate().
+                    if has_sdf_api and sdf_target_voxel_size is None:
+                        sdf_max_resolution = 64
+                    else:
+                        sdf_max_resolution = builder.default_shape_cfg.sdf_max_resolution
+
+                sdf_narrow_band_inner = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_inner", verbose=verbose
+                )
+                if sdf_narrow_band_inner == float("-inf"):
+                    sdf_narrow_band_inner = None
+                sdf_narrow_band_outer = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer", verbose=verbose
+                )
+                if sdf_narrow_band_outer == float("-inf"):
+                    sdf_narrow_band_outer = None
+                default_nb = builder.default_shape_cfg.sdf_narrow_band_range
+                sdf_narrow_band_range = (
+                    sdf_narrow_band_inner if sdf_narrow_band_inner is not None else default_nb[0],
+                    sdf_narrow_band_outer if sdf_narrow_band_outer is not None else default_nb[1],
+                )
+
+                sdf_texture_format = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_texture_format", verbose=verbose
+                )
+                _valid_sdf_tex_fmts = ("float32", "uint16", "uint8")
+                if sdf_texture_format is not None and sdf_texture_format not in _valid_sdf_tex_fmts:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfTextureFormat={sdf_texture_format!r} is invalid "
+                        f"(expected one of {list(_valid_sdf_tex_fmts)}); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_texture_format = None
+                if sdf_texture_format is None:
+                    sdf_texture_format = builder.default_shape_cfg.sdf_texture_format
+
+                sdf_padding = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_padding", verbose=verbose)
+                if sdf_padding == float("-inf"):
+                    sdf_padding = None
+                elif sdf_padding is not None and sdf_padding < 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfPadding={sdf_padding!r} is invalid "
+                        f"(must be >= 0); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_padding = None
+
+                hydroelastic_enabled = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="hydroelastic_enabled", verbose=verbose
+                )
+                kh = R.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
+                if kh == float("-inf"):
+                    kh = None
+                elif kh is not None and kh <= 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:hydroelasticStiffness={kh!r} is invalid "
+                        f"(must be > 0); falling back to default.",
+                        stacklevel=2,
+                    )
+                    kh = None
+                if hydroelastic_enabled is True:
+                    is_hydroelastic = True
+                elif hydroelastic_enabled is False:
+                    is_hydroelastic = False
+                elif has_sdf_api:
+                    # API applied but hydroelasticEnabled unauthored -> schema default False, not builder default.
+                    is_hydroelastic = False
+                else:
+                    is_hydroelastic = builder.default_shape_cfg.is_hydroelastic
+                if kh is None:
+                    kh = builder.default_shape_cfg.kh
+
+                # Hydroelastic meshes need an SDF source. For primitives, a texture
+                # SDF is generated from a synthesized watertight mesh at finalize(),
+                # but meshes require either an attached mesh.sdf or a
+                # resolution/voxel_size so one can be built deferred. Warn and
+                # disable hydroelastic on this shape rather than aborting the whole
+                # import — typically reached when newton:hydroelasticEnabled=true
+                # is authored without applying NewtonSDFCollisionAPI.
+                if (
+                    is_hydroelastic
+                    and key == UsdPhysics.ObjectType.MeshShape
+                    and sdf_max_resolution is None
+                    and sdf_target_voxel_size is None
+                ):
+                    warnings.warn(
+                        f"{prim.GetPath()}: hydroelastic mesh requires newton:sdfMaxResolution "
+                        f"or newton:sdfTargetVoxelSize so an SDF can be generated; "
+                        f"disabling hydroelastic for this shape.",
+                        stacklevel=2,
+                    )
+                    is_hydroelastic = False
                 # Mass model and shell thickness (resolved across Newton / MuJoCo schemas)
                 mass_model = R.get_value(prim, PrimType.SHAPE, "mass_model", default="solid")
                 shape_is_solid = mass_model != "shell"
@@ -2729,6 +3089,13 @@ def parse_usd(
                         density=shape_density,
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
+                        sdf_max_resolution=sdf_max_resolution,
+                        sdf_narrow_band_range=sdf_narrow_band_range,
+                        sdf_target_voxel_size=sdf_target_voxel_size,
+                        sdf_texture_format=sdf_texture_format,
+                        sdf_padding=sdf_padding,
+                        is_hydroelastic=is_hydroelastic,
+                        kh=kh,
                         is_solid=shape_is_solid,
                     ),
                     "label": path,
@@ -2806,24 +3173,54 @@ def parse_usd(
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
+                    # add_shape_mesh() rejects SDF cfg fields on meshes; strip them and
+                    # write the SDF intent to the builder lists, deferring the build to finalize().
+                    mesh_shape_params = dict(shape_params)
+                    mesh_shape_params["cfg"] = replace(
+                        shape_params["cfg"],
+                        sdf_max_resolution=None,
+                        sdf_target_voxel_size=None,
+                        sdf_narrow_band_range=(-0.1, 0.1),
+                        sdf_texture_format="uint16",
+                        sdf_padding=None,
+                        is_hydroelastic=False,
+                    )
                     shape_id = builder.add_shape_mesh(
                         scale=wp.vec3(*shape_spec.meshScale),
                         mesh=mesh,
-                        **shape_params,
+                        **mesh_shape_params,
                     )
+                    builder.shape_sdf_max_resolution[shape_id] = sdf_max_resolution
+                    builder.shape_sdf_target_voxel_size[shape_id] = sdf_target_voxel_size
+                    builder.shape_sdf_narrow_band_range[shape_id] = sdf_narrow_band_range
+                    builder.shape_sdf_texture_format[shape_id] = sdf_texture_format
+                    builder.shape_sdf_padding[shape_id] = sdf_padding
+                    # kh is a material param; persist regardless of hydro state.
+                    builder.shape_material_kh[shape_id] = kh
+                    if is_hydroelastic:
+                        builder.shape_flags[shape_id] |= ShapeFlags.HYDROELASTIC
                     if not skip_mesh_approximation:
                         approximation = usd.get_attribute(prim, "physics:approximation", None)
                         if approximation is not None:
-                            remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
-                            if remeshing_method is None:
-                                if verbose:
-                                    print(
-                                        f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
-                                    )
+                            if has_sdf_api and approximation.lower() != "none":
+                                # physics:approximation belongs to PhysicsMeshCollisionAPI;
+                                # it has no meaning on a NewtonSDFCollisionAPI prim.
+                                warnings.warn(
+                                    f"{prim.GetPath()}: physics:approximation={approximation!r} is "
+                                    f"ignored on a shape with NewtonSDFCollisionAPI applied.",
+                                    stacklevel=2,
+                                )
                             else:
-                                if remeshing_method not in remeshing_queue:
-                                    remeshing_queue[remeshing_method] = []
-                                remeshing_queue[remeshing_method].append(shape_id)
+                                remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
+                                if remeshing_method is None:
+                                    if verbose:
+                                        print(
+                                            f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
+                                        )
+                                else:
+                                    if remeshing_method not in remeshing_queue:
+                                        remeshing_queue[remeshing_method] = []
+                                    remeshing_queue[remeshing_method].append(shape_id)
 
                 elif key == UsdPhysics.ObjectType.PlaneShape:
                     # Warp uses +Z convention for planes
