@@ -701,17 +701,18 @@ recovered generalized velocities are rotated back into the joint parent frame.
 Orphan joints
 -------------
 
-An **orphan joint** is a joint that is not part of any articulation. This situation can arise when:
+An **orphan joint** is a joint that is not part of any articulation **and** whose child body is not reachable through any articulated joint (i.e. the child has no articulated path back to the rest of the model). This situation can arise when:
 
 * The USD asset does not define a ``PhysicsArticulationRootAPI`` on any prim, so no articulations are discovered during parsing.
 * A joint connects two bodies that are not under any ``PhysicsArticulationRootAPI`` prim, even though other articulations exist in the scene.
+
+A joint that is excluded from every :meth:`~newton.ModelBuilder.add_articulation` call but whose two bodies are already reachable through the articulation tree is **not** an orphan joint; it is a **loop-closing joint** (see :ref:`Loop closure`) and is handled separately.
 
 When orphan joints are detected during USD parsing (:meth:`~newton.ModelBuilder.add_usd`), Newton issues a warning that lists the affected joint paths.
 
 **Validation and finalization**
 
-By default, :meth:`~newton.ModelBuilder.finalize` validates that every joint belongs to an articulation and raises a :class:`ValueError` if orphan joints are found.
-To proceed with orphan joints, skip this validation:
+By default, :meth:`~newton.ModelBuilder.finalize` raises a :class:`ValueError` if any orphan joint is found. (Loop-closing joints pass this check — see :ref:`Loop closure`.) To proceed with orphan joints, skip this validation:
 
 .. testsetup:: articulation-orphan-joints
 
@@ -728,7 +729,7 @@ To proceed with orphan joints, skip this validation:
 
 Only maximal-coordinate solvers (:class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverSemiImplicit`) support orphan joints.
 Generalized-coordinate solvers (:class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverMuJoCo`) require every joint to belong to an articulation.
-(Loop-closing joints, whose bodies are both already in a tree, are a separate case — see :ref:`Loop closure`; :class:`~newton.solvers.SolverMuJoCo` supports these via equality constraints.)
+(Loop-closing joints are not orphan joints and are handled separately — see :ref:`Loop closure`.)
 
 .. _Loop closure:
 
@@ -744,10 +745,12 @@ as a tree and adding a separate joint that re-couples the open end.
 To close a loop, create the loop-closing joint with
 :meth:`~newton.ModelBuilder.add_joint_*` but **omit it from the
 ``joint_list`` passed to** :meth:`~newton.ModelBuilder.add_articulation`,
-so the articulation graph remains a tree and the closing joint stays outside
-any articulation as a **loop-closing joint** (its two bodies are both
-already in the tree, which distinguishes it from an
-:ref:`orphan joint <Orphan joints>`, whose child has no articulated path):
+so the articulation graph remains a tree. The omitted joint is a
+**loop-closing joint**: its two bodies are both already reachable through
+the tree, which distinguishes it from an
+:ref:`orphan joint <Orphan joints>` (whose child has no articulated path
+and which :meth:`~newton.ModelBuilder.finalize` rejects unless
+``skip_validation_joints=True``).
 
 .. testcode::
 
@@ -780,7 +783,7 @@ already in the tree, which distinguishes it from an
 
   # Loop-closing joint: a fixed joint between the two children. Authored with
   # add_joint_* exactly like a tree joint, but deliberately left out of the
-  # articulation below so it stays an orphan joint that closes the loop.
+  # articulation below.
   j_loop = builder.add_joint_fixed(parent=child_a, child=child_b)
 
   # Only the tree joints (j_root, j_a, j_b) go into the articulation;
@@ -795,42 +798,43 @@ honors it. Set the ``physics:excludeFromArticulation`` attribute to ``true``
 on a ``PhysicsJoint`` prim, and :meth:`~newton.ModelBuilder.add_usd` will
 register the joint with the builder via the normal ``add_joint_*`` path but
 leave it out of the surrounding :meth:`~newton.ModelBuilder.add_articulation`
-call — producing exactly the orphan-joint topology shown above. This is how
+call — producing exactly the topology shown above. This is how
 a USD asset can author a four-bar linkage or other parallel mechanism.
 
 .. note::
 
    A loop-closing joint passes :meth:`~newton.ModelBuilder.finalize`
-   validation by default: unlike a true orphan joint, its child body is
-   already reachable through the tree, so ``skip_validation_joints=True`` is
-   not required. Each solver handles the loop-closing joint differently:
+   validation by default — because its two bodies are already reachable
+   through the tree, the orphan-joint check does not fire and
+   ``skip_validation_joints=True`` is not required. Each solver then
+   handles the loop-closing joint differently:
 
    - **Maximal-coordinate solvers** track state as per-body transforms
      (:attr:`~newton.State.body_q` / :attr:`~newton.State.body_qd`) and
-     enforce joints as pairwise body constraints, so the orphan joint is
+     enforce joints as pairwise body constraints, so the loop-closure joint is
      solved alongside the tree joints with no special-casing. Under
      :class:`~newton.solvers.SolverXPBD` and
      :class:`~newton.solvers.SolverSemiImplicit`, ``j_loop`` keeps its full
-     joint behaviour — drive (``joint_target_ke``/``joint_target_kd``,
+     joint behavior — drive (``joint_target_ke``/``joint_target_kd``,
      ``control.joint_f``) and joint limits are applied alongside the
      loop-closure constraint, subject to each solver's general joint-feature
      support (see :ref:`Joint feature support`).
      :class:`~newton.solvers.SolverVBD` and
      :class:`~newton.solvers.SolverKamino` use the same flat per-joint
      iteration but support a narrower set of joint types and features, so
-     the same orphan-joint pattern works only within their respective
+     the same loop-closure pattern works only within their respective
      supported subsets.
 
    - **Generalized-coordinate solvers** carry only tree-joint coordinates in
      their state vector and must handle the loop closure separately.
-     :class:`~newton.solvers.SolverMuJoCo` enforces each orphan joint as a
+     :class:`~newton.solvers.SolverMuJoCo` enforces each loop-closure joint as a
      bilateral coupling at compile time, which restricts the supported
      joint types and drops joint-level features (see the note below).
      :class:`~newton.solvers.SolverFeatherstone` has no such synthesis
-     path: the orphan joint contributes no DOFs and the loop closure is
+     path: the loop-closure joint contributes no DOFs and the loop closure is
      silently not enforced.
 
-   In all cases the orphan joint is invisible to :func:`newton.eval_fk`,
+   In all cases the loop-closing joint is invisible to :func:`newton.eval_fk`,
    :func:`newton.eval_ik`, and :class:`~newton.selection.ArticulationView` —
    those walk the articulation tree only.
 
@@ -840,4 +844,4 @@ a USD asset can author a four-bar linkage or other parallel mechanism.
    types as loop closures, and the loop-closing joint loses its joint-level
    features (drive, limits, armature, friction). See
    :ref:`mujoco-loop-closures` for the supported types and MuJoCo-specific
-   behaviour.
+   behavior.
