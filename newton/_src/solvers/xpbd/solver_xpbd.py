@@ -502,7 +502,7 @@ class SolverXPBD(SolverBase):
                                     model.particle_inv_mass,
                                     model.tet_indices,
                                     model.tet_poses,
-                                    model.tet_activations,
+                                    control.tet_activations,
                                     model.tet_materials,
                                     dt,
                                     self.soft_body_relaxation,

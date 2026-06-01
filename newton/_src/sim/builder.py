@@ -302,6 +302,12 @@ class ModelBuilder:
             For MuJoCo, stiffness values will internally be scaled by masses.
             Users should choose kh to match their desired force-to-penetration ratio.
         """
+        sdf_padding: float | None = None
+        """SDF AABB padding [m] for primitive texture SDFs. Falls back to
+        :attr:`gap` when ``None``. Distinct from :attr:`gap` (broad-phase
+        inflation) and :attr:`margin` (contact-surface inflation). Rejected on
+        ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
+        :meth:`~newton.geometry.Mesh.build_sdf` instead."""
 
         def configure_sdf(
             self,
@@ -959,6 +965,9 @@ class ModelBuilder:
         """Per-shape SDF maximum resolutions retained until :meth:`finalize <ModelBuilder.finalize>`."""
         self.shape_sdf_texture_format: list[str] = []
         """Per-shape SDF texture format retained until :meth:`finalize <ModelBuilder.finalize>`."""
+        self.shape_sdf_padding: list[float | None] = []
+        """Per-shape SDF generation margins [m] retained until :meth:`finalize <ModelBuilder.finalize>`.
+        When ``None``, :attr:`shape_gap` is used for primitive texture SDF generation."""
 
         # Mesh SDF storage (texture SDF arrays created at finalize)
 
@@ -1138,6 +1147,8 @@ class ModelBuilder:
 
         self.articulation_start: list[int] = []
         """Articulation start indices accumulated for :attr:`Model.articulation_start`."""
+        self.articulation_end: list[int] = []
+        """Exclusive end indices of regular tree joints accumulated for :attr:`Model.articulation_end`."""
         self.articulation_label: list[str] = []
         """Articulation labels accumulated for :attr:`Model.articulation_label`."""
         self.articulation_world: list[int] = []
@@ -2243,6 +2254,7 @@ class ModelBuilder:
         # Store the articulation using the first joint's index as the start
         articulation_idx = self.articulation_count
         self.articulation_start.append(sorted_joints[0])
+        self.articulation_end.append(sorted_joints[-1] + 1)
         self.articulation_label.append(label or f"articulation_{articulation_idx}")
         self.articulation_world.append(self.current_world)
 
@@ -2430,6 +2442,7 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
         force_position_velocity_actuation: bool = False,
+        convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
@@ -2537,6 +2550,9 @@ class ModelBuilder:
                 ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
                 colliders on bodies with visual-only geometry. Default is False.
             parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+            convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
+                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
+                equality constraints are stored in the legacy equality constraint arrays.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
             schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
                 Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -2626,6 +2642,7 @@ class ModelBuilder:
             mesh_maxhullvert=mesh_maxhullvert,
             schema_resolvers=schema_resolvers,
             force_position_velocity_actuation=force_position_velocity_actuation,
+            convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,
         )
 
@@ -2657,6 +2674,7 @@ class ModelBuilder:
         collapse_fixed_joints: bool = False,
         verbose: bool = False,
         skip_equality_constraints: bool = False,
+        convert_mjc_equality_constraints: bool = True,
         convert_3d_hinge_to_ball_joints: bool = False,
         mesh_maxhullvert: int | None = None,
         ctrl_direct: bool = False,
@@ -2762,6 +2780,9 @@ class ModelBuilder:
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
             verbose: If True, print additional information about parsing the MJCF.
             skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
+            convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
+                joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
+                equality constraints are stored in the legacy equality constraint arrays.
             convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
             ctrl_direct: If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
@@ -2802,6 +2823,7 @@ class ModelBuilder:
             collapse_fixed_joints=collapse_fixed_joints,
             verbose=verbose,
             skip_equality_constraints=skip_equality_constraints,
+            convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             convert_3d_hinge_to_ball_joints=convert_3d_hinge_to_ball_joints,
             mesh_maxhullvert=mesh_maxhullvert,
             ctrl_direct=ctrl_direct,
@@ -3102,7 +3124,8 @@ class ModelBuilder:
                         self.joint_X_p[start_X_p + i] = transform_mul(xform, builder.joint_X_p[i])
 
             # offset the indices
-            self.articulation_start.extend([a + self.joint_count for a in builder.articulation_start])
+            self.articulation_start.extend([a + start_joint_idx for a in builder.articulation_start])
+            self.articulation_end.extend([a + start_joint_idx for a in builder.articulation_end])
 
             new_parents = [p + start_body_idx if p != -1 else -1 for p in builder.joint_parent]
             new_children = [c + start_body_idx for c in builder.joint_child]
@@ -3289,6 +3312,7 @@ class ModelBuilder:
             "shape_sdf_max_resolution",
             "shape_sdf_target_voxel_size",
             "shape_sdf_texture_format",
+            "shape_sdf_padding",
             "particle_qd",
             "particle_mass",
             "particle_radius",
@@ -3381,6 +3405,36 @@ class ModelBuilder:
             # Value transformation based on references
             use_current_world = attr.references == "world"
             value_offset = 0 if use_current_world else get_offset(attr.references)
+            is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
+
+            def transform_equality_target_value(entity_idx: int, value: Any) -> Any:
+                try:
+                    target = int(value)
+                except (TypeError, ValueError):
+                    return value
+                if target < 0:
+                    return value
+
+                target_kind_attr = builder.custom_attributes.get("mujoco:equality_constraint_target_kind")
+                target_kind = 0
+                if target_kind_attr is not None and isinstance(target_kind_attr.values, dict):
+                    try:
+                        target_kind = int(target_kind_attr.values.get(entity_idx, 0))
+                    except (TypeError, ValueError):
+                        target_kind = 0
+
+                if target_kind == 1:
+                    return target + start_joint_idx
+                if target_kind == 2:
+                    return target + start_constraint_mimic_idx
+                return value
+
+            def transform_enum_value(
+                entity_idx: int, value: Any, is_equality_target_attr: bool = is_equality_target_attr
+            ) -> Any:
+                if is_equality_target_attr:
+                    return transform_equality_target_value(entity_idx, value)
+                return transform_value(value)
 
             def transform_value(v, offset=value_offset, replace_with_world=use_current_world):
                 if replace_with_world:
@@ -3408,7 +3462,9 @@ class ModelBuilder:
                     mapped_values = [transform_value(value) for value in attr.values]
                 else:
                     # Enum frequency: remap dict indices with offset
-                    mapped_values = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
+                    mapped_values = {
+                        index_offset + idx: transform_enum_value(idx, value) for idx, value in attr.values.items()
+                    }
                 self.custom_attributes[full_key] = replace(attr, values=mapped_values)
                 continue
 
@@ -3439,7 +3495,9 @@ class ModelBuilder:
                 merged.values.extend(new_values)
             else:
                 # Enum frequency: update dict with remapped indices
-                new_indices = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
+                new_indices = {
+                    index_offset + idx: transform_enum_value(idx, value) for idx, value in attr.values.items()
+                }
                 merged.values.update(new_indices)
 
         # Carry over custom frequency registrations (including usd_prim_filter) from the source builder.
@@ -5159,6 +5217,7 @@ class ModelBuilder:
 
         joint_remap = {}
         articulation_first_joint: dict[int, int] = {}
+        articulation_last_joint: dict[int, int] = {}
         for i, joint in enumerate(retained_joints):
             old_joint_idx = joint["original_id"]
             joint_remap[old_joint_idx] = i
@@ -5166,12 +5225,15 @@ class ModelBuilder:
                 old_articulation = original_joint_articulation[old_joint_idx]
                 if old_articulation >= 0 and old_articulation not in articulation_first_joint:
                     articulation_first_joint[old_articulation] = i
+                if old_articulation >= 0:
+                    articulation_last_joint[old_articulation] = i
 
         # Update articulation starts from retained joints' original articulation
         # ownership. This preserves articulation order while dropping empty
         # articulations whose joints were fully collapsed away.
         articulation_remap: dict[int, int] = {}
         new_articulation_start: list[int] = []
+        new_articulation_end: list[int] = []
         new_articulation_label: list[str] = []
         new_articulation_world: list[int] = []
         for articulation_idx in range(len(original_articulation_start)):
@@ -5180,6 +5242,7 @@ class ModelBuilder:
 
             articulation_remap[articulation_idx] = len(new_articulation_start)
             new_articulation_start.append(articulation_first_joint[articulation_idx])
+            new_articulation_end.append(articulation_last_joint[articulation_idx] + 1)
             if articulation_idx < len(original_articulation_label):
                 new_articulation_label.append(original_articulation_label[articulation_idx])
             else:
@@ -5190,6 +5253,7 @@ class ModelBuilder:
                 new_articulation_world.append(self.current_world)
 
         self.articulation_start = new_articulation_start
+        self.articulation_end = new_articulation_end
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
 
@@ -5388,6 +5452,32 @@ class ModelBuilder:
                     print(f"Warning: Mimic constraint references removed joint {old_joint1}, disabling constraint")
                 self.constraint_mimic_enabled[i] = False
 
+        target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
+        target_attr = self.custom_attributes.get("mujoco:equality_constraint_target")
+        if (
+            target_kind_attr is not None
+            and target_attr is not None
+            and isinstance(target_kind_attr.values, dict)
+            and isinstance(target_attr.values, dict)
+        ):
+            for eq_idx, target in list(target_attr.values.items()):
+                try:
+                    target_kind = int(target_kind_attr.values.get(eq_idx, 0))
+                    old_target = int(target)
+                except (TypeError, ValueError):
+                    continue
+                if old_target < 0:
+                    continue
+                if target_kind == 1:
+                    if old_target in joint_remap:
+                        target_attr.values[eq_idx] = joint_remap[old_target]
+                    else:
+                        target_attr.values[eq_idx] = -1
+                        target_kind_attr.values[eq_idx] = 0
+                elif target_kind == 2 and old_target >= len(self.constraint_mimic_joint0):
+                    target_attr.values[eq_idx] = -1
+                    target_kind_attr.values[eq_idx] = 0
+
         # Rebuild parent/child lookups
         self.joint_parents.clear()
         self.joint_children.clear()
@@ -5494,20 +5584,35 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
         cfg.validate(shape_type=type)
-        if type == GeoType.MESH:
+        # Both raw meshes and convex-mesh approximations share the mesh-backed
+        # SDF code path; cfg.sdf_* fields belong on Mesh.build_sdf, not the
+        # ShapeConfig, so reject them for both shape types up front instead of
+        # producing empty texture data later in finalize().
+        if type in (GeoType.MESH, GeoType.CONVEX_MESH):
             if (
                 cfg.sdf_max_resolution is not None
                 or cfg.sdf_target_voxel_size is not None
                 or cfg.sdf_narrow_band_range != (-0.1, 0.1)
                 or cfg.sdf_texture_format != "uint16"
+                or cfg.sdf_padding is not None
             ):
                 raise ValueError(
-                    "Mesh shapes do not use cfg.sdf_* for SDF generation. "
+                    "Mesh-backed shapes do not use cfg.sdf_* for SDF generation. "
                     "Build and attach an SDF on the mesh via mesh.build_sdf()."
+                )
+            if type == GeoType.CONVEX_MESH and cfg.is_hydroelastic:
+                # finalize() only consumes mesh-attached SDFs for GeoType.MESH;
+                # a hydroelastic CONVEX_MESH would fall into the primitive
+                # branch where _create_primitive_mesh returns None, leaving an
+                # invalid shape_sdf_index entry. Reject up front.
+                raise ValueError(
+                    "Hydroelastic is not supported on GeoType.CONVEX_MESH. "
+                    "Use add_shape_mesh() with a watertight Mesh whose mesh.sdf "
+                    "was built via Mesh.build_sdf()."
                 )
             if cfg.is_hydroelastic and (src is None or getattr(src, "sdf", None) is None):
                 raise ValueError(
-                    "Hydroelastic mesh shapes require mesh.sdf. "
+                    "Hydroelastic mesh-backed shapes require mesh.sdf. "
                     "Call mesh.build_sdf() before add_shape_mesh(..., cfg=...)."
                 )
         if scale is None:
@@ -5622,6 +5727,7 @@ class ModelBuilder:
         self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
         self.shape_sdf_max_resolution.append(cfg.sdf_max_resolution)
         self.shape_sdf_texture_format.append(cfg.sdf_texture_format)
+        self.shape_sdf_padding.append(cfg.sdf_padding)
 
         if cfg.has_shape_collision and cfg.collision_filter_parent:
             for parent_body, joint_idx in self.joint_parents.get(body, ()):
@@ -6468,6 +6574,23 @@ class ModelBuilder:
                 for i, stype in enumerate(self.shape_type)
                 if stype == GeoType.MESH and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
             ]
+
+        # These methods rewrite shape_type away from MESH; any SDF/hydro state
+        # would be silently dropped at finalize. The USD importer intercepts
+        # this earlier; this guard catches direct Python API misuse.
+        if method in {"coacd", "vhacd", "convex_hull", "bounding_box", "bounding_sphere"}:
+            for shape in shape_indices:
+                has_sdf_state = (
+                    self.shape_sdf_max_resolution[shape] is not None
+                    or self.shape_sdf_target_voxel_size[shape] is not None
+                    or self.shape_sdf_padding[shape] is not None
+                    or bool(self.shape_flags[shape] & ShapeFlags.HYDROELASTIC)
+                )
+                if has_sdf_state:
+                    raise ValueError(
+                        f"Shape {shape}: method '{method}' replaces the mesh with non-mesh "
+                        f"geometry; SDF / hydroelastic configuration cannot be preserved."
+                    )
 
         if keep_visual_shapes:
             # if keeping visual shapes, first copy input shapes, mark the copies as visual-only,
@@ -8843,9 +8966,25 @@ class ModelBuilder:
 
             if parent_articulation is not None:
                 self._validate_kinematic_articulation_joints(joint_indices)
+                old_end = self.articulation_end[parent_articulation]
+                new_end = max(old_end, max(joint_indices) + 1)
+                imported_joints = set(joint_indices)
+                for joint_idx in range(old_end, new_end):
+                    if joint_idx not in imported_joints:
+                        joint_name = (
+                            self.joint_label[joint_idx] if joint_idx < len(self.joint_label) else f"#{joint_idx}"
+                        )
+                        owner = self.joint_articulation[joint_idx]
+                        kind = "loop-closing joint" if owner == -1 else f"joint owned by articulation #{owner}"
+                        raise ValueError(
+                            f"Cannot attach imported joints to articulation #{parent_articulation}: "
+                            f"{kind} '{joint_name}' at index {joint_idx} lies between the existing "
+                            "regular joints and the imported joints."
+                        )
                 # Mark all new joints as belonging to the parent's articulation
                 for joint_idx in joint_indices:
                     self.joint_articulation[joint_idx] = parent_articulation
+                self.articulation_end[parent_articulation] = new_end
             else:
                 # Parent body exists but is not in any articulation - this is an error
                 # because user explicitly specified parent_body but it can't be used
@@ -9307,7 +9446,7 @@ class ModelBuilder:
         - Body references: shape_body, joint_parent, joint_child, equality_constraint_body1/2
         - Joint references: equality_constraint_joint1/2
         - Self-referential joints: joint_parent[i] != joint_child[i]
-        - Start array monotonicity: joint_q_start, joint_qd_start, articulation_start
+        - Start array monotonicity: joint_q_start, joint_qd_start, articulation_start, articulation_end
         - Array length consistency: per-DOF and per-coord arrays
 
         Raises:
@@ -9452,7 +9591,13 @@ class ModelBuilder:
 
         articulation_count = self.articulation_count
         if articulation_count > 0:
+            if len(self.articulation_end) != articulation_count:
+                raise ValueError(
+                    f"Invalid articulation_end length: expected {articulation_count} entries, "
+                    f"got {len(self.articulation_end)}."
+                )
             articulation_start = np.array(self.articulation_start, dtype=np.int32)
+            articulation_end = np.array(self.articulation_end, dtype=np.int32)
             if len(articulation_start) > 1:
                 diffs = np.diff(articulation_start)
                 if np.any(diffs < 0):
@@ -9461,6 +9606,24 @@ class ModelBuilder:
                         f"articulation_start is not monotonically increasing: "
                         f"articulation_start[{idx}]={articulation_start[idx]} > articulation_start[{idx + 1}]={articulation_start[idx + 1]}."
                     )
+            invalid_end_mask = (articulation_end < articulation_start) | (articulation_end > joint_count)
+            if np.any(invalid_end_mask):
+                idx = int(np.where(invalid_end_mask)[0][0])
+                raise ValueError(
+                    f"Invalid articulation_end[{idx}]={articulation_end[idx]} for "
+                    f"articulation_start[{idx}]={articulation_start[idx]} and joint_count={joint_count}."
+                )
+            next_start = np.empty_like(articulation_start)
+            if articulation_count > 1:
+                next_start[:-1] = articulation_start[1:]
+            next_start[-1] = joint_count
+            invalid_loop_boundary_mask = articulation_end > next_start
+            if np.any(invalid_loop_boundary_mask):
+                idx = int(np.where(invalid_loop_boundary_mask)[0][0])
+                raise ValueError(
+                    f"articulation_end[{idx}]={articulation_end[idx]} exceeds the next articulation start "
+                    f"{next_start[idx]}."
+                )
 
         # Validate array length consistency
         if joint_count > 0:
@@ -10140,14 +10303,32 @@ class ModelBuilder:
                 and getattr(ssrc, "sdf", None) is not None
                 for stype, ssrc, sflags in zip(self.shape_type, self.shape_source, self.shape_flags, strict=True)
             )
+            # Catch meshes whose SDF is still deferred (built during finalize) so
+            # the CPU-runs-into-build_sdf path also raises here, not deeper down.
+            has_deferred_mesh_sdf = any(
+                stype == GeoType.MESH
+                and ssrc is not None
+                and sflags & ShapeFlags.COLLIDE_SHAPES
+                and getattr(ssrc, "sdf", None) is None
+                and (smax is not None or svox is not None)
+                for stype, ssrc, sflags, smax, svox in zip(
+                    self.shape_type,
+                    self.shape_source,
+                    self.shape_flags,
+                    self.shape_sdf_max_resolution,
+                    self.shape_sdf_target_voxel_size,
+                    strict=True,
+                )
+            )
             has_hydroelastic_shapes = any(
                 (sflags & ShapeFlags.HYDROELASTIC) and (sflags & ShapeFlags.COLLIDE_SHAPES)
                 for sflags in self.shape_flags
             )
-            if (has_mesh_sdf or has_hydroelastic_shapes) and not is_gpu:
+            if (has_mesh_sdf or has_deferred_mesh_sdf or has_hydroelastic_shapes) and not is_gpu:
                 raise ValueError(
-                    "SDF collision paths require a CUDA-capable GPU device. "
-                    "Texture SDFs (used for SDF collision) only support CUDA."
+                    "Building texture SDFs requires a CUDA-capable GPU device. "
+                    "The texture SDF build path uses wp.Volume.allocate_by_tiles "
+                    "and wp.Texture3D, which are CUDA-only."
                 )
 
             sdf_block_coords = []
@@ -10171,6 +10352,14 @@ class ModelBuilder:
             compact_texture_sdf_subgrid_start_slots = []
             shape_sdf_index = [-1] * len(self.shape_type)
             sdf_cache = {}
+            # Deferred-mesh SDFs are built into a temporary Mesh clone keyed by
+            # the parameter tuple. This avoids mutating the user's shared Mesh
+            # while still deduplicating identical (Mesh, params) combinations.
+            deferred_mesh_sdf_cache = {}
+            # Forward simplified collision edges from the deferred SDF clone to
+            # the edge-consumption loop below.
+            deferred_collision_edges_cache: dict[tuple, Any] = {}
+            deferred_collision_edges: dict[int, Any] = {}
 
             for i in range(len(self.shape_type)):
                 shape_type = self.shape_type[i]
@@ -10182,6 +10371,9 @@ class ModelBuilder:
                 sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
                 sdf_tex_fmt = self.shape_sdf_texture_format[i]
+                sdf_padding = self.shape_sdf_padding[i]
+                # Fall back to shape_gap when sdf_padding is unset (see ShapeConfig.sdf_padding).
+                sdf_gen_margin = sdf_padding if sdf_padding is not None else shape_gap
                 is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
@@ -10191,6 +10383,36 @@ class ModelBuilder:
 
                 if shape_type == GeoType.MESH and has_shape_collision and shape_src is not None:
                     mesh_sdf = getattr(shape_src, "sdf", None)
+                    # Build on a Mesh clone so shapes sharing one Mesh at different
+                    # scale/margin/resolution end up with distinct SDFs.
+                    if mesh_sdf is None and (sdf_max_resolution is not None or sdf_target_voxel_size is not None):
+                        sdf_kwargs = {"narrow_band_range": tuple(sdf_narrow_band_range)}
+                        if sdf_max_resolution is not None:
+                            sdf_kwargs["max_resolution"] = sdf_max_resolution
+                        if sdf_target_voxel_size is not None:
+                            sdf_kwargs["target_voxel_size"] = sdf_target_voxel_size
+                        sdf_kwargs["margin"] = sdf_gen_margin
+                        sdf_kwargs["scale"] = tuple(shape_scale)
+                        sdf_kwargs["texture_format"] = sdf_tex_fmt
+                        deferred_key = (
+                            id(shape_src),
+                            tuple(shape_scale),
+                            tuple(sdf_narrow_band_range),
+                            sdf_target_voxel_size,
+                            sdf_max_resolution,
+                            sdf_tex_fmt,
+                            sdf_gen_margin,
+                        )
+                        mesh_sdf = deferred_mesh_sdf_cache.get(deferred_key)
+                        if mesh_sdf is None:
+                            mesh_copy = shape_src.copy()
+                            mesh_copy.build_sdf(**sdf_kwargs)
+                            mesh_sdf = mesh_copy.sdf
+                            deferred_mesh_sdf_cache[deferred_key] = mesh_sdf
+                            if getattr(mesh_copy, "_collision_edges", None) is not None:
+                                deferred_collision_edges_cache[deferred_key] = mesh_copy._collision_edges
+                        if deferred_key in deferred_collision_edges_cache:
+                            deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
                         cache_key = ("mesh_sdf", id(mesh_sdf))
                         if mesh_sdf.texture_block_coords is not None:
@@ -10206,7 +10428,7 @@ class ModelBuilder:
                     cache_key = (
                         "primitive_generated",
                         shape_type,
-                        shape_gap,
+                        sdf_gen_margin,
                         tuple(sdf_narrow_band_range),
                         sdf_target_voxel_size,
                         effective_max_resolution,
@@ -10248,7 +10470,7 @@ class ModelBuilder:
                                 try:
                                     tex_data, c_tex, s_tex, tex_bc = create_texture_sdf_from_mesh(
                                         prim_wp_mesh,
-                                        margin=shape_gap,
+                                        margin=sdf_gen_margin,
                                         narrow_band_range=tuple(sdf_narrow_band_range),
                                         max_resolution=effective_max_resolution,
                                         target_voxel_size=sdf_target_voxel_size,
@@ -10370,14 +10592,20 @@ class ModelBuilder:
                     and (self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES)
                 ):
                     mesh = self.shape_source[i]
-                    mesh_key = id(mesh)
+                    deferred_edges = deferred_collision_edges.get(i)
+                    if deferred_edges is not None:
+                        mesh_key = ("deferred", id(deferred_edges))
+                    else:
+                        mesh_key = id(mesh)
                     if mesh_key in edge_cache:
                         shape_edge_ranges.append(edge_cache[mesh_key])
                     else:
                         # ``Mesh.build_sdf()`` caches a simplified edge set on
                         # the mesh for SDF-mesh contact generation; fall back
                         # to the full edge list otherwise.
-                        if mesh._collision_edges is not None:
+                        if deferred_edges is not None:
+                            edges = deferred_edges
+                        elif mesh._collision_edges is not None:
                             edges = mesh._collision_edges
                         else:
                             edges = mesh.edges  # lazily computed and cached on the Mesh
@@ -10616,13 +10844,14 @@ class ModelBuilder:
             joint_qd_start.append(self.joint_dof_count)
             articulation_start = copy.copy(self.articulation_start)
             articulation_start.append(self.joint_count)
+            articulation_end = copy.copy(self.articulation_end)
 
             # Compute max joints and dofs per articulation for IK/Jacobian kernel launches
             max_joints_per_articulation = 0
             max_dofs_per_articulation = 0
             for art_idx in range(len(self.articulation_start)):
                 joint_start = articulation_start[art_idx]
-                joint_end = articulation_start[art_idx + 1]
+                joint_end = articulation_end[art_idx]
                 num_joints = joint_end - joint_start
                 max_joints_per_articulation = max(max_joints_per_articulation, num_joints)
                 # Compute dofs for this articulation
@@ -10634,6 +10863,7 @@ class ModelBuilder:
             m.joint_q_start = wp.array(joint_q_start, dtype=wp.int32)
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
+            m.articulation_end = wp.array(articulation_end, dtype=wp.int32)
             m.articulation_label = self.articulation_label
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
