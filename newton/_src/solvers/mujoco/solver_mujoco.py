@@ -4928,7 +4928,7 @@ class SolverMuJoCo(SolverBase):
                     warnings.warn(
                         f"Free joint '{model.joint_label[j]}' has parent body {parent} instead of the world (-1). "
                         "SolverMuJoCo requires free joints to attach directly to the world; "
-                        "this model may not simulate correctly.",
+                        "MuJoCo will reject this model at compile time.",
                         UserWarning,
                         stacklevel=2,
                     )
