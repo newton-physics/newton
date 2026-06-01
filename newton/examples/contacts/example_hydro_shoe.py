@@ -2151,9 +2151,49 @@ class Example:
             hidden=False,
         )
 
+    def _log_compression_point_clouds(self, midsole_z: float):
+        grid_xy = self.spring_grid.grid_uv_m.astype(np.float32)
+        top_disp = self.wp_foot_top_displacement.numpy()
+        top_pressure = self.wp_foot_top_pressure_kpa.numpy()
+        bottom_disp = self.wp_ground_bottom_displacement.numpy()
+        bottom_pressure = self.wp_ground_bottom_pressure_kpa.numpy()
+
+        top_active = top_disp > 1.0e-6
+        if np.any(top_active):
+            top_z = self.start_z + self.spring_grid.top_m - top_disp
+            top_points = np.column_stack((grid_xy[top_active, 0], grid_xy[top_active, 1], top_z[top_active])).astype(
+                np.float32
+            )
+            top_colors = _colors_from_pressure(top_pressure[top_active], self.max_display_pressure_kpa)
+            self.viewer.log_points(
+                "/foot_shoe/top_compression_points",
+                wp.array(top_points, dtype=wp.vec3, device=self.device),
+                self.point_radius * 2.0,
+                wp.array(top_colors, dtype=wp.vec3, device=self.device),
+            )
+        else:
+            self.viewer.log_points("/foot_shoe/top_compression_points", None)
+
+        bottom_active = bottom_disp > 1.0e-6
+        if np.any(bottom_active):
+            bottom_z = midsole_z + self.spring_grid.bottom_m + bottom_disp
+            bottom_points = np.column_stack(
+                (grid_xy[bottom_active, 0], grid_xy[bottom_active, 1], bottom_z[bottom_active])
+            ).astype(np.float32)
+            bottom_colors = _colors_from_pressure(bottom_pressure[bottom_active], self.max_display_pressure_kpa)
+            self.viewer.log_points(
+                "/foot_shoe/bottom_compression_points",
+                wp.array(bottom_points, dtype=wp.vec3, device=self.device),
+                self.point_radius * 2.0,
+                wp.array(bottom_colors, dtype=wp.vec3, device=self.device),
+            )
+        else:
+            self.viewer.log_points("/foot_shoe/bottom_compression_points", None)
+
     def render(self):
         body_q = self.state_0.body_q.numpy()
         foot_pos = body_q[self.foot_body_id, :3]
+        midsole_pos = body_q[self.midsole_body_id, :3]
 
         # Retrieve the contact surface
         hydro = self.collision_pipeline.narrow_phase.hydroelastic_sdf
@@ -2165,6 +2205,7 @@ class Example:
 
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+        self._log_compression_point_clouds(float(midsole_pos[2]))
 
         # Log contact patch if active
         if face_count > 0:
@@ -2239,6 +2280,16 @@ class Example:
                     float(
                         np.max(self.wp_ground_bottom_displacement.numpy())
                         if len(self.wp_ground_bottom_displacement.numpy()) > 0
+                        else 0.0
+                    ),
+                    float(
+                        np.max(self.wp_foot_top_displacement.numpy())
+                        if len(self.wp_foot_top_displacement.numpy()) > 0
+                        else 0.0
+                    ),
+                    float(
+                        np.max(self.wp_stack_displacement.numpy())
+                        if len(self.wp_stack_displacement.numpy()) > 0
                         else 0.0
                     ),
                     float(face_count),
