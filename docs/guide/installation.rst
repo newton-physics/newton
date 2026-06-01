@@ -110,8 +110,6 @@ with other packages:
     ``examples`` extra). If you encounter installation errors, we recommend upgrading to a later
     Python version, or follow the :doc:`development` guide to install Newton using ``uv``.
 
-.. _running-examples:
-
 Running Examples
 ^^^^^^^^^^^^^^^^
 
@@ -122,26 +120,13 @@ After installing Newton with the ``examples`` extra, launch the default
 
     python -m newton.examples
 
-Run an example that runs RL policy inference. Choose the extra matching your
-NVIDIA driver's CUDA support (``torch-cu12`` for CUDA 12.x, ``torch-cu13`` for
-CUDA 13.x) and the corresponding pytorch wheel (e.g, ``128`` for CUDA 12.8); run ``nvidia-smi``
-to check the supported CUDA version (shown in the top-right corner of the output):
+Run an example that runs RL policy inference. RL policies ship as ONNX files and
+run on Newton's Warp-backed runtime, so the ``examples`` extra is all you need —
+no PyTorch installation is required:
 
 .. code-block:: console
 
-    pip install newton[torch-cu12] --extra-index-url https://download.pytorch.org/whl/cu128
     python -m newton.examples robot_anymal_c_walk
-
-.. note::
-
-    The ``torch-cu12`` extra installs PyTorch built against CUDA 12.8. If your
-    driver only supports CUDA 12.4 or 12.5 (check with ``nvidia-smi``), you
-    need to install PyTorch 2.6.0 manually instead:
-
-    .. code-block:: console
-
-        pip install "newton[examples]"
-        pip install torch==2.6.0 --extra-index-url https://download.pytorch.org/whl/cu124
 
 See a list of all available examples (also browsable from the viewer's side panel):
 
@@ -228,9 +213,9 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
    * - ``examples``
      - Dependencies for running examples, including visualization (includes ``sim`` + ``importers``)
    * - ``torch-cu12``
-     - PyTorch (CUDA 12.8+) for running RL policy examples (includes ``examples``); see :ref:`note above <running-examples>` for CUDA 12.4–12.5
+     - PyTorch (CUDA 12.8+) for Kamino RL training scripts (includes ``examples``)
    * - ``torch-cu13``
-     - PyTorch (CUDA 13) for running RL policy examples (includes ``examples``)
+     - PyTorch (CUDA 13) for Kamino RL training scripts (includes ``examples``)
    * - ``notebook``
      - Jupyter notebook support with Rerun visualization (includes ``examples``)
    * - ``dev``
