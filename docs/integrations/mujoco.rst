@@ -252,11 +252,12 @@ array; slot layout depends on the constraint type.
        :attr:`~newton.JointType.REVOLUTE` and
        :attr:`~newton.JointType.PRISMATIC` joints are supported.
 
-Explicit equality constraints are appended as ``mujoco:equality_constraint``
-custom-attribute rows. Construct them with
+Newton's core API does not expose equality constraints as a dedicated
+builder call. Construct them through the MuJoCo
+:ref:`custom-attribute namespace <mujoco-custom-attributes>` with
 :meth:`~newton.ModelBuilder.add_custom_values` using the
-``mujoco:equality_constraint_*`` keys, and read or update finalized fields via
-``model.mujoco.equality_constraint_*``.
+``mujoco:equality_constraint_*`` keys, then read or update finalized
+fields via ``model.mujoco.equality_constraint_*``.
 
 **Loop closures.** Newton joints with no associated articulation
 (``joint_articulation == -1``) are treated as loop closures rather than
