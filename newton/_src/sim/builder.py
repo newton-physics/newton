@@ -304,7 +304,7 @@ class ModelBuilder:
         """
         sdf_padding: float | None = None
         """SDF AABB padding [m] for primitive shapes. When a texture SDF is
-        generated from a primitive (box, sphere, capsule, cylinder, cone) during
+        generated from a primitive (box, sphere, capsule, cylinder, cone, ellipsoid) during
         :meth:`ModelBuilder.finalize`, this value extends the SDF's bounding box
         beyond the mesh AABB. Distinct from :attr:`gap` (collision-pipeline
         broad-phase inflation) and :attr:`margin` (contact-surface inflation),

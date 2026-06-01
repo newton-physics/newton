@@ -22,7 +22,6 @@ from pathlib import Path
 import warp as wp
 
 import newton
-from newton._src.utils.import_usd import parse_usd
 from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices
 
 CUBE_POINTS = [
@@ -116,7 +115,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = parse_usd(builder, str(usd_path))
+            result = builder.add_usd(str(usd_path))
             psm = result["path_shape_map"]
 
             s1 = psm["/World/Body1/CollisionMesh"]
@@ -160,7 +159,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             self.assertIsNone(builder.default_shape_cfg.sdf_max_resolution)
             self.assertIsNone(builder.default_shape_cfg.sdf_target_voxel_size)
 
-            result = parse_usd(builder, str(usd_path))
+            result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
 
             # Mesh should not have SDF built
@@ -186,7 +185,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             builder = newton.ModelBuilder()
             builder.default_shape_cfg.sdf_max_resolution = 64
 
-            result = parse_usd(builder, str(usd_path))
+            result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
 
             # SDF params stored, deferred to finalize
@@ -227,7 +226,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = parse_usd(builder, str(usd_path))
+            result = builder.add_usd(str(usd_path))
             psm = result["path_shape_map"]
 
             s1 = psm["/World/Body1/CollisionMesh"]
@@ -261,7 +260,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = parse_usd(builder, str(usd_path))
+            result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
 
             # SDF deferred to finalize; result lands in the model, not on the
@@ -295,7 +294,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = parse_usd(builder, str(usd_path))
+            result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
 
             # SDF should still be built (sdfEnabled not false), but hydroelastic should be off
@@ -328,7 +327,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = parse_usd(builder, str(usd_path))
+            result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
             self.assertTrue(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
@@ -362,7 +361,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = parse_usd(builder, str(usd_path))
+            result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
             self.assertAlmostEqual(builder.shape_sdf_padding[s1], 0.03, places=5)
@@ -390,7 +389,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = parse_usd(builder, str(usd_path))
+            result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
 
             self.assertEqual(builder.shape_sdf_max_resolution[s1], 64)
@@ -423,7 +422,7 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             with self.assertRaisesRegex(ValueError, "sdf_max_resolution must be divisible by 8"):
-                parse_usd(builder, str(usd_path))
+                builder.add_usd(str(usd_path))
 
     def test_deferred_sdf_distinguishes_shape_scales(self, device=None):
         """Two shapes sharing the same Mesh at different scales must produce distinct SDF entries."""
@@ -496,7 +495,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = parse_usd(builder, str(usd_path))
+            result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
             # shape_source still has no collision edges before finalize (the
             # deferred build runs inside finalize on a Mesh clone).
@@ -537,7 +536,7 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             with self.assertWarnsRegex(UserWarning, "physics:approximation.*ignored"):
-                result = parse_usd(builder, str(usd_path))
+                result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
             # SDF configuration must survive the ignored approximation.
             self.assertEqual(builder.shape_sdf_max_resolution[s1], 64)
@@ -563,7 +562,7 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             with self.assertWarnsRegex(UserWarning, "independent collision representations"):
-                result = parse_usd(builder, str(usd_path))
+                result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
             self.assertEqual(builder.shape_sdf_max_resolution[s1], 64)
 
@@ -590,7 +589,7 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             builder.default_shape_cfg.is_hydroelastic = True
-            result = parse_usd(builder, str(usd_path))
+            result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
             self.assertFalse(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
@@ -616,7 +615,7 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             # Must not raise: target_voxel_size and max_resolution are mutually exclusive.
-            result = parse_usd(builder, str(usd_path))
+            result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
             self.assertIsNone(builder.shape_sdf_max_resolution[s1])
@@ -646,7 +645,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = parse_usd(builder, str(usd_path))
+            result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
             self.assertFalse(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
@@ -675,7 +674,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = parse_usd(builder, str(usd_path))
+            result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
             self.assertFalse(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
@@ -704,7 +703,7 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             with self.assertRaisesRegex(ValueError, "hydroelastic mesh requires"):
-                parse_usd(builder, str(usd_path))
+                builder.add_usd(str(usd_path))
 
     def test_usd_hydroelastic_mesh_with_kh_without_sdf_config_raises(self, device=None):
         """Authoring newton:hydroelasticStiffness must not bypass the hydroelastic-mesh SDF-source validation."""
@@ -727,7 +726,7 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             with self.assertRaisesRegex(ValueError, "hydroelastic mesh requires"):
-                parse_usd(builder, str(usd_path))
+                builder.add_usd(str(usd_path))
 
 
 devices = get_selected_cuda_test_devices()
