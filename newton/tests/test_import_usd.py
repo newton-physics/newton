@@ -4486,6 +4486,149 @@ def Xform "Articulation" (
         self.assertAlmostEqual(rolling, 0.08, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visual_mesh_material_subsets_create_separate_visual_shapes(self):
+        """Test that visual mesh material subsets import as separate colored shapes."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/VisualMesh")
+        mesh.CreatePointsAttr().Set(
+            [
+                (-0.5, -0.5, 0.0),
+                (0.5, -0.5, 0.0),
+                (0.5, 0.5, 0.0),
+                (-0.5, 0.5, 0.0),
+            ]
+        )
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
+        st = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+        st.Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+
+        grey_material = UsdShade.Material.Define(stage, "/Materials/Grey")
+        grey_shader = UsdShade.Shader.Define(stage, "/Materials/Grey/PreviewSurface")
+        grey_shader.CreateIdAttr("UsdPreviewSurface")
+        grey_shader.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f).Set((0.5, 0.5, 0.5))
+        grey_material.CreateSurfaceOutput().ConnectToSource(grey_shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(grey_material)
+
+        red_material = UsdShade.Material.Define(stage, "/Materials/Red")
+        red_shader = UsdShade.Shader.Define(stage, "/Materials/Red/PreviewSurface")
+        red_shader.CreateIdAttr("UsdPreviewSurface")
+        red_shader.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f).Set((1.0, 0.0, 0.0))
+        red_material.CreateSurfaceOutput().ConnectToSource(red_shader.ConnectableAPI(), "surface")
+
+        blue_material = UsdShade.Material.Define(stage, "/Materials/Blue")
+        blue_shader = UsdShade.Shader.Define(stage, "/Materials/Blue/PreviewSurface")
+        blue_shader.CreateIdAttr("UsdPreviewSurface")
+        blue_texture = UsdShade.Shader.Define(stage, "/Materials/Blue/DiffuseTexture")
+        blue_texture.CreateIdAttr("UsdUVTexture")
+        blue_texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("blue.png"))
+        blue_texture.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+        blue_shader.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+            blue_texture.ConnectableAPI(), "rgb"
+        )
+        blue_material.CreateSurfaceOutput().ConnectToSource(blue_shader.ConnectableAPI(), "surface")
+
+        red_subset = UsdGeom.Subset.Define(stage, "/Body/VisualMesh/red")
+        red_subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.face)
+        red_subset.CreateFamilyNameAttr().Set("materialBind")
+        red_subset.CreateIndicesAttr().Set(Vt.IntArray([0]))
+        UsdShade.MaterialBindingAPI.Apply(red_subset.GetPrim()).Bind(red_material)
+
+        blue_subset = UsdGeom.Subset.Define(stage, "/Body/VisualMesh/blue")
+        blue_subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.face)
+        blue_subset.CreateFamilyNameAttr().Set("materialBind")
+        blue_subset.CreateIndicesAttr().Set(Vt.IntArray([1]))
+        UsdShade.MaterialBindingAPI.Apply(blue_subset.GetPrim()).Bind(blue_material)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        self.assertIn("/Body/VisualMesh/red", result["path_shape_map"])
+        self.assertIn("/Body/VisualMesh/blue", result["path_shape_map"])
+
+        red_shape = result["path_shape_map"]["/Body/VisualMesh/red"]
+        blue_shape = result["path_shape_map"]["/Body/VisualMesh/blue"]
+
+        self.assertEqual(builder.shape_count, 2)
+        self.assertEqual(builder.shape_label[red_shape], "/Body/VisualMesh/red")
+        self.assertEqual(builder.shape_label[blue_shape], "/Body/VisualMesh/blue")
+
+        red_mesh = builder.shape_source[red_shape]
+        blue_mesh = builder.shape_source[blue_shape]
+        self.assertEqual(len(red_mesh.indices), 3)
+        self.assertEqual(len(blue_mesh.indices), 3)
+        np.testing.assert_allclose(np.array(red_mesh.color), np.array([1.0, 0.0, 0.0]), atol=1e-6, rtol=1e-6)
+        self.assertIsNotNone(blue_mesh.uvs)
+        self.assertEqual(blue_mesh.texture, "blue.png")
+        np.testing.assert_allclose(np.array(blue_mesh.color), np.array([1.0, 1.0, 1.0]), atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_uv_length_mismatch_uses_info_logging(self):
+        """Dropped-UV/texture diagnostics are render-only and surface via `logger.info`, not `warnings.warn`."""
+        import logging as _logging  # noqa: PLC0415
+        import warnings as _warnings  # noqa: PLC0415
+
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        mesh = UsdGeom.Mesh.Define(stage, "/Body/VisualMesh")
+        mesh.CreatePointsAttr().Set(
+            [
+                (-0.5, -0.5, 0.0),
+                (0.5, -0.5, 0.0),
+                (0.5, 0.5, 0.0),
+                (-0.5, 0.5, 0.0),
+            ]
+        )
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
+        # Author a single face-varying `st` primvar whose length does not match the mesh's
+        # face-corner count, so the importer must drop UVs and (downstream) the bound texture.
+        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
+        ).Set([(0.0, 0.0)])
+
+        material = UsdShade.Material.Define(stage, "/Materials/Tex")
+        shader = UsdShade.Shader.Define(stage, "/Materials/Tex/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        tex = UsdShade.Shader.Define(stage, "/Materials/Tex/DiffuseTexture")
+        tex.CreateIdAttr("UsdUVTexture")
+        tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("ignored.png"))
+        tex.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+        shader.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(tex.ConnectableAPI(), "rgb")
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+
+        builder = newton.ModelBuilder()
+        with _warnings.catch_warnings(record=True) as caught, self.assertLogs("newton", level=_logging.INFO) as log_ctx:
+            _warnings.simplefilter("always")
+            builder.add_usd(stage)
+        uv_warnings = [
+            w for w in caught if "UV primvar length" in str(w.message) or "has a texture but no UVs" in str(w.message)
+        ]
+        self.assertEqual(uv_warnings, [], f"unexpected UV warnings: {[str(w.message) for w in uv_warnings]}")
+
+        joined = "\n".join(log_ctx.output)
+        self.assertIn("UV primvar length", joined)
+        self.assertIn("dropping texture because UVs could not be recovered", joined)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_density_used_by_mass_properties(self):
         """Test that physics material density contributes to imported body mass/inertia."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
