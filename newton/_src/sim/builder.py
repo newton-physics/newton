@@ -3536,9 +3536,14 @@ class ModelBuilder:
 
                 target_kind_attr = builder.custom_attributes.get("mujoco:equality_constraint_target_kind")
                 target_kind = 0
-                if target_kind_attr is not None and isinstance(target_kind_attr.values, dict):
+                if (
+                    target_kind_attr is not None
+                    and target_kind_attr.values
+                    and entity_idx < len(target_kind_attr.values)
+                    and target_kind_attr.values[entity_idx] is not None
+                ):
                     try:
-                        target_kind = int(target_kind_attr.values.get(entity_idx, 0))
+                        target_kind = int(target_kind_attr.values[entity_idx])
                     except (TypeError, ValueError):
                         target_kind = 0
 
@@ -3577,8 +3582,9 @@ class ModelBuilder:
             merged = self.custom_attributes.get(full_key)
             if merged is None:
                 if isinstance(freq_key, str):
-                    # String frequency: copy list as-is (no offset for sequential data)
-                    mapped_values = [transform_value(value) for value in attr.values]
+                    # String frequency: copy list, applying reference offsets and the polymorphic
+                    # equality-target remap (transform_enum_value falls back to transform_value).
+                    mapped_values = [transform_enum_value(idx, value) for idx, value in enumerate(attr.values)]
                 else:
                     # Enum frequency: remap dict indices with offset
                     mapped_values = {
@@ -3609,8 +3615,9 @@ class ModelBuilder:
                 merged.values = [] if isinstance(freq_key, str) else {}
 
             if isinstance(freq_key, str):
-                # String frequency: extend list with transformed values
-                new_values = [transform_value(value) for value in attr.values]
+                # String frequency: extend list with transformed values (reference offsets +
+                # the polymorphic equality-target remap via transform_enum_value).
+                new_values = [transform_enum_value(idx, value) for idx, value in enumerate(attr.values)]
                 merged.values.extend(new_values)
             else:
                 # Enum frequency: update dict with remapped indices
@@ -5632,15 +5639,18 @@ class ModelBuilder:
 
         target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
         target_attr = self.custom_attributes.get("mujoco:equality_constraint_target")
-        if (
-            target_kind_attr is not None
-            and target_attr is not None
-            and isinstance(target_kind_attr.values, dict)
-            and isinstance(target_attr.values, dict)
-        ):
-            for eq_idx, target in list(target_attr.values.items()):
+        if target_kind_attr is not None and target_attr is not None and target_attr.values:
+            for eq_idx in range(len(target_attr.values)):
+                target = target_attr.values[eq_idx]
+                if target is None:
+                    continue
+                target_kind_value = (
+                    target_kind_attr.values[eq_idx]
+                    if target_kind_attr.values and eq_idx < len(target_kind_attr.values)
+                    else None
+                )
                 try:
-                    target_kind = int(target_kind_attr.values.get(eq_idx, 0))
+                    target_kind = int(target_kind_value) if target_kind_value is not None else 0
                     old_target = int(target)
                 except (TypeError, ValueError):
                     continue

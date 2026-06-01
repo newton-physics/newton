@@ -3280,10 +3280,10 @@ def parse_usd(
     # for any bodies that get merged.
     def _parse_mjc_equality_constraints():
         local_builder_custom_attr_eq = builder_custom_attr_eq
-        if (
-            convert_mjc_equality_constraints
-            and "mujoco:equality_constraint_target_kind" not in builder.custom_attributes
-        ):
+        # ``eq_solref`` is registered only by the full SolverMuJoCo.register_custom_attributes; the
+        # ``equality_constraint_*`` core columns are already declared by ModelBuilder.__init__, so
+        # they cannot be used as the "attributes registered?" sentinel here.
+        if convert_mjc_equality_constraints and "mujoco:eq_solref" not in builder.custom_attributes:
             from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
             SolverMuJoCo.register_custom_attributes(builder)
