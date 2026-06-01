@@ -118,26 +118,26 @@ class ControlKamino:
         wp.copy(self.tau_j, other.tau_j)
 
     def finalize(self, model: ModelKamino, device: wp.DeviceLike = None) -> None:
-        """
-        Allocates any required internal buffer to interface with a :class:`newton.Control`.
+        """Allocate the coord-space side buffer used to interface with a
+        :class:`newton.Control`.
 
-        More specifically, an internal buffer is allocated for models for which joint coordinates
-        and DoFs differ (i.e. models with spherical or free joints); otherwise, no allocation
-        is performed. When :attr:`newton.use_coord_layout_targets` is ``True``,
-        ``Control.joint_target_q`` is already coord-aligned and the side buffer
-        is skipped entirely.
+        The buffer is allocated only when the wrapped Newton model was built
+        under :data:`newton.use_coord_layout_targets` ``False`` *and* contains
+        spherical or free joints — i.e. when ``Control.joint_target_q`` is
+        DOF-shaped and needs Euler→quat conversion. Otherwise no allocation
+        happens. The layout is read from
+        :attr:`ModelKamino.use_coord_layout_targets` (snapshot) so toggling
+        the global flag after ``finalize`` can't desynchronize.
 
         Args:
             model: The Kamino model describing the system.
-            device: Optional device to create the state on. If not specified, the model's device is used.
+            device: Optional allocation device. Defaults to the model's device.
         """
-        import newton  # noqa: PLC0415
-
         if device is None:
             device = model.device
 
         self._needs_coord_conversion = (
-            not newton.use_coord_layout_targets
+            not model.use_coord_layout_targets
             and model.size.sum_of_num_joint_dofs != model.size.sum_of_num_joint_coords
         )
         self._q_j_ref_coords_space = (
@@ -147,16 +147,14 @@ class ControlKamino:
         )
 
     def from_newton(self, control: Control, model: ModelKamino) -> None:
-        """
-        Reads a source :class:`newton.Control` object into this :class:`ControlKamino` instance.
-        Arrays are simply aliased whenever possible. A Euler→quaternion conversion is
-        only performed when ``newton.use_coord_layout_targets`` is ``False`` *and*
-        the model contains spherical or free joints; otherwise (flag is ``True``,
-        or the model has no spherical/free joint) the source array is aliased directly.
+        """Adopt arrays from a :class:`newton.Control`. Aliases directly when
+        possible; runs Euler→quat conversion on ``joint_target_q`` only if the
+        wrapped Newton model is DOF-layout (flag=False) and has spherical or
+        free joints.
 
         Args:
-            control: The source :class:`newton.Control` object to be interfaced.
-            model: The source Kamino model holding the time-invariant description of the system.
+            control: Source :class:`newton.Control` to read from.
+            model: The Kamino model holding the system description.
         """
         self.tau_j = control.joint_f
         self.tau_j_ref = control.joint_act
@@ -172,15 +170,13 @@ class ControlKamino:
             self.q_j_ref = control.joint_target_q
 
     def to_newton(self, control: Control, model: ModelKamino) -> None:
-        """
-        Writes this :class:`ControlKamino` instance into a destination :class:`newton.Control` object.
-        Arrays are simply aliased whenever possible. A quaternion→Euler conversion is
-        only performed when ``newton.use_coord_layout_targets`` is ``False`` *and*
-        the model contains spherical or free joints; otherwise the array is aliased directly.
+        """Write back into a :class:`newton.Control`. Aliases directly when
+        possible; runs quat→Euler conversion only if the wrapped Newton model
+        is DOF-layout (flag=False) and has spherical or free joints.
 
         Args:
-            control: The destination :class:`newton.Control` object to be interfaced.
-            model: The source Kamino model holding the time-invariant description of the system.
+            control: Destination :class:`newton.Control` to write into.
+            model: The Kamino model holding the system description.
         """
         control.joint_f = self.tau_j
         control.joint_act = self.tau_j_ref

@@ -3108,8 +3108,16 @@ class SolverMuJoCo(SolverBase):
 
         Shape [nu], dtype int32."""
         self.mjc_actuator_to_newton_target_q_idx: wp.array[wp.int32] | None = None
-        """Coord-layout index into :attr:`Control.joint_target_q` for position actuators
-        (``-1`` for velocity / CTRL_DIRECT actuators). Shape ``[nu]``, dtype ``int32``."""
+        """Index into :attr:`Control.joint_target_q` for position actuators
+        (``-1`` otherwise). Layout follows :attr:`Model.joint_target_q_start`:
+        coord under ``use_coord_layout_targets=True``, DOF otherwise.
+        Shape ``[nu]``, dtype ``int32``."""
+        self.mjc_actuator_to_target_q_axis_idx: wp.array[wp.int32] | None = None
+        """Angular-axis selector (``0``/``1``/``2`` = X/Y/Z) for BALL-joint
+        position actuators under coord layout, ``-1`` otherwise. Paired with
+        :attr:`mjc_actuator_to_newton_target_q_idx` (which points at the quat
+        base); the kernel converts the quat → axis-angle and reads the
+        selected component. Shape ``[nu]``, dtype ``int32``."""
         self.mjc_eq_to_newton_eq: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, eq] to Newton equality constraint index.
 

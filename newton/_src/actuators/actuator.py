@@ -160,12 +160,24 @@ class Actuator:
         self.state_pos_attr = state_pos_attr
         self.state_vel_attr = state_vel_attr
         if control_target_pos_attr is None or control_target_vel_attr is None:
+            import warnings  # noqa: PLC0415
+
             import newton  # noqa: PLC0415
 
             if newton.use_coord_layout_targets:
                 default_pos_attr, default_vel_attr = "joint_target_q", "joint_target_qd"
             else:
                 default_pos_attr, default_vel_attr = "joint_target_pos", "joint_target_vel"
+                warnings.warn(
+                    "Actuator default control_target_pos_attr/control_target_vel_attr "
+                    "currently resolves to legacy 'joint_target_pos'/'joint_target_vel' "
+                    "under newton.use_coord_layout_targets=False. The default will switch "
+                    "to canonical 'joint_target_q'/'joint_target_qd' in a future release. "
+                    "Pass control_target_pos_attr='joint_target_q' (and the velocity "
+                    "counterpart) explicitly to lock in the new behaviour now.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
         self.control_target_pos_attr = (
             control_target_pos_attr if control_target_pos_attr is not None else default_pos_attr
         )

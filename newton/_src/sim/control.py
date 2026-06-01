@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import warnings
+from typing import TYPE_CHECKING
 
 import warp as wp
+
+if TYPE_CHECKING:
+    from .model import Model
 
 _JOINT_TARGET_POS_DEPRECATION_MSG = (
     "Control.joint_target_pos is deprecated; use Control.joint_target_q. The "
@@ -27,20 +31,15 @@ _JOINT_TARGET_VEL_UNAVAILABLE_MSG = (
 class Control:
     """Time-varying control data for a :class:`Model`.
 
-    Time-varying control data includes joint torques, control inputs, muscle activations,
-    and activation forces for triangle and tetrahedral elements.
+    Carries joint torques, control inputs, muscle activations, and tri/tet
+    activation forces. Create via :func:`newton.Model.control()`.
 
-    The exact attributes depend on the contents of the model. Control objects
-    should generally be created using the :func:`newton.Model.control()` function.
-
-    :attr:`joint_target_q` and :attr:`joint_target_qd` carry the position and
-    velocity targets, matching :attr:`~newton.State.joint_q` and
-    :attr:`~newton.State.joint_qd`. Their shape depends on
-    :attr:`newton.use_coord_layout_targets`: under ``True``,
-    :attr:`joint_target_q` is shaped ``(joint_coord_count,)``; under ``False``
-    it is shaped ``(joint_dof_count,)`` to preserve the legacy layout, and the
-    deprecated :attr:`joint_target_pos` / :attr:`joint_target_vel` aliases are
-    available (they raise :class:`AttributeError` when the flag is ``True``).
+    Position and velocity targets live on :attr:`joint_target_q` and
+    :attr:`joint_target_qd`. The shape of :attr:`joint_target_q` depends on
+    :data:`newton.use_coord_layout_targets` — coord-shaped when ``True``,
+    DOF-shaped otherwise. Legacy :attr:`joint_target_pos` /
+    :attr:`joint_target_vel` aliases are available under ``False`` and raise
+    under ``True``.
     """
 
     def __init__(self):
@@ -61,19 +60,14 @@ class Control:
         frame with the child body's center of mass (COM) as reference point.
         """
         self.joint_target_q: wp.array | None = None
-        """Joint position targets [m or rad, depending on joint type], shape ``(joint_coord_count,)``, type ``float``.
-
-        Shape matches :attr:`~newton.State.joint_q` when
-        :attr:`newton.use_coord_layout_targets` is ``True``; otherwise the array
-        is shaped ``(joint_dof_count,)`` for backward compatibility with the
-        deprecated :attr:`joint_target_pos` alias.
+        """Joint position targets [m or rad]. Shape is ``(joint_coord_count,)``
+        when :data:`newton.use_coord_layout_targets` is ``True``, otherwise
+        ``(joint_dof_count,)`` for legacy compat with :attr:`joint_target_pos`.
         """
 
         self.joint_target_qd: wp.array | None = None
-        """Joint velocity targets [m/s or rad/s, depending on joint type], shape ``(joint_dof_count,)``, type ``float``.
-
-        Matches the layout of :attr:`~newton.State.joint_qd`. Replaces the
-        deprecated :attr:`joint_target_vel`.
+        """Joint velocity targets [m/s or rad/s], shape ``(joint_dof_count,)``.
+        Matches :attr:`~newton.State.joint_qd`; replaces :attr:`joint_target_vel`.
         """
 
         self.joint_act: wp.array | None = None
@@ -99,13 +93,9 @@ class Control:
 
     @property
     def joint_target_pos(self) -> wp.array | None:
-        """Deprecated alias for :attr:`joint_target_q` (legacy DOF-shape only).
-
-        Raises :class:`AttributeError` when this Control was constructed under
+        """Deprecated alias for :attr:`joint_target_q` (DOF-shape only).
+        Raises :class:`AttributeError` under
         :data:`newton.use_coord_layout_targets` ``True``.
-
-        .. deprecated::
-            Use :attr:`joint_target_q`.
         """
         if self._use_coord_layout_targets:
             raise AttributeError(_JOINT_TARGET_POS_UNAVAILABLE_MSG)
@@ -121,13 +111,9 @@ class Control:
 
     @property
     def joint_target_vel(self) -> wp.array | None:
-        """Deprecated alias for :attr:`joint_target_qd`.
-
-        Raises :class:`AttributeError` when this Control was constructed under
+        """Deprecated alias for :attr:`joint_target_qd`. Raises
+        :class:`AttributeError` under
         :data:`newton.use_coord_layout_targets` ``True``.
-
-        .. deprecated::
-            Use :attr:`joint_target_qd`.
         """
         if self._use_coord_layout_targets:
             raise AttributeError(_JOINT_TARGET_VEL_UNAVAILABLE_MSG)
@@ -141,8 +127,19 @@ class Control:
         warnings.warn(_JOINT_TARGET_VEL_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
         self.joint_target_qd = value
 
-    def clear(self) -> None:
-        """Reset the control inputs to zero."""
+    def clear(self, model: Model | None = None) -> None:
+        """Reset all control inputs to zero.
+
+        ``joint_target_q`` is special: zeroing it under coord layout corrupts
+        FREE/BALL/DISTANCE quaternion slots (``(0,0,0,0)`` is not a valid
+        rotation). Pass ``model`` to restore it from ``model.joint_target_q``
+        instead. Without ``model`` it falls back to the legacy zero-fill.
+
+        Args:
+            model: Optional source :class:`Model` whose ``joint_target_q``
+                seeds this Control. Required for models with FREE/BALL/DISTANCE
+                joints under coord layout.
+        """
 
         if self.joint_f is not None:
             self.joint_f.zero_()
@@ -153,7 +150,10 @@ class Control:
         if self.muscle_activations is not None:
             self.muscle_activations.zero_()
         if self.joint_target_q is not None:
-            self.joint_target_q.zero_()
+            if model is not None and model.joint_target_q is not None:
+                wp.copy(self.joint_target_q, model.joint_target_q)
+            else:
+                self.joint_target_q.zero_()
         if self.joint_target_qd is not None:
             self.joint_target_qd.zero_()
         if self.joint_act is not None:

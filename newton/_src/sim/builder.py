@@ -2113,43 +2113,59 @@ class ModelBuilder:
 
     @property
     def joint_target_pos(self) -> list[float]:
-        """Removed alias for :attr:`joint_target_q`.
+        """Deprecated read-only alias for :attr:`joint_target_q` (DOF-shape).
 
-        .. deprecated::
-            Use :attr:`ModelBuilder.joint_target_q` (coord layout) or set the
-            per-axis ``target_pos`` on :class:`JointDofConfig`.
+        Returns a fresh DOF-shaped list — for FREE/BALL/DISTANCE the quat-w
+        slot is dropped; other joints copy verbatim. Mutations do not
+        propagate back. Raises :class:`AttributeError` under
+        :data:`newton.use_coord_layout_targets` ``True``.
         """
-        raise AttributeError(
-            "ModelBuilder.joint_target_pos was removed. Use ModelBuilder.joint_target_q "
-            "(coord layout, shape joint_coord_count); for per-axis configuration set "
-            "JointDofConfig.target_pos before calling add_joint*()."
+        import newton
+
+        if newton.use_coord_layout_targets:
+            raise AttributeError(
+                "ModelBuilder.joint_target_pos is unavailable when "
+                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_q."
+            )
+        warnings.warn(
+            "ModelBuilder.joint_target_pos is deprecated; use ModelBuilder.joint_target_q "
+            "(coord-shaped). For per-axis configuration set JointDofConfig.target_pos before "
+            "calling add_joint*(). The attribute will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
         )
+        return self._project_target_q_to_dof()
 
     @property
     def joint_target_vel(self) -> list[float]:
-        """Removed alias for :attr:`joint_target_qd`.
-
-        .. deprecated::
-            Use :attr:`ModelBuilder.joint_target_qd` or set per-axis
-            ``target_vel`` on :class:`JointDofConfig`.
+        """Deprecated read-only alias for :attr:`joint_target_qd`. Returns a
+        fresh copy — mutations do not propagate back. Raises
+        :class:`AttributeError` under
+        :data:`newton.use_coord_layout_targets` ``True``.
         """
-        raise AttributeError(
-            "ModelBuilder.joint_target_vel was removed. Use ModelBuilder.joint_target_qd "
-            "(shape joint_dof_count); for per-axis configuration set "
-            "JointDofConfig.target_vel before calling add_joint*()."
+        import newton
+
+        if newton.use_coord_layout_targets:
+            raise AttributeError(
+                "ModelBuilder.joint_target_vel is unavailable when "
+                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_qd."
+            )
+        warnings.warn(
+            "ModelBuilder.joint_target_vel is deprecated; use ModelBuilder.joint_target_qd. "
+            "The attribute will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
         )
+        return list(self.joint_target_qd)
 
     def _project_target_q_to_dof(self) -> list[float]:
-        """Project the coord-shaped :attr:`joint_target_q` to a DOF-shaped list.
+        """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
+        the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped list.
 
-        For FREE/BALL/DISTANCE the quaternion-w coord slot is skipped; for all
-        other joint types the per-joint coord and DOF slices are the same size
-        and copied verbatim. Used when :attr:`newton.use_coord_layout_targets`
-        is ``False`` to populate the legacy DOF-shaped ``Model.joint_target_q``.
-
-        :attr:`joint_target_q` stores BALL/FREE/DISTANCE angular target_pos as
-        raw per-axis scalars (extrinsic ZYX Euler angles) in slots 0..2 (BALL)
-        or 3..5 (FREE/DISTANCE); projecting them to DOF is a verbatim copy.
+        Under :data:`newton.use_coord_layout_targets` ``False`` the builder
+        stores raw per-axis angles (extrinsic ZYX) in the first 3 quat slots
+        and a placeholder ``1.0`` in the 4th — this method just slices the
+        placeholder off to produce the legacy DOF-shaped ``Model.joint_target_q``.
         """
         result: list[float] = []
         for j, jtype in enumerate(self.joint_type):
@@ -2167,23 +2183,18 @@ class ModelBuilder:
 
     @staticmethod
     def _quat_from_axis_targets(t_x: float, t_y: float, t_z: float) -> tuple[float, float, float, float]:
-        """Build a unit quaternion from per-axis angular targets.
-
-        Treats ``t_x``, ``t_y``, ``t_z`` as rotation angles (radians) around
-        the X, Y, Z axes respectively, composed in extrinsic ZYX order: rotate
-        by ``t_z`` around world Z first, then ``t_y`` around world Y, then
-        ``t_x`` around world X. Matches
-        ``wp.quat_from_euler(wp.vec3(t_x, t_y, t_z), 2, 1, 0)`` — the same
-        convention used by kamino's ``target_dofs_to_coords_conversion_kernel``.
+        """Compose per-axis angles into a unit quaternion using extrinsic ZYX
+        (yaw-pitch-roll) — equivalent to
+        ``wp.quat_from_euler(wp.vec3(t_x, t_y, t_z), 2, 1, 0)``. Matches
+        Kamino's ``target_dofs_to_coords_conversion_kernel`` convention.
 
         Args:
-            t_x: Per-axis target around the X axis (radians).
-            t_y: Per-axis target around the Y axis (radians).
-            t_z: Per-axis target around the Z axis (radians).
+            t_x: Rotation around X [rad].
+            t_y: Rotation around Y [rad].
+            t_z: Rotation around Z [rad].
 
         Returns:
-            Unit quaternion ``(qx, qy, qz, qw)`` in the storage order used by
-            ``joint_q`` for FREE/BALL/DISTANCE joints.
+            ``(qx, qy, qz, qw)`` in Newton/Warp's vector-first storage order.
         """
         import math  # noqa: PLC0415
 
@@ -10887,8 +10898,8 @@ class ModelBuilder:
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,
                     target_pos_indices=target_pos_indices_arg,
-                    control_target_pos_attr=None,
-                    control_target_vel_attr=None,
+                    control_target_pos_attr="joint_target_q",
+                    control_target_vel_attr="joint_target_qd",
                     requires_grad=requires_grad,
                 )
 

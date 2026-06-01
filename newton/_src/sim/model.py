@@ -748,11 +748,9 @@ class Model:
         import newton  # noqa: PLC0415
 
         self.use_coord_layout_targets: bool = newton.use_coord_layout_targets
-        """Snapshot of :data:`newton.use_coord_layout_targets` captured at Model construction.
-        All Model-level layout decisions for ``joint_target_q`` and the deprecated
-        ``joint_target_pos`` / ``joint_target_vel`` aliases consult this attribute, so
-        toggling the global flag after :meth:`ModelBuilder.finalize` does not change
-        this Model's behavior."""
+        """Snapshot of :data:`newton.use_coord_layout_targets` taken at
+        :meth:`ModelBuilder.finalize`. All layout decisions for this Model
+        consult this — toggling the global later doesn't change behavior."""
 
         self.attribute_frequency: dict[str, Model.AttributeFrequency | str] = {}
         """Classifies each attribute using Model.AttributeFrequency enum values (per body, per joint, per DOF, etc.)
@@ -857,25 +855,18 @@ class Model:
 
     @property
     def joint_target_q_start(self) -> wp.array | None:
-        """Per-joint start index into :attr:`joint_target_q`, shape ``(joint_count + 1,)``.
-
-        Aliases :attr:`joint_q_start` when
-        :attr:`use_coord_layout_targets` (snapshot of
-        :data:`newton.use_coord_layout_targets` at construction) is ``True`` and
-        :attr:`joint_qd_start` otherwise. Solvers and the actuator library
-        should index :attr:`joint_target_q` via this array regardless of layout.
+        """Per-joint start index into :attr:`joint_target_q`, shape
+        ``(joint_count + 1,)``. Aliases :attr:`joint_q_start` under coord
+        layout, :attr:`joint_qd_start` otherwise. Solvers and actuators should
+        index :attr:`joint_target_q` through this regardless of layout.
         """
         return self.joint_q_start if self.use_coord_layout_targets else self.joint_qd_start
 
     @property
     def joint_target_pos(self) -> wp.array | None:
-        """Deprecated alias for :attr:`joint_target_q` (legacy DOF-shape only).
-
-        Raises :class:`AttributeError` when this Model was built with
+        """Deprecated alias for :attr:`joint_target_q` (DOF-shape only).
+        Raises :class:`AttributeError` when this Model was built under
         :attr:`use_coord_layout_targets` ``True``.
-
-        .. deprecated::
-            Use :attr:`joint_target_q`.
         """
         import warnings  # noqa: PLC0415
 
@@ -907,13 +898,9 @@ class Model:
 
     @property
     def joint_target_vel(self) -> wp.array | None:
-        """Deprecated alias for :attr:`joint_target_qd`.
-
-        Raises :class:`AttributeError` when this Model was built with
+        """Deprecated alias for :attr:`joint_target_qd`. Raises
+        :class:`AttributeError` when this Model was built under
         :attr:`use_coord_layout_targets` ``True``.
-
-        .. deprecated::
-            Use :attr:`joint_target_qd`.
         """
         import warnings  # noqa: PLC0415
 
@@ -1011,6 +998,7 @@ class Model:
             The initialized control object.
         """
         c = Control()
+        c._use_coord_layout_targets = self.use_coord_layout_targets
         if requires_grad is None:
             requires_grad = self.requires_grad
         if clone_variables:
