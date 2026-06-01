@@ -713,20 +713,12 @@ def parse_mjcf(
                 if len(friction_values) >= 3:
                     shape_cfg.mu_rolling = float(friction_values[2])
 
-            # MJCF ``solref`` is stored two ways for back-compat with the
-            # joint-limit pattern (PR #2610):
-            #   * Raw ``(timeconst, dampratio)`` lands in ``mujoco.solref``
-            #     via the registered ``mjcf_attribute_name="solref"``;
-            #     ``mujoco.solref_mode`` is set explicitly below.
-            #   * The lossy ``solref_to_stiffness_damping`` conversion still
-            #     populates Newton's ``shape_material_ke`` / ``kd`` so that
-            #     ``SOLREF_MODE_MJCF_DEFAULT`` shapes start at
-            #     ``DEFAULT_SHAPE_KE`` / ``DEFAULT_SHAPE_KD`` (which the
-            #     ``SolverMuJoCo`` auto-promote check uses to decide whether
-            #     the user has edited the gains). Authored ``solref`` shapes
-            #     get ``SOLREF_MODE_RAW`` so the solver forwards the native
-            #     MuJoCo pair unchanged regardless of the converted ke/kd
-            #     value sitting in ``shape_material_ke``.
+            # MJCF solref also fills shape_material_ke/kd via the lossy
+            # conversion so MJCF_DEFAULT shapes start at DEFAULT_SHAPE_KE /
+            # DEFAULT_SHAPE_KD; raw solref is preserved in mujoco.solref by
+            # the registered mjcf_attribute_name="solref". See
+            # docs/integrations/mujoco.rst > "Shape-material contact
+            # stiffness and damping".
             if "solref" in geom_attrib:
                 solref = parse_vec(geom_attrib, "solref", (0.02, 1.0))
                 geom_ke, geom_kd = solref_to_stiffness_damping(solref)
@@ -758,12 +750,11 @@ def parse_mjcf(
 
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             if has_solref_mode:
-                # Mirror the joint-limit ``solreflimit_mode`` handling above:
-                # an authored MJCF ``solref`` keeps native MuJoCo semantics
-                # (``SOLREF_MODE_RAW``); otherwise the geom starts from
-                # MuJoCo's implicit default solref pair and only flips to
-                # Newton force-space scaling after ``shape_material_ke`` /
-                # ``shape_material_kd`` are edited away from their defaults.
+                # Authored solref → RAW (forwarded verbatim); unauthored →
+                # MJCF_DEFAULT (force-space scaling is strictly opt-in for
+                # shapes — no auto-promote, unlike joint limits). See
+                # docs/integrations/mujoco.rst > "Shape-material contact
+                # stiffness and damping".
                 custom_attributes[solref_mode_key] = (
                     SOLREF_MODE_RAW if "solref" in geom_attrib else SOLREF_MODE_MJCF_DEFAULT
                 )

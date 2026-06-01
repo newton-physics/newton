@@ -348,21 +348,11 @@ class SchemaResolverMjc(SchemaResolver):
             "gap": SchemaAttribute("mjc:gap", 0.0),
             # Mass model: mjc:shellinertia (bool) → "shell" / "solid"
             "mass_model": SchemaAttribute("mjc:shellinertia", False, lambda v: "shell" if v else "solid"),
-            # ``mjc:solref`` is stored two ways for parity with the
-            # joint-limit pattern (PR #2610): the raw ``(timeconst,
-            # dampratio)`` lands in the ``mujoco.solref`` per-shape custom
-            # attribute (with ``mujoco.solref_mode`` set by the
-            # ``parse_solref_mode_usd`` transformer), while these mappings
-            # also populate Newton ``shape_material_ke`` / ``kd`` via the
-            # lossy ``solref_to_stiffness_damping`` conversion so that
-            # imported MuJoCo defaults land at ``DEFAULT_SHAPE_KE`` /
-            # ``DEFAULT_SHAPE_KD``. The MuJoCo solver picks ``mujoco.solref``
-            # over ``shape_material_ke`` whenever ``solref_mode`` is
-            # ``SOLREF_MODE_RAW``, so the (possibly acceleration-space)
-            # value sitting in ``shape_material_ke`` does not affect
-            # simulation until the user explicitly opts into force-space
-            # scaling (see ``SolverMuJoCo`` auto-promote logic on
-            # ``SOLREF_MODE_MJCF_DEFAULT``).
+            # mjc:solref also fills shape_material_ke/kd via the legacy lossy
+            # conversion so imported MuJoCo defaults land at DEFAULT_SHAPE_KE /
+            # DEFAULT_SHAPE_KD; raw solref is preserved in mujoco.solref. See
+            # docs/integrations/mujoco.rst > "Shape-material contact stiffness
+            # and damping".
             "ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
             "kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
         },
@@ -373,13 +363,8 @@ class SchemaResolverMjc(SchemaResolver):
             # Contact models
             "priority": SchemaAttribute("mjc:priority", 0),
             "weight": SchemaAttribute("mjc:solmix", 1.0),
-            # See PrimType.SHAPE comment: ``mjc:solref`` is mirrored into
-            # both ``mujoco.solref`` (raw, authoritative for the solver
-            # under ``SOLREF_MODE_RAW``) and Newton's force-space
-            # ``stiffness`` / ``damping`` (so the auto-promote check in
-            # ``SolverMuJoCo`` continues to recognise the imported MuJoCo
-            # default ``(0.02, 1.0)`` as ``DEFAULT_SHAPE_KE`` /
-            # ``DEFAULT_SHAPE_KD``).
+            # See PrimType.SHAPE above for the mjc:solref → stiffness/damping
+            # back-compat mirror.
             "stiffness": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
             "damping": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
         },
