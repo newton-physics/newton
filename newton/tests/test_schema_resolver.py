@@ -1632,6 +1632,59 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(rolling, 0.1)
         self.assertAlmostEqual(torsional, 0.2)
 
+    def test_mass_model(self):
+        """Test mass_model resolution: newton:massModel and mjc:shellinertia."""
+        stage = Usd.Stage.CreateInMemory()
+        xform = UsdGeom.Xform.Define(stage, "/xform").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(xform)
+        collider = UsdGeom.Sphere.Define(stage, "/xform/collider").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider)
+
+        # No authored value → default "solid"
+        resolver = SchemaResolverManager([SchemaResolverNewton()])
+        mass_model = resolver.get_value(collider, PrimType.SHAPE, "mass_model")
+        self.assertEqual(mass_model, "solid")
+
+        # newton:massModel authored
+        collider.CreateAttribute("newton:massModel", Sdf.ValueTypeNames.Token).Set("shell")
+        mass_model = resolver.get_value(collider, PrimType.SHAPE, "mass_model")
+        self.assertEqual(mass_model, "shell")
+
+        # mjc:shellinertia = True → "shell"
+        resolver = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
+        collider2 = UsdGeom.Sphere.Define(stage, "/xform/collider2").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider2)
+        collider2.CreateAttribute("mjc:shellinertia", Sdf.ValueTypeNames.Bool).Set(True)
+        mass_model = resolver.get_value(collider2, PrimType.SHAPE, "mass_model")
+        self.assertEqual(mass_model, "shell")
+
+        # mjc:shellinertia = False → "solid"
+        collider2.GetAttribute("mjc:shellinertia").Set(False)
+        mass_model = resolver.get_value(collider2, PrimType.SHAPE, "mass_model")
+        self.assertEqual(mass_model, "solid")
+
+        # Newton priority over MuJoCo: newton:massModel wins
+        resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverMjc()])
+        collider.GetAttribute("newton:massModel").Set("solid")
+        collider.CreateAttribute("mjc:shellinertia", Sdf.ValueTypeNames.Bool).Set(True)
+        mass_model = resolver.get_value(collider, PrimType.SHAPE, "mass_model")
+        self.assertEqual(mass_model, "solid")
+
+        # Full import: mjc:shellinertia produces correct is_solid on shape
+        UsdPhysics.MassAPI.Apply(xform).CreateMassAttr().Set(10.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        collider.GetAttribute("mjc:shellinertia").Set(True)
+        collider.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Float).Set(0.05)
+        # Remove newton:massModel so MjcResolver takes effect
+        collider.GetAttribute("newton:massModel").Clear()
+
+        builder = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()])
+
+        shell_idx = builder.shape_label.index("/xform/collider")
+        self.assertFalse(builder.shape_is_solid[shell_idx])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

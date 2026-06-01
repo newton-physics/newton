@@ -87,6 +87,9 @@ class SchemaResolverNewton(SchemaResolver):
             # Contact stiffness/damping
             "ke": SchemaAttribute("newton:contact_ke", None),
             "kd": SchemaAttribute("newton:contact_kd", None),
+            # Mass model
+            "mass_model": SchemaAttribute("newton:massModel", "solid"),
+            "shell_thickness": SchemaAttribute("newton:shellThickness", float("-inf")),
         },
         PrimType.BODY: {},
         PrimType.ARTICULATION: {
@@ -346,6 +349,8 @@ class SchemaResolverMjc(SchemaResolver):
             # Contact stiffness/damping from per-geom solref
             "ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
             "kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
+            # Mass model: mjc:shellinertia (bool) → "shell" / "solid"
+            "mass_model": SchemaAttribute("mjc:shellinertia", False, lambda v: "shell" if v else "solid"),
         },
         PrimType.MATERIAL: {
             # Materials

@@ -321,9 +321,9 @@ def parse_urdf(
         if color_el is not None:
             rgba = color_el.get("rgba")
             if rgba:
-                values = np.fromstring(rgba, sep=" ", dtype=np.float32)
-                if len(values) >= 3:
-                    color = (float(values[0]), float(values[1]), float(values[2]))
+                parts = rgba.split()
+                if len(parts) >= 3:
+                    color = (float(parts[0]), float(parts[1]), float(parts[2]))
 
         texture_el = material_element.find("texture")
         if texture_el is not None:
@@ -359,6 +359,14 @@ def parse_urdf(
         if material_element is None:
             return {"color": None, "texture": None}
         mat_name = material_element.get("name")
+
+        # Fast path: pure name reference to an already-parsed material. URDFs
+        # typically define materials once at the top level and then reference
+        # them by name on individual geoms (`<material name="foo"/>` with no
+        # children). Skip the XML re-parse in that common case.
+        if mat_name and mat_name in materials and len(material_element) == 0:
+            return dict(materials[mat_name])
+
         color, texture = _parse_material_properties(material_element)
 
         if mat_name and mat_name in materials:

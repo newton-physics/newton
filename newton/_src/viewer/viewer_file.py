@@ -602,78 +602,82 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
     return serialize(obj, callback, format_type=format_type, cache=cache)
 
 
+_MISSING = object()
+
+
 def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init_callback=None, _path=""):
     """
-    Recursively transfer values from source_dict to target_obj, respecting the tree structure.
-    Only transfers values where both source and target have matching attributes.
+    Recursively transfer values from ``source_dict`` into ``target_obj``.
+
+    The walk is source-driven: each non-private key in ``source_dict`` is matched against
+    the corresponding slot on ``target_obj``. Source keys not declared on ``target_obj``
+    are dropped, with one exception — ``Model.AttributeNamespace`` targets hold arbitrary
+    user-defined keys, so a namespace target accepts every source key. When the source
+    carries a ``Model.AttributeNamespace`` (reconstructed by :func:`deserialize`) that the
+    target lacks, it is installed wholesale so namespaces like ``model.mujoco`` roundtrip.
 
     Args:
         source_dict: Mapping-like decoded values to transfer from deserialization.
         target_obj: Target object to receive the values.
-        post_load_init_callback: Optional function taking (target_obj, path) called after all children are processed.
+        post_load_init_callback: Optional function taking (target_obj, path) called after
+            all children are processed.
         _path: Internal parameter tracking the current path.
     """
     if not hasattr(target_obj, "__dict__"):
         return
-
-    # Handle case where source_dict is not mapping-like (primitive value)
     if not isinstance(source_dict, Mapping):
         return
 
-    # Iterate through all attributes of the target object
-    for attr_name in dir(target_obj):
-        # Skip private/magic methods and properties
+    target_is_namespace = isinstance(target_obj, Model.AttributeNamespace)
+
+    for attr_name, source_value in source_dict.items():
         if attr_name.startswith("_"):
             continue
+        target_value = getattr(target_obj, attr_name, _MISSING)
 
-        # Skip if attribute doesn't exist in target or is not settable
-        try:
-            target_value = getattr(target_obj, attr_name)
-        except (AttributeError, TypeError, RuntimeError):
-            # Skip attributes that can't be accessed (including CUDA stream on CPU devices)
-            continue
-
-        # Skip methods and non-data attributes
-        if callable(target_value):
-            continue
-
-        # Check if source_dict has this attribute (optimization: single dict lookup)
-        source_value = source_dict.get(attr_name, _MISSING := object())
-        if source_value is _MISSING:
-            continue
-
-        # Handle different types of values
-        if hasattr(target_value, "__dict__") and isinstance(source_value, Mapping):
-            # Recursively transfer for custom objects
-            # Build path only when needed (optimization: lazy string formatting)
-            current_path = f"{_path}.{attr_name}" if _path else attr_name
-            transfer_to_model(source_value, target_value, post_load_init_callback, current_path)
-        elif isinstance(source_value, list | tuple) and hasattr(target_value, "__len__"):
-            # Handle sequences - try to transfer if lengths match or target is empty
-            try:
-                # Optimization: cache len() call to avoid redundant computation
-                target_len = len(target_value)
-                if target_len == 0 or target_len == len(source_value):
-                    # For now, just assign the value directly
-                    # In a more sophisticated implementation, you might want to handle
-                    # element-wise transfer for lists of objects
-                    setattr(target_obj, attr_name, source_value)
-            except (TypeError, AttributeError):
-                # If we can't handle the sequence, try direct assignment
+        # Source carries a reconstructed AttributeNamespace (e.g. ``model.mujoco``).
+        # Install it on the target only when the slot is empty; if the target already has
+        # a namespace there, merge attrs into it; otherwise skip rather than overwrite a
+        # non-namespace target.
+        if isinstance(source_value, Model.AttributeNamespace):
+            if target_value is _MISSING:
                 try:
                     setattr(target_obj, attr_name, source_value)
                 except (AttributeError, TypeError):
-                    # Skip if we can't set the attribute
                     pass
-        else:
-            # Direct assignment for primitive types and other values
-            try:
-                setattr(target_obj, attr_name, source_value)
-            except (AttributeError, TypeError):
-                # Skip if we can't set the attribute (e.g., read-only property)
-                pass
+            elif isinstance(target_value, Model.AttributeNamespace):
+                for ns_attr, ns_value in vars(source_value).items():
+                    if ns_attr.startswith("_"):
+                        continue
+                    setattr(target_value, ns_attr, ns_value)
+            continue
 
-    # Call post_load_init_callback after all children have been processed
+        # Recurse into sub-objects (custom objects with a __dict__) when source is a dict.
+        if isinstance(source_value, Mapping) and target_value is not _MISSING and hasattr(target_value, "__dict__"):
+            current_path = f"{_path}.{attr_name}" if _path else attr_name
+            transfer_to_model(source_value, target_value, post_load_init_callback, current_path)
+            continue
+
+        # Drop source keys not declared on the target. AttributeNamespace targets hold
+        # arbitrary user-defined keys by design, so they bypass this guard.
+        if target_value is _MISSING and not target_is_namespace:
+            continue
+
+        # Length-match guard for Python sequences: refuse to overwrite a populated target
+        # list/array with a mismatched-length source list.
+        if isinstance(source_value, list | tuple) and target_value is not _MISSING and hasattr(target_value, "__len__"):
+            try:
+                target_len = len(target_value)
+            except TypeError:
+                target_len = None
+            if target_len is not None and target_len != 0 and target_len != len(source_value):
+                continue
+
+        try:
+            setattr(target_obj, attr_name, source_value)
+        except (AttributeError, TypeError):
+            pass
+
     if post_load_init_callback is not None:
         post_load_init_callback(target_obj, _path)
 
@@ -737,8 +741,28 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
 
     # Custom objects
     if "attributes" in data:
-        # For now, return a simple dict representation
-        # In a full implementation, you might want to reconstruct the actual class
+        # Reconstruct AttributeNamespace as a real instance so downstream consumers
+        # (notably ``transfer_to_model``) can identify it without resorting to a
+        # heuristic on serialized field names.
+        if type_name == "AttributeNamespace":
+            attrs_data = data["attributes"]
+            name_data = attrs_data.get("_name")
+            ns_name = (
+                deserialize(name_data, callback, f"{_path}._name" if _path else "_name", format_type, cache)
+                if name_data is not None
+                else ""
+            )
+            ns = Model.AttributeNamespace(ns_name)
+            for attr, value in attrs_data.items():
+                if attr == "_name":
+                    continue
+                setattr(
+                    ns,
+                    attr,
+                    deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache),
+                )
+            return ns
+        # Fallback: return a flat dict of decoded attributes for other custom classes.
         return {
             attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
             for attr, value in data["attributes"].items()
