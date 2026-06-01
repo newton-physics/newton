@@ -11101,12 +11101,10 @@ class ModelBuilder:
                     # Safety fallback: use max observed length
                     custom_frequency_counts[freq_key] = max_len
 
-            # Warn about MODEL attributes with fewer values than expected (non-MODEL
-            # attributes are filled at runtime via _add_custom_attributes).
-            # Warn only when the user *partially* populated an attribute (some values present
-            # but fewer than the frequency expects) — that pattern usually signals a missed
-            # row and is worth surfacing. A fully-empty values list is treated as the user
-            # opting in to defaults across the board and stays silent.
+            # Only MODEL attributes are checked here; non-MODEL ones are filled at runtime via
+            # _add_custom_attributes. An empty values list opts into defaults and stays silent;
+            # partial population (some values, but fewer than the frequency expects) usually
+            # signals a missed row, so it warns.
             for full_key, custom_attr in self.custom_attributes.items():
                 freq_key = custom_attr.frequency
                 if isinstance(freq_key, str) and custom_attr.assignment == Model.AttributeAssignment.MODEL:
