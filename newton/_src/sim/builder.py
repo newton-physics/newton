@@ -5544,23 +5544,15 @@ class ModelBuilder:
                 return default
             return default if values[idx] is None else values[idx]
 
+        # Body/joint index remapping for body1/body2/joint1/joint2 is handled generically below
+        # via the ``references`` field. Here we only apply the MuJoCo-specific fixups that depend
+        # on the original indices: anchor/relpose frame transforms when a referenced body was
+        # merged into its parent, and disabling rows whose joint reference was removed.
         for i in range(self._equality_constraint_count):
             old_body1 = _at(body1_values, i, body1_attr.default)
             old_body2 = _at(body2_values, i, body2_attr.default)
-            body1_was_merged = False
-            body2_was_merged = False
-
-            if old_body1 in body_remap:
-                body1_values[i] = body_remap[old_body1]
-            elif old_body1 in body_merged_parent:
-                body1_values[i] = body_remap[body_merged_parent[old_body1]]
-                body1_was_merged = True
-
-            if old_body2 in body_remap:
-                body2_values[i] = body_remap[old_body2]
-            elif old_body2 in body_merged_parent:
-                body2_values[i] = body_remap[body_merged_parent[old_body2]]
-                body2_was_merged = True
+            body1_was_merged = old_body1 in body_merged_parent
+            body2_was_merged = old_body2 in body_merged_parent
 
             constraint_type = _at(type_values, i, type_attr.default)
 
@@ -5584,18 +5576,14 @@ class ModelBuilder:
             old_joint1 = _at(joint1_values, i, joint1_attr.default)
             old_joint2 = _at(joint2_values, i, joint2_attr.default)
 
-            if old_joint1 in joint_remap:
-                joint1_values[i] = joint_remap[old_joint1]
-            elif old_joint1 != -1:
+            if old_joint1 != -1 and old_joint1 not in joint_remap:
                 if verbose:
                     print(f"Warning: Equality constraint references removed joint {old_joint1}, disabling constraint")
                 while len(enabled_values) <= i:
                     enabled_values.append(None)
                 enabled_values[i] = False
 
-            if old_joint2 in joint_remap:
-                joint2_values[i] = joint_remap[old_joint2]
-            elif old_joint2 != -1:
+            if old_joint2 != -1 and old_joint2 not in joint_remap:
                 if verbose:
                     print(f"Warning: Equality constraint references removed joint {old_joint2}, disabling constraint")
                 while len(enabled_values) <= i:
@@ -5649,6 +5637,49 @@ class ModelBuilder:
                 elif target_kind == 2 and old_target >= len(self.constraint_mimic_joint0):
                     target_attr.values[eq_idx] = -1
                     target_kind_attr.values[eq_idx] = 0
+
+        # Generic entity-reference remap for any custom attribute that points at bodies or joints
+        # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
+        # Body references follow merges: a reference to a body that was merged into its parent
+        # resolves to the surviving parent. Joint references to removed joints collapse to -1.
+        # Domain-specific fixups that need the original indices run above, before this rewrite.
+        def _remap_body_reference(value: Any) -> Any:
+            if value is None:
+                return value
+            try:
+                idx = int(value)
+            except (TypeError, ValueError):
+                return value
+            if idx in body_remap:
+                return body_remap[idx]
+            if idx in body_merged_parent:
+                return body_remap[body_merged_parent[idx]]
+            return value
+
+        def _remap_joint_reference(value: Any) -> Any:
+            if value is None:
+                return value
+            try:
+                idx = int(value)
+            except (TypeError, ValueError):
+                return value
+            if idx == -1:
+                return value
+            return joint_remap.get(idx, -1)
+
+        for custom_attr in self.custom_attributes.values():
+            if custom_attr.references == "body":
+                remap_reference = _remap_body_reference
+            elif custom_attr.references == "joint":
+                remap_reference = _remap_joint_reference
+            else:
+                continue
+            if custom_attr.values is None:
+                continue
+            if isinstance(custom_attr.values, dict):
+                custom_attr.values = {key: remap_reference(value) for key, value in custom_attr.values.items()}
+            else:
+                custom_attr.values = [remap_reference(value) for value in custom_attr.values]
 
         # Rebuild parent/child lookups
         self.joint_parents.clear()
