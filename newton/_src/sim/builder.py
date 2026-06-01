@@ -1172,13 +1172,6 @@ class ModelBuilder:
         self.num_rigid_contacts_per_world: int | None = None
         """Optional per-world rigid-contact allocation budget used to set :attr:`Model.rigid_contact_max`."""
 
-        # equality constraints
-        # Backed by per-equality-constraint CustomAttributes under the ``mujoco`` namespace —
-        # declared below and populated through :meth:`add_custom_values` with
-        # ``mujoco:equality_constraint_*`` keys. The count is owned by
-        # ``self._custom_frequency_counts["mujoco:equality_constraint"]`` and exposed
-        # through the :meth:`_equality_constraint_count` property.
-
         # mimic constraints
         self.constraint_mimic_joint0: list[int] = []
         """Follower joint indices accumulated for :attr:`Model.constraint_mimic_joint0`."""
