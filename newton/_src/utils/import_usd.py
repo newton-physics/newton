@@ -2709,9 +2709,6 @@ def parse_usd(
                 sdf_target_voxel_size = R.get_value(
                     prim, prim_type=PrimType.SHAPE, key="sdf_target_voxel_size", verbose=verbose
                 )
-                # Schema sentinel is -inf meaning "use sdfMaxResolution instead";
-                # the <= 0 check also rejects any authored non-positive value as
-                # out of the documented (0, inf) range.
                 if sdf_target_voxel_size == float("-inf"):
                     sdf_target_voxel_size = None
                 elif sdf_target_voxel_size is not None and sdf_target_voxel_size <= 0:
@@ -2727,7 +2724,9 @@ def parse_usd(
                 sdf_max_resolution = R.get_value(
                     prim, prim_type=PrimType.SHAPE, key="sdf_max_resolution", verbose=verbose
                 )
-                if sdf_max_resolution is not None and sdf_max_resolution <= 0:
+                if sdf_max_resolution == float("-inf"):
+                    sdf_max_resolution = None
+                elif sdf_max_resolution is not None and sdf_max_resolution <= 0:
                     warnings.warn(
                         f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} is invalid "
                         f"(must be > 0); falling back to default.",
@@ -2747,9 +2746,13 @@ def parse_usd(
                 sdf_narrow_band_inner = R.get_value(
                     prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_inner", verbose=verbose
                 )
+                if sdf_narrow_band_inner == float("-inf"):
+                    sdf_narrow_band_inner = None
                 sdf_narrow_band_outer = R.get_value(
                     prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer", verbose=verbose
                 )
+                if sdf_narrow_band_outer == float("-inf"):
+                    sdf_narrow_band_outer = None
                 default_nb = builder.default_shape_cfg.sdf_narrow_band_range
                 sdf_narrow_band_range = (
                     sdf_narrow_band_inner if sdf_narrow_band_inner is not None else default_nb[0],
@@ -2764,8 +2767,6 @@ def parse_usd(
 
                 sdf_padding = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_padding", verbose=verbose)
                 if sdf_padding == float("-inf"):
-                    # Schema sentinel: builder.finalize falls back to shape_gap
-                    # when ShapeConfig.sdf_padding is None.
                     sdf_padding = None
                 elif sdf_padding is not None and sdf_padding < 0:
                     warnings.warn(
@@ -2783,7 +2784,9 @@ def parse_usd(
                     prim, prim_type=PrimType.SHAPE, key="hydroelastic_enabled", verbose=verbose
                 )
                 kh = R.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
-                if kh is not None and kh <= 0:
+                if kh == float("-inf"):
+                    kh = None
+                elif kh is not None and kh <= 0:
                     warnings.warn(
                         f"{prim.GetPath()}: newton:hydroelasticStiffness={kh!r} is invalid "
                         f"(must be > 0); falling back to default.",
