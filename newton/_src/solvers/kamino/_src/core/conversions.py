@@ -36,7 +36,6 @@ if TYPE_CHECKING:
 ###
 
 __all__ = [
-    "convert_entity_local_transforms",
     "convert_geometries",
     "convert_joints",
     "convert_model_joint_transforms",
@@ -198,8 +197,8 @@ def joint_conversion_kernel(
     joint_num_kinematic_cts: wp.array[int32],
     joint_B_r_B: wp.array[vec3f],
     joint_F_r_F: wp.array[vec3f],
-    joint_X_p: wp.array[mat33f],
-    joint_X_c: wp.array[mat33f],
+    joint_X_B: wp.array[mat33f],
+    joint_X_F: wp.array[mat33f],
 ):
     # Retrieve the joint index
     joint_id = wp.tid()
@@ -273,12 +272,12 @@ def joint_conversion_kernel(
     B_r_Bj = p_r_p_j - p_r_p_com
     F_r_Fj = c_r_c_j - c_r_c_com
     # Parent- and follower-side joint frames including the DoF axis basis.
-    X_p_j = wp.quat_to_matrix(q_p_j) @ R_axis_j
-    X_c_j = wp.quat_to_matrix(q_c_j) @ R_axis_j
+    X_B_j = wp.quat_to_matrix(q_p_j) @ R_axis_j
+    X_F_j = wp.quat_to_matrix(q_c_j) @ R_axis_j
     joint_B_r_B[joint_id] = B_r_Bj
     joint_F_r_F[joint_id] = F_r_Fj
-    joint_X_p[joint_id] = X_p_j
-    joint_X_c[joint_id] = X_c_j
+    joint_X_B[joint_id] = X_B_j
+    joint_X_F[joint_id] = X_F_j
 
     # Clip joint limits and effort/velocity limits to supported ranges
     for i in range(qd_count_j):
@@ -575,36 +574,6 @@ def write_coeff_kernel(a: wp.array[int32], idx: int, v: int):
 ###
 
 
-def convert_entity_local_transforms(model: Model) -> dict[str, wp.array]:
-    """
-    Returns working copies of Newton's entity-local transform arrays for the Kamino model.
-
-    Kamino's joint constraint formulation accepts non-aligned base/follower joint frames
-    (``q_pj != q_cj``) natively via the per-joint :attr:`JointsModel.X_p_j` and
-    :attr:`JointsModel.X_c_j` matrices, so no body-frame absorption is needed: each
-    output array is a plain clone of the corresponding Newton array.
-
-    Args:
-        model (Model): Newton model whose entity-local transforms should be cloned.
-
-    Returns:
-        A dictionary containing clones of ``body_q``, ``body_qd``, ``body_com``,
-        ``body_inertia``, ``body_inv_inertia``, ``shape_transform``, ``joint_X_p``,
-        and ``joint_X_c`` so that downstream conversion may consume them without
-        mutating the original Newton model.
-    """
-    return {
-        "body_q": wp.clone(model.body_q),
-        "body_qd": wp.clone(model.body_qd),
-        "body_com": wp.clone(model.body_com),
-        "body_inertia": wp.clone(model.body_inertia),
-        "body_inv_inertia": wp.clone(model.body_inv_inertia),
-        "shape_transform": wp.clone(model.shape_transform),
-        "joint_X_p": wp.clone(model.joint_X_p),
-        "joint_X_c": wp.clone(model.joint_X_c),
-    }
-
-
 def compute_required_contact_capacity(
     model: Model,
     max_contacts_per_pair: int | None = None,
@@ -671,8 +640,8 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
     """
     Converts the joint model parameterization of Newton's to Kamino's format.
 
-    Computes :attr:`JointsModel.B_r_Bj`, :attr:`JointsModel.F_r_Fj`, :attr:`JointsModel.X_p_j`
-    and :attr:`JointsModel.X_c_j` from Newton's ``model.joint_X_p`` / ``model.joint_X_c``
+    Computes :attr:`JointsModel.B_r_Bj`, :attr:`JointsModel.F_r_Fj`, :attr:`JointsModel.X_Bj`
+    and :attr:`JointsModel.X_Fj` from Newton's ``model.joint_X_p`` / ``model.joint_X_c``
     transforms and writes them in-place into ``joints``.
 
     Args:
@@ -694,8 +663,8 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
     n_joints = model.joint_count
     B_r_Bj_np = np.zeros((n_joints, 3), dtype=np.float32)
     F_r_Fj_np = np.zeros((n_joints, 3), dtype=np.float32)
-    X_p_j_np = np.zeros((n_joints, 9), dtype=np.float32)
-    X_c_j_np = np.zeros((n_joints, 9), dtype=np.float32)
+    X_Bj_np = np.zeros((n_joints, 9), dtype=np.float32)
+    X_Fj_np = np.zeros((n_joints, 9), dtype=np.float32)
 
     for j in range(n_joints):
         dof_type_j = JointDoFType(int(dof_type_np[j]))
@@ -717,39 +686,30 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
 
         B_r_Bj_np[j, :] = p_r_p_j - p_r_p_com
         F_r_Fj_np[j, :] = c_r_c_j - c_r_c_com
-        X_p_j_np[j, :] = wp.quat_to_matrix(q_p_j) @ R_axis_j
-        X_c_j_np[j, :] = wp.quat_to_matrix(q_c_j) @ R_axis_j
+        X_Bj_np[j, :] = wp.quat_to_matrix(q_p_j) @ R_axis_j
+        X_Fj_np[j, :] = wp.quat_to_matrix(q_c_j) @ R_axis_j
 
     joints.B_r_Bj.assign(B_r_Bj_np)
     joints.F_r_Fj.assign(F_r_Fj_np)
-    joints.X_p_j.assign(X_p_j_np.reshape((n_joints, 3, 3)))
-    joints.X_c_j.assign(X_c_j_np.reshape((n_joints, 3, 3)))
+    joints.X_Bj.assign(X_Bj_np.reshape((n_joints, 3, 3)))
+    joints.X_Fj.assign(X_Fj_np.reshape((n_joints, 3, 3)))
 
 
 def convert_rigid_bodies(
     model: Model,
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
-    body_com: wp.array,
-    body_q: wp.array,
-    body_qd: wp.array,
-    body_inertia: wp.array,
-    body_inv_inertia: wp.array,
 ) -> RigidBodiesModel:
     """
     Converts the rigid bodies from a Newton model into Kamino's format. The function
     will create a new `RigidBodiesModel` object and fill in the rigid body and shape
-    entries of the provided `SizeKamino` and `ModelKaminoInfo` objects.
+    entries of the provided `SizeKamino` and `ModelKaminoInfo` objects. The input model
+    is treated as read-only (data is neither modified nor aliased).
 
     Args:
         model: Newton model.
         model_size: Model size object, to be filled in by the function.
         model_info: Model info object, to be filled in by the function.
-        body_com: Rigid body center-of-mass offsets in body-local frame.
-        body_q: Initial rigid body poses (body-origin world poses).
-        body_qd: Initial rigid body twists.
-        body_inertia: Rigid body inertia tensors in body-local frame.
-        body_inv_inertia: Inverse rigid body inertia tensors in body-local frame.
 
     Returns:
         Fully converted rigid bodies model in Kamino's format.
@@ -795,7 +755,7 @@ def convert_rigid_bodies(
         inputs=[
             model.body_world_start,
             model.body_mass,
-            body_inertia,
+            model.body_inertia,
         ],
         outputs=[
             mass_total,
@@ -809,7 +769,7 @@ def convert_rigid_bodies(
     # model.body_q stores body-origin world poses, but Kamino expects
     # COM world poses (joint attachment vectors are COM-relative).
     q_i_0 = wp.empty((model.body_count,), dtype=transformf, device=model.device)
-    convert_body_origin_to_com(body_com, body_q, q_i_0)
+    convert_body_origin_to_com(model.body_com, model.body_q, q_i_0)
 
     # Fill in size data for bodies
     model_size.sum_of_num_bodies = model.body_count
@@ -846,11 +806,11 @@ def convert_rigid_bodies(
         bid=body_bid,  # TODO: Remove
         m_i=model.body_mass,
         inv_m_i=model.body_inv_mass,
-        i_r_com_i=body_com,
-        i_I_i=body_inertia,
-        inv_i_I_i=body_inv_inertia,
+        i_r_com_i=wp.clone(model.body_com, device=model.device),
+        i_I_i=wp.clone(model.body_inertia, device=model.device),
+        inv_i_I_i=wp.clone(model.body_inv_inertia, device=model.device),
         q_i_0=q_i_0,
-        u_i_0=body_qd,
+        u_i_0=wp.clone(model.body_qd, device=model.device),
     )
     return model_bodies
 
@@ -859,22 +819,17 @@ def convert_joints(
     model: Model,
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
-    body_com: wp.array,
-    model_joint_X_p: wp.array,
-    model_joint_X_c: wp.array,
 ) -> JointsModel:
     """
     Converts the joints from a Newton model into Kamino's format. The function will
     create a new `JointsModel` object and fill in the joint entries of the provided
-    `SizeKamino` and `ModelKaminoInfo` objects.
+    `SizeKamino` and `ModelKaminoInfo` objects. The input model is treated as read-only
+    (data is neither modified nor aliased).
 
     Args:
         model: Newton model.
         model_size: Model size object, to be filled in by the function.
         model_info: Model info object, to be filled in by the function.
-        body_com: Rigid body center-of-mass offsets in body-local frame.
-        model_joint_X_p: Newton's per-joint parent-side joint frame transforms.
-        model_joint_X_c: Newton's per-joint follower-side joint frame transforms.
 
     Returns:
         Fully converted joints model in Kamino's format.
@@ -895,8 +850,8 @@ def convert_joints(
         joint_num_kinematic_cts = wp.zeros(shape=(model.joint_count,), dtype=int32)
         joint_B_r_B = wp.empty(shape=(model.joint_count,), dtype=vec3f)
         joint_F_r_F = wp.empty(shape=(model.joint_count,), dtype=vec3f)
-        joint_X_p = wp.empty(shape=(model.joint_count,), dtype=mat33f)
-        joint_X_c = wp.empty(shape=(model.joint_count,), dtype=mat33f)
+        joint_X_B = wp.empty(shape=(model.joint_count,), dtype=mat33f)
+        joint_X_F = wp.empty(shape=(model.joint_count,), dtype=mat33f)
 
     # Copy limit arrays
     joint_limit_lower = wp.clone(model.joint_limit_lower)
@@ -923,9 +878,9 @@ def convert_joints(
             model.joint_target_ke,
             model.joint_target_kd,
             model.joint_axis,
-            body_com,
-            model_joint_X_p,
-            model_joint_X_c,
+            model.body_com,
+            model.joint_X_p,
+            model.joint_X_c,
             joint_limit_lower,
             joint_limit_upper,
             joint_velocity_limit,
@@ -941,8 +896,8 @@ def convert_joints(
             joint_num_kinematic_cts,
             joint_B_r_B,
             joint_F_r_F,
-            joint_X_p,
-            joint_X_c,
+            joint_X_B,
+            joint_X_F,
         ],
         device=model.device,
     )
@@ -1284,8 +1239,8 @@ def convert_joints(
         bid_F=model.joint_child,
         B_r_Bj=joint_B_r_B,
         F_r_Fj=joint_F_r_F,
-        X_p_j=joint_X_p,
-        X_c_j=joint_X_c,
+        X_Bj=joint_X_B,
+        X_Fj=joint_X_F,
         q_j_min=joint_limit_lower,
         q_j_max=joint_limit_upper,
         dq_j_max=joint_velocity_limit,
@@ -1363,9 +1318,7 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
     return geom_material
 
 
-def convert_geometries(
-    model: Model, model_size: SizeKamino, materials_manager: MaterialManager, shape_transform: wp.array
-) -> GeometriesModel:
+def convert_geometries(model: Model, model_size: SizeKamino, materials_manager: MaterialManager) -> GeometriesModel:
     # Set up materials
     geom_material_np = register_materials(model, materials_manager)
 

@@ -1076,27 +1076,20 @@ class JointDescriptor(Descriptor):
     Defaults to `-1`, indicating that the joint has not been assigned a follower body.
     """
 
-    # TODO: Change this to a transformf
     B_r_Bj: vec3f = field(default_factory=vec3f)
     """The relative position of the joint in the base body coordinates."""
 
-    # TODO: Change this to a transformf
     F_r_Fj: vec3f = field(default_factory=vec3f)
     """The relative position of the joint in the follower body coordinates."""
 
-    # TODO: Remove this when body offsets become transforms
-    X_p_j: mat33f = field(default_factory=mat33f)
-    """The constant axes matrix of the joint expressed in the base body's frame.
+    X_Bj: mat33f = field(default_factory=mat33f)
+    """The orientation of the joint frame on the base body, in the base body coordinates."""
 
-    Equal to ``R(q_pj) @ R_axis``, where ``q_pj`` is the rotation of the
-    joint frame in the base body and ``R_axis`` is the joint DoF axis basis.
+    X_Fj: mat33f | None = None
     """
+    The orientation of the joint frame on the follower body, in the follower body coordinates.
 
-    X_c_j: mat33f | None = None
-    """The constant axes matrix of the joint expressed in the follower body's frame.
-
-    Equal to ``R(q_cj) @ R_axis``. Defaults to :attr:`X_p_j` for joints with
-    aligned base/follower joint frames (``q_pj == q_cj``).
+    If not provided, defaults to `X_Bj`.
     """
 
     q_j_min: ArrayLike | float | None = None
@@ -1472,8 +1465,8 @@ class JointDescriptor(Descriptor):
 
         # Default the follower-side joint frame to the base-side one, which
         # is the convention for joints with aligned base/follower frames.
-        if self.X_c_j is None:
-            self.X_c_j = mat33f(self.X_p_j)
+        if self.X_Fj is None:
+            self.X_Fj = mat33f(self.X_Bj)
 
         # Set default values for joint limits if not provided
         self.q_j_min = self._check_dofs_array(self.q_j_min, self.num_dofs, float(JOINT_QMIN))
@@ -1549,8 +1542,8 @@ class JointDescriptor(Descriptor):
             "----------------------------------------------\n"
             f"B_r_Bj: {self.B_r_Bj},\n"
             f"F_r_Fj: {self.F_r_Fj},\n"
-            f"X_p_j:\n{self.X_p_j},\n"
-            f"X_c_j:\n{self.X_c_j},\n"
+            f"X_Bj:\n{self.X_Bj},\n"
+            f"X_Fj:\n{self.X_Fj},\n"
             "----------------------------------------------\n"
             f"q_j_min: {self.q_j_min},\n"
             f"q_j_max: {self.q_j_max},\n"
@@ -1741,31 +1734,25 @@ class JointsModel:
     B_r_Bj: wp.array | None = None
     """
     Relative position of the joint, expressed in and w.r.t the base body coordinate frame.\n
-    Shape of ``(num_joints, 3)`` and type :class:`vec3`.
+    Shape of ``(num_joints,)`` and type :class:`vec3`.
     """
 
     F_r_Fj: wp.array | None = None
     """
     Relative position of the joint, expressed in and w.r.t the follower body coordinate frame.\n
-    Shape of ``(num_joints, 3)`` and type :class:`vec3`.
+    Shape of ``(num_joints,)`` and type :class:`vec3`.
     """
 
-    X_p_j: wp.array | None = None
+    X_Bj: wp.array | None = None
     """
-    Joint axes matrix (local coordinates) of each joint, expressed in the base body's frame.\n
-    Indicates the relative orientation of the joint frame w.r.t the base body
-    coordinate frame, including the DoF axis basis. Equal to ``R(q_pj) @ R_axis``.\n
-    Shape of ``(num_joints, 3, 3)`` and type :class:`mat33`.
+    Orientation of the joint frame on the base body, expressed in the base body coordinate frame.\n
+    Shape of ``(num_joints,)`` and type :class:`mat33`.
     """
 
-    X_c_j: wp.array | None = None
+    X_Fj: wp.array | None = None
     """
-    Joint axes matrix (local coordinates) of each joint, expressed in the follower body's frame.\n
-    Indicates the relative orientation of the joint frame w.r.t the follower body
-    coordinate frame, including the DoF axis basis. Equal to ``R(q_cj) @ R_axis``.
-    For joints whose base/follower joint frames are aligned (``q_pj == q_cj``),
-    this equals :attr:`X_p_j`.\n
-    Shape of ``(num_joints, 3, 3)`` and type :class:`mat33`.
+    Orientation of the joint frame on the follower body, expressed in the follower body coordinate frame.\n
+    Shape of ``(num_joints,)`` and type :class:`mat33`.
     """
 
     ###

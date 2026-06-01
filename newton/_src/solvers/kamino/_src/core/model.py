@@ -17,7 +17,6 @@ from .....sim import Model
 from .bodies import RigidBodiesData, RigidBodiesModel, convert_geom_offset_origin_to_com
 from .control import ControlKamino
 from .conversions import (
-    convert_entity_local_transforms,
     convert_geometries,
     convert_joints,
     convert_rigid_bodies,
@@ -716,20 +715,6 @@ class ModelKamino:
                     arr_start_np[-2] = arr_start_np[-1]
                     arr_start.assign(arr_start_np)
 
-        # Get working copies of Newton's entity-local transforms. These remain in
-        # Newton's frame end-to-end: the joint constraint formulation consumes
-        # ``X_p_j`` and ``X_c_j`` separately, so no body-frame rotation absorption
-        # is needed. See :func:`convert_entity_local_transforms`.
-        converted = convert_entity_local_transforms(model)
-        body_q = converted["body_q"]
-        body_qd = converted["body_qd"]
-        body_com = converted["body_com"]
-        body_inertia = converted["body_inertia"]
-        body_inv_inertia = converted["body_inv_inertia"]
-        shape_transform = converted["shape_transform"]
-        joint_X_p = converted["joint_X_p"]
-        joint_X_c = converted["joint_X_c"]
-
         # Initialize materials manager
         materials_manager = MaterialManager()
 
@@ -755,22 +740,13 @@ class ModelKamino:
             model_gravity = GravityModel.from_newton(model)
 
             # Bodies
-            model_bodies = convert_rigid_bodies(
-                model,
-                model_size,
-                model_info,
-                body_com,
-                body_q,
-                body_qd,
-                body_inertia,
-                body_inv_inertia,
-            )
+            model_bodies = convert_rigid_bodies(model, model_size, model_info)
 
             # Joints
-            model_joints = convert_joints(model, model_size, model_info, body_com, joint_X_p, joint_X_c)
+            model_joints = convert_joints(model, model_size, model_info)
 
             # Geometries
-            model_geoms = convert_geometries(model, model_size, materials_manager, shape_transform)
+            model_geoms = convert_geometries(model, model_size, materials_manager)
 
             # Materials
             model_materials = materials_manager.make_materials_model()
@@ -784,7 +760,7 @@ class ModelKamino:
         convert_geom_offset_origin_to_com(
             model_bodies.i_r_com_i,
             model.shape_body,
-            shape_transform,
+            model.shape_transform,
             model_geoms.offset,
         )
 
