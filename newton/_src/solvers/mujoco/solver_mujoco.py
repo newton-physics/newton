@@ -45,7 +45,7 @@ from .constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
-from .equality import _register_equality_constraint_attributes
+from .equality import MJC_OBJ_BODY, MjcEqualityTargetKind, _register_equality_constraint_attributes
 from .kernels import (
     _snapshot_nacon_count,
     apply_mjc_body_f_kernel,
@@ -89,7 +89,6 @@ from .kernels import (
     update_solver_options_kernel,
     update_tendon_properties_kernel,
 )
-from .utils import MJC_OBJ_BODY, MjcEqualityTargetKind
 
 if TYPE_CHECKING:
     from mujoco import MjData, MjModel
@@ -850,35 +849,9 @@ class SolverMuJoCo(SolverBase):
         )
         # endregion body and joint attributes
 
-        # region equality attributes
-        # Equality rows use these fields to preserve MuJoCo solver parameters.
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="eq_solref",
-                frequency="mujoco:equality_constraint",
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.vec2,
-                default=wp.vec2(0.02, 1.0),
-                namespace="mujoco",
-                usd_attribute_name="mjc:solref",
-                mjcf_attribute_name="solref",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="eq_solimp",
-                frequency="mujoco:equality_constraint",
-                assignment=AttributeAssignment.MODEL,
-                dtype=vec5,
-                default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
-                namespace="mujoco",
-                usd_attribute_name="mjc:solimp",
-                mjcf_attribute_name="solimp",
-            )
-        )
-        # ``equality_constraint_target_kind`` / ``_target`` / ``_objtype`` are declared by
-        # _register_equality_constraint_attributes (called above), so they are not re-registered here.
-        # endregion equality attributes
+        # All equality-constraint custom attributes (incl. eq_solref/eq_solimp and the
+        # target_kind/target/objtype projection fields) are declared by
+        # _register_equality_constraint_attributes (called above), so none are registered here.
 
         # region solver options
         # Solver options (frequency WORLD for per-world values)

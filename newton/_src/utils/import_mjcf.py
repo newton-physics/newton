@@ -341,10 +341,10 @@ def parse_mjcf(
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
 
-    # ``eq_solref`` is registered only by the full SolverMuJoCo.register_custom_attributes; the
-    # ``equality_constraint_*`` core columns are already declared by ModelBuilder.__init__, so they
-    # cannot be used as the "attributes registered?" sentinel here.
-    if convert_mjc_equality_constraints and "mujoco:eq_solref" not in builder.custom_attributes:
+    # The equality custom attributes are declared by ModelBuilder.__init__; register the remaining
+    # MuJoCo custom attributes (geom/actuator/solver options) needed to parse and convert the model.
+    # register_custom_attributes is idempotent, so re-registering the equality fields is a no-op.
+    if convert_mjc_equality_constraints:
         SolverMuJoCo.register_custom_attributes(builder)
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.

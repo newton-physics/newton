@@ -131,48 +131,6 @@ class EqType(IntEnum):
     """Constrains the position or angle of one joint to be a quartic polynomial of another joint (like a prismatic or revolute joint)."""
 
 
-class EqTarget(IntEnum):
-    """Native Newton entity a MuJoCo equality constraint has been projected onto.
-
-    Backs ``model.mujoco.equality_constraint_target_kind`` and marks whether an
-    equality row is simulated as a pure equality constraint or was converted to a
-    loop joint / mimic constraint for solver portability.
-    """
-
-    NONE = 0
-    """Pure equality constraint; not converted to a native entity."""
-
-    JOINT = 1
-    """Converted to a loop-closing joint (``EqType.CONNECT`` / ``EqType.WELD``)."""
-
-    MIMIC = 2
-    """Converted to a mimic constraint (``EqType.JOINT``)."""
-
-
-class EqObjType(IntEnum):
-    """Kind of object a MuJoCo equality constraint references.
-
-    Disambiguates the ``model.mujoco.equality_constraint_body*`` / ``_joint*``
-    references and leaves room for site- and tendon-anchored equalities.
-    ``SolverMuJoCo`` maps these to the corresponding ``mujoco.mjtObj`` values.
-    """
-
-    NONE = 0
-    """No object / unset."""
-
-    BODY = 1
-    """References bodies (``EqType.CONNECT`` / ``EqType.WELD``)."""
-
-    SITE = 2
-    """References sites."""
-
-    JOINT = 3
-    """References joints (``EqType.JOINT``)."""
-
-    TENDON = 4
-    """References tendons."""
-
-
 class JointTargetMode(IntEnum):
     """
     Enumeration of actuator modes for joint degrees of freedom.

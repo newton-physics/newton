@@ -15,22 +15,37 @@ importers and by tests during the deprecation window for
 
 from __future__ import annotations
 
+from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
 import warp as wp
 
-from ...core.types import Transform, Vec3, axis_to_vec3
-from ...sim.enums import EqObjType, EqTarget, EqType
+from ...core.types import Transform, Vec3, axis_to_vec3, vec5
+from ...sim.enums import EqType
 from ...sim.model import Model
 
 if TYPE_CHECKING:
     from ...sim.builder import ModelBuilder
 
 
+class MjcEqualityTargetKind(IntEnum):
+    """How a MuJoCo equality row is projected into Newton."""
+
+    NONE = 0  # Pure equality row; no projected Newton object, target is -1.
+    JOINT = 1  # Target is a Newton joint, used by converted CONNECT/WELD loop joints.
+    MIMIC = 2  # Target is a Newton mimic constraint, used by converted JOINT equalities.
+
+
+# Object kinds an equality row references (mjtObj-aligned).
+MJC_OBJ_UNKNOWN = -1
+MJC_OBJ_BODY = 1
+MJC_OBJ_JOINT = 3
+
+
 def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     """Declare the ``model.mujoco.equality_constraint_*`` custom-attribute rows on ``builder``.
 
-    Registers the 15 per-equality-constraint custom attributes (the ``mujoco:equality_constraint``
+    Registers the per-equality-constraint custom attributes (the ``mujoco:equality_constraint``
     frequency) that back :func:`_add_equality_constraint` and surface on :class:`~newton.Model`
     under the ``mujoco`` namespace after :meth:`~newton.ModelBuilder.finalize`.
 
@@ -175,28 +190,28 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
             namespace="mujoco",
         )
     )
-    # ``objtype`` disambiguates the body*/joint* references (see :class:`EqObjType`) so
-    # the table can grow to site- and tendon-anchored equalities without a layout change.
+    # ``objtype`` disambiguates the body*/joint* references (see :data:`MJC_OBJ_BODY`) so the
+    # table can grow to site- and tendon-anchored equalities without a layout change.
     builder.add_custom_attribute(
         ca(
             name="equality_constraint_objtype",
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=wp.int32,
-            default=int(EqObjType.BODY),
+            default=MJC_OBJ_UNKNOWN,
             namespace="mujoco",
         )
     )
-    # ``target_kind`` / ``target`` link a row to the native entity it was projected onto
-    # (loop joint or mimic) for solver portability. Reserved for the MJCF/USD
-    # equality-to-joint conversion; until that lands every row keeps ``EqTarget.NONE`` / ``-1``.
+    # ``target_kind`` / ``target`` link a row to the native entity it was projected onto (loop
+    # joint or mimic) for solver portability; converted MJCF/USD equalities set them, while pure
+    # equality rows keep ``MjcEqualityTargetKind.NONE`` / ``-1``.
     builder.add_custom_attribute(
         ca(
             name="equality_constraint_target_kind",
             frequency=eq_freq,
             assignment=model_assignment,
             dtype=wp.int32,
-            default=int(EqTarget.NONE),
+            default=int(MjcEqualityTargetKind.NONE),
             namespace="mujoco",
         )
     )
@@ -208,6 +223,31 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
             dtype=wp.int32,
             default=-1,
             namespace="mujoco",
+        )
+    )
+    # MuJoCo solver reference parameters, parsed from USD/MJCF and read back by SolverMuJoCo.
+    builder.add_custom_attribute(
+        ca(
+            name="eq_solref",
+            frequency=eq_freq,
+            assignment=model_assignment,
+            dtype=wp.vec2,
+            default=wp.vec2(0.02, 1.0),
+            namespace="mujoco",
+            usd_attribute_name="mjc:solref",
+            mjcf_attribute_name="solref",
+        )
+    )
+    builder.add_custom_attribute(
+        ca(
+            name="eq_solimp",
+            frequency=eq_freq,
+            assignment=model_assignment,
+            dtype=vec5,
+            default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
+            namespace="mujoco",
+            usd_attribute_name="mjc:solimp",
+            mjcf_attribute_name="solimp",
         )
     )
 
@@ -257,7 +297,7 @@ def _add_equality_constraint(
         torquescale_value = 1.0 if constraint_type == EqType.WELD else 0.0
     else:
         torquescale_value = float(torquescale)
-    objtype = EqObjType.JOINT if constraint_type == EqType.JOINT else EqObjType.BODY
+    objtype = MJC_OBJ_JOINT if constraint_type == EqType.JOINT else MJC_OBJ_BODY
 
     indices = builder.add_custom_values(
         **{

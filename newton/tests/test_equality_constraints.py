@@ -8,8 +8,12 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.sim.enums import EqObjType, EqTarget
-from newton._src.solvers.mujoco.equality import _add_equality_constraint
+from newton._src.solvers.mujoco.equality import (
+    MJC_OBJ_BODY,
+    MJC_OBJ_JOINT,
+    MjcEqualityTargetKind,
+    _add_equality_constraint,
+)
 
 
 def _eq_value(builder, name, idx):
@@ -95,7 +99,7 @@ class TestEqualityConstraints(unittest.TestCase):
             self.assertLess(max_force, 1000.0, f"Maximum constraint force {max_force} seems unreasonably large")
 
     def test_target_and_objtype_defaults(self):
-        # Pure equality rows default to EqTarget.NONE / target -1 and carry the
+        # Pure equality rows default to MjcEqualityTargetKind.NONE / target -1 and carry the
         # objtype implied by their EqType (BODY for connect/weld, JOINT for joint).
         builder = newton.ModelBuilder()
         b0 = builder.add_body()
@@ -113,11 +117,11 @@ class TestEqualityConstraints(unittest.TestCase):
 
         np.testing.assert_array_equal(
             model.mujoco.equality_constraint_objtype.numpy(),
-            [int(EqObjType.BODY), int(EqObjType.BODY), int(EqObjType.JOINT)],
+            [MJC_OBJ_BODY, MJC_OBJ_BODY, MJC_OBJ_JOINT],
         )
         np.testing.assert_array_equal(
             model.mujoco.equality_constraint_target_kind.numpy(),
-            [int(EqTarget.NONE)] * 3,
+            [int(MjcEqualityTargetKind.NONE)] * 3,
         )
         np.testing.assert_array_equal(model.mujoco.equality_constraint_target.numpy(), [-1, -1, -1])
 

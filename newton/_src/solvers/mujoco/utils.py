@@ -4,27 +4,19 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from enum import IntEnum
 from typing import Any
 
 import warp as wp
 
 from ...core.types import vec5
 from ...sim.enums import EqType
-from .equality import _add_equality_constraint
-
-
-class MjcEqualityTargetKind(IntEnum):
-    """How a MuJoCo equality row is projected into Newton."""
-
-    NONE = 0  # Pure equality row; no projected Newton object, target is -1.
-    JOINT = 1  # Target is a Newton joint, used by converted CONNECT/WELD loop joints.
-    MIMIC = 2  # Target is a Newton mimic constraint, used by converted JOINT equalities.
-
-
-MJC_OBJ_UNKNOWN = -1
-MJC_OBJ_BODY = 1
-MJC_OBJ_JOINT = 3
+from .equality import (
+    MJC_OBJ_BODY,
+    MJC_OBJ_JOINT,
+    MJC_OBJ_UNKNOWN,
+    MjcEqualityTargetKind,
+    _add_equality_constraint,
+)
 
 
 def mjc_eq_solref(custom_attrs: dict[str, Any]) -> wp.vec2:
