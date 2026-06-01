@@ -120,9 +120,7 @@ After installing Newton with the ``examples`` extra, launch the default
 
     python -m newton.examples
 
-Run an example that runs RL policy inference. RL policies ship as ONNX files and
-run on Newton's Warp-backed runtime, so the ``examples`` extra is all you need —
-no PyTorch installation is required:
+Run an example with RL policy inference:
 
 .. code-block:: console
 
