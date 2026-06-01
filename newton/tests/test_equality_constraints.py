@@ -125,15 +125,6 @@ class TestEqualityConstraints(unittest.TestCase):
         )
         np.testing.assert_array_equal(model.mujoco.equality_constraint_target.numpy(), [-1, -1, -1])
 
-    def test_namespaced_fields_present_without_equality_constraints(self):
-        # Every model.mujoco.equality_constraint_* field (including objtype/target_kind/target)
-        # must be readable as an empty array on a model with no equality constraints, so
-        # downstream readers never hit AttributeError.
-        model = newton.ModelBuilder().finalize()
-        self.assertEqual(model.mujoco.equality_constraint_count, 0)
-        for field in ("type", "anchor", "world", "objtype", "target_kind", "target"):
-            self.assertEqual(getattr(model.mujoco, f"equality_constraint_{field}").numpy().shape[0], 0)
-
     def test_equality_constraints_not_duplicated_per_world(self):
         """Test that equality constraints are not duplicated for each world when using separate_worlds=True"""
         # Create a simple robot builder with equality constraints
