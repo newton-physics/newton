@@ -14,7 +14,7 @@ import os
 import posixpath
 import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urljoin
 
@@ -2895,6 +2895,160 @@ def parse_usd(
 
                 shape_color = material_props.get("color")
 
+                # SDF parameters. Applying NewtonSDFCollisionAPI is the canonical
+                # signal that SDF generation is configured for this shape.
+                has_sdf_api = prim.HasAPI("NewtonSDFCollisionAPI")
+                # NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are independent
+                # collision representations and should not be co-applied. SDF wins
+                # when both are present.
+                if has_sdf_api and prim.HasAPI("NewtonMeshCollisionAPI"):
+                    warnings.warn(
+                        f"{prim.GetPath()}: NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are "
+                        f"independent collision representations and should not be co-applied; "
+                        f"SDF configuration will be used.",
+                        stacklevel=2,
+                    )
+
+                # Resolve target_voxel_size first because it overrides
+                # sdf_max_resolution and the two are mutually exclusive in
+                # ShapeConfig.validate().
+                sdf_target_voxel_size = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_target_voxel_size", verbose=verbose
+                )
+                if sdf_target_voxel_size == float("-inf"):
+                    sdf_target_voxel_size = None
+                elif sdf_target_voxel_size is not None and sdf_target_voxel_size <= 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfTargetVoxelSize={sdf_target_voxel_size!r} is invalid "
+                        f"(must be > 0); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_target_voxel_size = None
+                if sdf_target_voxel_size is None:
+                    sdf_target_voxel_size = builder.default_shape_cfg.sdf_target_voxel_size
+
+                sdf_max_resolution = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_max_resolution", verbose=verbose
+                )
+                if sdf_max_resolution == float("-inf"):
+                    sdf_max_resolution = None
+                elif sdf_max_resolution is not None and sdf_max_resolution <= 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} is invalid "
+                        f"(must be > 0); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_max_resolution = None
+                elif sdf_max_resolution is not None and sdf_max_resolution % 8 != 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} must be "
+                        f"divisible by 8 (SDF volumes are allocated in 8x8x8 tiles); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_max_resolution = None
+                if sdf_target_voxel_size is not None and sdf_max_resolution is not None:
+                    warnings.warn(
+                        f"{prim.GetPath()}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution "
+                        f"are set; sdfTargetVoxelSize takes precedence.",
+                        stacklevel=2,
+                    )
+                    sdf_max_resolution = None
+                if sdf_max_resolution is None:
+                    # When the API is applied but neither attribute is authored,
+                    # fall back to the schema default (64). When target voxel
+                    # size already drives the resolution, leave max_resolution
+                    # unset so the two don't conflict in ShapeConfig.validate().
+                    if has_sdf_api and sdf_target_voxel_size is None:
+                        sdf_max_resolution = 64
+                    else:
+                        sdf_max_resolution = builder.default_shape_cfg.sdf_max_resolution
+
+                sdf_narrow_band_inner = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_inner", verbose=verbose
+                )
+                if sdf_narrow_band_inner == float("-inf"):
+                    sdf_narrow_band_inner = None
+                sdf_narrow_band_outer = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer", verbose=verbose
+                )
+                if sdf_narrow_band_outer == float("-inf"):
+                    sdf_narrow_band_outer = None
+                default_nb = builder.default_shape_cfg.sdf_narrow_band_range
+                sdf_narrow_band_range = (
+                    sdf_narrow_band_inner if sdf_narrow_band_inner is not None else default_nb[0],
+                    sdf_narrow_band_outer if sdf_narrow_band_outer is not None else default_nb[1],
+                )
+
+                sdf_texture_format = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_texture_format", verbose=verbose
+                )
+                _valid_sdf_tex_fmts = ("float32", "uint16", "uint8")
+                if sdf_texture_format is not None and sdf_texture_format not in _valid_sdf_tex_fmts:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfTextureFormat={sdf_texture_format!r} is invalid "
+                        f"(expected one of {list(_valid_sdf_tex_fmts)}); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_texture_format = None
+                if sdf_texture_format is None:
+                    sdf_texture_format = builder.default_shape_cfg.sdf_texture_format
+
+                sdf_padding = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_padding", verbose=verbose)
+                if sdf_padding == float("-inf"):
+                    sdf_padding = None
+                elif sdf_padding is not None and sdf_padding < 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfPadding={sdf_padding!r} is invalid "
+                        f"(must be >= 0); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_padding = None
+
+                hydroelastic_enabled = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="hydroelastic_enabled", verbose=verbose
+                )
+                kh = R.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
+                if kh == float("-inf"):
+                    kh = None
+                elif kh is not None and kh <= 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:hydroelasticStiffness={kh!r} is invalid "
+                        f"(must be > 0); falling back to default.",
+                        stacklevel=2,
+                    )
+                    kh = None
+                if hydroelastic_enabled is True:
+                    is_hydroelastic = True
+                elif hydroelastic_enabled is False:
+                    is_hydroelastic = False
+                elif has_sdf_api:
+                    # API applied but hydroelasticEnabled unauthored -> schema default False, not builder default.
+                    is_hydroelastic = False
+                else:
+                    is_hydroelastic = builder.default_shape_cfg.is_hydroelastic
+                if kh is None:
+                    kh = builder.default_shape_cfg.kh
+
+                # Hydroelastic meshes need an SDF source. For primitives, a texture
+                # SDF is generated from a synthesized watertight mesh at finalize(),
+                # but meshes require either an attached mesh.sdf or a
+                # resolution/voxel_size so one can be built deferred. Warn and
+                # disable hydroelastic on this shape rather than aborting the whole
+                # import — typically reached when newton:hydroelasticEnabled=true
+                # is authored without applying NewtonSDFCollisionAPI.
+                if (
+                    is_hydroelastic
+                    and key == UsdPhysics.ObjectType.MeshShape
+                    and sdf_max_resolution is None
+                    and sdf_target_voxel_size is None
+                ):
+                    warnings.warn(
+                        f"{prim.GetPath()}: hydroelastic mesh requires newton:sdfMaxResolution "
+                        f"or newton:sdfTargetVoxelSize so an SDF can be generated; "
+                        f"disabling hydroelastic for this shape.",
+                        stacklevel=2,
+                    )
+                    is_hydroelastic = False
                 # Mass model and shell thickness (resolved across Newton / MuJoCo schemas)
                 mass_model = R.get_value(prim, PrimType.SHAPE, "mass_model", default="solid")
                 shape_is_solid = mass_model != "shell"
@@ -2934,6 +3088,13 @@ def parse_usd(
                         density=shape_density,
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
+                        sdf_max_resolution=sdf_max_resolution,
+                        sdf_narrow_band_range=sdf_narrow_band_range,
+                        sdf_target_voxel_size=sdf_target_voxel_size,
+                        sdf_texture_format=sdf_texture_format,
+                        sdf_padding=sdf_padding,
+                        is_hydroelastic=is_hydroelastic,
+                        kh=kh,
                         is_solid=shape_is_solid,
                     ),
                     "label": path,
@@ -3011,24 +3172,54 @@ def parse_usd(
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
+                    # add_shape_mesh() rejects SDF cfg fields on meshes; strip them and
+                    # write the SDF intent to the builder lists, deferring the build to finalize().
+                    mesh_shape_params = dict(shape_params)
+                    mesh_shape_params["cfg"] = replace(
+                        shape_params["cfg"],
+                        sdf_max_resolution=None,
+                        sdf_target_voxel_size=None,
+                        sdf_narrow_band_range=(-0.1, 0.1),
+                        sdf_texture_format="uint16",
+                        sdf_padding=None,
+                        is_hydroelastic=False,
+                    )
                     shape_id = builder.add_shape_mesh(
                         scale=wp.vec3(*shape_spec.meshScale),
                         mesh=mesh,
-                        **shape_params,
+                        **mesh_shape_params,
                     )
+                    builder.shape_sdf_max_resolution[shape_id] = sdf_max_resolution
+                    builder.shape_sdf_target_voxel_size[shape_id] = sdf_target_voxel_size
+                    builder.shape_sdf_narrow_band_range[shape_id] = sdf_narrow_band_range
+                    builder.shape_sdf_texture_format[shape_id] = sdf_texture_format
+                    builder.shape_sdf_padding[shape_id] = sdf_padding
+                    # kh is a material param; persist regardless of hydro state.
+                    builder.shape_material_kh[shape_id] = kh
+                    if is_hydroelastic:
+                        builder.shape_flags[shape_id] |= ShapeFlags.HYDROELASTIC
                     if not skip_mesh_approximation:
                         approximation = usd.get_attribute(prim, "physics:approximation", None)
                         if approximation is not None:
-                            remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
-                            if remeshing_method is None:
-                                if verbose:
-                                    print(
-                                        f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
-                                    )
+                            if has_sdf_api and approximation.lower() != "none":
+                                # physics:approximation belongs to PhysicsMeshCollisionAPI;
+                                # it has no meaning on a NewtonSDFCollisionAPI prim.
+                                warnings.warn(
+                                    f"{prim.GetPath()}: physics:approximation={approximation!r} is "
+                                    f"ignored on a shape with NewtonSDFCollisionAPI applied.",
+                                    stacklevel=2,
+                                )
                             else:
-                                if remeshing_method not in remeshing_queue:
-                                    remeshing_queue[remeshing_method] = []
-                                remeshing_queue[remeshing_method].append(shape_id)
+                                remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
+                                if remeshing_method is None:
+                                    if verbose:
+                                        print(
+                                            f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
+                                        )
+                                else:
+                                    if remeshing_method not in remeshing_queue:
+                                        remeshing_queue[remeshing_method] = []
+                                    remeshing_queue[remeshing_method].append(shape_id)
 
                 elif key == UsdPhysics.ObjectType.PlaneShape:
                     # Warp uses +Z convention for planes
