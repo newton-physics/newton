@@ -349,8 +349,8 @@ class SchemaResolverMjc(SchemaResolver):
             # Mass model: mjc:shellinertia (bool) → "shell" / "solid"
             "mass_model": SchemaAttribute("mjc:shellinertia", False, lambda v: "shell" if v else "solid"),
             # mjc:solref also fills shape_material_ke/kd via the legacy lossy
-            # conversion so imported MuJoCo defaults land at DEFAULT_SHAPE_KE /
-            # DEFAULT_SHAPE_KD; raw solref is preserved in mujoco.solref. See
+            # conversion for back-compat with the convert_solref(ke, kd, 1, 1)
+            # round-trip; raw solref is preserved in mujoco.solref. See
             # docs/integrations/mujoco.rst > "Shape-material contact stiffness
             # and damping".
             "ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),

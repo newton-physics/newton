@@ -429,9 +429,11 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     solref = wp.vec2(-ke * factor, -kd * factor)
 
         # Convert Newton per-contact stiffness/damping to MuJoCo solref
-        # (timeconst, dampratio).  solimp is set to approximate a linear
-        # force-displacement relationship at rest, compensating for impedance
-        # scaling.  See https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
+        # (timeconst, dampratio). Per-contact overrides take precedence over
+        # the shape-material force-space override above. solimp is set to
+        # approximate a linear force-displacement relationship at rest,
+        # compensating for impedance scaling. See
+        # https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
         if rigid_contact_stiffness:
             contact_ke = rigid_contact_stiffness[tid]
             if contact_ke > 0.0:

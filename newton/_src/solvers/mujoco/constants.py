@@ -32,24 +32,6 @@ DEFAULT_LIMIT_SOLREF_DAMPRATIO = DEFAULT_LIMIT_SOLREF[1]
 DEFAULT_LIMIT_SOLREF_TIMECONST = DEFAULT_LIMIT_SOLREF[0]
 """MuJoCo's implicit default joint-limit solref time-constant component."""
 
-DEFAULT_SHAPE_GAIN_ATOL = 1.0e-4
-"""Absolute tolerance for detecting imported MuJoCo default shape-material gains."""
-
-DEFAULT_SHAPE_KD = 100.0
-"""Newton ``shape_material_kd`` equivalent to MuJoCo's implicit default contact solref."""
-
-DEFAULT_SHAPE_KE = 2500.0
-"""Newton ``shape_material_ke`` equivalent to MuJoCo's implicit default contact solref."""
-
-DEFAULT_SHAPE_SOLREF = (0.02, 1.0)
-"""MuJoCo's implicit default contact-pair solref pair."""
-
-DEFAULT_SHAPE_SOLREF_DAMPRATIO = DEFAULT_SHAPE_SOLREF[1]
-"""MuJoCo's implicit default contact solref damping ratio component."""
-
-DEFAULT_SHAPE_SOLREF_TIMECONST = DEFAULT_SHAPE_SOLREF[0]
-"""MuJoCo's implicit default contact solref time-constant component."""
-
 HINGE_CONNECT_AXIS_OFFSET = 0.1
 """Distance [m] along the hinge axis for the second CONNECT constraint point of a revolute loop joint."""
 

@@ -693,9 +693,6 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="solmix",
             )
         )
-        # endregion geom attributes
-
-        # region body and joint attributes
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="solref",
@@ -727,6 +724,9 @@ class SolverMuJoCo(SolverBase):
                 usd_value_transformer=parse_solref_mode_usd,
             )
         )
+        # endregion geom attributes
+
+        # region body and joint attributes
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="limit_margin",
@@ -3321,6 +3321,32 @@ class SolverMuJoCo(SolverBase):
         if disable_contacts:
             disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
         self.use_mujoco_cpu = use_mujoco_cpu
+        if use_mujoco_contacts or use_mujoco_cpu:
+            mujoco_attrs_for_warn = getattr(model, "mujoco", None)
+            solref_mode_attr = (
+                getattr(mujoco_attrs_for_warn, "solref_mode", None) if mujoco_attrs_for_warn is not None else None
+            )
+            if solref_mode_attr is not None:
+                force_space_shapes = int(np.count_nonzero(solref_mode_attr.numpy() == SOLREF_MODE_FORCE_SPACE))
+                if force_space_shapes > 0:
+                    backends = [
+                        name
+                        for name, flag in (
+                            ("use_mujoco_contacts=True", use_mujoco_contacts),
+                            ("use_mujoco_cpu=True", use_mujoco_cpu),
+                        )
+                        if flag
+                    ]
+                    warnings.warn(
+                        f"{force_space_shapes} shape(s) have mujoco.solref_mode == SOLREF_MODE_FORCE_SPACE "
+                        f"but SolverMuJoCo is running with {', '.join(backends)}. The per-contact "
+                        "body_invweight0 override only fires on the Newton-contacts GPU path "
+                        "(use_mujoco_contacts=False); on this backend these shapes silently fall back to "
+                        "the legacy convert_solref(ke, kd, 1, 1) approximation and shape_material_ke/kd "
+                        "will not behave as force-space gains. See "
+                        "docs/integrations/mujoco.rst > 'Shape-material contact stiffness and damping'.",
+                        stacklevel=2,
+                    )
         if separate_worlds is None:
             separate_worlds = not use_mujoco_cpu and model.world_count > 1
         # Buffers for the fast-path contact conversion optimisation.
@@ -6985,19 +7011,11 @@ class SolverMuJoCo(SolverBase):
         shape_mjc_solref = getattr(mujoco_attrs, "solref", None) if mujoco_attrs is not None else None
         shape_mjc_solref_mode = getattr(mujoco_attrs, "solref_mode", None) if mujoco_attrs is not None else None
 
-        # NOTE on auto-promote (issue #2009): the joint-limit fix in
-        # PR #2610 auto-promotes ``SOLREF_MODE_MJCF_DEFAULT`` joints to
-        # ``SOLREF_MODE_FORCE_SPACE`` when ``joint_limit_ke``/``kd`` drift
-        # from Newton's defaults. Mirroring that on shape materials is
-        # fragile because ``ModelBuilder.default_shape_cfg.ke``/``kd`` are
-        # commonly overridden per-example (e.g. ``example_robot_anymal_d``
-        # uses ``ke=2000``), so shapes imported from MJCF/USD do not
-        # uniformly land at ``DEFAULT_SHAPE_KE``. Auto-promotion based on
-        # ``ke != DEFAULT_SHAPE_KE`` would misclassify those imports as
-        # "user-edited" and flip them into force-space scaling
-        # unexpectedly, producing the wrong contact dynamics.
-        # Shape-material force-space scaling is therefore strictly opt-in:
-        # set ``model.mujoco.solref_mode[shape] = SOLREF_MODE_FORCE_SPACE``
+        # Shape-material force-space scaling is strictly opt-in (no
+        # auto-promote, unlike joint limits from PR #2610): per-example
+        # ``default_shape_cfg.ke``/``kd`` overrides are too common for a
+        # ke-drift heuristic to be reliable. Set
+        # ``model.mujoco.solref_mode[shape] = SOLREF_MODE_FORCE_SPACE``
         # explicitly to enable per-contact ``body_invweight0`` scaling.
 
         wp.launch(

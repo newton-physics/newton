@@ -714,11 +714,11 @@ def parse_mjcf(
                     shape_cfg.mu_rolling = float(friction_values[2])
 
             # MJCF solref also fills shape_material_ke/kd via the lossy
-            # conversion so MJCF_DEFAULT shapes start at DEFAULT_SHAPE_KE /
-            # DEFAULT_SHAPE_KD; raw solref is preserved in mujoco.solref by
-            # the registered mjcf_attribute_name="solref". See
-            # docs/integrations/mujoco.rst > "Shape-material contact
-            # stiffness and damping".
+            # conversion for back-compat with the legacy
+            # convert_solref(ke, kd, 1, 1) round-trip; raw solref is
+            # preserved in mujoco.solref by the registered
+            # mjcf_attribute_name="solref". See docs/integrations/mujoco.rst
+            # > "Shape-material contact stiffness and damping".
             if "solref" in geom_attrib:
                 solref = parse_vec(geom_attrib, "solref", (0.02, 1.0))
                 geom_ke, geom_kd = solref_to_stiffness_damping(solref)
