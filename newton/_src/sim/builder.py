@@ -3338,10 +3338,6 @@ class ModelBuilder:
             articulation_groups = [self.current_world] * builder.articulation_count
             self.articulation_world.extend(articulation_groups)
 
-        # Equality-constraint state lives in the ``mujoco:equality_constraint`` string
-        # frequency: index offsets (body/joint), world replacement, value carry-over, and
-        # the per-frequency counter are all handled by the custom-attribute merge below.
-
         # For mimic constraints
         if len(builder.constraint_mimic_joint0) > 0:
             constraint_worlds = [self.current_world] * len(builder.constraint_mimic_joint0)
