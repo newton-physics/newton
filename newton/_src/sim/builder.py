@@ -85,48 +85,6 @@ else:
     UsdStage = Any
 
 
-def _build_heightfield_warp_mesh(hf: Heightfield, device) -> wp.Mesh:
-    """Build a wp.Mesh from a Heightfield for BVH-accelerated ray queries.
-
-    Vertices use the Heightfield's unscaled extents (hx, hy, min_z, max_z);
-    per-instance scale is applied at query time by ray_intersect_mesh.
-    Winding matches the collision triangulation: two CCW triangles per cell.
-    """
-    nrow, ncol = hf.nrow, hf.ncol
-    dx = 2.0 * hf.hx / (ncol - 1)
-    dy = 2.0 * hf.hy / (nrow - 1)
-    z_range = hf.max_z - hf.min_z
-
-    verts = np.empty((nrow * ncol, 3), dtype=np.float32)
-    for r in range(nrow):
-        for c in range(ncol):
-            idx = r * ncol + c
-            verts[idx, 0] = -hf.hx + c * dx
-            verts[idx, 1] = -hf.hy + r * dy
-            verts[idx, 2] = hf.min_z + float(hf.data[r, c]) * z_range
-
-    num_cells = (nrow - 1) * (ncol - 1)
-    indices = np.empty(num_cells * 6, dtype=np.int32)
-    i = 0
-    for r in range(nrow - 1):
-        for c in range(ncol - 1):
-            v00 = r * ncol + c
-            v10 = r * ncol + (c + 1)
-            v01 = (r + 1) * ncol + c
-            v11 = (r + 1) * ncol + (c + 1)
-            # Triangle 0: (p00, p10, p11) — CCW from above
-            indices[i : i + 3] = [v00, v10, v11]
-            # Triangle 1: (p00, p11, p01) — CCW from above
-            indices[i + 3 : i + 6] = [v00, v11, v01]
-            i += 6
-
-    with wp.ScopedDevice(device):
-        points = wp.array(verts, dtype=wp.vec3)
-        velocities = wp.zeros_like(points)
-        idx_arr = wp.array(indices, dtype=wp.int32)
-        return wp.Mesh(points=points, velocities=velocities, indices=idx_arr)
-
-
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
 
@@ -10076,9 +10034,19 @@ class ModelBuilder:
                 geo_hash = hash(geo)  # avoid repeated hash computations
                 if isinstance(geo, Heightfield):
                     if geo_hash not in finalized_geos:
-                        hf_mesh = _build_heightfield_warp_mesh(geo, device=device)
-                        heightfield_meshes.append(hf_mesh)
-                        finalized_geos[geo_hash] = hf_mesh.id
+                        # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
+                        # while Heightfield stores row-major data (row=Y, col=X).
+                        actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
+                        hf_geo = Mesh.create_heightfield(
+                            heightfield=actual_heights.T,
+                            extent_x=geo.hx * 2.0,
+                            extent_y=geo.hy * 2.0,
+                            ground_z=geo.min_z,
+                            compute_inertia=False,
+                        )
+                        finalized_geos[geo_hash] = hf_geo.finalize(device=device)
+                        # keep mesh alive for the model's lifetime
+                        heightfield_meshes.append(hf_geo.mesh)
                     geo_sources.append(finalized_geos[geo_hash])
                 elif geo:
                     if geo_hash not in finalized_geos:
