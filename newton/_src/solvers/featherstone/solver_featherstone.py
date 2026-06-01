@@ -199,11 +199,12 @@ class SolverFeatherstone(SolverBase):
                     device=model.device,
                 )
                 articulation_start = model.articulation_start.numpy()
+                articulation_end = model.articulation_end.numpy()
                 articulation_indices = []
                 refresh_joint_starts = []
                 for articulation in range(model.articulation_count):
                     joint_start = articulation_start[articulation]
-                    joint_end = articulation_start[articulation + 1]
+                    joint_end = articulation_end[articulation]
                     descendant_joint_offsets = np.flatnonzero(descendant_free_distance_mask[joint_start:joint_end])
                     if descendant_joint_offsets.size == 0:
                         continue
@@ -265,12 +266,13 @@ class SolverFeatherstone(SolverBase):
             articulation_coord_start = []
 
             articulation_start = model.articulation_start.numpy()
+            articulation_end = model.articulation_end.numpy()
             joint_q_start = model.joint_q_start.numpy()
             joint_qd_start = model.joint_qd_start.numpy()
 
             for i in range(model.articulation_count):
                 first_joint = articulation_start[i]
-                last_joint = articulation_start[i + 1]
+                last_joint = articulation_end[i]
 
                 first_coord = joint_q_start[first_joint]
 
@@ -430,6 +432,7 @@ class SolverFeatherstone(SolverBase):
                     dim=model.articulation_count,
                     inputs=[
                         model.articulation_start,
+                        model.articulation_end,
                         model.joint_type,
                         model.joint_parent,
                         model.joint_child,
@@ -547,6 +550,7 @@ class SolverFeatherstone(SolverBase):
                     dim=model.articulation_count,
                     inputs=[
                         model.articulation_start,
+                        model.articulation_end,
                         model.joint_type,
                         model.joint_parent,
                         model.joint_child,
@@ -628,6 +632,7 @@ class SolverFeatherstone(SolverBase):
                         dim=model.articulation_count,
                         inputs=[
                             model.articulation_start,
+                            model.articulation_end,
                             model.joint_type,
                             model.joint_parent,
                             model.joint_child,
@@ -688,6 +693,7 @@ class SolverFeatherstone(SolverBase):
                             dim=model.articulation_count,
                             inputs=[
                                 model.articulation_start,
+                                model.articulation_end,
                                 self.articulation_J_start,
                                 model.joint_ancestor,
                                 model.joint_qd_start,
@@ -703,6 +709,7 @@ class SolverFeatherstone(SolverBase):
                             dim=model.articulation_count,
                             inputs=[
                                 model.articulation_start,
+                                model.articulation_end,
                                 self.articulation_M_start,
                                 state_aug.body_I_s,
                             ],

@@ -137,7 +137,12 @@ def download_usd_asset(robot_name: str) -> Path:
 class TestMenagerieUsdImport(unittest.TestCase):
     """Verify that each menagerie USD asset imports correctly into Newton."""
 
-    def _load_robot(self, robot_name: str) -> tuple[newton.ModelBuilder, newton.Model]:
+    def _load_robot(
+        self,
+        robot_name: str,
+        *,
+        convert_mjc_equality_constraints: bool = True,
+    ) -> tuple[newton.ModelBuilder, newton.Model]:
         """Load a menagerie USD asset and return the builder and finalized model."""
         usd_path = download_usd_asset(robot_name)
         self.assertTrue(usd_path.exists(), f"USD asset not found: {usd_path}")
@@ -150,6 +155,7 @@ class TestMenagerieUsdImport(unittest.TestCase):
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+            convert_mjc_equality_constraints=convert_mjc_equality_constraints,
         )
 
         model = builder.finalize()
@@ -188,7 +194,7 @@ class TestMenagerieUsdImport(unittest.TestCase):
         self._assert_no_nan(model, "shadow_hand")
 
     def test_import_robotiq_2f85_v4(self):
-        builder, model = self._load_robot("robotiq_2f85_v4")
+        builder, model = self._load_robot("robotiq_2f85_v4", convert_mjc_equality_constraints=False)
         self.assertEqual(builder.body_count, 11)
         self.assertEqual(builder.joint_count, 11)
         self.assertEqual(builder.shape_count, 28)

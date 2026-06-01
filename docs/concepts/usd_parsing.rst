@@ -70,18 +70,28 @@ For rigid bodies with ``UsdPhysics.MassAPI`` applied, Newton resolves each inert
 (mass, inertia, center of mass) independently.  Authored attributes take precedence;
 ``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)`` provides baseline values for the rest.
 
-1. Authored ``physics:mass``, ``physics:diagonalInertia``, and ``physics:centerOfMass`` are
+1. ``newton:inertia`` (from ``NewtonMassAPI``) is a compact 6-element symmetric tensor
+   ``[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`` already in the body frame.  When authored, it
+   overrides ``physics:diagonalInertia`` and ``physics:principalAxes``.
+2. Authored ``physics:mass``, ``physics:diagonalInertia``, and ``physics:centerOfMass`` are
    applied directly when present.  If ``physics:principalAxes`` is missing, identity rotation
    is used.
-2. When ``physics:mass`` is authored but ``physics:diagonalInertia`` is not, the inertia
+3. When ``physics:mass`` is authored but inertia is not, the inertia
    accumulated from collision shapes is scaled by ``authored_mass / accumulated_mass``.
-3. For any remaining unresolved properties, Newton falls back to
+   Shell colliders (``newton:massModel = "shell"``) contribute shell-derived inertia to the
+   accumulation before this scaling is applied.
+4. For any remaining unresolved properties, Newton falls back to
    ``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)``.
    In this fallback path, collider contributions use a two-level precedence:
 
    a. If collider ``UsdPhysics.MassAPI`` has authored ``mass`` and ``diagonalInertia``, those
       authored values are converted to unit-density collider mass information.
-   b. Otherwise, Newton derives unit-density collider mass information from collider geometry.
+   b. Otherwise, Newton derives unit-density collider mass information from collider
+      geometry.  When ``NewtonMassAPI`` is applied to the collider, ``newton:massModel``
+      controls whether inertia is derived from the full volume (``"solid"``, default) or a
+      thin shell at the surface (``"shell"``).  For shell shapes,
+      ``newton:shellThickness`` sets the wall thickness [m] measured inward from the outer
+      surface; the sentinel ``-inf`` (default) falls back to ``newton:contactMargin``.
 
    A collider is skipped (with warning) only if neither path provides usable collider mass
    information.

@@ -20,17 +20,20 @@
 - Add `ViewerRTX`, a real-time ray-traced viewer powered by NVIDIA OVRTX.
 - Support negative (mirrored) scale on mesh, convex hull, and SDF shapes, so a single `Mesh` instance can be shared across shapes with different signed scales without re-baking
 - Add `newton.utils.ColorSpace`, `color_srgb_to_linear()`, `color_linear_to_srgb()`, and `SensorTiledCamera.RenderConfig.output_color_space` for color-space boundaries
+- Add USD parsing for `NewtonMassAPI`: shell mass model (`newton:massModel`), shell thickness (`newton:shellThickness`), and compact inertia tensor (`newton:inertia`)
 
 ### Changed
 
 - Remove the `cbor2` `<6` dependency ceiling after updating recorder deserialization to accept mapping-like decoded containers
 - Switch the SDF-mesh narrow phase to hardware-filtered SDF texture sampling with centred-difference gradients. Hydroelastic SDF sampling is unchanged. Resulting contact distances and normals shift well below typical `contact_threshold` and `shape_margin` settings, so no user action is required; pass a negative `edge_lower_angle_threshold_rad` (e.g. `-1.0`) to `Mesh.build_sdf()` to disable the new edge-simplification pass and reproduce the pre-optimisation behaviour with the full edge set
+- Convert MuJoCo equality constraints to Newton loop joints and mimic constraints by default for MJCF/USD imports while preserving MuJoCo metadata for `SolverMuJoCo` round-trips; pass `convert_mjc_equality_constraints=False` to keep legacy equality-constraint arrays.
 - Require Warp 1.14 and configure Warp logging through `warp.config.log_level`; use Newton's `--quiet` flag or `--warp-config log_level=...` instead of legacy `verbose` or `quiet` config keys
 - Auto-scale `ViewerGL` contact arrows, joint axes, and COM markers by `Viewer.scene_scale`; to approximate the previous fixed sizes after `set_model()`, set `viewer.renderer.arrow_length_scale = 0.1 / viewer.scene_scale`, `viewer.renderer.joint_scale = 0.1 / viewer.scene_scale`, and `viewer.renderer.com_scale = 0.1 / viewer.scene_scale`.
 - Make the `ViewerGL` left control panel movable (drag the title bar) and resizable (drag the bottom-right corner); a vertical scrollbar appears automatically when contents overflow and is operable with the mouse wheel or two-finger trackpad gestures. The initial dock-on-left position is unchanged.
 - Normalize negative scale components to `abs()` in `ModelBuilder.add_shape*` for symmetric primitives (sphere, box, capsule, cylinder, ellipsoid, plane, gaussian); these shapes are point-symmetric so sign flips produce identical geometry. If you relied on a negative scale to flip such a shape, apply the mirror through the shape's transform (`xform`) instead.
 - Reject negative scale components on `ModelBuilder.add_shape_cone()` and heightfield shapes (previously silently accepted, produced invalid geometry). To mirror a cone, apply the flip through the shape's `xform`; to mirror a heightfield, pre-mirror the source height data and pass a positive scale.
 - Change `SensorTiledCamera` default packed `color` and `albedo` outputs to sRGB-encoded bytes so authored display colors render at the expected display brightness; pass `RenderConfig(output_color_space=ColorSpace.LINEAR)` to preserve the previous linear-byte behavior.
+- Bump `newton-usd-schemas` to `>=0.3.0`
 
 ### Deprecated
 

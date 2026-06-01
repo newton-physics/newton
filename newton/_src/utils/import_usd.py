@@ -8,6 +8,7 @@ import copy
 import datetime
 import inspect
 import itertools
+import math
 import os
 import posixpath
 import re
@@ -35,6 +36,11 @@ from ..sim.builder import ModelBuilder
 from ..sim.enums import EqType, JointTargetMode
 from ..sim.model import Model
 from ..solvers.mujoco.equality import _add_equality_constraint
+from ..solvers.mujoco.utils import (
+    mjc_add_equality_loop_joint,
+    mjc_add_equality_mimic,
+    mjc_polycoef_has_higher_order,
+)
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
@@ -89,6 +95,7 @@ def parse_usd(
     mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
     force_position_velocity_actuation: bool = False,
+    convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
@@ -197,6 +204,9 @@ def parse_usd(
             ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
             colliders on bodies with visual-only geometry. Default is False.
         parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+        convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
+            joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
+            equality constraints are stored in the legacy equality constraint arrays.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
         schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -2526,6 +2536,8 @@ def parse_usd(
         shape_scale: wp.vec3,
         shape_src: Mesh | None,
         shape_axis=None,
+        is_solid: bool = True,
+        thickness: float = 0.0,
     ):
         """Build unit-density collider mass information from geometric shape parameters.
 
@@ -2534,7 +2546,7 @@ def parse_usd(
         properties are not available.
         """
         shape_mass, shape_com, shape_inertia = compute_inertia_shape(
-            shape_geo_type, shape_scale, shape_src, density=1.0
+            shape_geo_type, shape_scale, shape_src, density=1.0, is_solid=is_solid, thickness=thickness
         )
         if shape_mass <= 0.0:
             warnings.warn(
@@ -2677,6 +2689,25 @@ def parse_usd(
                     shape_kd = builder.default_shape_cfg.kd
 
                 shape_color = material_props.get("color")
+
+                # Mass model and shell thickness (resolved across Newton / MuJoCo schemas)
+                mass_model = R.get_value(prim, PrimType.SHAPE, "mass_model", default="solid")
+                shape_is_solid = mass_model != "shell"
+                shell_thickness_val = R.get_value(prim, PrimType.SHAPE, "shell_thickness")
+                # When shell thickness is authored, pass it as margin so compute_inertia_shape
+                # uses the correct thickness. The real collision margin is restored after add_shape.
+                if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)):
+                    if float(shell_thickness_val) >= 0.0:
+                        inertia_margin = float(shell_thickness_val)
+                    else:
+                        warnings.warn(
+                            f"Shape {path}: negative shell thickness {shell_thickness_val}; falling back to margin.",
+                            stacklevel=2,
+                        )
+                        inertia_margin = margin_val
+                else:
+                    inertia_margin = margin_val
+
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
@@ -2689,7 +2720,7 @@ def parse_usd(
                         ka=usd.get_float_with_fallback(
                             prim_and_scene, "newton:contact_ka", builder.default_shape_cfg.ka
                         ),
-                        margin=margin_val,
+                        margin=inertia_margin,
                         gap=gap_val,
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
@@ -2698,6 +2729,7 @@ def parse_usd(
                         density=shape_density,
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
+                        is_solid=shape_is_solid,
                     ),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,
@@ -2810,6 +2842,12 @@ def parse_usd(
                 path_shape_map[path] = shape_id
                 path_shape_scale[path] = scale
 
+                # Restore the real collision margin when shell thickness was substituted.
+                # TODO: Consider adding a dedicated shell_thickness field to ShapeConfig
+                # so inertia thickness and collision margin don't share the same slot.
+                if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)) and shape_id >= 0:
+                    builder.shape_margin[shape_id] = margin_val
+
                 if body_path in bodies_requiring_mass_properties_fallback:
                     # Prepare collider mass information for ComputeMassProperties fallback path.
                     # Prefer authored collider MassAPI mass+diagonalInertia; otherwise derive
@@ -2858,6 +2896,8 @@ def parse_usd(
                                 shape_scale,
                                 shape_src,
                                 shape_axis,
+                                is_solid=shape_is_solid,
+                                thickness=inertia_margin,
                             )
                         if mass_info is not None:
                             rigid_body_mass_info_map[path] = mass_info
@@ -3033,6 +3073,43 @@ def parse_usd(
             has_authored_inertia = mass_api.GetDiagonalInertiaAttr().HasAuthoredValue()
             has_authored_com = mass_api.GetCenterOfMassAttr().HasAuthoredValue()
 
+            # newton:inertia (compact 6-element tensor) overrides physics:diagonalInertia + physics:principalAxes.
+            inertia_tensor_val = (
+                usd.get_attribute(prim, "newton:inertia") if usd.has_applied_api_schema(prim, "NewtonMassAPI") else None
+            )
+            has_inertia_tensor = inertia_tensor_val is not None
+            if has_inertia_tensor:
+                if len(inertia_tensor_val) != 6:
+                    warnings.warn(
+                        f"Body {body_path}: newton:inertia has {len(inertia_tensor_val)} elements, expected 6. Ignoring.",
+                        stacklevel=2,
+                    )
+                    has_inertia_tensor = False
+                elif not all(math.isfinite(v) for v in inertia_tensor_val):
+                    warnings.warn(
+                        f"Body {body_path}: newton:inertia contains non-finite values. Ignoring.",
+                        stacklevel=2,
+                    )
+                    has_inertia_tensor = False
+                elif any(v < 0.0 for v in inertia_tensor_val[:3]):
+                    warnings.warn(
+                        f"Body {body_path}: newton:inertia has negative diagonal elements. Ignoring.",
+                        stacklevel=2,
+                    )
+                    has_inertia_tensor = False
+                else:
+                    ixx, iyy, izz, ixy, ixz, iyz = inertia_tensor_val
+                    inertia_np = np.array([[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]], dtype=np.float64)
+                    if np.any(np.linalg.eigvalsh(inertia_np) < 0.0):
+                        warnings.warn(
+                            f"Body {body_path}: newton:inertia is not positive semidefinite. Ignoring.",
+                            stacklevel=2,
+                        )
+                        has_inertia_tensor = False
+                    else:
+                        has_authored_inertia = True
+                        inertia_tensor = wp.mat33(ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz)
+
             # Compute baseline mass properties via mass computer when at least one property needs resolving.
             if not (has_authored_mass and has_authored_inertia and has_authored_com):
                 rigid_body_api = UsdPhysics.RigidBodyAPI(prim)
@@ -3062,11 +3139,13 @@ def parse_usd(
                     cmp_i_diag = Gf.Vec3f(0.0, 0.0, 0.0)
                     cmp_principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
 
-            # Inertia: authored diagonal + principal axes take precedence over mass computer.
+            # Inertia: newton:inertia > physics:diagonalInertia + physics:principalAxes > mass computer.
             # When mass is authored but inertia is not, keep accumulated inertia
             # (scaled to match authored mass below) instead of using mass computer
             # inertia, which may already reflect the authored mass.
-            if has_authored_inertia:
+            if has_inertia_tensor:
+                i_diag_np = None  # skip diagonal path; full matrix set below
+            elif has_authored_inertia:
                 i_diag_np = np.array(mass_api.GetDiagonalInertiaAttr().Get(), dtype=np.float32)
                 if np.any(i_diag_np < 0.0):
                     warnings.warn(
@@ -3088,7 +3167,14 @@ def parse_usd(
                 # Mass authored, inertia not: keep accumulated inertia and scale
                 # to match authored mass in the mass block below.
                 i_diag_np = None
-            if i_diag_np is not None and np.linalg.norm(i_diag_np) > 0.0:
+            if has_inertia_tensor:
+                builder.body_inertia[body_id] = inertia_tensor
+                det = np.linalg.det(np.array(inertia_tensor).reshape(3, 3))
+                if det > 0.0:
+                    builder.body_inv_inertia[body_id] = wp.inverse(inertia_tensor)
+                else:
+                    builder.body_inv_inertia[body_id] = wp.mat33(0.0)
+            elif i_diag_np is not None and np.linalg.norm(i_diag_np) > 0.0:
                 i_rot = usd.value_to_warp(principal_axes)
                 rot = np.array(wp.quat_to_matrix(i_rot), dtype=np.float32).reshape(3, 3)
                 inertia = rot @ np.diag(i_diag_np) @ rot.T
@@ -3193,6 +3279,51 @@ def parse_usd(
     # builder's collapse logic can remap body/joint indices and adjust anchors/relposes
     # for any bodies that get merged.
     def _parse_mjc_equality_constraints():
+        local_builder_custom_attr_eq = builder_custom_attr_eq
+        if (
+            convert_mjc_equality_constraints
+            and "mujoco:equality_constraint_target_kind" not in builder.custom_attributes
+        ):
+            from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
+
+            SolverMuJoCo.register_custom_attributes(builder)
+            local_builder_custom_attr_eq = builder.get_custom_attributes_by_frequency(
+                [AttributeFrequency.EQUALITY_CONSTRAINT]
+            )
+
+        def add_converted_loop_joint(
+            eq_type: EqType,
+            body1: int,
+            body2: int,
+            anchor: wp.vec3,
+            relpose: wp.transform | None,
+            torquescale: float,
+            joint_path: str,
+            enabled: bool,
+            custom_attrs: dict[str, Any],
+        ) -> None:
+            try:
+                _, joint_idx = mjc_add_equality_loop_joint(
+                    builder,
+                    eq_type,
+                    body1,
+                    body2,
+                    anchor,
+                    relpose,
+                    torquescale,
+                    joint_path,
+                    enabled,
+                    custom_attrs,
+                )
+            except ValueError:
+                warnings.warn(
+                    f"MuJoCo equality '{joint_path}' has no valid body reference; skipping.",
+                    stacklevel=2,
+                )
+                return
+
+            path_joint_map[joint_path] = joint_idx
+
         for joint_path, joint_desc in joint_descriptions.items():
             joint_prim = stage.GetPrimAtPath(joint_path)
             if not joint_prim or not joint_prim.IsValid():
@@ -3213,7 +3344,7 @@ def parse_usd(
                 R.collect_prim_attrs(joint_prim)
 
             eq_custom_attrs = usd.get_custom_attribute_values(
-                joint_prim, builder_custom_attr_eq, context={"builder": builder}
+                joint_prim, local_builder_custom_attr_eq, context={"builder": builder}
             )
             enabled = bool(joint_desc.jointEnabled)
 
@@ -3237,16 +3368,29 @@ def parse_usd(
                         if (target0 in ("", "/") or target0 in path_body_map)
                         else site0_local_pos
                     )
-                    _add_equality_constraint(
-                        builder,
-                        constraint_type=EqType.CONNECT,
-                        body1=body0_idx,
-                        body2=body1_idx,
-                        anchor=anchor,
-                        label=joint_path,
-                        enabled=enabled,
-                        custom_attributes=eq_custom_attrs,
-                    )
+                    if convert_mjc_equality_constraints:
+                        add_converted_loop_joint(
+                            EqType.CONNECT,
+                            body0_idx,
+                            body1_idx,
+                            anchor,
+                            None,
+                            0.0,
+                            joint_path,
+                            enabled,
+                            eq_custom_attrs,
+                        )
+                    else:
+                        _add_equality_constraint(
+                            builder,
+                            constraint_type=EqType.CONNECT,
+                            body1=body0_idx,
+                            body2=body1_idx,
+                            anchor=anchor,
+                            label=joint_path,
+                            enabled=enabled,
+                            custom_attributes=eq_custom_attrs,
+                        )
                 else:
                     local_rot0 = usd.value_to_warp(joint_desc.localPose0Orientation)
                     local_rot1 = usd.value_to_warp(joint_desc.localPose1Orientation)
@@ -3265,18 +3409,32 @@ def parse_usd(
                     torquescale = (
                         float(torquescale_attr.Get()) if torquescale_attr and torquescale_attr.HasValue() else 1.0
                     )
-                    _add_equality_constraint(
-                        builder,
-                        constraint_type=EqType.WELD,
-                        body1=body0_idx,
-                        body2=body1_idx,
-                        anchor=anchor,
-                        relpose=wp.transform(relpose_pos, relpose_rot),
-                        torquescale=torquescale,
-                        label=joint_path,
-                        enabled=enabled,
-                        custom_attributes=eq_custom_attrs,
-                    )
+                    relpose = wp.transform(relpose_pos, relpose_rot)
+                    if convert_mjc_equality_constraints:
+                        add_converted_loop_joint(
+                            EqType.WELD,
+                            body0_idx,
+                            body1_idx,
+                            anchor,
+                            relpose,
+                            torquescale,
+                            joint_path,
+                            enabled,
+                            eq_custom_attrs,
+                        )
+                    else:
+                        _add_equality_constraint(
+                            builder,
+                            constraint_type=EqType.WELD,
+                            body1=body0_idx,
+                            body2=body1_idx,
+                            anchor=anchor,
+                            relpose=relpose,
+                            torquescale=torquescale,
+                            label=joint_path,
+                            enabled=enabled,
+                            custom_attributes=eq_custom_attrs,
+                        )
                 continue
 
             if is_eq_joint:
@@ -3317,16 +3475,34 @@ def parse_usd(
                     attr = joint_prim.GetAttribute(attr_name)
                     polycoef.append(float(attr.Get()) if attr and attr.HasValue() else default)
 
-                _add_equality_constraint(
-                    builder,
-                    constraint_type=EqType.JOINT,
-                    joint1=joint1_idx,
-                    joint2=joint2_idx,
-                    polycoef=polycoef,
-                    label=joint_path,
-                    enabled=enabled,
-                    custom_attributes=eq_custom_attrs,
-                )
+                if convert_mjc_equality_constraints:
+                    if mjc_polycoef_has_higher_order(polycoef):
+                        warnings.warn(
+                            f"Warning: Joint equality '{joint_path}' uses higher-order polycoef terms. "
+                            "They are preserved for SolverMuJoCo, but generic Newton mimic constraints use "
+                            "only coef0/coef1.",
+                            stacklevel=2,
+                        )
+                    mjc_add_equality_mimic(
+                        builder,
+                        joint1_idx,
+                        joint2_idx,
+                        polycoef,
+                        joint_path,
+                        enabled,
+                        eq_custom_attrs,
+                    )
+                else:
+                    _add_equality_constraint(
+                        builder,
+                        constraint_type=EqType.JOINT,
+                        joint1=joint1_idx,
+                        joint2=joint2_idx,
+                        polycoef=polycoef,
+                        label=joint_path,
+                        enabled=enabled,
+                        custom_attributes=eq_custom_attrs,
+                    )
 
     _parse_mjc_equality_constraints()
 

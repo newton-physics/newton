@@ -1,6 +1,30 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""Physics verification tests.
+
+In the simulation V&V (verification and validation) paradigm, this module
+holds *verification* tests only — checks that the equations of motion and
+constitutive laws are implemented correctly. Each test compares simulator
+output against a closed-form analytical solution, a known kinematic identity,
+or a conservation law (energy, linear/angular momentum). They are not a
+measure of physical plausibility, real-world fidelity, or agreement with
+another simulator; those belong in separate validation or cross-code suites.
+
+Tests added here should:
+
+- Compare against an analytical reference (free fall, pendulum period,
+  projectile parabola, Coulomb friction threshold, restitution, conical
+  pendulum orbit, ...) or assert a conservation law on a closed system.
+- State the reference equation in a comment so the expected value is
+  reproducible without re-running the simulator.
+- Avoid "looks reasonable" thresholds — pick tolerances tied to the
+  integrator order and step size.
+
+Tests that only check qualitative behaviour (no bouncing, no NaN, stays
+above ground, matches another simulator's output) belong elsewhere.
+"""
+
 import unittest
 
 import numpy as np
@@ -11,7 +35,7 @@ from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
-class TestPhysicsValidation(unittest.TestCase):
+class TestPhysicsVerification(unittest.TestCase):
     pass
 
 
@@ -1393,7 +1417,7 @@ for device in devices:
             continue
 
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_free_fall_{solver_name}",
             test_free_fall,
             devices=[device],
@@ -1401,7 +1425,7 @@ for device in devices:
         )
 
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_projectile_motion_{solver_name}",
             test_projectile_motion,
             devices=[device],
@@ -1410,7 +1434,7 @@ for device in devices:
         )
 
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_momentum_conservation_{solver_name}",
             test_momentum_conservation,
             devices=[device],
@@ -1450,7 +1474,7 @@ for device in devices:
             continue
 
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_pendulum_period_{solver_name}",
             test_pendulum_period,
             devices=[device],
@@ -1465,7 +1489,7 @@ for device in devices:
             continue
 
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_energy_conservation_{solver_name}",
             test_energy_conservation,
             devices=[device],
@@ -1479,7 +1503,7 @@ for device in devices:
             continue
 
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_joint_actuation_{solver_name}",
             test_joint_actuation,
             devices=[device],
@@ -1491,7 +1515,7 @@ for device in devices:
     # Restitution test
     if device.is_cuda:
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             "test_restitution_xpbd",
             test_restitution,
             devices=[device],
@@ -1502,7 +1526,7 @@ for device in devices:
 
     if not device.is_cuda:
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             "test_restitution_mujoco_cpu",
             test_restitution_mujoco,
             devices=[device],
@@ -1511,7 +1535,7 @@ for device in devices:
         )
     if device.is_cuda:
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             "test_restitution_mujoco_warp",
             test_restitution_mujoco,
             devices=[device],
@@ -1535,14 +1559,14 @@ for device in devices:
             continue
 
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_fourbar_linkage_{solver_name}",
             test_fourbar_linkage,
             devices=[device],
             solver_fn=solver_fn,
         )
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_fourbar_linkage_loop_joint_{solver_name}",
             test_fourbar_linkage,
             devices=[device],
@@ -1550,21 +1574,21 @@ for device in devices:
             use_loop_joint=True,
         )
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_revolute_loop_joint_{solver_name}",
             test_revolute_loop_joint,
             devices=[device],
             solver_fn=solver_fn,
         )
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_ball_loop_joint_{solver_name}",
             test_ball_loop_joint,
             devices=[device],
             solver_fn=solver_fn,
         )
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_fixed_loop_joint_{solver_name}",
             test_fixed_loop_joint,
             devices=[device],
