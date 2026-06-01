@@ -4454,17 +4454,19 @@ class SolverMuJoCo(SolverBase):
                 return int(joint_solref_limit_mode[dof_idx]) == SOLREF_MODE_RAW
             return bool(np.any(joint_solref_limit[dof_idx] != 0.0))
 
-        eq_constraint_type = model.mujoco.equality_constraint_type.numpy()
-        eq_constraint_body1 = model.mujoco.equality_constraint_body1.numpy()
-        eq_constraint_body2 = model.mujoco.equality_constraint_body2.numpy()
-        eq_constraint_anchor = model.mujoco.equality_constraint_anchor.numpy()
-        eq_constraint_torquescale = model.mujoco.equality_constraint_torquescale.numpy()
-        eq_constraint_relpose = model.mujoco.equality_constraint_relpose.numpy()
-        eq_constraint_joint1 = model.mujoco.equality_constraint_joint1.numpy()
-        eq_constraint_joint2 = model.mujoco.equality_constraint_joint2.numpy()
-        eq_constraint_polycoef = model.mujoco.equality_constraint_polycoef.numpy()
-        eq_constraint_enabled = model.mujoco.equality_constraint_enabled.numpy()
-        eq_constraint_world = model.mujoco.equality_constraint_world.numpy()
+        # Per-row equality arrays materialize only when constraints exist; when there are none,
+        # these read back as None (handled below) like every other absent custom attribute.
+        eq_constraint_type = get_custom_attribute("equality_constraint_type")
+        eq_constraint_body1 = get_custom_attribute("equality_constraint_body1")
+        eq_constraint_body2 = get_custom_attribute("equality_constraint_body2")
+        eq_constraint_anchor = get_custom_attribute("equality_constraint_anchor")
+        eq_constraint_torquescale = get_custom_attribute("equality_constraint_torquescale")
+        eq_constraint_relpose = get_custom_attribute("equality_constraint_relpose")
+        eq_constraint_joint1 = get_custom_attribute("equality_constraint_joint1")
+        eq_constraint_joint2 = get_custom_attribute("equality_constraint_joint2")
+        eq_constraint_polycoef = get_custom_attribute("equality_constraint_polycoef")
+        eq_constraint_enabled = get_custom_attribute("equality_constraint_enabled")
+        eq_constraint_world = get_custom_attribute("equality_constraint_world")
         eq_constraint_solref = get_custom_attribute("eq_solref")
         eq_constraint_solimp = get_custom_attribute("eq_solimp")
         eq_constraint_target_kind = get_custom_attribute("equality_constraint_target_kind")
@@ -4543,9 +4545,12 @@ class SolverMuJoCo(SolverBase):
             selected_shapes = np.where((shape_world == first_world) | (shape_world < 0))[0].astype(np.int32)
             selected_bodies = np.where((body_world == first_world) | (body_world < 0))[0].astype(np.int32)
             selected_joints = np.where((joint_world == first_world) | (joint_world < 0))[0].astype(np.int32)
-            selected_constraints = np.where((eq_constraint_world == first_world) | (eq_constraint_world < 0))[0].astype(
-                np.int32
-            )
+            if eq_constraint_world is None:
+                selected_constraints = np.empty(0, dtype=np.int32)
+            else:
+                selected_constraints = np.where((eq_constraint_world == first_world) | (eq_constraint_world < 0))[
+                    0
+                ].astype(np.int32)
             selected_mimic_constraints = np.where((mimic_world == first_world) | (mimic_world < 0))[0].astype(np.int32)
         else:
             # if we are not separating environments to worlds, we use all shapes, bodies, joints
@@ -6583,6 +6588,10 @@ class SolverMuJoCo(SolverBase):
 
         q_rel = wp.zeros(neq, dtype=wp.quat, device=model.device)
         t_rel = wp.zeros(neq, dtype=wp.vec3, device=model.device)
+        # No equality constraints means the per-row arrays were never materialized; skip the
+        # launch rather than dereferencing absent ``model.mujoco.equality_constraint_*`` arrays.
+        if neq == 0:
+            return q_rel, t_rel
 
         wp.launch(
             update_connect_constraint_rel_body_poses_at_qref_kernel,
@@ -7421,7 +7430,12 @@ class SolverMuJoCo(SolverBase):
         body_world = model.body_world.numpy()
         joint_world = model.joint_world.numpy()
         shape_world = model.shape_world.numpy()
-        eq_constraint_world = model.mujoco.equality_constraint_world.numpy()
+        # The per-row equality array is absent when there are no equality constraints.
+        eq_constraint_world = (
+            model.mujoco.equality_constraint_world.numpy()
+            if model.mujoco.equality_constraint_count > 0
+            else np.empty(0, dtype=np.int32)
+        )
 
         # --- Check global world restrictions (always, regardless of world_count) ---
         # No bodies in global world

@@ -10941,9 +10941,9 @@ class ModelBuilder:
             m.max_dofs_per_articulation = max_dofs_per_articulation
 
             # ---------------------
-            # Ensure the ``mujoco`` namespace exists on the model so the count, world_start, and
-            # per-equality-constraint arrays (populated by the standard custom-attribute pipeline
-            # below) all live under ``model.mujoco``.
+            # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)
+            # can live on it. The per-row ``equality_constraint_*`` arrays are materialized by the
+            # standard custom-attribute pipeline below, and only when constraints exist.
             if not hasattr(m, "mujoco"):
                 m.mujoco = Model.AttributeNamespace("mujoco")
 
@@ -10985,42 +10985,11 @@ class ModelBuilder:
             m.mujoco.equality_constraint_count = self._equality_constraint_count
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
-            # When no equality constraints exist, the standard custom-attribute pipeline (below)
-            # skips materialization because the ``mujoco:equality_constraint`` frequency count
-            # is 0. Allocate empty arrays explicitly so every ``model.mujoco.equality_constraint_*``
-            # field can be read unconditionally (e.g.
-            # ``model.mujoco.equality_constraint_world.numpy()`` in
-            # :meth:`SolverMuJoCo._validate_model_for_separate_worlds`), and so the deprecated
-            # top-level ``Model.equality_constraint_*`` properties return an empty array rather
-            # than raising ``AttributeError``. Other zero-count custom-frequency attributes
-            # intentionally remain absent from the model. Keep this list in sync with
-            # :func:`~newton._src.solvers.mujoco.equality._register_equality_constraint_attributes`.
-            if self._equality_constraint_count == 0:
-                for _eq_name in (
-                    "equality_constraint_type",
-                    "equality_constraint_body1",
-                    "equality_constraint_body2",
-                    "equality_constraint_anchor",
-                    "equality_constraint_torquescale",
-                    "equality_constraint_relpose",
-                    "equality_constraint_joint1",
-                    "equality_constraint_joint2",
-                    "equality_constraint_polycoef",
-                    "equality_constraint_label",
-                    "equality_constraint_enabled",
-                    "equality_constraint_world",
-                    "equality_constraint_objtype",
-                    "equality_constraint_target_kind",
-                    "equality_constraint_target",
-                ):
-                    _eq_custom_attr = self.custom_attributes[f"mujoco:{_eq_name}"]
-                    m.add_attribute(
-                        _eq_name,
-                        _eq_custom_attr.build_array(0, device=device, requires_grad=requires_grad),
-                        "mujoco:equality_constraint",
-                        Model.AttributeAssignment.MODEL,
-                        namespace="mujoco",
-                    )
+            # The per-row ``model.mujoco.equality_constraint_*`` arrays are materialized below by
+            # the standard custom-attribute pipeline only when the ``mujoco:equality_constraint``
+            # frequency count is non-zero, like every other zero-count custom frequency. Readers
+            # consult ``equality_constraint_count`` (always set above) and treat absent arrays as
+            # "no equality constraints".
 
             self.find_shape_contact_pairs(m)
 
