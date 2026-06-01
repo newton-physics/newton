@@ -475,7 +475,6 @@ class Utils:
         self,
         cameras: Any | list[Any] | tuple[Any, ...],
         *,
-        world_count: int | None = None,
         time: Any | None = None,
     ) -> wp.array2d[wp.transformf]:
         """Compute camera-to-world transforms from USD camera prims.
@@ -483,23 +482,15 @@ class Utils:
         Args:
             cameras: One or more USD camera prims or ``UsdGeom.Camera``
                 schemas.
-            world_count: Number of worlds to repeat each camera transform
-                across. If ``None``, uses the sensor render context's world
-                count.
             time: Optional USD time code or numeric frame used for authored
                 camera attributes and transforms.
 
         Returns:
             Camera-to-world transforms, shape ``(camera_count, world_count)``.
         """
-        if world_count is None:
-            world_count = self.__render_context.world_count
-        if world_count <= 0:
-            raise ValueError("world_count must be positive.")
-
         return camera_utils.compute_usd_camera_transforms(
             cameras,
-            world_count=world_count,
+            world_count=self.__render_context.world_count,
             device=self.__render_context.device,
             time=time,
         )
