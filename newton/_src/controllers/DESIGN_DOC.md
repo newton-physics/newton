@@ -2,7 +2,7 @@
 
 A library for composable control blocks. A `Controller` is a single, runnable control law (PID, differential IK, gravity comp, …). A `ControlGroup` is a composer that wraps one or more `Controller`s and orchestrates the per-step zero / compute sequence.
 
-Controllers typically run **before** actuators in a simulation step: a `Controller` produces a desired joint position, velocity, or force; downstream actuators turn that target into effort. There is no central hardware-contract object — users author their own `@wp.struct` instances for inputs and outputs (or reuse Newton's `State` / `Control`), and controllers bind directly to fields on them via the unified port form below.
+Controllers typically run **before** actuators in a simulation step: a `Controller` produces a desired joint position, velocity, or force; downstream actuators turn that target into effort. Users author their own `@wp.struct` instances for inputs and outputs (or reuse Newton's `State` / `Control`).
 
 ---
 
@@ -17,7 +17,7 @@ Multiple `Controller`s may bind to overlapping output slots; their contributions
 
 ## Two controller flavors
 
-Controllers fall into two categories, distinguished by whether each output depends on its sibling DOFs. The base class is shared; only the constructor signature and the kernel launch differ.
+Controllers fall into two categories, distinguished by whether each output depends on its sibling DOFs. The base class is shared, but the underlying kernel launch may be a different shape.
 
 ### Independent per-DOF controllers
 
@@ -31,10 +31,12 @@ Output `i` depends only on input `i` plus per-DOF parameters. Examples: `Control
 
 Each robot's outputs depend on the full state of that robot. Examples: `ControllerDifferentialIK`, `ControllerGravityComp`, `ControllerDifferentialDrive`, `ControllerHolonomic`, `ControllerOperationalSpace`.
 
-- Articulated controllers (`ControllerDifferentialIK`, `ControllerGravityComp`, etc.) take a `model: newton.Model` representing **one** copy of the robot. The controller reads `dofs_per_robot = model.joint_dof_count` and any per-link metadata it needs (link masses, joint axes, parent indices, …) directly from the Model at `__init__` time.
+- Articulated controllers (`ControllerDifferentialIK`, `ControllerGravityComp`, etc.) take a `model: newton.Model` containing one or more **topologically identical** articulations (`K = model.articulation_count`). The K articulations must share DOF count, link/joint count, and joint types; they may differ in physical parameters (mass, inertia, friction, joint limits). The controller reads `dofs_per_robot = model.joint_dof_count // K` directly from the Model at `__init__` time.
 - Mobile-base controllers (`ControllerDifferentialDrive`, `ControllerHolonomic`) take raw geometry instead of a Model. Wheel-base geometry isn't `Model` state in Newton.
-- The `indices` array is a flat `wp.array[wp.uint32]`, validated: `len(indices) % outputs_per_robot == 0`, where `outputs_per_robot = dofs_per_robot` for articulated controllers or `wheels_per_robot` for mobile ones. `num_robots = len(indices) // outputs_per_robot`.
-- Convention: `indices[r * outputs_per_robot + j]` is the global output index of robot `r`'s local slot `j`. Robots are contiguous in the flat layout.
+- For articulated controllers: `len(indices) % model.joint_dof_count == 0`. The replication count is `R = len(indices) // model.joint_dof_count`, and the controller internally tiles the user-supplied Model `R` times at `finalize()`. `num_robots = K * R`. The K=1 case is the single-robot template; K>1 lets the user supply categorical variants (e.g. for RL randomization) which are replicated across the batch.
+- For mobile controllers: `len(indices) % wheels_per_robot == 0`. `num_robots = len(indices) // wheels_per_robot`.
+- Layout convention. After replication, robot `r` is variant `r % K` from replication `r // K`. So with `K=4, R=3` the robots are `[v0, v1, v2, v3, v0, v1, v2, v3, v0, v1, v2, v3]`. Per-group input arrays (`target_pos`, `target_quat`, `damping`, …) of length `num_robots` follow this layout.
+- For both flavors: `indices[r * outputs_per_robot + j]` is the global output index of robot `r`'s local slot `j` (where `outputs_per_robot = dofs_per_robot` for articulated or `wheels_per_robot` for mobile). Robots are contiguous in the flat layout.
 - Kernel launches 2D with `dim=(num_robots, outputs_per_robot)`; inside, `robot, local_slot = wp.tid()`, and the flat output index is `robot * outputs_per_robot + local_slot`.
 
 `ControlGroup` does not need to know which flavor a controller is. Each controller declares its bound output arrays + indices via `outputs()`; the group's zero pass walks the union of all controllers' output destinations.
@@ -366,7 +368,7 @@ class ControllerDifferentialIK(Controller):
     on its full configuration q.
 
     Ports:
-        indices                       — flat global DOF indices; len(indices) % dofs_per_robot == 0
+        indices                       — flat global DOF indices; len(indices) % model.joint_dof_count == 0
         measurement                   — global joint_q (per-DOF lookup)
         measurement_rate              — global joint_qd (per-DOF lookup)
         target_pos                    — per-group: wp.array[wp.vec3], length num_robots, in base frame
@@ -375,17 +377,21 @@ class ControllerDifferentialIK(Controller):
         output_qd                     — global joint_qd_target (per-DOF lookup)
         output_q                      — global joint_q_target (per-DOF lookup)
 
-    Model assumption: the supplied single-robot Model has its base at the
-    origin. Target poses are expressed in that base frame. Multi-robot
-    batching is handled by replicating the Model internally at finalize().
+    Model assumption: the supplied Model contains K=model.articulation_count
+    topologically identical articulations, each with its base at the origin.
+    All K articulations must share DOF count, link/joint count, and joint
+    types; they may differ in physical parameters. Target poses are
+    expressed in that shared base frame. The controller tiles the Model
+    R = len(indices) // model.joint_dof_count times internally at finalize().
+    num_robots = K * R.
     """
 
     def __init__(
         self,
         *,
-        model: newton.Model,            # single-robot template
+        model: newton.Model,            # K articulations, topologically identical
         indices,                        # flat; len(indices) % model.joint_dof_count == 0
-        end_effector_link: int,         # link index in `model`
+        end_effector_link: int,         # link index within one articulation
         measurement,
         measurement_rate,
         target_pos,                     # wp.array[wp.vec3], length num_robots
@@ -396,13 +402,21 @@ class ControllerDifferentialIK(Controller):
     ):
         self._template_model    = model
         self._end_effector_link = end_effector_link
-        self._dofs_per_robot    = model.joint_dof_count
-        if len(indices) % self._dofs_per_robot != 0:
+        K = model.articulation_count
+        if model.joint_dof_count % K != 0:
+            raise ValueError(
+                f"ControllerDifferentialIK: model.joint_dof_count={model.joint_dof_count} is not "
+                f"divisible by model.articulation_count={K}; the K articulations must share DOF count."
+            )
+        self._dofs_per_robot = model.joint_dof_count // K
+        _validate_homogeneous_articulations(model)   # same dof count, link count, joint types per articulation
+        if len(indices) % model.joint_dof_count != 0:
             raise ValueError(
                 f"ControllerDifferentialIK: len(indices)={len(indices)} is not a multiple "
-                f"of dofs_per_robot={self._dofs_per_robot} (from the supplied Model)."
+                f"of model.joint_dof_count={model.joint_dof_count} (K={K} articulations)."
             )
-        self._num_robots = len(indices) // self._dofs_per_robot
+        self._replication_count = len(indices) // model.joint_dof_count
+        self._num_robots = K * self._replication_count
         self._indices = indices
         self._target_pos  = _validate_per_group(target_pos,  self._num_robots, wp.vec3,    "target_pos")
         self._target_quat = _validate_per_group(target_quat, self._num_robots, wp.quat,    "target_quat")
@@ -413,7 +427,7 @@ class ControllerDifferentialIK(Controller):
         self._output_q         = _normalize_port(output_q,         indices, name="output_q")
 
     def finalize(self, device, num_outputs):
-        self._model = _replicate_single_robot_model(self._template_model, self._num_robots, device)
+        self._model = _replicate_model(self._template_model, self._replication_count, device)
         self._state = self._model.state()
         self._joint_q_local  = wp.zeros((self._num_robots, self._dofs_per_robot), dtype=wp.float32, device=device)
         self._joint_qd_local = wp.zeros((self._num_robots, self._dofs_per_robot), dtype=wp.float32, device=device)
@@ -577,13 +591,14 @@ Users write `from newton.controllers import ControlGroup, ControllerPID, Control
 - Helpers in `newton/_src/controllers/utils.py`:
   - `_normalize_port(port, controller_indices, name)` — normalize bare-array or tuple to `(array, port_indices)` with validation.
   - `_validate_per_group(array, num_robots, dtype, name)` — shape + dtype check for per-group ports.
-  - `_replicate_single_robot_model(template, n, device)` — build an N-articulation Model from a single-robot template (used by `ControllerDifferentialIK` and any future articulated coupled controller).
+  - `_validate_homogeneous_articulations(model)` — verify all `K = model.articulation_count` articulations share DOF count, link/joint count, and joint types. Raises on mismatch.
+  - `_replicate_model(template, replication_count, device)` — tile a K-articulation Model `replication_count` times, producing a Model with `K * replication_count` articulations. The K=1 case yields a straight replication; K>1 yields variant-interleaved replication (used by `ControllerDifferentialIK` and any future articulated coupled controller).
 - For each shipped controller: math-correctness tests, integral / state accumulation across the `state_0` / `state_1` swap, masked reset, accumulation when multiple controllers overlap, one-big-array binding sanity tests.
 
 **Implementation order.**
 
 1. `ControllerPID` — proves independent-per-DOF flavor + the framework end-to-end (direct-write outputs, double-buffer state, mask reset).
-2. `ControllerDifferentialIK` — proves the coupled flavor: single-robot Model template + internal replication, multi-output (`q̇` and `q`), `newton.eval_fk` + `newton.eval_jacobian` reuse, in-kernel small-system Cholesky.
+2. `ControllerDifferentialIK` — proves the coupled flavor: K-articulation Model + internal replication, multi-output (`q̇` and `q`), `newton.eval_fk` + `newton.eval_jacobian` reuse, in-kernel small-system Cholesky.
 3. `ControllerDifferentialDrive` — first mobile controller; proves `wheels_per_robot` divisibility convention.
 4. `ControllerHolonomic` — second mobile; same family.
 5. *(gated on Newton's upcoming inverse-dynamics function)* `ControllerGravityComp`, `ControllerJointImpedance`, `ControllerOperationalSpace`.
@@ -643,4 +658,4 @@ Users write `from newton.controllers import ControlGroup, ControllerPID, Control
 1. **Per-controller specs.** See *Controllers to design* above.
 2. **In-kernel small-system solver helper.** `ControllerDifferentialIK` needs a 6×6 Cholesky; future controllers may need similar. Inline for v0; extract to `controllers/utils.py` if a second user appears.
 3. **Task-space orientation error formulation for `ControllerDifferentialIK`.** Rotation-vector (axis-angle log map) vs. quaternion vector-part? Pick one and document.
-4. **`_replicate_single_robot_model` implementation.** Use `newton.ModelBuilder` to clone? Or a lower-level Model-array tiling?
+4. **`_replicate_model` implementation.** Use `newton.ModelBuilder` to clone? Or a lower-level Model-array tiling?
