@@ -1150,9 +1150,6 @@ def get_mesh(
         # were converted to per-vertex. Avoid a second split here.
         if uvs_interpolation == UsdGeom.Tokens.faceVarying and not did_split_vertices:
             if len(uvs) != len(indices):
-                # A dropped UV is a render-only concern (it never affects simulation), so route the
-                # diagnostic through `logger.info` instead of `warnings.warn`. Consumers can raise the
-                # `newton` logger to INFO to surface these notices when investigating an asset.
                 logger.info(
                     "Mesh %s: UV primvar length (%d) does not match indices length (%d); dropping UVs.",
                     prim.GetPath(),

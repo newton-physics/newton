@@ -534,9 +534,6 @@ def parse_usd(
         if texture is not None:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
-            # A dropped texture is a render-only concern (it never affects simulation), so route the
-            # diagnostic through `logger.info` instead of `warnings.warn`. See the matching length-mismatch
-            # site in `newton._src.usd.utils.get_mesh` for the reasoning.
             logger.info("Mesh %s: dropping texture because UVs could not be recovered.", path_name)
             mesh.texture = None
         if material_props.get("color") is not None and mesh.texture is None:
@@ -644,10 +641,7 @@ def parse_usd(
         if texture:
             submesh.texture = texture
         if submesh.texture is not None and submesh.uvs is None:
-            warnings.warn(
-                f"Warning: mesh material subset {path_name} has a texture but no UVs; texture will be ignored.",
-                stacklevel=2,
-            )
+            logger.info("Mesh material subset %s: dropping texture because UVs could not be recovered.", path_name)
             submesh.texture = None
 
         color = material_props.get("color")
@@ -692,10 +686,10 @@ def parse_usd(
             subset_indices = np.asarray(subset.GetIndicesAttr().Get(), dtype=np.int32)
             valid = (subset_indices >= 0) & (subset_indices < len(face_counts))
             if not np.all(valid):
-                warnings.warn(
-                    f"Warning: mesh material subset {subset_path} has face indices outside the mesh face range; "
+                logger.info(
+                    "Mesh material subset %s: face indices outside the mesh face range; "
                     "out-of-range indices will be ignored.",
-                    stacklevel=2,
+                    subset_path,
                 )
                 subset_indices = subset_indices[valid]
             if len(subset_indices) == 0:
