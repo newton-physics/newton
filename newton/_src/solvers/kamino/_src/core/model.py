@@ -502,7 +502,7 @@ class ModelKamino:
         """
         if self._model is not None:
             return self._model.use_coord_layout_targets
-        import newton
+        import newton  # noqa: PLC0415
 
         return newton.use_coord_layout_targets
 

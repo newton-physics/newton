@@ -2120,7 +2120,7 @@ class ModelBuilder:
         propagate back. Raises :class:`AttributeError` under
         :data:`newton.use_coord_layout_targets` ``True``.
         """
-        import newton
+        import newton  # noqa: PLC0415
 
         if newton.use_coord_layout_targets:
             raise AttributeError(
@@ -2143,7 +2143,7 @@ class ModelBuilder:
         :class:`AttributeError` under
         :data:`newton.use_coord_layout_targets` ``True``.
         """
-        import newton
+        import newton  # noqa: PLC0415
 
         if newton.use_coord_layout_targets:
             raise AttributeError(
