@@ -1761,12 +1761,14 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(resolver_mjc_first_kf.get_value(material, PrimType.MATERIAL, "ka"), 0.01)
 
     def test_contact_response_legacy_shape(self):
-        """Test that legacy newton:contact_ke/kd on shape prims resolve with deprecation warning."""
+        """Test that legacy newton:contact_ke/kd/kf/ka on shape prims resolve with deprecation warning."""
 
         stage = Usd.Stage.CreateInMemory()
         collider = UsdGeom.Cube.Define(stage, "/collider").GetPrim()
         collider.CreateAttribute("newton:contact_ke", Sdf.ValueTypeNames.Float).Set(9999.0)
         collider.CreateAttribute("newton:contact_kd", Sdf.ValueTypeNames.Float).Set(777.0)
+        collider.CreateAttribute("newton:contact_kf", Sdf.ValueTypeNames.Float).Set(500.0)
+        collider.CreateAttribute("newton:contact_ka", Sdf.ValueTypeNames.Float).Set(0.05)
 
         resolver = SchemaResolverManager([SchemaResolverNewton()])
 
@@ -1774,18 +1776,26 @@ class TestSchemaResolver(unittest.TestCase):
             warnings.simplefilter("always")
             ke = resolver.get_value(collider, PrimType.SHAPE, "ke")
             kd = resolver.get_value(collider, PrimType.SHAPE, "kd")
+            kf = resolver.get_value(collider, PrimType.SHAPE, "kf")
+            ka = resolver.get_value(collider, PrimType.SHAPE, "ka")
             deprecation_msgs = [str(x.message) for x in w if issubclass(x.category, DeprecationWarning)]
 
         self.assertAlmostEqual(ke, 9999.0)
         self.assertAlmostEqual(kd, 777.0)
-        self.assertEqual(len(deprecation_msgs), 2)
+        self.assertAlmostEqual(kf, 500.0)
+        self.assertAlmostEqual(ka, 0.05)
+        self.assertEqual(len(deprecation_msgs), 4)
         self.assertIn("newton:contact_ke", deprecation_msgs[0])
         self.assertIn("newton:contactStiffness", deprecation_msgs[0])
         self.assertIn("newton:contact_kd", deprecation_msgs[1])
         self.assertIn("newton:contactDamping", deprecation_msgs[1])
+        self.assertIn("newton:contact_kf", deprecation_msgs[2])
+        self.assertIn("newton:contactFrictionGain", deprecation_msgs[2])
+        self.assertIn("newton:contact_ka", deprecation_msgs[3])
+        self.assertIn("newton:contactAdhesion", deprecation_msgs[3])
 
     def test_contact_response_shape_no_legacy(self):
-        """Without legacy attrs, Newton SHAPE resolver returns None for ke/kd."""
+        """Without legacy attrs, Newton SHAPE resolver returns None for ke/kd/kf/ka."""
 
         stage = Usd.Stage.CreateInMemory()
         collider = UsdGeom.Cube.Define(stage, "/collider").GetPrim()
@@ -1793,6 +1803,8 @@ class TestSchemaResolver(unittest.TestCase):
         resolver = SchemaResolverManager([SchemaResolverNewton()])
         self.assertIsNone(resolver.get_value(collider, PrimType.SHAPE, "ke"))
         self.assertIsNone(resolver.get_value(collider, PrimType.SHAPE, "kd"))
+        self.assertIsNone(resolver.get_value(collider, PrimType.SHAPE, "kf"))
+        self.assertIsNone(resolver.get_value(collider, PrimType.SHAPE, "ka"))
 
     def test_contact_response_cross_resolver_shape(self):
         """Test MuJoCo per-geom solref ke/kd at SHAPE with exact values and priority."""

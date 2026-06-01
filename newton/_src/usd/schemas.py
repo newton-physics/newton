@@ -64,8 +64,9 @@ def _mjc_legacy_material_solref(converter, material_attr: str):
         value = usd.get_attribute(prim, "mjc:solref")
         if value is not None:
             warnings.warn(
-                f"'mjc:solref' on material prim is deprecated; "
-                f"author '{material_attr}' on the bound NewtonMaterialAPI material instead.",
+                f"'mjc:solref' on material prim is deprecated; author '{material_attr}' on the "
+                f"bound NewtonMaterialAPI material, or use per-shape 'mjc:solref' (MjcGeomAPI) "
+                f"instead.",
                 DeprecationWarning,
                 stacklevel=4,
             )
@@ -130,6 +131,16 @@ class SchemaResolverNewton(SchemaResolver):
                 "newton:contact_kd",
                 None,
                 usd_value_getter=_newton_legacy_contact_attr("newton:contact_kd", "newton:contactDamping"),
+            ),
+            "kf": SchemaAttribute(
+                "newton:contact_kf",
+                None,
+                usd_value_getter=_newton_legacy_contact_attr("newton:contact_kf", "newton:contactFrictionGain"),
+            ),
+            "ka": SchemaAttribute(
+                "newton:contact_ka",
+                None,
+                usd_value_getter=_newton_legacy_contact_attr("newton:contact_ka", "newton:contactAdhesion"),
             ),
             # SDF configuration — from NewtonSDFCollisionAPI. `-inf` is the
             # "unset" sentinel (same convention as gap / shell_thickness above).

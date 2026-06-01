@@ -5971,7 +5971,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_contact_response_legacy_shape_fallback(self):
-        """Test deprecated newton:contact_ke/kd on shape prim as fallback with exact warnings."""
+        """Test deprecated newton:contact_ke/kd/kf/ka on shape prim with exact warnings."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
         stage = Usd.Stage.CreateInMemory()
@@ -5998,15 +5998,17 @@ def Xform "Articulation" (
         body = UsdGeom.Xform.Define(stage, "/Articulation/Body")
         UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
 
-        # Legacy on shape, plain material -> legacy used as fallback
+        # Legacy ke/kd/kf/ka on shape, plain material -> legacy used as fallback
         col_legacy = UsdGeom.Cube.Define(stage, "/Articulation/Body/ColLegacy")
         col_legacy_prim = col_legacy.GetPrim()
         UsdPhysics.CollisionAPI.Apply(col_legacy_prim)
         UsdShade.MaterialBindingAPI.Apply(col_legacy_prim).Bind(mat_plain, "physics")
         col_legacy_prim.CreateAttribute("newton:contact_ke", Sdf.ValueTypeNames.Float).Set(9999.0)
         col_legacy_prim.CreateAttribute("newton:contact_kd", Sdf.ValueTypeNames.Float).Set(777.0)
+        col_legacy_prim.CreateAttribute("newton:contact_kf", Sdf.ValueTypeNames.Float).Set(500.0)
+        col_legacy_prim.CreateAttribute("newton:contact_ka", Sdf.ValueTypeNames.Float).Set(0.05)
 
-        # Legacy on shape AND material authored -> material wins
+        # Legacy on shape AND material authored -> material wins over legacy
         col_both = UsdGeom.Cube.Define(stage, "/Articulation/Body/ColBoth")
         col_both_prim = col_both.GetPrim()
         UsdPhysics.CollisionAPI.Apply(col_both_prim)
@@ -6029,19 +6031,67 @@ def Xform "Articulation" (
         # Legacy fallback used when material has no contact attrs
         self.assertAlmostEqual(model.shape_material_ke.numpy()[idx_legacy], 9999.0, places=1)
         self.assertAlmostEqual(model.shape_material_kd.numpy()[idx_legacy], 777.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[idx_legacy], 500.0, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[idx_legacy], 0.05, places=4)
 
         # Material value wins over legacy attr
         self.assertAlmostEqual(model.shape_material_ke.numpy()[idx_both], 4000.0, places=1)
         self.assertAlmostEqual(model.shape_material_kd.numpy()[idx_both], 100.0, places=1)
 
-        # Deprecation warnings only from ColLegacy (material unset -> per-shape fallback fires).
-        # ColBoth has material authored, so per-shape is skipped entirely (no warning).
+        # Deprecation warnings from both shapes (legacy attrs always emit migration signal)
         ke_warnings = [m for m in dep_msgs if "newton:contact_ke" in m]
         kd_warnings = [m for m in dep_msgs if "newton:contact_kd" in m]
-        self.assertEqual(len(ke_warnings), 1)
-        self.assertEqual(len(kd_warnings), 1)
-        self.assertIn("newton:contactStiffness", ke_warnings[0])
-        self.assertIn("newton:contactDamping", kd_warnings[0])
+        kf_warnings = [m for m in dep_msgs if "newton:contact_kf" in m]
+        ka_warnings = [m for m in dep_msgs if "newton:contact_ka" in m]
+        self.assertEqual(len(ke_warnings), 2)
+        self.assertEqual(len(kd_warnings), 2)
+        self.assertEqual(len(kf_warnings), 1)
+        self.assertEqual(len(ka_warnings), 1)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_contact_response_solref_over_material(self):
+        """Test MuJoCo per-geom solref wins over material when MuJoCo resolver has priority."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        mat = UsdShade.Material.Define(stage, "/Materials/Mat")
+        mat_prim = mat.GetPrim()
+        mat_prim.ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(mat_prim)
+        mat_prim.GetAttribute("newton:contactStiffness").Set(4000.0)
+        mat_prim.GetAttribute("newton:contactDamping").Set(100.0)
+
+        articulation = UsdGeom.Xform.Define(stage, "/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/Articulation/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        col = UsdGeom.Cube.Define(stage, "/Articulation/Body/Col")
+        col_prim = col.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col_prim)
+        UsdShade.MaterialBindingAPI.Apply(col_prim).Bind(mat, "physics")
+        col_prim.CreateAttribute("mjc:solref", Sdf.ValueTypeNames.DoubleArray).Set([0.01, 0.5])
+
+        # MuJoCo resolver first -> solref wins over material ke/kd
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        result = builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()])
+        model = builder.finalize()
+        idx = result["path_shape_map"]["/Articulation/Body/Col"]
+
+        expected_ke = 1.0 / (0.01**2 * 0.5**2)
+        expected_kd = 2.0 / 0.01
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[idx], expected_ke, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[idx], expected_kd, places=1)
+        # kf/ka fall through to material (no MuJoCo per-shape kf/ka)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[idx], builder.default_shape_cfg.kf, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[idx], builder.default_shape_cfg.ka, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_constraint_parsing(self):

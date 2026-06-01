@@ -2890,22 +2890,41 @@ def parse_usd(
                 ) and not hide_collider_for_body
                 collider_is_visible = collider_is_visible and _is_effectively_visible(prim)
 
-                # Contact response: material (if authored) > per-shape resolver > builder default.
+                # Contact response precedence:
+                #   non-legacy per-shape (MuJoCo solref) > material > legacy per-shape > default
+                # Legacy getters emit DeprecationWarning; non-legacy (solref) do not.
                 _default = builder.default_shape_cfg
-                shape_ke = material.ke if material.ke is not None and math.isfinite(material.ke) else _default.ke
-                shape_kd = material.kd if material.kd is not None and math.isfinite(material.kd) else _default.kd
-                shape_kf = material.kf if material.kf is not None and math.isfinite(material.kf) else _default.kf
-                shape_ka = material.ka if material.ka is not None and math.isfinite(material.ka) else _default.ka
+                shape_contact = {}
+                for _ck in ("ke", "kd", "kf", "ka"):
+                    with warnings.catch_warnings(record=True) as _cw:
+                        warnings.simplefilter("always")
+                        per_shape_val = R.get_value(prim, prim_type=PrimType.SHAPE, key=_ck, verbose=verbose)
+                    _dep = [w for w in _cw if issubclass(w.category, DeprecationWarning)]
+                    for _w in _cw:
+                        if not issubclass(_w.category, DeprecationWarning):
+                            warnings.warn_explicit(_w.message, _w.category, _w.filename, _w.lineno)
+                    is_legacy = len(_dep) > 0
+                    has_shape = per_shape_val is not None and math.isfinite(float(per_shape_val))
+                    mat_val = getattr(material, _ck)
+                    has_mat = mat_val is not None and math.isfinite(mat_val)
 
-                for attr_key in ("ke", "kd"):
-                    if getattr(material, attr_key) is not None:
-                        continue
-                    per_shape_val = R.get_value(prim, prim_type=PrimType.SHAPE, key=attr_key, verbose=verbose)
-                    if per_shape_val is not None and math.isfinite(float(per_shape_val)):
-                        if attr_key == "ke":
-                            shape_ke = float(per_shape_val)
-                        else:
-                            shape_kd = float(per_shape_val)
+                    if has_shape and not is_legacy:
+                        shape_contact[_ck] = float(per_shape_val)
+                    elif has_mat:
+                        if is_legacy:
+                            for _w in _dep:
+                                warnings.warn_explicit(_w.message, _w.category, _w.filename, _w.lineno)
+                        shape_contact[_ck] = mat_val
+                    elif has_shape:
+                        for _w in _dep:
+                            warnings.warn_explicit(_w.message, _w.category, _w.filename, _w.lineno)
+                        shape_contact[_ck] = float(per_shape_val)
+                    else:
+                        shape_contact[_ck] = getattr(_default, _ck)
+                shape_ke = shape_contact["ke"]
+                shape_kd = shape_contact["kd"]
+                shape_kf = shape_contact["kf"]
+                shape_ka = shape_contact["ka"]
 
                 shape_color = material_props.get("color")
 
