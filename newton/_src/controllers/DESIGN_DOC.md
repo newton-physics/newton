@@ -1,6 +1,6 @@
 # Newton Controllers — Design Doc
 
-> **Status:** design proposal for v0. Supersedes the prior `README.md` sketch. Implementation does not yet exist.
+> **Status:** design proposal for v0. Supersedes the prior `README.md` sketch. Implementation does not yet exist. Cross-cutting framework decisions are resolved (see *Resolved cross-cutting decisions*); per-controller specs in *Controllers to design* remain open.
 
 A library for composable control blocks. A `Controller` is a single, runnable control law (PID, filter, gravity comp, …). A `ControlGroup` is a composer that wraps one or more `Controller`s and orchestrates the per-step zero / compute / accumulate sequence. The API mirrors `newton.actuators.Actuator` so the two modules feel like the same engine — finalize lifecycle, `State` dataclasses, `mask`-based reset, the `state_0, state_1 = state_1, state_0` swap pattern, `is_stateful()` / `is_graphable()` flags, and the `(global_array, indices)` binding convention used throughout Newton.
 
@@ -77,7 +77,7 @@ pid = nc.ControllerPID(
     measurement_rate=arm_in.joint_qd,
     setpoint=arm_in.joint_target_pos,
     kp=arm_in.kp,                              # local array, length len(indices)
-    ki=0.1,                                    # scalar
+    ki=wp.full(N, 0.1, dtype=wp.float32),      # local array (no scalar form)
     kd=wp.full(N, 2.0, dtype=wp.float32),      # local array
     integral_max=arm_in.integral_max,
     output=arm_out.joint_target_force,         # global; output_indices default to `indices`
@@ -112,9 +112,10 @@ group.reset(state_0, mask=reset_mask)
 | `(array, indices)` | global array; look up by index | `array[indices[i]]` |
 | `array` (paired with controller-level `indices`) | global array; uses the constructor's default `indices` | `array[indices[i]]` |
 | `array` (length `len(indices)`) | already in local layout | `array[i]` |
-| scalar (`float` / `int`) | constant for all DOFs | `c` |
 
 Disambiguation between the two bare-`array` forms is by length: if `array.shape[0] == len(indices)`, it's local; otherwise it is treated as global and uses the default `indices`. This mirrors how `ControllerPD` today accepts `kp` as a length-N local array while `positions` arrives as a global state array.
+
+**Gain ports are arrays only — no scalar form.** Gain ports (`kp`, `ki`, `kd`, `integral_max`, etc.) must be passed as `wp.array[float]` of length `len(indices)`. Scalars are not accepted at the controller layer, mirroring `newton.actuators.Controller` (reading scalar values back in `__init__` for range-validation would force a synchronous device-to-host copy). Users with a uniform gain pre-broadcast with `wp.full(N, value, dtype=wp.float32)`. Config-time scalar value validation (e.g. `kp >= 0`) is the responsibility of a config layer above the controller — not exposed in v0.
 
 **For the "one big array" case** — measurement, setpoint, and output all living in the same global `state.x`:
 
@@ -125,7 +126,7 @@ pid = nc.ControllerPID(
     setpoint=(state.x, setpoint_indices),
     output=(state.x, output_indices),
     kp=local_kp,
-    ki=0.1,
+    ki=local_ki,
     ...
 )
 ```
@@ -133,6 +134,16 @@ pid = nc.ControllerPID(
 Same `wp.array` reference appears in three ports; three different index arrays disambiguate the slots.
 
 ---
+
+## Reset semantics
+
+`Controller.State.reset(mask)` is the universal reset entry point. `mask` is `wp.array[wp.bool] | None` of length `len(indices)` — DOF-shaped, the same convention as `newton.actuators.Controller.State.reset`. Each `Controller.State` subclass decides how to project that mask onto its own state shape:
+
+- DOF-shaped state (e.g. `ControllerPID.State.integral`, shape `(len(indices),)`): zero the entries where the mask is True.
+- Per-robot state (e.g. hidden state for an RNN-flavor controller, shape `(num_robots, hidden_dim)`): OR-reduce the mask across each robot's `dofs_per_robot` consecutive entries, then zero (or re-initialize) the per-robot rows where the reduction is True.
+- History buffers (shape `(history_len, len(indices))`): broadcast the mask across the history dim.
+
+Coupled controllers may optionally expose a second reset method, `Controller.State.reset_per_robot(mask)`, where `mask` is length `num_robots`. The base `Controller.State` provides this method with a `NotImplementedError` default; subclasses with meaningful per-robot semantics override. `ControlGroup.State.reset_per_robot(mask)` fans out to each controller's `reset_per_robot` method.
 
 ## State and the double-buffer swap
 
@@ -181,13 +192,16 @@ class Controller:
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None: ...
 
     def __init__(self, **ports):
-        """Validate shapes / dtypes / scalar value ranges, normalize each
-        per-DOF port to (array, indices) form, stash bindings on self.
-        Does NOT allocate device buffers — finalize() does that.
+        """Validate shapes / dtypes, normalize each per-DOF port to
+        (array, indices) form, stash bindings on self. Does NOT allocate
+        device buffers — finalize() does that.
 
         Subclasses declare which kwargs they accept; missing required ports
         raise here, unknown ports raise here, and shape / dtype / length
-        mismatches raise here."""
+        mismatches raise here. Scalar value-range checks (e.g. ``kp >= 0``)
+        are NOT performed at this layer — they would force a synchronous
+        device-to-host copy. Such checks belong in a config layer above
+        the controller."""
 
     def finalize(self, device: wp.Device, num_outputs: int) -> None:
         """Allocate device-side scratch and per-controller buffers.
@@ -257,12 +271,16 @@ class ControllerPID(Controller):
         self._measurement_rate, self._measurement_rate_indices = _normalize_port(measurement_rate, measurement_rate_indices, indices)
         self._setpoint, self._setpoint_indices = _normalize_port(setpoint, setpoint_indices, indices)
         self._output, self._output_indices = _normalize_port(output, output_indices, indices)
-        # Gains: local array of length len(indices), or scalar.
-        self._kp = _normalize_gain(kp, len(indices))
-        self._ki = _normalize_gain(ki, len(indices))
-        self._kd = _normalize_gain(kd, len(indices))
-        self._integral_max = _normalize_gain(integral_max, len(indices))
-        # Scalar value-range validation (e.g. ki >= 0) happens here.
+        # Gains: wp.array[float] of length len(indices). Shape-checked here;
+        # no scalar form (see "Forms a per-DOF port accepts" — gain ports
+        # are arrays only). No device-side value-range validation.
+        for name, gain in (("kp", kp), ("ki", ki), ("kd", kd), ("integral_max", integral_max)):
+            if gain.shape != (len(indices),):
+                raise ValueError(f"{name} shape {gain.shape} must equal (len(indices),)=({len(indices)},)")
+        self._kp = kp
+        self._ki = ki
+        self._kd = kd
+        self._integral_max = integral_max
 
     def finalize(self, device, num_outputs):
         self._scratch = wp.zeros(num_outputs, dtype=wp.float32, device=device)
@@ -431,18 +449,18 @@ Users write `from newton.controllers import ControlGroup, ControllerPID`. Same p
 - `Controller` base class with `finalize`, `state`, `is_stateful`, `is_graphable`, `compute`.
 - `ControlGroup` composer with `state`, `step`, `reset`, `is_stateful`, `is_graphable`, plus the zero / scatter-add machinery via `(output_array, output_indices)`.
 - `newton/controllers.py` public shim.
-- Helpers: `_normalize_port`, `_normalize_gain` for the port-form normalization described above.
+- Helper: `_normalize_port` for the port-form normalization described above. No `_normalize_gain` — gain ports are arrays only and shape-checked inline.
 - For each shipped controller: math-correctness tests, integral / state accumulation across the `state_0` / `state_1` swap, masked reset, scatter-add when multiple controllers overlap, sliced / one-big-array binding sanity tests.
 
-**Suggested implementation order** (each step exercises a new piece of the framework):
+**Suggested implementation order** (each step exercises a new piece of the framework). Controllers that need g(q) or h(q,q̇) are gated on the upcoming generic inverse-dynamics function in Newton — they're listed but not part of the initial v0 push:
 
 1. `ControllerPID` — proves independent-per-DOF flavor + the framework end-to-end.
-2. `ControllerGravityComp` — first coupled controller; proves the single-robot `Model` + `dofs_per_robot` divisibility convention + 2D kernel launch.
-3. `ControllerJointImpedance` — coupled but very close to gravity comp in shape; tests parameter porting.
-4. `ControllerDifferentialDrive` — first mobile controller; proves the body-twist-to-wheels mapping (output not the same shape as input).
-5. `ControllerHolonomic` — second mobile; same family.
-6. `ControllerDifferentialIK` — first task-space controller; proves Jacobian reuse from `newton.ik`.
-7. `ControllerOperationalSpace` — most complex; needs full dynamics from the Model.
+2. `ControllerDifferentialDrive` — first mobile / coupled controller; proves the divisibility convention + 2D kernel launch with `wheels_per_robot` as the stride.
+3. `ControllerHolonomic` — second mobile; same family.
+4. `ControllerDifferentialIK` — first articulated coupled controller; uses the public `newton.eval_jacobian` (no new dynamics machinery needed).
+5. *(gated on inverse-dynamics function)* `ControllerGravityComp` — needs g(q).
+6. *(gated)* `ControllerJointImpedance` — needs g(q) (PD+gravity variant) or M + h + g (full impedance).
+7. *(gated)* `ControllerOperationalSpace` — needs J (public), M (public), and the bias term μ from inverse dynamics.
 
 See *Controllers to design* below for per-controller notes.
 
@@ -463,10 +481,9 @@ See *Controllers to design* below for per-controller notes.
 
 #### `ControllerDifferentialIK`
 
-- **Category:** coupled, task-space.
+- **Category:** coupled, task-space. **Unblocked** — only needs the Jacobian, which is already public via `newton.eval_jacobian` (`newton/_src/sim/articulation.py`).
 - **Sketch:** maps a desired task-space velocity `ẋ_d` (per end-effector) to joint velocities via `q̇ = J⁺(q) ẋ_d` (damped pseudoinverse, with nullspace and joint-limit terms).
-- **Relationship to `newton.ik`.** Should *not* be built on `IKSolver` — that's a full nonlinear multi-seed LM / L-BFGS optimizer (`newton/_src/sim/ik/ik_solver.py`). Differential IK is a one-step Jacobian solve. What it *should* reuse from `newton.ik`:
-  - The Jacobian machinery (`IKJacobianType.AUTODIFF` or analytical) used inside `IKOptimizerLM`. Need to expose / refactor that into a reusable Jacobian-at-q routine that doesn't require an optimizer loop.
+- **Relationship to `newton.ik`.** Should *not* be built on `IKSolver` — that's a full nonlinear multi-seed LM / L-BFGS optimizer (`newton/_src/sim/ik/ik_solver.py`). Differential IK is a one-step Jacobian solve. What it may reuse from `newton.ik`:
   - The `IKObjective` family (`IKObjectivePosition`, `IKObjectiveRotation`) as the way to declare "what task-space quantity does ẋ_d refer to".
 - **Open design questions to resume on:**
   - Does the controller take a list of `IKObjective`s the same way `IKSolver` does, or a flatter "frame_a, frame_b, type" spec?
@@ -476,32 +493,32 @@ See *Controllers to design* below for per-controller notes.
 
 #### `ControllerJointImpedance`
 
-- **Category:** coupled.
+- **Category:** coupled. **Gated on Newton's upcoming generic inverse-dynamics function** (for any variant that includes `g(q)` or `h(q,q̇)`).
 - **Sketch:** `τ = M(q)(q̈_d + K_d (q̇_d - q̇) + K_p (q_d - q)) + h(q, q̇)` (or simpler stiffness-only variants).
 - **Open design questions:**
-  - Include mass-matrix premultiplication, or stop at `τ = K_p e + K_d ė + g(q)` (PD + gravity)?
-  - Variants to ship: full impedance, stiffness-only (PD + gravity), Cartesian impedance (later)?
-  - Where does `M(q)` come from in Newton? Composite Rigid Body? RNEA-derived? Check what dynamics primitives `Model` exposes.
+  - Variants to ship: full impedance, PD+gravity, Cartesian impedance (later)?
+  - `M(q)` is already public via `newton.eval_mass_matrix`; `h(q,q̇)` requires the upcoming inverse-dynamics function.
 
 #### `ControllerGravityComp`
 
-- **Category:** coupled.
-- **Sketch:** `τ_g = -∂U_gravity/∂q`. Equivalent to RNEA with `q̇ = q̈ = 0`.
+- **Category:** coupled. **Gated on Newton's upcoming generic inverse-dynamics function.**
+- **Sketch:** `τ_g = -∂U_gravity/∂q`. Equivalent to inverse dynamics with `q̇ = q̈ = 0`.
 - **Open design questions:**
-  - Recursive Newton-Euler or analytic per-joint? RNEA is more general (handles all joint types Newton supports); analytic-per-joint is simpler for revolute-only chains.
-  - What does the Model need to expose to make this clean? Probably: per-link mass, COM in body frame, joint type, joint axis, parent index, joint offset transform.
-  - Does Newton already have an RNEA kernel we can reuse, or do we author one here?
+  - Whether to expose any variants (e.g. a "partial gravity comp" that ignores certain links) — likely no, keep v0 simple.
+  - Port for the gravity vector (default `(0, 0, -9.81)`, but allow override).
+  - When the inverse-dynamics function lands, confirm its signature matches the per-robot batched layout the coupled-controller convention assumes.
 
 ### Manipulator controllers
 
 #### `ControllerOperationalSpace`
 
-- **Category:** coupled, task-space.
+- **Category:** coupled, task-space. **Gated on Newton's upcoming generic inverse-dynamics function** (for the bias term μ and gravity p).
 - **Sketch:** task-space inertia `Λ = (J M⁻¹ Jᵀ)⁻¹`; task force `F = Λ (ẍ_d + K_d (ẋ_d - ẋ) + K_p (x_d - x)) + μ + p`; torque `τ = Jᵀ F + (I - JᵀJ̄ᵀ) τ_null`, where `J̄ = M⁻¹ Jᵀ Λ`.
+- `J` and `M` are already public (`newton.eval_jacobian`, `newton.eval_mass_matrix`); `μ` and `p` need the inverse-dynamics function.
 - **Open design questions:**
   - All-in-one OSC or split (TaskSpaceForce + JointMapping)?
   - Inertia-weighted pseudoinverse vs. plain damped pseudoinverse — both, or pick one?
-  - Same Jacobian-machinery reuse question as `ControllerDifferentialIK`.
+  - Same `IKObjective`-or-flat-spec question as `ControllerDifferentialIK`.
   - Nullspace handling — separate `ControllerNullspaceProjection` block that scatter-adds, or built in?
 
 ### Mobile-robot controllers
@@ -512,32 +529,35 @@ These break the per-DOF / per-robot symmetry: the controller's input dimension (
 
 - **Category:** coupled, mobile.
 - **Sketch:** input `(v, ω)` (linear m/s, angular rad/s) → wheel velocities `(ω_L, ω_R)` via `ω_L = (v - ω·L/2) / r`, `ω_R = (v + ω·L/2) / r` where `r` = wheel radius, `L` = axle width.
+- **Construction convention:** takes raw scalars `wheel_radius: float`, `axle_width: float` directly — no `Model` argument. Mobile-base geometry isn't `Model` state in Newton, and bolting it onto `Model` for one controller would pollute the schema. The divisibility convention is `len(indices) % wheels_per_robot == 0` with `wheels_per_robot = 2`, parallel to the articulated `dofs_per_robot` convention.
 - **Open design questions:**
-  - Where does Newton store wheel-radius and axle-width? Likely needs new metadata on the Model, or a small auxiliary struct passed in.
   - Output port: wheel velocity (`joint_target_vel`) or wheel torque via an inner PI loop?
-  - Are we taking a `Model` of a diff-drive base, or just the two scalars `(r, L)` directly? Suggest Model for consistency with the coupled-controller convention.
-  - Does Newton have a canonical way to identify "this is the left wheel joint" vs "right wheel joint" in a Model? Probably via joint names or user-supplied indices.
+  - How do users identify left vs. right wheels? Convention: the user-supplied `indices` array orders `(left, right, left, right, …)` per-robot; document this explicitly.
 
 #### `ControllerHolonomic`
 
 - **Category:** coupled, mobile.
 - **Sketch:** input body twist `(v_x, v_y, ω)` → wheel velocities for an N-wheeled omni base (3-wheel Kiwi, 4-wheel mecanum, etc.). Mapping is `wheel_velocities = W(geometry) · [v_x, v_y, ω]ᵀ`.
+- **Construction convention:** takes a `wheel_geometry: wp.array2d[float]` of shape `(wheels_per_robot, 3)` directly — no `Model` argument, same reasoning as `ControllerDifferentialDrive`. Each row encodes one wheel's contribution to the velocity-mapping matrix (placement + roller-angle terms). Helpers to build the matrix for known configurations (Kiwi, mecanum) live alongside the controller.
 - **Open design questions:**
-  - Which geometries to ship (Kiwi / mecanum / generic)? Suggest one generic `wheel_geometry: wp.array2d[float]` representing the per-wheel placement + roller angle, with helpers to build the matrix for known configurations.
-  - Same Model-vs-direct-scalars question as `ControllerDifferentialDrive`.
+  - Which geometry helpers to ship (Kiwi / mecanum / generic builder)?
+  - Output port: wheel velocity or wheel torque (same question as `ControllerDifferentialDrive`)?
 
-### Cross-cutting questions to revisit
+### Resolved cross-cutting decisions
 
-- **Scalar-vs-array gain ports.** Still unresolved (see Open questions below). Affects every controller with gains.
-- **What lives in `newton.Model` vs. controllers' own metadata?** Coupled controllers need: link masses / COMs / joint axes / parent indices / joint types / wheel geometry / etc. Decide whether `Model` grows accessors or whether each controller introspects fields directly.
-- **Where do Jacobian / dynamics primitives (M, J, h, g) live?** Today they're internal to `newton/_src/sim/ik/`. Several controllers need them in non-IK contexts. Worth pulling into a shared `newton.dynamics` (or similar) before authoring `ControllerOperationalSpace`.
-- **Mobile-robot output shape.** Output port length ≠ DOF count. The `(output_array, output_indices)` pattern still works (output indices select wheel-velocity slots in a global control array), but the divisibility convention is `len(indices) % wheels_per_robot == 0` rather than DOFs. Document this carefully.
+The following framework-level questions are settled. Per-controller decisions (kernel layout, what to lift from `model.*`, port shapes) remain open in each controller's section above.
+
+1. **Gain ports are arrays only.** Mirrors `newton.actuators.Controller`. No scalar form at `__init__`; users pre-broadcast with `wp.full(N, value, dtype=wp.float32)`. No `_normalize_gain` helper. Shape-check inline. Scalar value validation (e.g. `kp >= 0`) is config-layer responsibility, not part of v0.
+2. **Articulated coupled controllers read `model.*` arrays directly in `__init__`.** No upfront `utils.py` abstraction. `dofs_per_robot = model.joint_dof_count`. Link masses, COMs, joint axes, parent indices, joint types read straight off `Model`. Snippets that repeat 3+ times graduate to `newton._src.controllers.utils.py`. `newton.Model` does not grow new accessors for v0.
+3. **Mobile-base controllers take raw geometry, no `Model` arg.** `wheel_radius`, `axle_width`, `wheel_geometry: wp.array2d[float]` passed directly. The "single-robot `Model`" coupled-controller convention applies to articulated controllers only; mobile-base geometry isn't `Model` state and shouldn't be forced onto it. Mobile controllers use a local `wheels_per_robot` divisibility convention parallel to `dofs_per_robot`.
+4. **Reset mask is DOF-shaped, controllers interpret.** `Controller.State.reset(mask)` always takes a `wp.array[wp.bool]` of length `len(indices)`. Coupled controllers with per-robot state OR-reduce groups of `dofs_per_robot` consecutive entries. Coupled controllers may *optionally* expose `Controller.State.reset_per_robot(mask)` (length `num_robots`); base implementation raises `NotImplementedError`. `ControlGroup.State` exposes both methods, fanning each out.
+5. **Naming: keep `dofs_per_robot` for articulated controllers, `wheels_per_robot` for mobile.** Don't generalize to `outputs_per_robot` at the framework level — the framework only sees `len(indices)` and the controller's private stride.
+6. **Dynamics primitives (g(q), h(q,q̇), full inverse dynamics) wait on Newton's upcoming generic inverse-dynamics function.** Don't author a parallel RNEA inside controllers; don't extract from Featherstone. Public primitives already available: `newton.eval_jacobian`, `newton.eval_mass_matrix`, `newton.eval_fk` (`newton/_src/sim/articulation.py`). Controllers that need only these (`DifferentialIK`) are unblocked for v0. Controllers that need g/h (`GravityComp`, `JointImpedance`, `OperationalSpace`) are deferred until the inverse-dynamics function lands.
 
 ---
 
-## Open questions
+## Remaining open questions
 
-1. **Scalar vs. array kernel variants.** When a per-DOF gain port (`kp`, `kd`) can be either a scalar `float` or a length-`len(indices)` `wp.array[float]`, the controller author needs a strategy: ship two kernel variants, dispatch on type at `__init__`, broadcast scalars to a length-1 array, or rely on Warp's overload mechanism. Pick a convention before the second controller lands.
-2. **`Model` introspection API for coupled controllers.** v0 doesn't ship one, but the v1 design needs `_dofs_in_single_robot_model(model)`, plus accessors for link masses, COMs, joint axes, parent indices. Decide whether these live in `newton._src.controllers.utils`, or if `newton.Model` itself should expose convenience accessors usable by both controllers and any user code.
-3. **Composed reset shape.** `group.reset(state, mask)` is per-DOF on the output dimension (length `len(indices)`). If a controller's state has a different leading dim (e.g. history buffers, per-robot quantities for coupled controllers), it handles the mask internally — same as `ControllerNeuralMLP.State.reset` does today.
-4. **Future need for sliced-output provenance.** Dropped in v0 because zeroing-overlapping-indices-then-accumulating is correct (just slightly redundant). If a future user has many controllers binding overlapping `output_indices` and the redundant zeroing becomes a measurable cost, dedupe the zero pass in `ControlGroup` by `(array.ptr, indices.ptr)`.
+1. **Per-controller specs.** Each entry in *Controllers to design* above still has TBDs (port shapes, kernel layout, output choices). These are picked up per-controller, not as cross-cutting work.
+2. **Sliced-output zero-pass dedupe.** Dropped from v0: zeroing-overlapping-indices-then-accumulating is correct, just slightly redundant. If a future user has many controllers binding overlapping `output_indices` and the redundant zeroing becomes a measurable cost, dedupe the zero pass in `ControlGroup` by `(array.ptr, indices.ptr)`. Not a v0 decision.
+3. **Config layer for scalar validation.** v0 doesn't ship one. If a `ControllerBuilder` or USD parser appears later, it carries the scalar-value-range validation (mirroring `Controller.resolve_arguments` in actuators) before materializing per-DOF arrays.
