@@ -36,7 +36,12 @@ _USD_CAMERA_PARAM_MAX_THETA = 16
 _PI = 3.141592653589793
 
 
-def _coerce_usd_time(time: Any, Usd: Any) -> Any:
+def _coerce_usd_time(time: Any) -> Any:
+    try:
+        from pxr import Usd
+    except ImportError as e:
+        raise ImportError("USD camera ray helpers require the pxr USD Python modules.") from e
+
     if time is None:
         return Usd.TimeCode.Default()
     if isinstance(time, Usd.TimeCode):
@@ -44,7 +49,12 @@ def _coerce_usd_time(time: Any, Usd: Any) -> Any:
     return Usd.TimeCode(float(time))
 
 
-def _normalize_usd_cameras(cameras: Any, UsdGeom: Any) -> list[Any]:
+def _normalize_usd_cameras(cameras: Any) -> list[Any]:
+    try:
+        from pxr import UsdGeom
+    except ImportError as e:
+        raise ImportError("USD camera ray helpers require the pxr USD Python modules.") from e
+
     if isinstance(cameras, (list, tuple)):
         camera_items = list(cameras)
     else:
@@ -135,13 +145,8 @@ def extract_usd_camera_ray_params(
     *,
     time: Any | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    try:
-        from pxr import Usd, UsdGeom
-    except ImportError as e:
-        raise ImportError("USD camera ray helpers require the pxr USD Python modules.") from e
-
-    time_code = _coerce_usd_time(time, Usd)
-    usd_cameras = _normalize_usd_cameras(cameras, UsdGeom)
+    time_code = _coerce_usd_time(time)
+    usd_cameras = _normalize_usd_cameras(cameras)
 
     model_ids = np.empty(len(usd_cameras), dtype=np.int32)
     params = np.zeros((len(usd_cameras), _USD_CAMERA_PARAM_COUNT), dtype=np.float32)
@@ -333,14 +338,14 @@ def compute_usd_camera_transforms(
     time: Any | None = None,
 ) -> wp.array2d[wp.transformf]:
     try:
-        from pxr import Usd, UsdGeom
+        from pxr import UsdGeom
     except ImportError as e:
         raise ImportError("USD camera ray helpers require the pxr USD Python modules.") from e
 
     from ...usd.utils import get_transform  # noqa: PLC0415
 
-    time_code = _coerce_usd_time(time, Usd)
-    usd_cameras = _normalize_usd_cameras(cameras, UsdGeom)
+    time_code = _coerce_usd_time(time)
+    usd_cameras = _normalize_usd_cameras(cameras)
     xform_cache = UsdGeom.XformCache(time_code)
     transforms = []
     for usd_camera in usd_cameras:
