@@ -843,7 +843,7 @@ raycast_kernel_no_hfield = raycast_kernel
 
 
 @wp.kernel
-def _intersect_ray(
+def _intersect_ray_kernel(
     bvh_id: wp.uint64,
     bvh_shapes_group_roots: wp.array[wp.int32],
     bvh_shape_enabled: wp.array[wp.uint32],
@@ -922,7 +922,7 @@ def intersect_ray(
     """
 
     wp.launch(
-        kernel=_intersect_ray,
+        kernel=_intersect_ray_kernel,
         dim=(ray_origins.shape[0], ray_origins.shape[1]),
         inputs=[
             model.bvh_shapes.id,
