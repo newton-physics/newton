@@ -23,36 +23,6 @@ if TYPE_CHECKING:
     from .collide import CollisionPipeline
 
 
-_EQUALITY_CONSTRAINT_DEPRECATED_IN = "1.3"
-_EQUALITY_CONSTRAINT_MODEL_FIELDS = frozenset(
-    (
-        "equality_constraint_count",
-        "equality_constraint_type",
-        "equality_constraint_body1",
-        "equality_constraint_body2",
-        "equality_constraint_anchor",
-        "equality_constraint_torquescale",
-        "equality_constraint_relpose",
-        "equality_constraint_joint1",
-        "equality_constraint_joint2",
-        "equality_constraint_polycoef",
-        "equality_constraint_label",
-        "equality_constraint_enabled",
-        "equality_constraint_world",
-    )
-)
-
-
-def _default_equality_constraint_model_field(name: str) -> Any:
-    if name not in _EQUALITY_CONSTRAINT_MODEL_FIELDS:
-        raise AttributeError(f"Unknown equality constraint field: {name}")
-    if name == "equality_constraint_count":
-        return 0
-    if name == "equality_constraint_label":
-        return []
-    return None
-
-
 class Model:
     """
     Represents the static (non-time-varying) definition of a simulation model in Newton.
@@ -834,10 +804,39 @@ class Model:
     # the ``model.mujoco.equality_constraint_*`` namespace (the source of truth). Delete this
     # whole region when the deprecation window closes.
 
+    _EQUALITY_CONSTRAINT_DEPRECATED_IN = "1.3"
+    _EQUALITY_CONSTRAINT_MODEL_FIELDS = frozenset(
+        (
+            "equality_constraint_count",
+            "equality_constraint_type",
+            "equality_constraint_body1",
+            "equality_constraint_body2",
+            "equality_constraint_anchor",
+            "equality_constraint_torquescale",
+            "equality_constraint_relpose",
+            "equality_constraint_joint1",
+            "equality_constraint_joint2",
+            "equality_constraint_polycoef",
+            "equality_constraint_label",
+            "equality_constraint_enabled",
+            "equality_constraint_world",
+        )
+    )
+
+    @staticmethod
+    def _default_equality_constraint_model_field(name: str) -> Any:
+        if name not in Model._EQUALITY_CONSTRAINT_MODEL_FIELDS:
+            raise AttributeError(f"Unknown equality constraint field: {name}")
+        if name == "equality_constraint_count":
+            return 0
+        if name == "equality_constraint_label":
+            return []
+        return None
+
     @staticmethod
     def _deprecated_equality_constraint_model_field_message(name: str) -> str:
         return (
-            f"Model.{name} is deprecated in Newton {_EQUALITY_CONSTRAINT_DEPRECATED_IN} "
+            f"Model.{name} is deprecated in Newton {Model._EQUALITY_CONSTRAINT_DEPRECATED_IN} "
             f"and will be removed in a future release. "
             f"Use model.mujoco.{name} instead. ModelBuilder.finalize() populates "
             "the namespaced fields. The namespaced attribute is the source of truth "
@@ -850,7 +849,7 @@ class Model:
             self.mujoco = Model.AttributeNamespace("mujoco")
             mujoco_attrs = self.mujoco
         if not hasattr(mujoco_attrs, name):
-            setattr(mujoco_attrs, name, _default_equality_constraint_model_field(name))
+            setattr(mujoco_attrs, name, self._default_equality_constraint_model_field(name))
         return getattr(mujoco_attrs, name)
 
     def _get_deprecated_equality_constraint_model_field(self, name: str) -> Any:
@@ -867,7 +866,7 @@ class Model:
             DeprecationWarning,
             stacklevel=3,
         )
-        if name not in _EQUALITY_CONSTRAINT_MODEL_FIELDS:
+        if name not in self._EQUALITY_CONSTRAINT_MODEL_FIELDS:
             raise AttributeError(f"Unknown equality constraint field: {name}")
         if not hasattr(self, "mujoco"):
             self.mujoco = Model.AttributeNamespace("mujoco")
