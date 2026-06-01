@@ -876,38 +876,8 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="solimp",
             )
         )
-        # Converted MuJoCo equalities keep one authoritative equality row and point to
-        # the Newton joint/mimic object they were projected to.
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="equality_constraint_target_kind",
-                frequency=AttributeFrequency.EQUALITY_CONSTRAINT,
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.int32,
-                default=int(MjcEqualityTargetKind.NONE),
-                namespace="mujoco",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="equality_constraint_target",
-                frequency=AttributeFrequency.EQUALITY_CONSTRAINT,
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.int32,
-                default=-1,
-                namespace="mujoco",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="equality_constraint_objtype",
-                frequency=AttributeFrequency.EQUALITY_CONSTRAINT,
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.int32,
-                default=-1,
-                namespace="mujoco",
-            )
-        )
+        # ``equality_constraint_target_kind`` / ``_target`` / ``_objtype`` are declared by
+        # _register_equality_constraint_attributes (called above), so they are not re-registered here.
         # endregion equality attributes
 
         # region solver options

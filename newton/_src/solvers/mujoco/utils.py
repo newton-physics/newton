@@ -11,6 +11,7 @@ import warp as wp
 
 from ...core.types import vec5
 from ...sim.enums import EqType
+from .equality import _add_equality_constraint
 
 
 class MjcEqualityTargetKind(IntEnum):
@@ -125,7 +126,8 @@ def mjc_add_equality_loop_joint(
     )
     # For WELD, relpose/torquescale remain on the equality row; the loop joint only
     # gives Newton a projected simulation object.
-    eq_idx = builder.add_equality_constraint(
+    eq_idx = _add_equality_constraint(
+        builder,
         constraint_type=eq_type,
         body1=body1,
         body2=body2,
@@ -162,7 +164,9 @@ def mjc_add_equality_mimic(
         label=label,
         enabled=enabled,
     )
-    eq_idx = builder.add_equality_constraint_joint(
+    eq_idx = _add_equality_constraint(
+        builder,
+        constraint_type=EqType.JOINT,
         joint1=joint1,
         joint2=joint2,
         polycoef=list(polycoef),

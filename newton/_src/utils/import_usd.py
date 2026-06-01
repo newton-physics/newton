@@ -3287,9 +3287,7 @@ def parse_usd(
             from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
             SolverMuJoCo.register_custom_attributes(builder)
-            local_builder_custom_attr_eq = builder.get_custom_attributes_by_frequency(
-                [AttributeFrequency.EQUALITY_CONSTRAINT]
-            )
+            local_builder_custom_attr_eq = builder.get_custom_attributes_by_frequency(["mujoco:equality_constraint"])
 
         def add_converted_loop_joint(
             eq_type: EqType,
