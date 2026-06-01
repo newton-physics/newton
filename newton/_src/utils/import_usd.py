@@ -2808,21 +2808,26 @@ def parse_usd(
                 if kh is None:
                     kh = builder.default_shape_cfg.kh
 
-                # Early validation: hydroelastic meshes need an SDF source.
-                # For primitives, a texture SDF is generated from a synthesized
-                # watertight mesh at finalize(), but meshes require either an
-                # attached mesh.sdf or a resolution/voxel_size so one can be
-                # built deferred.
+                # Hydroelastic meshes need an SDF source. For primitives, a texture
+                # SDF is generated from a synthesized watertight mesh at finalize(),
+                # but meshes require either an attached mesh.sdf or a
+                # resolution/voxel_size so one can be built deferred. Warn and
+                # disable hydroelastic on this shape rather than aborting the whole
+                # import — typically reached when newton:hydroelasticEnabled=true
+                # is authored without applying NewtonSDFCollisionAPI.
                 if (
                     is_hydroelastic
                     and key == UsdPhysics.ObjectType.MeshShape
                     and sdf_max_resolution is None
                     and sdf_target_voxel_size is None
                 ):
-                    raise ValueError(
+                    warnings.warn(
                         f"{prim.GetPath()}: hydroelastic mesh requires newton:sdfMaxResolution "
-                        f"or newton:sdfTargetVoxelSize so an SDF can be generated."
+                        f"or newton:sdfTargetVoxelSize so an SDF can be generated; "
+                        f"disabling hydroelastic for this shape.",
+                        stacklevel=2,
                     )
+                    is_hydroelastic = False
                 # Mass model and shell thickness (resolved across Newton / MuJoCo schemas)
                 mass_model = R.get_value(prim, PrimType.SHAPE, "mass_model", default="solid")
                 shape_is_solid = mass_model != "shell"

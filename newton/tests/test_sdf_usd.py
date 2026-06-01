@@ -679,8 +679,8 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             self.assertFalse(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
 
-    def test_usd_hydroelastic_mesh_without_sdf_config_raises(self, device=None):
-        """Hydroelastic mesh without SDF resolution or voxel size raises at import."""
+    def test_usd_hydroelastic_mesh_without_sdf_config_warns_and_disables(self, device=None):
+        """Hydroelastic mesh without SDF resolution or voxel size warns and falls back to plain mesh collider."""
         del device  # validation is host-side and independent of device
 
         from pxr import Sdf, Usd, UsdPhysics
@@ -695,18 +695,19 @@ class TestSDFUSDParsing(unittest.TestCase):
             p1 = m1.GetPrim()
             # hydroelasticEnabled=true opts into hydro explicitly, but the API is
             # not applied so the importer does not fill in a default
-            # sdfMaxResolution. The mesh has no attached SDF — validation should
-            # fail at parse time.
+            # sdfMaxResolution. Importer should warn and disable hydro on this shape.
             p1.CreateAttribute("newton:hydroelasticEnabled", Sdf.ValueTypeNames.Bool, custom=True).Set(True)
 
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with self.assertRaisesRegex(ValueError, "hydroelastic mesh requires"):
-                builder.add_usd(str(usd_path))
+            with self.assertWarnsRegex(UserWarning, "hydroelastic mesh requires"):
+                result = builder.add_usd(str(usd_path))
+            s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
+            self.assertFalse(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
 
-    def test_usd_hydroelastic_mesh_with_kh_without_sdf_config_raises(self, device=None):
-        """Authoring newton:hydroelasticStiffness must not bypass the hydroelastic-mesh SDF-source validation."""
+    def test_usd_hydroelastic_mesh_with_kh_without_sdf_config_warns_and_disables(self, device=None):
+        """Authoring newton:hydroelasticStiffness must not bypass the hydroelastic-mesh SDF-source check."""
         del device  # validation is host-side and independent of device
 
         from pxr import Sdf, Usd, UsdPhysics
@@ -725,8 +726,10 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with self.assertRaisesRegex(ValueError, "hydroelastic mesh requires"):
-                builder.add_usd(str(usd_path))
+            with self.assertWarnsRegex(UserWarning, "hydroelastic mesh requires"):
+                result = builder.add_usd(str(usd_path))
+            s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
+            self.assertFalse(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
 
 
 devices = get_selected_cuda_test_devices()
