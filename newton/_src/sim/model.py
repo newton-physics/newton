@@ -799,10 +799,10 @@ class Model:
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
 
-    # region deprecated equality-constraint arrays (removal in a future release)
+    # Deprecated equality-constraint arrays (removal in a future release).
     # The legacy top-level ``Model.equality_constraint_*`` arrays are now read-only forwards to
     # the ``model.mujoco.equality_constraint_*`` namespace (the source of truth). Delete this
-    # whole region when the deprecation window closes.
+    # whole block when the deprecation window closes.
 
     _EQUALITY_CONSTRAINT_DEPRECATED_IN = "1.3"
     _EQUALITY_CONSTRAINT_MODEL_FIELDS = frozenset(
@@ -1013,8 +1013,6 @@ class Model:
             DeprecationWarning,
             stacklevel=2,
         )
-
-    # endregion deprecated equality-constraint arrays
 
     def state(self, requires_grad: bool | None = None) -> State:
         """
