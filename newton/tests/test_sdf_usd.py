@@ -858,9 +858,8 @@ add_function_test(
     TestSDFUSDParsing.test_deferred_sdf_distinguishes_shape_scales,
     devices=devices,
 )
-# The two test_usd_hydroelastic_mesh_*_raises methods validate parse-time
-# ValueErrors on the host; they do not call wp.launch and need no CUDA
-# device, so they are registered as plain unittest methods.
+# The hydroelastic-mesh warn-and-degrade tests run host-side (no wp.launch / CUDA),
+# so they're registered as plain unittest methods.
 
 
 if __name__ == "__main__":
