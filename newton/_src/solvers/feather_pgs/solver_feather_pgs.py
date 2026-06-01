@@ -35,7 +35,10 @@ from ..semi_implicit.kernels_particle import (
 from ..solver import SolverBase
 from .kernels import (
     TILE_THREADS,
-    TiledKernelFactory,
+    _get_cholesky_kernel,
+    _get_hinv_jt_kernel,
+    _get_pgs_fused_warp_kernel,
+    _get_triangular_solve_kernel,
     add_dense_contact_compliance_to_diag,
     allocate_joint_limit_slots,
     allocate_joint_velocity_limit_slots,
@@ -92,15 +95,47 @@ from .kernels import (
 class SolverFeatherPGS(SolverBase):
     """Private CUDA-only FeatherPGS prototype using one fused Warp path.
 
-    The solver advances reduced-coordinate articulations with CRBA/RNEA and
-    solves contact, joint-position limit, and joint-velocity limit rows through
-    a matrix-free projected Gauss-Seidel sweep. Velocity limits are always
-    considered for finite positive ``model.joint_velocity_limit`` entries.
+    ``SolverFeatherPGS`` advances reduced-coordinate articulations with the
+    same FK/RNEA/CRBA building blocks as :class:`~newton.solvers.SolverFeatherstone`,
+    then solves articulated contacts, joint-position limits, joint-velocity
+    limits, and free-rigid contacts with projected Gauss-Seidel. The narrow
+    private path is pure Warp and matrix-free: articulated rows are gathered
+    into world-local buffers, free rigid-body contacts use per-body inverse
+    inertia products, and one fused size-specialized tiled kernel iterates both
+    row families without assembling a global Delassus matrix. Unlike public
+    sibling solvers such as :class:`~newton.solvers.SolverMuJoCo` and
+    :class:`~newton.solvers.SolverSemiImplicit`, this class is not exported from
+    :mod:`newton.solvers`.
 
-    Unsupported model features intentionally fail early while this remains a
-    private API. Kinematic bodies are not supported, and model mutations require
-    recreating the solver. When requested on the model, ``State.body_parent_f``
-    is populated from the solver's RNEA backward pass.
+    Dynamics support covers PRISMATIC, REVOLUTE, BALL, FIXED, D6, and root
+    FREE or DISTANCE joints; DISTANCE roots are treated with the same floating
+    root convention as FREE joints. CABLE joints are not supported. Non-root
+    FREE or DISTANCE joints, zero-DOF articulations, kinematic bodies, CPU
+    devices, and model mutation after construction intentionally fail early.
+    Joint-position and joint-velocity limit rows are currently generated only
+    for scalar PRISMATIC, REVOLUTE, and D6 DOFs.
+
+    When :attr:`~newton.State.body_parent_f` is requested via
+    :meth:`~newton.ModelBuilder.request_state_attributes`, the solver writes the
+    per-body net spatial wrench from its RNEA backward pass translated to the
+    body's center of mass. Components are linear force ``[N]`` first and torque
+    ``[N·m]`` second, both in world frame at the COM. For floating roots this is
+    a diagnostic residual from the same recursion rather than a separate ground
+    reaction model.
+
+    Example:
+        Internal users may instantiate the private solver directly when the
+        model is finalized on CUDA::
+
+            import newton
+            from newton._src.solvers.feather_pgs import SolverFeatherPGS
+
+            builder = newton.ModelBuilder()
+            model = builder.finalize(device="cuda")
+            solver = SolverFeatherPGS(model, pgs_iterations=12)
+            state_0 = model.state()
+            state_1 = model.state()
+            solver.step(state_0, state_1, model.control(), None, 1.0 / 240.0)
     """
 
     def __init__(
@@ -119,33 +154,37 @@ class SolverFeatherPGS(SolverBase):
         max_constraints: int = 36,
         mf_max_constraints: int = 512,
     ):
-        """
-        Args:
-            model (Model): the model to be simulated.
-            angular_damping (float, optional): Angular damping factor. Defaults to 0.05.
-            update_mass_matrix_interval (int, optional): How often to update the mass matrix (every n-th time the :meth:`step` function gets called). Defaults to 1.
-            friction_smoothing (float, optional): The delta value for the Huber norm (see :func:`warp.math.norm_huber`) used for the friction velocity normalization. Defaults to 1.0.
-            enable_contact_friction (bool, optional): Enables Coulomb friction contacts inside the PGS solve. Defaults to True.
-            enable_joint_limits (bool, optional): Enforce joint position limits as unilateral PGS
-                constraints.  Each violated limit adds one constraint row. Defaults to False.
-            model.joint_velocity_limit: Joint velocity limits are always enforced
-                as per-DOF PGS constraints when finite and positive. When
-                ``|qdot_i| > qdot_max_i``, a single signed-Jacobian row projects
-                ``qdot_i`` back onto the bilateral box
-                ``[-qdot_max_i, +qdot_max_i]``. No Baumgarte bias.
-            pgs_iterations (int, optional): Number of Gauss-Seidel iterations to apply per frame. Defaults to 12.
-            pgs_beta (float, optional): ERP style position correction factor. Defaults to 0.2.
-            pgs_cfm (float, optional): Compliance/regularization added to the Delassus diagonal. Defaults to 1.0e-6.
-            contact_compliance (float, optional): Normal contact compliance [m/N] applied
-                to articulated contact rows. Converted to an impulse-space diagonal term
-                using ``compliance / dt^2``. Defaults to 0.0.
-            pgs_omega (float, optional): Successive over-relaxation factor for the PGS sweep. Defaults to 1.0.
-            max_constraints (int, optional): Maximum number of articulated contact constraint
-                rows stored per world. Free rigid body contacts are stored separately, bounded by
-                mf_max_constraints. Contact triplet storage is padded internally when needed.
-                Defaults to 36.
-            mf_max_constraints (int, optional): Maximum number of matrix-free constraints per world. Defaults to 512.
+        """Initialize the private FeatherPGS solver.
 
+        Args:
+            model: Model to simulate. It must be finalized on a CUDA device and
+                must not be mutated while the solver is in use.
+            angular_damping: Angular damping factor. Defaults to 0.05.
+            update_mass_matrix_interval: Number of calls to :meth:`step`
+                between mass-matrix rebuilds. Defaults to 1.
+            friction_smoothing: Delta value for the Huber norm
+                (:func:`warp.math.norm_huber`) used in friction velocity
+                normalization. Defaults to 1.0.
+            enable_contact_friction: Enable Coulomb friction rows inside the
+                PGS solve. This private path currently requires ``True``.
+            enable_joint_limits: Enforce joint position limits as unilateral
+                PGS constraints. Each violated supported DOF adds one row.
+                Defaults to ``False``.
+            pgs_iterations: Number of Gauss-Seidel iterations per step.
+                Defaults to 12.
+            pgs_beta: ERP-style position correction factor. Defaults to 0.2.
+            pgs_cfm: Compliance or regularization added to the Delassus
+                diagonal. Defaults to 1.0e-6.
+            contact_compliance: Normal contact compliance ``[m/N]`` applied to
+                articulated contact rows. Converted to an impulse-space
+                diagonal term with ``compliance / dt^2``. Defaults to 0.0.
+            pgs_omega: Successive over-relaxation factor for the PGS sweep.
+                Defaults to 1.0.
+            max_constraints: Maximum number of dense articulated constraint rows
+                stored per world. Contact triplet storage is padded internally
+                when needed. Defaults to 36.
+            mf_max_constraints: Maximum number of matrix-free free-rigid
+                constraint rows per world. Defaults to 512.
         """
         super().__init__(model)
 
@@ -200,6 +239,7 @@ class SolverFeatherPGS(SolverBase):
         self._allocate_world_buffers(model)
         self._allocate_mf_buffers(model)
         self._scatter_armature_to_groups(model)
+        self._init_tiled_kernels(model)
         self._init_size_group_streams(model)
         self._dummy_is_free_rigid = wp.zeros((1,), dtype=wp.int32, device=model.device)
         self._dummy_contact_impulses = wp.zeros((1, 1), dtype=wp.float32, device=model.device)
@@ -881,6 +921,28 @@ class SolverFeatherPGS(SolverBase):
 
             self.R_by_size[size] = wp.array(R_np, dtype=wp.float32, device=model.device)
 
+    def _init_tiled_kernels(self, model):
+        """Resolve size-specialized Warp kernels once for the immutable model shape."""
+        device_arch = model.device.arch
+        self._cholesky_kernels_by_size = {}
+        self._triangular_solve_kernels_by_size = {}
+        self._hinv_jt_kernels_by_size = {}
+
+        for size in self.size_groups:
+            self._cholesky_kernels_by_size[size] = _get_cholesky_kernel(size, device_arch)
+            self._triangular_solve_kernels_by_size[size] = _get_triangular_solve_kernel(size, device_arch)
+            self._hinv_jt_kernels_by_size[size] = _get_hinv_jt_kernel(size, self.max_constraints, device_arch)
+
+        self._pgs_fused_warp_kernel = None
+        if self.world_count > 0 and self.max_world_dofs > 0:
+            self._pgs_fused_warp_kernel = _get_pgs_fused_warp_kernel(
+                self.max_constraints,
+                self._max_contact_triplets,
+                self.mf_max_constraints,
+                self.max_world_dofs,
+                device_arch,
+            )
+
     def _init_size_group_streams(self, model):
         """Initialize CUDA streams for parallel kernel launches across size groups.
 
@@ -1121,13 +1183,9 @@ class SolverFeatherPGS(SolverBase):
                 )
 
         with wp.ScopedTimer("S6_PGS_Solve", print=False, use_nvtx=self._nvtx, synchronize=self._nvtx):
-            fused_kernel = TiledKernelFactory.get_pgs_fused_warp_kernel(
-                self.max_constraints,
-                self._max_contact_triplets,
-                self.mf_max_constraints,
-                self.max_world_dofs,
-                self.model.device,
-            )
+            fused_kernel = self._pgs_fused_warp_kernel
+            if fused_kernel is None:
+                raise RuntimeError("SolverFeatherPGS fused PGS kernel was not initialized.")
             wp.launch_tiled(
                 fused_kernel,
                 dim=[self.world_count],
@@ -1746,7 +1804,7 @@ class SolverFeatherPGS(SolverBase):
     def _stage2_cholesky_tiled(self, size: int):
         model = self.model
         n_arts = self.n_arts_by_size[size]
-        cholesky_kernel = TiledKernelFactory.get_cholesky_kernel(size, model.device)
+        cholesky_kernel = self._cholesky_kernels_by_size[size]
         wp.launch_tiled(
             cholesky_kernel,
             dim=[n_arts],
@@ -1780,7 +1838,7 @@ class SolverFeatherPGS(SolverBase):
             outputs=[self.tau_by_size[size]],
             device=model.device,
         )
-        solve_kernel = TiledKernelFactory.get_triangular_solve_kernel(size, model.device)
+        solve_kernel = self._triangular_solve_kernels_by_size[size]
         wp.launch_tiled(
             solve_kernel,
             dim=[n_arts],
@@ -2275,7 +2333,7 @@ class SolverFeatherPGS(SolverBase):
     def _stage4_hinv_jt_tiled(self, size: int):
         model = self.model
         n_arts = self.n_arts_by_size[size]
-        hinv_jt_kernel = TiledKernelFactory.get_hinv_jt_kernel(size, self.max_constraints, model.device)
+        hinv_jt_kernel = self._hinv_jt_kernels_by_size[size]
         wp.launch_tiled(
             hinv_jt_kernel,
             dim=[n_arts],
