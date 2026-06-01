@@ -187,7 +187,6 @@ class Actuator:
         self.control_feedforward_attr = control_feedforward_attr
         self.control_output_attr = control_output_attr
         self.control_computed_output_attr = control_computed_output_attr
-        self._target_attrs_resolved: bool = False
 
         self.device = indices.device
         self.requires_grad = requires_grad
@@ -226,20 +225,6 @@ class Actuator:
             ),
         )
 
-    def _resolve_target_attrs(self, sim_control: Any) -> None:
-        """One-shot fixup on first :meth:`step`: swap legacy ``joint_target_pos``
-        / ``joint_target_vel`` to canonical ``joint_target_q`` / ``joint_target_qd``
-        when ``sim_control`` exposes them as real instance attributes, avoiding
-        the legacy ``@property`` shim being hit every frame. Custom Control-like
-        objects without the canonical attributes keep the legacy names.
-        """
-        sim_control_vars = vars(sim_control) if hasattr(sim_control, "__dict__") else {}
-        if self.control_target_pos_attr == "joint_target_pos" and "joint_target_q" in sim_control_vars:
-            self.control_target_pos_attr = "joint_target_q"
-        if self.control_target_vel_attr == "joint_target_vel" and "joint_target_qd" in sim_control_vars:
-            self.control_target_vel_attr = "joint_target_qd"
-        self._target_attrs_resolved = True
-
     def step(
         self,
         sim_state: Any,
@@ -272,9 +257,6 @@ class Actuator:
             raise ValueError(
                 "Stateful actuator requires both current_act_state and next_act_state; create them via actuator.state()"
             )
-
-        if not self._target_attrs_resolved:
-            self._resolve_target_attrs(sim_control)
 
         positions = getattr(sim_state, self.state_pos_attr)
         velocities = getattr(sim_state, self.state_vel_attr)
