@@ -186,7 +186,7 @@ jobs:
         if: ${{ needs.start-runner.outputs.ec2-instance-id != '' }}
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7  # v6.0.0
         with:
-          aws-region: ${{ needs.start-runner.outputs.region || env.AWS_REGION }}
+          aws-region: ${{ needs.start-runner.outputs.region }}
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
 
