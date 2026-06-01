@@ -2733,6 +2733,20 @@ def parse_usd(
                         stacklevel=2,
                     )
                     sdf_max_resolution = None
+                elif sdf_max_resolution is not None and sdf_max_resolution % 8 != 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} must be "
+                        f"divisible by 8 (SDF volumes are allocated in 8x8x8 tiles); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_max_resolution = None
+                if sdf_target_voxel_size is not None and sdf_max_resolution is not None:
+                    warnings.warn(
+                        f"{prim.GetPath()}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution "
+                        f"are set; sdfTargetVoxelSize takes precedence.",
+                        stacklevel=2,
+                    )
+                    sdf_max_resolution = None
                 if sdf_max_resolution is None:
                     # When the API is applied but neither attribute is authored,
                     # fall back to the schema default (64). When target voxel
@@ -2762,6 +2776,14 @@ def parse_usd(
                 sdf_texture_format = R.get_value(
                     prim, prim_type=PrimType.SHAPE, key="sdf_texture_format", verbose=verbose
                 )
+                _valid_sdf_tex_fmts = ("float32", "uint16", "uint8")
+                if sdf_texture_format is not None and sdf_texture_format not in _valid_sdf_tex_fmts:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfTextureFormat={sdf_texture_format!r} is invalid "
+                        f"(expected one of {list(_valid_sdf_tex_fmts)}); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_texture_format = None
                 if sdf_texture_format is None:
                     sdf_texture_format = builder.default_shape_cfg.sdf_texture_format
 
@@ -2955,13 +2977,9 @@ def parse_usd(
                     # so we strip SDF fields and pass a clean cfg. SDF building is
                     # deferred to finalize() where instances can be deduplicated.
                     # We write SDF params directly to the builder's per-shape lists
-                    # after the shape is added. Validate the SDF fields here so
-                    # invalid values (e.g. sdf_max_resolution not divisible by 8,
-                    # unknown sdf_texture_format) are caught before stripping
-                    # bypasses ShapeConfig.validate. shape_type=None skips the
-                    # hydroelastic-requires-SDF check (which only fires for
-                    # primitives) while still running the SDF-format checks.
-                    shape_params["cfg"].validate(shape_type=None)
+                    # after the shape is added. SDF-field validity (divisibility,
+                    # texture format, both-set conflict) is already enforced inline
+                    # with warn-and-degrade above.
                     mesh_shape_params = dict(shape_params)
                     mesh_shape_params["cfg"] = replace(
                         shape_params["cfg"],

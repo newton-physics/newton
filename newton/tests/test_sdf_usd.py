@@ -401,8 +401,8 @@ class TestSDFUSDParsing(unittest.TestCase):
                 "Applied SDF API should land an SDF entry on the finalized model.",
             )
 
-    def test_usd_mesh_invalid_sdf_max_resolution_raises(self):
-        """USD mesh path must validate sdf_max_resolution divisible-by-8 before stripping cfg."""
+    def test_usd_mesh_invalid_sdf_max_resolution_warns_and_clears(self):
+        """An sdfMaxResolution not divisible by 8 must warn and fall back to default rather than aborting the import."""
         from pxr import Sdf, Usd, UsdPhysics
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -413,16 +413,65 @@ class TestSDFUSDParsing(unittest.TestCase):
             _add_rigid_body(stage, "/World/Body1")
             m1 = _add_collision_mesh(stage, "/World/Body1/CollisionMesh")
             p1 = m1.GetPrim()
-            # 63 is not divisible by 8 — ShapeConfig.validate would reject it,
-            # but the importer strips SDF fields before add_shape_mesh, so the
-            # validation must fire explicitly in the USD mesh path.
             p1.CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, custom=True).Set(63)
 
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with self.assertRaisesRegex(ValueError, "sdf_max_resolution must be divisible by 8"):
-                builder.add_usd(str(usd_path))
+            with self.assertWarnsRegex(UserWarning, "must be divisible by 8"):
+                result = builder.add_usd(str(usd_path))
+            s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
+            # Invalid resolution should be dropped — builder default (None) wins.
+            self.assertIsNone(builder.shape_sdf_max_resolution[s1])
+
+    def test_usd_mesh_invalid_sdf_texture_format_warns_and_clears(self):
+        """An unknown sdfTextureFormat must warn and fall back to default rather than aborting the import."""
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "test_mesh_invalid_sdf_tex.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+            _add_rigid_body(stage, "/World/Body1")
+            m1 = _add_collision_mesh(stage, "/World/Body1/CollisionMesh")
+            p1 = m1.GetPrim()
+            p1.CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, custom=True).Set(64)
+            p1.CreateAttribute("newton:sdfTextureFormat", Sdf.ValueTypeNames.Token, custom=True).Set("bogus")
+
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "newton:sdfTextureFormat.*invalid"):
+                result = builder.add_usd(str(usd_path))
+            s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
+            # Bad texture format dropped — builder default ("uint16") wins.
+            self.assertEqual(builder.shape_sdf_texture_format[s1], "uint16")
+
+    def test_usd_mesh_both_sdf_resolution_and_voxel_size_warns(self):
+        """Authoring both sdfMaxResolution and sdfTargetVoxelSize must warn; target voxel size takes precedence."""
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "test_mesh_both_sdf_knobs.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+
+            _add_rigid_body(stage, "/World/Body1")
+            m1 = _add_collision_mesh(stage, "/World/Body1/CollisionMesh")
+            p1 = m1.GetPrim()
+            p1.CreateAttribute("newton:sdfMaxResolution", Sdf.ValueTypeNames.Int, custom=True).Set(64)
+            p1.CreateAttribute("newton:sdfTargetVoxelSize", Sdf.ValueTypeNames.Float, custom=True).Set(0.01)
+
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "both.*sdfTargetVoxelSize.*sdfMaxResolution"):
+                result = builder.add_usd(str(usd_path))
+            s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
+            # Target voxel size wins; max_resolution is cleared.
+            self.assertIsNone(builder.shape_sdf_max_resolution[s1])
+            self.assertAlmostEqual(builder.shape_sdf_target_voxel_size[s1], 0.01, places=4)
 
     def test_deferred_sdf_distinguishes_shape_scales(self, device=None):
         """Two shapes sharing the same Mesh at different scales must produce distinct SDF entries."""
