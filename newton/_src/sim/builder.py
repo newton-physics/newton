@@ -303,18 +303,11 @@ class ModelBuilder:
             Users should choose kh to match their desired force-to-penetration ratio.
         """
         sdf_padding: float | None = None
-        """SDF AABB padding [m] for primitive shapes. When a texture SDF is
-        generated from a primitive (box, sphere, capsule, cylinder, cone, ellipsoid) during
-        :meth:`ModelBuilder.finalize`, this value extends the SDF's bounding box
-        beyond the mesh AABB. Distinct from :attr:`gap` (collision-pipeline
-        broad-phase inflation) and :attr:`margin` (contact-surface inflation),
-        but when left at the sentinel ``None`` value, ``finalize`` reuses
-        :attr:`gap` as the SDF padding for backward compatibility — a tight
-        ``gap`` therefore implies a tight SDF, which gives accurate near-surface
-        contact resolution. Set :attr:`sdf_padding` explicitly to decouple the
-        two values. Not accepted on mesh-backed shapes (``MESH``, ``CONVEX_MESH``)
-        — for user meshes, pass ``margin`` to :meth:`~newton.geometry.Mesh.build_sdf`
-        before calling :meth:`ModelBuilder.add_shape_mesh`."""
+        """SDF AABB padding [m] for primitive texture SDFs. Falls back to
+        :attr:`gap` when ``None``. Distinct from :attr:`gap` (broad-phase
+        inflation) and :attr:`margin` (contact-surface inflation). Rejected on
+        ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
+        :meth:`~newton.geometry.Mesh.build_sdf` instead."""
 
         def configure_sdf(
             self,
@@ -10379,11 +10372,7 @@ class ModelBuilder:
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
                 sdf_tex_fmt = self.shape_sdf_texture_format[i]
                 sdf_padding = self.shape_sdf_padding[i]
-                # SDF AABB padding: use the per-shape sdf_padding when the
-                # caller has set it explicitly; otherwise fall back to shape_gap
-                # so the SDF tracks the broad-phase tolerance. A tight gap then
-                # produces a tight SDF, which is what hydroelastic tests rely on
-                # for accurate near-surface penetration depths.
+                # Fall back to shape_gap when sdf_padding is unset (see ShapeConfig.sdf_padding).
                 sdf_gen_margin = sdf_padding if sdf_padding is not None else shape_gap
                 is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
@@ -10394,12 +10383,8 @@ class ModelBuilder:
 
                 if shape_type == GeoType.MESH and has_shape_collision and shape_src is not None:
                     mesh_sdf = getattr(shape_src, "sdf", None)
-                    # Deferred SDF building: if SDF params were stored but mesh.sdf
-                    # was not built yet (e.g. during USD import), build it now —
-                    # but on a Mesh clone, not on shape_src itself. Two shapes that
-                    # share a Mesh instance with different scale/margin/resolution
-                    # must end up with different SDFs; mutating shape_src.sdf
-                    # would let the first build silently leak into later shapes.
+                    # Build on a Mesh clone so shapes sharing one Mesh at different
+                    # scale/margin/resolution end up with distinct SDFs.
                     if mesh_sdf is None and (sdf_max_resolution is not None or sdf_target_voxel_size is not None):
                         sdf_kwargs = {"narrow_band_range": tuple(sdf_narrow_band_range)}
                         if sdf_max_resolution is not None:

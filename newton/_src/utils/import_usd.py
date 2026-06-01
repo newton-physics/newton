@@ -2798,10 +2798,6 @@ def parse_usd(
                     )
                     sdf_padding = None
 
-                # Hydroelastic is opt-in via newton:hydroelasticEnabled on the
-                # NewtonSDFCollisionAPI. newton:hydroelasticStiffness alone is
-                # a material parameter and does NOT flip the feature on —
-                # users must explicitly set the enable bool to true.
                 hydroelastic_enabled = R.get_value(
                     prim, prim_type=PrimType.SHAPE, key="hydroelastic_enabled", verbose=verbose
                 )
@@ -2820,10 +2816,7 @@ def parse_usd(
                 elif hydroelastic_enabled is False:
                     is_hydroelastic = False
                 elif has_sdf_api:
-                    # The API is applied but newton:hydroelasticEnabled is
-                    # unauthored: the schema default (False) is the canonical
-                    # signal — overriding it via builder.default_shape_cfg
-                    # would silently flip hydro on for every API-applied shape.
+                    # API applied but hydroelasticEnabled unauthored -> schema default False, not builder default.
                     is_hydroelastic = False
                 else:
                     is_hydroelastic = builder.default_shape_cfg.is_hydroelastic
@@ -2973,13 +2966,8 @@ def parse_usd(
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
-                    # add_shape_mesh() rejects SDF params in ShapeConfig for meshes,
-                    # so we strip SDF fields and pass a clean cfg. SDF building is
-                    # deferred to finalize() where instances can be deduplicated.
-                    # We write SDF params directly to the builder's per-shape lists
-                    # after the shape is added. SDF-field validity (divisibility,
-                    # texture format, both-set conflict) is already enforced inline
-                    # with warn-and-degrade above.
+                    # add_shape_mesh() rejects SDF cfg fields on meshes; strip them and
+                    # write the SDF intent to the builder lists, deferring the build to finalize().
                     mesh_shape_params = dict(shape_params)
                     mesh_shape_params["cfg"] = replace(
                         shape_params["cfg"],
@@ -2995,15 +2983,12 @@ def parse_usd(
                         mesh=mesh,
                         **mesh_shape_params,
                     )
-                    # Store SDF intent on the builder (deferred to finalize).
                     builder.shape_sdf_max_resolution[shape_id] = sdf_max_resolution
                     builder.shape_sdf_target_voxel_size[shape_id] = sdf_target_voxel_size
                     builder.shape_sdf_narrow_band_range[shape_id] = sdf_narrow_band_range
                     builder.shape_sdf_texture_format[shape_id] = sdf_texture_format
                     builder.shape_sdf_padding[shape_id] = sdf_padding
-                    # kh is a material parameter; persist it regardless of
-                    # hydroelastic state so overrides survive even when hydro
-                    # is disabled.
+                    # kh is a material param; persist regardless of hydro state.
                     builder.shape_material_kh[shape_id] = kh
                     if is_hydroelastic:
                         builder.shape_flags[shape_id] |= ShapeFlags.HYDROELASTIC
