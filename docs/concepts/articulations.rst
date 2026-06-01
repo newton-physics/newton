@@ -728,7 +728,7 @@ To proceed with orphan joints, skip this validation:
 
 Only maximal-coordinate solvers (:class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverSemiImplicit`) support orphan joints.
 Generalized-coordinate solvers (:class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverMuJoCo`) require every joint to belong to an articulation.
-
+(Loop-closing joints, whose bodies are both already in a tree, are a separate case — see :ref:`Loop closure`; :class:`~newton.solvers.SolverMuJoCo` supports these via equality constraints.)
 
 .. _Loop closure:
 
@@ -744,8 +744,10 @@ as a tree and adding a separate joint that re-couples the open end.
 To close a loop, create the loop-closing joint with
 :meth:`~newton.ModelBuilder.add_joint_*` but **omit it from the
 ``joint_list`` passed to** :meth:`~newton.ModelBuilder.add_articulation`,
-so the articulation graph remains a tree and the closing joint becomes an
-:ref:`orphan joint <Orphan joints>`:
+so the articulation graph remains a tree and the closing joint stays outside
+any articulation as a **loop-closing joint** (its two bodies are both
+already in the tree, which distinguishes it from an
+:ref:`orphan joint <Orphan joints>`, whose child has no articulated path):
 
 .. testcode::
 
@@ -798,10 +800,10 @@ a USD asset can author a four-bar linkage or other parallel mechanism.
 
 .. note::
 
-   Omitting a joint from :meth:`~newton.ModelBuilder.add_articulation` is
-   accepted by every Newton solver (after the default ``finalize()``
-   orphan-joint check is disabled with ``skip_validation_joints=True``), but
-   each solver handles the resulting orphan joint differently:
+   A loop-closing joint passes :meth:`~newton.ModelBuilder.finalize`
+   validation by default: unlike a true orphan joint, its child body is
+   already reachable through the tree, so ``skip_validation_joints=True`` is
+   not required. Each solver handles the loop-closing joint differently:
 
    - **Maximal-coordinate solvers** track state as per-body transforms
      (:attr:`~newton.State.body_q` / :attr:`~newton.State.body_qd`) and

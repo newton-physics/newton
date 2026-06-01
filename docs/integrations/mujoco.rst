@@ -273,9 +273,11 @@ the relative motion of the two bodies according to the joint type:
 
 Other joint types used as loop closures
 (:attr:`~newton.JointType.PRISMATIC`, :attr:`~newton.JointType.FREE`,
-:attr:`~newton.JointType.DISTANCE`, :attr:`~newton.JointType.D6`,
-:attr:`~newton.JointType.CABLE`) emit a warning and are silently skipped —
-the loop is *not* closed.
+:attr:`~newton.JointType.DISTANCE`, :attr:`~newton.JointType.CABLE`) emit a
+warning and are silently skipped — the loop is *not* closed. A
+:attr:`~newton.JointType.D6` is dispatched by its degrees of freedom: one
+angular axis behaves as a revolute closure and three as a ball closure;
+any other configuration is skipped.
 
 Only the kinematic coupling implied by the joint type is enforced. Any
 drive (``joint_target_pos`` / ``joint_target_vel``, PD gains,
