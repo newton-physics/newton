@@ -5250,70 +5250,9 @@ def Xform "Articulation" (
         np.testing.assert_allclose(np.array(blue_mesh.color), np.array([1.0, 1.0, 1.0]), atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_has_orphan_subset_primvars_detects_pattern(self):
-        from pxr import Sdf, Usd, UsdGeom
-
-        from newton._src.usd.utils import has_orphan_subset_primvars  # noqa: PLC0415
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-
-        def _make_mesh(path: str) -> UsdGeom.Mesh:
-            mesh = UsdGeom.Mesh.Define(stage, path)
-            mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0)])
-            mesh.CreateFaceVertexCountsAttr().Set([3])
-            mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2])
-            return mesh
-
-        single_st = _make_mesh("/SingleSt")
-        UsdGeom.PrimvarsAPI(single_st).CreatePrimvar(
-            "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
-        ).Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)])
-        self.assertFalse(has_orphan_subset_primvars(single_st.GetPrim()))
-
-        with_subset = _make_mesh("/WithSubset")
-        for name in ("st", "st_1"):
-            UsdGeom.PrimvarsAPI(with_subset).CreatePrimvar(
-                name, Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
-            ).Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)])
-        subset = UsdGeom.Subset.Define(stage, "/WithSubset/face0")
-        subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.face)
-        subset.CreateIndicesAttr().Set([0])
-        self.assertFalse(has_orphan_subset_primvars(with_subset.GetPrim()))
-
-        orphan = _make_mesh("/Orphan")
-        for name in ("st", "st_1", "st_2"):
-            UsdGeom.PrimvarsAPI(orphan).CreatePrimvar(
-                name, Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
-            ).Set([(0.0, 0.0)])
-        self.assertTrue(has_orphan_subset_primvars(orphan.GetPrim()))
-
-        # A non-face subset (e.g. point/edge) should not disqualify the orphan pattern, since
-        # only face subsets bind per-subset UV primvars.
-        with_point_subset = _make_mesh("/WithPointSubset")
-        for name in ("st", "st_1"):
-            UsdGeom.PrimvarsAPI(with_point_subset).CreatePrimvar(
-                name, Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
-            ).Set([(0.0, 0.0)])
-        point_subset = UsdGeom.Subset.Define(stage, "/WithPointSubset/points")
-        point_subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.point)
-        point_subset.CreateIndicesAttr().Set([0])
-        self.assertTrue(has_orphan_subset_primvars(with_point_subset.GetPrim()))
-
-        # Primvar names that merely start with "st" (e.g. "stiffness") must not be counted as
-        # UV subset primvars.
-        st_prefixed = _make_mesh("/StPrefixed")
-        UsdGeom.PrimvarsAPI(st_prefixed).CreatePrimvar(
-            "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
-        ).Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)])
-        UsdGeom.PrimvarsAPI(st_prefixed).CreatePrimvar(
-            "stiffness", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant
-        ).Set([1.0])
-        self.assertFalse(has_orphan_subset_primvars(st_prefixed.GetPrim()))
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_orphan_subset_primvars_demotes_uv_warnings(self):
-        """When a mesh has orphan `st_N` primvars without subsets, importer should not warn."""
+    def test_uv_length_mismatch_uses_info_logging(self):
+        """Dropped-UV/texture diagnostics are render-only and surface via `logger.info`, not `warnings.warn`."""
+        import logging as _logging  # noqa: PLC0415
         import warnings as _warnings  # noqa: PLC0415
 
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
@@ -5337,12 +5276,11 @@ def Xform "Articulation" (
         )
         mesh.CreateFaceVertexCountsAttr().Set([3, 3])
         mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
-        # Author multiple `st_N` primvars with the wrong length and no GeomSubsets to bind them.
-        # This mimics the malformed authoring pattern observed on Isaac Sim's Spot lower-leg meshes.
-        for name in ("st", "st_1", "st_2"):
-            UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
-                name, Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
-            ).Set([(0.0, 0.0)])
+        # Author a single face-varying `st` primvar whose length does not match the mesh's
+        # face-corner count, so the importer must drop UVs and (downstream) the bound texture.
+        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
+        ).Set([(0.0, 0.0)])
 
         material = UsdShade.Material.Define(stage, "/Materials/Tex")
         shader = UsdShade.Shader.Define(stage, "/Materials/Tex/PreviewSurface")
@@ -5356,13 +5294,17 @@ def Xform "Articulation" (
         UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
 
         builder = newton.ModelBuilder()
-        with _warnings.catch_warnings(record=True) as caught:
+        with _warnings.catch_warnings(record=True) as caught, self.assertLogs("newton", level=_logging.INFO) as log_ctx:
             _warnings.simplefilter("always")
             builder.add_usd(stage)
         uv_warnings = [
             w for w in caught if "UV primvar length" in str(w.message) or "has a texture but no UVs" in str(w.message)
         ]
         self.assertEqual(uv_warnings, [], f"unexpected UV warnings: {[str(w.message) for w in uv_warnings]}")
+
+        joined = "\n".join(log_ctx.output)
+        self.assertIn("UV primvar length", joined)
+        self.assertIn("dropping texture because UVs could not be recovered", joined)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_density_used_by_mass_properties(self):

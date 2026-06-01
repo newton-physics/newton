@@ -534,16 +534,10 @@ def parse_usd(
         if texture is not None:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
-            # See usd.utils.has_orphan_subset_primvars: when the asset was authored with per-subset
-            # UV primvars but had its GeomSubsets stripped, UVs are unrecoverable and the matching
-            # length-mismatch notice was already logged. Avoid emitting a second, redundant warning.
-            if usd.has_orphan_subset_primvars(prim):
-                logger.info("Mesh %s: dropping texture because UVs could not be recovered.", path_name)
-            else:
-                warnings.warn(
-                    f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
-                    stacklevel=2,
-                )
+            # A dropped texture is a render-only concern (it never affects simulation), so route the
+            # diagnostic through `logger.info` instead of `warnings.warn`. See the matching length-mismatch
+            # site in `newton._src.usd.utils.get_mesh` for the reasoning.
+            logger.info("Mesh %s: dropping texture because UVs could not be recovered.", path_name)
             mesh.texture = None
         if material_props.get("color") is not None and mesh.texture is None:
             mesh.color = material_props["color"]

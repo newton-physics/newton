@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import warnings
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, overload
@@ -148,41 +147,6 @@ def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
         True if the schema is applied to the prim, False otherwise.
     """
     return prim.HasAPI(schema_name) or schema_name in _get_raw_api_schemas(prim)
-
-
-_ST_SUBSET_PRIMVAR_RE = re.compile(r"^st(?:_\d+)?$")
-
-
-def has_orphan_subset_primvars(prim: Usd.Prim) -> bool:
-    """Detect the malformed "GeomSubsets stripped but per-subset primvars retained" pattern.
-
-    Some USD assets (e.g. Isaac Sim's Boston Dynamics Spot lower-leg meshes) carry sibling
-    ``st_N`` primvars (``st``, ``st_1``, ``st_2``, ...) that were originally each bound to a
-    separate face-based ``UsdGeom.Subset``, but the subsets were later removed in authoring while
-    the primvars were left in place. Without subsets there is no way to map the primvars back to
-    faces, so the importer cannot recover UVs even though the data is present.
-
-    Args:
-        prim: The USD prim to inspect for the orphan-primvar pattern.
-
-    Returns:
-        True when the prim has no face-based ``UsdGeom.Subset`` children but does carry more
-        than one UV-shaped primvar (``st`` plus at least one ``st_N`` sibling).
-    """
-    if not prim or not prim.IsValid():
-        return False
-    for child in prim.GetChildren():
-        try:
-            if not child.IsA(UsdGeom.Subset):
-                continue
-            element_type = UsdGeom.Subset(child).GetElementTypeAttr().Get()
-        except Exception:
-            continue
-        if element_type == UsdGeom.Tokens.face:
-            return False
-    primvars_api = UsdGeom.PrimvarsAPI(prim)
-    st_count = sum(1 for pv in primvars_api.GetPrimvars() if _ST_SUBSET_PRIMVAR_RE.match(pv.GetPrimvarName()))
-    return st_count > 1
 
 
 @overload
@@ -1186,24 +1150,15 @@ def get_mesh(
         # were converted to per-vertex. Avoid a second split here.
         if uvs_interpolation == UsdGeom.Tokens.faceVarying and not did_split_vertices:
             if len(uvs) != len(indices):
-                # Some USD assets carry per-GeomSubset UV primvars (`st`, `st_1`, ...) but no GeomSubsets to
-                # bind them to faces (likely an authoring tool removed subsets but left the primvars). Without
-                # subset bindings the primvar-to-face mapping is unrecoverable; demote to info-level since
-                # there is nothing the caller can do about it and the noisier warning misleads users.
-                if has_orphan_subset_primvars(prim):
-                    logger.info(
-                        "Mesh %s: UV primvar 'st' length %d does not match indices length %d and no "
-                        "GeomSubsets are authored to bind the sibling `st_N` primvars; dropping UVs.",
-                        prim.GetPath(),
-                        len(uvs),
-                        len(indices),
-                    )
-                else:
-                    warnings.warn(
-                        f"UV primvar length ({len(uvs)}) does not match indices length ({len(indices)}) for mesh {prim.GetPath()}; "
-                        "dropping UVs.",
-                        stacklevel=2,
-                    )
+                # A dropped UV is a render-only concern (it never affects simulation), so route the
+                # diagnostic through `logger.info` instead of `warnings.warn`. Consumers can raise the
+                # `newton` logger to INFO to surface these notices when investigating an asset.
+                logger.info(
+                    "Mesh %s: UV primvar length (%d) does not match indices length (%d); dropping UVs.",
+                    prim.GetPath(),
+                    len(uvs),
+                    len(indices),
+                )
                 uvs = None
             else:
                 corner_flat = _triangulate_face_varying_indices(counts, flip_winding)
