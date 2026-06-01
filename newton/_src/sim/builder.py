@@ -1245,11 +1245,6 @@ class ModelBuilder:
         """Return the per-equality-constraint :class:`CustomAttribute` for the bare ``name`` (no ``mujoco:`` prefix)."""
         return self.custom_attributes[f"mujoco:{name}"]
 
-    @property
-    def _equality_constraint_count(self) -> int:
-        """Number of equality constraints added to this builder (from the ``mujoco:equality_constraint`` counter)."""
-        return self._custom_frequency_counts.get("mujoco:equality_constraint", 0)
-
     def _eq_list(self, name: str) -> list[Any]:
         """Dense list of equality-constraint ``name`` values, default-filled to match :meth:`finalize`."""
         attr = self._eq_attr(name)
@@ -1283,6 +1278,11 @@ class ModelBuilder:
             DeprecationWarning,
             stacklevel=3,
         )
+
+    @property
+    def _equality_constraint_count(self) -> int:
+        """Number of equality constraints added to this builder (from the ``mujoco:equality_constraint`` counter)."""
+        return self._custom_frequency_counts.get("mujoco:equality_constraint", 0)
 
     @property
     def equality_constraint_type(self) -> list[int]:
