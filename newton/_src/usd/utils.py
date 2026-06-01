@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import warnings
 from collections.abc import Iterable, Sequence
@@ -14,6 +15,8 @@ import warp as wp
 from ..core.types import Axis, AxisType
 from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
+
+logger = logging.getLogger("newton")
 
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
@@ -1098,10 +1101,11 @@ def get_mesh(
         # were converted to per-vertex. Avoid a second split here.
         if uvs_interpolation == UsdGeom.Tokens.faceVarying and not did_split_vertices:
             if len(uvs) != len(indices):
-                warnings.warn(
-                    f"UV primvar length ({len(uvs)}) does not match indices length ({len(indices)}) for mesh {prim.GetPath()}; "
-                    "dropping UVs.",
-                    stacklevel=2,
+                logger.info(
+                    "Mesh %s: UV primvar length (%d) does not match indices length (%d); dropping UVs.",
+                    prim.GetPath(),
+                    len(uvs),
+                    len(indices),
                 )
                 uvs = None
             else:

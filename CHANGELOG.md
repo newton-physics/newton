@@ -9,6 +9,8 @@
 ### Fixed
 
 - Fix mesh-convex and heightfield-convex contacts missing when shapes are separated by margin but still within the contact envelope.
+- Fix `ArticulationView` link selections for closed-loop joints so BODY-frequency accessors expose each physical body once.
+- Fix USD visual mesh imports to preserve face-material `UsdGeom.Subset` colors and textures by splitting material subsets into separate render meshes; collision/physics import behavior is unchanged
 
 ## [1.2.0] - 2026-05-12
 
