@@ -8,6 +8,8 @@ import copy
 import datetime
 import inspect
 import itertools
+import logging
+import math
 import os
 import posixpath
 import re
@@ -32,12 +34,19 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
-from ..sim.enums import JointTargetMode
+from ..sim.enums import EqType, JointTargetMode
 from ..sim.model import Model
+from ..solvers.mujoco.utils import (
+    mjc_add_equality_loop_joint,
+    mjc_add_equality_mimic,
+    mjc_polycoef_has_higher_order,
+)
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
 from .import_utils import should_show_collider
+
+logger = logging.getLogger("newton")
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -88,6 +97,7 @@ def parse_usd(
     mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
     force_position_velocity_actuation: bool = False,
+    convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
@@ -196,6 +206,9 @@ def parse_usd(
             ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
             colliders on bodies with visual-only geometry. Default is False.
         parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+        convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
+            joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
+            equality constraints are stored in the legacy equality constraint arrays.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
         schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -521,10 +534,7 @@ def parse_usd(
         if texture is not None:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
-            warnings.warn(
-                f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
-                stacklevel=2,
-            )
+            logger.info("Mesh %s: dropping texture because UVs could not be recovered.", path_name)
             mesh.texture = None
         if material_props.get("color") is not None and mesh.texture is None:
             mesh.color = material_props["color"]
@@ -533,6 +543,186 @@ def parse_usd(
         if material_props.get("metallic") is not None:
             mesh.metallic = material_props["metallic"]
         return mesh
+
+    def _get_face_material_subsets(prim: Usd.Prim) -> list[Usd.Prim]:
+        """Return face-based material subsets authored directly under a mesh prim."""
+        subsets = []
+        for child in prim.GetChildren():
+            try:
+                is_subset = child.IsA(UsdGeom.Subset)
+            except Exception:
+                is_subset = False
+            if not is_subset:
+                continue
+
+            subset = UsdGeom.Subset(child)
+            element_type = subset.GetElementTypeAttr().Get()
+            if element_type != UsdGeom.Tokens.face:
+                continue
+            family_name = subset.GetFamilyNameAttr().Get()
+            if family_name and family_name != "materialBind":
+                continue
+            indices = subset.GetIndicesAttr().Get()
+            if not indices:
+                continue
+            subsets.append(child)
+        return subsets
+
+    def _get_subset_uvs(prim: Usd.Prim, used_vertices: np.ndarray, expected_count: int) -> np.ndarray | None:
+        """Return UVs for a material subset when a matching primvar is authored."""
+        max_used_vertex = int(np.max(used_vertices, initial=-1))
+        full_mesh_uvs = None
+        for primvar in UsdGeom.PrimvarsAPI(prim).GetPrimvars():
+            name = primvar.GetBaseName()
+            if not name.startswith("st"):
+                continue
+            values = primvar.Get()
+            if values is None:
+                continue
+            uvs = np.asarray(values, dtype=np.float32)
+            if primvar.IsIndexed():
+                indices = primvar.GetIndices()
+                if indices is None:
+                    continue
+                indices = np.asarray(indices, dtype=np.int32)
+                if len(indices) == expected_count:
+                    uvs = uvs[indices]
+                    if len(uvs) == expected_count:
+                        return uvs
+                    continue
+                if len(indices) > max_used_vertex:
+                    uvs = uvs[indices]
+                else:
+                    continue
+            if len(uvs) == expected_count:
+                return uvs
+            if full_mesh_uvs is None and len(uvs) > max_used_vertex:
+                full_mesh_uvs = uvs[used_vertices]
+        return full_mesh_uvs
+
+    def _make_visual_submesh(
+        mesh: Mesh,
+        triangle_indices: np.ndarray,
+        material_props: dict[str, Any],
+        *,
+        prim: Usd.Prim,
+        path_name: str,
+    ) -> Mesh | None:
+        """Create a render-only mesh slice for the selected triangle rows."""
+        if len(triangle_indices) == 0:
+            return None
+
+        triangles = mesh.indices.reshape(-1, 3)[triangle_indices]
+        used_vertices = np.unique(triangles)
+        vertex_remap = np.full(len(mesh.vertices), -1, dtype=np.int32)
+        vertex_remap[used_vertices] = np.arange(len(used_vertices), dtype=np.int32)
+
+        normals = None
+        if mesh.normals is not None and len(mesh.normals) == len(mesh.vertices):
+            normals = mesh.normals[used_vertices]
+
+        uvs = None
+        if mesh.uvs is not None and len(mesh.uvs) == len(mesh.vertices):
+            uvs = mesh.uvs[used_vertices]
+        elif material_props.get("texture") is not None:
+            uvs = _get_subset_uvs(prim, used_vertices, len(used_vertices))
+
+        submesh = Mesh(
+            mesh.vertices[used_vertices],
+            vertex_remap[triangles].reshape(-1),
+            normals=normals,
+            uvs=uvs,
+            compute_inertia=False,
+            is_solid=mesh.is_solid,
+            maxhullvert=mesh.maxhullvert,
+        )
+
+        texture = material_props.get("texture")
+        if texture:
+            submesh.texture = texture
+        if submesh.texture is not None and submesh.uvs is None:
+            logger.info("Mesh material subset %s: dropping texture because UVs could not be recovered.", path_name)
+            submesh.texture = None
+
+        color = material_props.get("color")
+        if color is not None:
+            submesh.color = color
+        elif submesh.texture is not None:
+            submesh.color = (1.0, 1.0, 1.0)
+        if material_props.get("roughness") is not None:
+            submesh.roughness = material_props["roughness"]
+        if material_props.get("metallic") is not None:
+            submesh.metallic = material_props["metallic"]
+        return submesh
+
+    def _get_visual_material_subset_meshes(prim: Usd.Prim) -> list[tuple[str, Mesh]]:
+        """Load one render mesh per USD material subset when subsets are authored."""
+        subsets = _get_face_material_subsets(prim)
+        if not subsets:
+            return []
+
+        mesh_schema = UsdGeom.Mesh(prim)
+        face_counts = mesh_schema.GetFaceVertexCountsAttr().Get()
+        if face_counts is None:
+            return []
+        face_counts = np.asarray(face_counts, dtype=np.int32)
+        if len(face_counts) == 0 or np.any(face_counts < 3):
+            return []
+
+        subset_props = [(str(subset.GetPath()), usd.resolve_material_properties_for_prim(subset)) for subset in subsets]
+        mesh = _get_mesh_cached(prim)
+        triangle_face_indices = np.repeat(np.arange(len(face_counts), dtype=np.int32), face_counts - 2)
+        covered_faces = np.zeros(len(face_counts), dtype=bool)
+
+        submeshes = []
+        for subset_path, material_props in subset_props:
+            # `resolve_material_properties_for_prim` does not fall back from a subset to its parent mesh
+            # (see `newton/_src/usd/utils.py` resolve_material_properties_for_prim). If a subset binds no
+            # visible material, let the uncovered-faces fallback below apply the parent mesh material
+            # instead of producing a materialless submesh and hiding the parent material on those faces.
+            if not any(value is not None for value in material_props.values()):
+                continue
+            subset = UsdGeom.Subset(stage.GetPrimAtPath(subset_path))
+            subset_indices = np.asarray(subset.GetIndicesAttr().Get(), dtype=np.int32)
+            valid = (subset_indices >= 0) & (subset_indices < len(face_counts))
+            if not np.all(valid):
+                logger.info(
+                    "Mesh material subset %s: face indices outside the mesh face range; "
+                    "out-of-range indices will be ignored.",
+                    subset_path,
+                )
+                subset_indices = subset_indices[valid]
+            if len(subset_indices) == 0:
+                continue
+
+            face_mask = np.zeros(len(face_counts), dtype=bool)
+            face_mask[subset_indices] = True
+            triangle_indices = np.nonzero(face_mask[triangle_face_indices])[0]
+            submesh = _make_visual_submesh(mesh, triangle_indices, material_props, prim=prim, path_name=subset_path)
+            if submesh is None:
+                continue
+            covered_faces[subset_indices] = True
+            submeshes.append((subset_path, submesh))
+
+        if not submeshes:
+            return []
+
+        uncovered_faces = np.nonzero(~covered_faces)[0]
+        if len(uncovered_faces) > 0:
+            face_mask = np.zeros(len(face_counts), dtype=bool)
+            face_mask[uncovered_faces] = True
+            triangle_indices = np.nonzero(face_mask[triangle_face_indices])[0]
+            fallback_mesh = _make_visual_submesh(
+                mesh,
+                triangle_indices,
+                _get_material_props_cached(prim),
+                prim=prim,
+                path_name=str(prim.GetPath()),
+            )
+            if fallback_mesh is not None:
+                submeshes.insert(0, (str(prim.GetPath()), fallback_mesh))
+
+        return submeshes
 
     def _get_tetmesh_cached(prim: Usd.Prim) -> TetMesh:
         """Load and cache TetMesh data to avoid repeated USD extraction."""
@@ -736,16 +926,38 @@ def parse_usd(
                     label=path_name,
                 )
             elif type_name == "mesh":
-                mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
-                shape_id = builder.add_shape_mesh(
-                    parent_body_id,
-                    xform,
-                    scale=scale,
-                    mesh=mesh,
-                    cfg=visual_shape_cfg_for_prim,
-                    color=shape_color,
-                    label=path_name,
-                )
+                subset_meshes = _get_visual_material_subset_meshes(prim)
+                if subset_meshes:
+                    for subset_path, subset_mesh in subset_meshes:
+                        subset_shape_id = builder.add_shape_mesh(
+                            parent_body_id,
+                            xform,
+                            scale=scale,
+                            mesh=subset_mesh,
+                            cfg=visual_shape_cfg_for_prim,
+                            color=None,
+                            label=subset_path,
+                        )
+                        path_shape_map[subset_path] = subset_shape_id
+                        path_shape_scale[subset_path] = scale
+                        if shape_id < 0:
+                            shape_id = subset_shape_id
+                        if verbose:
+                            print(
+                                f"Added visual shape {subset_path} ({type_name} material subset) "
+                                f"with id {subset_shape_id}."
+                            )
+                else:
+                    mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
+                    shape_id = builder.add_shape_mesh(
+                        parent_body_id,
+                        xform,
+                        scale=scale,
+                        mesh=mesh,
+                        cfg=visual_shape_cfg_for_prim,
+                        color=shape_color,
+                        label=path_name,
+                    )
             elif type_name == "particlefield3dgaussiansplat":
                 gaussian = usd.get_gaussian(prim)
                 shape_id = builder.add_shape_gaussian(
@@ -757,7 +969,11 @@ def parse_usd(
                     color=shape_color,
                     label=path_name,
                 )
-            elif len(type_name) > 0 and type_name not in {"xform", "tetmesh"} and verbose:
+            elif (
+                len(type_name) > 0
+                and type_name not in {"geomsubset", "material", "scope", "shader", "xform", "tetmesh"}
+                and verbose
+            ):
                 print(f"Warning: Unsupported geometry type {type_name} at {path_name} while loading visual shapes.")
 
             if shape_id >= 0:
@@ -2357,7 +2573,32 @@ def parse_usd(
         if is_body_to_world and free_joints_auto_inserted and not is_fixed_joint:
             continue
         try:
-            joint_index = parse_joint(joint_desc, incoming_xform=incoming_world_xform)
+            # Body-to-world joints (the world side may be body0 or body1) have no
+            # world-side prim to inherit a frame from, and authoring tools often
+            # write the world-side localPose relative to a USD ancestor Xform
+            # instead of in world coords. Recover the missing world-side frame from
+            # the child body's world pose and the joint local poses so the joint
+            # chain FK reproduces the imported child world pose:
+            #   world_body = child_world * child_tf * inv(parent_tf)
+            # The world-side localPose cancels, so the joint anchors at the
+            # USD-authored child body pose however that pose was authored.
+            orphan_incoming_xform = incoming_world_xform
+            if is_body_to_world:
+                _, _, parent_tf_o, child_tf_o = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
+                    joint_desc, path_body_map, get_transforms=True
+                )
+                child_path_o = body1_path if body0_path in ("", "/") else body0_path
+                child_prim_o = stage.GetPrimAtPath(child_path_o) if child_path_o else None
+                if (
+                    parent_tf_o is not None
+                    and child_tf_o is not None
+                    and child_prim_o is not None
+                    and child_prim_o.IsValid()
+                ):
+                    child_world_xform_o = usd.get_transform(child_prim_o, local=False, xform_cache=xform_cache)
+                    world_body_xform_o = child_world_xform_o * child_tf_o * wp.transform_inverse(parent_tf_o)
+                    orphan_incoming_xform = incoming_world_xform * world_body_xform_o
+            joint_index = parse_joint(joint_desc, incoming_xform=orphan_incoming_xform)
             # Handle body-to-world FIXED joints separately to ensure proper welding.
             # Creates an articulation for the body-to-world FIXED joint (consistent with MuJoCo approach)
             if joint_index is not None and is_body_to_world and is_fixed_joint:
@@ -2500,6 +2741,8 @@ def parse_usd(
         shape_scale: wp.vec3,
         shape_src: Mesh | None,
         shape_axis=None,
+        is_solid: bool = True,
+        thickness: float = 0.0,
     ):
         """Build unit-density collider mass information from geometric shape parameters.
 
@@ -2508,7 +2751,7 @@ def parse_usd(
         properties are not available.
         """
         shape_mass, shape_com, shape_inertia = compute_inertia_shape(
-            shape_geo_type, shape_scale, shape_src, density=1.0
+            shape_geo_type, shape_scale, shape_src, density=1.0, is_solid=is_solid, thickness=thickness
         )
         if shape_mass <= 0.0:
             warnings.warn(
@@ -2651,6 +2894,25 @@ def parse_usd(
                     shape_kd = builder.default_shape_cfg.kd
 
                 shape_color = material_props.get("color")
+
+                # Mass model and shell thickness (resolved across Newton / MuJoCo schemas)
+                mass_model = R.get_value(prim, PrimType.SHAPE, "mass_model", default="solid")
+                shape_is_solid = mass_model != "shell"
+                shell_thickness_val = R.get_value(prim, PrimType.SHAPE, "shell_thickness")
+                # When shell thickness is authored, pass it as margin so compute_inertia_shape
+                # uses the correct thickness. The real collision margin is restored after add_shape.
+                if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)):
+                    if float(shell_thickness_val) >= 0.0:
+                        inertia_margin = float(shell_thickness_val)
+                    else:
+                        warnings.warn(
+                            f"Shape {path}: negative shell thickness {shell_thickness_val}; falling back to margin.",
+                            stacklevel=2,
+                        )
+                        inertia_margin = margin_val
+                else:
+                    inertia_margin = margin_val
+
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
@@ -2663,7 +2925,7 @@ def parse_usd(
                         ka=usd.get_float_with_fallback(
                             prim_and_scene, "newton:contact_ka", builder.default_shape_cfg.ka
                         ),
-                        margin=margin_val,
+                        margin=inertia_margin,
                         gap=gap_val,
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
@@ -2672,6 +2934,7 @@ def parse_usd(
                         density=shape_density,
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
+                        is_solid=shape_is_solid,
                     ),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,
@@ -2784,6 +3047,12 @@ def parse_usd(
                 path_shape_map[path] = shape_id
                 path_shape_scale[path] = scale
 
+                # Restore the real collision margin when shell thickness was substituted.
+                # TODO: Consider adding a dedicated shell_thickness field to ShapeConfig
+                # so inertia thickness and collision margin don't share the same slot.
+                if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)) and shape_id >= 0:
+                    builder.shape_margin[shape_id] = margin_val
+
                 if body_path in bodies_requiring_mass_properties_fallback:
                     # Prepare collider mass information for ComputeMassProperties fallback path.
                     # Prefer authored collider MassAPI mass+diagonalInertia; otherwise derive
@@ -2832,6 +3101,8 @@ def parse_usd(
                                 shape_scale,
                                 shape_src,
                                 shape_axis,
+                                is_solid=shape_is_solid,
+                                thickness=inertia_margin,
                             )
                         if mass_info is not None:
                             rigid_body_mass_info_map[path] = mass_info
@@ -3007,6 +3278,43 @@ def parse_usd(
             has_authored_inertia = mass_api.GetDiagonalInertiaAttr().HasAuthoredValue()
             has_authored_com = mass_api.GetCenterOfMassAttr().HasAuthoredValue()
 
+            # newton:inertia (compact 6-element tensor) overrides physics:diagonalInertia + physics:principalAxes.
+            inertia_tensor_val = (
+                usd.get_attribute(prim, "newton:inertia") if usd.has_applied_api_schema(prim, "NewtonMassAPI") else None
+            )
+            has_inertia_tensor = inertia_tensor_val is not None
+            if has_inertia_tensor:
+                if len(inertia_tensor_val) != 6:
+                    warnings.warn(
+                        f"Body {body_path}: newton:inertia has {len(inertia_tensor_val)} elements, expected 6. Ignoring.",
+                        stacklevel=2,
+                    )
+                    has_inertia_tensor = False
+                elif not all(math.isfinite(v) for v in inertia_tensor_val):
+                    warnings.warn(
+                        f"Body {body_path}: newton:inertia contains non-finite values. Ignoring.",
+                        stacklevel=2,
+                    )
+                    has_inertia_tensor = False
+                elif any(v < 0.0 for v in inertia_tensor_val[:3]):
+                    warnings.warn(
+                        f"Body {body_path}: newton:inertia has negative diagonal elements. Ignoring.",
+                        stacklevel=2,
+                    )
+                    has_inertia_tensor = False
+                else:
+                    ixx, iyy, izz, ixy, ixz, iyz = inertia_tensor_val
+                    inertia_np = np.array([[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]], dtype=np.float64)
+                    if np.any(np.linalg.eigvalsh(inertia_np) < 0.0):
+                        warnings.warn(
+                            f"Body {body_path}: newton:inertia is not positive semidefinite. Ignoring.",
+                            stacklevel=2,
+                        )
+                        has_inertia_tensor = False
+                    else:
+                        has_authored_inertia = True
+                        inertia_tensor = wp.mat33(ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz)
+
             # Compute baseline mass properties via mass computer when at least one property needs resolving.
             if not (has_authored_mass and has_authored_inertia and has_authored_com):
                 rigid_body_api = UsdPhysics.RigidBodyAPI(prim)
@@ -3036,11 +3344,13 @@ def parse_usd(
                     cmp_i_diag = Gf.Vec3f(0.0, 0.0, 0.0)
                     cmp_principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
 
-            # Inertia: authored diagonal + principal axes take precedence over mass computer.
+            # Inertia: newton:inertia > physics:diagonalInertia + physics:principalAxes > mass computer.
             # When mass is authored but inertia is not, keep accumulated inertia
             # (scaled to match authored mass below) instead of using mass computer
             # inertia, which may already reflect the authored mass.
-            if has_authored_inertia:
+            if has_inertia_tensor:
+                i_diag_np = None  # skip diagonal path; full matrix set below
+            elif has_authored_inertia:
                 i_diag_np = np.array(mass_api.GetDiagonalInertiaAttr().Get(), dtype=np.float32)
                 if np.any(i_diag_np < 0.0):
                     warnings.warn(
@@ -3062,7 +3372,14 @@ def parse_usd(
                 # Mass authored, inertia not: keep accumulated inertia and scale
                 # to match authored mass in the mass block below.
                 i_diag_np = None
-            if i_diag_np is not None and np.linalg.norm(i_diag_np) > 0.0:
+            if has_inertia_tensor:
+                builder.body_inertia[body_id] = inertia_tensor
+                det = np.linalg.det(np.array(inertia_tensor).reshape(3, 3))
+                if det > 0.0:
+                    builder.body_inv_inertia[body_id] = wp.inverse(inertia_tensor)
+                else:
+                    builder.body_inv_inertia[body_id] = wp.mat33(0.0)
+            elif i_diag_np is not None and np.linalg.norm(i_diag_np) > 0.0:
                 i_rot = usd.value_to_warp(principal_axes)
                 rot = np.array(wp.quat_to_matrix(i_rot), dtype=np.float32).reshape(3, 3)
                 inertia = rot @ np.diag(i_diag_np) @ rot.T
@@ -3167,6 +3484,51 @@ def parse_usd(
     # builder's collapse logic can remap body/joint indices and adjust anchors/relposes
     # for any bodies that get merged.
     def _parse_mjc_equality_constraints():
+        local_builder_custom_attr_eq = builder_custom_attr_eq
+        if (
+            convert_mjc_equality_constraints
+            and "mujoco:equality_constraint_target_kind" not in builder.custom_attributes
+        ):
+            from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
+
+            SolverMuJoCo.register_custom_attributes(builder)
+            local_builder_custom_attr_eq = builder.get_custom_attributes_by_frequency(
+                [AttributeFrequency.EQUALITY_CONSTRAINT]
+            )
+
+        def add_converted_loop_joint(
+            eq_type: EqType,
+            body1: int,
+            body2: int,
+            anchor: wp.vec3,
+            relpose: wp.transform | None,
+            torquescale: float,
+            joint_path: str,
+            enabled: bool,
+            custom_attrs: dict[str, Any],
+        ) -> None:
+            try:
+                _, joint_idx = mjc_add_equality_loop_joint(
+                    builder,
+                    eq_type,
+                    body1,
+                    body2,
+                    anchor,
+                    relpose,
+                    torquescale,
+                    joint_path,
+                    enabled,
+                    custom_attrs,
+                )
+            except ValueError:
+                warnings.warn(
+                    f"MuJoCo equality '{joint_path}' has no valid body reference; skipping.",
+                    stacklevel=2,
+                )
+                return
+
+            path_joint_map[joint_path] = joint_idx
+
         for joint_path, joint_desc in joint_descriptions.items():
             joint_prim = stage.GetPrimAtPath(joint_path)
             if not joint_prim or not joint_prim.IsValid():
@@ -3187,7 +3549,7 @@ def parse_usd(
                 R.collect_prim_attrs(joint_prim)
 
             eq_custom_attrs = usd.get_custom_attribute_values(
-                joint_prim, builder_custom_attr_eq, context={"builder": builder}
+                joint_prim, local_builder_custom_attr_eq, context={"builder": builder}
             )
             enabled = bool(joint_desc.jointEnabled)
 
@@ -3211,14 +3573,27 @@ def parse_usd(
                         if (target0 in ("", "/") or target0 in path_body_map)
                         else site0_local_pos
                     )
-                    builder.add_equality_constraint_connect(
-                        body1=body0_idx,
-                        body2=body1_idx,
-                        anchor=anchor,
-                        label=joint_path,
-                        enabled=enabled,
-                        custom_attributes=eq_custom_attrs,
-                    )
+                    if convert_mjc_equality_constraints:
+                        add_converted_loop_joint(
+                            EqType.CONNECT,
+                            body0_idx,
+                            body1_idx,
+                            anchor,
+                            None,
+                            0.0,
+                            joint_path,
+                            enabled,
+                            eq_custom_attrs,
+                        )
+                    else:
+                        builder.add_equality_constraint_connect(
+                            body1=body0_idx,
+                            body2=body1_idx,
+                            anchor=anchor,
+                            label=joint_path,
+                            enabled=enabled,
+                            custom_attributes=eq_custom_attrs,
+                        )
                 else:
                     local_rot0 = usd.value_to_warp(joint_desc.localPose0Orientation)
                     local_rot1 = usd.value_to_warp(joint_desc.localPose1Orientation)
@@ -3237,16 +3612,30 @@ def parse_usd(
                     torquescale = (
                         float(torquescale_attr.Get()) if torquescale_attr and torquescale_attr.HasValue() else 1.0
                     )
-                    builder.add_equality_constraint_weld(
-                        body1=body0_idx,
-                        body2=body1_idx,
-                        anchor=anchor,
-                        relpose=wp.transform(relpose_pos, relpose_rot),
-                        torquescale=torquescale,
-                        label=joint_path,
-                        enabled=enabled,
-                        custom_attributes=eq_custom_attrs,
-                    )
+                    relpose = wp.transform(relpose_pos, relpose_rot)
+                    if convert_mjc_equality_constraints:
+                        add_converted_loop_joint(
+                            EqType.WELD,
+                            body0_idx,
+                            body1_idx,
+                            anchor,
+                            relpose,
+                            torquescale,
+                            joint_path,
+                            enabled,
+                            eq_custom_attrs,
+                        )
+                    else:
+                        builder.add_equality_constraint_weld(
+                            body1=body0_idx,
+                            body2=body1_idx,
+                            anchor=anchor,
+                            relpose=relpose,
+                            torquescale=torquescale,
+                            label=joint_path,
+                            enabled=enabled,
+                            custom_attributes=eq_custom_attrs,
+                        )
                 continue
 
             if is_eq_joint:
@@ -3287,14 +3676,32 @@ def parse_usd(
                     attr = joint_prim.GetAttribute(attr_name)
                     polycoef.append(float(attr.Get()) if attr and attr.HasValue() else default)
 
-                builder.add_equality_constraint_joint(
-                    joint1=joint1_idx,
-                    joint2=joint2_idx,
-                    polycoef=polycoef,
-                    label=joint_path,
-                    enabled=enabled,
-                    custom_attributes=eq_custom_attrs,
-                )
+                if convert_mjc_equality_constraints:
+                    if mjc_polycoef_has_higher_order(polycoef):
+                        warnings.warn(
+                            f"Warning: Joint equality '{joint_path}' uses higher-order polycoef terms. "
+                            "They are preserved for SolverMuJoCo, but generic Newton mimic constraints use "
+                            "only coef0/coef1.",
+                            stacklevel=2,
+                        )
+                    mjc_add_equality_mimic(
+                        builder,
+                        joint1_idx,
+                        joint2_idx,
+                        polycoef,
+                        joint_path,
+                        enabled,
+                        eq_custom_attrs,
+                    )
+                else:
+                    builder.add_equality_constraint_joint(
+                        joint1=joint1_idx,
+                        joint2=joint2_idx,
+                        polycoef=polycoef,
+                        label=joint_path,
+                        enabled=enabled,
+                        custom_attributes=eq_custom_attrs,
+                    )
 
     _parse_mjc_equality_constraints()
 
