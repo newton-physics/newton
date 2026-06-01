@@ -47,3 +47,12 @@ h2, h3, h4, h5, h6 {
 dl.py.attribute {
     margin-bottom: 0.3em !important;
 }
+
+/* Standard marker for APIs and behavior that may change without prior notice. */
+.admonition.experimental {
+    border-left-color: var(--pst-color-warning);
+}
+
+.admonition.experimental > .admonition-title {
+    background-color: var(--pst-color-warning-bg);
+}

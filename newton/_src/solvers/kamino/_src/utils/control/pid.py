@@ -15,7 +15,7 @@ from ...core.joints import JointActuationType
 from ...core.model import ModelKamino
 from ...core.state import StateKamino
 from ...core.time import TimeData
-from ...core.types import FloatArrayLike, IntArrayLike, float32, int32
+from ...core.types import FloatArrayLike, IntArrayLike, float32, int32, to_warp_int32_array
 
 ###
 # Module interface
@@ -438,7 +438,7 @@ class JointSpacePIDController:
                 K_i=wp.array(K_i if K_i is not None else np.zeros(num_actuated_dofs), dtype=float32),
                 K_d=wp.array(K_d if K_d is not None else np.zeros(num_actuated_dofs), dtype=float32),
                 integrator=wp.zeros(num_actuated_dofs, dtype=float32),
-                decimation=wp.array(decimation, dtype=int32),
+                decimation=to_warp_int32_array(decimation),
             )
 
     def reset(self, model: ModelKamino, state: StateKamino) -> None:

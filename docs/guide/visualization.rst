@@ -60,13 +60,6 @@ OpenGL Viewer
 Newton provides :class:`~newton.viewer.ViewerGL`, a simple OpenGL viewer for interactive real-time visualization of simulations.
 The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed.
 
-Constructor parameters:
-
-- ``width``: Window width in pixels (default: ``1920``)
-- ``height``: Window height in pixels (default: ``1080``)
-- ``vsync``: Enable vertical sync (default: ``False``)
-- ``headless``: Run without a visible window, useful for off-screen rendering (default: ``False``)
-
 .. code-block:: python
 
     viewer = newton.viewer.ViewerGL()
@@ -184,6 +177,35 @@ Set the PyOpenGL platform before running:
 
 This is a known issue when running OpenGL applications on Wayland display servers.
 
+RTX Viewer
+~~~~~~~~~~
+
+:class:`~newton.viewer.ViewerRTX` provides real-time path-traced rendering using the NVIDIA OVRTX renderer.
+It builds a USD scene on the first frame and updates rigid-body transforms each frame via the OVRTX attribute API,
+presenting the result in a pyglet/OpenGL window.
+
+.. note::
+    The RTX viewer is experimental and may not have the same functionality as the OpenGL viewer.
+
+**Installation**: Requires the ``rtx`` dependency group:
+
+.. code-block:: bash
+
+    uv sync --extra rtx
+
+This installs ``ovrtx`` (the NVIDIA OVRTX renderer) and ``usd-core``, in addition to ``pyglet`` for the window.
+
+.. code-block:: python
+
+    viewer = newton.viewer.ViewerRTX(environment="studio")
+
+    viewer.set_model(model)
+
+    # at every frame:
+    viewer.begin_frame(sim_time)
+    viewer.log_state(state)
+    viewer.end_frame()
+
 Recording and Offline Viewers
 -----------------------------
 
@@ -260,25 +282,10 @@ Use :class:`~newton.viewer.ViewerFile` to load a recording, then restore the mod
 
 For a complete example with UI controls for scrubbing and playback, see ``newton/examples/basic/example_replay_viewer.py``.
 
-Key parameters:
-
-- ``output_path``: Path to the output file (format determined by extension: .json or .bin)
-- ``auto_save``: If True, automatically save periodically during recording (default: ``True``)
-- ``save_interval``: Number of frames between auto-saves when auto_save=True (default: ``100``)
-- ``max_history_size``: Maximum number of frames to keep in memory (default: ``None`` for unlimited)
-
 Rendering to USD
 ~~~~~~~~~~~~~~~~
 
 Instead of rendering in real-time, you can also render the simulation as a time-sampled USD stage to be visualized in Omniverse or other USD-compatible tools using the :class:`~newton.viewer.ViewerUSD` backend.
-
-Constructor parameters:
-
-- ``output_path``: Path to the output USD file
-- ``fps``: Frames per second for time sampling (default: ``60``)
-- ``up_axis``: USD up axis, ``"Y"`` or ``"Z"`` (default: ``"Z"``)
-- ``num_frames``: Maximum number of frames to record, or ``None`` for unlimited (default: ``100``)
-- ``scaling``: Uniform scaling applied to the scene root (default: ``1.0``)
 
 .. code-block:: python
 
@@ -308,17 +315,6 @@ enabling real-time or offline visualization with advanced features like time scr
 .. code-block:: bash
 
     pip install rerun-sdk
-
-Constructor parameters:
-
-- ``app_id``: Application ID for Rerun (default: ``"newton-viewer"``). Use different IDs to differentiate between parallel viewer instances.
-- ``address``: Optional server address to connect to a remote Rerun server. If provided, connects to the specified server.
-- ``serve_web_viewer``: Serve a web viewer over HTTP and open it in the browser (default: ``True``). If ``False``, spawns a native Rerun viewer.
-- ``web_port``: Port for the web viewer (default: ``9090``)
-- ``grpc_port``: Port for the gRPC server (default: ``9876``)
-- ``keep_historical_data``: Keep historical state data in the viewer for time scrubbing (default: ``False``)
-- ``keep_scalar_history``: Keep scalar time-series history (default: ``True``)
-- ``record_to_rrd``: Optional path to save a ``.rrd`` recording file
 
 **Usage**:
 
@@ -425,14 +421,6 @@ providing web-based 3D visualization that works in any browser and has native Ju
 
     # Close the viewer when done
     viewer.close()
-
-Key parameters:
-
-- ``port``: Port number for the web server (default: ``8080``)
-- ``label``: Optional label for the browser window title
-- ``verbose``: If True, print the server URL when starting (default: ``True``)
-- ``share``: If True, create a publicly accessible URL via viser's share feature
-- ``record_to_viser``: Path to record the visualization to a ``.viser`` file for later playback
 
 **Recording and playback**
 
@@ -646,6 +634,10 @@ Choosing the Right Viewer
       - Interactive development and debugging
       - Real-time display
       - pyglet, imgui_bundle
+    * - :class:`~newton.viewer.ViewerRTX`
+      - Path-traced real-time visualization on NVIDIA GPUs
+      - Real-time display
+      - ovrtx, usd-core, pyglet (``uv sync --extra rtx``)
     * - :class:`~newton.viewer.ViewerFile`
       - Recording for replay/sharing
       - .json or .bin files

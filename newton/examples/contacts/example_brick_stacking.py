@@ -438,7 +438,7 @@ class Example:
         scene = newton.ModelBuilder()
         scene.add_builder(franka_builder)
         self.add_bricks(scene)
-        scene.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.75))
+        scene.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.75, gap=0.01))
 
         self.model = scene.finalize()
 
@@ -492,6 +492,7 @@ class Example:
 
     def build_franka_with_table(self):
         builder = newton.ModelBuilder()
+        builder.rigid_gap = 0.005
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
         builder.add_urdf(

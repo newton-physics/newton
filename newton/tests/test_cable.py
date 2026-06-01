@@ -3252,7 +3252,10 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
 
     fps = 60.0
     frame_dt = 1.0 / fps
-    sim_substeps = 2
+    # AVBD friction tracking under the surface-anchor moment arm needs either
+    # dt ≲ 4 ms (substeps ≥ 4) or rigid_avbd_contact_alpha ≲ 0.5; both stay
+    # well inside the 1 cm tolerance below.
+    sim_substeps = 4
     sim_dt = frame_dt / sim_substeps
 
     # Record initial pose
