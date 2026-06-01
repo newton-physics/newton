@@ -749,6 +749,29 @@ class TestModelJoints(unittest.TestCase):
         self.assertAlmostEqual(builder.body_mass[0], 3.0)
         self.assertTrue(builder.body_lock_inertia[0])
 
+    def test_collapse_fixed_joints_massless_chain(self):
+        """Collapsing a chain of massless bodies into a positive-mass body must yield a finite center of mass."""
+        for use_articulation in (True, False):
+            with self.subTest(use_articulation=use_articulation):
+                builder = ModelBuilder()
+                root = builder.add_link(mass=0.0, label="massless_root")
+                dummy = builder.add_link(mass=0.0, label="massless_dummy")
+                mass_body = builder.add_link(mass=2.0, com=wp.vec3(1.0, 0.0, 0.0), label="mass_body")
+
+                joints = [
+                    builder.add_joint_free(parent=-1, child=root, label="floating_base"),
+                    builder.add_joint_fixed(parent=root, child=dummy, label="root_to_dummy"),
+                    builder.add_joint_fixed(parent=dummy, child=mass_body, label="dummy_to_mass_body"),
+                ]
+
+                if use_articulation:
+                    builder.add_articulation(joints)
+                builder.collapse_fixed_joints()
+
+                self.assertEqual(builder.body_count, 1)
+                self.assertAlmostEqual(builder.body_mass[0], 2.0)
+                assert_np_equal(np.array(builder.body_com[0]), np.array([1.0, 0.0, 0.0]))
+
     def test_collapse_fixed_joints_with_groups(self):
         """Test that collapse_fixed_joints correctly preserves world groups."""
         # Optionally enable debug printing

@@ -28,7 +28,7 @@ description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "warp-lang>=1.14.0.dev20260514",
+    "warp-lang>=1.14.0rc2",
 ]
 
 [project.optional-dependencies]
@@ -69,7 +69,7 @@ importers = [
     "usd-exchange>=2.2.0 ; platform_machine == 'aarch64' and python_version < '3.13'",
 
     # Newton USD Schemas
-    "newton-usd-schemas>=0.2.0",
+    "newton-usd-schemas>=0.3.0",
 ]
 
 # Remeshing dependencies (for SurfaceReconstructor)
@@ -89,6 +89,13 @@ examples = [
     "pyyaml>=6.0.2",
     "cbor2>=5.7.0",         # for binary recording format (.bin files) - more efficient than JSON
     "Pillow>=11.3.0",
+]
+
+# OVRTX real-time ray tracing viewer
+rtx = [
+    "newton[importers]",    # include import dependencies (USD)
+    "pyglet>=2.1.6,<3",     # for the viewer window/presentation
+    "ovrtx>=0.3",           # NVIDIA OVRTX renderer
 ]
 
 # PyTorch is no longer required to run RL policies (examples and actuators
@@ -236,6 +243,7 @@ banned-module-level-imports = [
     "onnx",
     "open3d",
     "openmesh",
+    "ovrtx",
     "PIL",
     "point_cloud_utils",
     "pxr",
@@ -318,3 +326,8 @@ pnd = "pnd"
 PNGs = "PNGs"
 Haa = "Haa"
 iy = "iy"
+# Wonik Allegro thumb-adduction joint names
+tha0 = "tha0"
+tha1 = "tha1"
+tha2 = "tha2"
+tha3 = "tha3"

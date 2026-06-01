@@ -5,6 +5,7 @@ import os
 import tempfile
 import time
 import unittest
+import warnings
 import xml.etree.ElementTree as ET
 
 import numpy as np  # For numerical operations and random values
@@ -13,6 +14,15 @@ import warp as wp
 import newton
 from newton import BodyFlags, JointType, Mesh
 from newton._src.core.types import vec5
+from newton._src.solvers.mujoco.constants import (
+    DEFAULT_LIMIT_KD,
+    DEFAULT_LIMIT_KE,
+    KINEMATIC_ARMATURE,
+    SOLREF_MODE_FORCE_SPACE,
+    SOLREF_MODE_MJCF_DEFAULT,
+    SOLREF_MODE_RAW,
+)
+from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
 
@@ -1403,7 +1413,9 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
     def test_joint_limit_solref_conversion(self):
         """
         Verify that joint_limit_ke and joint_limit_kd are properly converted to MuJoCo's solref_limit
-        using the negative convention: solref_limit = (-stiffness, -damping)
+        using the negative convention ``solref_limit = (-ke * factor, -kd * factor)`` where
+        ``factor = dof_invweight0 * (1 - dmax)`` makes MuJoCo's effective stiffness match the
+        force-space values users configure.
         """
         # Skip if no joints
         if self.model.joint_dof_count == 0:
@@ -1439,26 +1451,39 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         mjc_revolute_indices = [2, 3]  # MuJoCo joint indices for revolute joints
         newton_revolute_dof_indices = [12, 13]  # Newton DOF indices for revolute joints
 
+        jnt_dofadr = solver.mjw_model.jnt_dofadr.numpy()
+
+        def expected_scaled_solref(world_idx, mjc_idx, ke, kd):
+            dof_adr = int(jnt_dofadr[mjc_idx])
+            invw = float(solver.mjw_model.dof_invweight0.numpy()[world_idx, dof_adr])
+            dmax = float(solver.mjw_model.jnt_solimp.numpy()[world_idx, mjc_idx][1])
+            factor = invw * (1.0 - dmax) if invw > 0.0 and dmax < 1.0 else 1.0
+            return -ke * factor, -kd * factor
+
         for world_idx in range(self.model.world_count):
             for _i, (mjc_idx, newton_dof_idx) in enumerate(
                 zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
             ):
                 global_dof_idx = world_idx * dofs_per_world + newton_dof_idx
-                expected_ke = -initial_limit_ke[global_dof_idx]
-                expected_kd = -initial_limit_kd[global_dof_idx]
+                expected_ke, expected_kd = expected_scaled_solref(
+                    world_idx, mjc_idx, initial_limit_ke[global_dof_idx], initial_limit_kd[global_dof_idx]
+                )
 
-                # Get actual values from MuJoCo's jnt_solref array
+                # Get actual values from MuJoCo's jnt_solref array. Solref is
+                # stored in float32 while ``expected_*`` is computed in float64,
+                # so use a relative tolerance instead of ``places`` (absolute).
+                rel_tol = 1e-4
                 actual_solref = solver.mjw_model.jnt_solref.numpy()[world_idx, mjc_idx]
                 self.assertAlmostEqual(
-                    actual_solref[0],
+                    float(actual_solref[0]),
                     expected_ke,
-                    places=3,
+                    delta=abs(expected_ke) * rel_tol,
                     msg=f"Initial solref stiffness for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
                 self.assertAlmostEqual(
-                    actual_solref[1],
+                    float(actual_solref[1]),
                     expected_kd,
-                    places=3,
+                    delta=abs(expected_kd) * rel_tol,
                     msg=f"Initial solref damping for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
 
@@ -1478,21 +1503,23 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                 zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
             ):
                 global_dof_idx = world_idx * dofs_per_world + newton_dof_idx
-                expected_ke = -updated_limit_ke[global_dof_idx]
-                expected_kd = -updated_limit_kd[global_dof_idx]
+                expected_ke, expected_kd = expected_scaled_solref(
+                    world_idx, mjc_idx, updated_limit_ke[global_dof_idx], updated_limit_kd[global_dof_idx]
+                )
 
-                # Get actual values from MuJoCo's jnt_solref array
+                # Get actual values from MuJoCo's jnt_solref array.
+                rel_tol = 1e-4
                 actual_solref = solver.mjw_model.jnt_solref.numpy()[world_idx, mjc_idx]
                 self.assertAlmostEqual(
-                    actual_solref[0],
+                    float(actual_solref[0]),
                     expected_ke,
-                    places=3,
+                    delta=abs(expected_ke) * rel_tol,
                     msg=f"Updated solref stiffness for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
                 self.assertAlmostEqual(
-                    actual_solref[1],
+                    float(actual_solref[1]),
                     expected_kd,
-                    places=3,
+                    delta=abs(expected_kd) * rel_tol,
                     msg=f"Updated solref damping for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
 
@@ -1885,8 +1912,6 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
 
 
 class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
-    KINEMATIC_ARMATURE = 1.0e10
-
     @staticmethod
     def _build_model(*, root_kinematic: bool) -> tuple[newton.Model, int]:
         builder = newton.ModelBuilder()
@@ -1934,7 +1959,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
 
                 body_idx = int(dof_to_body[newton_dof])
                 is_kinematic = body_idx >= 0 and (int(body_flags[body_idx]) & int(BodyFlags.KINEMATIC)) != 0
-                expected_armature = float(self.KINEMATIC_ARMATURE if is_kinematic else joint_armature[newton_dof])
+                expected_armature = float(KINEMATIC_ARMATURE if is_kinematic else joint_armature[newton_dof])
                 actual_armature = float(dof_armature[world_idx, mjc_dof])
 
                 self.assertAlmostEqual(
@@ -6956,6 +6981,220 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # (only CONNECT entries are tracked) so the weld slot should remain -1
         assert np.allclose(solver.mjc_eq_to_newton_jnt.numpy(), np.full((world_count, 3), -1, dtype=np.int32))
 
+    def test_loop_connect_mapping_tiles_template_joint_indices(self):
+        """Generic CONNECT loop-joint mappings tile template joint indices across worlds."""
+        builder = newton.ModelBuilder()
+        inertia = wp.mat33(np.eye(3))
+        b0 = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=inertia)
+        b1 = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=inertia)
+        j0 = builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0))
+        j1 = builder.add_joint_revolute(b0, b1, axis=(0.0, 1.0, 0.0))
+        builder.add_articulation([j0, j1])
+        builder.add_joint_revolute(b1, b0, axis=(0.0, 0.0, 1.0))
+
+        world_count = 3
+        world_builder = newton.ModelBuilder()
+        world_builder.replicate(builder, world_count=world_count)
+        model = world_builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.neq, 2)
+        expected = np.array([[2, 2], [5, 5], [8, 8]], dtype=np.int32)
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_jnt.numpy(), expected)
+
+    def test_mjc_equality_target_remaps_in_add_builder(self):
+        """The polymorphic MuJoCo equality target remaps joint and mimic indices."""
+        main = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(main)
+        inertia = wp.mat33(np.eye(3))
+        b0 = main.add_link(mass=1.0, com=wp.vec3(0.0), inertia=inertia)
+        b1 = main.add_link(mass=1.0, com=wp.vec3(0.0), inertia=inertia)
+        j0 = main.add_joint_revolute(-1, b0)
+        j1 = main.add_joint_revolute(b0, b1)
+        main.add_articulation([j0, j1])
+        main.add_constraint_mimic(joint0=j1, joint1=j0)
+
+        source = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(source)
+        s0 = source.add_link(mass=1.0, com=wp.vec3(0.0), inertia=inertia)
+        s1 = source.add_link(mass=1.0, com=wp.vec3(0.0), inertia=inertia)
+        sj0 = source.add_joint_revolute(-1, s0)
+        sj1 = source.add_joint_revolute(s0, s1)
+        source.add_articulation([sj0, sj1])
+        sm = source.add_constraint_mimic(joint0=sj1, joint1=sj0)
+        source.add_equality_constraint_connect(
+            body1=s0,
+            body2=s1,
+            anchor=wp.vec3(0.0),
+            custom_attributes={
+                "mujoco:equality_constraint_target_kind": int(MjcEqualityTargetKind.JOINT),
+                "mujoco:equality_constraint_target": sj0,
+                "mujoco:equality_constraint_objtype": MJC_OBJ_BODY,
+            },
+        )
+        source.add_equality_constraint_joint(
+            joint1=sj1,
+            joint2=sj0,
+            custom_attributes={
+                "mujoco:equality_constraint_target_kind": int(MjcEqualityTargetKind.MIMIC),
+                "mujoco:equality_constraint_target": sm,
+                "mujoco:equality_constraint_objtype": MJC_OBJ_JOINT,
+            },
+        )
+
+        joint_offset = main.joint_count
+        mimic_offset = len(main.constraint_mimic_joint0)
+        main.add_builder(source)
+        model = main.finalize()
+
+        np.testing.assert_array_equal(
+            model.mujoco.equality_constraint_target_kind.numpy(),
+            np.array([int(MjcEqualityTargetKind.JOINT), int(MjcEqualityTargetKind.MIMIC)], dtype=np.int32),
+        )
+        np.testing.assert_array_equal(
+            model.mujoco.equality_constraint_target.numpy(),
+            np.array([joint_offset + sj0, mimic_offset + sm], dtype=np.int32),
+        )
+
+    def test_mjc_equality_target_invalidates_removed_projected_joint(self):
+        """collapse_fixed_joints clears targets for projected joints that are removed."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        inertia = wp.mat33(np.eye(3))
+        root = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=inertia)
+        child = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=inertia)
+        root_joint = builder.add_joint_revolute(-1, root)
+        fixed_joint = builder.add_joint_fixed(root, child)
+        builder.add_articulation([root_joint, fixed_joint])
+        builder.add_equality_constraint_weld(
+            body1=root,
+            body2=child,
+            custom_attributes={
+                "mujoco:equality_constraint_target_kind": int(MjcEqualityTargetKind.JOINT),
+                "mujoco:equality_constraint_target": fixed_joint,
+                "mujoco:equality_constraint_objtype": MJC_OBJ_BODY,
+            },
+        )
+
+        builder.collapse_fixed_joints()
+
+        target_kind = builder.custom_attributes["mujoco:equality_constraint_target_kind"].values[0]
+        target = builder.custom_attributes["mujoco:equality_constraint_target"].values[0]
+        self.assertEqual(target_kind, int(MjcEqualityTargetKind.NONE))
+        self.assertEqual(target, -1)
+
+    def test_preserved_loop_equality_runtime_update_keeps_per_world_mujoco_data(self):
+        """Preserved MuJoCo CONNECT/WELD loop equalities keep per-world metadata."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        connect_anchor = np.array([[0.1, 0.2, 0.3], [-0.4, 0.5, -0.6]], dtype=np.float32)
+        weld_anchor = np.array([[0.7, -0.8, 0.9], [-1.0, 1.1, -1.2]], dtype=np.float32)
+        weld_relpose_pos = np.array([[0.01, 0.02, 0.03], [-0.04, 0.05, -0.06]], dtype=np.float32)
+        weld_torquescale = np.array([0.37, 0.83], dtype=np.float32)
+        connect_solref = np.array([[0.04, 1.2], [0.08, 0.9]], dtype=np.float32)
+        weld_solref = np.array([[0.03, 1.4], [0.07, 0.6]], dtype=np.float32)
+        connect_solimp = np.array(
+            [[0.82, 0.91, 0.002, 0.45, 1.8], [0.75, 0.88, 0.004, 0.55, 1.6]],
+            dtype=np.float32,
+        )
+        weld_solimp = np.array(
+            [[0.66, 0.86, 0.006, 0.35, 1.4], [0.72, 0.9, 0.008, 0.65, 2.2]],
+            dtype=np.float32,
+        )
+        connect_enabled = np.array([True, False])
+        weld_enabled = np.array([False, True])
+
+        for world in range(2):
+            builder.begin_world()
+            root = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+            mid = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+            tip = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+            j0 = builder.add_joint_revolute(-1, root, axis=(0.0, 0.0, 1.0))
+            j1 = builder.add_joint_revolute(root, mid, axis=(0.0, 1.0, 0.0))
+            j2 = builder.add_joint_revolute(mid, tip, axis=(1.0, 0.0, 0.0))
+            builder.add_shape_box(body=root, hx=0.1, hy=0.1, hz=0.1)
+            builder.add_shape_box(body=mid, hx=0.1, hy=0.1, hz=0.1)
+            builder.add_shape_box(body=tip, hx=0.1, hy=0.1, hz=0.1)
+            builder.add_articulation([j0, j1, j2])
+
+            connect_joint = builder.add_joint_ball(
+                parent=root,
+                child=mid,
+                enabled=bool(connect_enabled[world]),
+            )
+            builder.add_equality_constraint_connect(
+                body1=root,
+                body2=mid,
+                anchor=wp.vec3(*connect_anchor[world]),
+                enabled=bool(connect_enabled[world]),
+                custom_attributes={
+                    "mujoco:eq_solref": wp.vec2(*connect_solref[world]),
+                    "mujoco:eq_solimp": vec5(*connect_solimp[world]),
+                    "mujoco:equality_constraint_target_kind": int(MjcEqualityTargetKind.JOINT),
+                    "mujoco:equality_constraint_target": connect_joint,
+                    "mujoco:equality_constraint_objtype": MJC_OBJ_BODY,
+                },
+            )
+            weld_joint = builder.add_joint_fixed(
+                parent=mid,
+                child=tip,
+                enabled=bool(weld_enabled[world]),
+            )
+            builder.add_equality_constraint_weld(
+                body1=mid,
+                body2=tip,
+                anchor=wp.vec3(*weld_anchor[world]),
+                relpose=wp.transform(
+                    wp.vec3(*weld_relpose_pos[world]),
+                    wp.quat_identity(),
+                ),
+                torquescale=float(weld_torquescale[world]),
+                enabled=bool(weld_enabled[world]),
+                custom_attributes={
+                    "mujoco:eq_solref": wp.vec2(*weld_solref[world]),
+                    "mujoco:eq_solimp": vec5(*weld_solimp[world]),
+                    "mujoco:equality_constraint_target_kind": int(MjcEqualityTargetKind.JOINT),
+                    "mujoco:equality_constraint_target": weld_joint,
+                    "mujoco:equality_constraint_objtype": MJC_OBJ_BODY,
+                },
+            )
+            builder.end_world()
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.neq, 2)
+        self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
+        self.assertEqual(int(solver.mj_model.eq_type[1]), int(solver._mujoco.mjtEq.mjEQ_WELD))
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_eq.numpy(), np.array([[0, 1], [2, 3]]))
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_jnt.numpy(), np.full((2, 2), -1, dtype=np.int32))
+
+        eq_data = solver.mjw_model.eq_data.numpy()
+        np.testing.assert_allclose(eq_data[:, 0, :3], connect_anchor, rtol=1e-5)
+        np.testing.assert_allclose(eq_data[:, 1, :3], weld_anchor, rtol=1e-5)
+        np.testing.assert_allclose(eq_data[:, 1, 3:6], weld_relpose_pos, rtol=1e-5)
+        np.testing.assert_allclose(eq_data[:, 1, 6:10], [[1.0, 0.0, 0.0, 0.0]] * 2, rtol=1e-5)
+        np.testing.assert_allclose(eq_data[:, 1, 10], weld_torquescale, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solref.numpy()[:, 0], connect_solref, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solref.numpy()[:, 1], weld_solref, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solimp.numpy()[:, 0], connect_solimp, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solimp.numpy()[:, 1], weld_solimp, rtol=1e-5)
+        np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 0], connect_enabled)
+        np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 1], weld_enabled)
+
+        eq_enabled = model.equality_constraint_enabled.numpy()
+        eq_enabled[0] = False
+        eq_enabled[1] = True
+        eq_enabled[2] = True
+        eq_enabled[3] = False
+        model.equality_constraint_enabled.assign(eq_enabled)
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy(), eq_data, rtol=1e-5)
+        np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 0], [False, True])
+        np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 1], [True, False])
+
     def test_loop_joint_coordinate_conversion_offset(self):
         """Verify coordinate conversion when revolute loop joints precede other joints.
 
@@ -7560,6 +7799,135 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         np.testing.assert_allclose(eq_data[0, 0, 1], 3.0, rtol=1e-5)
         eq_active = solver.mjw_data.eq_active.numpy()
         self.assertFalse(eq_active[0, 0])
+
+    def test_preserved_mimic_runtime_update_keeps_mujoco_data(self):
+        """Preserved MuJoCo mimic equalities sync active state without flattening polycoef."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        polycoef = np.array(
+            [
+                [0.25, 1.5, -0.2, 0.05, 0.01],
+                [-0.5, 0.75, 0.3, -0.1, 0.02],
+            ],
+            dtype=np.float32,
+        )
+        solref = np.array([[0.04, 1.2], [0.08, 0.9]], dtype=np.float32)
+        solimp = np.array(
+            [
+                [0.82, 0.91, 0.002, 0.45, 1.8],
+                [0.75, 0.88, 0.004, 0.55, 1.6],
+            ],
+            dtype=np.float32,
+        )
+
+        for world in range(2):
+            builder.begin_world()
+            b1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+            b2 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+            j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+            j2 = builder.add_joint_revolute(-1, b2, axis=(0, 0, 1))
+            builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+            builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+            builder.add_articulation([j1, j2])
+            mimic = builder.add_constraint_mimic(
+                joint0=j2,
+                joint1=j1,
+                coef0=10.0 + world,
+                coef1=20.0 + world,
+                enabled=world == 0,
+            )
+            builder.add_equality_constraint_joint(
+                joint1=j2,
+                joint2=j1,
+                polycoef=polycoef[world].tolist(),
+                enabled=world == 0,
+                custom_attributes={
+                    "mujoco:eq_solref": wp.vec2(*solref[world]),
+                    "mujoco:eq_solimp": vec5(*solimp[world]),
+                    "mujoco:equality_constraint_target_kind": int(MjcEqualityTargetKind.MIMIC),
+                    "mujoco:equality_constraint_target": mimic,
+                    "mujoco:equality_constraint_objtype": MJC_OBJ_JOINT,
+                },
+            )
+            builder.end_world()
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mj_model.neq, 1)
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_eq.numpy()[:, 0], [0, 1])
+        np.testing.assert_array_equal(solver.mjc_eq_to_newton_mimic.numpy(), np.full((2, 1), -1, dtype=np.int32))
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :5], polycoef, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solref.numpy()[:, 0], solref, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solimp.numpy()[:, 0], solimp, rtol=1e-5)
+        np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 0], [True, False])
+
+        # Normal Newton mimic coefficients must not overwrite preserved MuJoCo polycoef data.
+        model.constraint_mimic_coef0.assign(np.array([100.0, 200.0], dtype=np.float32))
+        model.constraint_mimic_coef1.assign(np.array([300.0, 400.0], dtype=np.float32))
+        model.constraint_mimic_enabled.assign(np.array([False, True], dtype=bool))
+        model.equality_constraint_enabled.assign(np.array([False, True], dtype=bool))
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :5], polycoef, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solref.numpy()[:, 0], solref, rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.eq_solimp.numpy()[:, 0], solimp, rtol=1e-5)
+        np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 0], [False, True])
+
+    def test_preserved_mimic_runtime_update_syncs_cpu_backend(self):
+        """Preserved MuJoCo mimic equality updates are visible to MuJoCo-C."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        b1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        b2 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        j2 = builder.add_joint_revolute(-1, b2, axis=(0, 0, 1))
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j1, j2])
+        mimic = builder.add_constraint_mimic(
+            joint0=j2,
+            joint1=j1,
+            coef0=10.0,
+            coef1=20.0,
+            enabled=True,
+        )
+        builder.add_equality_constraint_joint(
+            joint1=j2,
+            joint2=j1,
+            polycoef=[0.25, 1.5, -0.2, 0.05, 0.01],
+            enabled=True,
+            custom_attributes={
+                "mujoco:eq_solref": wp.vec2(0.04, 1.2),
+                "mujoco:eq_solimp": vec5(0.82, 0.91, 0.002, 0.45, 1.8),
+                "mujoco:equality_constraint_target_kind": int(MjcEqualityTargetKind.MIMIC),
+                "mujoco:equality_constraint_target": mimic,
+                "mujoco:equality_constraint_objtype": MJC_OBJ_JOINT,
+            },
+        )
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=True)
+
+        updated_polycoef = np.array([[0.3, 1.7, -0.4, 0.08, 0.02]], dtype=np.float32)
+        updated_solref = np.array([[0.08, 0.9]], dtype=np.float32)
+        updated_solimp = np.array([[0.75, 0.88, 0.004, 0.55, 1.6]], dtype=np.float32)
+
+        model.constraint_mimic_coef0.assign(np.array([100.0], dtype=np.float32))
+        model.constraint_mimic_coef1.assign(np.array([300.0], dtype=np.float32))
+        model.constraint_mimic_enabled.assign(np.array([False], dtype=bool))
+        model.equality_constraint_polycoef.assign(updated_polycoef)
+        model.equality_constraint_enabled.assign(np.array([False], dtype=bool))
+        model.mujoco.eq_solref.assign(wp.array(updated_solref, dtype=wp.vec2, device=model.device))
+        model.mujoco.eq_solimp.assign(wp.array(updated_solimp, dtype=vec5, device=model.device))
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mj_model.eq_data[:, :5], updated_polycoef, rtol=1e-5)
+        np.testing.assert_allclose(solver.mj_model.eq_solref, updated_solref, rtol=1e-5)
+        np.testing.assert_allclose(solver.mj_model.eq_solimp, updated_solimp, rtol=1e-5)
+        np.testing.assert_array_equal(solver.mj_data.eq_active, [False])
 
     def test_mimic_no_constraints(self):
         """Test solver works with zero mimic constraints."""
@@ -8377,9 +8745,15 @@ class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
         state_1 = model.state()
         control = model.control()
         contacts = model.contacts()
+        joint_q_start = model.joint_q_start.numpy()
+        slide_joints = [
+            i for i, label in enumerate(model.joint_label) if label.endswith("/joint1") or label.endswith("/joint2")
+        ]
 
         # Set joint1 (all of them) to have a non-zero speed.
-        start_joint_q = [1.0, 0.0, 1.0, 0.0, 1.0, 0.0]
+        start_joint_q = state_0.joint_q.numpy()
+        for joint_idx in slide_joints:
+            start_joint_q[joint_q_start[joint_idx]] = 1.0 if model.joint_label[joint_idx].endswith("/joint1") else 0.0
         state_0.joint_q.assign(start_joint_q)
 
         # If the de-duplication is not working properly we will end up with the equality constraint
@@ -8395,8 +8769,8 @@ class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
             solver.step(state_0, state_1, control, contacts, 0.02)
             state_0, state_1 = state_1, state_0
         measured_joint_q = state_0.joint_q.numpy()
-        for i in range(0, 6):
-            measured = measured_joint_q[i]
+        for i, joint_idx in enumerate(slide_joints):
+            measured = measured_joint_q[joint_q_start[joint_idx]]
             expected = expected_joint_q[i]
             self.assertAlmostEqual(
                 expected,
@@ -8449,9 +8823,15 @@ class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
         state_1 = model.state()
         control = model.control()
         contacts = model.contacts()
+        joint_q_start = model.joint_q_start.numpy()
+        slide_joints = [
+            i for i, label in enumerate(model.joint_label) if label.endswith("/joint1") or label.endswith("/joint2")
+        ]
 
         # Set joint1 (all of them) to have a non-zero speed.
-        start_joint_q = [1.0, 0.0, 1.0, 0.0, 1.0, 0.0]
+        start_joint_q = state_0.joint_q.numpy()
+        for joint_idx in slide_joints:
+            start_joint_q[joint_q_start[joint_idx]] = 1.0 if model.joint_label[joint_idx].endswith("/joint1") else 0.0
         state_0.joint_q.assign(start_joint_q)
 
         # If the de-duplication is not working properly we will end up with the equality constraint
@@ -8467,8 +8847,8 @@ class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
             solver.step(state_0, state_1, control, contacts, 0.02)
             state_0, state_1 = state_1, state_0
         measured_joint_q = state_0.joint_q.numpy()
-        for i in range(0, 6):
-            measured = measured_joint_q[i]
+        for i, joint_idx in enumerate(slide_joints):
+            measured = measured_joint_q[joint_q_start[joint_idx]]
             expected = expected_joint_q[i]
             self.assertAlmostEqual(
                 expected,
@@ -9115,7 +9495,7 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+        builder.add_mjcf(mjcf, ignore_inertial_definitions=False, convert_mjc_equality_constraints=False)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
 
@@ -9352,6 +9732,911 @@ class TestUpdateContactsPointPositions(unittest.TestCase):
                 break
 
         self.assertTrue(found_contacts, "No contacts detected after 200 steps")
+
+
+class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
+    """Regression tests for joint-limit solref calibration.
+
+    Newton users set ``ModelBuilder.add_joint_revolute`` ``limit_ke`` /
+    ``limit_kd`` as *force-space* stiffness/damping (N·m/rad). MuJoCo's
+    limit-constraint solver, however, applies effective stiffness
+    ``k_eff = k / (invweight * (1 - dmax))``. Unless the Newton→MuJoCo
+    ``jnt_solref`` conversion pre-multiplies by
+    ``dof_invweight0 * (1 - dmax)`` the simulated stiffness ends up
+    scaled by the DOF inertia instead of matching the configured
+    force-space limit response.
+
+    The analogous scaling for ``shape_material_ke``/``kd`` on
+    ``geom_solref`` is **not** applied, because MuJoCo mixes contact
+    ``solref`` linearly in ``(timeconst, dampratio)`` space, which is
+    non-linear in ``(ke, kd)`` and collapses dynamic-vs-static contact
+    stiffness. The contact case therefore needs a separate contact-time
+    mixing design.
+    """
+
+    def _build_pendulum_model(
+        self,
+        mass: float,
+        ke: float,
+        kd: float,
+        *,
+        inertia: float = 0.5,
+        gravity: float = -9.81,
+        register_mujoco_attrs: bool = False,
+    ):
+        builder = newton.ModelBuilder(gravity=gravity)
+        if register_mujoco_attrs:
+            SolverMuJoCo.register_custom_attributes(builder)
+        inertia_tensor = wp.mat33(np.eye(3) * inertia)
+        link = builder.add_link(mass=mass, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia_tensor)
+        joint = builder.add_joint_revolute(
+            parent=-1,
+            child=link,
+            axis=wp.vec3(0.0, 1.0, 0.0),
+            limit_lower=-1.0,
+            limit_upper=1.0,
+            limit_ke=ke,
+            limit_kd=kd,
+        )
+        builder.add_articulation([joint])
+        return builder.finalize()
+
+    def _build_solver_for_solref_case(
+        self,
+        *,
+        ke: float,
+        kd: float,
+        use_mujoco_cpu: bool,
+        inertia: float = 0.5,
+        solimp: tuple[float, float, float, float, float] | None = None,
+        solref: tuple[float, float] | None = None,
+    ):
+        model = self._build_pendulum_model(
+            mass=2.0,
+            ke=ke,
+            kd=kd,
+            inertia=inertia,
+            register_mujoco_attrs=solimp is not None or solref is not None,
+        )
+
+        if solimp is not None:
+            model.mujoco.solimplimit.assign(
+                wp.array(np.array([solimp], dtype=np.float32), dtype=vec5, device=model.device)
+            )
+        if solref is not None:
+            model.mujoco.solreflimit.assign(
+                wp.array(np.array([solref], dtype=np.float32), dtype=wp.vec2, device=model.device)
+            )
+            model.mujoco.solreflimit_mode.assign(np.array([SOLREF_MODE_RAW], dtype=np.int32))
+
+        return SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
+
+    def _expected_solref_from_solver(
+        self,
+        solver: SolverMuJoCo,
+        ke: float,
+        kd: float,
+        solref: tuple[float, float] | None,
+    ):
+        if solref is not None:
+            return np.array(solref, dtype=np.float64)
+        if ke <= 0.0:
+            return np.array([0.02, 1.0], dtype=np.float64)
+
+        dof_invweight0 = float(solver.mj_model.dof_invweight0[0])
+        dmax = float(solver.mj_model.jnt_solimp[0, 1])
+        factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
+        return np.array([-ke * factor, -kd * factor], dtype=np.float64)
+
+    def test_cpu_and_warp_joint_limit_solref_cases_match(self):
+        """CPU and Warp backends must agree for each joint-limit ``solref`` branch."""
+        cases = (
+            {
+                "name": "scale Newton force-space gains",
+                "ke": 12000.0,
+                "kd": 120.0,
+                "solimp": (0.9, 0.95, 0.001, 0.5, 2.0),
+                "solref": None,
+            },
+            {
+                "name": "preserve MuJoCo-native solreflimit",
+                "ke": 12000.0,
+                "kd": 120.0,
+                "solimp": None,
+                "solref": (0.03, 0.7),
+            },
+            {
+                "name": "preserve MuJoCo-native zero solreflimit",
+                "ke": 12000.0,
+                "kd": 120.0,
+                "solimp": None,
+                "solref": (0.0, 0.0),
+            },
+            {
+                "name": "restore default solref when Newton limit is disabled",
+                "ke": 0.0,
+                "kd": 0.0,
+                "solimp": None,
+                "solref": None,
+            },
+            {
+                "name": "fall back to unscaled gains when dmax is one",
+                "ke": 700.0,
+                "kd": 70.0,
+                "solimp": (0.8, 1.0, 0.001, 0.5, 2.0),
+                "solref": None,
+            },
+        )
+
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                solvers = (
+                    self._build_solver_for_solref_case(
+                        ke=case["ke"],
+                        kd=case["kd"],
+                        solimp=case["solimp"],
+                        solref=case["solref"],
+                        use_mujoco_cpu=False,
+                    ),
+                    self._build_solver_for_solref_case(
+                        ke=case["ke"],
+                        kd=case["kd"],
+                        solimp=case["solimp"],
+                        solref=case["solref"],
+                        use_mujoco_cpu=True,
+                    ),
+                )
+
+                expected = self._expected_solref_from_solver(
+                    solvers[0],
+                    case["ke"],
+                    case["kd"],
+                    case["solref"],
+                )
+                cpu_expected = self._expected_solref_from_solver(
+                    solvers[1],
+                    case["ke"],
+                    case["kd"],
+                    case["solref"],
+                )
+                np.testing.assert_allclose(cpu_expected, expected, rtol=1e-5, atol=1e-6)
+
+                for solver in solvers:
+                    mj_solref = np.array(solver.mj_model.jnt_solref[0], dtype=np.float64)
+                    mjw_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
+                    np.testing.assert_allclose(mj_solref, expected, rtol=1e-5, atol=1e-6)
+                    np.testing.assert_allclose(mjw_solref, expected, rtol=1e-5, atol=1e-6)
+
+    def test_joint_limit_solref_uses_dof_invweight0(self):
+        """``jnt_solref`` for joint limits must be scaled by ``dof_invweight0 * (1 - dmax)``."""
+        ke = 10000.0
+        kd = 100.0
+        # Use inertia = 0.5 so ``dof_invweight0 = 1/0.5 = 2`` and factor = 2 * 0.05 = 0.1,
+        # which is far enough from 1.0 that the test distinguishes fixed from buggy behavior.
+        model = self._build_pendulum_model(mass=2.0, ke=ke, kd=kd, inertia=0.5)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
+        solimp = solver.mjw_model.jnt_solimp.numpy()[0, 0]
+        dmax = float(solimp[1])
+        factor = dof_invweight0 * (1.0 - dmax)
+
+        actual_solref = solver.mjw_model.jnt_solref.numpy()[0, 0]
+        rel_tol = 1e-4
+        self.assertAlmostEqual(float(actual_solref[0]), -ke * factor, delta=abs(ke * factor) * rel_tol)
+        self.assertAlmostEqual(float(actual_solref[1]), -kd * factor, delta=abs(kd * factor) * rel_tol)
+
+    def test_joint_limit_solref_updates_after_mass_change(self):
+        """Changing inertia and notifying the solver must recompute the ``invweight0`` factor."""
+        ke = 8000.0
+        kd = 80.0
+        model = self._build_pendulum_model(mass=1.5, ke=ke, kd=kd, inertia=0.5)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        new_mass = np.array([4.0], dtype=np.float32)
+        new_inertia = np.array([np.eye(3, dtype=np.float32) * 0.2], dtype=np.float32)
+        model.body_mass.assign(new_mass)
+        model.body_inertia.assign(new_inertia)
+        model.body_inv_mass.assign(1.0 / new_mass)
+        model.body_inv_inertia.assign(np.linalg.inv(new_inertia))
+
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+
+        dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
+        solimp = solver.mjw_model.jnt_solimp.numpy()[0, 0]
+        dmax = float(solimp[1])
+        factor = dof_invweight0 * (1.0 - dmax)
+
+        actual_solref = solver.mjw_model.jnt_solref.numpy()[0, 0]
+        # ``actual_solref`` is stored in float32 on the GPU while ``expected_*``
+        # is computed in float64 on the host. Use a relative tolerance so the
+        # assertion passes for float32 round-off on multi-thousand-scale values
+        # while still rejecting the buggy 10x-too-stiff solref.
+        expected_ke = -ke * factor
+        expected_kd = -kd * factor
+        rel_tol = 1e-4
+        self.assertAlmostEqual(float(actual_solref[0]), expected_ke, delta=abs(expected_ke) * rel_tol)
+        self.assertAlmostEqual(float(actual_solref[1]), expected_kd, delta=abs(expected_kd) * rel_tol)
+
+    def test_mjcf_unauthored_solreflimit_ke_updates_are_not_shadowed(self):
+        """MJCF joints without ``solreflimit`` must keep the sentinel so ``limit_ke`` updates apply."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="2" diaginertia="0.5 0.5 0.5"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """,
+            ignore_inertial_definitions=False,
+        )
+        model = builder.finalize()
+
+        np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], [0.0, 0.0], rtol=0.0, atol=0.0)
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_MJCF_DEFAULT)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        initial_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
+        np.testing.assert_allclose(initial_solref, [0.02, 1.0], rtol=1e-6, atol=1e-6)
+
+        ke = np.array([5000.0], dtype=np.float32)
+        kd = np.array([50.0], dtype=np.float32)
+        model.joint_limit_ke.assign(ke)
+        model.joint_limit_kd.assign(kd)
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
+        dmax = float(solver.mjw_model.jnt_solimp.numpy()[0, 0][1])
+        factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
+        expected_solref = np.array([-ke[0] * factor, -kd[0] * factor], dtype=np.float64)
+        actual_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
+
+        self.assertFalse(np.allclose(actual_solref, initial_solref))
+        np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
+
+    def test_mjcf_implicit_default_mode_promotes_after_gain_edit(self):
+        """Once imported MJCF default gains are edited, later default-valued gains stay force-space."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="2" diaginertia="0.5 0.5 0.5"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """,
+            ignore_inertial_definitions=False,
+        )
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        model.joint_limit_ke.assign(np.array([5000.0], dtype=np.float32))
+        model.joint_limit_kd.assign(np.array([50.0], dtype=np.float32))
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_FORCE_SPACE)
+
+        model.joint_limit_ke.assign(np.array([DEFAULT_LIMIT_KE], dtype=np.float32))
+        model.joint_limit_kd.assign(np.array([DEFAULT_LIMIT_KD], dtype=np.float32))
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
+        dmax = float(solver.mjw_model.jnt_solimp.numpy()[0, 0][1])
+        factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
+        expected_solref = np.array([-DEFAULT_LIMIT_KE * factor, -DEFAULT_LIMIT_KD * factor], dtype=np.float64)
+        actual_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
+
+        np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_authored_zero_solreflimit_is_preserved_as_native_parameter(self):
+        """USD-authored ``mjc:solreflimit = [0, 0]`` must set raw mode just like MJCF import."""
+        from pxr import Sdf, Vt
+
+        def set_zero_solref(joint):
+            joint.GetPrim().CreateAttribute("mjc:solreflimit", Sdf.ValueTypeNames.DoubleArray, True).Set(
+                Vt.DoubleArray([0.0, 0.0])
+            )
+
+        stage = _create_actuator_test_stage(extra_joint_attrs=set_zero_solref)
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        raw_dofs = np.flatnonzero(model.mujoco.solreflimit_mode.numpy() == SOLREF_MODE_RAW)
+        self.assertEqual(len(raw_dofs), 1)
+        raw_dof = int(raw_dofs[0])
+        np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[raw_dof], [0.0, 0.0], rtol=0.0, atol=0.0)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        jnt_to_dof = solver.mjc_jnt_to_newton_dof.numpy()[0]
+        raw_mjc_joints = np.flatnonzero(jnt_to_dof == raw_dof)
+        self.assertEqual(len(raw_mjc_joints), 1)
+        np.testing.assert_allclose(
+            solver.mjw_model.jnt_solref.numpy()[0, int(raw_mjc_joints[0])],
+            [0.0, 0.0],
+            rtol=0.0,
+            atol=0.0,
+        )
+
+    def test_mjcf_authored_solreflimit_is_preserved_as_native_parameter(self):
+        """Authored MJCF ``solreflimit`` still bypasses Newton force-space gain scaling."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="2" diaginertia="0.5 0.5 0.5"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1" solreflimit="0.03 0.7"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """,
+            ignore_inertial_definitions=False,
+        )
+        model = builder.finalize()
+
+        expected_solref = np.array([0.03, 0.7], dtype=np.float64)
+        np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], expected_solref, rtol=1e-6, atol=1e-6)
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_RAW)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        np.testing.assert_allclose(solver.mjw_model.jnt_solref.numpy()[0, 0], expected_solref, rtol=1e-6, atol=1e-6)
+
+    def test_mjcf_authored_zero_solreflimit_is_preserved_as_native_parameter(self):
+        """Authored MJCF ``solreflimit="0 0"`` must not be confused with the sentinel."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="2" diaginertia="0.5 0.5 0.5"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1" solreflimit="0 0"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """,
+            ignore_inertial_definitions=False,
+        )
+        model = builder.finalize()
+
+        expected_solref = np.array([0.0, 0.0], dtype=np.float64)
+        np.testing.assert_allclose(model.mujoco.solreflimit.numpy()[0], expected_solref, rtol=0.0, atol=0.0)
+        self.assertEqual(int(model.mujoco.solreflimit_mode.numpy()[0]), SOLREF_MODE_RAW)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        np.testing.assert_allclose(solver.mjw_model.jnt_solref.numpy()[0, 0], expected_solref, rtol=0.0, atol=0.0)
+
+    def test_saved_mjcf_and_mj_model_use_scaled_joint_limit_solref(self):
+        """Force-space joints get the scaled ``jnt_solref`` in ``MjModel`` but no ``solreflimit`` in MJCF.
+
+        ``save_to_mjcf`` writes ``solreflimit`` only for ``SOLREF_MODE_RAW``
+        joints (issue #2009 review item I6): re-importing a scaled
+        ``solreflimit`` would silently freeze the Newton force-space gains
+        because the MJCF parser sets ``SOLREF_MODE_RAW`` on every authored
+        ``solreflimit`` and the runtime ``jnt_solref`` would no longer
+        follow ``joint_limit_ke``/``kd``.
+        """
+        ke = 10000.0
+        kd = 100.0
+        model = self._build_pendulum_model(mass=2.0, ke=ke, kd=kd, inertia=0.5)
+
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as f:
+            xml_path = f.name
+        try:
+            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, save_to_mjcf=xml_path)
+
+            dof_invweight0 = float(solver.mj_model.dof_invweight0[0])
+            dmax = float(solver.mj_model.jnt_solimp[0, 1])
+            factor = dof_invweight0 * (1.0 - dmax)
+            expected_solref = np.array([-ke * factor, -kd * factor], dtype=np.float64)
+
+            # Runtime ``MjModel`` still carries the scaled solref so MuJoCo
+            # produces the right force at this instant.
+            np.testing.assert_allclose(solver.mj_model.jnt_solref[0], expected_solref, rtol=1e-6, atol=1e-6)
+
+            # Exported MJCF must NOT author ``solreflimit`` for this
+            # ``SOLREF_MODE_FORCE_SPACE`` joint (builder-API default).
+            tree = ET.parse(xml_path)
+            joint = next(tree.iter("joint"))
+            self.assertIsNone(
+                joint.get("solreflimit"),
+                "FORCE_SPACE joints must not persist a scaled solreflimit into the saved MJCF",
+            )
+        finally:
+            os.unlink(xml_path)
+
+    def test_saved_mjcf_does_not_write_limit_solref_to_unlimited_joints(self):
+        """``solreflimit`` is exported only for RAW joints with active limits.
+
+        After the I6 fix (issue #2009): ``SOLREF_MODE_FORCE_SPACE`` and
+        ``SOLREF_MODE_MJCF_DEFAULT`` joints intentionally skip the
+        ``solreflimit`` write to preserve round-trip semantics; unlimited
+        joints are also skipped (they have no limit to author). Authored
+        RAW solreflimit values still survive the export.
+        """
+        builder = newton.ModelBuilder(gravity=0.0)
+        SolverMuJoCo.register_custom_attributes(builder)
+        inertia = wp.mat33(np.eye(3) * 0.5)
+        link_a = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia, label="link_a")
+        link_b = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia, label="link_b")
+        limited = builder.add_joint_revolute(
+            parent=-1,
+            child=link_a,
+            axis=wp.vec3(0.0, 1.0, 0.0),
+            limit_lower=-1.0,
+            limit_upper=1.0,
+            limit_ke=10000.0,
+            limit_kd=100.0,
+            label="limited",
+        )
+        unlimited = builder.add_joint_revolute(
+            parent=link_a,
+            child=link_b,
+            axis=wp.vec3(0.0, 1.0, 0.0),
+            limit_ke=10000.0,
+            limit_kd=100.0,
+            label="unlimited",
+        )
+        builder.add_articulation([limited, unlimited])
+        model = builder.finalize()
+
+        # Promote the limited joint to RAW with an authored solreflimit so
+        # the export path has something to persist.
+        mode = model.mujoco.solreflimit_mode.numpy()
+        solref = model.mujoco.solreflimit.numpy()
+        mode[0] = SOLREF_MODE_RAW
+        solref[0] = np.array([0.03, 0.7], dtype=np.float32)
+        model.mujoco.solreflimit_mode.assign(mode)
+        model.mujoco.solreflimit.assign(wp.array(solref, dtype=wp.vec2, device=model.device))
+
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as f:
+            xml_path = f.name
+        try:
+            SolverMuJoCo(model, iterations=1, disable_contacts=True, save_to_mjcf=xml_path)
+
+            tree = ET.parse(xml_path)
+            joints = {joint.get("name"): joint for joint in tree.iter("joint")}
+            self.assertIn("limited", joints)
+            self.assertIn("unlimited", joints)
+            self.assertIsNotNone(
+                joints["limited"].get("solreflimit"),
+                "RAW joint with authored solreflimit must be exported",
+            )
+            self.assertIsNone(
+                joints["unlimited"].get("solreflimit"),
+                "Unlimited joint must not author solreflimit",
+            )
+        finally:
+            os.unlink(xml_path)
+
+    def test_cpu_backend_solref_uses_updated_solimp(self):
+        """CPU runtime solref scaling must use the latest ``solimplimit`` values."""
+        ke = 8000.0
+        kd = 80.0
+        model = self._build_pendulum_model(
+            mass=2.0,
+            ke=ke,
+            kd=kd,
+            inertia=0.5,
+            register_mujoco_attrs=True,
+        )
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=True)
+
+        solimp = np.array([[0.8, 0.8, 0.001, 0.5, 2.0]], dtype=np.float32)
+        model.mujoco.solimplimit.assign(wp.array(solimp, dtype=vec5, device=model.device))
+
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mj_model.jnt_solimp[0], solimp[0], rtol=1e-6, atol=1e-6)
+        dof_invweight0 = float(solver.mj_model.dof_invweight0[0])
+        dmax = float(solimp[0, 1])
+        factor = dof_invweight0 * (1.0 - dmax)
+        expected_solref = np.array([-ke * factor, -kd * factor], dtype=np.float64)
+        np.testing.assert_allclose(solver.mj_model.jnt_solref[0], expected_solref, rtol=1e-6, atol=1e-6)
+
+    def test_joint_limit_solref_resets_to_default_when_limit_ke_is_disabled(self):
+        """Runtime ``ke -> 0`` updates must restore the same limit ``solref`` as a fresh ``ke=0`` model."""
+        model = self._build_pendulum_model(mass=2.0, ke=10000.0, kd=100.0, inertia=0.5)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        default_model = self._build_pendulum_model(mass=2.0, ke=0.0, kd=0.0, inertia=0.5)
+        default_solver = SolverMuJoCo(default_model, iterations=1, disable_contacts=True)
+        expected_solref = default_solver.mjw_model.jnt_solref.numpy()[0, 0]
+
+        initial_solref = solver.mjw_model.jnt_solref.numpy()[0, 0]
+        self.assertNotAlmostEqual(float(initial_solref[0]), float(expected_solref[0]), places=3)
+        self.assertNotAlmostEqual(float(initial_solref[1]), float(expected_solref[1]), places=3)
+
+        model.joint_limit_ke.assign(np.array([0.0], dtype=np.float32))
+        model.joint_limit_kd.assign(np.array([0.0], dtype=np.float32))
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        actual_solref = solver.mjw_model.jnt_solref.numpy()[0, 0]
+        self.assertAlmostEqual(float(actual_solref[0]), float(expected_solref[0]), places=6)
+        self.assertAlmostEqual(float(actual_solref[1]), float(expected_solref[1]), places=6)
+
+    def test_cpu_backend_scales_joint_limit_solref_after_set_const(self):
+        """CPU ``MjModel.jnt_solref`` must use the same force-space scaling as the warp backend."""
+        ke = 50000.0
+        kd = 500.0
+        model = self._build_pendulum_model(mass=1.0, ke=ke, kd=kd, inertia=0.5, gravity=0.0)
+        solver = SolverMuJoCo(model, iterations=50, disable_contacts=True, use_mujoco_cpu=True)
+
+        def assert_scaled_solref(expected_invweight0):
+            dof_invweight0 = float(solver.mj_model.dof_invweight0[0])
+            self.assertAlmostEqual(dof_invweight0, expected_invweight0, delta=1e-4)
+            dmax = float(solver.mj_model.jnt_solimp[0, 1])
+            factor = dof_invweight0 * (1.0 - dmax)
+            expected_solref = np.array([-ke * factor, -kd * factor], dtype=np.float64)
+            actual_solref = np.array(solver.mj_model.jnt_solref[0], dtype=np.float64)
+            np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-6, atol=1e-6)
+
+        assert_scaled_solref(expected_invweight0=2.0)
+
+        new_mass = np.array([4.0], dtype=np.float32)
+        new_inertia = np.array([np.eye(3, dtype=np.float32) * 0.2], dtype=np.float32)
+        model.body_mass.assign(new_mass)
+        model.body_inertia.assign(new_inertia)
+        model.body_inv_mass.assign(1.0 / new_mass)
+        model.body_inv_inertia.assign(np.linalg.inv(new_inertia))
+
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+
+        assert_scaled_solref(expected_invweight0=5.0)
+
+    def test_joint_limit_torque_matches_configured_stiffness(self):
+        """Scaled ``jnt_solref`` produces a mass-independent constraint response.
+
+        MuJoCo uses a soft constraint with impedance ``D = imp/(invweight*(1-imp))``
+        and reference acceleration ``aref = -k_stored * pos``. After the
+        ``invweight0 * (1 - dmax)`` scaling, ``k_stored = ke*invweight0*(1-dmax)``
+        so the constraint-solver product ``D * k_stored = imp * ke`` is
+        independent of the mass matrix — matching Newton's force-space ``ke``.
+
+        For this pendulum (inertia=0.5, dof_invweight0=2, dmax=0.95, ke=50000,
+        kd=500) the factor is ``2 * 0.05 = 0.1``. MuJoCo's single-DOF constraint
+        solver then yields a one-step response of about ``qd_after ≈ -0.5 rad/s``
+        with the fix. Without the fix the stored stiffness is ``ke`` directly,
+        giving ``qd_after ≈ -5 rad/s`` — a 10x increase matching ``1 / factor``.
+        The window below accepts the fix and rejects the 10x-too-stiff bug.
+        """
+        mass = 1.0
+        inertia = 0.5
+        ke = 50000.0
+        kd = 500.0
+        model = self._build_pendulum_model(mass=mass, ke=ke, kd=kd, inertia=inertia, gravity=0.0)
+
+        solver = SolverMuJoCo(model, iterations=50, disable_contacts=True)
+
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+
+        overshoot = 0.1
+        joint_q = state_0.joint_q.numpy()
+        joint_q[0] = 1.0 + overshoot
+        state_0.joint_q.assign(joint_q)
+        joint_qd = state_0.joint_qd.numpy()
+        joint_qd[:] = 0.0
+        state_0.joint_qd.assign(joint_qd)
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+        dt = 1e-3
+        solver.step(state_0, state_1, control, None, dt)
+
+        qd_after = float(state_1.joint_qd.numpy()[0])
+        # With the fix: qd_after ≈ -0.5 rad/s (stored stiffness ke*factor = 5000).
+        # Without the fix: qd_after ≈ -5 rad/s (stored stiffness ke = 50000).
+        self.assertLess(qd_after, -0.2)
+        self.assertGreater(qd_after, -0.8)
+
+    def test_saved_mjcf_default_solreflimit_round_trips(self):
+        """MJCF without ``solreflimit`` must round-trip through ``save_to_mjcf``.
+
+        ``spec.to_xml()`` serialises MuJoCo's default ``(0.02, 1.0)`` as a
+        one-value ``solreflimit="0.02"`` shorthand. Before the fix the MJCF
+        importer rejected single-value ``solreflimit`` with ``ValueError:
+        ... expected 2 elements, got 3``; now the parser pads the missing
+        ``dampratio`` from the MuJoCo default.
+        """
+        mjcf_source = """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="2" diaginertia="0.5 0.5 0.5"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_source, ignore_inertial_definitions=False)
+        model = builder.finalize()
+
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as f:
+            xml_path = f.name
+        try:
+            SolverMuJoCo(model, iterations=1, disable_contacts=True, save_to_mjcf=xml_path)
+            # Re-import must succeed (this is the round-trip failure repro).
+            roundtrip_builder = newton.ModelBuilder()
+            roundtrip_builder.add_mjcf(xml_path, ignore_inertial_definitions=False)
+            roundtrip_builder.finalize()
+        finally:
+            os.unlink(xml_path)
+
+    def test_solreflimit_mode_force_space_overrides_authored_raw_value(self):
+        """``SOLREF_MODE_FORCE_SPACE`` must scale gains even when ``solreflimit`` is non-zero.
+
+        The earlier ``raw_solref_is_set`` shortcut silently forwarded any
+        non-zero ``mujoco.solreflimit`` regardless of the configured mode, so a
+        user opting into Newton force-space scaling would still see the raw
+        value at the constraint level. With the fix the explicit mode is
+        authoritative.
+        """
+        for use_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_cpu):
+                ke = 10000.0
+                kd = 100.0
+                model = self._build_pendulum_model(
+                    mass=2.0,
+                    ke=ke,
+                    kd=kd,
+                    inertia=0.5,
+                    register_mujoco_attrs=True,
+                )
+                model.mujoco.solreflimit.assign(
+                    wp.array(np.array([[0.03, 0.7]], dtype=np.float32), dtype=wp.vec2, device=model.device)
+                )
+                model.mujoco.solreflimit_mode.assign(np.array([SOLREF_MODE_FORCE_SPACE], dtype=np.int32))
+
+                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=use_cpu)
+
+                if use_cpu:
+                    dof_invweight0 = float(solver.mj_model.dof_invweight0[0])
+                    dmax = float(solver.mj_model.jnt_solimp[0, 1])
+                    actual_solref = np.array(solver.mj_model.jnt_solref[0], dtype=np.float64)
+                else:
+                    dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
+                    dmax = float(solver.mjw_model.jnt_solimp.numpy()[0, 0][1])
+                    actual_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
+                factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
+                expected_solref = np.array([-ke * factor, -kd * factor], dtype=np.float64)
+
+                self.assertFalse(np.allclose(actual_solref, [0.03, 0.7]))
+                np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
+
+    def test_joint_limit_solref_scales_per_dof_on_multi_dof_joint(self):
+        """Multi-DOF joints scale ``jnt_solref`` independently per DOF.
+
+        Exercises the ``jnt_dofadr`` lookup and the per-``mjc_jnt`` →
+        ``newton_dof`` mapping in ``update_jnt_solref_from_invweight0_kernel``
+        for a D6 joint with three angular DOFs. Each DOF gets a distinct
+        ``joint_limit_ke``/``kd`` pair so the per-DOF scaling can be observed
+        in the resulting ``jnt_solref`` rows.
+        """
+        builder = newton.ModelBuilder(gravity=0.0)
+        SolverMuJoCo.register_custom_attributes(builder)
+        inertia = wp.mat33(np.eye(3) * 0.3)
+        link = builder.add_link(
+            mass=1.5,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=inertia,
+            label="link",
+        )
+        # Three angular DOFs with distinct gains so per-DOF scaling is
+        # observable in the output. Limits must be finite so MuJoCo emits a
+        # ``jnt_limited`` slot per DOF.
+        ke_x, kd_x = 5000.0, 50.0
+        ke_y, kd_y = 12000.0, 120.0
+        ke_z, kd_z = 8000.0, 80.0
+        cfg_x = newton.ModelBuilder.JointDofConfig(
+            axis=wp.vec3(1.0, 0.0, 0.0),
+            limit_lower=-1.0,
+            limit_upper=1.0,
+            limit_ke=ke_x,
+            limit_kd=kd_x,
+        )
+        cfg_y = newton.ModelBuilder.JointDofConfig(
+            axis=wp.vec3(0.0, 1.0, 0.0),
+            limit_lower=-1.0,
+            limit_upper=1.0,
+            limit_ke=ke_y,
+            limit_kd=kd_y,
+        )
+        cfg_z = newton.ModelBuilder.JointDofConfig(
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            limit_lower=-1.0,
+            limit_upper=1.0,
+            limit_ke=ke_z,
+            limit_kd=kd_z,
+        )
+        j = builder.add_joint_d6(parent=-1, child=link, angular_axes=[cfg_x, cfg_y, cfg_z])
+        builder.add_articulation([j])
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # MuJoCo expands the D6 into three single-DOF joints. ``jnt_solref``
+        # rows must reflect each DOF's own ke/kd, scaled by that DOF's
+        # ``dof_invweight0`` and the per-joint ``solimp[1]``.
+        jnt_solref = solver.mjw_model.jnt_solref.numpy()[0]
+        dof_invweight0 = solver.mjw_model.dof_invweight0.numpy()[0]
+        jnt_solimp = solver.mjw_model.jnt_solimp.numpy()[0]
+        jnt_dofadr = solver.mjw_model.jnt_dofadr.numpy()
+
+        expected_gains = [(ke_x, kd_x), (ke_y, kd_y), (ke_z, kd_z)]
+        self.assertGreaterEqual(jnt_solref.shape[0], 3)
+        for mjc_jnt, (ke, kd) in enumerate(expected_gains):
+            dof_idx = int(jnt_dofadr[mjc_jnt])
+            invw = float(dof_invweight0[dof_idx])
+            dmax = float(jnt_solimp[mjc_jnt][1])
+            factor = invw * (1.0 - dmax) if invw > 0.0 and dmax < 1.0 else 1.0
+            expected = np.array([-ke * factor, -kd * factor], dtype=np.float64)
+            np.testing.assert_allclose(
+                jnt_solref[mjc_jnt],
+                expected,
+                rtol=1e-5,
+                atol=1e-6,
+                err_msg=f"D6 DOF {mjc_jnt}: expected scaled solref {expected.tolist()}, "
+                f"got {jnt_solref[mjc_jnt].tolist()}",
+            )
+
+        # Each DOF's solref is distinct (the three ke/kd pairs differ), which
+        # implicitly verifies that the kernel uses ``jnt_dofadr`` rather than
+        # broadcasting a single DOF's gain across the joint.
+        self.assertFalse(np.allclose(jnt_solref[0], jnt_solref[1]))
+        self.assertFalse(np.allclose(jnt_solref[1], jnt_solref[2]))
+
+    def test_invalid_raw_solreflimit_warns_in_update_solref(self):
+        """``_update_solref_from_invweight0`` warns once on invalid RAW solreflimit and re-arms after JOINT_DOF_PROPERTIES."""
+        builder = newton.ModelBuilder(gravity=0.0)
+        SolverMuJoCo.register_custom_attributes(builder)
+        inertia = wp.mat33(np.eye(3) * 0.5)
+        link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia)
+        joint = builder.add_joint_revolute(
+            parent=-1,
+            child=link,
+            axis=wp.vec3(0.0, 1.0, 0.0),
+            limit_lower=-1.0,
+            limit_upper=1.0,
+            limit_ke=2500.0,
+            limit_kd=100.0,
+        )
+        builder.add_articulation([joint])
+        model = builder.finalize()
+
+        # Promote to RAW with a mixed-sign solref — MuJoCo would silently
+        # treat the timeconst as 2500s and effectively disable the limit.
+        model.mujoco.solreflimit_mode.assign(np.array([SOLREF_MODE_RAW], dtype=np.int32))
+        model.mujoco.solreflimit.assign(
+            wp.array(np.array([[-2500.0, 1.0]], dtype=np.float32), dtype=wp.vec2, device=model.device)
+        )
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        messages = [str(w.message) for w in caught]
+        self.assertTrue(
+            any("invalid components" in m and "DOF indices" in m for m in messages),
+            f"Expected RAW solreflimit domain warning, got: {messages}",
+        )
+
+        # Second notify with no change must not re-warn — the one-shot flag
+        # is sticky outside JOINT_DOF_PROPERTIES.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+        self.assertFalse(
+            any("invalid components" in str(w.message) for w in caught),
+            "RAW solreflimit warn must not re-fire on BODY_INERTIAL_PROPERTIES",
+        )
+
+        # JOINT_DOF_PROPERTIES re-arms the validator.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+        self.assertTrue(
+            any("invalid components" in str(w.message) for w in caught),
+            "JOINT_DOF_PROPERTIES must re-arm the RAW solreflimit validator",
+        )
+
+    def test_mjcf_invalid_solreflimit_emits_import_warning(self):
+        """MJCF importer warns when ``solref_to_stiffness_damping`` rejects an authored solreflimit."""
+        mjcf_source = """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1" solreflimit="-1 1"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_mjcf(mjcf_source, ignore_inertial_definitions=False)
+        messages = [str(w.message) for w in caught]
+        self.assertTrue(
+            any("invalid solreflimit" in m and "joint" in m.lower() for m in messages),
+            f"Expected MJCF importer warning for invalid solreflimit, got: {messages}",
+        )
+
+    def test_parse_vec_unknown_shorthand_warns(self):
+        """``parse_vec`` warns when a non-whitelisted multi-component MJCF attribute gets a single value.
+
+        ``solreflimit="0.04"`` (whitelisted) must round-trip silently; an
+        unrelated multi-component attribute like ``actuatorfrcrange="1"``
+        gets replicate semantics with a warning.
+        """
+        # Whitelisted: no warning, shorthand pads from default.
+        mjcf_whitelisted = """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1" solreflimit="0.04"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            newton.ModelBuilder().add_mjcf(mjcf_whitelisted, ignore_inertial_definitions=False)
+        self.assertFalse(
+            any("provided a single value" in str(w.message) for w in caught),
+            "Whitelisted solreflimit shorthand must not warn",
+        )
+
+        # Non-whitelisted multi-component shorthand: ``range`` is a vec2
+        # joint attribute that's not on the solref whitelist. A single
+        # value should trigger the warn-and-replicate fallback so the
+        # semantic drift surfaces.
+        mjcf_unexpected = """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                  <joint name="hinge" type="hinge" axis="0 1 0" range="0.5"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            newton.ModelBuilder().add_mjcf(mjcf_unexpected, ignore_inertial_definitions=False)
+        self.assertTrue(
+            any("provided a single value" in str(w.message) and "range" in str(w.message) for w in caught),
+            f"Non-whitelisted multi-component shorthand must warn; got: {[str(w.message) for w in caught]}",
+        )
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ from ...core.joints import JointActuationType
 from ...core.math import FLOAT32_MAX
 from ...core.model import ModelKamino
 from ...core.time import TimeData
-from ...core.types import FloatArrayLike, IntArrayLike, float32, int32
+from ...core.types import FloatArrayLike, IntArrayLike, float32, int32, to_warp_int32_array
 
 ###
 # Module interface
@@ -307,7 +307,7 @@ class RandomJointController:
         with wp.ScopedDevice(self._device):
             self._data = RandomJointControllerData(
                 seed=self._seed,
-                decimation=wp.array(self._decimation, dtype=int32),
+                decimation=to_warp_int32_array(self._decimation),
                 scale=wp.array(self._scale, dtype=float32),
             )
 

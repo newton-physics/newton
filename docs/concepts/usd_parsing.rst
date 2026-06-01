@@ -37,6 +37,27 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 * Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
+Material Color Spaces
+---------------------
+
+Newton stores imported mesh colors and base-color textures in display/sRGB
+space, matching the rest of the public model API. During USD import, scalar
+``UsdPreviewSurface`` ``diffuseColor`` and ``baseColor`` values are resolved
+from the authored input and normalized to that Newton convention.
+
+If a scalar color has no USD color-space metadata, Newton follows the USD
+Preview Surface convention and treats it as linear Rec.709 before converting it
+to display/sRGB. If the attribute has authored ``colorSpace`` metadata or
+inherits a color space through ``UsdColorSpaceAPI``, Newton uses
+``Usd.ColorSpaceAPI.ComputeColorSpaceName`` to determine the effective color
+space. Linear/raw color spaces are converted to display/sRGB; display/sRGB
+colors such as ``srgb_rec709_scene`` are kept as authored.
+
+Texture inputs are handled similarly at the color-texture boundary. Newton reads
+``UsdUVTexture.sourceColorSpace`` first, falls back to color-space metadata on
+the file attribute, and converts linear/raw color textures to display/sRGB when
+they are loaded. Display/sRGB textures stay display-encoded.
+
 Mass and Inertia Precedence
 ---------------------------
 
@@ -49,18 +70,28 @@ For rigid bodies with ``UsdPhysics.MassAPI`` applied, Newton resolves each inert
 (mass, inertia, center of mass) independently.  Authored attributes take precedence;
 ``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)`` provides baseline values for the rest.
 
-1. Authored ``physics:mass``, ``physics:diagonalInertia``, and ``physics:centerOfMass`` are
+1. ``newton:inertia`` (from ``NewtonMassAPI``) is a compact 6-element symmetric tensor
+   ``[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`` already in the body frame.  When authored, it
+   overrides ``physics:diagonalInertia`` and ``physics:principalAxes``.
+2. Authored ``physics:mass``, ``physics:diagonalInertia``, and ``physics:centerOfMass`` are
    applied directly when present.  If ``physics:principalAxes`` is missing, identity rotation
    is used.
-2. When ``physics:mass`` is authored but ``physics:diagonalInertia`` is not, the inertia
+3. When ``physics:mass`` is authored but inertia is not, the inertia
    accumulated from collision shapes is scaled by ``authored_mass / accumulated_mass``.
-3. For any remaining unresolved properties, Newton falls back to
+   Shell colliders (``newton:massModel = "shell"``) contribute shell-derived inertia to the
+   accumulation before this scaling is applied.
+4. For any remaining unresolved properties, Newton falls back to
    ``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)``.
    In this fallback path, collider contributions use a two-level precedence:
 
    a. If collider ``UsdPhysics.MassAPI`` has authored ``mass`` and ``diagonalInertia``, those
       authored values are converted to unit-density collider mass information.
-   b. Otherwise, Newton derives unit-density collider mass information from collider geometry.
+   b. Otherwise, Newton derives unit-density collider mass information from collider
+      geometry.  When ``NewtonMassAPI`` is applied to the collider, ``newton:massModel``
+      controls whether inertia is derived from the full volume (``"solid"``, default) or a
+      thin shell at the surface (``"shell"``).  For shell shapes,
+      ``newton:shellThickness`` sets the wall thickness [m] measured inward from the outer
+      surface; the sentinel ``-inf`` (default) falls back to ``newton:contactMargin``.
 
    A collider is skipped (with warning) only if neither path provides usable collider mass
    information.
@@ -89,9 +120,9 @@ Schema Resolvers
 
 Schema resolvers bridge the gap between solver-specific USD schemas and Newton's internal representation. They remap attributes authored for PhysX, MuJoCo, or other solvers to the equivalent Newton properties, handle priority-based resolution when multiple solvers define the same attribute, and collect solver-native attributes for inspection or custom pipelines.
 
-.. note::
+.. experimental::
 
-   The ``schema_resolvers`` argument in :meth:`newton.ModelBuilder.add_usd` is an experimental feature that may be removed or changed significantly in the future.
+   The ``schema_resolvers`` argument in :meth:`newton.ModelBuilder.add_usd` may change without prior notice.
 
 Solver Attribute Remapping
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
