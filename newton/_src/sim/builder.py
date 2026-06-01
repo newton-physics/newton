@@ -1239,9 +1239,9 @@ class ModelBuilder:
 
         _register_equality_constraint_attributes(self)
 
-    # region deprecated equality-constraint accumulators (removal in a future release)
+    # Deprecated equality-constraint accumulators (removal in a future release).
     # The legacy ``ModelBuilder.equality_constraint_*`` lists are now thin read-only views over
-    # the ``mujoco:equality_constraint`` custom-attribute table. Delete this whole region when
+    # the ``mujoco:equality_constraint`` custom-attribute table. Delete this whole block when
     # the deprecation window closes.
 
     def _eq_attr(self, name: str) -> ModelBuilder.CustomAttribute:
@@ -1362,8 +1362,6 @@ class ModelBuilder:
             stacklevel=2,
         )
         return []
-
-    # endregion deprecated equality-constraint accumulators
 
     def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
         """Add a collision filter pair in canonical order.
