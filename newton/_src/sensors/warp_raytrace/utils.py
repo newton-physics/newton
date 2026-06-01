@@ -11,6 +11,7 @@ import numpy as np
 import warp as wp
 
 from ...core import MAXVAL
+from . import camera_utils
 from .types import RenderLightType, TextureData
 
 if TYPE_CHECKING:
@@ -419,6 +420,89 @@ class Utils:
         )
 
         return camera_rays
+
+    def compute_usd_camera_rays(
+        self,
+        width: int,
+        height: int,
+        cameras: Any | list[Any] | tuple[Any, ...],
+        *,
+        time: Any | None = None,
+    ) -> wp.array4d[wp.vec3f]:
+        """Compute camera-space rays from USD camera definitions.
+
+        Supports standard perspective ``UsdGeom.Camera`` pinhole cameras
+        and OmniLens analytic fisheye camera attributes for OpenCV Fisheye,
+        F-theta, and Kannala-Brandt K3. Depth of field, exposure, shutter,
+        clipping range, LUT lenses, and non-perspective USD projections do
+        not affect the returned rays.
+
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            cameras: One or more USD camera prims or ``UsdGeom.Camera``
+                schemas.
+            time: Optional USD time code or numeric frame used for authored
+                camera attributes.
+
+        Returns:
+            Camera-space rays, shape ``(camera_count, height, width, 2)``.
+        """
+        if width <= 0 or height <= 0:
+            raise ValueError("width and height must be positive.")
+
+        model_ids, params = camera_utils.extract_usd_camera_ray_params(width, height, cameras, time=time)
+
+        camera_count = len(model_ids)
+        camera_rays = wp.empty((camera_count, height, width, 2), dtype=wp.vec3f, device=self.__render_context.device)
+
+        wp.launch(
+            kernel=camera_utils.compute_usd_camera_rays_kernel,
+            dim=(camera_count, height, width),
+            inputs=[
+                width,
+                height,
+                wp.array(model_ids, dtype=wp.int32, device=self.__render_context.device),
+                wp.array(params, dtype=wp.float32, device=self.__render_context.device),
+                camera_rays,
+            ],
+            device=self.__render_context.device,
+        )
+
+        return camera_rays
+
+    def compute_usd_camera_transforms(
+        self,
+        cameras: Any | list[Any] | tuple[Any, ...],
+        *,
+        world_count: int | None = None,
+        time: Any | None = None,
+    ) -> wp.array2d[wp.transformf]:
+        """Compute camera-to-world transforms from USD camera prims.
+
+        Args:
+            cameras: One or more USD camera prims or ``UsdGeom.Camera``
+                schemas.
+            world_count: Number of worlds to repeat each camera transform
+                across. If ``None``, uses the sensor render context's world
+                count.
+            time: Optional USD time code or numeric frame used for authored
+                camera attributes and transforms.
+
+        Returns:
+            Camera-to-world transforms, shape ``(camera_count, world_count)``.
+        """
+        if world_count is None:
+            world_count = self.__render_context.world_count
+        if world_count <= 0:
+            raise ValueError("world_count must be positive.")
+
+        return camera_utils.compute_usd_camera_transforms(
+            cameras,
+            world_count=world_count,
+            device=self.__render_context.device,
+            time=time,
+        )
 
     def convert_ray_depth_to_forward_depth(
         self,

@@ -107,6 +107,33 @@ attributes, and usage examples.
   :class:`~newton.sensors.SensorTiledCamera` instead.
 * :class:`~newton.sensors.SensorTiledCamera` -- raytraced color and depth rendering across multiple worlds.
 
+USD Cameras
+-----------
+
+``SensorTiledCamera`` can derive render inputs directly from USD camera prims. The helper supports standard
+perspective ``UsdGeom.Camera`` pinhole parameters and OmniLens analytic fisheye camera attributes:
+
+.. code-block:: python
+
+   from pxr import Usd
+
+   from newton.sensors import SensorTiledCamera
+
+   stage = Usd.Stage.Open("scene.usda")
+   usd_camera = stage.GetPrimAtPath("/World/Camera")
+
+   sensor = SensorTiledCamera(model)
+   camera_rays = sensor.utils.compute_usd_camera_rays(640, 480, usd_camera)
+   camera_transforms = sensor.utils.compute_usd_camera_transforms(usd_camera)
+
+   color = sensor.utils.create_color_image_output(640, 480)
+   sensor.update(
+       state,
+       camera_transforms,
+       camera_rays,
+       color_image=color,
+   )
+
 Extended Attributes
 -------------------
 
