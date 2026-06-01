@@ -158,13 +158,13 @@ for _ in range(steps):
 group.reset(state_0, mask=reset_mask)
 ```
 
-A `Controller`'s `__init__` validates and stashes bindings; it does not allocate device buffers. `ControlGroup.__init__` picks the device, validates all controllers agree, calls `controller.finalize(device, num_outputs)` on each (allocating per-controller private buffers such as PID's `next_integral` scratch or DiffIK's internal Model + State + Jacobian buffer), and precomputes the zero plan.
+A `Controller`'s `__init__` validates and stashes bindings; it does not allocate device buffers. `ControlGroup.__init__` picks the device, validates all controllers agree, calls `controller.finalize(device, num_outputs)` on each (allocating per-controller private buffers such as PID's `next_integral` scratch or DiffIK's internal Model + State + Jacobian buffer), and collects every controller's `outputs()` bindings into a flat list to be zeroed at the start of each step.
 
 ---
 
 ## Output accumulation (direct write)
 
-`ControlGroup` runs a single **upfront zero pass** before any controller's `compute()` is called: for every output `(array, port_indices)` registered by any controller (collected at `ControlGroup.__init__` from `Controller.outputs()`), it writes zero into `array[port_indices[i]]`. Overlapping destinations are zeroed once each — the zero plan dedupes by `(array.ptr, port_indices.ptr)`.
+`ControlGroup` zeros all output destinations before any controller's `compute()` is called. At the start of each `step()`, it walks the flat list of `(array, port_indices)` bindings collected from every controller's `outputs()` and, for each one, launches a kernel that writes zero into `array[port_indices[i]]`. No dedupe: two controllers binding overlapping slots will have those slots zeroed twice, which is harmless (zero is idempotent) and avoids the fragility of comparing `wp.array` references for identity.
 
 Each `Controller.compute()` then writes directly into its bound output array(s) using `+=`:
 
@@ -254,9 +254,10 @@ class Controller:
 
     def outputs(self) -> list[tuple[wp.array[float], wp.array[wp.uint32]]]:
         """Return the (output_array, output_port_indices) bindings this
-        controller writes to. Used by ControlGroup to build the upfront
-        zero plan. Most controllers return a single binding; multi-output
-        controllers (e.g. ControllerDifferentialIK) return multiple."""
+        controller writes to. ControlGroup collects these from every
+        controller and zeros each one before every step. Most controllers
+        return a single binding; multi-output controllers (e.g.
+        ControllerDifferentialIK) return multiple."""
 
     def compute(
         self,
@@ -495,8 +496,8 @@ class ControlGroup:
     def __init__(self, controllers: list[Controller]):
         """Pick the device from controllers' bound output arrays, validate
         all agree, finalize() every controller (each controller's
-        num_outputs is len(its indices)), build the zero plan as the
-        deduped union of all controllers' outputs() bindings."""
+        num_outputs is len(its indices)), collect every controller's
+        outputs() into a flat list to be zeroed at the start of each step."""
 
     def is_stateful(self) -> bool: ...
     def is_graphable(self) -> bool: ...
@@ -505,8 +506,10 @@ class ControlGroup:
         """Allocate composed state with one entry per stateful controller."""
 
     def step(self, current_state, next_state, dt: float) -> None:
-        """1. Run the upfront zero pass over the deduped union of output
-              destinations.
+        """1. Walk the collected list of output bindings and zero each one.
+              Two controllers binding overlapping slots will have those
+              slots zeroed twice — harmless (idempotent), and avoids any
+              wp.array-identity comparison.
            2. For each controller (in registration order), call compute()
               which += writes into its bound output array(s)."""
 
