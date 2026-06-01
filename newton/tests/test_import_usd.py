@@ -5985,13 +5985,15 @@ def Xform "Articulation" (
         mat_plain_prim.ApplyAPI("NewtonMaterialAPI")
         UsdPhysics.MaterialAPI.Apply(mat_plain_prim)
 
-        # Material WITH ke & kd authored
+        # Material WITH all contact attrs authored
         mat_authored = UsdShade.Material.Define(stage, "/Materials/AuthoredMat")
         mat_authored_prim = mat_authored.GetPrim()
         mat_authored_prim.ApplyAPI("NewtonMaterialAPI")
         UsdPhysics.MaterialAPI.Apply(mat_authored_prim)
         mat_authored_prim.GetAttribute("newton:contactStiffness").Set(4000.0)
         mat_authored_prim.GetAttribute("newton:contactDamping").Set(100.0)
+        mat_authored_prim.GetAttribute("newton:contactFrictionGain").Set(600.0)
+        mat_authored_prim.GetAttribute("newton:contactAdhesion").Set(0.02)
 
         articulation = UsdGeom.Xform.Define(stage, "/Articulation")
         UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
@@ -6015,6 +6017,8 @@ def Xform "Articulation" (
         UsdShade.MaterialBindingAPI.Apply(col_both_prim).Bind(mat_authored, "physics")
         col_both_prim.CreateAttribute("newton:contact_ke", Sdf.ValueTypeNames.Float).Set(1111.0)
         col_both_prim.CreateAttribute("newton:contact_kd", Sdf.ValueTypeNames.Float).Set(222.0)
+        col_both_prim.CreateAttribute("newton:contact_kf", Sdf.ValueTypeNames.Float).Set(333.0)
+        col_both_prim.CreateAttribute("newton:contact_ka", Sdf.ValueTypeNames.Float).Set(0.09)
 
         builder = newton.ModelBuilder()
         with warnings.catch_warnings(record=True) as w:
@@ -6037,6 +6041,8 @@ def Xform "Articulation" (
         # Material value wins over legacy attr
         self.assertAlmostEqual(model.shape_material_ke.numpy()[idx_both], 4000.0, places=1)
         self.assertAlmostEqual(model.shape_material_kd.numpy()[idx_both], 100.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[idx_both], 600.0, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[idx_both], 0.02, places=4)
 
         # Deprecation warnings from both shapes (legacy attrs always emit migration signal)
         ke_warnings = [m for m in dep_msgs if "newton:contact_ke" in m]
@@ -6045,8 +6051,8 @@ def Xform "Articulation" (
         ka_warnings = [m for m in dep_msgs if "newton:contact_ka" in m]
         self.assertEqual(len(ke_warnings), 2)
         self.assertEqual(len(kd_warnings), 2)
-        self.assertEqual(len(kf_warnings), 1)
-        self.assertEqual(len(ka_warnings), 1)
+        self.assertEqual(len(kf_warnings), 2)
+        self.assertEqual(len(ka_warnings), 2)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_contact_response_solref_over_material(self):
@@ -6092,6 +6098,16 @@ def Xform "Articulation" (
         # kf/ka fall through to material (no MuJoCo per-shape kf/ka)
         self.assertAlmostEqual(model.shape_material_kf.numpy()[idx], builder.default_shape_cfg.kf, places=1)
         self.assertAlmostEqual(model.shape_material_ka.numpy()[idx], builder.default_shape_cfg.ka, places=4)
+
+        # Newton resolver first -> material wins over solref
+        builder2 = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder2)
+        result2 = builder2.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
+        model2 = builder2.finalize()
+        idx2 = result2["path_shape_map"]["/Articulation/Body/Col"]
+
+        self.assertAlmostEqual(model2.shape_material_ke.numpy()[idx2], 4000.0, places=1)
+        self.assertAlmostEqual(model2.shape_material_kd.numpy()[idx2], 100.0, places=1)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_constraint_parsing(self):

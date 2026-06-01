@@ -2891,33 +2891,28 @@ def parse_usd(
                 collider_is_visible = collider_is_visible and _is_effectively_visible(prim)
 
                 # Contact response precedence:
-                #   non-legacy per-shape (MuJoCo solref) > material > legacy per-shape > default
-                # Legacy getters emit DeprecationWarning; non-legacy (solref) do not.
+                #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
                 _default = builder.default_shape_cfg
+                mjc_has_priority = False
+                for _r in R.resolvers:
+                    if _r.name == "mjc":
+                        mjc_has_priority = True
+                        break
+                    if _r.name == "newton":
+                        break
+                has_solref = mjc_has_priority and usd.get_attribute(prim, "mjc:solref") is not None
                 shape_contact = {}
                 for _ck in ("ke", "kd", "kf", "ka"):
-                    with warnings.catch_warnings(record=True) as _cw:
-                        warnings.simplefilter("always")
-                        per_shape_val = R.get_value(prim, prim_type=PrimType.SHAPE, key=_ck, verbose=verbose)
-                    _dep = [w for w in _cw if issubclass(w.category, DeprecationWarning)]
-                    for _w in _cw:
-                        if not issubclass(_w.category, DeprecationWarning):
-                            warnings.warn_explicit(_w.message, _w.category, _w.filename, _w.lineno)
-                    is_legacy = len(_dep) > 0
+                    per_shape_val = R.get_value(prim, prim_type=PrimType.SHAPE, key=_ck, verbose=verbose)
                     has_shape = per_shape_val is not None and math.isfinite(float(per_shape_val))
                     mat_val = getattr(material, _ck)
                     has_mat = mat_val is not None and math.isfinite(mat_val)
 
-                    if has_shape and not is_legacy:
+                    if has_solref and _ck in ("ke", "kd") and has_shape:
                         shape_contact[_ck] = float(per_shape_val)
                     elif has_mat:
-                        if is_legacy:
-                            for _w in _dep:
-                                warnings.warn_explicit(_w.message, _w.category, _w.filename, _w.lineno)
                         shape_contact[_ck] = mat_val
                     elif has_shape:
-                        for _w in _dep:
-                            warnings.warn_explicit(_w.message, _w.category, _w.filename, _w.lineno)
                         shape_contact[_ck] = float(per_shape_val)
                     else:
                         shape_contact[_ck] = getattr(_default, _ck)
