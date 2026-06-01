@@ -218,8 +218,13 @@ def solve_particle_shape_contacts(
     wp.atomic_add(delta, particle_index, w1 * delta_total)
 
     if body_index >= 0:
-        delta_t = wp.cross(r, delta_total)
-        wp.atomic_sub(body_delta, body_index, wp.spatial_vector(delta_total, delta_t))
+        # apply_body_deltas() treats body_delta as a velocity-like correction:
+        # it multiplies by inverse mass/inertia and dt to update the body pose.
+        # delta_total is a positional contact correction, matching the particle
+        # path above, so convert it to the body-delta convention here.
+        delta_v = delta_total / dt
+        delta_w = wp.cross(r, delta_v)
+        wp.atomic_sub(body_delta, body_index, wp.spatial_vector(delta_v, delta_w))
 
 
 @wp.kernel
@@ -469,6 +474,38 @@ def solve_tetrahedra(
     relaxation: float,
     delta: wp.array[wp.vec3],
 ):
+    # Tetrahedral XPBD constraint solve.
+    #
+    # ModelBuilder stores rest_matrix as inv(Dm), where
+    # Dm = [x1_0 - x0_0, x2_0 - x0_0, x3_0 - x0_0] in the rest pose.  Each
+    # iteration rebuilds Ds from the current particle positions and computes the
+    # deformation gradient
+    #
+    #     F = Ds * inv(Dm).
+    #
+    # The material is the same compressible Neo-Hookean-style split used by the
+    # FEM path: a distortional term controlled by the first Lame parameter
+    # k_mu, and a volume term controlled by the second Lame parameter k_lambda.
+    # In XPBD form these are solved as two scalar constraints:
+    #
+    #     C_dev = trace(F^T F) - 3
+    #     C_vol = det(F) - 1 + activation
+    #
+    # Their gradients are dC/dF = 2F for C_dev and cof(F) for C_vol.  The chain
+    # rule dF/dx contributes inv(Dm)^T, giving the per-particle gradients below.
+    #
+    # A tetrahedron's energy scales with rest volume V0, so the XPBD compliance
+    # for a material stiffness k is 1 / (V0 * k).  Since rest_matrix is inv(Dm),
+    # det(rest_matrix) * 6 = 1 / V0.
+    #
+    # Damping uses XPBD's compliant Rayleigh term:
+    #
+    #     gamma = k_damp / (k * dt)
+    #     dlambda = -(C + gamma * dt * grad(C).dot(v))
+    #               / ((1 + gamma) * sum_i(w_i |grad_i C|^2) + alpha)
+    #
+    # The solver does not persist lambdas for this constraint, so each iteration
+    # computes a local multiplier and accumulates relaxed position corrections.
     tid = wp.tid()
 
     i = indices[tid, 0]
@@ -476,21 +513,21 @@ def solve_tetrahedra(
     k = indices[tid, 2]
     l = indices[tid, 3]
 
-    # act = activation[tid]
+    act = activation[tid]
 
-    # k_mu = materials[tid, 0]
-    # k_lambda = materials[tid, 1]
-    # k_damp = materials[tid, 2]
+    k_mu = materials[tid, 0]
+    k_lambda = materials[tid, 1]
+    k_damp = materials[tid, 2]
 
     x0 = x[i]
     x1 = x[j]
     x2 = x[k]
     x3 = x[l]
 
-    # v0 = v[i]
-    # v1 = v[j]
-    # v2 = v[k]
-    # v3 = v[l]
+    v0 = v[i]
+    v1 = v[j]
+    v2 = v[k]
+    v3 = v[l]
 
     w0 = inv_mass[i]
     w1 = inv_mass[j]
@@ -506,6 +543,8 @@ def solve_tetrahedra(
     inv_QT = wp.transpose(Dm)
 
     inv_rest_volume = wp.determinant(Dm) * 6.0
+    if inv_rest_volume <= 0.0 or k_mu <= 0.0 or k_lambda <= 0.0:
+        return
 
     # F = Xs*Xm^-1
     F = Ds * Dm
@@ -519,9 +558,7 @@ def solve_tetrahedra(
     C = float(0.0)
     dC = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     compliance = float(0.0)
-
-    stretching_compliance = relaxation
-    volume_compliance = relaxation
+    stiffness = float(0.0)
 
     num_terms = 2
     for term in range(0, num_terms):
@@ -529,12 +566,14 @@ def solve_tetrahedra(
             # deviatoric, stable
             C = tr - 3.0
             dC = F * 2.0
-            compliance = stretching_compliance
+            compliance = inv_rest_volume / k_mu
+            stiffness = k_mu
         elif term == 1:
             # volume conservation
-            C = wp.determinant(F) - 1.0
+            C = wp.determinant(F) - 1.0 + act
             dC = wp.matrix_from_cols(wp.cross(f2, f3), wp.cross(f3, f1), wp.cross(f1, f2))
-            compliance = volume_compliance
+            compliance = inv_rest_volume / k_lambda
+            stiffness = k_lambda
 
         if C != 0.0:
             dP = dC * inv_QT
@@ -552,14 +591,17 @@ def solve_tetrahedra(
 
             if w > 0.0:
                 alpha = compliance / dt / dt
-                if inv_rest_volume > 0.0:
-                    alpha *= inv_rest_volume
-                dlambda = -C / (w + alpha)
+                gamma = float(0.0)
+                grad_dot_v = float(0.0)
+                if k_damp > 0.0 and stiffness > 0.0:
+                    gamma = k_damp / (stiffness * dt)
+                    grad_dot_v = dt * (wp.dot(grad0, v0) + wp.dot(grad1, v1) + wp.dot(grad2, v2) + wp.dot(grad3, v3))
+                dlambda = -1.0 * (C + gamma * grad_dot_v) / ((1.0 + gamma) * w + alpha)
 
-                wp.atomic_add(delta, i, w0 * dlambda * grad0)
-                wp.atomic_add(delta, j, w1 * dlambda * grad1)
-                wp.atomic_add(delta, k, w2 * dlambda * grad2)
-                wp.atomic_add(delta, l, w3 * dlambda * grad3)
+                wp.atomic_add(delta, i, w0 * dlambda * grad0 * relaxation)
+                wp.atomic_add(delta, j, w1 * dlambda * grad1 * relaxation)
+                wp.atomic_add(delta, k, w2 * dlambda * grad2 * relaxation)
+                wp.atomic_add(delta, l, w3 * dlambda * grad3 * relaxation)
                 # wp.atomic_add(particle.num_corr, id0, 1)
                 # wp.atomic_add(particle.num_corr, id1, 1)
                 # wp.atomic_add(particle.num_corr, id2, 1)
@@ -657,11 +699,6 @@ def solve_tetrahedra2(
     x1 = x[j]
     x2 = x[k]
     x3 = x[l]
-
-    # v0 = v[i]
-    # v1 = v[j]
-    # v2 = v[k]
-    # v3 = v[l]
 
     w0 = inv_mass[i]
     w1 = inv_mass[j]
@@ -801,6 +838,7 @@ def apply_particle_deltas(
     v_new_mag = wp.length(v_new)
     if v_new_mag > v_max:
         v_new *= v_max / v_new_mag
+        x_new = x0 + v_new * dt
 
     x_out[tid] = x_new
     v_out[tid] = v_new
