@@ -154,46 +154,38 @@ def extract_usd_camera_ray_params(
     for camera_index, usd_camera in enumerate(usd_cameras):
         prim = usd_camera.GetPrim()
         lens_model = str(_get_usd_attr(prim, "omni:lensdistortion:model", "", time_code))
-        applied_schemas = set(_get_applied_api_schemas(prim))
 
-        has_opencv_fisheye = (
-            lens_model == "opencvFisheye"
-            or "OmniLensDistortionOpenCvFisheyeAPI" in applied_schemas
-            or _has_any_authored_usd_attr(
+        is_opencv_fisheye = lens_model == "opencvFisheye"
+        is_ftheta = lens_model == "ftheta"
+        is_kannala_brandt = lens_model == "kannalaBrandtK3"
+
+        if not is_opencv_fisheye and not is_ftheta and not is_kannala_brandt:
+            applied_schemas = set(_get_applied_api_schemas(prim))
+            if "OmniLensDistortionOpenCvFisheyeAPI" in applied_schemas or _has_any_authored_usd_attr(
                 prim,
                 (
                     "omni:lensdistortion:opencvFisheye:fx",
                     "omni:lensdistortion:opencvFisheye:fy",
                     "omni:lensdistortion:opencvFisheye:k1",
                 ),
-            )
-        )
-        has_ftheta = (
-            lens_model == "ftheta"
-            or "OmniLensDistortionFthetaAPI" in applied_schemas
-            or _has_any_authored_usd_attr(
+            ):
+                is_opencv_fisheye = True
+            elif "OmniLensDistortionFthetaAPI" in applied_schemas or _has_any_authored_usd_attr(
                 prim,
-                (
-                    "omni:lensdistortion:ftheta:k0",
-                    "omni:lensdistortion:ftheta:k1",
-                    "omni:lensdistortion:ftheta:maxFov",
-                ),
-            )
-        )
-        has_kannala_brandt = (
-            lens_model == "kannalaBrandtK3"
-            or "OmniLensDistortionKannalaBrandtK3API" in applied_schemas
-            or _has_any_authored_usd_attr(
+                ("omni:lensdistortion:ftheta:k0", "omni:lensdistortion:ftheta:k1", "omni:lensdistortion:ftheta:maxFov"),
+            ):
+                is_ftheta = True
+            elif "OmniLensDistortionKannalaBrandtK3API" in applied_schemas or _has_any_authored_usd_attr(
                 prim,
                 (
                     "omni:lensdistortion:kannalaBrandtK3:k0",
                     "omni:lensdistortion:kannalaBrandtK3:k1",
                     "omni:lensdistortion:kannalaBrandtK3:maxFov",
                 ),
-            )
-        )
+            ):
+                is_kannala_brandt = True
 
-        if has_opencv_fisheye:
+        if is_opencv_fisheye:
             image_size = _get_usd_vec2_attr(
                 prim, "omni:lensdistortion:opencvFisheye:imageSize", (2048.0, 1024.0), time_code
             )
@@ -227,7 +219,7 @@ def extract_usd_camera_ray_params(
             )
             continue
 
-        if has_ftheta:
+        if is_ftheta:
             nominal_width = _get_usd_float_attr(
                 prim, "omni:lensdistortion:ftheta:nominalWidth", float(width), time_code
             )
@@ -268,7 +260,7 @@ def extract_usd_camera_ray_params(
             )
             continue
 
-        if has_kannala_brandt:
+        if is_kannala_brandt:
             nominal_width = _get_usd_float_attr(
                 prim, "omni:lensdistortion:kannalaBrandtK3:nominalWidth", float(width), time_code
             )

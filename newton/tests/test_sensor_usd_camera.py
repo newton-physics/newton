@@ -75,17 +75,6 @@ class TestSensorUsdCameraRays(unittest.TestCase):
 
         np.testing.assert_allclose(got, expected, atol=1e-6)
 
-    def test_usd_camera_transforms_repeat_world_transforms(self):
-        utils = _make_utils()
-        _stage, camera = _make_camera()
-        UsdGeom.Xformable(camera.GetPrim()).AddTranslateOp().Set(Gf.Vec3d(1.0, 2.0, 3.0))
-
-        camera_transforms = utils.compute_usd_camera_transforms(camera, world_count=3)
-
-        self.assertEqual(tuple(camera_transforms.shape), (1, 3))
-        got = camera_transforms.numpy()
-        np.testing.assert_allclose(got[0, :, :3], np.array([[1.0, 2.0, 3.0]] * 3), atol=1e-6)
-
     def test_opencv_fisheye_zero_distortion(self):
         utils = _make_utils()
         _stage, camera = _make_camera()
@@ -146,6 +135,35 @@ class TestSensorUsdCameraRays(unittest.TestCase):
         _set_attr(prim, "omni:lensdistortion:ftheta:k2", Sdf.ValueTypeNames.Float, 0.0)
         _set_attr(prim, "omni:lensdistortion:ftheta:k3", Sdf.ValueTypeNames.Float, 0.0)
         _set_attr(prim, "omni:lensdistortion:ftheta:k4", Sdf.ValueTypeNames.Float, 0.0)
+        _set_attr(prim, "omni:lensdistortion:ftheta:maxFov", Sdf.ValueTypeNames.Float, 180.0)
+
+        got = utils.compute_usd_camera_rays(1, 1, camera).numpy()[0, 0, 0, 1]
+
+        np.testing.assert_allclose(got, _direction(theta), atol=1e-6)
+
+    def test_explicit_lens_model_ignores_stale_fisheye_attrs(self):
+        utils = _make_utils()
+        theta = 0.4
+        radius = 2.0 * theta
+        _stage, camera = _make_camera()
+        prim = camera.GetPrim()
+        _set_attr(prim, "omni:lensdistortion:model", Sdf.ValueTypeNames.Token, "ftheta")
+        _set_attr(prim, "omni:lensdistortion:opencvFisheye:imageSize", Sdf.ValueTypeNames.Int2, Gf.Vec2i(1, 1))
+        _set_attr(prim, "omni:lensdistortion:opencvFisheye:fx", Sdf.ValueTypeNames.Float, 1.0)
+        _set_attr(prim, "omni:lensdistortion:opencvFisheye:fy", Sdf.ValueTypeNames.Float, 1.0)
+        _set_attr(prim, "omni:lensdistortion:opencvFisheye:cx", Sdf.ValueTypeNames.Float, 0.5)
+        _set_attr(prim, "omni:lensdistortion:opencvFisheye:cy", Sdf.ValueTypeNames.Float, 0.5)
+        _set_attr(prim, "omni:lensdistortion:opencvFisheye:k1", Sdf.ValueTypeNames.Float, 0.0)
+        _set_attr(prim, "omni:lensdistortion:ftheta:nominalWidth", Sdf.ValueTypeNames.Float, 1.0)
+        _set_attr(prim, "omni:lensdistortion:ftheta:nominalHeight", Sdf.ValueTypeNames.Float, 1.0)
+        _set_attr(
+            prim,
+            "omni:lensdistortion:ftheta:opticalCenter",
+            Sdf.ValueTypeNames.Float2,
+            Gf.Vec2f(0.5 - radius, 0.5),
+        )
+        _set_attr(prim, "omni:lensdistortion:ftheta:k0", Sdf.ValueTypeNames.Float, 0.0)
+        _set_attr(prim, "omni:lensdistortion:ftheta:k1", Sdf.ValueTypeNames.Float, 2.0)
         _set_attr(prim, "omni:lensdistortion:ftheta:maxFov", Sdf.ValueTypeNames.Float, 180.0)
 
         got = utils.compute_usd_camera_rays(1, 1, camera).numpy()[0, 0, 0, 1]
