@@ -5871,7 +5871,7 @@ def Xform "Articulation" (
         UsdPhysics.MaterialAPI.Apply(mat_all_prim)
         mat_all_prim.GetAttribute("newton:contactStiffness").Set(5000.0)
         mat_all_prim.GetAttribute("newton:contactDamping").Set(200.0)
-        mat_all_prim.GetAttribute("newton:contactFrictionStiffness").Set(800.0)
+        mat_all_prim.GetAttribute("newton:contactFrictionGain").Set(800.0)
         mat_all_prim.GetAttribute("newton:contactAdhesion").Set(0.01)
 
         # Material with only ke/kd authored (kf/ka use builder defaults)
@@ -5946,7 +5946,7 @@ def Xform "Articulation" (
         UsdPhysics.MaterialAPI.Apply(mat_prim)
         mat_prim.GetAttribute("newton:contactStiffness").Set(float("-inf"))
         mat_prim.GetAttribute("newton:contactDamping").Set(float("-inf"))
-        mat_prim.GetAttribute("newton:contactFrictionStiffness").Set(float("-inf"))
+        mat_prim.GetAttribute("newton:contactFrictionGain").Set(float("-inf"))
         mat_prim.GetAttribute("newton:contactAdhesion").Set(float("-inf"))
 
         articulation = UsdGeom.Xform.Define(stage, "/Articulation")

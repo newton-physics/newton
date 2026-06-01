@@ -155,7 +155,7 @@ class SchemaResolverNewton(SchemaResolver):
             "mu_rolling": SchemaAttribute("newton:rollingFriction", 0.0005),
             "ke": SchemaAttribute("newton:contactStiffness", None),
             "kd": SchemaAttribute("newton:contactDamping", None),
-            "kf": SchemaAttribute("newton:contactFrictionStiffness", None),
+            "kf": SchemaAttribute("newton:contactFrictionGain", None),
             "ka": SchemaAttribute("newton:contactAdhesion", None),
         },
         PrimType.ACTUATOR: {},

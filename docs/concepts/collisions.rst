@@ -1697,7 +1697,7 @@ Extends ``PhysicsMaterialAPI`` with torsional/rolling friction
 (``newton:torsionalFriction``, ``newton:rollingFriction``) and contact response
 attributes. The contact response attributes map to :class:`~ModelBuilder.ShapeConfig`
 fields as follows: ``newton:contactStiffness`` → ``ke``,
-``newton:contactDamping`` → ``kd``, ``newton:contactFrictionStiffness`` → ``kf``,
+``newton:contactDamping`` → ``kd``, ``newton:contactFrictionGain`` → ``kf``,
 ``newton:contactAdhesion`` → ``ka``. A value of ``-inf`` means "use the engine's
 default" (see :ref:`Contact Material Properties`).
 
@@ -1712,7 +1712,7 @@ default" (see :ref:`Contact Material Properties`).
         float newton:rollingFriction = 0.01
         float newton:contactStiffness = 5000.0
         float newton:contactDamping = 200.0
-        float newton:contactFrictionStiffness = 800.0
+        float newton:contactFrictionGain = 800.0
         float newton:contactAdhesion = 0.0
     }
 

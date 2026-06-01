@@ -1707,7 +1707,7 @@ class TestSchemaResolver(unittest.TestCase):
         # Author Newton material values
         material.GetAttribute("newton:contactStiffness").Set(5000.0)
         material.GetAttribute("newton:contactDamping").Set(200.0)
-        material.GetAttribute("newton:contactFrictionStiffness").Set(800.0)
+        material.GetAttribute("newton:contactFrictionGain").Set(800.0)
         material.GetAttribute("newton:contactAdhesion").Set(0.01)
 
         self.assertAlmostEqual(resolver.get_value(material, PrimType.MATERIAL, "ke"), 5000.0)
