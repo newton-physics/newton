@@ -11009,12 +11009,6 @@ class ModelBuilder:
             m.mujoco.equality_constraint_count = self._equality_constraint_count
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
-            # The per-row ``model.mujoco.equality_constraint_*`` arrays are materialized below by
-            # the standard custom-attribute pipeline only when the ``mujoco:equality_constraint``
-            # frequency count is non-zero, like every other zero-count custom frequency. Readers
-            # consult ``equality_constraint_count`` (always set above) and treat absent arrays as
-            # "no equality constraints".
-
             self.find_shape_contact_pairs(m)
 
             # enable ground plane
