@@ -820,18 +820,9 @@ doubles as an end-to-end regression against Newton's importer.
 
 
    class PortDefaults(enum.Enum):
-       """Controls how unauthored PhysX attributes are handled during porting.
-
-       ``NEWTON``: leave the corresponding Newton attribute unauthored so the
-       Newton importer applies its own schema defaults at parse time
-       (sdfMaxResolution=64, narrow band (-0.1, 0.1) m, padding fallback to
-       contactGap, texture uint16).
-
-       ``PHYSX``: backfill from PhysX schema defaults so the ported authoring
-       preserves what PhysX would have used at runtime (sdfResolution=256,
-       narrow band ±0.01 × bbox-diag, padding 0.01 × bbox-diag, texture
-       uint16). Use when you want PhysX-fidelity behavior in Newton.
-       """
+       """Source for unauthored attributes during porting: ``NEWTON`` leaves
+       the Newton attribute unauthored (importer applies its own schema
+       defaults); ``PHYSX`` backfills from PhysX schema defaults."""
 
        NEWTON = "newton"
        PHYSX = "physx"
@@ -863,11 +854,7 @@ doubles as an end-to-end regression against Newton's importer.
                                               op.orderedItems) if items)
 
    def _bbox_diag(prim) -> float | None:
-       """Compute the world-space AABB diagonal [m] of a USD prim, or ``None``
-       if the bbox is empty. PhysX's fractional SDF distances are fractions of
-       the AABB of the SCALED collision shape, so we use ``ComputeWorldBound``
-       (which captures all ancestor xformOps, including scale) rather than
-       ``ComputeLocalBound`` (which would miss ancestor scaling)."""
+       """World-space AABB diagonal [m] of ``prim``, or ``None`` if empty."""
        cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(),
                                  includedPurposes=[UsdGeom.Tokens.default_])
        rng = cache.ComputeWorldBound(prim).ComputeAlignedRange()
@@ -943,8 +930,7 @@ doubles as an end-to-end regression against Newton's importer.
            modified += 1
        return modified
 
-   # Round-trip demo: build a tiny PhysX-authored stage in memory, port it,
-   # reload it, and verify the Newton-schema attributes landed correctly.
+   # Round-trip demo: PhysX-authored stage -> port -> verify.
    stage = Usd.Stage.CreateInMemory()
    UsdPhysics.Scene.Define(stage, "/World")
    body = stage.DefinePrim("/World/Body", "Xform")
@@ -987,11 +973,7 @@ doubles as an end-to-end regression against Newton's importer.
    assert _get(p, "newton:sdfTextureFormat") == "uint16"
    assert _has_applied_schema(p, "NewtonSDFCollisionAPI")
 
-   # PHYSX-mode demo: a fresh stage that applies PhysxSDFMeshCollisionAPI
-   # without authoring any of its attributes (the common case for assets
-   # that rely on PhysX runtime defaults). PHYSX mode backfills from the
-   # PhysX schema defaults so the resulting Newton authoring matches what
-   # PhysX would have used at runtime.
+   # PHYSX-mode demo: applied API with no authored attrs -> backfill from PhysX defaults.
    stage2 = Usd.Stage.CreateInMemory()
    mesh2 = UsdGeom.Mesh.Define(stage2, "/Body/CollisionMesh")
    mesh2.CreatePointsAttr([(-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (0.5, 0.5, -0.5),
@@ -1008,8 +990,7 @@ doubles as an end-to-end regression against Newton's importer.
    assert _close(_get(p2, "newton:sdfPadding"), 0.01 * _diag, tol=1e-5)
    assert _get(p2, "newton:sdfTextureFormat") == "uint16"
 
-   # NEWTON mode (the default) on the same kind of stage leaves Newton attrs
-   # unauthored, so the importer applies its own schema defaults at parse time.
+   # NEWTON mode (default): leave Newton attrs unauthored; importer applies its own schema defaults.
    stage3 = Usd.Stage.CreateInMemory()
    mesh3 = UsdGeom.Mesh.Define(stage3, "/Body/CollisionMesh")
    mesh3.CreatePointsAttr([(-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (0.5, 0.5, -0.5),
@@ -1026,10 +1007,9 @@ doubles as an end-to-end regression against Newton's importer.
    assert _get(p3, "newton:sdfPadding") is None
    assert _has_applied_schema(p3, "NewtonSDFCollisionAPI")
 
-   # Xform-scale demo: when a parent Xform carries a non-unit scale, PhysX
-   # treats the collision shape as scaled, so fractional SDF distances are
-   # fractions of the SCALED diagonal. ComputeLocalBound would return the
-   # unscaled bbox here; ComputeWorldBound captures the ancestor scale.
+   # Xform-scale demo: PhysX fractional SDF distances are fractions of the
+   # SCALED collision shape's AABB, so we use ComputeWorldBound (which
+   # captures ancestor xformOps) rather than ComputeLocalBound.
    import pxr.Gf as _Gf  # noqa: PLC0415
    stage4 = Usd.Stage.CreateInMemory()
    parent = UsdGeom.Xform.Define(stage4, "/Body")
