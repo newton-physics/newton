@@ -135,6 +135,59 @@ MuJoCo geometry model. They are only available through Newton's
 collision pipeline (see `Collision pipeline`_ below).
 
 
+Joint-limit stiffness and damping
+---------------------------------
+
+:attr:`~newton.Model.joint_limit_ke` and
+:attr:`~newton.Model.joint_limit_kd` are force-space gains (for example,
+``N·m/rad`` and ``N·m·s/rad`` for revolute joints). MuJoCo's negative
+``solreflimit`` convention stores stiffness and damping values, but the
+limit solver then converts them to an effective response using the owning
+DOF's ``dof_invweight0`` and the limit impedance parameter
+``dmax = solimplimit[1]``:
+
+.. math::
+
+   k_\mathrm{eff} = k_\mathrm{stored} /
+   (\mathrm{dof\_invweight0} \cdot (1 - dmax))
+
+To keep Newton's force-space meaning,
+:class:`~newton.solvers.SolverMuJoCo` writes
+``solreflimit = (-ke * factor, -kd * factor)`` with
+``factor = dof_invweight0 * (1 - dmax)``. This update runs after MuJoCo has
+compiled or refreshed ``dof_invweight0``. If ``joint_limit_ke <= 0`` or
+``joint_limit_kd <= 0``, the solver restores MuJoCo's default
+``solreflimit`` value ``(0.02, 1.0)``.
+
+MJCF- or USD-authored ``solreflimit`` values are already native MuJoCo
+parameters, so they are preserved verbatim through the
+``model.mujoco.solreflimit`` custom attribute and are not rescaled. Imported
+MJCF joints that did not author ``solreflimit`` keep MuJoCo's implicit default
+``(0.02, 1.0)`` until their Newton ``joint_limit_ke`` or ``joint_limit_kd``
+values are changed, at which point the Newton force-space scaling above is
+used.
+
+``model.mujoco.solreflimit_mode`` records how ``solreflimit`` should be
+interpreted: Newton force-space gains, a raw authored MuJoCo value, or an
+implicit MJCF default. This extra flag is needed because the two-component
+``solreflimit`` value alone cannot distinguish an unauthored value from an
+authored native value such as ``solreflimit="0 0"`` or USD
+``mjc:solreflimit = [0, 0]``.
+
+.. note::
+
+   ``SolverMuJoCo(..., save_to_mjcf=path)`` is not a fully semantic
+   round-trip for ``SOLREF_MODE_FORCE_SPACE`` joints. MJCF only stores
+   ``solreflimit``; it has no field for "use Newton force-space
+   scaling with these gains". The exporter therefore only writes
+   ``solreflimit`` for ``SOLREF_MODE_RAW`` joints (where the authored
+   value carries the full intent). Re-importing the saved file
+   recovers the same MuJoCo dynamics, but ``joint_limit_ke`` /
+   ``joint_limit_kd`` from the original ``SOLREF_MODE_FORCE_SPACE`` /
+   ``SOLREF_MODE_MJCF_DEFAULT`` joints will not be preserved — reapply
+   them on the rebuilt model if you need them.
+
+
 Actuators
 ---------
 
