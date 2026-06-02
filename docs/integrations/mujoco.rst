@@ -221,6 +221,8 @@ Additional actuators declared this way are appended after the joint-target
 actuators — see ``SolverMuJoCo._init_actuators``.
 
 
+.. _mujoco-equality-constraints:
+
 Equality constraints
 --------------------
 
@@ -252,21 +254,37 @@ array; slot layout depends on the constraint type.
        :attr:`~newton.JointType.REVOLUTE` and
        :attr:`~newton.JointType.PRISMATIC` joints are supported.
 
-**Loop closures.** Newton joints with no associated articulation
-(``joint_articulation == -1``) are treated as loop closures rather than
-tree joints. They are not emitted as MuJoCo joints; instead, the solver
-synthesises equality constraints:
 
-- :attr:`~newton.JointType.FIXED` → ``mjEQ_WELD`` (constrains all 6 DOFs).
-- :attr:`~newton.JointType.REVOLUTE` → two ``mjEQ_CONNECT`` constraints,
-  the second offset by 0.1 m along the hinge axis, so 5 DOFs are
-  constrained and one rotational DOF remains free.
-- :attr:`~newton.JointType.BALL` → one ``mjEQ_CONNECT`` (3 translational
-  DOFs constrained, all 3 rotational DOFs free).
+.. _mujoco-loop-closures:
 
-Other joint types in this configuration are not supported and produce a
-warning. Loop-joint DOFs and coordinates are excluded from MuJoCo's
-``nq`` / ``nv``.
+Loop closures
+-------------
+
+Loop-closing joints (see :ref:`Loop closure` for the general authoring
+pattern) are not emitted as MuJoCo joints; instead the solver constrains
+the relative motion of the two bodies according to the joint type:
+
+- :attr:`~newton.JointType.FIXED` — all 6 relative DOFs constrained
+  (relative position and orientation locked).
+- :attr:`~newton.JointType.REVOLUTE` — 5 DOFs constrained; one rotational
+  DOF about the hinge axis remains free.
+- :attr:`~newton.JointType.BALL` — the 3 translational DOFs constrained;
+  all 3 rotational DOFs remain free.
+
+Other joint types used as loop closures
+(:attr:`~newton.JointType.PRISMATIC`, :attr:`~newton.JointType.FREE`,
+:attr:`~newton.JointType.DISTANCE`, :attr:`~newton.JointType.CABLE`) emit a
+warning and are silently skipped — the loop is *not* closed. A
+:attr:`~newton.JointType.D6` is dispatched by its degrees of freedom: one
+angular axis behaves as a revolute closure and three as a ball closure;
+any other configuration is skipped.
+
+Only the kinematic coupling implied by the joint type is enforced. Any
+drive (``joint_target_pos`` / ``joint_target_vel``, PD gains,
+``control.joint_f``), joint limits, armature, friction, and
+effort/velocity limits authored on the loop-closing joint are **ignored**
+by :class:`~newton.solvers.SolverMuJoCo`. Loop-joint DOFs and coordinates
+are excluded from MuJoCo's ``nq`` / ``nv``.
 
 
 Tendons
