@@ -2,7 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .render_context import RenderContext
-from .types import ClearData, GaussianRenderMode, MeshData, RenderConfig, RenderLightType, RenderOrder, TextureData
+from .types import (
+    ClearData,
+    GaussianRenderMode,
+    MeshData,
+    RenderConfig,
+    RenderLightType,
+    RenderOrder,
+    TextureData,
+)
 from .utils import Utils
 
 __all__ = [

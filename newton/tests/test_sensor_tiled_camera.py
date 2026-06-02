@@ -4,12 +4,94 @@
 import math
 import os
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton._src.sensors.warp_raytrace import RenderConfig, RenderContext
 from newton.sensors import SensorTiledCamera
+
+
+class TestRenderContextMeshBvhConstructor(unittest.TestCase):
+    @staticmethod
+    def _build_mesh_model(mesh_bvh_constructor: str | None = None):
+        builder = newton.ModelBuilder()
+        builder.default_bvh_cfg.mesh_constructor = mesh_bvh_constructor
+        mesh = newton.Mesh(
+            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+            indices=np.array([0, 1, 2], dtype=np.int32),
+            compute_inertia=False,
+        )
+        builder.add_shape_mesh(body=-1, mesh=mesh)
+        return builder.finalize(device="cpu")
+
+    def test_render_context_reuses_model_mesh_sources_when_bvh_constructor_matches(self):
+        model = self._build_mesh_model(mesh_bvh_constructor=None)
+        render_context = RenderContext(config=RenderConfig(mesh_bvh_constructor=None), device="cpu")
+
+        with mock.patch("newton._src.sensors.warp_raytrace.render_context.wp.Mesh") as wp_mesh:
+            render_context.init_from_model(model)
+
+        wp_mesh.assert_not_called()
+        self.assertIs(render_context.shape_source_ptr, model.shape_source_ptr)
+
+    def test_render_context_creates_render_mesh_sources_when_bvh_constructor_differs(self):
+        for constructor in ("sah", "cubql"):
+            with self.subTest(constructor=constructor):
+                model = self._build_mesh_model(mesh_bvh_constructor=None)
+                render_context = RenderContext(config=RenderConfig(mesh_bvh_constructor=constructor), device="cpu")
+
+                with mock.patch("newton._src.sensors.warp_raytrace.render_context.wp.Mesh") as wp_mesh:
+                    wp_mesh.return_value.id = 789
+                    render_context.init_from_model(model)
+
+                self.assertEqual(wp_mesh.call_args.kwargs["bvh_constructor"], constructor)
+                self.assertIsNot(render_context.shape_source_ptr, model.shape_source_ptr)
+                self.assertEqual(int(render_context.shape_source_ptr.numpy()[0]), 789)
+
+    def test_render_context_preserves_non_mesh_sources_when_mesh_bvh_constructor_differs(self):
+        builder = newton.ModelBuilder()
+        mesh = newton.Mesh(
+            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+            indices=np.array([0, 1, 2], dtype=np.int32),
+            compute_inertia=False,
+        )
+        gaussian = newton.Gaussian(positions=np.zeros((1, 3), dtype=np.float32))
+        builder.add_shape_mesh(body=-1, mesh=mesh)
+        builder.add_shape_gaussian(body=-1, gaussian=gaussian)
+        model = builder.finalize(device="cpu")
+        render_context = RenderContext(config=RenderConfig(mesh_bvh_constructor="sah"), device="cpu")
+
+        with mock.patch("newton._src.sensors.warp_raytrace.render_context.wp.Mesh") as wp_mesh:
+            wp_mesh.return_value.id = 789
+            render_context.init_from_model(model)
+
+        original_sources = model.shape_source_ptr.numpy()
+        render_sources = render_context.shape_source_ptr.numpy()
+        self.assertEqual(int(render_sources[0]), 789)
+        self.assertEqual(int(render_sources[1]), int(original_sources[1]))
+
+    def test_render_context_rejects_unknown_renderer_mesh_bvh(self):
+        model = self._build_mesh_model(mesh_bvh_constructor=None)
+        render_context = RenderContext(config=RenderConfig(mesh_bvh_constructor="not-a-backend"), device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "Unsupported.*mesh_bvh_constructor='not-a-backend'"):
+            render_context.init_from_model(model)
+
+    def test_render_context_reuses_model_gaussians(self):
+        builder = newton.ModelBuilder()
+        gaussian = newton.Gaussian(positions=np.zeros((1, 3), dtype=np.float32))
+        builder.add_shape_gaussian(body=-1, gaussian=gaussian)
+        model = builder.finalize(device="cpu")
+        render_context = RenderContext(device="cpu")
+
+        with mock.patch.object(newton.Gaussian, "finalize", autospec=True) as finalize:
+            render_context.init_from_model(model)
+
+        finalize.assert_not_called()
+        self.assertIs(render_context.gaussians_data, model.gaussians_data)
 
 
 class TestSensorTiledCamera(unittest.TestCase):

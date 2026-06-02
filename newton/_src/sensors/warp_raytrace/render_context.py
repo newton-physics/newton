@@ -69,6 +69,7 @@ class RenderContext:
         self.shape_texture_ids: wp.array[wp.int32] | None = None
         self.shape_mesh_data_ids: wp.array[wp.int32] | None = None
 
+        self.__render_meshes: dict[int, wp.Mesh] = {}
         self.mesh_data: wp.array[MeshData] | None = None
         self.texture_data: wp.array[TextureData] | None = None
 
@@ -101,10 +102,11 @@ class RenderContext:
         self.__triangle_points = None
         self.__triangle_indices = None
         self.__has_particles = False
+        self.__render_meshes = {}
 
         self.shape_count_total = model.shape_count
         self.shape_world_index = model.shape_world
-        self.shape_source_ptr = model.shape_source_ptr
+        self.shape_source_ptr = self.__create_render_shape_source_ptr(model)
 
         if model.particle_q is not None and model.particle_q.shape[0]:
             self.__has_particles = True
@@ -201,7 +203,12 @@ class RenderContext:
         if has_shapes or has_particles or self.has_triangle_mesh or self.has_gaussians:
             if self.has_triangle_mesh:
                 if self.triangle_mesh is None:
-                    self.triangle_mesh = wp.Mesh(self.triangle_points, self.triangle_indices, device=self.device)
+                    self.triangle_mesh = wp.Mesh(
+                        self.triangle_points,
+                        self.triangle_indices,
+                        device=self.device,
+                        bvh_constructor=self.config.mesh_bvh_constructor,
+                    )
                 else:
                     self.triangle_mesh.refit()
 
@@ -479,6 +486,45 @@ class RenderContext:
 
         self.mesh_data = wp.array(self.__mesh_data, dtype=MeshData, device=self.device)
         self.shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)
+
+    def __create_render_shape_source_ptr(self, model: Model) -> wp.array[wp.uint64]:
+        """Return source pointers for rendering, creating renderer-owned mesh handles only when needed."""
+        constructor = self.config.mesh_bvh_constructor
+        if constructor == getattr(model, "mesh_bvh_constructor", None):
+            return model.shape_source_ptr
+
+        self.__validate_mesh_bvh_constructor(constructor)
+
+        shape_source_ptr = None
+
+        with wp.ScopedDevice(self.device):
+            for shape_index, shape in enumerate(model.shape_source):
+                if not isinstance(shape, Mesh):
+                    continue
+
+                if shape_source_ptr is None:
+                    shape_source_ptr = model.shape_source_ptr.numpy().astype(np.uint64, copy=True)
+
+                mesh_hash = hash(shape)
+                render_mesh = self.__render_meshes.get(mesh_hash)
+                if render_mesh is None:
+                    points = wp.array(shape.vertices, dtype=wp.vec3, device=self.device)
+                    indices = wp.array(shape.indices, dtype=wp.int32, device=self.device)
+                    render_mesh = wp.Mesh(points=points, indices=indices, bvh_constructor=constructor)
+                    self.__render_meshes[mesh_hash] = render_mesh
+
+                shape_source_ptr[shape_index] = render_mesh.id
+
+        if shape_source_ptr is None:
+            return model.shape_source_ptr
+
+        return wp.array(shape_source_ptr, dtype=wp.uint64, device=self.device)
+
+    @staticmethod
+    def __validate_mesh_bvh_constructor(constructor: str | None):
+        supported_constructors = (None, "lbvh", "median", "sah", "cubql")
+        if constructor not in supported_constructors:
+            raise ValueError(f"Unsupported RenderConfig.mesh_bvh_constructor={constructor!r}.")
 
     def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create an output array for color rendering.

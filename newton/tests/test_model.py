@@ -90,6 +90,64 @@ class TestModelBuilderDeprecations(unittest.TestCase):
         )
 
 
+class TestModelBuilderMeshBvhConstructor(unittest.TestCase):
+    def test_model_builder_bvh_constructor_defaults_use_warp_defaults(self):
+        builder = ModelBuilder()
+
+        self.assertIsNone(builder.default_bvh_cfg.mesh_constructor)
+        self.assertIsNone(builder.default_bvh_cfg.gaussian_constructor)
+
+    def test_model_builder_forwards_mesh_bvh_constructor_to_warp_mesh(self):
+        builder = ModelBuilder()
+        builder.default_bvh_cfg.mesh_constructor = "sah"
+        mesh = newton.Mesh(
+            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+            indices=np.array([0, 1, 2], dtype=np.int32),
+            compute_inertia=False,
+        )
+        builder.add_shape_mesh(body=-1, mesh=mesh)
+
+        with mock.patch("newton._src.geometry.types.wp.Mesh") as wp_mesh:
+            wp_mesh.return_value.id = 123
+            model = builder.finalize(device="cpu")
+
+        wp_mesh.assert_called_once()
+        self.assertEqual(wp_mesh.call_args.kwargs["bvh_constructor"], "sah")
+        self.assertEqual(model.mesh_bvh_constructor, "sah")
+
+    def test_gaussian_finalize_forwards_bvh_constructor_to_warp_bvh(self):
+        gaussian = newton.Gaussian(
+            positions=np.zeros((1, 3), dtype=np.float32),
+            rotations=np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32),
+            scales=np.ones((1, 3), dtype=np.float32),
+            opacities=np.ones(1, dtype=np.float32),
+            sh_coeffs=np.ones((1, 3), dtype=np.float32),
+        )
+
+        with (
+            mock.patch("newton._src.geometry.types.wp.launch"),
+            mock.patch("newton._src.geometry.types.wp.Bvh") as wp_bvh,
+        ):
+            wp_bvh.return_value.id = 456
+            gaussian.finalize(device="cpu", bvh_constructor="sah")
+
+        self.assertEqual(wp_bvh.call_args.kwargs["constructor"], "sah")
+
+    def test_model_builder_forwards_gaussian_bvh_constructor(self):
+        builder = ModelBuilder()
+        builder.default_bvh_cfg.gaussian_constructor = "sah"
+        gaussian = newton.Gaussian(positions=np.zeros((1, 3), dtype=np.float32))
+        builder.add_shape_gaussian(body=-1, gaussian=gaussian)
+
+        with mock.patch.object(
+            newton.Gaussian, "finalize", autospec=True, return_value=newton.Gaussian.Data()
+        ) as finalize:
+            model = builder.finalize(device="cpu")
+
+        finalize.assert_called_once_with(gaussian, device="cpu", bvh_constructor="sah")
+        self.assertEqual(model.gaussian_bvh_constructor, "sah")
+
+
 class TestModelMesh(unittest.TestCase):
     def test_add_triangles(self):
         rng = np.random.default_rng(123)
