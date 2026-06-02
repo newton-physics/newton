@@ -33,7 +33,7 @@ _USD_CAMERA_PARAM_K3 = 14
 _USD_CAMERA_PARAM_K4 = 15
 _USD_CAMERA_PARAM_MAX_THETA = 16
 
-_PI = 3.141592653589793
+_PI = wp.float32(math.pi)
 
 
 def _coerce_usd_time(time: Any) -> Any:
@@ -323,10 +323,11 @@ def extract_usd_camera_ray_params(
 
 
 def compute_usd_camera_transforms(
-    cameras: Any | list[Any] | tuple[Any, ...],
+    cameras: Any | list[Any] | tuple[Any, ...] | list[list[Any]] | tuple[tuple[Any, ...], ...],
     *,
     world_count: int,
     device: wp.Device,
+    target_up_axis: Any | None = None,
     time: Any | None = None,
 ) -> wp.array2d[wp.transformf]:
     try:
@@ -334,15 +335,43 @@ def compute_usd_camera_transforms(
     except ImportError as e:
         raise ImportError("USD camera ray helpers require the pxr USD Python modules.") from e
 
+    from ...core import Axis, quat_between_axes  # noqa: PLC0415
     from ...usd.utils import get_transform  # noqa: PLC0415
 
     time_code = _coerce_usd_time(time)
-    usd_cameras = _normalize_usd_cameras(cameras)
     xform_cache = UsdGeom.XformCache(time_code)
-    transforms = []
-    for usd_camera in usd_cameras:
+
+    def world_transform(usd_camera: Any) -> wp.transformf:
         transform = get_transform(usd_camera.GetPrim(), local=False, xform_cache=xform_cache)
-        transforms.append([transform for _world_index in range(world_count)])
+        if target_up_axis is not None:
+            stage_up_axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(usd_camera.GetPrim().GetStage())))
+            axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(stage_up_axis, target_up_axis))
+            transform = axis_xform * transform
+        return transform
+
+    is_per_world = isinstance(cameras, (list, tuple)) and len(cameras) > 0 and isinstance(cameras[0], (list, tuple))
+
+    if is_per_world:
+        if len(cameras) != world_count:
+            raise ValueError(
+                f"compute_usd_camera_transforms: per-world cameras outer dimension {len(cameras)} "
+                f"must match world_count {world_count}."
+            )
+        rows = [_normalize_usd_cameras(row) for row in cameras]
+        camera_count = len(rows[0])
+        for world_index, row in enumerate(rows):
+            if len(row) != camera_count:
+                raise ValueError(
+                    f"compute_usd_camera_transforms: per-world cameras row {world_index} has "
+                    f"{len(row)} cameras, expected {camera_count}."
+                )
+        transforms = [
+            [world_transform(rows[world_index][camera_index]) for world_index in range(world_count)]
+            for camera_index in range(camera_count)
+        ]
+    else:
+        usd_cameras = _normalize_usd_cameras(cameras)
+        transforms = [[world_transform(usd_camera)] * world_count for usd_camera in usd_cameras]
 
     return wp.array(
         transforms,

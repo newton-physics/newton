@@ -143,6 +143,10 @@ def convert_ray_depth_to_forward_depth_kernel(
     ray_dir_world = wp.transform_vector(camera_transform, camera_ray)
     cam_forward_world = wp.normalize(wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0)))
 
+    if ray_depth <= 0.0 or wp.dot(ray_dir_world, ray_dir_world) <= 1.0e-12:
+        out_depth[world_index, camera_index, py, px] = ray_depth
+        return
+
     out_depth[world_index, camera_index, py, px] = ray_depth * wp.dot(ray_dir_world, cam_forward_world)
 
 
@@ -473,15 +477,21 @@ class Utils:
 
     def compute_usd_camera_transforms(
         self,
-        cameras: Any | list[Any] | tuple[Any, ...],
+        cameras: Any | list[Any] | tuple[Any, ...] | list[list[Any]] | tuple[tuple[Any, ...], ...],
         *,
         time: Any | None = None,
     ) -> wp.array2d[wp.transformf]:
         """Compute camera-to-world transforms from USD camera prims.
 
+        Transforms are rotated from each USD camera's stage up-axis into the
+        associated :class:`~newton.Model` up-axis.
+
         Args:
             cameras: One or more USD camera prims or ``UsdGeom.Camera``
-                schemas.
+                schemas. A 1D sequence shares the same transforms across all
+                worlds. A 2D sequence shaped ``(world_count, camera_count)``
+                assigns a distinct camera per world; the outer dimension must
+                equal ``world_count`` and each row must have the same length.
             time: Optional USD time code or numeric frame used for authored
                 camera attributes and transforms.
 
@@ -492,6 +502,7 @@ class Utils:
             cameras,
             world_count=self.__render_context.world_count,
             device=self.__render_context.device,
+            target_up_axis=self.__render_context.up_axis,
             time=time,
         )
 
@@ -516,8 +527,9 @@ class Utils:
             camera_transforms: World-space camera transforms, shape
                 ``(camera_count, world_count)``.
             camera_rays: Camera-space rays from
-                :meth:`compute_pinhole_camera_rays`, shape
-                ``(camera_count, height, width, 2)``.
+                :meth:`compute_pinhole_camera_rays` or
+                :meth:`compute_usd_camera_rays`, shape ``(camera_count,
+                height, width, 2)``.
             out_depth: Output forward-depth array [m] with the same shape as
                 *depth_image*. If ``None``, allocates a new one.
 

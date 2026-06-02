@@ -164,6 +164,26 @@ class TestConvertRayDepthToForwardDepth(unittest.TestCase):
                     msg=f"Off-axis pixel ({px},{py}) should have forward depth < ray depth",
                 )
 
+    def test_zero_direction_preserves_clear_depth(self):
+        """Invalid zero-length rays keep the rendered clear depth sentinel."""
+        camera_rays = wp.zeros((1, 1, 1, 2), dtype=wp.vec3f, device=self.device)
+        depth_image = wp.full((1, 1, 1, 1), value=-1.0, dtype=wp.float32, device=self.device)
+        out_depth = wp.zeros_like(depth_image)
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device=self.device,
+        )
+
+        wp.launch(
+            kernel=convert_ray_depth_to_forward_depth_kernel,
+            dim=(1, 1, 1, 1),
+            inputs=[depth_image, camera_rays, camera_transforms, out_depth],
+            device=self.device,
+        )
+
+        self.assertEqual(float(out_depth.numpy()[0, 0, 0, 0]), -1.0)
+
     def test_varying_depth(self):
         """Per-pixel ray depths are each scaled by the correct cos(theta)."""
         width, height = 3, 3

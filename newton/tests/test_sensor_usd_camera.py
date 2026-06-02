@@ -20,10 +20,10 @@ except ImportError:
     UsdGeom = None
 
 
-def _make_utils(device: str = "cpu"):
+def _make_utils(device: str = "cpu", up_axis: newton.Axis = newton.Axis.Z):
     from newton._src.sensors.warp_raytrace.utils import Utils  # noqa: PLC0415
 
-    render_context = types.SimpleNamespace(world_count=2, device=wp.get_device(device))
+    render_context = types.SimpleNamespace(world_count=2, device=wp.get_device(device), up_axis=up_axis)
     return Utils(render_context)
 
 
@@ -74,6 +74,27 @@ class TestSensorUsdCameraRays(unittest.TestCase):
         expected /= np.linalg.norm(expected)
 
         np.testing.assert_allclose(got, expected, atol=1e-6)
+
+    def test_usd_camera_transform_matches_model_up_axis(self):
+        from newton.math import quat_between_axes  # noqa: PLC0415
+
+        utils = _make_utils(up_axis=newton.Axis.Z)
+        stage, camera = _make_camera()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+        camera.AddTranslateOp().Set(Gf.Vec3d(0.0, 1.0, 0.0))
+
+        got = utils.compute_usd_camera_transforms(camera).numpy()[0, 0]
+        expected = wp.transform(wp.vec3(0.0), quat_between_axes(newton.Axis.Y, newton.Axis.Z)) * wp.transform(
+            wp.vec3(0.0, 1.0, 0.0),
+            wp.quat_identity(),
+        )
+
+        np.testing.assert_allclose(got[:3], np.array(expected.p), atol=1e-6)
+        got_q = got[3:]
+        expected_q = np.array(expected.q)
+        if np.dot(got_q, expected_q) < 0.0:
+            got_q = -got_q
+        np.testing.assert_allclose(got_q, expected_q, atol=1e-6)
 
     def test_opencv_fisheye_zero_distortion(self):
         utils = _make_utils()
