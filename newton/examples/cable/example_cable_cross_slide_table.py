@@ -47,6 +47,8 @@ TABLE_RECT_POINTS = (
 TABLE_RECT_HIT_TOLERANCE = 0.1
 TABLE_RECT_TEST_FRAMES = 2100
 START_RAMP_DURATION = 1.2
+MOUSE_PICK_STIFFNESS = 0.01
+MOUSE_PICK_DAMPING = 0.001
 
 
 @wp.kernel
@@ -998,6 +1000,15 @@ class Example:
 
         # Viewer setup.
         self.viewer.set_model(self.model)
+        picking = getattr(self.viewer, "picking", None)
+        if picking is not None:
+            pick_state = picking.pick_state.numpy()
+            pick_state[0]["pick_stiffness"] = MOUSE_PICK_STIFFNESS
+            pick_state[0]["pick_damping"] = MOUSE_PICK_DAMPING
+            picking.pick_stiffness = float(pick_state[0]["pick_stiffness"])
+            picking.pick_damping = float(pick_state[0]["pick_damping"])
+            picking.pick_state.assign(pick_state)
+
         self.viewer.set_camera(
             pos=wp.vec3(0.0, 0.0, 0.8),
             pitch=-90.0,

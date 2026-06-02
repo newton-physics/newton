@@ -6880,11 +6880,12 @@ class ModelBuilder:
             color: Optional display RGB color for all generated capsule shapes. If None, the rod uses
                 the default rod color.
             body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
-                the legacy convention where the body origin is at ``positions[i]`` and the COM/shape
-                are offset by half the segment length. ``"com"`` places the body origin at the
-                segment midpoint so the body origin and COM coincide. If None, preserves ``"start"``
-                for now with a :class:`DeprecationWarning` because the implicit default will change to
-                ``"com"``; pass ``"start"`` or ``"com"`` explicitly.
+                the legacy convention where the body origin is at the segment start position
+                (``positions[i]`` for segment ``i``), and the COM/shape are offset by half the
+                segment length. ``"com"`` places the body origin at the segment midpoint so the
+                body origin and COM coincide. If None, preserves ``"start"`` for now with a
+                :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
+                pass ``"start"`` or ``"com"`` explicitly.
 
         Returns:
             A pair ``(body_indices, joint_indices)``. For an open chain,
@@ -7099,11 +7100,12 @@ class ModelBuilder:
             color: Optional display RGB color for all generated capsule shapes. If None, the graph uses
                 the default rod color.
             body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
-                the legacy convention where the body origin is at the edge's ``u`` node and the COM/shape
-                are offset by half the edge length. ``"com"`` places the body origin at the edge midpoint
-                so the body origin and COM coincide. If None, preserves ``"start"`` for now with a
-                :class:`DeprecationWarning` because the implicit default will change to ``"com"``; pass
-                ``"start"`` or ``"com"`` explicitly.
+                the legacy convention where the body origin is at the edge start node
+                (``node_positions[u]`` for edge ``(u, v)``), and the COM/shape are offset by half
+                the edge length. ``"com"`` places the body origin at the edge midpoint so the body
+                origin and COM coincide. If None, preserves ``"start"`` for now with a
+                :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
+                pass ``"start"`` or ``"com"`` explicitly.
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to

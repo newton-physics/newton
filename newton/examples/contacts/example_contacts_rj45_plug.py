@@ -46,6 +46,7 @@ PLUG_Y_OFFSET = -0.025
 
 CABLE_RADIUS = 0.00325
 CABLE_KINEMATIC_COUNT = 4  # first N rod bodies are inside the plug and follow it
+CABLE_BODY_FRAME_ORIGIN = "com"
 
 # Contact parameters for cable and ground plane (tuned for VBD).
 CABLE_MU = 2.0
@@ -56,6 +57,23 @@ LATCH_LIMIT_UPPER = 0.3  # max outward deflection [rad]
 LATCH_SPRING_KE = 0.15  # angular return-spring stiffness [N*m/rad]
 LATCH_SPRING_KD = 0.2  # dimensionless damping ratio (VBD: D = kd * ke)
 LATCH_LIMIT_KD = 1.0e-4  # dimensionless limit damping (VBD: D = kd * limit_ke)
+
+
+def _cable_segment_body_origin(points, segment_index: int, body_frame_origin: str) -> wp.vec3:
+    if body_frame_origin == "com":
+        return 0.5 * (points[segment_index] + points[segment_index + 1])
+    if body_frame_origin == "start":
+        return points[segment_index]
+    raise ValueError(f"Unsupported cable body frame origin: {body_frame_origin!r}")
+
+
+def _cable_segment_start_offset(points, segment_index: int, body_frame_origin: str) -> wp.vec3:
+    if body_frame_origin == "com":
+        segment_length = float(wp.length(points[segment_index + 1] - points[segment_index]))
+        return wp.vec3(0.0, 0.0, -0.5 * segment_length)
+    if body_frame_origin == "start":
+        return wp.vec3(0.0)
+    raise ValueError(f"Unsupported cable body frame origin: {body_frame_origin!r}")
 
 
 @wp.kernel
@@ -143,7 +161,7 @@ def _align_cable_orientations(
     body_q: wp.array[wp.transform],
     cable_body_idx: wp.array[int],
     cable_next_idx: wp.array[int],
-    cable_next_start_local: wp.array[wp.vec3],
+    cable_next_start_offsets: wp.array[wp.vec3],
 ):
     """Swing-correct each dynamic cable capsule to its deformed segment direction.
 
@@ -161,7 +179,7 @@ def _align_cable_orientations(
     next_tf = body_q[bi_next]
     next_pos = wp.transform_get_translation(next_tf)
     next_rot = wp.transform_get_rotation(next_tf)
-    seg = next_pos + wp.quat_rotate(next_rot, cable_next_start_local[tid]) - pos
+    seg = next_pos + wp.quat_rotate(next_rot, cable_next_start_offsets[tid]) - pos
     seg_len = wp.length(seg)
     if seg_len < 1.0e-10:
         return
@@ -331,7 +349,7 @@ class Example:
             bend_stiffness=bend_stiffness,
             bend_damping=1.0e-1,
             label="cable",
-            body_frame_origin="com",
+            body_frame_origin=CABLE_BODY_FRAME_ORIGIN,
         )
 
         # Collision-filter cable segments that overlap the plug at rest.
@@ -349,7 +367,8 @@ class Example:
 
         anchor_body_ids = tuple(rod_bodies[:CABLE_KINEMATIC_COUNT])
         anchor_offsets = tuple(
-            0.5 * (cable_points[i] + cable_points[i + 1]) - plug_pos for i in range(CABLE_KINEMATIC_COUNT)
+            _cable_segment_body_origin(cable_points, i, CABLE_BODY_FRAME_ORIGIN) - plug_pos
+            for i in range(CABLE_KINEMATIC_COUNT)
         )
         anchor_rots = tuple(cable_quats[i] for i in range(CABLE_KINEMATIC_COUNT))
 
@@ -367,13 +386,15 @@ class Example:
         align_start = max(CABLE_KINEMATIC_COUNT - 1, 0)
         align_bodies = tuple(rod_bodies[align_start:-1])
         align_next = tuple(rod_bodies[align_start + 1 :])
-        align_next_start_local = tuple(
-            wp.vec3(0.0, 0.0, -0.5 * float(wp.length(cable_points[i + 2] - cable_points[i + 1])))
+        align_next_start_offsets = tuple(
+            _cable_segment_start_offset(cable_points, i + 1, CABLE_BODY_FRAME_ORIGIN)
             for i in range(align_start, len(rod_bodies) - 1)
         )
         self._cable_align_indices = wp.array(align_bodies, dtype=int, device=self.model.device)
         self._cable_align_next = wp.array(align_next, dtype=int, device=self.model.device)
-        self._cable_align_next_start_local = wp.array(align_next_start_local, dtype=wp.vec3, device=self.model.device)
+        self._cable_align_next_start_offsets = wp.array(
+            align_next_start_offsets, dtype=wp.vec3, device=self.model.device
+        )
         self._cable_align_count = len(align_bodies)
 
         self.viewer.set_model(self.model)
@@ -469,7 +490,7 @@ class Example:
                     self.state_0.body_q,
                     self._cable_align_indices,
                     self._cable_align_next,
-                    self._cable_align_next_start_local,
+                    self._cable_align_next_start_offsets,
                 ),
                 device=self.model.device,
             )
