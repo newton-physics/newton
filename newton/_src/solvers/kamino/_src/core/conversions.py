@@ -169,8 +169,6 @@ def joint_conversion_kernel(
     model_joint_world_start: wp.array[int32],
     model_joint_type: wp.array[int32],
     model_joint_target_mode: wp.array[int32],
-    model_joint_parent: wp.array[int32],
-    model_joint_child: wp.array[int32],
     model_joint_dof_dim: wp.array2d[int32],
     model_joint_q_start: wp.array[int32],
     model_joint_qd_start: wp.array[int32],
@@ -178,10 +176,6 @@ def joint_conversion_kernel(
     model_joint_friction: wp.array[float32],
     model_joint_target_ke: wp.array[float32],
     model_joint_target_kd: wp.array[float32],
-    joint_axis: wp.array[vec3f],
-    body_com: wp.array[vec3f],
-    model_joint_X_p: wp.array[transformf],
-    model_joint_X_c: wp.array[transformf],
     joint_limit_lower: wp.array[float32],
     joint_limit_upper: wp.array[float32],
     joint_velocity_limit: wp.array[float32],
@@ -195,10 +189,6 @@ def joint_conversion_kernel(
     joint_num_cts: wp.array[int32],
     joint_num_dynamic_cts: wp.array[int32],
     joint_num_kinematic_cts: wp.array[int32],
-    joint_B_r_B: wp.array[vec3f],
-    joint_F_r_F: wp.array[vec3f],
-    joint_X_B: wp.array[mat33f],
-    joint_X_F: wp.array[mat33f],
 ):
     # Retrieve the joint index
     joint_id = wp.tid()
@@ -254,31 +244,6 @@ def joint_conversion_kernel(
         joint_num_dynamic_cts[joint_id] = ndofs_j
     joint_num_cts[joint_id] = joint_num_dynamic_cts[joint_id] + joint_num_kinematic_cts[joint_id]
 
-    # Compute joint axes and offsets
-    parent_bid = model_joint_parent[joint_id]
-    p_r_p_com = vec3f(body_com[parent_bid]) if parent_bid >= 0 else vec3f(0.0, 0.0, 0.0)
-    c_r_c_com = vec3f(body_com[model_joint_child[joint_id]])
-    T_X_p_j = model_joint_X_p[joint_id]
-    T_X_c_j = model_joint_X_c[joint_id]
-    q_p_j = wp.transform_get_rotation(T_X_p_j)
-    q_c_j = wp.transform_get_rotation(T_X_c_j)
-    p_r_p_j = wp.transform_get_translation(T_X_p_j)
-    c_r_c_j = wp.transform_get_translation(T_X_c_j)
-
-    dof_axes_j = mat63f()
-    for i in range(ndofs_j):
-        dof_axes_j[i] = joint_axis[dofs_start_j + i]
-    R_axis_j = JointDoFType.axes_matrix_from_joint_type(dof_type_j, dof_axes_j)
-    B_r_Bj = p_r_p_j - p_r_p_com
-    F_r_Fj = c_r_c_j - c_r_c_com
-    # Parent- and follower-side joint frames including the DoF axis basis.
-    X_B_j = wp.quat_to_matrix(q_p_j) @ R_axis_j
-    X_F_j = wp.quat_to_matrix(q_c_j) @ R_axis_j
-    joint_B_r_B[joint_id] = B_r_Bj
-    joint_F_r_F[joint_id] = F_r_Fj
-    joint_X_B[joint_id] = X_B_j
-    joint_X_F[joint_id] = X_F_j
-
     # Clip joint limits and effort/velocity limits to supported ranges
     for i in range(qd_count_j):
         joint_limit_lower[dofs_start_j + i] = wp.clamp(joint_limit_lower[dofs_start_j + i], JOINT_QMIN, JOINT_QMAX)
@@ -289,6 +254,62 @@ def joint_conversion_kernel(
         joint_effort_limit[dofs_start_j + i] = wp.clamp(
             joint_effort_limit[dofs_start_j + i], -JOINT_TAUMAX, JOINT_TAUMAX
         )
+
+
+@wp.kernel
+def joint_frame_conversion_kernel(
+    # Inputs:
+    model_joint_parent: wp.array[int32],
+    model_joint_child: wp.array[int32],
+    model_joint_qd_start: wp.array[int32],
+    model_joint_axis: wp.array[vec3f],
+    model_body_com: wp.array[vec3f],
+    model_joint_X_p: wp.array[transformf],
+    model_joint_X_c: wp.array[transformf],
+    joint_dof_type: wp.array[int32],
+    joint_num_dofs: wp.array[int32],
+    # Outputs:
+    joint_B_r_B: wp.array[vec3f],
+    joint_F_r_F: wp.array[vec3f],
+    joint_X_B: wp.array[mat33f],
+    joint_X_F: wp.array[mat33f],
+):
+    # Retrieve the joint index
+    joint_id = wp.tid()
+
+    # Get joint type properties
+    dof_type_j = joint_dof_type[joint_id]
+    ndofs_j = joint_num_dofs[joint_id]
+
+    # Get Newton joint transforms and joint axes
+    parent_bid = model_joint_parent[joint_id]
+    p_r_p_com = vec3f(model_body_com[parent_bid]) if parent_bid >= 0 else vec3f(0.0, 0.0, 0.0)
+    c_r_c_com = vec3f(model_body_com[model_joint_child[joint_id]])
+    T_X_p_j = model_joint_X_p[joint_id]
+    T_X_c_j = model_joint_X_c[joint_id]
+    q_p_j = wp.transform_get_rotation(T_X_p_j)
+    q_c_j = wp.transform_get_rotation(T_X_c_j)
+    p_r_p_j = wp.transform_get_translation(T_X_p_j)
+    c_r_c_j = wp.transform_get_translation(T_X_c_j)
+
+    # Convert positions by subtracting CoM
+    B_r_Bj = p_r_p_j - p_r_p_com
+    F_r_Fj = c_r_c_j - c_r_c_com
+
+    # Convert rotations by absorbing the DoF axis basis
+    dof_axes_j = mat63f()
+    dofs_start_j = model_joint_qd_start[joint_id]
+    for i in range(ndofs_j):
+        dof_axes_j[i] = model_joint_axis[dofs_start_j + i]
+    R_axis_j = JointDoFType.axes_matrix_from_joint_type(dof_type_j, dof_axes_j)
+    X_B_j = wp.quat_to_matrix(q_p_j) @ R_axis_j
+    X_F_j = wp.quat_to_matrix(q_c_j) @ R_axis_j
+
+    # Write converted joint transforms
+    joint_B_r_B[joint_id] = B_r_Bj
+    joint_F_r_F[joint_id] = F_r_Fj
+    joint_X_B[joint_id] = X_B_j
+    joint_X_F[joint_id] = X_F_j
 
 
 @wp.kernel
@@ -635,7 +656,6 @@ def compute_required_contact_capacity(
     return int(np.sum(world_max_contacts)), world_max_contacts.astype(int).tolist()
 
 
-# TODO: Re-implement this using a kernel to run in parallel on the GPU if possible
 def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
     """
     Converts the joint model parameterization of Newton's to Kamino's format.
@@ -651,48 +671,28 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
         The output JointsModel instance where the converted joint data will be stored.
         This function modifies the `joints` object in-place.
     """
-    joint_X_p_np = model.joint_X_p.numpy()
-    joint_X_c_np = model.joint_X_c.numpy()
-    body_com_np = model.body_com.numpy()
-    joint_parent_np = model.joint_parent.numpy()
-    joint_child_np = model.joint_child.numpy()
-    joint_axis_np = model.joint_axis.numpy()
-    joint_qd_start_np = model.joint_qd_start.numpy()
-    dof_type_np = joints.dof_type.numpy()
-
-    n_joints = model.joint_count
-    B_r_Bj_np = np.zeros((n_joints, 3), dtype=np.float32)
-    F_r_Fj_np = np.zeros((n_joints, 3), dtype=np.float32)
-    X_Bj_np = np.zeros((n_joints, 9), dtype=np.float32)
-    X_Fj_np = np.zeros((n_joints, 9), dtype=np.float32)
-
-    for j in range(n_joints):
-        dof_type_j = JointDoFType(int(dof_type_np[j]))
-        dofs_start_j = int(joint_qd_start_np[j])
-        ndofs_j = dof_type_j.num_dofs
-        joint_axes_j = mat63f(joint_axis_np[dofs_start_j : dofs_start_j + ndofs_j])
-        R_axis_j = JointDoFType.axes_matrix_from_joint_type(dof_type=dof_type_j, dof_axes=joint_axes_j)
-
-        parent_bid = int(joint_parent_np[j])
-        p_r_p_com = wp.vec3f(body_com_np[parent_bid]) if parent_bid >= 0 else wp.vec3f(0.0)
-        c_r_c_com = wp.vec3f(body_com_np[int(joint_child_np[j])])
-
-        T_X_p_j = wp.transformf(*joint_X_p_np[j, :])
-        T_X_c_j = wp.transformf(*joint_X_c_np[j, :])
-        q_p_j = wp.transform_get_rotation(T_X_p_j)
-        q_c_j = wp.transform_get_rotation(T_X_c_j)
-        p_r_p_j = wp.transform_get_translation(T_X_p_j)
-        c_r_c_j = wp.transform_get_translation(T_X_c_j)
-
-        B_r_Bj_np[j, :] = p_r_p_j - p_r_p_com
-        F_r_Fj_np[j, :] = c_r_c_j - c_r_c_com
-        X_Bj_np[j, :] = wp.quat_to_matrix(q_p_j) @ R_axis_j
-        X_Fj_np[j, :] = wp.quat_to_matrix(q_c_j) @ R_axis_j
-
-    joints.B_r_Bj.assign(B_r_Bj_np)
-    joints.F_r_Fj.assign(F_r_Fj_np)
-    joints.X_Bj.assign(X_Bj_np.reshape((n_joints, 3, 3)))
-    joints.X_Fj.assign(X_Fj_np.reshape((n_joints, 3, 3)))
+    wp.launch(
+        kernel=joint_frame_conversion_kernel,
+        dim=model.joint_count,
+        inputs=[
+            # Inputs:
+            model.joint_parent,
+            model.joint_child,
+            model.joint_qd_start,
+            model.joint_axis,
+            model.body_com,
+            model.joint_X_p,
+            model.joint_X_c,
+            joints.dof_type,
+            joints.num_dofs,
+            # Outputs:
+            joints.B_r_Bj,
+            joints.F_r_Fj,
+            joints.X_Bj,
+            joints.X_Fj,
+        ],
+        device=model.device,
+    )
 
 
 def convert_rigid_bodies(
@@ -868,8 +868,6 @@ def convert_joints(
             model.joint_world_start,
             model.joint_type,
             model.joint_target_mode,
-            model.joint_parent,
-            model.joint_child,
             model.joint_dof_dim,
             model.joint_q_start,
             model.joint_qd_start,
@@ -877,10 +875,6 @@ def convert_joints(
             model.joint_friction,
             model.joint_target_ke,
             model.joint_target_kd,
-            model.joint_axis,
-            model.body_com,
-            model.joint_X_p,
-            model.joint_X_c,
             joint_limit_lower,
             joint_limit_upper,
             joint_velocity_limit,
@@ -894,6 +888,25 @@ def convert_joints(
             joint_num_cts,
             joint_num_dynamic_cts,
             joint_num_kinematic_cts,
+        ],
+        device=model.device,
+    )
+
+    wp.launch(
+        kernel=joint_frame_conversion_kernel,
+        dim=model.joint_count,
+        inputs=[
+            # Inputs:
+            model.joint_parent,
+            model.joint_child,
+            model.joint_qd_start,
+            model.joint_axis,
+            model.body_com,
+            model.joint_X_p,
+            model.joint_X_c,
+            joint_dof_type,
+            joint_num_dofs,
+            # Outputs:
             joint_B_r_B,
             joint_F_r_F,
             joint_X_B,
