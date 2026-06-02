@@ -878,7 +878,7 @@ def intersect_ray(
         out_normal: Optional output hit normals, shape [ray_count, 3].
     """
 
-    if not model.bvh_id:
+    if model.bvh_shapes is None:
         raise RuntimeError("BVH raycasting requires a shape BVH to be built first using build_bvh_shape().")
 
     write_dist = out_dist is not None
