@@ -525,7 +525,7 @@ def mul_mask_float(mask: wp.int32, value: wp.float32) -> wp.float32:
 
 @cache
 def create_eval_min_num_iterations_kernel(TILE_SIZE: int):
-    @wp.kernel
+    @wp.kernel(module="unique", enable_backward=False)
     def _eval_min_num_iterations(
         # Inputs
         world_actuated_coord_offsets: wp.array[wp.int32],
@@ -1271,6 +1271,10 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
     (returned in this order)
     """
 
+    # Create separate warp module for compiling kernels in this factory
+    module = wp.get_module(__name__ + "_tile_2d")
+    module.options.update({"enable_backward": False})
+
     @wp.func
     def clip_to_one(x: wp.float32):
         """
@@ -1278,7 +1282,7 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
         """
         return wp.min(x, 1.0)
 
-    @wp.kernel
+    @wp.kernel(module=module)
     def _eval_pattern_T_pattern(
         # Inputs
         sparsity_pattern: wp.array3d[wp.float32],
@@ -1329,7 +1333,7 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
             tile_out_3d_clipped = wp.tile_map(clip_to_one, tile_out_3d)
             wp.tile_store(pattern_T_pattern, tile_out_3d_clipped, offset=(wd_id, i * TILE_SIZE_VRS, j * TILE_SIZE_VRS))
 
-    @wp.kernel
+    @wp.kernel(module=module)
     def _eval_jacobian_T_jacobian(
         # Inputs
         constraints_jacobian: wp.array3d[wp.float32],
@@ -1382,7 +1386,7 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
             tile_out_3d = wp.tile_reshape(tile_out, (1, TILE_SIZE_VRS, TILE_SIZE_VRS))
             wp.tile_store(jacobian_T_jacobian, tile_out_3d, offset=(wd_id, i * TILE_SIZE_VRS, j * TILE_SIZE_VRS))
 
-    @wp.kernel
+    @wp.kernel(module=module)
     def _eval_jacobian_T_constraints(
         # Inputs
         constraints_jacobian: wp.array3d[wp.float32],
@@ -1458,6 +1462,10 @@ def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
     (returned in this order)
     """
 
+    # Create separate warp module for compiling kernels in this factory
+    module = wp.get_module(__name__ + "_tile_1d")
+    module.options.update({"enable_backward": False})
+
     @wp.func
     def _isnan(x: wp.float32) -> wp.int32:
         """Calls wp.isnan and converts the result to int32"""
@@ -1465,7 +1473,7 @@ def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
 
     TILE_SIZE = TILE_SIZE_VRS if use_regularization else TILE_SIZE_CTS
 
-    @wp.kernel
+    @wp.kernel(module=module)
     def _eval_max_residual(
         # Inputs
         residual: wp.array2d[wp.float32],
@@ -1503,7 +1511,7 @@ def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
                         if check_val == curr_val:
                             break
 
-    @wp.kernel
+    @wp.kernel(module=module)
     def _eval_merit_function(
         # Inputs
         constraints: wp.array2d[wp.float32],
@@ -1528,7 +1536,7 @@ def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
             if tid == 0:
                 wp.atomic_add(merit_function_val, wd_id, segment_error)
 
-    @wp.kernel
+    @wp.kernel(module=module)
     def _eval_regularizer(
         # Inputs
         first_body_id: wp.array[wp.int32],
@@ -1570,7 +1578,7 @@ def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
         if tid == 0:
             wp.atomic_add(merit_function_val, wd_id, 0.5 * reg_weight * reg)
 
-    @wp.kernel
+    @wp.kernel(module=module)
     def _eval_merit_function_gradient(
         # Inputs
         step: wp.array2d[wp.float32],
