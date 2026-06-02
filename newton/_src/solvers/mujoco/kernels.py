@@ -1386,27 +1386,32 @@ def apply_mjc_control_kernel(
     mjc_actuator_to_newton_idx: wp.array[wp.int32],
     mjc_actuator_to_newton_target_q_idx: wp.array[wp.int32],
     mjc_actuator_to_target_q_axis_idx: wp.array[wp.int32],
+    mjc_actuator_q_cj: wp.array[wp.quat],
     joint_target_q: wp.array[wp.float32],
     joint_target_qd: wp.array[wp.float32],
+    joint_q: wp.array[wp.float32],
     mujoco_ctrl: wp.array[wp.float32],
     target_q_per_world: wp.int32,
+    coords_per_world: wp.int32,
     dofs_per_world: wp.int32,
     ctrls_per_world: wp.int32,
+    use_coord_layout_targets: bool,
     # outputs
     mj_ctrl: wp.array2d[wp.float32],
 ):
     """Apply Newton control inputs to MuJoCo control array.
 
     For JOINT_TARGET (source=0), uses sign encoding in mjc_actuator_to_newton_idx:
-    - Positive value (>=0): position actuator; the coord-index into
+    - Positive value (>=0): position actuator; the index into
       ``joint_target_q`` is read from ``mjc_actuator_to_newton_target_q_idx``.
     - Value of -1: unmapped/skip
     - Negative value (<=-2): velocity actuator, newton_axis = -(value + 2)
 
-    For ball-joint position actuators under the coord layout, the target stored
-    in ``joint_target_q`` is a quaternion. ``mjc_actuator_to_target_q_axis_idx``
-    selects axis 0/1/2 of the axis-angle representation; a value of -1 means
-    "scalar passthrough" (the legacy DOF-layout and all non-ball actuators).
+    For ball-joint actuators, ``axis_idx >= 0`` selects the angular component to feed MuJoCo.
+    Position targets are rotated statically by ``q_cj``. Velocity targets read the current
+    quaternion start from ``mjc_actuator_to_newton_target_q_idx`` and rotate by ``q_cj * r^{-1}``
+    (mirroring the qpos / qvel bridges in :func:`convert_mj_coords_to_warp_kernel` BALL). The
+    velocity case reuses the existing target-q lookup slot.
 
     For CTRL_DIRECT (source=1), mjc_actuator_to_newton_idx is the ctrl index.
     """
@@ -1425,23 +1430,59 @@ def apply_mjc_control_kernel(
                 if world_target_q < joint_target_q.shape[0]:
                     mj_ctrl[world, actuator] = joint_target_q[world_target_q]
             else:
-                # Ball-joint quaternion target: feed MuJoCo the matching component
-                # of the axis-angle 3-vector (matches mjc actuator_length units).
-                if world_target_q + 3 < joint_target_q.shape[0]:
-                    aa = _target_quat_to_axis_angle(
-                        joint_target_q[world_target_q + 0],
-                        joint_target_q[world_target_q + 1],
-                        joint_target_q[world_target_q + 2],
-                        joint_target_q[world_target_q + 3],
-                    )
-                    mj_ctrl[world, actuator] = aa[axis_idx]
+                # Ball-joint position target → axis-angle in MuJoCo's child rest frame.
+                # Coord layout stores a 4-float quat (needs log-map); DOF layout stores
+                # the 3 axis-angle components directly at the qd_start base.
+                if use_coord_layout_targets:
+                    if world_target_q + 3 < joint_target_q.shape[0]:
+                        aa_newton = _target_quat_to_axis_angle(
+                            joint_target_q[world_target_q + 0],
+                            joint_target_q[world_target_q + 1],
+                            joint_target_q[world_target_q + 2],
+                            joint_target_q[world_target_q + 3],
+                        )
+                        aa_mj = wp.quat_rotate(mjc_actuator_q_cj[actuator], aa_newton)
+                        mj_ctrl[world, actuator] = aa_mj[axis_idx]
+                else:
+                    if world_target_q + 2 < joint_target_q.shape[0]:
+                        aa_newton = wp.vec3(
+                            joint_target_q[world_target_q + 0],
+                            joint_target_q[world_target_q + 1],
+                            joint_target_q[world_target_q + 2],
+                        )
+                        aa_mj = wp.quat_rotate(mjc_actuator_q_cj[actuator], aa_newton)
+                        mj_ctrl[world, actuator] = aa_mj[axis_idx]
         elif idx == -1:
             return
         else:
             # Velocity actuator: newton_axis = -(idx + 2)
             newton_axis = -(idx + 2)
-            world_dof = world * dofs_per_world + newton_axis
-            mj_ctrl[world, actuator] = joint_target_qd[world_dof]
+            axis_idx = mjc_actuator_to_target_q_axis_idx[actuator]
+            if axis_idx < 0:
+                world_dof = world * dofs_per_world + newton_axis
+                mj_ctrl[world, actuator] = joint_target_qd[world_dof]
+            else:
+                # Ball-joint velocity target: rotate into MuJoCo's current child body frame.
+                qd_start = newton_axis - axis_idx
+                qd_base = world * dofs_per_world + qd_start
+                # target_q_idx for ball-velocity points at the coord-indexed q_start of the ball
+                # quat in joint_q (which is always coord-indexed regardless of layout).
+                target_q_idx = mjc_actuator_to_newton_target_q_idx[actuator]
+                q_base = world * coords_per_world + target_q_idx
+                w_newton = wp.vec3(
+                    joint_target_qd[qd_base + 0],
+                    joint_target_qd[qd_base + 1],
+                    joint_target_qd[qd_base + 2],
+                )
+                r = wp.quat(
+                    joint_q[q_base + 0],
+                    joint_q[q_base + 1],
+                    joint_q[q_base + 2],
+                    joint_q[q_base + 3],
+                )
+                q_cj = mjc_actuator_q_cj[actuator]
+                w_mj = wp.quat_rotate(q_cj * wp.quat_inverse(r), w_newton)
+                mj_ctrl[world, actuator] = w_mj[axis_idx]
     else:  # CTRL_SOURCE_CTRL_DIRECT
         world_ctrl_idx = world * ctrls_per_world + idx
         if world_ctrl_idx < mujoco_ctrl.shape[0]:
