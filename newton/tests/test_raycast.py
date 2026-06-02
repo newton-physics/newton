@@ -619,11 +619,9 @@ def test_intersect_ray(test: TestRaycast, device: str):
     origins = wp.array(
         np.array(
             [
-                [
-                    [-2.0, 0.0, 0.0],
-                    [3.0, 0.0, 2.0],
-                    [0.0, 2.0, 0.0],
-                ]
+                [-2.0, 0.0, 0.0],
+                [3.0, 0.0, 2.0],
+                [0.0, 2.0, 0.0],
             ],
             dtype=np.float32,
         ),
@@ -633,38 +631,95 @@ def test_intersect_ray(test: TestRaycast, device: str):
     directions = wp.array(
         np.array(
             [
-                [
-                    [1.0, 0.0, 0.0],
-                    [0.0, 0.0, -1.0],
-                    [1.0, 0.0, 0.0],
-                ]
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+                [1.0, 0.0, 0.0],
             ],
             dtype=np.float32,
         ),
         dtype=wp.vec3,
         device=device,
     )
+    worlds = wp.array(np.array([0, 0, 0], dtype=np.int32), dtype=wp.int32, device=device)
 
-    out_dist = wp.empty(shape=(1, 3), dtype=float, device=device)
-    out_shape_id = wp.empty(shape=(1, 3), dtype=wp.int32, device=device)
-    out_normal = wp.empty(shape=(1, 3), dtype=wp.vec3, device=device)
-    newton.intersect_ray(model, origins, directions, out_dist, out_shape_id, out_normal)
+    out_dist = wp.empty(shape=3, dtype=float, device=device)
+    out_shape_id = wp.empty(shape=3, dtype=wp.int32, device=device)
+    out_normal = wp.empty(shape=3, dtype=wp.vec3, device=device)
+    newton.intersect_ray(model, origins, directions, worlds, False, out_dist, out_shape_id, out_normal)
 
-    np.testing.assert_allclose(out_dist.numpy(), np.array([[1.5, 1.5, -1.0]], dtype=np.float32), atol=1e-5)
-    np.testing.assert_array_equal(out_shape_id.numpy(), np.array([[0, 1, -1]], dtype=np.int32))
+    np.testing.assert_allclose(out_dist.numpy(), np.array([1.5, 1.5, -1.0], dtype=np.float32), atol=1e-5)
+    np.testing.assert_array_equal(out_shape_id.numpy(), np.array([0, 1, -1], dtype=np.int32))
     np.testing.assert_allclose(
         out_normal.numpy(),
         np.array(
             [
-                [
-                    [-1.0, 0.0, 0.0],
-                    [0.0, 0.0, 1.0],
-                    [0.0, 0.0, 0.0],
-                ]
+                [-1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 0.0],
             ],
             dtype=np.float32,
         ),
         atol=1e-5,
+    )
+
+
+def _make_global_world_model(device: str):
+    """Two worlds each with a sphere, plus a global-world box shared by both."""
+    builder = newton.ModelBuilder()
+
+    # Global world (-1): box at the origin, accessible from every world.
+    global_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    global_box = builder.add_shape_box(body=global_body, hx=0.5, hy=0.5, hz=0.5)
+
+    builder.begin_world()
+    body0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 5.0, 0.0), wp.quat_identity()))
+    sphere0 = builder.add_shape_sphere(body=body0, radius=0.5)
+    builder.end_world()
+
+    builder.begin_world()
+    body1 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 10.0, 0.0), wp.quat_identity()))
+    sphere1 = builder.add_shape_sphere(body=body1, radius=0.5)
+    builder.end_world()
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    build_bvh_shape(model, state)
+    return model, global_box, sphere0, sphere1
+
+
+def test_intersect_ray_global_world(test: TestRaycast, device: str):
+    model, global_box, sphere0, sphere1 = _make_global_world_model(device)
+
+    # Rays fired along -y toward each world's sphere and the global box.
+    origins = wp.array(
+        np.array(
+            [
+                [0.0, 5.0, 5.0],  # world 0 sphere
+                [0.0, 10.0, 5.0],  # world 1 sphere
+                [0.0, 0.0, 5.0],  # global box, queried from world 0
+                [0.0, 0.0, 5.0],  # global box, queried from world -1
+                [0.0, 10.0, 5.0],  # world 1 sphere is invisible from world 0
+            ],
+            dtype=np.float32,
+        ),
+        dtype=wp.vec3,
+        device=device,
+    )
+    directions = wp.array(
+        np.tile(np.array([0.0, 0.0, -1.0], dtype=np.float32), (5, 1)),
+        dtype=wp.vec3,
+        device=device,
+    )
+    worlds = wp.array(np.array([0, 1, 0, -1, 0], dtype=np.int32), dtype=wp.int32, device=device)
+
+    out_dist = wp.empty(shape=5, dtype=float, device=device)
+    out_shape_id = wp.empty(shape=5, dtype=wp.int32, device=device)
+    out_normal = wp.empty(shape=5, dtype=wp.vec3, device=device)
+    newton.intersect_ray(model, origins, directions, worlds, True, out_dist, out_shape_id, out_normal)
+
+    np.testing.assert_allclose(out_dist.numpy(), np.array([4.5, 4.5, 4.5, 4.5, -1.0], dtype=np.float32), atol=1e-5)
+    np.testing.assert_array_equal(
+        out_shape_id.numpy(), np.array([sphere0, sphere1, global_box, global_box, -1], dtype=np.int32)
     )
 
 
@@ -700,6 +755,7 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestRaycast, "test_intersect_ray", test_intersect_ray, devices=devices)
+add_function_test(TestRaycast, "test_intersect_ray_global_world", test_intersect_ray_global_world, devices=devices)
 
 
 if __name__ == "__main__":
