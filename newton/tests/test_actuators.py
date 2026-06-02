@@ -434,13 +434,16 @@ class TestControllerNeuralMLP(unittest.TestCase):
                 return self.fc(x)
 
         model = _BiasOnlyMLP().eval()
-        scripted = torch.jit.script(model)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            scripted = torch.jit.script(model)
         path = os.path.join(self._tmp_dir, "legacy_mlp.pt")
         scripted.save(path, _extra_files={"metadata.json": json.dumps({"effort_scale": 1.0})})
 
-        ctrl = ControllerNeuralMLP(model_path=path)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
+            warnings.simplefilter("ignore", UserWarning)
+            ctrl = ControllerNeuralMLP(model_path=path)
             ctrl.finalize(self.device, n)
 
         self.assertEqual(ctrl._net_output_name, "action")
@@ -666,7 +669,9 @@ class TestControllerNeuralLSTMLegacyTorchScript(unittest.TestCase):
                 return effort, hc_new
 
         model = _LegacyLSTM(hidden_size).eval()
-        scripted = torch.jit.script(model)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            scripted = torch.jit.script(model)
         extra_files = {"metadata.json": json.dumps(metadata or {})}
         scripted.save(path, _extra_files=extra_files)
 
@@ -727,22 +732,27 @@ class TestControllerNeuralLSTMLegacyTorchScript(unittest.TestCase):
         target_vel = wp.zeros(n, dtype=wp.float32, device=self.device)
         forces = wp.zeros(n, dtype=wp.float32, device=self.device)
 
-        ctrl.compute(
-            positions,
-            velocities,
-            target_pos,
-            target_vel,
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            state_a,
-            0.01,
-            self.device,
-        )
-        ctrl.update_state(state_a, state_b)
+        with warnings.catch_warnings():
+            # CuDNN emits a UserWarning about non-contiguous RNN weights from
+            # inside torch when the legacy adapter runs the LSTM on GPU; it is
+            # advisory and unrelated to Newton's contract.
+            warnings.simplefilter("ignore", UserWarning)
+            ctrl.compute(
+                positions,
+                velocities,
+                target_pos,
+                target_vel,
+                None,
+                indices,
+                indices,
+                indices,
+                indices,
+                forces,
+                state_a,
+                0.01,
+                self.device,
+            )
+            ctrl.update_state(state_a, state_b)
 
         # The legacy module returns a non-zero effort for non-zero pos/vel error
         # and the LSTM hidden state should evolve away from zero.
@@ -2499,7 +2509,13 @@ class TestActuatorErrorPaths(unittest.TestCase):
         indices = _wp_array(list(range(n)), dtype=wp.uint32)
         ctrl = ControllerPD(kp=_wp_array([1.0] * n), kd=_wp_array([0.0] * n))
         delay = Delay(delay_steps=_wp_array([1] * n, dtype=wp.int32), max_delay=2)
-        return Actuator(indices=indices, controller=ctrl, delay=delay)
+        return Actuator(
+            indices=indices,
+            controller=ctrl,
+            delay=delay,
+            control_target_pos_attr="joint_target_q",
+            control_target_vel_attr="joint_target_qd",
+        )
 
     def _empty_sim_namespaces(self, n: int):
         sim_state = types.SimpleNamespace(joint_q=_wp_array([0.0] * n), joint_qd=_wp_array([0.0] * n))
