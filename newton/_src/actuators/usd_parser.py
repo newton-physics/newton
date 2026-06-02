@@ -139,11 +139,9 @@ def _get_relationship_targets(prim, name: str) -> list[str]:
 
 
 class SchemaNames:
-    """Canonical USD tokens from ``newton-usd-schemas`` (stand-in for missing typed bindings)."""
+    """Canonical USD tokens from ``newton-usd-schemas``"""
 
     ACTUATOR = "NewtonActuator"
-    CONTROL_BASE = "NewtonActuatorControlBaseAPI"
-    CLAMPING_BASE = "NewtonActuatorClampingBaseAPI"
 
     PD_CONTROL = "NewtonPDControlAPI"
     PID_CONTROL = "NewtonPIDControlAPI"
