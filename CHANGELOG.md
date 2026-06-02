@@ -62,6 +62,8 @@
 - Fix `eval_fk()` overwriting VBD-simulated `JointType.CABLE` body poses.
 - Fix `SolverXPBD` `body_parent_f` reporting to include `Control.joint_f` contributions and accumulate multiple inbound joint contributions, matching the `SolverMuJoCo` and `SolverFeatherstone` convention.
 - Fix MJCF `xyaxes` parsing to treat the second vector as Y and derive Z from X cross Y.
+- Fix MJCF `euler` producing wrong orientations for multi-component angles (used extrinsic instead of intrinsic rotation).
+- Fix MJCF reading only the first `<compiler>` element; attributes are now merged across all elements in document order including `<include>`-expanded children.
 - Fix `ViewerFile` playback dropping namespaced custom attributes (e.g. `model.mujoco.geom_solimp`) when restoring into a fresh `Model`.
 - Fix mesh-convex and heightfield-convex contacts missing when shapes are separated by margin but still within the contact envelope.
 - Fix `brick_stacking` example contact gaps to avoid oversized contact envelopes around the robot, table, and ground.

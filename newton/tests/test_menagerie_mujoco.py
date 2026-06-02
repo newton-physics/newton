@@ -2178,12 +2178,17 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
     """ALOHA bimanual system."""
 
     robot_folder = "aloha"
-    # Dynamics and FK disabled: multiple MJCF import issues (#2492)
-    num_steps = 0
-    fk_enabled = False  # FK fails (xpos diff 0.14) due to import bugs (#2492)
-    # TODO(#2492): dof_damping, jnt_range, eq_, ngeom differ
-    # jnt_ is broad but needed: compare_jnt_range runs outside model_skip_fields
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"dof_damping", "eq_", "neq", "ngeom", "jnt_"}
+    num_steps = 20
+    fk_enabled = True
+    # Aloha's MJCF doesn't author `<option integrator=...>`, so sync native
+    # to Newton's auto-selected IMPLICITFAST (same pattern as FR3v2/Cassie).
+    # 15-trial native-vs-native qvel diff is bit-exact (0); newton-vs-native
+    # max 1.43e-6 (float32 noise). Tolerance set ~7x for headroom.
+    dynamics_tolerance = 1e-5
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"ngeom"}
+
+    def _align_models(self, newton_solver, native_mjw_model, mj_model):
+        native_mjw_model.opt.integrator = newton_solver.mjw_model.opt.integrator
 
 
 class TestMenagerie_GoogleRobot(TestMenagerieMJCF):

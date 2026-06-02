@@ -311,6 +311,122 @@ class TestImportMjcfBasic(unittest.TestCase):
         negated = np.allclose(newton_xyzw, -native_xyzw, rtol=1e-6, atol=1e-6)
         self.assertTrue(same or negated, "Site quaternion mismatch (accounting for q/-q equivalence)")
 
+    def test_body_euler_matches_mujoco(self):
+        """Body ``euler`` quaternion must match MuJoCo at default ``eulerseq=xyz``.
+
+        Uses three non-zero components so the intrinsic-vs-extrinsic
+        difference shows up above float32 noise.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <compiler angle="radian"/>
+    <worldbody>
+        <body name="test_body" euler="0.3 1.2 -0.7">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+        body_idx = model.body_label.index("test/worldbody/test_body")
+        newton_xyzw = np.array(model.body_q.numpy()[body_idx, 3:], dtype=np.float64)
+
+        native_wxyz = np.array(
+            SolverMuJoCo.import_mujoco()[0].MjModel.from_xml_string(mjcf_content).body_quat[1], dtype=np.float64
+        )
+        native_xyzw = np.array([native_wxyz[1], native_wxyz[2], native_wxyz[3], native_wxyz[0]], dtype=np.float64)
+
+        same = np.allclose(newton_xyzw, native_xyzw, rtol=1e-6, atol=1e-6)
+        negated = np.allclose(newton_xyzw, -native_xyzw, rtol=1e-6, atol=1e-6)
+        self.assertTrue(
+            same or negated,
+            f"Body quaternion mismatch (accounting for q/-q equivalence): newton={newton_xyzw} native={native_xyzw}",
+        )
+
+    def test_compiler_merge_across_includes(self):
+        """``<compiler>`` attributes merge globally across ``<include>``-expanded
+        files (document order, later wins, scope is not file-local).
+
+        Both layouts (inner-compiler-after-outer and outer-compiler-after-inner)
+        check that the latest compiler wins for ALL bodies regardless of which
+        file authored them.
+        """
+        import os  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+
+        inner_xml = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="inner">
+    <compiler angle="radian"/>
+    <worldbody>
+        <body name="inner_body" euler="0 1.57 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        layouts = {
+            "inner_compiler_wins": """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="outer">
+    <compiler angle="degree"/>
+    <worldbody>
+        <body name="outer_body" euler="0 1.57 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <include file="inner.xml"/>
+</mujoco>
+""",
+            "outer_compiler_wins": """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="outer">
+    <include file="inner.xml"/>
+    <worldbody>
+        <body name="outer_body" euler="0 1.57 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <compiler angle="degree"/>
+</mujoco>
+""",
+        }
+
+        for layout_name, outer_xml in layouts.items():
+            with tempfile.TemporaryDirectory() as d:
+                with open(os.path.join(d, "outer.xml"), "w") as f:
+                    f.write(outer_xml)
+                with open(os.path.join(d, "inner.xml"), "w") as f:
+                    f.write(inner_xml)
+
+                # MuJoCo (the ground truth) — loads and merges across includes
+                native = mujoco.MjModel.from_xml_path(os.path.join(d, "outer.xml"))
+
+                # Newton — must produce the same body quats
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(os.path.join(d, "outer.xml"))
+                model = builder.finalize()
+
+            for native_idx in range(1, native.nbody):  # skip worldbody
+                name = native.body(native_idx).name
+                native_wxyz = np.array(native.body_quat[native_idx], dtype=np.float64)
+                native_xyzw = np.array(
+                    [native_wxyz[1], native_wxyz[2], native_wxyz[3], native_wxyz[0]], dtype=np.float64
+                )
+                # Find the body in Newton's label-path scheme (`outer/worldbody/<name>`)
+                matches = [j for j in range(model.body_count) if model.body_label[j].endswith(name)]
+                self.assertEqual(len(matches), 1, f"Body {name!r} not uniquely found in Newton model")
+                newton_xyzw = np.array(model.body_q.numpy()[matches[0], 3:], dtype=np.float64)
+
+                same = np.allclose(newton_xyzw, native_xyzw, rtol=1e-6, atol=1e-6)
+                negated = np.allclose(newton_xyzw, -native_xyzw, rtol=1e-6, atol=1e-6)
+                self.assertTrue(
+                    same or negated,
+                    f"Compiler-merge layout={layout_name!r} body={name!r}: newton={newton_xyzw} native={native_xyzw}",
+                )
+
     def test_root_body_with_custom_xform(self):
         """Test 1: Root body with custom xform parameter (with rotation) → verify transform is properly applied."""
         # Add a 45-degree rotation around Z to the body
