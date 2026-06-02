@@ -52,6 +52,7 @@ from projects.digital_instron_v2.workflow import (
     _hysteresis_segments,
     _spring_state_for_trial_frame,
     _trial_contact_surface_cache,
+    _trial_displacement_split,
     run_fit_autodiff,
 )
 
@@ -269,6 +270,7 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
         )
         from projects.digital_instron_v2.geometry import compute_grid_neighbors
         from projects.digital_instron_v2.foundation import infer_spacing, _infer_longitudinal_axis_and_x_max
+
         spacing_val = infer_spacing(xy)
         neighbors_val = compute_grid_neighbors(xy, spacing_val)
         wp_neighbors = wp.array(neighbors_val, dtype=wp.int32, device=device)
@@ -767,8 +769,43 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
 
             self.assertGreater(float(np.max(compression)), 0.0)
             self.assertGreater(float(np.max(compression) - np.min(compression)), 0.001)
-            self.assertGreater(int(np.count_nonzero(compression == 0.0)), 0)
+            self.assertEqual(int(np.count_nonzero(compression > 0.0)), len(compression))
             self.assertEqual(int(np.count_nonzero(velocity < 0.0)), int(np.count_nonzero(compression > 0.0)))
+
+    def test_spring_state_combines_top_and_bottom_compression(self):
+        spring_grid = SimpleNamespace(
+            slack_length_m=np.asarray([0.02, 0.02, 0.02], dtype=np.float64),
+            bottom_m=np.asarray([-0.020, -0.019, -0.016], dtype=np.float64),
+        )
+        trial = SimpleNamespace(
+            name="rearfoot_two_sided",
+            fixture="rearfoot_punch",
+            indenter={"top_displacement_fraction": 0.5, "bottom_displacement_fraction": 0.5},
+        )
+        rearfoot_mask = np.asarray([True, True, False])
+
+        current_length, velocity = _spring_state_for_trial_frame(
+            spring_grid,
+            trial,
+            rearfoot_mask,
+            {},
+            displacement_m=0.004,
+            displacement_velocity_mps=0.01,
+        )
+
+        compression = spring_grid.slack_length_m - current_length
+        np.testing.assert_allclose(compression, [0.004, 0.003, 0.0], atol=1.0e-12)
+        np.testing.assert_allclose(velocity, [-0.01, -0.01, 0.0], atol=1.0e-12)
+
+    def test_trial_displacement_split_rejects_top_only_contact(self):
+        trial = SimpleNamespace(
+            name="rearfoot_top_only",
+            fixture="rearfoot_punch",
+            indenter={"top_displacement_fraction": 1.0, "bottom_displacement_fraction": 0.0},
+        )
+
+        with self.assertRaisesRegex(ValueError, "top and bottom"):
+            _trial_displacement_split(trial)
 
     def test_fullfoot_stl_height_offset_and_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1034,7 +1071,7 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
 
         forces = result.predicted_force_n
         for i in range(1, len(forces)):
-            self.assertLessEqual(forces[i], forces[i-1])
+            self.assertLessEqual(forces[i], forces[i - 1])
         self.assertLess(forces[-1], forces[0])
 
     def test_workflow_fit_autodiff_with_per_cylinder(self):
@@ -1149,6 +1186,23 @@ class TestDigitalInstronV2Foundation(unittest.TestCase):
             self.assertTrue(material_path.exists())
             material_artifact = json.loads(material_path.read_text())
             self.assertEqual(material_artifact["schema_version"], "digital_instron_v2_foundation_material_1")
+            self.assertEqual(material_artifact["contact_model"]["type"], "two_sided_spring_grid")
+            self.assertEqual(material_artifact["contact_model"]["compression_components"], "top_plus_bottom")
+            trial_contact = material_artifact["contact_model"]["trials"]["rearfoot_punch"]
+            self.assertAlmostEqual(trial_contact["top_displacement_fraction"], 0.5)
+            self.assertAlmostEqual(trial_contact["bottom_displacement_fraction"], 0.5)
+            self.assertIn("calibration_envelope", material_artifact)
+            envelope = material_artifact["calibration_envelope"]
+            self.assertGreater(envelope["preferred_peak_top_compression_m"], 0.0)
+            self.assertGreater(envelope["preferred_peak_bottom_compression_m"], 0.0)
+            self.assertGreater(envelope["preferred_peak_stack_compression_m"], 0.0)
+            self.assertGreater(envelope["preferred_one_sided_hydro_shoe_stroke_m"], 0.0)
+            trial_envelope = material_artifact["calibration_envelope"]["trials"]["rearfoot_punch"]
+            self.assertGreater(trial_envelope["peak_displacement_m"], 0.0)
+            self.assertGreater(trial_envelope["peak_max_compression_m"], 0.0)
+            self.assertGreater(trial_envelope["peak_top_compression_m"], 0.0)
+            self.assertGreater(trial_envelope["peak_bottom_compression_m"], 0.0)
+            self.assertGreater(trial_envelope["peak_active_area_m2"], 0.0)
             hysteresis_png = Path(saved["hysteresis"]["hysteresis_png"])
             hysteresis_csv = Path(saved["hysteresis"]["hysteresis_csv"])
             hysteresis_trials_csv = Path(saved["hysteresis"]["hysteresis_trials_csv"])

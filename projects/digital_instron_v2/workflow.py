@@ -46,7 +46,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="qc",
     )
     parser.add_argument("--train-cycles", default="90-98", help="Cycle window for split-cycles or fit-validate")
-    parser.add_argument("--validate-cycles", default="99-100", help="Held-out cycle window for split-cycles or fit-validate")
+    parser.add_argument(
+        "--validate-cycles", default="99-100", help="Held-out cycle window for split-cycles or fit-validate"
+    )
     parser.add_argument("--cycle-phase-count", type=int, default=501, help="Phase samples per generated cycle trace")
     parser.add_argument("--autodiff-iterations", type=int, default=25, help="Iterations for --step fit-autodiff")
     parser.add_argument("--loop-weight", type=float, default=None, help="Override fit.loop_weight for autodiff fitting")
@@ -134,7 +136,7 @@ def run_fit_smoke(args: argparse.Namespace) -> dict[str, object]:
         velocity = np.zeros_like(compression)
         if trial.fixture == "rearfoot_punch":
             radius_m = float(trial.indenter.get("radius_m", 0.0225))
-            analytical_area = np.pi * (radius_m ** 2)
+            analytical_area = np.pi * (radius_m**2)
             active_count = len(grid.xy_m)
             cell_area_val = analytical_area / active_count if active_count > 0 else grid.cell_area_m2
         else:
@@ -325,6 +327,75 @@ def _trial_contact_surface_cache(manifest, spring_grid) -> dict[str, tuple[np.nd
     return surfaces
 
 
+def _trial_displacement_split(trial) -> tuple[float, float]:
+    """Return top/bottom fractions of the measured platen displacement."""
+
+    indenter = getattr(trial, "indenter", {}) or {}
+    top_fraction = float(indenter.get("top_displacement_fraction", 0.5))
+    bottom_fraction = float(indenter.get("bottom_displacement_fraction", 0.5))
+    if top_fraction <= 0.0 or bottom_fraction <= 0.0:
+        raise ValueError("top and bottom indenter displacement fractions must both be positive")
+    return top_fraction, bottom_fraction
+
+
+def _bottom_platen_compression(
+    spring_grid,
+    active_mask: np.ndarray,
+    bottom_travel_m: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compression from a flat bottom platen moving toward the midsole."""
+
+    compression = np.zeros_like(spring_grid.slack_length_m)
+    active = np.asarray(active_mask, dtype=bool)
+    if bottom_travel_m <= 0.0 or not np.any(active):
+        return compression, np.zeros_like(active, dtype=bool)
+
+    bottom_plane_m = float(np.min(spring_grid.bottom_m[active]) + bottom_travel_m)
+    compression[active] = np.maximum(bottom_plane_m - spring_grid.bottom_m[active], 0.0)
+    return compression, active & (compression > 0.0)
+
+
+def _spring_compression_components_for_trial_frame(
+    spring_grid,
+    trial,
+    rearfoot_mask: np.ndarray,
+    contact_surfaces: dict[str, tuple[np.ndarray, np.ndarray]],
+    displacement_m: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return top and bottom spring-compression components for one frame."""
+
+    displacement = max(float(displacement_m), 0.0)
+    top_fraction, bottom_fraction = _trial_displacement_split(trial)
+    top_travel = top_fraction * displacement
+    bottom_travel = bottom_fraction * displacement
+
+    top_compression = np.zeros_like(spring_grid.slack_length_m)
+    bottom_compression = np.zeros_like(spring_grid.slack_length_m)
+    top_active = np.zeros_like(top_compression, dtype=bool)
+    bottom_active = np.zeros_like(top_compression, dtype=bool)
+
+    if trial.fixture == "rearfoot_punch":
+        active = np.asarray(rearfoot_mask, dtype=bool)
+        top_compression[active] = top_travel
+        top_active = active & (top_compression > 0.0)
+        bottom_compression, bottom_active = _bottom_platen_compression(spring_grid, active, bottom_travel)
+        return top_compression, bottom_compression, top_active, bottom_active
+
+    if trial.fixture == "fullfoot_last" and trial.name in contact_surfaces:
+        contact_surface_0, valid = contact_surfaces[trial.name]
+        contact_surface = contact_surface_0 - top_travel
+        top_compression[valid] = np.maximum(spring_grid.top_m[valid] - contact_surface[valid], 0.0)
+        top_active = valid & (top_compression > 0.0)
+        bottom_compression, bottom_active = _bottom_platen_compression(spring_grid, valid, bottom_travel)
+        return top_compression, bottom_compression, top_active, bottom_active
+
+    active = np.ones_like(rearfoot_mask, dtype=bool)
+    top_compression[active] = top_travel
+    top_active = active & (top_compression > 0.0)
+    bottom_compression, bottom_active = _bottom_platen_compression(spring_grid, active, bottom_travel)
+    return top_compression, bottom_compression, top_active, bottom_active
+
+
 def _fullfoot_contact_diagnostics(
     spring_grid,
     contact_surfaces: dict[str, tuple[np.ndarray, np.ndarray]],
@@ -471,25 +542,23 @@ def _spring_state_for_trial_frame(
     displacement = max(float(displacement_m), 0.0)
     current_length = spring_grid.slack_length_m.copy()
     velocity = np.zeros_like(current_length)
-    if trial.fixture == "rearfoot_punch":
-        active = rearfoot_mask
-        current_length[active] = np.maximum(spring_grid.slack_length_m[active] - displacement, 0.0)
-        velocity[active] = -float(displacement_velocity_mps)
-        return current_length, velocity
+    compression_velocity = np.zeros_like(current_length)
+    top_fraction, bottom_fraction = _trial_displacement_split(trial)
+    top_velocity = top_fraction * float(displacement_velocity_mps)
+    bottom_velocity = bottom_fraction * float(displacement_velocity_mps)
 
-    if trial.fixture == "fullfoot_last" and trial.name in contact_surfaces:
-        contact_surface_0, valid = contact_surfaces[trial.name]
-        contact_surface = contact_surface_0 - displacement
-        compression = np.zeros_like(current_length)
-        compression[valid] = np.maximum(spring_grid.top_m[valid] - contact_surface[valid], 0.0)
-        contact_active = valid & (compression > 0.0)
-        current_length[valid] = np.maximum(spring_grid.slack_length_m[valid] - compression[valid], 0.0)
-        velocity[contact_active] = -float(displacement_velocity_mps)
-        return current_length, velocity
-
-    active = np.ones_like(rearfoot_mask, dtype=bool)
-    current_length[active] = np.maximum(spring_grid.slack_length_m[active] - displacement, 0.0)
-    velocity[active] = -float(displacement_velocity_mps)
+    top_compression, bottom_compression, top_active, bottom_active = _spring_compression_components_for_trial_frame(
+        spring_grid,
+        trial,
+        rearfoot_mask,
+        contact_surfaces,
+        displacement,
+    )
+    compression = np.minimum(top_compression + bottom_compression, spring_grid.slack_length_m)
+    current_length = np.maximum(spring_grid.slack_length_m - compression, 0.0)
+    compression_velocity[top_active] += top_velocity
+    compression_velocity[bottom_active] += bottom_velocity
+    velocity[compression > 0.0] = -compression_velocity[compression > 0.0]
     return current_length, velocity
 
 
@@ -746,7 +815,7 @@ def _autodiff_batches(
             active_mask = rearfoot_mask
             active_count = np.count_nonzero(active_mask)
             radius_m = float(trial.indenter.get("radius_m", 0.0225))
-            analytical_area = np.pi * (radius_m ** 2)
+            analytical_area = np.pi * (radius_m**2)
             cell_area_val = analytical_area / active_count if active_count > 0 else spring_grid.cell_area_m2
             trial_cell_area = np.full(len(spring_grid.xy_m), cell_area_val, dtype=np.float64)
         else:
@@ -762,7 +831,12 @@ def _autodiff_batches(
                 sample_weight=weights,
                 cell_area_m2=trial_cell_area,
                 time_s=trace["time_s"],
-                dt_s=np.concatenate(([trace["time_s"][1] - trace["time_s"][0] if len(trace["time_s"]) > 1 else 0.001], np.diff(trace["time_s"]))),
+                dt_s=np.concatenate(
+                    (
+                        [trace["time_s"][1] - trace["time_s"][0] if len(trace["time_s"]) > 1 else 0.001],
+                        np.diff(trace["time_s"]),
+                    )
+                ),
                 displacement_m=trace["displacement_m"],
                 phase=tuple(str(phase) for phase in phases),
                 force_zero_n=float(trace["force_zero_n"][0]),
@@ -898,11 +972,87 @@ def _write_foundation_material_artifact(
         str(trial_summary["trial"]): {"force_zero_n": float(trial_summary["force_zero_n"])}
         for trial_summary in hysteresis["trials"]
     }
+    contact_trials = {}
+    for trial in manifest.trials:
+        if not trial.include_in_fit:
+            continue
+        top_fraction, bottom_fraction = _trial_displacement_split(trial)
+        contact_trials[trial.name] = {
+            "fixture": trial.fixture,
+            "indenter_type": str(trial.indenter.get("type", "")),
+            "top_displacement_fraction": float(top_fraction),
+            "bottom_displacement_fraction": float(bottom_fraction),
+        }
+    trial_envelopes = {}
+    for trial_summary in hysteresis["trials"]:
+        trial_name = str(trial_summary["trial"])
+        contact_trial = contact_trials.get(trial_name, {})
+        top_fraction = float(contact_trial.get("top_displacement_fraction", 0.5))
+        bottom_fraction = float(contact_trial.get("bottom_displacement_fraction", 0.5))
+        fraction_total = max(top_fraction + bottom_fraction, 1.0e-12)
+        peak_max_compression_m = float(trial_summary.get("peak_max_compression_m", 0.0))
+        trial_envelopes[trial_name] = {
+            "max_displacement_m": float(trial_summary.get("max_displacement_m", 0.0)),
+            "peak_displacement_m": float(trial_summary.get("peak_displacement_m", 0.0)),
+            "max_compression_m": float(trial_summary.get("max_compression_m", 0.0)),
+            "peak_max_compression_m": peak_max_compression_m,
+            "peak_top_compression_m": peak_max_compression_m * top_fraction / fraction_total,
+            "peak_bottom_compression_m": peak_max_compression_m * bottom_fraction / fraction_total,
+            "peak_active_area_m2": float(trial_summary.get("peak_active_area_m2", 0.0)),
+            "measured_peak_force_n": float(trial_summary.get("measured_peak_force_n", 0.0)),
+            "predicted_peak_force_n": float(trial_summary.get("predicted_peak_force_n", 0.0)),
+        }
+
+    preferred_trial_name = ""
+    preferred_trial_envelope: dict[str, float] = {}
+    preferred_stack = -1.0
+    for trial_name, envelope in trial_envelopes.items():
+        fixture = contact_trials.get(trial_name, {}).get("fixture")
+        if fixture != "fullfoot_last":
+            continue
+        stack = float(envelope["peak_max_compression_m"])
+        if stack > preferred_stack:
+            preferred_stack = stack
+            preferred_trial_name = trial_name
+            preferred_trial_envelope = envelope
+    if not preferred_trial_envelope:
+        for trial_name, envelope in trial_envelopes.items():
+            stack = float(envelope["peak_max_compression_m"])
+            if stack > preferred_stack:
+                preferred_stack = stack
+                preferred_trial_name = trial_name
+                preferred_trial_envelope = envelope
+
+    preferred_peak_displacement_m = float(preferred_trial_envelope.get("peak_displacement_m", 0.0))
+    preferred_peak_top_compression_m = float(preferred_trial_envelope.get("peak_top_compression_m", 0.0))
+    preferred_peak_bottom_compression_m = float(preferred_trial_envelope.get("peak_bottom_compression_m", 0.0))
+    preferred_peak_stack_compression_m = float(preferred_trial_envelope.get("peak_max_compression_m", 0.0))
+    preferred_one_sided_hydro_shoe_stroke_m = preferred_peak_top_compression_m + 0.5 * preferred_peak_bottom_compression_m
     artifact = {
         "schema_version": "digital_instron_v2_foundation_material_1",
         "manifest": str(manifest.path),
         "fit_source": fit_source,
         "material": material.__dict__,
+        "contact_model": {
+            "type": "two_sided_spring_grid",
+            "compression_components": "top_plus_bottom",
+            "top_contact": "manifest indenter or flat active fixture region",
+            "bottom_contact": "flat bottom platen over the active fixture region",
+            "trials": contact_trials,
+        },
+        "calibration_envelope": {
+            "preferred_peak_displacement_m": float(preferred_peak_displacement_m),
+            "preferred_peak_top_compression_m": preferred_peak_top_compression_m,
+            "preferred_peak_bottom_compression_m": preferred_peak_bottom_compression_m,
+            "preferred_peak_stack_compression_m": preferred_peak_stack_compression_m,
+            "preferred_one_sided_hydro_shoe_stroke_m": preferred_one_sided_hydro_shoe_stroke_m,
+            "preferred_trial": preferred_trial_name,
+            "basis": (
+                "fullfoot_last peak envelope when available, otherwise max fitted trial peak stack compression; "
+                "one_sided_hydro_shoe_stroke is top compression plus half bottom compression"
+            ),
+            "trials": trial_envelopes,
+        },
         "grid": {
             "spring_count": int(len(spring_grid.xy_m)),
             "cell_area_m2": float(spring_grid.cell_area_m2),
@@ -1028,12 +1178,20 @@ def _write_autodiff_hysteresis_plot(
         rmse = float(np.sqrt(np.mean((predicted - measured) ** 2)))
         measured_loop_area = float(np.trapezoid(measured_machine, displacement))
         predicted_loop_area = float(np.trapezoid(predicted_machine, displacement))
+        compression = np.maximum(batch.slack_length_m[None, :] - batch.current_length_m, 0.0)
+        peak_index = int(np.argmax(measured))
+        peak_active = compression[peak_index] > 0.0
         trial_summaries.append(
             {
                 "trial": batch.name,
                 "frame_count": int(len(measured)),
                 "force_zero_n": float(getattr(batch, "force_zero_n", 0.0)),
                 "segment_count": int(len(segments)),
+                "max_displacement_m": float(np.max(displacement)) if len(displacement) else 0.0,
+                "peak_displacement_m": float(displacement[peak_index]) if len(displacement) else 0.0,
+                "max_compression_m": float(np.max(compression)) if compression.size else 0.0,
+                "peak_max_compression_m": float(np.max(compression[peak_index])) if compression.size else 0.0,
+                "peak_active_area_m2": float(np.sum(batch.cell_area_m2[peak_active])),
                 "rmse_n": rmse,
                 "normalized_rmse": float(rmse / max(float(np.max(np.abs(measured))), 1.0)),
                 "measured_peak_force_n": float(np.max(measured)),
@@ -1182,9 +1340,7 @@ def _material_from_history_row(row: dict[str, float]) -> FoundationMaterial:
         prony_stiffness_pa=prony_stiffness,
         prony_damping_pa_s=prony_damping,
         state_warmup_cycles=int(row["state_warmup_cycles"]),
-        pasternak_stiffness_n_per_m=float(
-            row.get("pasternak_stiffness_n_per_m", row.get("shear_modulus_pa", 0.0))
-        ),
+        pasternak_stiffness_n_per_m=float(row.get("pasternak_stiffness_n_per_m", row.get("shear_modulus_pa", 0.0))),
         spatial_slope=float(row.get("spatial_slope", 0.0)),
     )
 
@@ -1208,11 +1364,7 @@ def _history_selection_score(
         # This selector is deliberately aligned with the official gates. It is
         # not the differentiable objective; it chooses the checkpoint that best
         # satisfies the locked train metrics before held-out validation.
-        score = (
-            metrics.peak_force_error
-            + metrics.force_rmse_relative
-            + min(metrics.hysteresis_error, 10.0)
-        )
+        score = metrics.peak_force_error + metrics.force_rmse_relative + min(metrics.hysteresis_error, 10.0)
         trial_scores.append(
             {
                 "trial": batch.name,
@@ -1787,7 +1939,9 @@ def _phase2_dynamic_replay(
         wrench_array = np.asarray(wrench_rows, dtype=np.float64)
         body_force_array = np.asarray(body_force_rows, dtype=np.float64)
         body_qd_array = np.asarray(body_qd_rows, dtype=np.float64)
-        equal_opposite_error = float(np.max(np.abs(body_force_array[:, shoe_body_index, :] + body_force_array[:, fixture_body_index, :])))
+        equal_opposite_error = float(
+            np.max(np.abs(body_force_array[:, shoe_body_index, :] + body_force_array[:, fixture_body_index, :]))
+        )
         solver_advanced = bool(len(body_qd_array) and np.any(np.abs(body_qd_array) > 0.0))
         peak_body_qd_abs = [float(value) for value in np.max(np.abs(body_qd_array), axis=(0, 1))]
         body_qd_bound = 1.0e6
@@ -1819,8 +1973,12 @@ def _phase2_dynamic_replay(
                 "max_force_jump_relative": max_force_jump_relative,
                 "mean_cop_x_m": float(np.mean(cop[finite_cop, 0])) if np.any(finite_cop) else float("nan"),
                 "mean_cop_y_m": float(np.mean(cop[finite_cop, 1])) if np.any(finite_cop) else float("nan"),
-                "peak_cop_x_m": float(cop[np.nanargmax(np.abs(cop[:, 0])), 0]) if np.any(np.isfinite(cop[:, 0])) else float("nan"),
-                "peak_cop_y_m": float(cop[np.nanargmax(np.abs(cop[:, 1])), 1]) if np.any(np.isfinite(cop[:, 1])) else float("nan"),
+                "peak_cop_x_m": float(cop[np.nanargmax(np.abs(cop[:, 0])), 0])
+                if np.any(np.isfinite(cop[:, 0]))
+                else float("nan"),
+                "peak_cop_y_m": float(cop[np.nanargmax(np.abs(cop[:, 1])), 1])
+                if np.any(np.isfinite(cop[:, 1]))
+                else float("nan"),
                 "equal_opposite_wrench_error": equal_opposite_error,
                 "solver_advanced_state": solver_advanced,
                 "solver_step_count": int(len(body_qd_rows)),

@@ -284,7 +284,13 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
     fig.savefig(force_heatmap_png, dpi=180)
     plt.close(fig)
 
-    from .workflow import _rearfoot_mask, _spring_state_for_trial_frame, _trial_contact_surface_cache
+    from .workflow import (
+        _rearfoot_mask,
+        _spring_compression_components_for_trial_frame,
+        _spring_state_for_trial_frame,
+        _trial_contact_surface_cache,
+        _trial_displacement_split,
+    )
 
     contact_surfaces = _trial_contact_surface_cache(manifest, footprint_grid)
     rearfoot_mask = _rearfoot_mask(manifest, footprint_grid, vertices)
@@ -335,11 +341,30 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
                 0.0,
             )
             compression = np.maximum(footprint_grid.slack_length_m - current_length, 0.0)
-            deformed_top = footprint_grid.top_m - compression
+            top_compression, bottom_compression, top_active, bottom_active = (
+                _spring_compression_components_for_trial_frame(
+                    footprint_grid,
+                    trial,
+                    rearfoot_mask,
+                    contact_surfaces,
+                    displacement_m,
+                )
+            )
+            deformed_top = footprint_grid.top_m - top_compression
+            deformed_bottom = footprint_grid.bottom_m + bottom_compression
             active = compression > 0.0
 
             ax.scatter(x_mm, footprint_grid.bottom_m * 1000.0, s=7, c="#595959", alpha=0.35, label="ground side")
             ax.scatter(x_mm, footprint_grid.top_m * 1000.0, s=7, c="#9ecae1", alpha=0.28, label="uncompressed top")
+            ax.scatter(
+                x_mm,
+                deformed_bottom * 1000.0,
+                c=bottom_compression * 1000.0,
+                s=np.where(bottom_active, 18, 8),
+                cmap="viridis",
+                alpha=np.where(bottom_active, 0.9, 0.2),
+                label="compressed bottom",
+            )
             sc = ax.scatter(
                 x_mm,
                 deformed_top * 1000.0,
@@ -349,9 +374,10 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
                 alpha=np.where(active, 0.9, 0.25),
                 label="compressed top",
             )
+            top_fraction, bottom_fraction = _trial_displacement_split(trial)
             if trial.fixture == "fullfoot_last" and trial.name in contact_surfaces:
                 contact_surface_0, valid = contact_surfaces[trial.name]
-                contact_surface = contact_surface_0 - displacement_m
+                contact_surface = contact_surface_0 - top_fraction * displacement_m
                 ax.scatter(
                     x_mm[valid],
                     contact_surface[valid] * 1000.0,
@@ -360,8 +386,18 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
                     alpha=0.45,
                     label="last contact surface",
                 )
+                if bottom_fraction > 0.0:
+                    bottom_plane = np.min(footprint_grid.bottom_m[valid]) + bottom_fraction * displacement_m
+                    ax.scatter(
+                        x_mm[valid],
+                        np.full(np.count_nonzero(valid), bottom_plane * 1000.0),
+                        s=10,
+                        c="#f28e2b",
+                        alpha=0.45,
+                        label="bottom platen",
+                    )
             elif trial.fixture == "rearfoot_punch":
-                platen = footprint_grid.top_m - displacement_m
+                platen = footprint_grid.top_m - top_fraction * displacement_m
                 ax.scatter(
                     x_mm[rearfoot_mask],
                     platen[rearfoot_mask] * 1000.0,
@@ -370,6 +406,16 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
                     alpha=0.55,
                     label="flat punch platen",
                 )
+                if bottom_fraction > 0.0 and np.any(rearfoot_mask):
+                    bottom_plane = np.min(footprint_grid.bottom_m[rearfoot_mask]) + bottom_fraction * displacement_m
+                    ax.scatter(
+                        x_mm[rearfoot_mask],
+                        np.full(np.count_nonzero(rearfoot_mask), bottom_plane * 1000.0),
+                        s=12,
+                        c="#f28e2b",
+                        alpha=0.55,
+                        label="bottom platen",
+                    )
 
             ax.set_title(f"{trial.name}: peak squish at {displacement_m * 1000.0:.2f} mm")
             ax.set_xlabel("footprint length [mm]")
@@ -430,7 +476,10 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
 
             compressions = []
             deformed_tops = []
+            deformed_bottoms = []
+            bottom_compressions = []
             contact_lines = []
+            bottom_contact_lines = []
             for frame_index in frame_indices:
                 displacement_m = float(trace["displacement_m"][frame_index])
                 velocity_mps = float(trace["velocity_mps"][frame_index])
@@ -443,17 +492,47 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
                     velocity_mps,
                 )
                 compression = np.maximum(footprint_grid.slack_length_m - current_length, 0.0)
+                top_compression, bottom_compression, _, _ = _spring_compression_components_for_trial_frame(
+                    footprint_grid,
+                    trial,
+                    rearfoot_mask,
+                    contact_surfaces,
+                    displacement_m,
+                )
                 compressions.append(compression)
-                deformed_tops.append(footprint_grid.top_m - compression)
+                bottom_compressions.append(bottom_compression)
+                deformed_tops.append(footprint_grid.top_m - top_compression)
+                deformed_bottoms.append(footprint_grid.bottom_m + bottom_compression)
+                top_fraction, bottom_fraction = _trial_displacement_split(trial)
                 if trial.fixture == "fullfoot_last" and trial.name in contact_surfaces:
                     contact_surface_0, valid = contact_surfaces[trial.name]
-                    contact_lines.append((x_mm[valid], (contact_surface_0[valid] - displacement_m) * 1000.0))
+                    contact_lines.append(
+                        (x_mm[valid], (contact_surface_0[valid] - top_fraction * displacement_m) * 1000.0)
+                    )
+                    if bottom_fraction > 0.0:
+                        bottom_plane = np.min(footprint_grid.bottom_m[valid]) + bottom_fraction * displacement_m
+                        bottom_contact_lines.append(
+                            (x_mm[valid], np.full(np.count_nonzero(valid), bottom_plane * 1000.0))
+                        )
+                    else:
+                        bottom_contact_lines.append((np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)))
                 elif trial.fixture == "rearfoot_punch":
                     contact_lines.append(
-                        (x_mm[rearfoot_mask], (footprint_grid.top_m[rearfoot_mask] - displacement_m) * 1000.0)
+                        (
+                            x_mm[rearfoot_mask],
+                            (footprint_grid.top_m[rearfoot_mask] - top_fraction * displacement_m) * 1000.0,
+                        )
                     )
+                    if bottom_fraction > 0.0 and np.any(rearfoot_mask):
+                        bottom_plane = np.min(footprint_grid.bottom_m[rearfoot_mask]) + bottom_fraction * displacement_m
+                        bottom_contact_lines.append(
+                            (x_mm[rearfoot_mask], np.full(np.count_nonzero(rearfoot_mask), bottom_plane * 1000.0))
+                        )
+                    else:
+                        bottom_contact_lines.append((np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)))
                 else:
                     contact_lines.append((np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)))
+                    bottom_contact_lines.append((np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)))
 
             compression_vmax_mm = max(float(np.max([np.max(c) for c in compressions]) * 1000.0), 1.0)
             fig_anim, (ax_map, ax_side) = plt.subplots(1, 2, figsize=(11.5, 4.8), constrained_layout=True)
@@ -475,6 +554,16 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
 
             ax_side.scatter(x_mm, footprint_grid.bottom_m * 1000.0, s=6, c="#595959", alpha=0.35, label="ground side")
             ax_side.scatter(x_mm, footprint_grid.top_m * 1000.0, s=6, c="#9ecae1", alpha=0.25, label="uncompressed top")
+            bottom_scatter = ax_side.scatter(
+                x_mm,
+                deformed_bottoms[0] * 1000.0,
+                c=bottom_compressions[0] * 1000.0,
+                s=14,
+                cmap="viridis",
+                vmin=0.0,
+                vmax=compression_vmax_mm,
+                label="compressed bottom",
+            )
             side_scatter = ax_side.scatter(
                 x_mm,
                 deformed_tops[0] * 1000.0,
@@ -487,6 +576,15 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
             )
             contact_x, contact_y = contact_lines[0]
             contact_scatter = ax_side.scatter(contact_x, contact_y, s=9, c="#2ca02c", alpha=0.5, label="indenter")
+            bottom_contact_x, bottom_contact_y = bottom_contact_lines[0]
+            bottom_contact_scatter = ax_side.scatter(
+                bottom_contact_x,
+                bottom_contact_y,
+                s=9,
+                c="#f28e2b",
+                alpha=0.5,
+                label="bottom platen",
+            )
             ax_side.set_xlim(float(np.min(x_mm)), float(np.max(x_mm)))
             ax_side.set_ylim(z_min_mm - 5.0, z_max_mm + 5.0)
             ax_side.set_xlabel("footprint length [mm]")
@@ -500,15 +598,19 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
                 top_scatter.set_array(compression * 1000.0)
                 side_scatter.set_offsets(np.column_stack((x_mm, deformed_tops[frame_number] * 1000.0)))
                 side_scatter.set_array(compression * 1000.0)
+                bottom_scatter.set_offsets(np.column_stack((x_mm, deformed_bottoms[frame_number] * 1000.0)))
+                bottom_scatter.set_array(bottom_compressions[frame_number] * 1000.0)
                 contact_x_frame, contact_y_frame = contact_lines[frame_number]
                 contact_scatter.set_offsets(np.column_stack((contact_x_frame, contact_y_frame)))
+                bottom_contact_x_frame, bottom_contact_y_frame = bottom_contact_lines[frame_number]
+                bottom_contact_scatter.set_offsets(np.column_stack((bottom_contact_x_frame, bottom_contact_y_frame)))
                 source_index = frame_indices[frame_number]
                 title.set_text(
                     f"{trial.name} impact | "
                     f"t={trace['time_s'][source_index]:.4f} s | "
                     f"disp={trace['displacement_m'][source_index] * 1000.0:.2f} mm"
                 )
-                return top_scatter, side_scatter, contact_scatter, title
+                return top_scatter, side_scatter, bottom_scatter, contact_scatter, bottom_contact_scatter, title
 
             animation_path = output / f"digital_instron_v2_impact_{_safe_name(trial.name)}.gif"
             animation = FuncAnimation(fig_anim, update, frames=len(frame_indices), interval=80, blit=False)

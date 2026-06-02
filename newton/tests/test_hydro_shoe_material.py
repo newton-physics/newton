@@ -1,12 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import json
+import tempfile
 import unittest
 
 import numpy as np
 import warp as wp
 
 from newton.examples.contacts.example_hydro_shoe import (
+    CONTACT_LAW_CALIBRATED_OGDEN,
     CONTACT_LAW_KIM_HYPERFOAM,
     CONTACT_LAW_KIM_LAYERED,
     KIM_HYPERFOAM_MATERIALS,
@@ -20,7 +23,10 @@ from newton.examples.contacts.example_hydro_shoe import (
     apply_bonded_top_forces_kernel,
     evaluate_bottom_hydroelastic_ogden_kernel,
     evaluate_contact_stress,
+    load_calibrated_foundation_material,
+    preferred_calibrated_hydro_shoe_stroke_m,
     set_kinematic_foot_state_kernel,
+    update_stack_material_state_kernel,
     update_shoe_stats_kernel,
 )
 
@@ -222,7 +228,7 @@ class TestHydroShoeMaterial(unittest.TestCase):
             dtype=wp.vec3,
             device=device,
         )
-        depths = wp.array([-0.0025], dtype=wp.float32, device=device)  # displacement = -2 * depth = 0.005
+        depths = wp.array([-0.0025], dtype=wp.float32, device=device)
         shape_pairs = wp.array([wp.vec2i(1, 2)], dtype=wp.vec2i, device=device)
         face_count_ptr = wp.array([1], dtype=wp.int32, device=device)
 
@@ -246,7 +252,7 @@ class TestHydroShoeMaterial(unittest.TestCase):
         coupled_state = wp.zeros(6, dtype=float, device=device)
         expected_area = 0.00005
         top_displacement = 0.004
-        bottom_displacement = 0.005
+        bottom_displacement = 0.0025
         coupled_np = coupled_state.numpy()
         coupled_np[SURFACE_TOP_AREA] = expected_area
         coupled_np[SURFACE_TOP_DISP_AREA] = top_displacement * expected_area
@@ -280,6 +286,16 @@ class TestHydroShoeMaterial(unittest.TestCase):
         stack_disp = wp.zeros(1, dtype=float, device=device)
         stack_pressure = wp.zeros(1, dtype=float, device=device)
 
+        slack = 0.02
+        stack_displacement = top_displacement + bottom_displacement
+        strain = stack_displacement / slack
+        expected_stress = material.bulk_modulus_pa * strain ** (material.alpha1 - 1.0)
+        expected_force = expected_stress * expected_area * 1.0
+        stack_stress = wp.array([expected_stress], dtype=float, device=device)
+        stack_material_disp = wp.array([stack_displacement], dtype=float, device=device)
+        energy_density = wp.array([0.5 * expected_stress * stack_displacement], dtype=float, device=device)
+        dissipation_density = wp.zeros(1, dtype=float, device=device)
+
         # Define grid for the single spring
         grid_to_spring = wp.array([[0]], dtype=wp.int32, device=device)
         grid_min_u = 0.0
@@ -307,6 +323,10 @@ class TestHydroShoeMaterial(unittest.TestCase):
                 num_springs,
                 coupled_state,
                 params,
+                stack_stress,
+                stack_material_disp,
+                energy_density,
+                dissipation_density,
                 body_f,
                 wrench,
                 energy,
@@ -326,12 +346,6 @@ class TestHydroShoeMaterial(unittest.TestCase):
             ],
             device=device,
         )
-
-        slack = 0.02
-        stack_displacement = top_displacement + bottom_displacement
-        strain = stack_displacement / slack
-        expected_stress = material.bulk_modulus_pa * strain ** (material.alpha1 - 1.0)
-        expected_force = expected_stress * expected_area * 1.0
 
         forces = body_f.numpy()
         self.assertAlmostEqual(forces[0][2], 0.0, delta=1.0e-12)
@@ -384,11 +398,20 @@ class TestHydroShoeMaterial(unittest.TestCase):
         coupled_np[SURFACE_GROUND_DISP_AREA] = 0.004 * area
         coupled_state.assign(coupled_np)
         body_f = wp.zeros(2, dtype=wp.spatial_vector, device=device)
+        wrench = wp.zeros(6, dtype=float, device=device)
         energy = wp.zeros(4, dtype=float, device=device)
         dissipated_total = wp.zeros(1, dtype=float, device=device)
         foot_pressure = wp.zeros(1, dtype=float, device=device)
         stack_disp = wp.zeros(1, dtype=float, device=device)
         stack_pressure = wp.zeros(1, dtype=float, device=device)
+
+        strain = 0.009 / 0.02
+        expected_stress = material.bulk_modulus_pa * strain ** (material.alpha1 - 1.0)
+        expected_force = expected_stress * area
+        stack_stress = wp.array([expected_stress], dtype=float, device=device)
+        stack_material_disp = wp.array([0.009], dtype=float, device=device)
+        energy_density = wp.array([0.5 * expected_stress * 0.009], dtype=float, device=device)
+        dissipation_density = wp.zeros(1, dtype=float, device=device)
 
         wp.launch(
             apply_bonded_top_forces_kernel,
@@ -405,7 +428,12 @@ class TestHydroShoeMaterial(unittest.TestCase):
                 1,
                 coupled_state,
                 params,
+                stack_stress,
+                stack_material_disp,
+                energy_density,
+                dissipation_density,
                 body_f,
+                wrench,
                 energy,
                 dissipated_total,
                 0.001,
@@ -416,14 +444,193 @@ class TestHydroShoeMaterial(unittest.TestCase):
             device=device,
         )
 
-        strain = 0.009 / 0.02
-        expected_stress = material.bulk_modulus_pa * strain ** (material.alpha1 - 1.0)
-        expected_force = expected_stress * area
         forces = body_f.numpy()
         self.assertAlmostEqual(forces[0][2], expected_force, delta=max(abs(expected_force) * 1.0e-5, 1.0e-6))
         self.assertAlmostEqual(forces[1][2], -expected_force, delta=max(abs(expected_force) * 1.0e-5, 1.0e-6))
+        self.assertAlmostEqual(wrench.numpy()[2], expected_force, delta=max(abs(expected_force) * 1.0e-5, 1.0e-6))
         self.assertAlmostEqual(stack_disp.numpy()[0], 0.009, delta=1.0e-7)
         self.assertAlmostEqual(stack_pressure.numpy()[0], expected_stress * 0.001, delta=2.0e-5)
+
+    def test_calibrated_stack_material_state_uses_digital_instron_terms(self):
+        device = "cpu"
+        grid_xy = wp.array([(0.0, 0.0), (0.01, 0.0)], dtype=wp.vec2, device=device)
+        slack = wp.array([0.02, 0.02], dtype=float, device=device)
+        area = 0.01 * 0.01
+        coupled_state = wp.zeros(12, dtype=float, device=device)
+        coupled_np = coupled_state.numpy()
+        coupled_np[SURFACE_TOP_AREA] = area
+        coupled_np[SURFACE_TOP_DISP_AREA] = 0.006 * area
+        coupled_np[SURFACE_GROUND_AREA] = area
+        coupled_np[SURFACE_GROUND_DISP_AREA] = 0.004 * area
+        coupled_np[6 + SURFACE_TOP_AREA] = area
+        coupled_np[6 + SURFACE_TOP_DISP_AREA] = 0.002 * area
+        coupled_np[6 + SURFACE_GROUND_AREA] = area
+        coupled_np[6 + SURFACE_GROUND_DISP_AREA] = 0.005 * area
+        coupled_state.assign(coupled_np)
+        neighbors = wp.array([[-1, 1, -1, -1], [0, -1, -1, -1]], dtype=wp.int32, device=device)
+        params = wp.array(
+            [
+                50000.0,  # stiffness
+                0.5,  # alpha
+                0.8,  # lock strain
+                0.0,  # damping
+                1.0,
+                float(CONTACT_LAW_CALIBRATED_OGDEN),
+                50000.0,
+                0.5,
+                1.0,
+                1.0,
+                100.0,  # pasternak stiffness
+                -0.5,  # spatial slope
+                0.0,  # longitudinal x axis
+                0.0,  # axis min
+                0.01,  # axis span
+                1000.0,  # prony stiffness
+                100.0,  # prony damping
+            ],
+            dtype=float,
+            device=device,
+        )
+        prony_state = wp.zeros(2, dtype=float, device=device)
+        stress_out = wp.zeros(2, dtype=float, device=device)
+        displacement_out = wp.zeros(2, dtype=float, device=device)
+        energy_density_out = wp.zeros(2, dtype=float, device=device)
+        dissipation_density_out = wp.zeros(2, dtype=float, device=device)
+
+        wp.launch(
+            update_stack_material_state_kernel,
+            dim=2,
+            inputs=[
+                grid_xy,
+                slack,
+                2,
+                coupled_state,
+                params,
+                neighbors,
+                0.01,
+                0.001,
+                prony_state,
+                stress_out,
+                displacement_out,
+                energy_density_out,
+                dissipation_density_out,
+            ],
+            device=device,
+        )
+
+        displacement0 = 0.006 + 0.004
+        displacement1 = 0.002 + 0.005
+        strain0 = displacement0 / 0.02
+        strain1 = displacement1 / 0.02
+        ogden0 = 50000.0 * ((1.0 - strain0 / 0.8) ** -0.5 - 1.0) / 0.5
+        ogden1 = 50000.0 * ((1.0 - strain1 / 0.8) ** -0.5 - 1.0) / 0.5
+        lap0 = (displacement1 + displacement0 + displacement0 + displacement0 - 4.0 * displacement0) / (0.01 * 0.01)
+        lap1 = (displacement0 + displacement1 + displacement1 + displacement1 - 4.0 * displacement1) / (0.01 * 0.01)
+        elastic0 = ogden0 - 100.0 * lap0
+        elastic1 = ogden1 * 0.5 - 100.0 * lap1
+        beta = 1000.0 / 50000.0
+        tau = 100.0 / 1000.0
+        relax = 1.0 - np.exp(-0.001 / tau)
+        expected0 = elastic0 * (1.0 - beta * relax)
+        expected1 = max(elastic1 * (1.0 - beta * relax), 0.0)
+
+        result = stress_out.numpy()
+        np.testing.assert_allclose(result, [expected0, expected1], rtol=5.0e-5, atol=1.0e-5)
+        np.testing.assert_allclose(
+            displacement_out.numpy(),
+            [displacement0, displacement1],
+            rtol=1.0e-6,
+            atol=1.0e-8,
+        )
+        np.testing.assert_allclose(
+            energy_density_out.numpy(),
+            [0.5 * expected0 * displacement0, 0.5 * expected1 * displacement1],
+            rtol=5.0e-5,
+            atol=1.0e-5,
+        )
+        np.testing.assert_allclose(dissipation_density_out.numpy(), [0.0, 0.0], atol=1.0e-12)
+        self.assertGreater(prony_state.numpy()[0], 0.0)
+
+    def test_calibrated_material_loader_accepts_top_plus_bottom_artifact(self):
+        artifact = {
+            "schema_version": "digital_instron_v2_foundation_material_1",
+            "contact_model": {
+                "type": "two_sided_spring_grid",
+                "compression_components": "top_plus_bottom",
+            },
+            "material": {
+                "stiffness_pa": 141138.0,
+                "ogden_alpha": 0.104,
+                "lock_strain": 0.557,
+                "damping_pa_s": 10115.5,
+                "damping_power": 0.982,
+                "per_cylinder_area": True,
+                "prony_stiffness_pa": 17339.8,
+                "prony_damping_pa_s": 621.8,
+                "state_warmup_cycles": 5,
+                "pasternak_stiffness_n_per_m": 881.2,
+                "spatial_slope": -0.026,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = f"{tmp}/material.json"
+            with open(path, "w") as f:
+                json.dump(artifact, f)
+
+            material = load_calibrated_foundation_material(path)
+
+        self.assertAlmostEqual(material.stiffness_pa, 141138.0)
+        self.assertTrue(material.per_cylinder_area)
+        self.assertAlmostEqual(material.pasternak_stiffness_n_per_m, 881.2)
+
+    def test_calibrated_hydro_shoe_stroke_uses_two_sided_envelope(self):
+        artifact = {
+            "contact_model": {
+                "compression_components": "top_plus_bottom",
+                "trials": {
+                    "rearfoot": {"fixture": "rearfoot_punch"},
+                    "fullfoot": {"fixture": "fullfoot_last"},
+                },
+            },
+            "calibration_envelope": {
+                "trials": {
+                    "rearfoot": {
+                        "peak_top_compression_m": 0.012,
+                        "peak_bottom_compression_m": 0.012,
+                        "peak_max_compression_m": 0.024,
+                    },
+                    "fullfoot": {
+                        "peak_top_compression_m": 0.008,
+                        "peak_bottom_compression_m": 0.008,
+                        "peak_max_compression_m": 0.016,
+                    },
+                }
+            },
+        }
+
+        self.assertAlmostEqual(preferred_calibrated_hydro_shoe_stroke_m(artifact), 0.012)
+
+    def test_calibrated_material_loader_rejects_explicit_top_only_artifact(self):
+        artifact = {
+            "schema_version": "digital_instron_v2_foundation_material_1",
+            "contact_model": {
+                "type": "one_sided_spring_grid",
+                "compression_components": "top_only",
+            },
+            "material": {
+                "stiffness_pa": 1.0,
+                "ogden_alpha": 1.0,
+                "lock_strain": 0.5,
+                "damping_pa_s": 0.0,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = f"{tmp}/material.json"
+            with open(path, "w") as f:
+                json.dump(artifact, f)
+
+            with self.assertRaisesRegex(ValueError, "top_plus_bottom"):
+                load_calibrated_foundation_material(path)
 
     def test_kinematic_foot_state_kernel_writes_pose_and_velocity(self):
         device = "cpu"

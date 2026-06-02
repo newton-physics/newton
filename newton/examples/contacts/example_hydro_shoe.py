@@ -72,6 +72,14 @@ PARAM_LOWER_BULK = 6
 PARAM_LOWER_ALPHA = 7
 PARAM_UPPER_FRACTION = 8
 PARAM_HYDRO_FORCE_SCALE = 9
+PARAM_PASTERNAK_STIFFNESS = 10
+PARAM_SPATIAL_SLOPE = 11
+PARAM_LONGITUDINAL_AXIS = 12
+PARAM_AXIS_MIN = 13
+PARAM_AXIS_SPAN = 14
+PARAM_PRONY_STIFFNESS = 15
+PARAM_PRONY_DAMPING = 16
+PARAM_CELL_AREA = 17
 STATS_LAST_FORCE_N = 0
 STATS_PEAK_FORCE_N = 1
 STATS_LAST_ELASTIC_ENERGY_J = 2
@@ -132,6 +140,18 @@ def _kim_layered_pressure_pa(
 
     pressure = 0.5 * (lo + hi)
     return np.where(strain <= 1.0e-8, 0.0, pressure)
+
+
+def _infer_longitudinal_axis_and_span(xy_m: np.ndarray) -> tuple[int, float, float]:
+    if len(xy_m) == 0:
+        return 0, 0.0, 1.0
+    x_min = float(np.min(xy_m[:, 0]))
+    x_span = float(np.max(xy_m[:, 0]) - x_min)
+    y_min = float(np.min(xy_m[:, 1]))
+    y_span = float(np.max(xy_m[:, 1]) - y_min)
+    if x_span >= y_span:
+        return 0, x_min, max(x_span, 1.0e-5)
+    return 1, y_min, max(y_span, 1.0e-5)
 
 
 def _rotate_vec_by_quat(v: np.ndarray, q_xyzw: np.ndarray) -> np.ndarray:
@@ -334,6 +354,134 @@ def evaluate_dissipated_energy_rate(strain: float, comp_vel: float, area: float,
 
 
 @wp.func
+def stack_displacement_from_surface_state(
+    spring: int,
+    coupled_surface_state: wp.array[float],
+    slack: float,
+    params: wp.array[float],
+) -> float:
+    top_area = coupled_surface_state[spring * 6 + SURFACE_TOP_AREA]
+    ground_area = coupled_surface_state[spring * 6 + SURFACE_GROUND_AREA]
+    top_displacement = float(0.0)
+    ground_displacement = float(0.0)
+
+    if top_area > 0.0:
+        top_displacement = coupled_surface_state[spring * 6 + SURFACE_TOP_DISP_AREA] / top_area
+    if ground_area > 0.0:
+        ground_displacement = coupled_surface_state[spring * 6 + SURFACE_GROUND_DISP_AREA] / ground_area
+
+    return wp.clamp(top_displacement + ground_displacement, 0.0, slack)
+
+
+@wp.kernel
+def update_stack_material_state_kernel(
+    grid_xy: wp.array[wp.vec2],
+    slack_length_m: wp.array[float],
+    spring_count: int,
+    coupled_surface_state: wp.array[float],
+    params: wp.array[float],
+    neighbors: wp.array2d[wp.int32],
+    spacing_m: float,
+    sim_dt: float,
+    prony_state: wp.array[float],
+    stack_stress_pa_out: wp.array[float],
+    stack_displacement_m_out: wp.array[float],
+    stack_elastic_energy_density_out: wp.array[float],
+    stack_dissipation_rate_density_out: wp.array[float],
+):
+    spring = wp.tid()
+    if spring >= spring_count:
+        return
+
+    slack = wp.max(slack_length_m[spring], 1.0e-6)
+    top_area = coupled_surface_state[spring * 6 + SURFACE_TOP_AREA]
+    ground_area = coupled_surface_state[spring * 6 + SURFACE_GROUND_AREA]
+    top_displacement = float(0.0)
+    ground_displacement = float(0.0)
+    if top_area > 0.0:
+        top_displacement = coupled_surface_state[spring * 6 + SURFACE_TOP_DISP_AREA] / top_area
+    if ground_area > 0.0:
+        ground_displacement = coupled_surface_state[spring * 6 + SURFACE_GROUND_DISP_AREA] / ground_area
+
+    stack_displacement = top_displacement + ground_displacement
+    stack_displacement = wp.clamp(stack_displacement, 0.0, slack)
+    stack_displacement_m_out[spring] = stack_displacement
+    strain = wp.clamp(stack_displacement / slack, 0.0, 0.99)
+
+    stack_comp_vel = float(0.0)
+    if top_area > 0.0:
+        stack_comp_vel += coupled_surface_state[spring * 6 + SURFACE_TOP_VEL_AREA] / top_area
+    if ground_area > 0.0:
+        stack_comp_vel += coupled_surface_state[spring * 6 + SURFACE_GROUND_VEL_AREA] / ground_area
+    elastic_stress = evaluate_elastic_contact_stress(strain, params)
+
+    if int(params[PARAM_CONTACT_LAW]) == CONTACT_LAW_CALIBRATED_OGDEN:
+        xy = grid_xy[spring]
+        coord = float(0.0)
+        if int(params[PARAM_LONGITUDINAL_AXIS]) == 0:
+            coord = xy[0] - params[PARAM_AXIS_MIN]
+        else:
+            coord = xy[1] - params[PARAM_AXIS_MIN]
+        bar_x = coord / wp.max(params[PARAM_AXIS_SPAN], 1.0e-5)
+        spatial_scale = wp.max(1.0 + params[PARAM_SPATIAL_SLOPE] * bar_x, 0.01)
+        elastic_stress = elastic_stress * spatial_scale
+
+        h2 = spacing_m * spacing_m
+        laplacian = float(0.0)
+        if h2 > 1.0e-12:
+            n_left = neighbors[spring, 0]
+            n_right = neighbors[spring, 1]
+            n_bottom = neighbors[spring, 2]
+            n_top = neighbors[spring, 3]
+
+            val_left = stack_displacement
+            val_right = stack_displacement
+            val_bottom = stack_displacement
+            val_top = stack_displacement
+            if n_left != -1:
+                val_left = stack_displacement_from_surface_state(
+                    n_left, coupled_surface_state, slack_length_m[n_left], params
+                )
+            if n_right != -1:
+                val_right = stack_displacement_from_surface_state(
+                    n_right, coupled_surface_state, slack_length_m[n_right], params
+                )
+            if n_bottom != -1:
+                val_bottom = stack_displacement_from_surface_state(
+                    n_bottom, coupled_surface_state, slack_length_m[n_bottom], params
+                )
+            if n_top != -1:
+                val_top = stack_displacement_from_surface_state(
+                    n_top, coupled_surface_state, slack_length_m[n_top], params
+                )
+            laplacian = (val_left + val_right + val_bottom + val_top - 4.0 * stack_displacement) / h2
+
+        elastic_stress = elastic_stress - wp.max(params[PARAM_PASTERNAK_STIFFNESS], 0.0) * laplacian
+
+        prony_stiffness = wp.max(params[PARAM_PRONY_STIFFNESS], 0.0)
+        prony_damping = wp.max(params[PARAM_PRONY_DAMPING], 0.0)
+        if prony_stiffness > 0.0 and prony_damping > 0.0:
+            beta = wp.min(prony_stiffness / wp.max(params[PARAM_STIFFNESS_OR_BULK], 1.0e-6), 0.99)
+            tau = wp.max(prony_damping / wp.max(prony_stiffness, 1.0e-6), 1.0e-6)
+            decay = wp.exp(-wp.max(sim_dt, 0.0) / tau)
+            curr_state = prony_state[spring] * decay + (1.0 - decay) * beta * elastic_stress
+            prony_state[spring] = curr_state
+            elastic_stress = elastic_stress - curr_state
+        else:
+            prony_state[spring] = 0.0
+
+    elastic_stress = wp.max(elastic_stress, 0.0)
+    viscous_stress = evaluate_viscous_contact_stress(strain, stack_comp_vel, params)
+    effective_viscous_stress = viscous_stress
+    if viscous_stress < -elastic_stress:
+        effective_viscous_stress = -elastic_stress
+
+    stack_stress_pa_out[spring] = wp.max(elastic_stress + viscous_stress, 0.0)
+    stack_elastic_energy_density_out[spring] = 0.5 * elastic_stress * stack_displacement
+    stack_dissipation_rate_density_out[spring] = wp.max(effective_viscous_stress * stack_comp_vel, 0.0)
+
+
+@wp.func
 def top_displacement_for_spring(
     spring: int,
     foot_z: float,
@@ -494,7 +642,7 @@ def accumulate_bottom_hydro_state_kernel(
     if normal[2] < 0.0:
         normal = -normal
 
-    displacement = -2.0 * depths[tid]
+    displacement = -depths[tid]
     if displacement <= 0.0:
         return
 
@@ -578,6 +726,10 @@ def evaluate_bottom_hydroelastic_ogden_kernel(
     num_springs: int,
     coupled_surface_state: wp.array[float],
     params: wp.array[float],
+    stack_stress_pa: wp.array[float],
+    stack_material_displacement_m: wp.array[float],
+    stack_elastic_energy_density: wp.array[float],
+    stack_dissipation_rate_density: wp.array[float],
     body_f: wp.array[wp.spatial_vector],  # Output accumulated body forces
     wrench_out: wp.array[float],  # Output accumulated wrench (midsole-ground)
     energy_out: wp.array[float],
@@ -646,8 +798,9 @@ def evaluate_bottom_hydroelastic_ogden_kernel(
     if nearest != -1:
         local_thick = spring_slack[nearest]
 
-    # Calculate vertical displacement relative to depths (negative in Warp)
-    displacement = -2.0 * depths[tid]
+    # Hydroelastic depths are negative for penetration; the magnitude is the
+    # bottom compression contribution.
+    displacement = -depths[tid]
     if displacement <= 0.0:
         return
 
@@ -666,6 +819,8 @@ def evaluate_bottom_hydroelastic_ogden_kernel(
             stack_displacement = wp.clamp(top_displacement + ground_displacement, 0.0, slack)
             stack_comp_vel = top_comp_vel + ground_comp_vel
             coupled_energy_scale = 0.5
+    if nearest != -1 and int(params[PARAM_CONTACT_LAW]) == CONTACT_LAW_CALIBRATED_OGDEN:
+        stack_displacement = stack_material_displacement_m[nearest]
 
     strain = wp.clamp(stack_displacement / slack, 0.0, 0.99)
 
@@ -682,7 +837,16 @@ def evaluate_bottom_hydroelastic_ogden_kernel(
         comp_vel = stack_comp_vel
 
     stress = evaluate_contact_stress(strain, comp_vel, params)
-    force_magnitude = stress * area * wp.max(params[PARAM_HYDRO_FORCE_SCALE], 0.0)
+    if nearest != -1:
+        stress = stack_stress_pa[nearest]
+    effective_area = area
+    if nearest != -1 and int(params[PARAM_CONTACT_LAW]) == CONTACT_LAW_CALIBRATED_OGDEN:
+        ground_area = coupled_surface_state[nearest * 6 + SURFACE_GROUND_AREA]
+        cell_area = params[PARAM_CELL_AREA]
+        if ground_area > cell_area and cell_area > 0.0:
+            effective_area = area * cell_area / ground_area
+
+    force_magnitude = stress * effective_area * wp.max(params[PARAM_HYDRO_FORCE_SCALE], 0.0)
     force_vec = normal * force_magnitude
 
     # 5. Apply bottom contact force: midsole-ground contact pushes the midsole up.
@@ -699,10 +863,16 @@ def evaluate_bottom_hydroelastic_ogden_kernel(
     wp.atomic_add(wrench_out, 4, torque[1])
     wp.atomic_add(wrench_out, 5, torque[2])
 
-    dissipated_energy = evaluate_dissipated_energy_rate(strain, comp_vel, area, params) * sim_dt * coupled_energy_scale
-    wp.atomic_add(
-        energy_out, 1, evaluate_elastic_energy(stack_displacement, slack, area, params) * coupled_energy_scale
-    )
+    if nearest != -1 and int(params[PARAM_CONTACT_LAW]) == CONTACT_LAW_CALIBRATED_OGDEN:
+        dissipated_energy = stack_dissipation_rate_density[nearest] * effective_area * sim_dt * coupled_energy_scale
+        elastic_energy = stack_elastic_energy_density[nearest] * effective_area * coupled_energy_scale
+    else:
+        dissipated_energy = evaluate_dissipated_energy_rate(strain, comp_vel, effective_area, params) * sim_dt
+        dissipated_energy *= coupled_energy_scale
+        elastic_energy = (
+            evaluate_elastic_energy(stack_displacement, slack, effective_area, params) * coupled_energy_scale
+        )
+    wp.atomic_add(energy_out, 1, elastic_energy)
     wp.atomic_add(energy_out, 3, dissipated_energy)
     wp.atomic_add(dissipated_energy_total_out, 0, dissipated_energy)
 
@@ -726,7 +896,12 @@ def apply_bonded_top_forces_kernel(
     midsole_body_idx: int,
     coupled_surface_state: wp.array[float],
     params: wp.array[float],
+    stack_stress_pa: wp.array[float],
+    stack_material_displacement_m: wp.array[float],
+    stack_elastic_energy_density: wp.array[float],
+    stack_dissipation_rate_density: wp.array[float],
     body_f: wp.array[wp.spatial_vector],
+    wrench_out: wp.array[float],
     energy_out: wp.array[float],
     dissipated_energy_total_out: wp.array[float],
     sim_dt: float,
@@ -760,13 +935,15 @@ def apply_bonded_top_forces_kernel(
 
     slack = wp.max(slack_length_m[spring], 1.0e-6)
     stack_displacement = wp.clamp(stack_displacement, 0.0, slack)
+    if int(params[PARAM_CONTACT_LAW]) == CONTACT_LAW_CALIBRATED_OGDEN:
+        stack_displacement = stack_material_displacement_m[spring]
     if stack_displacement <= 0.0:
         return
 
     midsole_z = body_q[midsole_body_idx].p[2]
 
     strain = wp.clamp(stack_displacement / slack, 0.0, 0.99)
-    stress = evaluate_contact_stress(strain, stack_comp_vel, params)
+    stress = stack_stress_pa[spring]
     force_magnitude = stress * top_area * wp.max(params[PARAM_HYDRO_FORCE_SCALE], 0.0)
     force_vec = wp.vec3(0.0, 0.0, force_magnitude)
 
@@ -780,11 +957,27 @@ def apply_bonded_top_forces_kernel(
     wp.atomic_add(body_f, foot_body_idx, wp.spatial_vector(force_vec, wp.cross(r_foot, force_vec)))
     wp.atomic_sub(body_f, midsole_body_idx, wp.spatial_vector(force_vec, wp.cross(r_midsole, force_vec)))
 
-    dissipated_energy = evaluate_dissipated_energy_rate(strain, stack_comp_vel, top_area, params) * sim_dt
-    dissipated_energy *= coupled_energy_scale
-    wp.atomic_add(
-        energy_out, 0, evaluate_elastic_energy(stack_displacement, slack, top_area, params) * coupled_energy_scale
-    )
+    # Report the top platen reaction as a positive vertical load for Instron-style
+    # peak-force comparisons. The bottom hydroelastic contact also accumulates a
+    # ground reaction into this wrench; the two surfaces do not necessarily have
+    # identical active areas in the shoe example, so the reported value is the
+    # coupled spring-grid load rather than a raw hydro contact face sum.
+    wp.atomic_add(wrench_out, 0, force_vec[0])
+    wp.atomic_add(wrench_out, 1, force_vec[1])
+    wp.atomic_add(wrench_out, 2, force_magnitude)
+    torque = wp.cross(r_foot, force_vec)
+    wp.atomic_add(wrench_out, 3, torque[0])
+    wp.atomic_add(wrench_out, 4, torque[1])
+    wp.atomic_add(wrench_out, 5, torque[2])
+
+    if int(params[PARAM_CONTACT_LAW]) == CONTACT_LAW_CALIBRATED_OGDEN:
+        dissipated_energy = stack_dissipation_rate_density[spring] * top_area * sim_dt * coupled_energy_scale
+        elastic_energy = stack_elastic_energy_density[spring] * top_area * coupled_energy_scale
+    else:
+        dissipated_energy = evaluate_dissipated_energy_rate(strain, stack_comp_vel, top_area, params) * sim_dt
+        dissipated_energy *= coupled_energy_scale
+        elastic_energy = evaluate_elastic_energy(stack_displacement, slack, top_area, params) * coupled_energy_scale
+    wp.atomic_add(energy_out, 0, elastic_energy)
     wp.atomic_add(energy_out, 2, dissipated_energy)
     wp.atomic_add(dissipated_energy_total_out, 0, dissipated_energy)
     foot_pressure_kpa_out[spring] = stress * 0.001
@@ -968,6 +1161,92 @@ def _compute_kim_pressures(
     return np.maximum(elastic_stress + viscous_stress, 0.0)
 
 
+def load_calibrated_foundation_material(path: str | Path) -> FoundationMaterial:
+    """Load a Digital Instron v2 material artifact for the calibrated contact law."""
+
+    artifact = json.loads(Path(path).read_text())
+    return calibrated_foundation_material_from_artifact(artifact)
+
+
+def calibrated_foundation_material_from_artifact(artifact: dict[str, object]) -> FoundationMaterial:
+    """Parse the material section of a Digital Instron v2 artifact."""
+
+    if not isinstance(artifact, dict):
+        raise ValueError("Calibrated material artifact must be a JSON object")
+    material_data = artifact.get("material")
+    if not isinstance(material_data, dict):
+        raise ValueError("Calibrated material artifact must contain a material object")
+
+    contact_model = artifact.get("contact_model")
+    if contact_model is not None:
+        if not isinstance(contact_model, dict):
+            raise ValueError("Calibrated material artifact contact_model must be an object")
+        compression_components = contact_model.get("compression_components")
+        if compression_components != "top_plus_bottom":
+            raise ValueError(
+                "Calibrated material artifact must use top_plus_bottom contact compression "
+                f"for hydro_shoe calibrated-ogden, got {compression_components!r}"
+            )
+
+    return FoundationMaterial(**material_data)
+
+
+def preferred_calibrated_hydro_shoe_stroke_m(artifact: dict[str, object]) -> float:
+    """Return the one-body shoe stroke suggested by a two-sided calibration artifact."""
+
+    envelope = artifact.get("calibration_envelope")
+    if not isinstance(envelope, dict):
+        return 0.0
+
+    preferred = float(envelope.get("preferred_one_sided_hydro_shoe_stroke_m", 0.0))
+    if preferred > 0.0:
+        return preferred
+
+    top = float(envelope.get("preferred_peak_top_compression_m", 0.0))
+    bottom = float(envelope.get("preferred_peak_bottom_compression_m", 0.0))
+    if top > 0.0 and bottom > 0.0:
+        return top + 0.5 * bottom
+
+    contact_model = artifact.get("contact_model", {})
+    contact_trials = contact_model.get("trials", {}) if isinstance(contact_model, dict) else {}
+    trial_envelopes = envelope.get("trials", {})
+    if isinstance(contact_trials, dict) and isinstance(trial_envelopes, dict):
+        selected: dict[str, object] | None = None
+        selected_stack = -1.0
+        for trial_name, trial_envelope in trial_envelopes.items():
+            if not isinstance(trial_envelope, dict):
+                continue
+            trial_contact = contact_trials.get(trial_name, {})
+            fixture = trial_contact.get("fixture") if isinstance(trial_contact, dict) else None
+            if fixture != "fullfoot_last":
+                continue
+            stack = float(trial_envelope.get("peak_max_compression_m", 0.0))
+            if stack > selected_stack:
+                selected = trial_envelope
+                selected_stack = stack
+        if selected is None:
+            for trial_envelope in trial_envelopes.values():
+                if not isinstance(trial_envelope, dict):
+                    continue
+                stack = float(trial_envelope.get("peak_max_compression_m", 0.0))
+                if stack > selected_stack:
+                    selected = trial_envelope
+                    selected_stack = stack
+        if selected is not None:
+            top = float(selected.get("peak_top_compression_m", 0.0))
+            bottom = float(selected.get("peak_bottom_compression_m", 0.0))
+            if top > 0.0 and bottom > 0.0:
+                return top + 0.5 * bottom
+            if selected_stack > 0.0:
+                return 0.75 * selected_stack
+
+    stack = float(envelope.get("preferred_peak_stack_compression_m", 0.0))
+    if stack > 0.0:
+        return 0.75 * stack
+
+    return float(envelope.get("preferred_peak_displacement_m", 0.0))
+
+
 class Example:
     """Foot-Shoe interactive ground contact simulation using a custom 3D Hydroelastic contact model."""
 
@@ -995,6 +1274,11 @@ class Example:
         self.hydro_force_scale = float(args.hydro_force_scale)
         self.shoe_attach_mode = args.shoe_attach_mode
         self.shoe_compression_limit_m = args.shoe_compression_limit_mm * 0.001
+        self.kinematic_peak_displacement_m = (
+            0.001 * float(args.kinematic_peak_displacement_mm)
+            if args.kinematic_peak_displacement_mm is not None
+            else 0.025
+        )
         self.shoe_lift_limit_m = args.shoe_lift_limit_mm * 0.001
         self.shoe_joint_limit_ke = args.shoe_joint_limit_ke
         self.shoe_joint_limit_kd = args.shoe_joint_limit_kd
@@ -1016,6 +1300,8 @@ class Example:
             "foot_offset_y_mm",
             "foot_offset_z_mm",
         ]:
+            if self.contact_law == "calibrated-ogden" and field == "foot_offset_z_mm":
+                continue
             if getattr(args, field, 0.0) == 0.0 and field in loaded_config:
                 setattr(args, field, loaded_config[field])
 
@@ -1041,17 +1327,23 @@ class Example:
 
         self.spring_grid, self.midsole_vertices = _load_spring_grid(self.manifest, self.output_dir)
 
-        with open(args.material) as f:
-            mat_data = json.load(f)["material"]
-        self.calibrated_material = FoundationMaterial(**mat_data)
+        self.calibrated_material_artifact = json.loads(Path(args.material).read_text())
+        self.calibrated_material = calibrated_foundation_material_from_artifact(self.calibrated_material_artifact)
         if self.contact_law == "kim-hyperfoam":
             self.material = _kim_material_to_foundation(self.kim_material, self.kim_damping_pa_s)
         elif self.contact_law == "kim-layered":
             self.material = _kim_material_to_foundation(self.kim_upper_material, self.kim_damping_pa_s)
         else:
             self.material = self.calibrated_material
+            if args.kinematic_peak_displacement_mm is None:
+                preferred = preferred_calibrated_hydro_shoe_stroke_m(self.calibrated_material_artifact)
+                if preferred > 0.0:
+                    self.kinematic_peak_displacement_m = preferred
 
         self.neighbors = compute_grid_neighbors(self.spring_grid.grid_uv_m, self.spring_grid.spacing_m)
+        self.longitudinal_axis, self.axis_min_m, self.axis_span_m = _infer_longitudinal_axis_and_span(
+            self.spring_grid.grid_uv_m
+        )
         self.max_display_pressure_kpa = 800.0
         self.min_bottom_m = np.min(self.spring_grid.bottom_m)
         self.start_z = -self.min_bottom_m + 0.005
@@ -1073,7 +1365,11 @@ class Example:
             print(
                 "[material] contact_law=calibrated-ogden "
                 f"stiffness={self.material.stiffness_pa:.3g}Pa alpha={self.material.ogden_alpha:.3g} "
-                f"lock_strain={self.material.lock_strain:.3g}"
+                f"lock_strain={self.material.lock_strain:.3g} "
+                f"pasternak={self.material.pasternak_stiffness_n_per_m:.3g}N/m "
+                f"spatial_slope={self.material.spatial_slope:.3g} "
+                f"prony=({self.material.prony_stiffness_pa:.3g}Pa, {self.material.prony_damping_pa_s:.3g}Pa*s) "
+                f"stroke={self.kinematic_peak_displacement_m * 1000.0:.3g}mm"
             )
 
         # 2. Load and mirror/align the foot model
@@ -1418,6 +1714,7 @@ class Example:
         self.wp_spring_slack = wp.array(self.spring_grid.slack_length_m, dtype=float, device=self.device)
         self.wp_spring_top = wp.array(self.spring_grid.top_m, dtype=float, device=self.device)
         self.wp_spring_bottom = wp.array(self.spring_grid.bottom_m, dtype=float, device=self.device)
+        self.wp_neighbors = wp.array2d(self.neighbors.astype(np.int32), dtype=wp.int32, device=self.device)
         self.wp_foot_sole_z = wp.array(np.nan_to_num(self.foot_sole_z_m, nan=0.0), dtype=float, device=self.device)
         self.wp_foot_contact_valid = wp.array(
             self.foot_contact_valid.astype(np.int32),
@@ -1484,6 +1781,14 @@ class Example:
                 lower_alpha,
                 upper_fraction,
                 self.hydro_force_scale,
+                self.material.pasternak_stiffness_n_per_m,
+                self.material.spatial_slope,
+                float(self.longitudinal_axis),
+                self.axis_min_m,
+                self.axis_span_m,
+                self.material.prony_stiffness_pa,
+                self.material.prony_damping_pa_s,
+                float(self.spring_grid.cell_area_m2),
             ],
             dtype=float,
             device=self.device,
@@ -1563,6 +1868,11 @@ class Example:
         self.wp_ground_bottom_pressure_kpa = wp.zeros(self.num_springs, dtype=float, device=self.device)
         self.wp_stack_displacement = wp.zeros(self.num_springs, dtype=float, device=self.device)
         self.wp_stack_pressure_kpa = wp.zeros(self.num_springs, dtype=float, device=self.device)
+        self.wp_stack_stress_pa = wp.zeros(self.num_springs, dtype=float, device=self.device)
+        self.wp_stack_material_displacement_m = wp.zeros(self.num_springs, dtype=float, device=self.device)
+        self.wp_stack_elastic_energy_density = wp.zeros(self.num_springs, dtype=float, device=self.device)
+        self.wp_stack_dissipation_rate_density = wp.zeros(self.num_springs, dtype=float, device=self.device)
+        self.wp_prony_state_pa = wp.zeros(self.num_springs, dtype=float, device=self.device)
         self.wp_coupled_surface_state = wp.zeros(self.num_springs * 6, dtype=float, device=self.device)
         self.wp_peak_foot_top_displacement = wp.zeros(self.num_springs, dtype=float, device=self.device)
         self.wp_peak_foot_top_pressure_kpa = wp.zeros(self.num_springs, dtype=float, device=self.device)
@@ -1667,7 +1977,7 @@ class Example:
         pairs = contact_surface.contact_surface_shape_pair.numpy()[:face_count]
         depths = contact_surface.contact_surface_depth.numpy()[:face_count]
         centroids = np.mean(points, axis=1)
-        face_displacement_m = np.maximum(-2.0 * depths, 0.0)
+        face_displacement_m = np.maximum(-depths, 0.0)
 
         is_ground = ((pairs[:, 0] == self.midsole_shape_id) & (pairs[:, 1] == self.ground_shape_id)) | (
             (pairs[:, 1] == self.midsole_shape_id) & (pairs[:, 0] == self.ground_shape_id)
@@ -1750,9 +2060,10 @@ class Example:
             # Update kinematic trajectory of the foot or apply gravity in dynamic mode
             if self.kinematic:
                 omega = 2.0 * np.pi * 1.0
-                disp = 0.0125 * (1.0 - np.cos(omega * self.sim_time))
+                half_stroke = 0.5 * self.kinematic_peak_displacement_m
+                disp = half_stroke * (1.0 - np.cos(omega * self.sim_time))
                 self.current_z = self.start_z - disp
-                self.current_vz = -0.0125 * omega * np.sin(omega * self.sim_time)
+                self.current_vz = -half_stroke * omega * np.sin(omega * self.sim_time)
 
                 wp.launch(
                     set_kinematic_foot_state_kernel,
@@ -1832,6 +2143,28 @@ class Example:
                 device=self.device,
             )
 
+            if contact_surface is None:
+                wp.launch(
+                    update_stack_material_state_kernel,
+                    dim=self.num_springs,
+                    inputs=[
+                        self.wp_spring_xy,
+                        self.wp_spring_slack,
+                        self.num_springs,
+                        self.wp_coupled_surface_state,
+                        self.wp_params,
+                        self.wp_neighbors,
+                        float(self.spring_grid.spacing_m),
+                        float(self.sim_dt),
+                        self.wp_prony_state_pa,
+                        self.wp_stack_stress_pa,
+                        self.wp_stack_material_displacement_m,
+                        self.wp_stack_elastic_energy_density,
+                        self.wp_stack_dissipation_rate_density,
+                    ],
+                    device=self.device,
+                )
+
             if contact_surface is not None:
                 wp.launch(
                     accumulate_bottom_hydro_state_kernel,
@@ -1861,6 +2194,26 @@ class Example:
                     device=self.device,
                 )
                 wp.launch(
+                    update_stack_material_state_kernel,
+                    dim=self.num_springs,
+                    inputs=[
+                        self.wp_spring_xy,
+                        self.wp_spring_slack,
+                        self.num_springs,
+                        self.wp_coupled_surface_state,
+                        self.wp_params,
+                        self.wp_neighbors,
+                        float(self.spring_grid.spacing_m),
+                        float(self.sim_dt),
+                        self.wp_prony_state_pa,
+                        self.wp_stack_stress_pa,
+                        self.wp_stack_material_displacement_m,
+                        self.wp_stack_elastic_energy_density,
+                        self.wp_stack_dissipation_rate_density,
+                    ],
+                    device=self.device,
+                )
+                wp.launch(
                     evaluate_bottom_hydroelastic_ogden_kernel,
                     dim=self.collision_pipeline.rigid_contact_max,
                     inputs=[
@@ -1879,6 +2232,10 @@ class Example:
                         self.num_springs,
                         self.wp_coupled_surface_state,
                         self.wp_params,
+                        self.wp_stack_stress_pa,
+                        self.wp_stack_material_displacement_m,
+                        self.wp_stack_elastic_energy_density,
+                        self.wp_stack_dissipation_rate_density,
                         self.state_0.body_f,
                         self.wp_contact_wrench,
                         self.wp_contact_energy,
@@ -1914,7 +2271,12 @@ class Example:
                     self.midsole_body_id,
                     self.wp_coupled_surface_state,
                     self.wp_params,
+                    self.wp_stack_stress_pa,
+                    self.wp_stack_material_displacement_m,
+                    self.wp_stack_elastic_energy_density,
+                    self.wp_stack_dissipation_rate_density,
                     self.state_0.body_f,
+                    self.wp_contact_wrench,
                     self.wp_contact_energy,
                     self.wp_dissipated_energy_total,
                     float(self.sim_dt),
@@ -2210,6 +2572,15 @@ class Example:
             f"Peak Vertical Force reached: {self.peak_force_n:.2f} N, "
             f"Peak Elastic Energy stored: {self.peak_elastic_energy_j:.4f} J, "
             f"Dissipated Energy: {self.dissipated_energy_j:.4f} J"
+        )
+        active_stack = self.peak_stack_displacement_m > 1.0e-6
+        print(
+            "[contact] "
+            f"active_area={np.sum(active_stack) * self.spring_grid.cell_area_m2 * 1.0e6:.0f} mm^2, "
+            f"max_top={np.max(self.peak_foot_top_displacement_m) * 1000.0:.3f} mm, "
+            f"max_bottom={np.max(self.peak_ground_bottom_displacement_m) * 1000.0:.3f} mm, "
+            f"max_stack={np.max(self.peak_stack_displacement_m) * 1000.0:.3f} mm, "
+            f"max_pressure={np.max(self.peak_stack_pressure_kpa):.1f} kPa"
         )
         assert self.peak_force_n >= self.min_peak_force_n, (
             f"Expected peak vertical force to reach {self.min_peak_force_n:.2f} N, "
@@ -2727,6 +3098,15 @@ class Example:
             type=float,
             default=None,
             help="Override the example test_final peak-force gate [N].",
+        )
+        parser.add_argument(
+            "--kinematic-peak-displacement-mm",
+            type=float,
+            default=None,
+            help=(
+                "Peak kinematic foot stroke [mm]. Defaults to the calibrated material envelope for "
+                "calibrated-ogden, otherwise 25 mm."
+            ),
         )
         parser.add_argument(
             "--save-plots",
