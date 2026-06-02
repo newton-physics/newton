@@ -25,8 +25,102 @@ from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
 from newton._src.utils.import_mjcf import _load_and_expand_mjcf, parse_mjcf
 from newton.solvers import SolverMuJoCo
 
+MASSLESS_FIXED_ROOT_MJCF = """
+<mujoco model="massless_fixed_root">
+    <worldbody>
+        <body name="base_link">
+            <freejoint name="floating_base"/>
+            <body name="chassis">
+                <inertial pos="0 0 0" mass="2.0" diaginertia="0.1 0.1 0.1"/>
+                <geom type="box" size="0.5 0.5 0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
+<mujoco model="massless_fixed_root_internal_fixed">
+    <worldbody>
+        <body name="base_link">
+            <freejoint name="floating_base"/>
+            <body name="chassis">
+                <inertial pos="0 0 0" mass="2.0" diaginertia="0.1 0.1 0.1"/>
+                <geom type="box" size="0.5 0.5 0.5"/>
+                <body name="sensor" pos="0 0 0.6">
+                    <inertial pos="0 0 0" mass="0.1" diaginertia="0.01 0.01 0.01"/>
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
 
 class TestImportMjcfBasic(unittest.TestCase):
+    def test_massless_fixed_root_default_preserves_topology(self):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF)
+
+        self.assertEqual(builder.joint_count, 3)
+        self.assertTrue(any(label.endswith("/floating_base") for label in builder.joint_label))
+        self.assertTrue(any(label.endswith("/chassis/chassis_joint") for label in builder.joint_label))
+        self.assertTrue(any(label.endswith("/sensor/sensor_joint") for label in builder.joint_label))
+
+        root_joint = next(i for i, label in enumerate(builder.joint_label) if label.endswith("/floating_base"))
+        root_body = builder.joint_child[root_joint]
+        self.assertEqual(builder.joint_type[root_joint], newton.JointType.FREE)
+        self.assertEqual(builder.body_mass[root_body], 0.0)
+
+    def test_massless_fixed_root_opt_in_is_dynamic(self):
+        dt = 1.0 / 60.0
+        step_count = 5
+        expected_drop = 0.5 * 9.81 * (step_count * dt) ** 2
+        min_drop = 0.5 * expected_drop
+
+        for mjcf in [MASSLESS_FIXED_ROOT_MJCF, MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF]:
+            with self.subTest(mjcf=mjcf.splitlines()[1].strip()):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, collapse_massless_fixed_root=True)
+
+                self.assertEqual(builder.joint_type[0], newton.JointType.FREE)
+                self.assertGreater(builder.body_mass[0], 0.0)
+
+                model = builder.finalize()
+                state_0 = model.state()
+                state_1 = model.state()
+                control = model.control()
+                contacts = model.contacts()
+                newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+                root_body = int(model.joint_child.numpy()[0])
+                start_z = float(state_0.body_q.numpy()[root_body][2])
+
+                solver = newton.solvers.SolverXPBD(model, iterations=2)
+                for _ in range(step_count):
+                    state_0.clear_forces()
+                    solver.step(state_0, state_1, control, contacts, dt)
+                    state_0, state_1 = state_1, state_0
+
+                end_z = float(state_0.body_q.numpy()[root_body][2])
+                self.assertGreaterEqual(start_z - end_z, min_drop)
+
+    def test_massless_fixed_root_opt_in_preserves_imported_internal_fixed_joints(self):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF, collapse_massless_fixed_root=True)
+
+        self.assertEqual(builder.joint_count, 2)
+        self.assertTrue(any(label.endswith("/floating_base") for label in builder.joint_label))
+        self.assertFalse(any(label.endswith("/chassis/chassis_joint") for label in builder.joint_label))
+        self.assertTrue(any(label.endswith("/sensor/sensor_joint") for label in builder.joint_label))
+
+        root_joint = next(i for i, label in enumerate(builder.joint_label) if label.endswith("/floating_base"))
+        sensor_joint = next(i for i, label in enumerate(builder.joint_label) if label.endswith("/sensor/sensor_joint"))
+        self.assertGreater(builder.body_mass[builder.joint_child[root_joint]], 0.0)
+        self.assertEqual(builder.joint_type[root_joint], newton.JointType.FREE)
+        self.assertEqual(builder.joint_type[sensor_joint], newton.JointType.FIXED)
+
     def test_humanoid_mjcf(self):
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 123.0

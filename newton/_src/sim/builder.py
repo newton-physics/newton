@@ -2412,6 +2412,7 @@ class ModelBuilder:
         joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
         bodies_follow_joint_ordering: bool = True,
         collapse_fixed_joints: bool = False,
+        collapse_massless_fixed_root: bool = False,
         mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
@@ -2505,6 +2506,7 @@ class ModelBuilder:
             joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
             bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
+            collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
             force_position_velocity_actuation: If True and both position (stiffness) and velocity
                 (damping) gains are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
@@ -2532,6 +2534,7 @@ class ModelBuilder:
             joint_ordering=joint_ordering,
             bodies_follow_joint_ordering=bodies_follow_joint_ordering,
             collapse_fixed_joints=collapse_fixed_joints,
+            collapse_massless_fixed_root=collapse_massless_fixed_root,
             mesh_maxhullvert=mesh_maxhullvert,
             force_position_velocity_actuation=force_position_velocity_actuation,
             override_root_xform=override_root_xform,
@@ -2795,6 +2798,7 @@ class ModelBuilder:
         enable_self_collisions: bool = True,
         ignore_inertial_definitions: bool = False,
         collapse_fixed_joints: bool = False,
+        collapse_massless_fixed_root: bool = False,
         verbose: bool = False,
         skip_equality_constraints: bool = False,
         convert_mjc_equality_constraints: bool = True,
@@ -2901,6 +2905,7 @@ class ModelBuilder:
             enable_self_collisions: If True, self-collisions are enabled.
             ignore_inertial_definitions: If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
+            collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
             verbose: If True, print additional information about parsing the MJCF.
             skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
@@ -2944,6 +2949,7 @@ class ModelBuilder:
             enable_self_collisions=enable_self_collisions,
             ignore_inertial_definitions=ignore_inertial_definitions,
             collapse_fixed_joints=collapse_fixed_joints,
+            collapse_massless_fixed_root=collapse_massless_fixed_root,
             verbose=verbose,
             skip_equality_constraints=skip_equality_constraints,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
@@ -5055,13 +5061,19 @@ class ModelBuilder:
             plt.legend(loc="upper left", fontsize=6)
         plt.show()
 
-    def collapse_fixed_joints(self, verbose: bool = False, joints_to_keep: list[str] | None = None) -> dict[str, Any]:
+    def collapse_fixed_joints(
+        self,
+        verbose: bool = False,
+        joints_to_keep: Sequence[str | int] | None = None,
+    ) -> dict[str, Any]:
         """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.
 
         Args:
             verbose: If True, print additional information about the collapsed joints.
-            joints_to_keep: An optional list of joint labels to be excluded from the collapse process.
+            joints_to_keep: An optional sequence of joint labels or original joint indices to be excluded from
+                the collapse process.
         """
+        joints_to_keep = set(joints_to_keep or ())
 
         body_data = {}
         body_children = {-1: []}
@@ -5173,7 +5185,6 @@ class ModelBuilder:
             nonlocal retained_joints
             nonlocal retained_bodies
             nonlocal body_data
-            nonlocal joints_to_keep
 
             joint = joint_data[(parent_body, child_body)]
             # Don't merge fixed joints if the child body is referenced in an equality constraint
@@ -5181,9 +5192,7 @@ class ModelBuilder:
             should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
 
             # Don't merge fixed joints listed in joints_to_keep list
-            if joints_to_keep is None:
-                joints_to_keep = []
-            joint_in_keep_list = joint["label"] in joints_to_keep
+            joint_in_keep_list = joint["label"] in joints_to_keep or joint["original_id"] in joints_to_keep
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
                 # Skip merging this fixed joint because the body is referenced in an equality constraint

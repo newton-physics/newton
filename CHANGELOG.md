@@ -20,12 +20,14 @@
 - Parse URDF `<material>` colors (inline `<color rgba>` and named material references) during import and apply them to `ModelBuilder.shape_color` for all shape types
 - Add robotics tutorial notebook covering ModelBuilder, solvers, CUDA graphs, IK, and pick-and-place
 - Add `newton.utils.OnnxRuntime`, a graph-capturable ONNX inference engine backed solely by Warp kernels (no `onnxruntime` or `torch` runtime dependency); used by `ControllerNeuralMLP` and `ControllerNeuralLSTM` to load `.onnx` policies. To migrate a TorchScript policy, run `torch.onnx.export(model, dummy_input, "policy.onnx", opset_version=17)` once and point the controllers at the resulting `.onnx` file. The `onnx` package is now an optional extra (`pip install newton[onnx]`); install it explicitly to use the ONNX runtime.
+- Add opt-in `collapse_massless_fixed_root` to URDF and MJCF importers to collapse massless fixed-root chains for maximal-coordinate solvers while preserving topology by default
 - Add USD parsing for `NewtonSiteAPI` to mark shapes as sites.
 - Add `joint_damping` model attribute and `JointDofConfig.damping` for velocity-proportional damping that is always active
 - Add `ViewerRTX`, a real-time ray-traced viewer powered by NVIDIA OVRTX.
 - Support negative (mirrored) scale on mesh, convex hull, and SDF shapes, so a single `Mesh` instance can be shared across shapes with different signed scales without re-baking
 - Add `newton.utils.ColorSpace`, `color_srgb_to_linear()`, `color_linear_to_srgb()`, and `SensorTiledCamera.RenderConfig.output_color_space` for color-space boundaries
 - Add USD parsing for `NewtonMassAPI`: shell mass model (`newton:massModel`), shell thickness (`newton:shellThickness`), and compact inertia tensor (`newton:inertia`)
+- Add USD parsing for contact response attributes (`ke`, `kd`, `kf`, `ka`) from `NewtonMaterialAPI` on bound materials
 
 ### Changed
 
@@ -42,7 +44,7 @@
 - Normalize negative scale components to `abs()` in `ModelBuilder.add_shape*` for symmetric primitives (sphere, box, capsule, cylinder, ellipsoid, plane, gaussian); these shapes are point-symmetric so sign flips produce identical geometry. If you relied on a negative scale to flip such a shape, apply the mirror through the shape's transform (`xform`) instead.
 - Reject negative scale components on `ModelBuilder.add_shape_cone()` and heightfield shapes (previously silently accepted, produced invalid geometry). To mirror a cone, apply the flip through the shape's `xform`; to mirror a heightfield, pre-mirror the source height data and pass a positive scale.
 - Change `SensorTiledCamera` default packed `color` and `albedo` outputs to sRGB-encoded bytes so authored display colors render at the expected display brightness; pass `RenderConfig(output_color_space=ColorSpace.LINEAR)` to preserve the previous linear-byte behavior.
-- Bump `newton-usd-schemas` to `>=0.3.0`
+- Bump `newton-usd-schemas` to `>=0.3.1`
 
 ### Deprecated
 
@@ -50,6 +52,8 @@
 - Deprecate loading `.pt` / `.pth` (TorchScript) checkpoints via `ControllerNeuralMLP`; the legacy TorchScript / dict-checkpoint path still works (with a `DeprecationWarning`) when PyTorch is installed but will be removed in a future release. `ControllerNeuralLSTM` requires re-exporting to ONNX with the metadata properties documented in its class docstring; pointing it at a `.pt` checkpoint now raises `NotImplementedError` with migration guidance. Convert the MLP checkpoint to ONNX once with `torch.onnx.export(model, dummy_input, "policy.onnx", opset_version=17)` and load the resulting `.onnx` file.
 - Deprecate implicit positive Dahl defaults in `SolverVBD.register_custom_attributes()`. Pass `dahl_defaults_enabled=False` and explicitly author positive `model.vbd.dahl_eps_max` and `model.vbd.dahl_tau` values when Dahl cable friction is desired, instead of relying on registered default values.
 - Deprecate `Model.mujoco.dof_passive_damping` in favor of `Model.joint_damping`; MuJoCo `damping` import now populates `Model.joint_damping` and the old namespaced attribute remains a warning alias
+- Deprecate `newton:contact_ke`/`newton:contact_kd`/`newton:contact_kf`/`newton:contact_ka` custom attributes on shape prims; author `newton:contactStiffness`/`newton:contactDamping`/`newton:contactFrictionGain`/`newton:contactAdhesion` on the bound `NewtonMaterialAPI` material instead
+- Deprecate `mjc:solref` on material prims for contact stiffness/damping; author `newton:contactStiffness`/`newton:contactDamping` on the bound `NewtonMaterialAPI` material, or use per-shape `mjc:solref` (`MjcGeomAPI`) which is unchanged
 
 ### Removed
 
