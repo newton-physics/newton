@@ -135,6 +135,59 @@ MuJoCo geometry model. They are only available through Newton's
 collision pipeline (see `Collision pipeline`_ below).
 
 
+Joint-limit stiffness and damping
+---------------------------------
+
+:attr:`~newton.Model.joint_limit_ke` and
+:attr:`~newton.Model.joint_limit_kd` are force-space gains (for example,
+``N·m/rad`` and ``N·m·s/rad`` for revolute joints). MuJoCo's negative
+``solreflimit`` convention stores stiffness and damping values, but the
+limit solver then converts them to an effective response using the owning
+DOF's ``dof_invweight0`` and the limit impedance parameter
+``dmax = solimplimit[1]``:
+
+.. math::
+
+   k_\mathrm{eff} = k_\mathrm{stored} /
+   (\mathrm{dof\_invweight0} \cdot (1 - dmax))
+
+To keep Newton's force-space meaning,
+:class:`~newton.solvers.SolverMuJoCo` writes
+``solreflimit = (-ke * factor, -kd * factor)`` with
+``factor = dof_invweight0 * (1 - dmax)``. This update runs after MuJoCo has
+compiled or refreshed ``dof_invweight0``. If ``joint_limit_ke <= 0`` or
+``joint_limit_kd <= 0``, the solver restores MuJoCo's default
+``solreflimit`` value ``(0.02, 1.0)``.
+
+MJCF- or USD-authored ``solreflimit`` values are already native MuJoCo
+parameters, so they are preserved verbatim through the
+``model.mujoco.solreflimit`` custom attribute and are not rescaled. Imported
+MJCF joints that did not author ``solreflimit`` keep MuJoCo's implicit default
+``(0.02, 1.0)`` until their Newton ``joint_limit_ke`` or ``joint_limit_kd``
+values are changed, at which point the Newton force-space scaling above is
+used.
+
+``model.mujoco.solreflimit_mode`` records how ``solreflimit`` should be
+interpreted: Newton force-space gains, a raw authored MuJoCo value, or an
+implicit MJCF default. This extra flag is needed because the two-component
+``solreflimit`` value alone cannot distinguish an unauthored value from an
+authored native value such as ``solreflimit="0 0"`` or USD
+``mjc:solreflimit = [0, 0]``.
+
+.. note::
+
+   ``SolverMuJoCo(..., save_to_mjcf=path)`` is not a fully semantic
+   round-trip for ``SOLREF_MODE_FORCE_SPACE`` joints. MJCF only stores
+   ``solreflimit``; it has no field for "use Newton force-space
+   scaling with these gains". The exporter therefore only writes
+   ``solreflimit`` for ``SOLREF_MODE_RAW`` joints (where the authored
+   value carries the full intent). Re-importing the saved file
+   recovers the same MuJoCo dynamics, but ``joint_limit_ke`` /
+   ``joint_limit_kd`` from the original ``SOLREF_MODE_FORCE_SPACE`` /
+   ``SOLREF_MODE_MJCF_DEFAULT`` joints will not be preserved — reapply
+   them on the rebuilt model if you need them.
+
+
 Actuators
 ---------
 
@@ -168,6 +221,8 @@ Additional actuators declared this way are appended after the joint-target
 actuators — see ``SolverMuJoCo._init_actuators``.
 
 
+.. _mujoco-equality-constraints:
+
 Equality constraints
 --------------------
 
@@ -199,21 +254,37 @@ array; slot layout depends on the constraint type.
        :attr:`~newton.JointType.REVOLUTE` and
        :attr:`~newton.JointType.PRISMATIC` joints are supported.
 
-**Loop closures.** Newton joints with no associated articulation
-(``joint_articulation == -1``) are treated as loop closures rather than
-tree joints. They are not emitted as MuJoCo joints; instead, the solver
-synthesises equality constraints:
 
-- :attr:`~newton.JointType.FIXED` → ``mjEQ_WELD`` (constrains all 6 DOFs).
-- :attr:`~newton.JointType.REVOLUTE` → two ``mjEQ_CONNECT`` constraints,
-  the second offset by 0.1 m along the hinge axis, so 5 DOFs are
-  constrained and one rotational DOF remains free.
-- :attr:`~newton.JointType.BALL` → one ``mjEQ_CONNECT`` (3 translational
-  DOFs constrained, all 3 rotational DOFs free).
+.. _mujoco-loop-closures:
 
-Other joint types in this configuration are not supported and produce a
-warning. Loop-joint DOFs and coordinates are excluded from MuJoCo's
-``nq`` / ``nv``.
+Loop closures
+-------------
+
+Loop-closing joints (see :ref:`Loop closure` for the general authoring
+pattern) are not emitted as MuJoCo joints; instead the solver constrains
+the relative motion of the two bodies according to the joint type:
+
+- :attr:`~newton.JointType.FIXED` — all 6 relative DOFs constrained
+  (relative position and orientation locked).
+- :attr:`~newton.JointType.REVOLUTE` — 5 DOFs constrained; one rotational
+  DOF about the hinge axis remains free.
+- :attr:`~newton.JointType.BALL` — the 3 translational DOFs constrained;
+  all 3 rotational DOFs remain free.
+
+Other joint types used as loop closures
+(:attr:`~newton.JointType.PRISMATIC`, :attr:`~newton.JointType.FREE`,
+:attr:`~newton.JointType.DISTANCE`, :attr:`~newton.JointType.CABLE`) emit a
+warning and are silently skipped — the loop is *not* closed. A
+:attr:`~newton.JointType.D6` is dispatched by its degrees of freedom: one
+angular axis behaves as a revolute closure and three as a ball closure;
+any other configuration is skipped.
+
+Only the kinematic coupling implied by the joint type is enforced. Any
+drive (``joint_target_pos`` / ``joint_target_vel``, PD gains,
+``control.joint_f``), joint limits, armature, friction, and
+effort/velocity limits authored on the loop-closing joint are **ignored**
+by :class:`~newton.solvers.SolverMuJoCo`. Loop-joint DOFs and coordinates
+are excluded from MuJoCo's ``nq`` / ``nv``.
 
 
 Tendons

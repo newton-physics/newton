@@ -8,7 +8,7 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.geometry.contact_reduction_global import reduction_insert_slot
+from newton._src.geometry.contact_reduction_global import GlobalContactReducer, reduction_insert_slot
 from newton._src.geometry.hashtable import HashTable
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -47,6 +47,21 @@ def test_power_of_two_rounding(test, device):
 
     ht3 = HashTable(capacity=1, device=device)
     test.assertEqual(ht3.capacity, 1)
+
+
+def test_global_reducer_hashtable_scales_with_contact_capacity(test, device):
+    """Test contact reduction hashtable sizing and user scaling."""
+    small_reducer = GlobalContactReducer(capacity=64, device=device)
+    test.assertGreaterEqual(small_reducer.hashtable.capacity, 1024)
+
+    large_reducer = GlobalContactReducer(capacity=1500, device=device)
+    test.assertGreaterEqual(large_reducer.hashtable.capacity, 1024)
+
+    scaled_reducer = GlobalContactReducer(capacity=1500, device=device, hashtable_size_factor=2.0)
+    test.assertGreaterEqual(scaled_reducer.hashtable.capacity, 2 * scaled_reducer.capacity)
+
+    with test.assertRaises(ValueError):
+        GlobalContactReducer(capacity=1500, device=device, hashtable_size_factor=0.0)
 
 
 def test_insert_single_slot(test, device):
@@ -334,6 +349,12 @@ devices = get_test_devices()
 # Register tests for all devices (CPU and CUDA)
 add_function_test(TestHashTable, "test_basic_creation", test_basic_creation, devices=devices)
 add_function_test(TestHashTable, "test_power_of_two_rounding", test_power_of_two_rounding, devices=devices)
+add_function_test(
+    TestHashTable,
+    "test_global_reducer_hashtable_scales_with_contact_capacity",
+    test_global_reducer_hashtable_scales_with_contact_capacity,
+    devices=devices,
+)
 add_function_test(TestHashTable, "test_insert_single_slot", test_insert_single_slot, devices=devices)
 add_function_test(TestHashTable, "test_atomic_max_behavior", test_atomic_max_behavior, devices=devices)
 add_function_test(TestHashTable, "test_multiple_keys", test_multiple_keys, devices=devices)

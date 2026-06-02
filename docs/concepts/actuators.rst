@@ -6,10 +6,10 @@
 Actuators
 =========
 
-.. warning::
+.. experimental::
 
-   The actuator API is **experimental** and may change in future releases.
-   Feedback is welcome — please file issues or discussion threads.
+   The actuator API may change without prior notice. Feedback is welcome —
+   please file issues or discussion threads.
 
 Actuators provide composable implementations that read physics simulation
 state, compute effort, and **accumulate** (scatter-add) the effort into
@@ -170,11 +170,12 @@ state objects — simply omit them:
 Differentiability and Graph Capture
 -----------------------------------
 
-Whether an actuator supports differentiability and CUDA graph capture depends on
-its controller.  :class:`ControllerPD` and :class:`ControllerPID` are fully
-graphable.  Neural-network controllers (:class:`ControllerNeuralMLP`,
-:class:`ControllerNeuralLSTM`) require PyTorch and are not graphable due to
-framework interop overhead.
+All built-in controllers are graphable and differentiable, including the
+neural-network controllers (:class:`ControllerNeuralMLP`,
+:class:`ControllerNeuralLSTM`), which run their ONNX policies on Newton's
+Warp-backed runtime.  The one exception is the deprecated TorchScript checkpoint
+path, which requires PyTorch and is not graphable due to framework interop
+overhead.
 
 :meth:`Actuator.is_graphable` returns ``True`` when all components can be
 captured in a CUDA graph.
@@ -193,10 +194,10 @@ Controllers
 * :class:`ControllerPD` — proportional-derivative control law (stateless).
 * :class:`ControllerPID` — proportional-integral-derivative control law
   (stateful: integral accumulator with anti-windup clamp).
-* :class:`ControllerNeuralMLP` — MLP neural-network controller (requires
-  PyTorch, stateful: position/velocity history buffers).
-* :class:`ControllerNeuralLSTM` — LSTM neural-network controller (requires
-  PyTorch, stateful: hidden/cell state).
+* :class:`ControllerNeuralMLP` — MLP neural-network controller (ONNX policy,
+  stateful: position/velocity history buffers).
+* :class:`ControllerNeuralLSTM` — LSTM neural-network controller (ONNX policy,
+  stateful: hidden/cell state).
 
 See the API documentation for each controller's control-law equations.
 

@@ -9,6 +9,7 @@ import os
 import warnings
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import urlparse
 
 import numpy as np
 import warp as wp
@@ -298,6 +299,86 @@ class ViewerViser(ViewerBase):
             return f"{jupyter_base_url}/proxy/{port}{normalized_path}{query}"
 
         return f"http://{local_host}:{port}{normalized_path}{query}"
+
+    @staticmethod
+    def _get_colab_output() -> Any | None:
+        """Return google.colab.output when Colab iframe display is available."""
+        try:
+            from google.colab import output  # noqa: PLC0415
+        except Exception:
+            return None
+
+        if not hasattr(output, "serve_kernel_port_as_iframe"):
+            return None
+
+        return output
+
+    @classmethod
+    def _display_colab_iframe(
+        cls,
+        port: int,
+        *,
+        path: str = "/",
+        query: str = "",
+        width: int | str = "100%",
+        height: int | str = 400,
+    ) -> bool:
+        """Display a local server port in Colab when the Colab helper is available."""
+        output = cls._get_colab_output()
+        if output is None:
+            return False
+
+        normalized_path = "/" if path in ("", "/") else "/" + path.lstrip("/")
+        normalized_query = ""
+        if query:
+            normalized_query = query if query.startswith("?") else "?" + query
+        iframe_path = f"{normalized_path}{normalized_query}"
+
+        try:
+            output.serve_kernel_port_as_iframe(port, path=iframe_path, width=width, height=height)
+        except TypeError:
+            output.serve_kernel_port_as_iframe(port, path=iframe_path, height=height)
+
+        return True
+
+    @classmethod
+    def _colab_iframe_target_from_url(cls, player_url: str) -> tuple[int, str, str] | None:
+        """Extract a Colab iframe target from an absolute or Jupyter proxy URL."""
+        parsed_url = urlparse(player_url)
+
+        proxy_target = None
+        path_segments = parsed_url.path.split("/")
+        for index, segment in enumerate(path_segments[:-1]):
+            if segment != "proxy":
+                continue
+
+            port_text = path_segments[index + 1]
+            if not port_text.isdecimal():
+                continue
+
+            proxy_port = int(port_text)
+            if proxy_port > 65535:
+                continue
+
+            downstream_segments = path_segments[index + 2 :]
+            if not downstream_segments or downstream_segments == [""]:
+                downstream_path = "/"
+            else:
+                downstream_path = "/" + "/".join(downstream_segments)
+            proxy_target = (proxy_port, downstream_path, parsed_url.query)
+
+        if proxy_target is not None:
+            return proxy_target
+
+        try:
+            parsed_port = parsed_url.port
+        except ValueError:
+            parsed_port = None
+
+        if parsed_port is not None:
+            return parsed_port, parsed_url.path or "/", parsed_url.query
+
+        return None
 
     @classmethod
     def get_viser_client_dir(cls) -> Path:
@@ -1313,6 +1394,9 @@ class ViewerViser(ViewerBase):
         from .viewer import is_sphinx_build  # noqa: PLC0415
 
         if self._record_to_viser is None:
+            if self._display_colab_iframe(self._port, width=width, height=height):
+                return None
+
             # No recording - display the live server via IFrame
             return display(IFrame(src=self.url, width=width, height=height))
 
@@ -1364,6 +1448,18 @@ class ViewerViser(ViewerBase):
                 self._record_to_viser,
                 camera_request=self._camera_request,
             )
+            colab_target = self._colab_iframe_target_from_url(player_url)
+            if colab_target is not None:
+                colab_port, colab_path, colab_query = colab_target
+                if self._display_colab_iframe(
+                    colab_port,
+                    path=colab_path,
+                    query=colab_query,
+                    width=width,
+                    height=height,
+                ):
+                    return None
+
             return display(IFrame(src=player_url, width=width, height=height))
 
     def _ipython_display_(self):
