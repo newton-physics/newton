@@ -1961,9 +1961,9 @@ class ForwardKinematicsSolver:
         self.newton_iteration.fill_(-1)  # The initial Newton convergence check will increment this to zero
         self.newton_success.zero_()
         if world_mask is not None:
-            wp.copy(self.newton_mask, world_mask)
+            self.newton_mask.assign(world_mask)
         else:
-            wp.copy(self.newton_mask, self.all_worlds_mask)
+            self.newton_mask.fill_(True)
         self.min_newton_iterations.fill_(-1)  # To disregard min iterations in initial Newton check
 
         # Optionally reset state

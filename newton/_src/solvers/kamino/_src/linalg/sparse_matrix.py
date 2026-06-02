@@ -8,6 +8,8 @@ This module provides data structures and utilities for managing multiple
 independent linear systems, including rectangular and square systems.
 """
 
+from __future__ import annotations
+
 import functools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, get_args
@@ -440,13 +442,13 @@ class BlockSparseMatrices:
         self.num_nzb.zero_()
         self.nzb_coords.zero_()
 
-    def zero(self, matrix_mask: wp.array | None = None):
+    def zero(self, matrix_mask: wp.array[bool] | None = None):
         """
         Sets non-zero block data to zero, for all or a subset of the matrices.
 
         Args:
             matrix_mask (optional): Per-matrix mask selecting which matrices to zero;
-                                    matrices with a truthy entry are zeroed, falsy / zero entries are left unchanged.
+                                    matrices with a `True` entry are zeroed, `False` entries are left unchanged.
                                     If not provided, all matrices are set to zero.
                                     Shape of ``(num_matrices,)``.
         """
@@ -607,7 +609,7 @@ def _make_masked_zero_kernel(block_type: BlockDType, index_dtype: IntType):
         # Inputs
         nzb_start: wp.array[index_dtype],
         max_nzb: wp.array[index_dtype],
-        matrix_mask: wp.array[Any],
+        matrix_mask: wp.array[bool],
         # Outputs
         nzb_values: wp.array[block_type.warp_type],
     ):
@@ -747,7 +749,7 @@ def _make_dense_to_bsm_copy_kernel(block_size: int):
 
 
 def allocate_block_sparse_from_dense(
-    dense_op: "DenseLinearOperatorData",
+    dense_op: DenseLinearOperatorData,
     block_size: int,
     sparsity_threshold: float = 1.0,
     device: wp.DeviceLike | None = None,
@@ -801,7 +803,7 @@ def allocate_block_sparse_from_dense(
 
 
 def dense_to_block_sparse_copy_values(
-    dense_op: "DenseLinearOperatorData",
+    dense_op: DenseLinearOperatorData,
     bsm: BlockSparseMatrices,
     block_size: int,
 ) -> None:
