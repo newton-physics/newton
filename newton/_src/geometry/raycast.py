@@ -5,9 +5,8 @@
 
 import warp as wp
 
-from .types import (
-    GeoType,
-)
+from .types import GeoType
+from ..sim import Model
 
 # A small constant to avoid division by zero and other numerical issues
 MINVAL = 1e-15
@@ -838,10 +837,6 @@ def raycast_kernel(
         _spinlock_release(lock)
 
 
-# Alias for backward compatibility.
-raycast_kernel_no_hfield = raycast_kernel
-
-
 @wp.kernel
 def _intersect_ray_kernel(
     bvh_id: wp.uint64,
@@ -901,7 +896,7 @@ def _intersect_ray_kernel(
 
 
 def intersect_ray(
-    model,
+    model: Model,
     ray_origins: wp.array2d[wp.vec3],
     ray_directions: wp.array2d[wp.vec3],
     out_dist: wp.array2d[float],

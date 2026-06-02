@@ -42,7 +42,6 @@ newton.geometry
    compute_inertia_shape
    compute_offset_mesh
    create_empty_sdf_data
-   intersect_ray
    refit_bvh_particle
    refit_bvh_shape
    sdf_box

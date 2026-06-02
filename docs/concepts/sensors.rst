@@ -95,7 +95,7 @@ Examples::
 Available Sensors
 -----------------
 
-Newton provides five sensor types. See the
+Newton provides four sensor types. See the
 :doc:`API reference <../api/newton_sensors>` for constructor arguments,
 attributes, and usage examples.
 

@@ -305,7 +305,7 @@ class Model:
         """Compact array of HeightfieldData structs, one per actual heightfield shape."""
         self.heightfield_elevations: wp.array[wp.float32] | None = None
         """Concatenated 1D elevation array for all heightfields. Kernels index via HeightfieldData.data_offset."""
-        self.heightfield_meshes: list = []
+        self.heightfield_meshes: list[wp.Mesh] = []
         """wp.Mesh objects built from heightfield shapes, kept alive for the model's lifetime."""
 
         # Mesh edge data (packed array + per-shape slice)
