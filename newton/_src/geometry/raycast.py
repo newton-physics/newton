@@ -3,10 +3,16 @@
 
 # Some ray intersection functions are adapted from https://iquilezles.org/articles/intersectors/
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import warp as wp
 
 from .types import GeoType
-from ..sim import Model
+
+if TYPE_CHECKING:
+    from ..sim import Model
 
 # A small constant to avoid division by zero and other numerical issues
 MINVAL = 1e-15
