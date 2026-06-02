@@ -54,6 +54,7 @@
 ### Removed
 
 - Remove `SensorContact.net_force` (deprecated in 1.1.0); use `SensorContact.total_force` and `SensorContact.force_matrix` instead
+- Remove beta `SolverKamino.reset(state_out=...)` and legacy positional reset-target compatibility; pass the reset state as `reset(state, ...)` or `reset(state=...)` and provide reset targets by keyword, such as `base_q=...`
 - Remove `include_total` parameter from `SensorContact` (deprecated in 1.1.0); use `measure_total` instead
 - Remove `SensorContact.sensing_objs` (deprecated in 1.1.0); use `SensorContact.sensing_obj_idx` and `SensorContact.sensing_obj_type` instead
 - Remove `SensorContact.counterparts` and `SensorContact.reading_indices` (deprecated in 1.1.0); use `SensorContact.counterpart_indices` and `SensorContact.counterpart_type` instead

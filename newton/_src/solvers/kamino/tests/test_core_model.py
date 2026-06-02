@@ -712,7 +712,7 @@ class TestModelConversions(unittest.TestCase):
 
         # Default reset (no args) should restore body-origin poses
         state_out: State = model.state()
-        solver.reset(state_out=state_out)
+        solver.reset(state=state_out)
         body_q_after = state_out.body_q.numpy()
 
         for i in range(model.body_count):
@@ -750,7 +750,7 @@ class TestModelConversions(unittest.TestCase):
             dtype=wp.transformf,
         )
         base_u = wp.zeros(1, dtype=wp.spatial_vectorf)
-        solver.reset(state_out=state_out, base_q=base_q, base_u=base_u)
+        solver.reset(state=state_out, base_q=base_q, base_u=base_u)
         body_q_after = state_out.body_q.numpy()
 
         for i in range(model.body_count):
@@ -776,7 +776,7 @@ class TestModelConversions(unittest.TestCase):
             [wp.transformf(wp.vec3f(*offset), wp.quat_identity(dtype=wp.float32))],
             dtype=wp.transformf,
         )
-        solver.reset(state_out=state_out, base_q=base_q_shifted, base_u=base_u)
+        solver.reset(state=state_out, base_q=base_q_shifted, base_u=base_u)
         body_q_shifted = state_out.body_q.numpy()
 
         for i in range(model.body_count):

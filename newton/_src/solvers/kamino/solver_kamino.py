@@ -440,11 +440,10 @@ class SolverKamino(SolverBase):
     @override
     def reset(
         self,
-        state: State | None = None,
+        state: State,
         world_mask: wp.array | None = None,
         flags: SolverStateFlags | None = None,
-        *legacy_targets: wp.array | None,
-        state_out: State | None = None,
+        *,
         actuator_q: wp.array | None = None,
         actuator_u: wp.array | None = None,
         joint_q: wp.array | None = None,
@@ -469,7 +468,6 @@ class SolverKamino(SolverBase):
             flags: Optional :class:`SolverStateFlags` bitmask controlling
                 which state attributes need to be reset.  If ``None``, all
                 state attributes are reset.
-            state_out: Deprecated alias for *state*. Use *state* instead.
             actuator_q: Optional array of target actuated joint coordinates.
                 Shape of ``(num_actuated_joint_coords,)`` and type :class:`wp.float32`.
             actuator_u: Optional array of target actuated joint DoF velocities.
@@ -483,55 +481,12 @@ class SolverKamino(SolverBase):
             base_u: Optional array of target base body twists.
                 Shape of ``(num_worlds,)`` and type :class:`wp.spatial_vectorf`.
         """
-        legacy_target_names = ("actuator_q", "actuator_u", "joint_q", "joint_u", "base_q", "base_u")
-        target_values = {
-            "actuator_q": actuator_q,
-            "actuator_u": actuator_u,
-            "joint_q": joint_q,
-            "joint_u": joint_u,
-            "base_q": base_q,
-            "base_u": base_u,
-        }
-
-        if legacy_targets:
-            positional_targets = (flags, *legacy_targets)
-            if len(positional_targets) > len(legacy_target_names):
-                raise TypeError(
-                    f"reset() takes at most {2 + len(legacy_target_names)} positional arguments "
-                    f"after 'self' ({2 + len(positional_targets)} given)"
-                )
-            for name, value in zip(legacy_target_names, positional_targets, strict=False):
-                if target_values[name] is not None:
-                    raise TypeError(f"reset() got multiple values for argument '{name}'")
-                target_values[name] = value
-            flags = None
-        elif flags is not None and not isinstance(flags, int):
-            if actuator_q is not None:
-                raise TypeError("reset() got multiple values for argument 'actuator_q'")
-            target_values["actuator_q"] = flags
-            flags = None
-
-        actuator_q = target_values["actuator_q"]
-        actuator_u = target_values["actuator_u"]
-        joint_q = target_values["joint_q"]
-        joint_u = target_values["joint_u"]
-        base_q = target_values["base_q"]
-        base_u = target_values["base_u"]
-
-        if state_out is not None:
-            if state is not None:
-                raise ValueError("Cannot specify both 'state' and 'state_out'.")
-            warnings.warn(
-                "SolverKamino.reset(state_out=...) is deprecated, use reset(state=...) instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            state = state_out
         if state is None:
             raise ValueError("'state' argument is required.")
 
         state_flags = SolverStateFlags.ALL if flags is None else SolverStateFlags(flags)
 
+        # Convert base pose from body-origin to COM frame
         if base_q is not None:
             base_q_com = wp.zeros_like(base_q)
             self._kamino.convert_base_origin_to_com(
@@ -543,12 +498,18 @@ class SolverKamino(SolverBase):
             base_q = base_q_com
 
         # TODO: fix brittle in-place update of arrays after conversion
+        # Create a zero-copy view of the input state as a StateKamino
+        # to interface with the Kamino solver's reset operation.
         state_out_kamino = self._kamino.StateKamino.from_newton(self._model_kamino.size, self.model, state)
+
+        # Partial resets preserve excluded fields by snapshotting and restoring
+        # them around the Kamino reset. Replace this with preallocated scratch if
+        # partial resets become part of a captured reset graph.
         restore_after_reset: list[tuple[wp.array, wp.array]] = []
 
         def _preserve_if_unset(array: wp.array | None, flag: SolverStateFlags) -> None:
             if array is not None and not (state_flags & flag):
-                restore_after_reset.append((array, wp.clone(array)))
+                restore_after_reset.append((array, wp.clone(array, device=array.device)))
 
         _preserve_if_unset(state_out_kamino.q_j, SolverStateFlags.JOINT_Q)
         _preserve_if_unset(state_out_kamino.q_j_p, SolverStateFlags.JOINT_Q)
@@ -556,6 +517,8 @@ class SolverKamino(SolverBase):
         _preserve_if_unset(state_out_kamino.q_i, SolverStateFlags.BODY_Q)
         _preserve_if_unset(state_out_kamino.u_i, SolverStateFlags.BODY_QD)
 
+        # Execute the reset operation of the Kamino solver,
+        # to write the reset state to `state_out_kamino`.
         self._solver_kamino.reset(
             state_out=state_out_kamino,
             world_mask=world_mask,
@@ -567,6 +530,7 @@ class SolverKamino(SolverBase):
             base_u=base_u,
         )
 
+        # Convert COM-frame poses from Kamino reset to body-origin frame
         self._kamino.convert_body_com_to_origin(
             body_com=self._model_kamino.bodies.i_r_com_i,
             body_q_com=state_out_kamino.q_i,
