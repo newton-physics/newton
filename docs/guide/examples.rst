@@ -189,30 +189,24 @@ Robotics
      - .. image:: ../images/examples/example_robot_anymal_c_walk.jpg
           :target: https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_anymal_c_walk.py
           :alt: robot_anymal_c_walk
-     -
-   * - ``python -m newton.examples robot_anymal_d``
-     - ``python -m newton.examples robot_anymal_c_walk``
-     -
-   * - .. image:: ../images/examples/example_robot_policy.jpg
+     - .. image:: ../images/examples/example_robot_policy.jpg
           :target: https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_policy.py
           :alt: robot_policy
-     - .. image:: ../images/examples/example_robot_ur10.jpg
+   * - ``python -m newton.examples robot_anymal_d``
+     - ``python -m newton.examples robot_anymal_c_walk``
+     - ``python -m newton.examples robot_policy``
+   * - .. image:: ../images/examples/example_robot_ur10.jpg
           :target: https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_ur10.py
           :alt: robot_ur10
      - .. image:: ../images/examples/example_robot_panda_hydro.jpg
           :target: https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_panda_hydro.py
           :alt: robot_panda_hydro
-   * - ``python -m newton.examples robot_policy``
-     - ``python -m newton.examples robot_ur10``
-     - ``python -m newton.examples robot_panda_hydro``
-   * - .. image:: ../images/examples/example_robot_allegro_hand.jpg
+     - .. image:: ../images/examples/example_robot_allegro_hand.jpg
           :target: https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_allegro_hand.py
           :alt: robot_allegro_hand
-     -
-     -
-   * - ``python -m newton.examples robot_allegro_hand``
-     -
-     -
+   * - ``python -m newton.examples robot_ur10``
+     - ``python -m newton.examples robot_panda_hydro``
+     - ``python -m newton.examples robot_allegro_hand``
 
 Cables
 ^^^^^^
