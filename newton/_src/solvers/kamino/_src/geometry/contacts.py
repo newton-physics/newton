@@ -30,7 +30,7 @@ from enum import IntEnum
 
 import warp as wp
 
-from .....sim.contacts import Contacts
+from .....sim.contacts import Contacts, contact_surface_separation
 from .....sim.model import Model
 from .....sim.state import State
 from ..core.math import COS_PI_6, UNIT_X, UNIT_Y
@@ -828,7 +828,7 @@ def _convert_contacts_newton_to_kamino(
     # Reconstruct Newton signed contact distance d from exported fields:
     # d = dot((p1 - p0), n_a_to_b) - (offset0 + offset1),
     # with n_newton = n_a_to_b and offset* stored in rigid_contact_thickness*.
-    d_newton = wp.dot(p1_world - p0_world, n_newton) - (newton_thickness0[tid] + newton_thickness1[tid])
+    d_newton = contact_surface_separation(p0_world, p1_world, n_newton, newton_thickness0[tid], newton_thickness1[tid])
 
     if b1 < 0:
         # shape1 is world-static → make it Kamino A, shape0 becomes Kamino B.
