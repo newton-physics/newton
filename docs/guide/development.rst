@@ -875,6 +875,40 @@ Commit hashes can be used instead of relative references:
 
             asv run --launch-method spawn abc1234..def5678
 
+Benchmarking runnable examples
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For a quick timing check on a runnable example, use ``--benchmark`` with a
+fixed ``--num-frames`` value:
+
+.. tab-set::
+    :sync-group: env
+
+    .. tab-item:: uv
+        :sync: uv
+
+        .. code-block:: console
+
+            uv run -m newton.examples robot_cartpole --benchmark --num-frames 1000
+
+    .. tab-item:: venv
+        :sync: venv
+
+        .. code-block:: console
+
+            python -m newton.examples robot_cartpole --benchmark --num-frames 1000
+
+``--benchmark`` uses the null viewer internally and prints FPS after a short
+warmup. When comparing code changes, prefer keeping ``--num-frames`` fixed so
+each run completes the same simulation workload.
+
+Passing a value to ``--benchmark``, such as ``--benchmark 10``, sets a duration
+limit in seconds. The run stops when either the duration or ``--num-frames`` is
+reached. This can be useful for quick smoke checks, but fixed-frame runs are
+usually easier to compare across code changes. ``--viewer null`` runs without
+rendering but does not print benchmark results, and ``--headless`` is not
+equivalent because it still uses a rendering viewer path.
+
 Running benchmarks standalone
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
