@@ -361,9 +361,19 @@ class TestControllerNeuralMLP(unittest.TestCase):
         def _step(b):
             b.forces.zero_()
             b.ctrl.compute(
-                b.positions, b.velocities, b.target_pos, b.target_vel, None,
-                b.indices, b.indices, b.indices, b.indices,
-                b.forces, b.state, 0.01, self.device,
+                b.positions,
+                b.velocities,
+                b.target_pos,
+                b.target_vel,
+                None,
+                b.indices,
+                b.indices,
+                b.indices,
+                b.indices,
+                b.forces,
+                b.state,
+                0.01,
+                self.device,
             )
 
         eager = _setup()
@@ -388,7 +398,10 @@ class TestControllerNeuralMLP(unittest.TestCase):
 
         for i, tgt in enumerate(target_schedule):
             np.testing.assert_allclose(
-                graph_forces[i], eager_forces[i], rtol=1e-5, atol=1e-6,
+                graph_forces[i],
+                eager_forces[i],
+                rtol=1e-5,
+                atol=1e-6,
                 err_msg=f"target={tgt}: graph replay diverged from eager",
             )
 
@@ -455,8 +468,6 @@ class TestControllerNeuralMLP(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_ONNX, "onnx not installed")
-
-
 class TestControllerNeuralLSTM(unittest.TestCase):
     """ControllerNeuralLSTM — load via model_path, call compute() directly."""
 
@@ -556,9 +567,19 @@ class TestControllerNeuralLSTM(unittest.TestCase):
         def _step(b):
             b.forces.zero_()
             b.ctrl.compute(
-                b.positions, b.velocities, b.target_pos, b.target_vel, None,
-                b.indices, b.indices, b.indices, b.indices,
-                b.forces, b.state, 0.01, self.device,
+                b.positions,
+                b.velocities,
+                b.target_pos,
+                b.target_vel,
+                None,
+                b.indices,
+                b.indices,
+                b.indices,
+                b.indices,
+                b.forces,
+                b.state,
+                0.01,
+                self.device,
             )
 
         eager = _setup()
@@ -583,14 +604,15 @@ class TestControllerNeuralLSTM(unittest.TestCase):
 
         for i, tgt in enumerate(target_schedule):
             np.testing.assert_allclose(
-                graph_forces[i], eager_forces[i], rtol=1e-5, atol=1e-6,
+                graph_forces[i],
+                eager_forces[i],
+                rtol=1e-5,
+                atol=1e-6,
                 err_msg=f"target={tgt}: graph replay diverged from eager",
             )
 
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
-
-
 class TestControllerNeuralLSTMLegacyTorchScript(unittest.TestCase):
     """Regression tests for the deprecated ``.pt`` LSTM checkpoint path.
 
@@ -1232,7 +1254,7 @@ class TestDelayedActuator(unittest.TestCase):
 
         control = model.control()
         for _step in range(3):
-            _write_dof_values(model, control.joint_target_pos, dofs, [10.0] * n)
+            _write_dof_values(model, control.joint_target_q, dofs, [10.0] * n)
             control.joint_f.zero_()
             actuator.step(state, control, state_0, state_1, 0.01)
             state_0, state_1 = state_1, state_0
@@ -1407,16 +1429,16 @@ class TestDelayedActuator(unittest.TestCase):
             return s0, s1, act_a, act_b
 
         solver, s0, s1, ctrl, act, act_a, act_b = _setup()
-        wp.copy(ctrl.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        wp.copy(ctrl.joint_target_q, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
         s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, max_delay)
         eager_results = []
         for tgt in cycle_targets:
-            wp.copy(ctrl.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            wp.copy(ctrl.joint_target_q, wp.full(ndof, tgt, dtype=wp.float32, device=device))
             s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, N)
             eager_results.append(s0.joint_q.numpy().copy())
 
         solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g = _setup()
-        wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        wp.copy(ctrl_g.joint_target_q, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
         s0_g, s1_g, act_a_g, act_b_g = _loop(solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g, max_delay)
         sub_dt = dt / K
         with wp.ScopedCapture(device=device) as capture:
@@ -1432,7 +1454,7 @@ class TestDelayedActuator(unittest.TestCase):
 
         graph_results = []
         for tgt in cycle_targets:
-            wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            wp.copy(ctrl_g.joint_target_q, wp.full(ndof, tgt, dtype=wp.float32, device=device))
             wp.capture_launch(graph)
             graph_results.append(s0_g.joint_q.numpy().copy())
 
@@ -2573,12 +2595,12 @@ class TestActuatorStep(unittest.TestCase):
         return s0, s1
 
     def test_full_pipeline(self):
-        """End-to-end ``Actuator.step``: PD + per-DOF delay + DC-motor clamp on a free + 2×revolute template.
+        """End-to-end ``Actuator.step``: PD + per-DOF delay + DC-motor clamp on a free + 2 revolute template.
 
         The free joint contributes 7 coords / 6 DOFs, so the actuator's
         ``pos_indices`` (coord layout) and ``target_pos_indices`` (DOF layout)
         differ by one. Combined with distinct per-joint targets at every step,
-        a wrong-index read into ``joint_target_pos`` would surface as a
+        a wrong-index read into ``joint_target_q`` would surface as a
         wrong-sign force on at least one joint.
 
         Per step we expect ``force = dc_clamp(kp*(delayed_target - q) + kd*(0 - qd), qd)``
@@ -2604,7 +2626,11 @@ class TestActuatorStep(unittest.TestCase):
         dc_args = {"saturation_effort": sat, "velocity_limit": v_lim, "max_motor_effort": 1e6}
         for dof, delay in [(dof_a, delay_a), (dof_b, delay_b)]:
             template.add_actuator(
-                ControllerPD, index=dof, kp=kp, kd=kd, delay_steps=delay,
+                ControllerPD,
+                index=dof,
+                kp=kp,
+                kd=kd,
+                delay_steps=delay,
                 clamping=[(ClampingDCMotor, dc_args)],
             )
 
@@ -2655,9 +2681,12 @@ class TestActuatorStep(unittest.TestCase):
         ]
 
         s0, _ = self.run_actuators_step(
-            actuator, state, model.control(),
-            target_schedule, expected_forces,
-            target_pos_attr="joint_target_pos",
+            actuator,
+            state,
+            model.control(),
+            target_schedule,
+            expected_forces,
+            target_pos_attr="joint_target_q",
             dofs=dofs,
         )
 

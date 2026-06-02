@@ -738,10 +738,25 @@ class ViewerGui:
         nav_highlight_color = self.ui.get_theme_color(imgui.Col_.nav_cursor, (1.0, 1.0, 1.0, 1.0))
 
         io = self.ui.io
-        imgui.set_next_window_pos(imgui.ImVec2(10, 10))
-        imgui.set_next_window_size(imgui.ImVec2(300, io.display_size[1] - 20))
+        # ``dpi_scale`` keeps the panel at a constant visual size on HiDPI
+        # displays, where ``display_size`` is in framebuffer pixels.
+        s = self.ui.dpi_scale
+        # Initial position/size only — ``first_use_ever`` lets the user drag
+        # the title bar and resize via the bottom-right corner without
+        # snapping back on every appearance.
+        imgui.set_next_window_pos(imgui.ImVec2(10 * s, 10 * s), imgui.Cond_.first_use_ever)
+        imgui.set_next_window_size(
+            imgui.ImVec2(300 * s, io.display_size[1] - 20 * s),
+            imgui.Cond_.first_use_ever,
+        )
+        # Allow generous downsizing while keeping at least one button row plus
+        # the title bar visible.
+        imgui.set_next_window_size_constraints(
+            imgui.ImVec2(160 * s, 80 * s),
+            imgui.ImVec2(io.display_size[0], io.display_size[1]),
+        )
 
-        flags = imgui.WindowFlags_.no_resize.value
+        flags = 0
 
         if imgui.begin(f"Newton Viewer v{nt.__version__}", flags=flags):
             imgui.separator()
@@ -894,9 +909,10 @@ class ViewerGui:
         viewer = self._viewer
         imgui = self.ui.imgui
         io = self.ui.io
+        s = self.ui.dpi_scale
         fps_color = (1.0, 1.0, 1.0, 1.0)
 
-        window_pos = (io.display_size[0] - 10, 10)
+        window_pos = (io.display_size[0] - 10 * s, 10 * s)
         imgui.set_next_window_pos(imgui.ImVec2(window_pos[0], window_pos[1]), pivot=imgui.ImVec2(1.0, 0.0))
 
         flags: imgui.WindowFlags = (
@@ -960,20 +976,23 @@ class ViewerGui:
             return
         imgui = self.ui.imgui
         io = self.ui.io
+        s = self.ui.dpi_scale
         scalar_arrays = getattr(viewer, "_scalar_arrays", {})
         plot_history_size = getattr(viewer, "_plot_history_size", 250)
-        window_width = 400
-        item_height = len(scalar_buffers or {}) * 140 + len(array_buffers or {}) * 260
-        window_height = min(io.display_size[1] - 20, item_height + 60)
+        window_width = 400 * s
+        item_height = len(scalar_buffers or {}) * 140 * s + len(array_buffers or {}) * 260 * s
+        window_height = min(io.display_size[1] - 20 * s, item_height + 60 * s)
+        # ``first_use_ever`` keeps user-dragged positions stable across
+        # collapse/expand cycles and survives ``imgui.ini`` reloads.
         imgui.set_next_window_pos(
-            imgui.ImVec2(io.display_size[0] - window_width - 10, 10),
-            imgui.Cond_.appearing,
+            imgui.ImVec2(io.display_size[0] - window_width - 10 * s, io.display_size[1] - window_height - 10 * s),
+            imgui.Cond_.first_use_ever,
         )
-        imgui.set_next_window_size(imgui.ImVec2(window_width, window_height), imgui.Cond_.appearing)
+        imgui.set_next_window_size(imgui.ImVec2(window_width, window_height), imgui.Cond_.first_use_ever)
         n = plot_history_size
         expanded = imgui.begin("Plots")
         if expanded:
-            graph_size = imgui.ImVec2(-1, 100)
+            graph_size = imgui.ImVec2(-1, 100 * s)
             for name, buf in (scalar_buffers or {}).items():
                 arr = scalar_arrays.get(name)
                 if arr is None:
@@ -987,7 +1006,7 @@ class ViewerGui:
             if render_heatmap is not None:
                 for name, array in (array_buffers or {}).items():
                     if imgui.collapsing_header(name, imgui.TreeNodeFlags_.default_open.value):
-                        render_heatmap(name, array, window_width - 40.0)
+                        render_heatmap(name, array, window_width - 40.0 * s, dpi_scale=s)
         imgui.end()
 
     def _render_selection_panel(self):
@@ -1147,7 +1166,7 @@ class ViewerGui:
 
             imgui.spacing()
             imgui.text("Values:")
-            if imgui.begin_child("values_scroll", 0, 300, border=True):
+            if imgui.begin_child("values_scroll", 0, 300 * self.ui.dpi_scale, border=True):
                 if len(values.shape) == 1:
                     names = self._get_attribute_names(view, attribute_name)
                     self._render_value_sliders(values, names, attribute_name, state)

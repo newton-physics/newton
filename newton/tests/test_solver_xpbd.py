@@ -406,7 +406,7 @@ def test_articulation_contact_drift(test, device):
         builder.body_inertia[i] = builder.body_inertia[i] + armature_inertia
 
     builder.joint_q[-12:] = [0.2, 0.4, -0.6, -0.2, -0.4, 0.6, -0.2, 0.4, -0.6, 0.2, -0.4, 0.6]
-    builder.joint_target_pos[-12:] = builder.joint_q[-12:]
+    builder.joint_target_q[-12:] = builder.joint_q[-12:]
     builder.add_ground_plane()
 
     model = builder.finalize(device=device)

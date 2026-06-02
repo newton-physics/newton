@@ -28,27 +28,27 @@ from newton.solvers import SolverNotifyFlags
 
 @wp.kernel
 def move_hand(
-    joint_qd_start: wp.array[wp.int32],
+    joint_q_start: wp.array[wp.int32],
     joint_limit_lower: wp.array[wp.float32],
     joint_limit_upper: wp.array[wp.float32],
     sim_time: wp.array[wp.float32],
     sim_dt: float,
     hand_rotation: wp.quat,
     # outputs
-    joint_target_pos: wp.array[wp.float32],
+    joint_target_q: wp.array[wp.float32],
     joint_parent_xform: wp.array[wp.transform],
 ):
     world_id = wp.tid()
     root_joint_id = world_id * 22
     t = sim_time[world_id]
 
-    root_dof_start = joint_qd_start[root_joint_id]
+    root_dof_start = joint_q_start[root_joint_id]
 
     # animate the finger joints
     for i in range(20):
         di = root_dof_start + i
         target = wp.sin(t + float(i * 6) * 0.1) * 0.08 + 0.3
-        joint_target_pos[di] = wp.clamp(target, joint_limit_lower[di], joint_limit_upper[di])
+        joint_target_q[di] = wp.clamp(target, joint_limit_lower[di], joint_limit_upper[di])
 
     # animate the root joint transform
     q = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.sin(t) * 0.1)
@@ -61,6 +61,7 @@ def move_hand(
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
 
@@ -99,10 +100,10 @@ class Example:
             allegro_hand.joint_target_ke[i] = 150
             allegro_hand.joint_target_kd[i] = 5
             allegro_hand.joint_q[i] = 0.3
-            allegro_hand.joint_target_pos[i] = 0.3
+            allegro_hand.joint_target_q[i] = 0.3
             if allegro_hand.joint_label[i][-2:] == "_0":
                 allegro_hand.joint_q[i] = 0.6
-                allegro_hand.joint_target_pos[i] = 0.6
+                allegro_hand.joint_target_q[i] = 0.6
             allegro_hand.joint_target_mode[i] = int(JointTargetMode.POSITION)
             if allegro_hand.joint_type[i] == newton.JointType.REVOLUTE:
                 allegro_hand.joint_armature[i] = 1e-2
@@ -171,14 +172,14 @@ class Example:
                 move_hand,
                 dim=self.world_count,
                 inputs=[
-                    self.model.joint_qd_start,
+                    self.model.joint_q_start,
                     self.model.joint_limit_lower,
                     self.model.joint_limit_upper,
                     self.world_time,
                     self.sim_dt,
                     self.hand_rotation,
                 ],
-                outputs=[self.control.joint_target_pos, self.model.joint_X_p],
+                outputs=[self.control.joint_target_q, self.model.joint_X_p],
             )
 
             # # update the solver since we have updated the joint parent transforms

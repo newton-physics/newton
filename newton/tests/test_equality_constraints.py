@@ -23,6 +23,7 @@ class TestEqualityConstraints(unittest.TestCase):
             ignore_names=["floor", "ground"],
             up_axis="Z",
             skip_equality_constraints=False,
+            convert_mjc_equality_constraints=False,
         )
 
         self.model = builder.finalize()

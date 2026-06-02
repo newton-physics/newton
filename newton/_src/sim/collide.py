@@ -507,6 +507,7 @@ class CollisionPipeline:
         contact_matching_normal_dot_threshold: float = 0.995,
         contact_report: bool = False,
         verify_buffers: bool = True,
+        contact_reduction_hashtable_size_factor: float = 0.25,
     ):
         """
         Initialize the CollisionPipeline (expert API).
@@ -524,6 +525,10 @@ class CollisionPipeline:
                 for mesh and heightfield collisions.  Increase this when
                 scenes with large/complex meshes or heightfields report
                 triangle-pair overflow warnings.
+            contact_reduction_hashtable_size_factor: Multiplier applied to
+                ``max_triangle_pairs`` when allocating the global contact
+                reduction hashtable. Increase this if hashtable fill/failure
+                warnings appear. Defaults to ``0.25`` for memory compatibility.
             soft_contact_max: Maximum number of soft contacts to allocate.
                 If None, computed as shape_count * particle_count.
             soft_contact_margin: Margin for soft contact generation. Defaults to 0.01.
@@ -657,6 +662,11 @@ class CollisionPipeline:
                 raise ValueError("Provide both broad_phase and narrow_phase for expert component construction")
             if sdf_hydroelastic_config is not None:
                 raise ValueError("sdf_hydroelastic_config cannot be used when narrow_phase is provided")
+            if contact_reduction_hashtable_size_factor != 0.25:
+                raise ValueError(
+                    "contact_reduction_hashtable_size_factor cannot be used when narrow_phase is provided; "
+                    "construct the NarrowPhase with that value instead"
+                )
 
             inferred_mode = _infer_broad_phase_mode_from_instance(broad_phase_instance)
             self.broad_phase_mode = inferred_mode
@@ -789,6 +799,7 @@ class CollisionPipeline:
                 deterministic=deterministic,
                 contact_max=rigid_contact_max,
                 verify_buffers=verify_buffers,
+                contact_reduction_hashtable_size_factor=contact_reduction_hashtable_size_factor,
             )
             self.hydroelastic_sdf = self.narrow_phase.hydroelastic_sdf
 

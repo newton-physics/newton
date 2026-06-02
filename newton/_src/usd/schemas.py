@@ -87,6 +87,20 @@ class SchemaResolverNewton(SchemaResolver):
             # Contact stiffness/damping
             "ke": SchemaAttribute("newton:contact_ke", None),
             "kd": SchemaAttribute("newton:contact_kd", None),
+            # SDF configuration — from NewtonSDFCollisionAPI. `-inf` is the
+            # "unset" sentinel (same convention as gap / shell_thickness above).
+            "sdf_max_resolution": SchemaAttribute("newton:sdfMaxResolution", float("-inf")),
+            "sdf_narrow_band_inner": SchemaAttribute("newton:sdfNarrowBandInner", float("-inf")),
+            "sdf_narrow_band_outer": SchemaAttribute("newton:sdfNarrowBandOuter", float("-inf")),
+            "sdf_target_voxel_size": SchemaAttribute("newton:sdfTargetVoxelSize", float("-inf")),
+            "sdf_texture_format": SchemaAttribute("newton:sdfTextureFormat", None),
+            "sdf_padding": SchemaAttribute("newton:sdfPadding", float("-inf")),
+            # Hydroelastic contacts — folded into NewtonSDFCollisionAPI
+            "hydroelastic_enabled": SchemaAttribute("newton:hydroelasticEnabled", None),
+            "kh": SchemaAttribute("newton:hydroelasticStiffness", float("-inf")),
+            # Mass model
+            "mass_model": SchemaAttribute("newton:massModel", "solid"),
+            "shell_thickness": SchemaAttribute("newton:shellThickness", float("-inf")),
         },
         PrimType.BODY: {},
         PrimType.ARTICULATION: {
@@ -343,7 +357,13 @@ class SchemaResolverMjc(SchemaResolver):
                 attribute_names=("mjc:margin", "mjc:gap"),
             ),
             "gap": SchemaAttribute("mjc:gap", 0.0),
-            # Contact stiffness/damping from per-geom solref
+            # Mass model: mjc:shellinertia (bool) → "shell" / "solid"
+            "mass_model": SchemaAttribute("mjc:shellinertia", False, lambda v: "shell" if v else "solid"),
+            # mjc:solref also fills shape_material_ke/kd via the legacy lossy
+            # conversion for back-compat with the convert_solref(ke, kd, 1, 1)
+            # round-trip; raw solref is preserved in mujoco.solref. See
+            # docs/integrations/mujoco.rst > "Shape-material contact stiffness
+            # and damping".
             "ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
             "kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
         },
@@ -354,6 +374,8 @@ class SchemaResolverMjc(SchemaResolver):
             # Contact models
             "priority": SchemaAttribute("mjc:priority", 0),
             "weight": SchemaAttribute("mjc:solmix", 1.0),
+            # See PrimType.SHAPE above for the mjc:solref → stiffness/damping
+            # back-compat mirror.
             "stiffness": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
             "damping": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
         },

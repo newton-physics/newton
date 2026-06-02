@@ -12,6 +12,18 @@ import warp as wp
 from ...core.types import vec5
 from ...sim import BodyFlags, EqType, JointTargetMode, JointType
 from ...sim.articulation import com_twist_to_point_velocity, origin_twist_to_com_twist
+from .constants import (
+    DEFAULT_LIMIT_GAIN_RTOL,
+    DEFAULT_LIMIT_KD,
+    DEFAULT_LIMIT_KE,
+    DEFAULT_LIMIT_SOLREF_DAMPRATIO,
+    DEFAULT_LIMIT_SOLREF_TIMECONST,
+    MJ_MINMU,
+    MJ_MINVAL,
+    SOLREF_MODE_FORCE_SPACE,
+    SOLREF_MODE_MJCF_DEFAULT,
+    SOLREF_MODE_RAW,
+)
 
 
 def _import_contact_force_fn():
@@ -23,11 +35,6 @@ def _import_contact_force_fn():
 # Custom vector types
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
 vec11 = wp.types.vector(length=11, dtype=wp.float32)
-
-
-# Constants
-MJ_MINVAL = 2.220446049250313e-16
-MJ_MINMU = 1e-5
 
 
 # Utility functions
@@ -178,7 +185,7 @@ def contact_params(
 
     solimp = mix * geom_solimp[worldid, g1] + (1.0 - mix) * geom_solimp[worldid, g2]
 
-    return margin, gap, condim, friction, solref, solreffriction, solimp
+    return margin, gap, condim, friction, solref, solreffriction, solimp, mix
 
 
 @wp.func
@@ -192,8 +199,8 @@ def convert_solref(ke: float, kd: float, d_width: float, d_r: float) -> wp.vec2:
         timeconst = 2.0 / (kd * d_width)
         dampratio = kd / 2.0 * wp.sqrt(d_r / ke)
     else:
-        timeconst = 0.02
-        dampratio = 1.0
+        timeconst = DEFAULT_LIMIT_SOLREF_TIMECONST
+        dampratio = DEFAULT_LIMIT_SOLREF_DAMPRATIO
     # see https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
 
     return wp.vec2(timeconst, dampratio)
@@ -224,6 +231,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     # Model:
     geom_bodyid: wp.array[int],
     body_weldid: wp.array[int],
+    body_invweight0: wp.array2d[wp.vec2],
     geom_condim: wp.array[int],
     geom_priority: wp.array[int],
     geom_solmix: wp.array2d[float],
@@ -232,6 +240,10 @@ def convert_newton_contacts_to_mjwarp_kernel(
     geom_friction: wp.array2d[wp.vec3],
     geom_margin: wp.array2d[float],
     geom_gap: wp.array2d[float],
+    # Newton shape-material force-space inputs (issue #2009)
+    shape_material_ke: wp.array[float],
+    shape_material_kd: wp.array[float],
+    shape_mjc_solref_mode: wp.array[wp.int32],
     # Newton contacts
     rigid_contact_count: wp.array[wp.int32],
     rigid_contact_shape0: wp.array[wp.int32],
@@ -375,7 +387,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
         if body_a < 0:
             worldid = body_b // bodies_per_world
 
-        margin, gap, condim, friction, solref, solreffriction, solimp = contact_params(
+        margin, gap, condim, friction, solref, solreffriction, solimp, mix = contact_params(
             geom_condim,
             geom_priority,
             geom_solmix,
@@ -388,10 +400,40 @@ def convert_newton_contacts_to_mjwarp_kernel(
             worldid,
         )
 
+        # FORCE_SPACE per-contact override: bypass contact_params' per-geom
+        # solref averaging and write the two-body factor directly. See
+        # docs/integrations/mujoco.rst > "Shape-material contact stiffness
+        # and damping" for the mechanism.
+        if shape_mjc_solref_mode:
+            mode_a = shape_mjc_solref_mode[shape_a]
+            mode_b = shape_mjc_solref_mode[shape_b]
+            if mode_a == SOLREF_MODE_FORCE_SPACE and mode_b == SOLREF_MODE_FORCE_SPACE:
+                ke_a = shape_material_ke[shape_a]
+                kd_a = shape_material_kd[shape_a]
+                ke_b = shape_material_ke[shape_b]
+                kd_b = shape_material_kd[shape_b]
+                # Reuse mix from contact_params so heterogeneous materials
+                # combine consistently with friction/solimp.
+                ke = mix * ke_a + (1.0 - mix) * ke_b
+                kd = mix * kd_a + (1.0 - mix) * kd_b
+                invw_a = float(0.0)
+                invw_b = float(0.0)
+                if body_a >= 0:
+                    invw_a = body_invweight0[worldid, mj_body_a][0]
+                if body_b >= 0:
+                    invw_b = body_invweight0[worldid, mj_body_b][0]
+                m_inv = invw_a + invw_b
+                dmax = solimp[1]
+                if m_inv > 0.0 and dmax < 1.0:
+                    factor = m_inv * (1.0 - dmax)
+                    solref = wp.vec2(-ke * factor, -kd * factor)
+
         # Convert Newton per-contact stiffness/damping to MuJoCo solref
-        # (timeconst, dampratio).  solimp is set to approximate a linear
-        # force-displacement relationship at rest, compensating for impedance
-        # scaling.  See https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
+        # (timeconst, dampratio). Per-contact overrides take precedence over
+        # the shape-material force-space override above. solimp is set to
+        # approximate a linear force-displacement relationship at rest,
+        # compensating for impedance scaling. See
+        # https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
         if rigid_contact_stiffness:
             contact_ke = rigid_contact_stiffness[tid]
             if contact_ke > 0.0:
@@ -1301,13 +1343,41 @@ CTRL_SOURCE_JOINT_TARGET = wp.constant(0)
 CTRL_SOURCE_CTRL_DIRECT = wp.constant(1)
 
 
+@wp.func
+def _target_quat_to_axis_angle(qx: float, qy: float, qz: float, qw: float) -> wp.vec3:
+    """Convert an XYZW target quaternion to its axis-angle vector ``θ * n̂``.
+
+    Matches ``mujoco_warp.math.quat_to_vel`` so the value fed to MuJoCo's
+    position actuator ctrl is in the same units as ``actuator_length`` for a
+    ball-joint transmission (component of ``θ * n̂`` along the actuator gear).
+    """
+    nrm = wp.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    if nrm < 1.0e-20:
+        return wp.vec3(0.0, 0.0, 0.0)
+    inv = 1.0 / nrm
+    x = qx * inv
+    y = qy * inv
+    z = qz * inv
+    w = qw * inv
+    sin_a_2 = wp.sqrt(x * x + y * y + z * z)
+    if sin_a_2 == 0.0:
+        return wp.vec3(0.0, 0.0, 0.0)
+    speed = 2.0 * wp.atan2(sin_a_2, w)
+    if speed > wp.pi:
+        speed = speed - 2.0 * wp.pi
+    return wp.vec3(x, y, z) * (speed / sin_a_2)
+
+
 @wp.kernel
 def apply_mjc_control_kernel(
     mjc_actuator_ctrl_source: wp.array[wp.int32],
     mjc_actuator_to_newton_idx: wp.array[wp.int32],
-    joint_target_pos: wp.array[wp.float32],
-    joint_target_vel: wp.array[wp.float32],
+    mjc_actuator_to_newton_target_q_idx: wp.array[wp.int32],
+    mjc_actuator_to_target_q_axis_idx: wp.array[wp.int32],
+    joint_target_q: wp.array[wp.float32],
+    joint_target_qd: wp.array[wp.float32],
     mujoco_ctrl: wp.array[wp.float32],
+    target_q_per_world: wp.int32,
     dofs_per_world: wp.int32,
     ctrls_per_world: wp.int32,
     # outputs
@@ -1316,21 +1386,17 @@ def apply_mjc_control_kernel(
     """Apply Newton control inputs to MuJoCo control array.
 
     For JOINT_TARGET (source=0), uses sign encoding in mjc_actuator_to_newton_idx:
-    - Positive value (>=0): position actuator, newton_axis = value
+    - Positive value (>=0): position actuator; the coord-index into
+      ``joint_target_q`` is read from ``mjc_actuator_to_newton_target_q_idx``.
     - Value of -1: unmapped/skip
     - Negative value (<=-2): velocity actuator, newton_axis = -(value + 2)
 
-    For CTRL_DIRECT (source=1), mjc_actuator_to_newton_idx is the ctrl index.
+    For ball-joint position actuators under the coord layout, the target stored
+    in ``joint_target_q`` is a quaternion. ``mjc_actuator_to_target_q_axis_idx``
+    selects axis 0/1/2 of the axis-angle representation; a value of -1 means
+    "scalar passthrough" (the legacy DOF-layout and all non-ball actuators).
 
-    Args:
-        mjc_actuator_ctrl_source: 0=JOINT_TARGET, 1=CTRL_DIRECT
-        mjc_actuator_to_newton_idx: Index into Newton array (sign-encoded for JOINT_TARGET)
-        joint_target_pos: Per-DOF position targets
-        joint_target_vel: Per-DOF velocity targets
-        mujoco_ctrl: Direct control inputs (from control.mujoco.ctrl)
-        dofs_per_world: Number of DOFs per world
-        ctrls_per_world: Number of ctrl inputs per world
-        mj_ctrl: Output MuJoCo control array
+    For CTRL_DIRECT (source=1), mjc_actuator_to_newton_idx is the ctrl index.
     """
     world, actuator = wp.tid()
     source = mjc_actuator_ctrl_source[actuator]
@@ -1338,17 +1404,32 @@ def apply_mjc_control_kernel(
 
     if source == CTRL_SOURCE_JOINT_TARGET:
         if idx >= 0:
-            # Position actuator
-            world_dof = world * dofs_per_world + idx
-            mj_ctrl[world, actuator] = joint_target_pos[world_dof]
+            target_q_idx = mjc_actuator_to_newton_target_q_idx[actuator]
+            if target_q_idx < 0:
+                return
+            world_target_q = world * target_q_per_world + target_q_idx
+            axis_idx = mjc_actuator_to_target_q_axis_idx[actuator]
+            if axis_idx < 0:
+                if world_target_q < joint_target_q.shape[0]:
+                    mj_ctrl[world, actuator] = joint_target_q[world_target_q]
+            else:
+                # Ball-joint quaternion target: feed MuJoCo the matching component
+                # of the axis-angle 3-vector (matches mjc actuator_length units).
+                if world_target_q + 3 < joint_target_q.shape[0]:
+                    aa = _target_quat_to_axis_angle(
+                        joint_target_q[world_target_q + 0],
+                        joint_target_q[world_target_q + 1],
+                        joint_target_q[world_target_q + 2],
+                        joint_target_q[world_target_q + 3],
+                    )
+                    mj_ctrl[world, actuator] = aa[axis_idx]
         elif idx == -1:
-            # Unmapped/skip
             return
         else:
             # Velocity actuator: newton_axis = -(idx + 2)
             newton_axis = -(idx + 2)
             world_dof = world * dofs_per_world + newton_axis
-            mj_ctrl[world, actuator] = joint_target_vel[world_dof]
+            mj_ctrl[world, actuator] = joint_target_qd[world_dof]
     else:  # CTRL_SOURCE_CTRL_DIRECT
         world_ctrl_idx = world * ctrls_per_world + idx
         if world_ctrl_idx < mujoco_ctrl.shape[0]:
@@ -1596,6 +1677,7 @@ def eval_single_articulation_fk(
 @wp.kernel
 def eval_articulation_fk(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     joint_articulation: wp.array[int],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
@@ -1616,7 +1698,7 @@ def eval_articulation_fk(
     tid = wp.tid()
 
     joint_start = articulation_start[tid]
-    joint_end = articulation_start[tid + 1]
+    joint_end = articulation_end[tid]
 
     eval_single_articulation_fk(
         joint_start,
@@ -2069,8 +2151,6 @@ def update_body_properties_kernel(
 @wp.kernel
 def update_jnt_properties_kernel(
     mjc_jnt_to_newton_dof: wp.array2d[wp.int32],
-    joint_limit_ke: wp.array[float],
-    joint_limit_kd: wp.array[float],
     joint_limit_lower: wp.array[float],
     joint_limit_upper: wp.array[float],
     joint_effort_limit: wp.array[float],
@@ -2079,7 +2159,6 @@ def update_jnt_properties_kernel(
     limit_margin: wp.array[float],
     # outputs
     jnt_solimp: wp.array2d[vec5],
-    jnt_solref: wp.array2d[wp.vec2],
     jnt_stiffness: wp.array2d[float],
     jnt_margin: wp.array2d[float],
     jnt_range: wp.array2d[wp.vec2],
@@ -2088,16 +2167,17 @@ def update_jnt_properties_kernel(
     """Update MuJoCo joint properties from Newton DOF properties.
 
     Iterates over MuJoCo joints [world, jnt], looks up Newton DOF,
-    and copies joint-level properties (limits, stiffness, solref, solimp).
+    and copies joint-level properties (limits, stiffness, solimp).
+
+    ``jnt_solref`` for joint limits is **not** written here. This kernel writes
+    the current ``jnt_solimp`` values; ``update_jnt_solref_from_invweight0_kernel``
+    must run later, after MuJoCo refreshes ``dof_invweight0`` via
+    ``set_const_0`` / ``mj_setConst``.
     """
     world, mjc_jnt = wp.tid()
     newton_dof = mjc_jnt_to_newton_dof[world, mjc_jnt]
     if newton_dof < 0:
         return
-
-    # Update joint limit solref using negative convention
-    if joint_limit_ke[newton_dof] > 0.0:
-        jnt_solref[world, mjc_jnt] = wp.vec2(-joint_limit_ke[newton_dof], -joint_limit_kd[newton_dof])
 
     # Update solimplimit
     if solimplimit:
@@ -2266,6 +2346,8 @@ def update_geom_properties_kernel(
     shape_mu_rolling: wp.array[float],
     shape_geom_solimp: wp.array[vec5],
     shape_geom_solmix: wp.array[float],
+    shape_mjc_solref: wp.array[wp.vec2f],
+    shape_mjc_solref_mode: wp.array[wp.int32],
     shape_margin: wp.array[float],
     zero_margin: int,
     # outputs
@@ -2307,10 +2389,19 @@ def update_geom_properties_kernel(
     rolling = shape_mu_rolling[shape_idx]
     geom_friction[world, geom_idx] = wp.vec3f(mu, torsional, rolling)
 
-    # update geom_solref (timeconst, dampratio) using stiffness and damping
-    # we don't use the negative convention to support controlling the mixing of shapes' stiffnesses via solmix
-    # use approximation of d(0) = d(width) = 1
-    geom_solref[world, geom_idx] = convert_solref(shape_ke[shape_idx], shape_kd[shape_idx], 1.0, 1.0)
+    # geom_solref per shape_mjc_solref_mode. See docs/integrations/mujoco.rst
+    # > "Shape-material contact stiffness and damping". FORCE_SPACE and
+    # MJCF_DEFAULT both write the legacy convert_solref round-trip here;
+    # FORCE_SPACE additionally triggers the per-contact override in
+    # convert_newton_contacts_to_mjwarp_kernel.
+    if shape_mjc_solref_mode and shape_mjc_solref:
+        mode = shape_mjc_solref_mode[shape_idx]
+        if mode == SOLREF_MODE_RAW:
+            geom_solref[world, geom_idx] = shape_mjc_solref[shape_idx]
+        else:
+            geom_solref[world, geom_idx] = convert_solref(shape_ke[shape_idx], shape_kd[shape_idx], 1.0, 1.0)
+    else:
+        geom_solref[world, geom_idx] = convert_solref(shape_ke[shape_idx], shape_kd[shape_idx], 1.0, 1.0)
 
     # update geom_solimp from custom attribute
     if shape_geom_solimp:
@@ -2345,6 +2436,127 @@ def update_geom_properties_kernel(
     # store position and orientation
     geom_pos[world, geom_idx] = tf.p
     geom_quat[world, geom_idx] = quat_xyzw_to_wxyz(tf.q)
+
+
+@wp.kernel
+def update_jnt_solref_from_invweight0_kernel(
+    mjc_jnt_to_newton_dof: wp.array2d[wp.int32],
+    joint_limit_ke: wp.array[float],
+    joint_limit_kd: wp.array[float],
+    joint_limit_solref: wp.array[wp.vec2],
+    joint_limit_solref_mode: wp.array[wp.int32],
+    jnt_dofadr: wp.array[wp.int32],
+    dof_invweight0: wp.array2d[float],
+    jnt_solimp: wp.array2d[vec5],
+    # outputs
+    jnt_solref: wp.array2d[wp.vec2],
+):
+    """Scale joint-limit ``jnt_solref`` so MuJoCo's ``k_eff`` matches Newton's ``limit_ke``/``limit_kd``.
+
+    Newton's ``joint_limit_ke``/``joint_limit_kd`` are force-space
+    stiffness and damping (N·m/rad, N·m·s/rad for revolute joints). MuJoCo's
+    limit constraint uses ``k_eff = k / (invweight * (1 - dmax))`` where
+    ``invweight = dof_invweight0`` for the DOF that owns this joint. Pre-scaling
+    ``solref`` by ``dof_invweight0 * (1 - dmax)`` cancels that scaling so the
+    simulated restoring torque matches the user-specified ``limit_ke`` /
+    ``limit_kd``.
+
+    The limit uses the negative (stiffness, damping) convention so the result is
+    ``solref = (-ke * factor, -kd * factor)``. When ``ke <= 0`` or ``kd <= 0``,
+    Newton restores MuJoCo's default ``(0.02, 1.0)`` pair so runtime disablement
+    matches a fresh model compiled without ``solreflimit``. MJCF-imported raw
+    ``solreflimit`` values are forwarded unchanged when present; MJCF joints
+    that rely on the implicit default keep MuJoCo's native ``(0.02, 1.0)`` until
+    ``joint_limit_ke``/``joint_limit_kd`` are changed by the user.
+    ``dof_invweight0`` is only valid after MuJoCo's ``set_const_0`` /
+    ``mj_setConst`` has run, so this kernel must be launched from
+    :meth:`SolverMuJoCo.notify_model_changed` after those calls (and once at
+    initialisation right after ``put_model``).
+
+    Args:
+        mjc_jnt_to_newton_dof: ``[world, mjc_jnt] → newton_dof`` mapping, ``-1``
+            for unmapped MuJoCo joints (e.g. injected internal constraints).
+        joint_limit_ke: Newton force-space limit stiffness per DOF
+            [N/m or N·m/rad].
+        joint_limit_kd: Newton force-space limit damping per DOF
+            [N·s/m or N·m·s/rad].
+        joint_limit_solref: Optional authored ``mujoco.solreflimit`` per DOF;
+            forwarded unchanged when ``joint_limit_solref_mode`` indicates
+            ``SOLREF_MODE_RAW``.
+        joint_limit_solref_mode: Optional ``mujoco.solreflimit_mode`` per DOF
+            (``SOLREF_MODE_FORCE_SPACE`` / ``SOLREF_MODE_RAW`` /
+            ``SOLREF_MODE_MJCF_DEFAULT``).
+        jnt_dofadr: Per-``mjc_jnt`` index of the first DOF in MuJoCo's flat
+            ``qvel`` layout; used to look up ``dof_invweight0`` for the joint's
+            owning DOF.
+        dof_invweight0: Frozen ``mean_diag(J · M⁻¹ · J')`` per DOF [1/kg],
+            shape ``[world, dof]``; valid only after ``mj_setConst``.
+        jnt_solimp: MuJoCo limit ``solimp`` per joint, shape ``[world, mjc_jnt]``
+            with component ``[..., 1]`` carrying ``dmax``.
+        jnt_solref: Output ``solref`` per joint, shape ``[world, mjc_jnt]``,
+            written in MuJoCo's negative-direct-mode convention
+            ``(-ke·factor, -kd·factor)``.
+    """
+    world, mjc_jnt = wp.tid()
+    newton_dof = mjc_jnt_to_newton_dof[world, mjc_jnt]
+    if newton_dof < 0:
+        return
+
+    # When ``joint_limit_solref_mode`` is present it is authoritative: only
+    # ``SOLREF_MODE_RAW`` forwards the authored ``mujoco.solreflimit`` value
+    # unscaled. Otherwise (legacy back-compat without the mode field) we fall
+    # back to inferring intent from a non-zero ``solreflimit``.
+    solref_mode = SOLREF_MODE_FORCE_SPACE
+    mode_present = False
+    if joint_limit_solref_mode:
+        mode_present = True
+        solref_mode = joint_limit_solref_mode[newton_dof]
+
+    if joint_limit_solref:
+        raw_solref = joint_limit_solref[newton_dof]
+        if mode_present:
+            if solref_mode == SOLREF_MODE_RAW:
+                jnt_solref[world, mjc_jnt] = raw_solref
+                return
+        else:
+            raw_solref_is_set = raw_solref[0] != 0.0 or raw_solref[1] != 0.0
+            if raw_solref_is_set:
+                jnt_solref[world, mjc_jnt] = raw_solref
+                return
+
+    ke = joint_limit_ke[newton_dof]
+    kd = joint_limit_kd[newton_dof]
+    if (
+        solref_mode == SOLREF_MODE_MJCF_DEFAULT
+        and wp.abs(ke - DEFAULT_LIMIT_KE) <= DEFAULT_LIMIT_GAIN_RTOL * DEFAULT_LIMIT_KE
+        and wp.abs(kd - DEFAULT_LIMIT_KD) <= DEFAULT_LIMIT_GAIN_RTOL * DEFAULT_LIMIT_KD
+    ):
+        # MJCF import converts MuJoCo's implicit default solreflimit to
+        # Newton's default ke/kd. Preserve the native MuJoCo default until the
+        # user edits those Newton gains, then fall through to force-space
+        # scaling below.
+        jnt_solref[world, mjc_jnt] = wp.vec2(DEFAULT_LIMIT_SOLREF_TIMECONST, DEFAULT_LIMIT_SOLREF_DAMPRATIO)
+        return
+
+    if ke <= 0.0 or kd <= 0.0:
+        # Restore MuJoCo's compiled default so runtime ``ke -> 0`` or ``kd -> 0``
+        # updates behave the same as a fresh model built without a custom limit
+        # solref. Without the ``kd <= 0`` guard, a ``(ke>0, kd=0)`` pair would
+        # write ``solref = (-ke·factor, 0)``, which MuJoCo's negative-direct-mode
+        # convention treats as ``dampratio = 0`` and triggers a divide-by-zero
+        # in ``k_eff = 1/(τ²·ζ²)``.
+        jnt_solref[world, mjc_jnt] = wp.vec2(DEFAULT_LIMIT_SOLREF_TIMECONST, DEFAULT_LIMIT_SOLREF_DAMPRATIO)
+        return
+
+    dof_idx = jnt_dofadr[mjc_jnt]
+    invw = dof_invweight0[world, dof_idx]
+    dmax = jnt_solimp[world, mjc_jnt][1]
+
+    factor = float(1.0)
+    if invw > 0.0 and dmax < 1.0:
+        factor = invw * (1.0 - dmax)
+
+    jnt_solref[world, mjc_jnt] = wp.vec2(-ke * factor, -kd * factor)
 
 
 @wp.kernel(enable_backward=False)
@@ -2545,7 +2757,7 @@ def update_mimic_eq_data_and_active_kernel(
 
     Iterates over MuJoCo equality constraints [world, eq], looks up Newton mimic constraint,
     and copies:
-    - eq_data: polycoef = [coef0, coef1, 0, 0, 0] (linear mimic relationship)
+    - eq_data: polycoef = [coef0, coef1, 0, 0, 0] for Newton mimic constraints
     - eq_active from constraint_mimic_enabled
     """
     world, mjc_eq = wp.tid()

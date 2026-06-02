@@ -18,9 +18,22 @@ from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import Mesh, ShapeFlags
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
-from ..sim import JointTargetMode, JointType, ModelBuilder
+from ..sim import EqType, JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
+from ..solvers.mujoco.constants import (
+    DEFAULT_LIMIT_KD,
+    DEFAULT_LIMIT_KE,
+    DEFAULT_LIMIT_SOLREF,
+    SOLREF_MODE_MJCF_DEFAULT,
+    SOLREF_MODE_RAW,
+)
+from ..solvers.mujoco.utils import (
+    mjc_add_equality_loop_joint,
+    mjc_add_equality_mimic,
+    mjc_parse_polycoef,
+    mjc_polycoef_has_higher_order,
+)
 from ..usd.schemas import solref_to_stiffness_damping
 from .heightfield import load_heightfield_elevation
 from .import_utils import (
@@ -171,6 +184,7 @@ def parse_mjcf(
     collapse_fixed_joints: bool = False,
     verbose: bool = False,
     skip_equality_constraints: bool = False,
+    convert_mjc_equality_constraints: bool = True,
     convert_3d_hinge_to_ball_joints: bool = False,
     mesh_maxhullvert: int | None = None,
     ctrl_direct: bool = False,
@@ -277,13 +291,16 @@ def parse_mjcf(
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
         verbose: If True, print additional information about parsing the MJCF.
         skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
+        convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
+            joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
+            equality constraints are stored in the legacy equality constraint arrays.
         convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
         ctrl_direct: If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
             where control comes directly from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
             See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
             actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
-            from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
+            from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
         path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
     """
     # Early validation of base joint parameters
@@ -323,6 +340,9 @@ def parse_mjcf(
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
 
+    if convert_mjc_equality_constraints and "mujoco:equality_constraint_target_kind" not in builder.custom_attributes:
+        SolverMuJoCo.register_custom_attributes(builder)
+
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.SHAPE]
@@ -336,6 +356,10 @@ def parse_mjcf(
     builder_custom_attr_dof: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.JOINT_DOF]
     )
+    solreflimit_mode_key = "mujoco:solreflimit_mode"
+    has_solreflimit_mode = solreflimit_mode_key in builder.custom_attributes
+    solref_mode_key = "mujoco:solref_mode"
+    has_solref_mode = solref_mode_key in builder.custom_attributes
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.EQUALITY_CONSTRAINT]
     )
@@ -509,6 +533,15 @@ def parse_mjcf(
         else:
             return default
 
+    # Whitelist of MJCF attributes whose ``mujoco.MjSpec.to_xml()`` can emit a
+    # one-value shorthand for an otherwise multi-component vector (e.g.
+    # ``solreflimit="0.02"`` for the ``(0.02, 1.0)`` default). For these keys
+    # ``parse_vec`` pads the remaining components from the registered default
+    # so the ``save_to_mjcf`` → re-import round-trip works. All other
+    # multi-component callers keep the historical "replicate" semantics so a
+    # ``vec5`` or ``vec6`` attribute does not silently change meaning.
+    _SOLREF_SHORTHAND_KEYS = frozenset({"solref", "solreflimit", "solrefcontact", "solreffriction"})
+
     def parse_vec(attrib, key, default):
         if key in attrib:
             out = np.array(attrib[key].split(), dtype=np.float32)
@@ -516,8 +549,29 @@ def parse_mjcf(
             out = np.array(default, dtype=np.float32)
 
         length = len(out)
-        if length == 1:
-            return wp.types.vector(len(default), wp.float32)(out[0], out[0], out[0])
+        # ``default`` can be ``None`` for callers that don't have a fixed
+        # length (e.g. ``actuatorfrcrange``); in that case there's nothing
+        # to pad against, so just return the parsed vector as-is.
+        if length == 1 and default is not None and len(default) != 1:
+            if key in _SOLREF_SHORTHAND_KEYS and len(default) >= 2:
+                # MuJoCo's solref-style shorthand: trailing components fall
+                # back to the registered default (e.g. dampratio=1.0).
+                padded = (out[0], *(float(default[i]) for i in range(1, len(default))))
+                return wp.types.vector(len(default), wp.float32)(*padded)
+            # Legacy "replicate to fill" behaviour for vec3 attributes that
+            # accept a single value (e.g. ``size="0.05"`` for a sphere).
+            if len(default) == 3:
+                return wp.types.vector(3, wp.float32)(out[0], out[0], out[0])
+            # Unexpected shorthand on a multi-component attribute: warn so
+            # silent semantic drift is visible in CI, and replicate to keep
+            # the historical behaviour.
+            warnings.warn(
+                f"MJCF attribute {key!r} provided a single value but expects "
+                f"{len(default)} components; replicating to fill. If this is a "
+                f"MuJoCo shorthand please extend ``parse_vec``'s whitelist.",
+                stacklevel=2,
+            )
+            return wp.types.vector(len(default), wp.float32)(*([float(out[0])] * len(default)))
 
         return wp.types.vector(length, wp.float32)(out)
 
@@ -659,8 +713,12 @@ def parse_mjcf(
                 if len(friction_values) >= 3:
                     shape_cfg.mu_rolling = float(friction_values[2])
 
-            # Parse MJCF solref for contact stiffness/damping (only if explicitly specified)
-            # Like friction, only override Newton defaults if solref is authored in MJCF
+            # MJCF solref also fills shape_material_ke/kd via the lossy
+            # conversion for back-compat with the legacy
+            # convert_solref(ke, kd, 1, 1) round-trip; raw solref is
+            # preserved in mujoco.solref by the registered
+            # mjcf_attribute_name="solref". See docs/integrations/mujoco.rst
+            # > "Shape-material contact stiffness and damping".
             if "solref" in geom_attrib:
                 solref = parse_vec(geom_attrib, "solref", (0.02, 1.0))
                 geom_ke, geom_kd = solref_to_stiffness_damping(solref)
@@ -691,6 +749,15 @@ def parse_mjcf(
                 shape_cfg.gap = mj_gap
 
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
+            if has_solref_mode:
+                # Authored solref → RAW (forwarded verbatim); unauthored →
+                # MJCF_DEFAULT (force-space scaling is strictly opt-in for
+                # shapes — no auto-promote, unlike joint limits). See
+                # docs/integrations/mujoco.rst > "Shape-material contact
+                # stiffness and damping".
+                custom_attributes[solref_mode_key] = (
+                    SOLREF_MODE_RAW if "solref" in geom_attrib else SOLREF_MODE_MJCF_DEFAULT
+                )
             shape_label = f"{label_prefix}/{geom_name}" if label_prefix else geom_name
             shape_kwargs = {
                 "label": shape_label,
@@ -1523,6 +1590,19 @@ def parse_mjcf(
                             dof_custom_attributes[key] = {}
                         for dof_offset in range(3):
                             dof_custom_attributes[key][current_dof_index + dof_offset] = value
+                    if has_solreflimit_mode:
+                        # The raw vec2 cannot distinguish authored
+                        # solreflimit="0 0" from the "not authored" sentinel.
+                        # Track whether MJCF provided a raw value or merely
+                        # inherited MuJoCo's implicit default.
+                        solreflimit_mode = (
+                            SOLREF_MODE_RAW if "solreflimit" in joint_attrib else SOLREF_MODE_MJCF_DEFAULT
+                        )
+                        dof_custom_attributes.setdefault(solreflimit_mode_key, {})
+                        for dof_offset in range(3):
+                            dof_custom_attributes[solreflimit_mode_key][current_dof_index + dof_offset] = (
+                                solreflimit_mode
+                            )
                     # Lift frictionloss into the builder's per-DOF friction array so it
                     # reaches the MuJoCo spec (joint_friction[qd_start]) on export.
                     ball_friction = parse_float(joint_attrib, "frictionloss", 0.0)
@@ -1538,13 +1618,45 @@ def parse_mjcf(
                 limit_upper = np.deg2rad(joint_range[1]) if has_range and is_angular and use_degrees else joint_range[1]
 
                 # Parse solreflimit for joint limit stiffness and damping
-                solreflimit = parse_vec(joint_attrib, "solreflimit", (0.02, 1.0))
+                solreflimit = parse_vec(joint_attrib, "solreflimit", DEFAULT_LIMIT_SOLREF)
                 limit_ke, limit_kd = solref_to_stiffness_damping(solreflimit)
-                # Handle None return values (invalid solref)
+                # MuJoCo's solref domain is ``(timeconst > 0, dampratio > 0)``
+                # for the standard mode or ``(< 0, < 0)`` for direct mode;
+                # mixed signs are rejected by ``solref_to_stiffness_damping``
+                # which returns ``(None, None)``. The ``"0 0"`` sentinel is
+                # also rejected by the conversion but is intentionally used by
+                # MJCF authors as a marker preserved verbatim through the
+                # ``mujoco.solreflimit`` custom attribute (see
+                # ``test_mjcf_authored_zero_solreflimit_is_preserved_as_native_parameter``),
+                # so we keep ``SOLREF_MODE_RAW`` semantics for the runtime
+                # ``jnt_solref`` path. Newton-side ``joint_limit_ke``/``kd``
+                # fall back to the MuJoCo defaults; warn so authors of
+                # genuinely malformed configurations notice the mismatch
+                # between the Newton gains (defaults) and the raw solref
+                # (forwarded verbatim) before they switch the mode to
+                # ``SOLREF_MODE_FORCE_SPACE``.
+                if (
+                    "solreflimit" in joint_attrib
+                    and (limit_ke is None or limit_kd is None)
+                    and not (float(solreflimit[0]) == 0.0 and float(solreflimit[1]) == 0.0)
+                ):
+                    warnings.warn(
+                        f"MJCF joint {joint_attrib.get('name', 'unnamed')!r}: invalid "
+                        f"solreflimit={joint_attrib['solreflimit']!r} (expected two "
+                        "same-sign non-zero components or the '0 0' sentinel); "
+                        f"joint_limit_ke/kd fall back to ({DEFAULT_LIMIT_KE}, "
+                        f"{DEFAULT_LIMIT_KD}) while the raw value is forwarded to "
+                        "MuJoCo via mujoco.solreflimit (SOLREF_MODE_RAW). MuJoCo may "
+                        "silently disable the limit or divide by zero — fix the "
+                        "authored solreflimit or set "
+                        "model.mujoco.solreflimit_mode = SOLREF_MODE_FORCE_SPACE "
+                        "to switch to the Newton force-space scaling.",
+                        stacklevel=2,
+                    )
                 if limit_ke is None:
-                    limit_ke = 2500.0  # From MuJoCo's default solref (0.02, 1.0)
+                    limit_ke = DEFAULT_LIMIT_KE  # From MuJoCo's default solref.
                 if limit_kd is None:
-                    limit_kd = 100.0  # From MuJoCo's default solref (0.02, 1.0)
+                    limit_kd = DEFAULT_LIMIT_KD  # From MuJoCo's default solref.
 
                 effort_limit = default_joint_effort_limit
                 if "actuatorfrcrange" in joint_attrib:
@@ -1594,11 +1706,20 @@ def parse_mjcf(
                     context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                 )
                 # assemble custom attributes for each DOF (dict mapping DOF index to value)
-                # Only store values that were explicitly specified in the source
+                # Only store values that were explicitly specified in the source.
                 for key, value in dof_attr.items():
                     if key not in dof_custom_attributes:
                         dof_custom_attributes[key] = {}
                     dof_custom_attributes[key][current_dof_index] = value
+                if has_solreflimit_mode:
+                    # The mode keeps native MJCF semantics separate from
+                    # Newton-authored force-space ``joint_limit_ke``/``kd``:
+                    # authored solreflimit is raw MuJoCo data, while an
+                    # unauthored limit starts from MuJoCo's implicit default
+                    # and only switches to Newton scaling after the gains move
+                    # away from their imported default values.
+                    solreflimit_mode = SOLREF_MODE_RAW if "solreflimit" in joint_attrib else SOLREF_MODE_MJCF_DEFAULT
+                    dof_custom_attributes.setdefault(solreflimit_mode_key, {})[current_dof_index] = solreflimit_mode
 
                 # Track this MJCF joint's name and DOF offset within the combined Newton joint
                 mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))
@@ -1905,6 +2026,39 @@ def parse_mjcf(
             anchor = wp.vec3(site_xform[0], site_xform[1], site_xform[2])
             return (body_idx, anchor)
 
+        def equality_label(common: dict[str, Any]) -> str | None:
+            if articulation_label and common["name"]:
+                return f"{articulation_label}/{common['name']}"
+            return common["name"]
+
+        def add_converted_loop_joint(
+            eq_type: EqType,
+            body1: int,
+            body2: int,
+            anchor: wp.vec3,
+            relpose: wp.transform | None,
+            torquescale: float,
+            common: dict[str, Any],
+            custom_attrs: dict[str, Any],
+        ) -> None:
+            try:
+                mjc_add_equality_loop_joint(
+                    builder,
+                    eq_type,
+                    body1,
+                    body2,
+                    anchor,
+                    relpose,
+                    torquescale,
+                    equality_label(common),
+                    common["active"],
+                    custom_attrs,
+                )
+            except ValueError:
+                if verbose:
+                    print(f"Warning: Equality constraint '{common['name']}' has no valid body reference. Skipping.")
+                return
+
         for connect in equality.findall("connect"):
             attribs = merge_equality_defaults(connect)
             common = parse_common_attributes(attribs)
@@ -1924,16 +2078,26 @@ def parse_mjcf(
                 body1_idx = body_name_to_idx.get(body1_name, -1) if body1_name else -1
                 body2_idx = body_name_to_idx.get(body2_name, -1) if body2_name else -1
 
-                builder.add_equality_constraint_connect(
-                    body1=body1_idx,
-                    body2=body2_idx,
-                    anchor=anchor_vec,
-                    label=f"{articulation_label}/{common['name']}"
-                    if articulation_label and common["name"]
-                    else common["name"],
-                    enabled=common["active"],
-                    custom_attributes=custom_attrs,
-                )
+                if convert_mjc_equality_constraints:
+                    add_converted_loop_joint(
+                        EqType.CONNECT,
+                        body1_idx,
+                        body2_idx,
+                        anchor_vec,
+                        None,
+                        0.0,
+                        common,
+                        custom_attrs,
+                    )
+                else:
+                    builder.add_equality_constraint_connect(
+                        body1=body1_idx,
+                        body2=body2_idx,
+                        anchor=anchor_vec,
+                        label=equality_label(common),
+                        enabled=common["active"],
+                        custom_attributes=custom_attrs,
+                    )
             elif site1:
                 if site2:
                     # Site-based connect: both site1 and site2 must be specified
@@ -1949,16 +2113,26 @@ def parse_mjcf(
                         print(
                             f"Connect constraint (site-based): site '{site1}' on body {body1_idx} to body {body2_idx}"
                         )
-                    builder.add_equality_constraint_connect(
-                        body1=body1_idx,
-                        body2=body2_idx,
-                        anchor=anchor_vec,
-                        label=f"{articulation_label}/{common['name']}"
-                        if articulation_label and common["name"]
-                        else common["name"],
-                        enabled=common["active"],
-                        custom_attributes=custom_attrs,
-                    )
+                    if convert_mjc_equality_constraints:
+                        add_converted_loop_joint(
+                            EqType.CONNECT,
+                            body1_idx,
+                            body2_idx,
+                            anchor_vec,
+                            None,
+                            0.0,
+                            common,
+                            custom_attrs,
+                        )
+                    else:
+                        builder.add_equality_constraint_connect(
+                            body1=body1_idx,
+                            body2=body2_idx,
+                            anchor=anchor_vec,
+                            label=equality_label(common),
+                            enabled=common["active"],
+                            custom_attributes=custom_attrs,
+                        )
                 else:
                     if verbose:
                         print(
@@ -1993,18 +2167,28 @@ def parse_mjcf(
                     wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
                 )
 
-                builder.add_equality_constraint_weld(
-                    body1=body1_idx,
-                    body2=body2_idx,
-                    anchor=anchor_vec,
-                    relpose=relpose_transform,
-                    torquescale=torquescale,
-                    label=f"{articulation_label}/{common['name']}"
-                    if articulation_label and common["name"]
-                    else common["name"],
-                    enabled=common["active"],
-                    custom_attributes=custom_attrs,
-                )
+                if convert_mjc_equality_constraints:
+                    add_converted_loop_joint(
+                        EqType.WELD,
+                        body1_idx,
+                        body2_idx,
+                        anchor_vec,
+                        relpose_transform,
+                        torquescale,
+                        common,
+                        custom_attrs,
+                    )
+                else:
+                    builder.add_equality_constraint_weld(
+                        body1=body1_idx,
+                        body2=body2_idx,
+                        anchor=anchor_vec,
+                        relpose=relpose_transform,
+                        torquescale=torquescale,
+                        label=equality_label(common),
+                        enabled=common["active"],
+                        custom_attributes=custom_attrs,
+                    )
             elif site1:
                 if site2:
                     # Site-based weld: both site1 and site2 must be specified
@@ -2023,18 +2207,28 @@ def parse_mjcf(
                     )
                     if verbose:
                         print(f"Weld constraint (site-based): body {body1_idx} to body {body2_idx}")
-                    builder.add_equality_constraint_weld(
-                        body1=body1_idx,
-                        body2=body2_idx,
-                        anchor=anchor_vec,
-                        relpose=relpose_transform,
-                        torquescale=torquescale,
-                        label=f"{articulation_label}/{common['name']}"
-                        if articulation_label and common["name"]
-                        else common["name"],
-                        enabled=common["active"],
-                        custom_attributes=custom_attrs,
-                    )
+                    if convert_mjc_equality_constraints:
+                        add_converted_loop_joint(
+                            EqType.WELD,
+                            body1_idx,
+                            body2_idx,
+                            anchor_vec,
+                            relpose_transform,
+                            torquescale,
+                            common,
+                            custom_attrs,
+                        )
+                    else:
+                        builder.add_equality_constraint_weld(
+                            body1=body1_idx,
+                            body2=body2_idx,
+                            anchor=anchor_vec,
+                            relpose=relpose_transform,
+                            torquescale=torquescale,
+                            label=equality_label(common),
+                            enabled=common["active"],
+                            custom_attributes=custom_attrs,
+                        )
                 else:
                     if verbose:
                         print(
@@ -2056,17 +2250,34 @@ def parse_mjcf(
 
                 joint1_idx = joint_name_to_idx.get(joint1_name, -1) if joint1_name else -1
                 joint2_idx = joint_name_to_idx.get(joint2_name, -1) if joint2_name else -1
+                polycoef_values = mjc_parse_polycoef(polycoef)
 
-                builder.add_equality_constraint_joint(
-                    joint1=joint1_idx,
-                    joint2=joint2_idx,
-                    polycoef=[float(x) for x in polycoef.split()],
-                    label=f"{articulation_label}/{common['name']}"
-                    if articulation_label and common["name"]
-                    else common["name"],
-                    enabled=common["active"],
-                    custom_attributes=custom_attrs,
-                )
+                if convert_mjc_equality_constraints:
+                    if mjc_polycoef_has_higher_order(polycoef_values):
+                        warnings.warn(
+                            f"Warning: Joint equality '{common['name']}' uses higher-order polycoef terms. "
+                            "They are preserved for SolverMuJoCo, but generic Newton mimic constraints use "
+                            "only coef0/coef1.",
+                            stacklevel=2,
+                        )
+                    mjc_add_equality_mimic(
+                        builder,
+                        joint1_idx,
+                        joint2_idx,
+                        polycoef_values,
+                        equality_label(common),
+                        common["active"],
+                        custom_attrs,
+                    )
+                else:
+                    builder.add_equality_constraint_joint(
+                        joint1=joint1_idx,
+                        joint2=joint2_idx,
+                        polycoef=polycoef_values,
+                        label=equality_label(common),
+                        enabled=common["active"],
+                        custom_attributes=custom_attrs,
+                    )
 
         # TODO: add support for equality constraint type "flex" once Newton supports it
 
