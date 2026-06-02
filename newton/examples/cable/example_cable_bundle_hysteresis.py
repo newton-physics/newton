@@ -295,9 +295,7 @@ class Example:
 
         self.contacts = self.model.contacts()
         self.viewer.set_model(self.model)
-        picking = getattr(self.viewer, "picking", None)
-        if picking is not None:
-            picking.set_linear_only_bodies(cable_body_ids)
+        self.viewer.set_picking_linear_only_bodies(cable_body_ids)
 
         # Obstacle kinematics parameters
         self.obstacle_bodies_wp = wp.array(self.obstacle_bodies, dtype=int, device=self.solver.device)

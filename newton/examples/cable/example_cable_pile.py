@@ -177,10 +177,10 @@ class Example:
         self.contacts = self.model.contacts(collision_pipeline=pipeline)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_picking_linear_only_bodies(rod_bodies_all)
 
         picking = getattr(self.viewer, "picking", None)
         if picking is not None:
-            picking.set_linear_only_bodies(rod_bodies_all)
             ps = picking.pick_state.numpy()
             ps[0]["pick_stiffness"] = 100.0
             ps[0]["pick_damping"] = 0.0

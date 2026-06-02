@@ -124,10 +124,10 @@ class Example:
         self.pinned_body_q0 = self.state_0.body_q.numpy()[self.pinned_body].copy()
 
         self.viewer.set_model(self.model)
+        self.viewer.set_picking_linear_only_bodies(self.graph_bodies)
 
         picking = getattr(self.viewer, "picking", None)
         if picking is not None:
-            picking.set_linear_only_bodies(self.graph_bodies)
             pick_state = picking.pick_state.numpy()
             pick_state[0]["pick_stiffness"] = 2.0
             pick_state[0]["pick_damping"] = 0.0

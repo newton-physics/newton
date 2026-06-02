@@ -210,9 +210,7 @@ class Example:
         self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
-        picking = getattr(self.viewer, "picking", None)
-        if picking is not None:
-            picking.set_linear_only_bodies(all_cable_bodies)
+        self.viewer.set_picking_linear_only_bodies(all_cable_bodies)
 
         # Twist rates for first segments (radians per second)
         twist_rates = np.full(len(kinematic_body_indices), 0.5, dtype=np.float32)

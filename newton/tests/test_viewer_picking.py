@@ -8,6 +8,7 @@ import warp as wp
 
 import newton
 from newton._src.viewer.picking import Picking
+from newton._src.viewer.viewer_null import ViewerNull
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 
@@ -207,6 +208,25 @@ class TestPickingSetup(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "outside the model body range"):
             picking.set_linear_only_bodies([model.body_count])
+
+    def test_viewer_linear_only_picking_noops_without_picker(self):
+        """Viewer-level linear-only picking controls are safe when picking is unavailable."""
+        viewer = ViewerNull(num_frames=0)
+
+        viewer.set_picking_linear_only_bodies([0])
+        viewer.set_picking_linear_only_bodies(None)
+        viewer.clear_picking_linear_only_bodies()
+
+    def test_viewer_linear_only_picking_forwards_to_picker(self):
+        """Viewer-level linear-only picking controls forward to the picking object."""
+        model = _make_single_sphere_model(device="cpu")
+        viewer = ViewerNull(num_frames=0)
+        viewer.picking = Picking(model)
+
+        viewer.set_picking_linear_only_bodies([0])
+        viewer.clear_picking_linear_only_bodies()
+        with self.assertRaisesRegex(ValueError, "outside the model body range"):
+            viewer.set_picking_linear_only_bodies([model.body_count])
 
     def test_world_offsets_optional(self):
         """Picking can be constructed with optional world_offsets."""

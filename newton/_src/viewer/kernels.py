@@ -121,7 +121,7 @@ def apply_picking_force_kernel(
         force_at_offset = force_at_offset * (max_force / force_mag)
 
     # Compute the resulting torque given the offset from COM to the picked point.
-    # Bodies registered via Picking.set_linear_only_bodies() receive force only,
+    # Bodies registered for linear-only picking receive force only,
     # which keeps mouse picking from injecting destabilizing torques into cables
     # and other low-inertia articulated chains.
     if linear_only_body_mask[pick_body] != 0:

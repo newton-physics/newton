@@ -46,7 +46,6 @@ PLUG_Y_OFFSET = -0.025
 
 CABLE_RADIUS = 0.00325
 CABLE_KINEMATIC_COUNT = 4  # first N rod bodies are inside the plug and follow it
-CABLE_BODY_FRAME_ORIGIN = "com"
 
 # Contact parameters for cable and ground plane (tuned for VBD).
 CABLE_MU = 2.0
@@ -57,23 +56,6 @@ LATCH_LIMIT_UPPER = 0.3  # max outward deflection [rad]
 LATCH_SPRING_KE = 0.15  # angular return-spring stiffness [N*m/rad]
 LATCH_SPRING_KD = 0.2  # dimensionless damping ratio (VBD: D = kd * ke)
 LATCH_LIMIT_KD = 1.0e-4  # dimensionless limit damping (VBD: D = kd * limit_ke)
-
-
-def _cable_segment_body_origin(points, segment_index: int, body_frame_origin: str) -> wp.vec3:
-    if body_frame_origin == "com":
-        return 0.5 * (points[segment_index] + points[segment_index + 1])
-    if body_frame_origin == "start":
-        return points[segment_index]
-    raise ValueError(f"Unsupported cable body frame origin: {body_frame_origin!r}")
-
-
-def _cable_segment_start_offset(points, segment_index: int, body_frame_origin: str) -> wp.vec3:
-    if body_frame_origin == "com":
-        segment_length = float(wp.length(points[segment_index + 1] - points[segment_index]))
-        return wp.vec3(0.0, 0.0, -0.5 * segment_length)
-    if body_frame_origin == "start":
-        return wp.vec3(0.0)
-    raise ValueError(f"Unsupported cable body frame origin: {body_frame_origin!r}")
 
 
 @wp.kernel
@@ -349,7 +331,7 @@ class Example:
             bend_stiffness=bend_stiffness,
             bend_damping=1.0e-1,
             label="cable",
-            body_frame_origin=CABLE_BODY_FRAME_ORIGIN,
+            body_frame_origin="com",
         )
 
         # Collision-filter cable segments that overlap the plug at rest.
@@ -367,8 +349,7 @@ class Example:
 
         anchor_body_ids = tuple(rod_bodies[:CABLE_KINEMATIC_COUNT])
         anchor_offsets = tuple(
-            _cable_segment_body_origin(cable_points, i, CABLE_BODY_FRAME_ORIGIN) - plug_pos
-            for i in range(CABLE_KINEMATIC_COUNT)
+            0.5 * (cable_points[i] + cable_points[i + 1]) - plug_pos for i in range(CABLE_KINEMATIC_COUNT)
         )
         anchor_rots = tuple(cable_quats[i] for i in range(CABLE_KINEMATIC_COUNT))
 
@@ -387,7 +368,7 @@ class Example:
         align_bodies = tuple(rod_bodies[align_start:-1])
         align_next = tuple(rod_bodies[align_start + 1 :])
         align_next_start_offsets = tuple(
-            _cable_segment_start_offset(cable_points, i + 1, CABLE_BODY_FRAME_ORIGIN)
+            wp.vec3(0.0, 0.0, -0.5 * float(wp.length(cable_points[i + 2] - cable_points[i + 1])))
             for i in range(align_start, len(rod_bodies) - 1)
         )
         self._cable_align_indices = wp.array(align_bodies, dtype=int, device=self.model.device)
