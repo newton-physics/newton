@@ -645,7 +645,15 @@ def test_intersect_ray(test: TestRaycast, device: str):
     out_dist = wp.empty(shape=3, dtype=float, device=device)
     out_shape_id = wp.empty(shape=3, dtype=wp.int32, device=device)
     out_normal = wp.empty(shape=3, dtype=wp.vec3, device=device)
-    newton.intersect_ray(model, origins, directions, worlds, False, out_dist, out_shape_id, out_normal)
+    newton.intersect_ray(
+        model,
+        ray_origins=origins,
+        ray_directions=directions,
+        ray_worlds=worlds,
+        out_dist=out_dist,
+        out_shape_id=out_shape_id,
+        out_normal=out_normal,
+    )
 
     np.testing.assert_allclose(out_dist.numpy(), np.array([1.5, 1.5, -1.0], dtype=np.float32), atol=1e-5)
     np.testing.assert_array_equal(out_shape_id.numpy(), np.array([0, 1, -1], dtype=np.int32))
@@ -715,7 +723,16 @@ def test_intersect_ray_global_world(test: TestRaycast, device: str):
     out_dist = wp.empty(shape=5, dtype=float, device=device)
     out_shape_id = wp.empty(shape=5, dtype=wp.int32, device=device)
     out_normal = wp.empty(shape=5, dtype=wp.vec3, device=device)
-    newton.intersect_ray(model, origins, directions, worlds, True, out_dist, out_shape_id, out_normal)
+    newton.intersect_ray(
+        model,
+        ray_origins=origins,
+        ray_directions=directions,
+        ray_worlds=worlds,
+        enable_global_world=True,
+        out_dist=out_dist,
+        out_shape_id=out_shape_id,
+        out_normal=out_normal,
+    )
 
     np.testing.assert_allclose(out_dist.numpy(), np.array([4.5, 4.5, 4.5, 4.5, -1.0], dtype=np.float32), atol=1e-5)
     np.testing.assert_array_equal(

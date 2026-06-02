@@ -846,14 +846,15 @@ def raycast_kernel(
 
 def intersect_ray(
     model: Model,
+    *,
     ray_origins: wp.array[wp.vec3],
     ray_directions: wp.array[wp.vec3],
     ray_worlds: wp.array[wp.int32],
-    enable_global_world: bool,
+    enable_global_world: bool = False,
     out_dist: wp.array[float] | None = None,
     out_shape_id: wp.array[wp.int32] | None = None,
     out_normal: wp.array[wp.vec3] | None = None,
-) -> None:
+):
     """Intersect rays with model shapes.
 
     Each ray is cast against the shapes of its own world (given by
