@@ -642,7 +642,7 @@ def make_desaxce_correction_and_velocity_bias_kernel(has_contacts: bool, collect
         collect_info: Whether to persist the De Saxce correction to solver_s.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", enable_backward=False)
     def _compute_desaxce_correction_and_velocity_bias(
         # Inputs:
         problem_dim: wp.array[int32],
@@ -1181,7 +1181,7 @@ def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_u_m
     num_tiles_cts = (n_cts_max + tile_size - 1) // tile_size
     num_tiles_u = (n_u_max + tile_size - 1) // tile_size
 
-    @wp.kernel
+    @wp.kernel(module="unique", enable_backward=False)
     def _compute_infnorm_residuals(
         # Inputs:
         problem_nl: wp.array[int32],
@@ -1325,7 +1325,7 @@ def _make_compute_infnorm_residuals_accel_kernel(tile_size: int, n_cts_max: int,
     num_tiles_cts = (n_cts_max + tile_size - 1) // tile_size
     num_tiles_u = (n_u_max + tile_size - 1) // tile_size
 
-    @wp.kernel
+    @wp.kernel(module="unique", enable_backward=False)
     def _compute_infnorm_residuals_accel(
         # Inputs:
         problem_nl: wp.array[int32],
