@@ -1228,6 +1228,7 @@ class CollisionPipeline:
                     model.shape_source_ptr,
                     model.shape_world,
                     soft_contact_margin,
+                    model.shape_margin,
                     self.soft_contact_max,
                     model.shape_count,
                     model.shape_flags,

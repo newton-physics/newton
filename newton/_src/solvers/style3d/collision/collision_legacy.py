@@ -226,6 +226,7 @@ class CollisionHandler:
                 contacts.soft_contact_body_pos,
                 contacts.soft_contact_body_vel,
                 contacts.soft_contact_normal,
+                self.model.shape_margin,
             ],
             outputs=[particle_forces, self.contact_hessian_diags],
             device=self.model.device,
