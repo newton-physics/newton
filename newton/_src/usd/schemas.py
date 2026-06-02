@@ -423,8 +423,8 @@ class SchemaResolverMjc(SchemaResolver):
             # round-trip; raw solref is preserved in mujoco.solref. See
             # docs/integrations/mujoco.rst > "Shape-material contact stiffness
             # and damping".
-            "ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
-            "kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
+            "ke": SchemaAttribute("mjc:solref", None, solref_to_stiffness),
+            "kd": SchemaAttribute("mjc:solref", None, solref_to_damping),
         },
         PrimType.MATERIAL: {
             # Materials
