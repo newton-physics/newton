@@ -3,7 +3,7 @@
 
 """Tests for the ADMM-coupled solvers.
 
-These tests validate generic :class:`SolverCoupledAdmm` ADMM plumbing against a
+These tests validate generic :class:`SolverCoupledADMM` ADMM plumbing against a
 cloth-plus-rigid-body scene.
 """
 
@@ -19,6 +19,7 @@ import warp as wp
 import newton
 from newton._src.solvers.coupled.admm_contact_stream import AdmmContactStream, AdmmContactType
 from newton._src.solvers.coupled.admm_utils import (
+    body_gravity_compensation_kernel,
     contact_lambda_update_kernel,
     contact_pp_accumulate_forces_kernel,
     contact_pp_compute_Jv_kernel,
@@ -27,10 +28,13 @@ from newton._src.solvers.coupled.admm_utils import (
     contact_rp_compute_Jv_kernel,
     contact_rp_compute_u_min_kernel,
     contact_rr_accumulate_forces_kernel,
+    contact_rr_clear_contact_snapshot_kernel,
     contact_rr_compute_Jv_kernel,
     contact_rr_compute_u_min_kernel,
+    contact_rr_snapshot_by_contact_kernel,
     contact_u_update_kernel,
     joint_box_friction_u_update_kernel,
+    particle_gravity_compensation_kernel,
     u_update_quadratic_kernel,
 )
 from newton._src.solvers.coupled.interface import (
@@ -47,7 +51,7 @@ from newton.solvers import (
 from newton.solvers.experimental.coupled import (
     ModelView,
     SolverCoupled,
-    SolverCoupledAdmm,
+    SolverCoupledADMM,
 )
 
 
@@ -555,6 +559,81 @@ class TestAdmmComReference(unittest.TestCase):
         np.testing.assert_allclose(body_f_a.numpy()[0], np.array([10.0, 0.0, 0.0, 0.0, 0.0, 0.0]), atol=1.0e-6)
         np.testing.assert_allclose(body_f_b.numpy()[1], np.array([-10.0, 0.0, 0.0, 0.0, 0.0, 0.0]), atol=1.0e-6)
 
+    def test_rigid_rigid_contact_snapshot_is_cleared_before_write(self):
+        device = "cpu"
+        active_count = wp.array([2], dtype=int, device=device)
+        contact_id = wp.array([3, 1, -1], dtype=int, device=device)
+        active = wp.array([1, 1, 0], dtype=int, device=device)
+        lambda_ = wp.array(
+            [
+                wp.vec3(3.0, 0.0, 0.0),
+                wp.vec3(1.0, 0.0, 0.0),
+                wp.vec3(9.0, 0.0, 0.0),
+            ],
+            dtype=wp.vec3,
+            device=device,
+        )
+        prev_contact_active = wp.array([1, 1, 1, 1, 1], dtype=int, device=device)
+        prev_contact_lambda = wp.array([wp.vec3(9.0, 9.0, 9.0)] * 5, dtype=wp.vec3, device=device)
+
+        wp.launch(
+            contact_rr_clear_contact_snapshot_kernel,
+            dim=prev_contact_active.shape[0],
+            inputs=[prev_contact_active, prev_contact_lambda],
+            device=device,
+        )
+        wp.launch(
+            contact_rr_snapshot_by_contact_kernel,
+            dim=contact_id.shape[0],
+            inputs=[active_count, contact_id, active, lambda_, prev_contact_active, prev_contact_lambda],
+            device=device,
+        )
+
+        np.testing.assert_array_equal(prev_contact_active.numpy(), [0, 1, 0, 1, 0])
+        np.testing.assert_allclose(prev_contact_lambda.numpy()[1], np.array([1.0, 0.0, 0.0]), atol=1.0e-6)
+        np.testing.assert_allclose(prev_contact_lambda.numpy()[3], np.array([3.0, 0.0, 0.0]), atol=1.0e-6)
+        np.testing.assert_allclose(prev_contact_lambda.numpy()[0], np.zeros(3), atol=1.0e-6)
+
+    def test_gamma_gravity_compensation_uses_pre_scaled_mass(self):
+        device = "cpu"
+        gamma = 2.0
+        gravity = wp.array([wp.vec3(0.0, 0.0, -9.81)], dtype=wp.vec3, device=device)
+
+        body_mass = wp.array([6.0, 12.0], dtype=float, device=device)
+        body_inv_mass = wp.array([1.0 / 6.0, 0.0], dtype=float, device=device)
+        body_world = wp.array([0, 0], dtype=wp.int32, device=device)
+        body_f = wp.zeros(2, dtype=wp.spatial_vector, device=device)
+        wp.launch(
+            body_gravity_compensation_kernel,
+            dim=2,
+            inputs=[gamma, body_mass, body_inv_mass, body_world, gravity],
+            outputs=[body_f],
+            device=device,
+        )
+
+        np.testing.assert_allclose(body_f.numpy()[0], np.array([0.0, 0.0, 39.24, 0.0, 0.0, 0.0]), atol=1.0e-6)
+        np.testing.assert_allclose(body_f.numpy()[1], np.zeros(6), atol=1.0e-6)
+
+        particle_mass = wp.array([3.0, 6.0, 9.0], dtype=float, device=device)
+        particle_inv_mass = wp.array([1.0 / 3.0, 0.0, 1.0 / 9.0], dtype=float, device=device)
+        particle_flags = wp.array(
+            [int(newton.ParticleFlags.ACTIVE), int(newton.ParticleFlags.ACTIVE), 0],
+            dtype=wp.int32,
+            device=device,
+        )
+        particle_world = wp.array([0, 0, 0], dtype=wp.int32, device=device)
+        particle_f = wp.zeros(3, dtype=wp.vec3, device=device)
+        wp.launch(
+            particle_gravity_compensation_kernel,
+            dim=3,
+            inputs=[gamma, particle_mass, particle_inv_mass, particle_flags, particle_world, gravity],
+            outputs=[particle_f],
+            device=device,
+        )
+
+        np.testing.assert_allclose(particle_f.numpy()[0], np.array([0.0, 0.0, 19.62]), atol=1.0e-6)
+        np.testing.assert_allclose(particle_f.numpy()[1:], np.zeros((2, 3)), atol=1.0e-6)
+
 
 def _build_cloth_rigid_scene(
     rigid_pos: tuple[float, float, float] = (0.0, 0.0, 1.5),
@@ -617,7 +696,7 @@ def _make_solver(
         [i for i in range(model.body_count) if i < rigid_start or i >= rigid_end],
         dtype=int,
     )
-    return SolverCoupledAdmm(
+    return SolverCoupledADMM(
         model=model,
         entries=[
             SolverCoupled.Entry(
@@ -633,7 +712,7 @@ def _make_solver(
                 particles=list(range(model.particle_count)),
             ),
         ],
-        coupling=SolverCoupledAdmm.Config(
+        coupling=SolverCoupledADMM.Config(
             iterations=admm_iters,
             rho=rho,
             gamma=gamma,
@@ -695,7 +774,7 @@ def _run_particles(solver, model: newton.Model, n_steps: int = 5, dt: float = 1.
 
 
 def _make_vbd_xpbd_particle_solver(model: newton.Model):
-    return SolverCoupledAdmm(
+    return SolverCoupledADMM(
         model=model,
         entries=[
             SolverCoupled.Entry(
@@ -709,7 +788,7 @@ def _make_vbd_xpbd_particle_solver(model: newton.Model):
                 particles=[1],
             ),
         ],
-        coupling=SolverCoupledAdmm.Config(
+        coupling=SolverCoupledADMM.Config(
             iterations=8,
             rho=20.0,
             baumgarte=0.2,
@@ -718,7 +797,7 @@ def _make_vbd_xpbd_particle_solver(model: newton.Model):
 
 
 def _make_semi_particle_solver(model: newton.Model):
-    return SolverCoupledAdmm(
+    return SolverCoupledADMM(
         model=model,
         entries=[
             SolverCoupled.Entry(
@@ -732,7 +811,7 @@ def _make_semi_particle_solver(model: newton.Model):
                 particles=[1],
             ),
         ],
-        coupling=SolverCoupledAdmm.Config(
+        coupling=SolverCoupledADMM.Config(
             iterations=10,
             rho=30.0,
             baumgarte=0.5,
@@ -762,7 +841,7 @@ def _build_body_particle_attachment_scene(enabled: bool = True) -> newton.Model:
         inertia=wp.mat33(np.eye(3)),
     )
     particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
-    SolverCoupledAdmm.add_body_particle_attachment(
+    SolverCoupledADMM.add_body_particle_attachment(
         builder,
         body,
         particle,
@@ -863,7 +942,7 @@ def _run_bodies(
 
 
 def _make_semi_body_particle_solver(model: newton.Model):
-    return SolverCoupledAdmm(
+    return SolverCoupledADMM(
         model=model,
         entries=[
             SolverCoupled.Entry(
@@ -877,7 +956,7 @@ def _make_semi_body_particle_solver(model: newton.Model):
                 particles=[0],
             ),
         ],
-        coupling=SolverCoupledAdmm.Config(
+        coupling=SolverCoupledADMM.Config(
             iterations=10,
             rho=30.0,
             baumgarte=0.5,
@@ -886,7 +965,7 @@ def _make_semi_body_particle_solver(model: newton.Model):
 
 
 def _make_semi_body_body_solver(model: newton.Model):
-    return SolverCoupledAdmm(
+    return SolverCoupledADMM(
         model=model,
         entries=[
             SolverCoupled.Entry(
@@ -900,7 +979,7 @@ def _make_semi_body_body_solver(model: newton.Model):
                 bodies=[1],
             ),
         ],
-        coupling=SolverCoupledAdmm.Config(
+        coupling=SolverCoupledADMM.Config(
             iterations=10,
             rho=30.0,
             baumgarte=0.5,
@@ -969,8 +1048,8 @@ def _make_admm_inclined_plane_particle_box_solver(
     particle_ids: list[int],
     angle: float,
     friction: float,
-) -> SolverCoupledAdmm:
-    return SolverCoupledAdmm(
+) -> SolverCoupledADMM:
+    return SolverCoupledADMM(
         model=model,
         entries=[
             SolverCoupled.Entry(
@@ -984,12 +1063,12 @@ def _make_admm_inclined_plane_particle_box_solver(
                 particles=particle_ids,
             ),
         ],
-        coupling=SolverCoupledAdmm.Config(
+        coupling=SolverCoupledADMM.Config(
             iterations=18,
             rho=50.0,
             baumgarte=0.1,
             contact_pairs=[
-                SolverCoupledAdmm.ContactPair(
+                SolverCoupledADMM.ContactPair(
                     source="plane",
                     destination="box",
                     detection_margin=0.04,
@@ -1128,8 +1207,11 @@ def _make_collision_admm_inclined_plane_rigid_box_solver(
     box_body: int,
     angle: float,
     friction: float,
-) -> SolverCoupledAdmm:
-    return SolverCoupledAdmm(
+    *,
+    rigid_contact_matching: str = "disabled",
+) -> SolverCoupledADMM:
+    del friction
+    return SolverCoupledADMM(
         model=model,
         entries=[
             SolverCoupled.Entry(
@@ -1143,13 +1225,14 @@ def _make_collision_admm_inclined_plane_rigid_box_solver(
                 bodies=[box_body],
             ),
         ],
-        coupling=SolverCoupledAdmm.Config(
+        coupling=SolverCoupledADMM.Config(
             iterations=30,
             rho=5.0,
             gamma=0.2,
             baumgarte=0.03,
+            rigid_contact_matching=rigid_contact_matching,
             contact_pairs=[
-                SolverCoupledAdmm.ContactPair(
+                SolverCoupledADMM.ContactPair(
                     source="plane",
                     destination="box",
                 )
@@ -1201,7 +1284,7 @@ class TestAdmmScalePartMass(unittest.TestCase):
         model = builder.finalize(device="cpu")
 
         view = ModelView(model, "test")
-        view.scale_particle_mass(4.0)
+        view.scale_particle_mass(None, 4.0)
 
         np.testing.assert_allclose(view.particle_mass.numpy(), [8.0, 8.0, 8.0])
         np.testing.assert_allclose(view.particle_inv_mass.numpy(), [0.125, 0.125, 0.125])
@@ -1217,12 +1300,12 @@ class TestAdmmCouplingHooks(unittest.TestCase):
         builder = newton.ModelBuilder(gravity=0.0)
         builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
         model = builder.finalize(device="cpu")
-        solver = SolverCoupledAdmm(
+        solver = SolverCoupledADMM(
             model=model,
             entries=[
                 SolverCoupled.Entry(name="p", solver=_AdmmParticleForceNotifySolver, particles=[0]),
             ],
-            coupling=SolverCoupledAdmm.Config(iterations=1),
+            coupling=SolverCoupledADMM.Config(iterations=1),
         )
 
         state_0 = model.state()
@@ -1244,12 +1327,12 @@ class TestAdmmCouplingHooks(unittest.TestCase):
         builder = newton.ModelBuilder(gravity=0.0)
         builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
         model = builder.finalize(device="cpu")
-        solver = SolverCoupledAdmm(
+        solver = SolverCoupledADMM(
             model=model,
             entries=[
                 SolverCoupled.Entry(name="p", solver=_CustomAdmmInputStateUpdateSolver, particles=[0]),
             ],
-            coupling=SolverCoupledAdmm.Config(iterations=1, gamma=2.0),
+            coupling=SolverCoupledADMM.Config(iterations=1, gamma=2.0),
         )
 
         state_0 = model.state()
@@ -1272,12 +1355,12 @@ class TestAdmmCouplingHooks(unittest.TestCase):
         builder = newton.ModelBuilder(gravity=0.0)
         builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
         model = builder.finalize(device="cpu")
-        solver = SolverCoupledAdmm(
+        solver = SolverCoupledADMM(
             model=model,
             entries=[
                 SolverCoupled.Entry(name="p", solver=_CustomAdmmInputStateUpdateSolver, particles=[0]),
             ],
-            coupling=SolverCoupledAdmm.Config(iterations=2),
+            coupling=SolverCoupledADMM.Config(iterations=2),
         )
 
         state_0 = model.state()
@@ -1295,7 +1378,7 @@ class TestAdmmCouplingHooks(unittest.TestCase):
     def test_collision_contact_uses_custom_effective_mass(self):
         _CustomEffectiveMassSolver.instances.clear()
         model = _build_two_particle_contact_scene(gap=-0.08)
-        solver = SolverCoupledAdmm(
+        solver = SolverCoupledADMM(
             model=model,
             entries=[
                 SolverCoupled.Entry(
@@ -1309,9 +1392,9 @@ class TestAdmmCouplingHooks(unittest.TestCase):
                     particles=[1],
                 ),
             ],
-            coupling=SolverCoupledAdmm.Config(
+            coupling=SolverCoupledADMM.Config(
                 contact_pairs=[
-                    SolverCoupledAdmm.ContactPair(source="a", destination="b", contact_distance=0.1),
+                    SolverCoupledADMM.ContactPair(source="a", destination="b", contact_distance=0.1),
                 ],
             ),
         )
@@ -1415,7 +1498,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
         return builder.finalize(device="cpu"), parent, child, joint
 
     def _make_two_body_joint_solver(self, model: newton.Model, parent: int, child: int, **coupling_kwargs):
-        return SolverCoupledAdmm(
+        return SolverCoupledADMM(
             model=model,
             entries=[
                 SolverCoupled.Entry(
@@ -1429,7 +1512,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
                     bodies=[child],
                 ),
             ],
-            coupling=SolverCoupledAdmm.Config(
+            coupling=SolverCoupledADMM.Config(
                 iterations=12,
                 rho=40.0,
                 baumgarte=0.5,
@@ -1502,7 +1585,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
         model = builder.finalize(device="cpu")
 
         gamma = 2.0
-        solver = SolverCoupledAdmm(
+        solver = SolverCoupledADMM(
             model=model,
             entries=[
                 SolverCoupled.Entry(
@@ -1516,7 +1599,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
                     bodies=[parent],
                 ),
             ],
-            coupling=SolverCoupledAdmm.Config(gamma=gamma),
+            coupling=SolverCoupledADMM.Config(gamma=gamma),
         )
 
         linear_group = solver._admm_rr_groups[0]
@@ -1588,7 +1671,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
 
     def test_joint_proximal_destination_filter_adds_proxy_to_one_side(self):
         model, parent, child, _ = self._build_two_body_joint_scene("ball")
-        solver = SolverCoupledAdmm(
+        solver = SolverCoupledADMM(
             model=model,
             entries=[
                 SolverCoupled.Entry(
@@ -1602,7 +1685,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
                     bodies=[parent],
                 ),
             ],
-            coupling=SolverCoupledAdmm.Config(joint_proximal_destination_entries=("parent",)),
+            coupling=SolverCoupledADMM.Config(joint_proximal_destination_entries=("parent",)),
         )
 
         child_entry = solver._entries["child"]
@@ -1645,7 +1728,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
     def test_rejects_cross_solver_joint_owned_by_subsolver(self):
         model, parent, child, joint = self._build_two_body_joint_scene("ball")
         with self.assertRaisesRegex(ValueError, "must not be owned"):
-            SolverCoupledAdmm(
+            SolverCoupledADMM(
                 model=model,
                 entries=[
                     SolverCoupled.Entry(
@@ -1660,7 +1743,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
                         bodies=[child],
                     ),
                 ],
-                coupling=SolverCoupledAdmm.Config(),
+                coupling=SolverCoupledADMM.Config(),
             )
 
 
@@ -1757,7 +1840,7 @@ class TestAdmmCollisionDetection(unittest.TestCase):
         builder.add_shape_collision_filter_pair(shape_a1, shape_b0)
         model = builder.finalize(device="cpu")
 
-        solver = SolverCoupledAdmm(
+        solver = SolverCoupledADMM(
             model=model,
             entries=[
                 SolverCoupled.Entry(
@@ -1771,8 +1854,8 @@ class TestAdmmCollisionDetection(unittest.TestCase):
                     bodies=[body_b0, body_b1],
                 ),
             ],
-            coupling=SolverCoupledAdmm.Config(
-                contact_pairs=[SolverCoupledAdmm.ContactPair(source="a", destination="b")],
+            coupling=SolverCoupledADMM.Config(
+                contact_pairs=[SolverCoupledADMM.ContactPair(source="a", destination="b")],
             ),
         )
 
@@ -1783,6 +1866,128 @@ class TestAdmmCollisionDetection(unittest.TestCase):
         self.assertEqual(actual_pairs, expected_pairs)
         self.assertEqual(group.count, 8 * len(expected_pairs))
         self.assertEqual(solver._admm_internal_contacts.rigid_contact_max, 8 * len(expected_pairs))
+
+    def test_rigid_particle_detection_margin_honors_explicit_zero(self):
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.density = 1000.0
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+        builder.add_shape_sphere(body=body, radius=0.1)
+        particle = builder.add_particle(
+            pos=(0.0, 0.0, 0.2),
+            vel=(0.0, 0.0, 0.0),
+            mass=1.0,
+            radius=0.05,
+        )
+        model = builder.finalize(device="cpu")
+
+        solver = SolverCoupledADMM(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="rigid",
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
+                    bodies=[body],
+                ),
+                SolverCoupled.Entry(
+                    name="particle",
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
+                    particles=[particle],
+                ),
+            ],
+            coupling=SolverCoupledADMM.Config(
+                contact_pairs=[
+                    SolverCoupledADMM.ContactPair(
+                        source="rigid",
+                        destination="particle",
+                        detection_margin=0.0,
+                    ),
+                ],
+            ),
+        )
+
+        self.assertEqual(solver._rigid_particle_detection_margin(), 0.0)
+
+    def test_collision_rigid_rigid_contact_matching_can_be_disabled(self):
+        model, plane_body, box_body = _build_collision_inclined_plane_rigid_box_scene(0.0)
+        solver = _make_collision_admm_inclined_plane_rigid_box_solver(model, plane_body, box_body, 0.0, 0.0)
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        solver._refresh_collision_contact_groups(state)
+        group = solver._admm_dynamic_rr_contact_groups[0]
+        count = int(group.active_count.numpy()[0])
+        self.assertGreater(count, 0)
+        self.assertIsNone(solver._admm_internal_contacts.rigid_contact_match_index)
+
+        group.u.fill_(wp.vec3(1.25, 0.0, 0.0))
+        group.lambda_.fill_(wp.vec3(2.5, 0.0, 0.0))
+        solver._refresh_collision_contact_groups(state)
+
+        refreshed_count = int(group.active_count.numpy()[0])
+        self.assertGreater(refreshed_count, 0)
+        np.testing.assert_allclose(group.u.numpy()[:refreshed_count], 0.0, atol=1.0e-6)
+        np.testing.assert_allclose(group.lambda_.numpy()[:refreshed_count], 0.0, atol=1.0e-6)
+
+    def test_collision_rigid_rigid_contacts_warm_start_lambda_by_latest_match(self):
+        model, plane_body, box_body = _build_collision_inclined_plane_rigid_box_scene(0.0)
+        solver = _make_collision_admm_inclined_plane_rigid_box_solver(
+            model, plane_body, box_body, 0.0, 0.0, rigid_contact_matching="latest"
+        )
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        solver._refresh_collision_contact_groups(state)
+        group = solver._admm_dynamic_rr_contact_groups[0]
+        count = int(group.active_count.numpy()[0])
+        self.assertGreater(count, 0)
+        self.assertIsNotNone(solver._admm_internal_contacts.rigid_contact_match_index)
+
+        group.u.fill_(wp.vec3(1.25, 0.0, 0.0))
+        group.lambda_.fill_(wp.vec3(2.5, 0.0, 0.0))
+        solver._refresh_collision_contact_groups(state)
+
+        refreshed_count = int(group.active_count.numpy()[0])
+        self.assertGreater(refreshed_count, 0)
+        match_index = solver._admm_internal_contacts.rigid_contact_match_index.numpy()[:refreshed_count]
+        self.assertTrue(np.all(match_index >= 0), f"expected stable rigid contacts to match, got {match_index}")
+        np.testing.assert_allclose(
+            group.u.numpy()[:refreshed_count],
+            0.0,
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            group.lambda_.numpy()[:refreshed_count],
+            np.tile([2.5, 0.0, 0.0], (refreshed_count, 1)),
+            atol=1.0e-6,
+        )
+
+    def test_collision_rigid_rigid_contacts_accept_sticky_matching(self):
+        model, plane_body, box_body = _build_collision_inclined_plane_rigid_box_scene(0.0)
+        solver = _make_collision_admm_inclined_plane_rigid_box_solver(
+            model, plane_body, box_body, 0.0, 0.0, rigid_contact_matching="sticky"
+        )
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        solver._refresh_collision_contact_groups(state)
+        group = solver._admm_dynamic_rr_contact_groups[0]
+        count = int(group.active_count.numpy()[0])
+        self.assertGreater(count, 0)
+        self.assertEqual(solver._admm_collision_pipeline.contact_matching, "sticky")
+        self.assertIsNotNone(solver._admm_internal_contacts.rigid_contact_match_index)
+
+        group.u.fill_(wp.vec3(1.25, 0.0, 0.0))
+        group.lambda_.fill_(wp.vec3(2.5, 0.0, 0.0))
+        solver._refresh_collision_contact_groups(state)
+
+        refreshed_count = int(group.active_count.numpy()[0])
+        self.assertGreater(refreshed_count, 0)
+        np.testing.assert_allclose(group.u.numpy()[:refreshed_count], 0.0, atol=1.0e-6)
+        np.testing.assert_allclose(
+            group.lambda_.numpy()[:refreshed_count],
+            np.tile([2.5, 0.0, 0.0], (refreshed_count, 1)),
+            atol=1.0e-6,
+        )
 
     def test_rigid_contact_detection_rejects_cross_world_pairs(self):
         builder = newton.ModelBuilder()
@@ -1799,11 +2004,13 @@ class TestAdmmCollisionDetection(unittest.TestCase):
         builder.end_world()
 
         model = builder.finalize(device="cpu")
-        model.shape_contact_pairs = wp.array(np.asarray([(shape_a, shape_b)], dtype=np.int32), dtype=wp.vec2i)
+        model.shape_contact_pairs = wp.array(
+            np.asarray([(shape_a, shape_b)], dtype=np.int32), dtype=wp.vec2i, device=model.device
+        )
         model.shape_contact_pair_count = 1
 
         with self.assertRaisesRegex(ValueError, "same world"):
-            SolverCoupledAdmm(
+            SolverCoupledADMM(
                 model=model,
                 entries=[
                     SolverCoupled.Entry(
@@ -1817,14 +2024,14 @@ class TestAdmmCollisionDetection(unittest.TestCase):
                         bodies=[body_b],
                     ),
                 ],
-                coupling=SolverCoupledAdmm.Config(
-                    contact_pairs=[SolverCoupledAdmm.ContactPair(source="a", destination="b")],
+                coupling=SolverCoupledADMM.Config(
+                    contact_pairs=[SolverCoupledADMM.ContactPair(source="a", destination="b")],
                 ),
             )
 
     def test_collision_particle_particle_contacts_are_refreshed_in_solver(self):
         model = _build_two_particle_contact_scene(gap=-0.08)
-        solver = SolverCoupledAdmm(
+        solver = SolverCoupledADMM(
             model=model,
             entries=[
                 SolverCoupled.Entry(
@@ -1838,12 +2045,12 @@ class TestAdmmCollisionDetection(unittest.TestCase):
                     particles=[1],
                 ),
             ],
-            coupling=SolverCoupledAdmm.Config(
+            coupling=SolverCoupledADMM.Config(
                 iterations=10,
                 rho=30.0,
                 baumgarte=0.5,
                 contact_pairs=[
-                    SolverCoupledAdmm.ContactPair(source="a", destination="b", contact_distance=0.1),
+                    SolverCoupledADMM.ContactPair(source="a", destination="b", contact_distance=0.1),
                 ],
             ),
         )
@@ -1855,7 +2062,7 @@ class TestAdmmCollisionDetection(unittest.TestCase):
 
     def test_collision_particle_particle_contacts_are_persistent(self):
         model = _build_two_particle_contact_scene(gap=-0.08)
-        solver = SolverCoupledAdmm(
+        solver = SolverCoupledADMM(
             model=model,
             entries=[
                 SolverCoupled.Entry(
@@ -1869,9 +2076,9 @@ class TestAdmmCollisionDetection(unittest.TestCase):
                     particles=[1],
                 ),
             ],
-            coupling=SolverCoupledAdmm.Config(
+            coupling=SolverCoupledADMM.Config(
                 contact_pairs=[
-                    SolverCoupledAdmm.ContactPair(source="a", destination="b", contact_distance=0.1),
+                    SolverCoupledADMM.ContactPair(source="a", destination="b", contact_distance=0.1),
                 ],
             ),
         )
@@ -1898,7 +2105,7 @@ class TestAdmmCollisionDetection(unittest.TestCase):
 
     def test_collision_particle_particle_stream_reports_normal_force(self):
         model = _build_two_particle_contact_scene(gap=-0.08)
-        solver = SolverCoupledAdmm(
+        solver = SolverCoupledADMM(
             model=model,
             entries=[
                 SolverCoupled.Entry(
@@ -1912,12 +2119,12 @@ class TestAdmmCollisionDetection(unittest.TestCase):
                     particles=[1],
                 ),
             ],
-            coupling=SolverCoupledAdmm.Config(
+            coupling=SolverCoupledADMM.Config(
                 iterations=4,
                 rho=30.0,
                 baumgarte=0.5,
                 contact_pairs=[
-                    SolverCoupledAdmm.ContactPair(source="a", destination="b", contact_distance=0.1),
+                    SolverCoupledADMM.ContactPair(source="a", destination="b", contact_distance=0.1),
                 ],
             ),
         )
@@ -1993,7 +2200,7 @@ class TestAdmmCollisionDetection(unittest.TestCase):
 
     def test_collision_particle_shape_contacts_are_refreshed_in_solver(self):
         model, particle, tray_body, _ = _build_collision_contact_scene()
-        solver = SolverCoupledAdmm(
+        solver = SolverCoupledADMM(
             model=model,
             entries=[
                 SolverCoupled.Entry(
@@ -2007,13 +2214,13 @@ class TestAdmmCollisionDetection(unittest.TestCase):
                     bodies=[tray_body],
                 ),
             ],
-            coupling=SolverCoupledAdmm.Config(
+            coupling=SolverCoupledADMM.Config(
                 iterations=12,
                 rho=45.0,
                 gamma=0.05,
                 baumgarte=0.1,
                 contact_pairs=[
-                    SolverCoupledAdmm.ContactPair(
+                    SolverCoupledADMM.ContactPair(
                         source="drop",
                         destination="tray",
                         contact_distance=0.04,

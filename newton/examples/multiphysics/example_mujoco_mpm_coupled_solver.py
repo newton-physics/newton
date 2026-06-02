@@ -171,7 +171,7 @@ class Example:
         self.contacts = self.rigid_collision_pipeline.contacts()
         self.control = self.model.control()
 
-        self.viewer.set_model(self.model)
+        newton.examples.configure_coupled_view(self, args)
         if isinstance(self.viewer, newton.viewer.ViewerGL):
             self.viewer.register_ui_callback(self.render_ui, position="side")
         self.viewer.show_particles = True
@@ -194,7 +194,7 @@ class Example:
 
     def simulate(self):
         self.state_0.clear_forces()
-        self.viewer.apply_forces(self.state_0)
+        newton.examples.apply_coupled_viewer_forces(self, self.state_0)
         self.rigid_collision_pipeline.collide(self.state_0, self.contacts)
         self.solver.step(self.state_0, self.state_0, self.control, self.contacts, self.frame_dt)
 
@@ -218,20 +218,21 @@ class Example:
         )
 
     def render(self):
+        render_state = newton.examples.get_coupled_view_state(self)
         self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        newton.examples.log_coupled_view(self, self.contacts)
 
-        self.viewer.log_points(
-            "/sand",
-            points=self.state_0.particle_q,
-            radii=self.model.particle_radius,
-            colors=self.particle_render_colors,
-            hidden=not self.viewer.show_particles,
-        )
+        if render_state.particle_q is not None:
+            self.viewer.log_points(
+                "/sand",
+                points=render_state.particle_q,
+                radii=self.model.particle_radius,
+                colors=self.particle_render_colors,
+                hidden=not self.viewer.show_particles,
+            )
 
-        if self.show_impulses:
-            impulses, pos, _cid = self.mpm_solver.collect_collider_impulses(self.state_0)
+        if self.show_impulses and render_state.particle_q is not None:
+            impulses, pos, _cid = self.mpm_solver.collect_collider_impulses(render_state)
             self.viewer.log_lines(
                 "/impulses",
                 starts=pos,
@@ -312,6 +313,7 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        newton.examples.add_coupled_view_args(parser)
         _add_rigid_solver_arg(parser)
         parser.add_argument(
             "--mass-scale",

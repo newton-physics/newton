@@ -161,7 +161,7 @@ class Example:
         self.contacts = self.model.contacts()
         self.control = self.model.control()
 
-        self.viewer.set_model(self.model)
+        newton.examples.configure_coupled_view(self, args)
         if hasattr(self.viewer, "show_particles"):
             self.viewer.show_particles = True
 
@@ -186,7 +186,7 @@ class Example:
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.viewer.apply_forces(self.state_0)
+            newton.examples.apply_coupled_viewer_forces(self, self.state_0)
             self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -215,16 +215,16 @@ class Example:
         assert mpm_min[2] > -0.25, f"MPM particles penetrated the ground: z_min={mpm_min[2]:.4f}"
 
     def render(self):
+        render_state = newton.examples.get_coupled_view_state(self)
         wp.launch(
             _gather_particles,
             dim=len(self.mpm_particles),
-            inputs=[self.mpm_particle_ids, self.state_0.particle_q, self.mpm_render_points],
+            inputs=[self.mpm_particle_ids, render_state.particle_q, self.mpm_render_points],
             device=self.model.device,
         )
 
         self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        newton.examples.log_coupled_view(self, self.contacts)
         self.viewer.log_points(
             "/mpm",
             points=self.mpm_render_points,
@@ -323,6 +323,7 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        newton.examples.add_coupled_view_args(parser)
         parser.add_argument(
             "--proxy-iterations",
             help="Number of VBD/MPM proxy relaxation passes per substep",

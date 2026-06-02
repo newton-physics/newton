@@ -4,13 +4,13 @@
 from .interface import CouplingInterface
 from .model_view import ModelView
 from .solver_coupled import SolverCoupled
-from .solver_coupled_admm import SolverCoupledAdmm
+from .solver_coupled_admm import SolverCoupledADMM
 from .solver_coupled_proxy import SolverCoupledProxy
 
 __all__ = [
     "CouplingInterface",
     "ModelView",
     "SolverCoupled",
-    "SolverCoupledAdmm",
+    "SolverCoupledADMM",
     "SolverCoupledProxy",
 ]
