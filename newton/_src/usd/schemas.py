@@ -357,11 +357,15 @@ class SchemaResolverMjc(SchemaResolver):
                 attribute_names=("mjc:margin", "mjc:gap"),
             ),
             "gap": SchemaAttribute("mjc:gap", 0.0),
-            # Contact stiffness/damping from per-geom solref
-            "ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
-            "kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
             # Mass model: mjc:shellinertia (bool) → "shell" / "solid"
             "mass_model": SchemaAttribute("mjc:shellinertia", False, lambda v: "shell" if v else "solid"),
+            # mjc:solref also fills shape_material_ke/kd via the legacy lossy
+            # conversion for back-compat with the convert_solref(ke, kd, 1, 1)
+            # round-trip; raw solref is preserved in mujoco.solref. See
+            # docs/integrations/mujoco.rst > "Shape-material contact stiffness
+            # and damping".
+            "ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
+            "kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
         },
         PrimType.MATERIAL: {
             # Materials
@@ -370,6 +374,8 @@ class SchemaResolverMjc(SchemaResolver):
             # Contact models
             "priority": SchemaAttribute("mjc:priority", 0),
             "weight": SchemaAttribute("mjc:solmix", 1.0),
+            # See PrimType.SHAPE above for the mjc:solref → stiffness/damping
+            # back-compat mirror.
             "stiffness": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
             "damping": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
         },

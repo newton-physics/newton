@@ -4213,7 +4213,8 @@ def parse_usd(
     #
     #   USD MjcActuator rows targeting a joint DOF with the position/velocity
     #   shape and default dyntype/gaintype/gear are imported as JOINT_TARGET
-    #   and driven by Control.joint_target_pos / joint_target_vel.
+    #   and driven by Control.joint_target_q / joint_target_qd (or the legacy
+    #   joint_target_pos / joint_target_vel aliases under the DOF layout).
     #
     # Rows that author non-default dyntype (filter, integrator, ...), gaintype,
     # gear, or carry an unresolved dampratio placeholder (positive biasprm[2])
@@ -4266,7 +4267,7 @@ def parse_usd(
             # values for those force the actuator to stay CTRL_DIRECT.
             #
             # Authored ctrlrange/forcerange are not gating: ctrlrange has no
-            # equivalent under Control.joint_target_pos/vel (matching MJCF's
+            # equivalent under Control.joint_target_q/qd (matching MJCF's
             # behavior), and forcerange is propagated below into joint_effort_limit.
             if (
                 int(_row("mujoco:actuator_biastype", row)) != biastype_affine
