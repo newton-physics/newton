@@ -238,6 +238,8 @@ install the most specific set for your use case.
 Next Steps
 ----------
 
-- Run ``python -m newton.examples --list`` to see all available examples and check out the :doc:`visualization` guide to learn how to interact with the example simulations.
+- Run ``python -m newton.examples --list`` to see all available examples,
+  browse the :doc:`examples` guide, and check out the :doc:`visualization`
+  guide to learn how to interact with the example simulations.
 - See the :doc:`compatibility` guide for Newton's supported platforms, versioning scheme, and deprecation policy.
 - Check out the :doc:`development` guide to learn how to contribute to Newton, or how to use alternative installation methods.

@@ -14,7 +14,7 @@ Open the notebooks directly in Colab:
 - :doc:`Introduction </tutorials/00_introduction>` |intro-colab|
 - :doc:`Robotics </tutorials/01_robotics>` |robotics-colab|
 
-You can also explore the examples in the ``newton/examples/`` directory for more use cases.
+For more runnable scenarios, browse the :doc:`examples` guide.
 
 .. toctree::
    :maxdepth: 2
