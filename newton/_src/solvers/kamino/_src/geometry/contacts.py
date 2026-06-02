@@ -739,6 +739,11 @@ class ContactsKamino:
         if model is None and capacity is None:
             raise ValueError("Expected either 'model' or 'capacity' argument to be provided, but got neither")
 
+        # The memory allocation requires the total number of contacts (over multiple worlds)
+        # as well as the contacts capacities for each world. Corresponding sizes are defaulted to 0 (empty).
+        model_max_contacts = 0
+        world_max_contacts = [0]
+
         # If a model is provided, extract the required contacts capacity from that
         if model is not None:
             model_max_contacts: int = 0
@@ -753,11 +758,6 @@ class ContactsKamino:
             self._device = model.device
         else:
             self._device = device
-
-        # The memory allocation requires the total number of contacts (over multiple worlds)
-        # as well as the contacts capacities for each world. Corresponding sizes are defaulted to 0 (empty).
-        model_max_contacts = 0
-        world_max_contacts = [0]
 
         # If the capacity is a list, this means we are allocating for multiple worlds
         if isinstance(capacity, list):
