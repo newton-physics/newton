@@ -109,8 +109,8 @@ For example:
 Example Gallery
 ---------------
 
-The command-line list is the canonical catalog. The galleries below show the
-examples that have preview images in the docs.
+The command-line list shows all available examples. The galleries below show
+the examples that have preview images in the docs.
 
 Basic and Visualization
 ^^^^^^^^^^^^^^^^^^^^^^^
