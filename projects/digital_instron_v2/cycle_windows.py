@@ -63,10 +63,10 @@ def infer_cycle_column(columns: dict[str, np.ndarray]) -> str:
 
     lowered = {name.lower(): name for name in columns}
     priority = (
-        "total cycle count(electropuls",
-        "total cycle count",
         "elapsed cycles",
         "total cycles",
+        "total cycle count(electropuls",
+        "total cycle count",
     )
     for needle in priority:
         for lowered_name, original in lowered.items():

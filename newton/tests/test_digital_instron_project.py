@@ -15,6 +15,10 @@ from projects.digital_instron_v2 import (
     FoundationMaterial,
     FoundationResult,
     FrameQCError,
+    BakedMidsoleGeometry,
+    build_baked_midsole_geometry,
+    evaluate_foundation_baked,
+    fit_foundation_material_baked_batches_autodiff,
     build_raycast_spring_grid,
     condition_midsole_mesh,
     detect_mesh_frame,
@@ -1501,6 +1505,285 @@ class TestDigitalInstronV2Visualization(unittest.TestCase):
             force_heatmap = root / "digital_instron_v2_force_heatmap.png"
             self.assertTrue(force_heatmap.exists(), msg="force heatmap PNG should exist")
             self.assertGreater(force_heatmap.stat().st_size, 0, msg="force heatmap should be non-empty")
+
+
+class TestDigitalInstronV2Baked(unittest.TestCase):
+    """Tests for the baked (spatially-invariant) texture-sampled calibration logic."""
+
+    def test_baked_geometry_construction_and_evaluation(self):
+        # 1. Create a dummy/synthetic BakedMidsoleGeometry
+        thickness_map = np.full((10, 10), 0.03, dtype=np.float64)
+        top_map = np.full((10, 10), 0.015, dtype=np.float64)
+        bottom_map = np.full((10, 10), -0.015, dtype=np.float64)
+        mins_uv = np.array([-0.05, -0.05], dtype=np.float64)
+        maxs_uv = np.array([0.05, 0.05], dtype=np.float64)
+        from projects.digital_instron_v2 import MeshFrame
+        frame = MeshFrame(
+            plane_axes=(0, 1),
+            thickness_axis=2,
+            center_m=np.zeros(3),
+            extents_m=np.array([0.1, 0.1, 0.03])
+        )
+        baked_geo = BakedMidsoleGeometry(
+            thickness_map=thickness_map,
+            top_map=top_map,
+            bottom_map=bottom_map,
+            mins_uv=mins_uv,
+            maxs_uv=maxs_uv,
+            frame=frame
+        )
+
+        xy = np.asarray([[0.0, 0.0]], dtype=np.float64)
+        indenter_map = np.full((10, 10), 0.015, dtype=np.float64)
+        indenter_valid_map = np.full((10, 10), 1.0, dtype=np.float64)
+        material = FoundationMaterial(2.0e6, 2.0, 0.65, 0.0)
+
+        # 2. Evaluate with compression
+        result = evaluate_foundation_baked(
+            xy,
+            baked_geo,
+            indenter_map,
+            indenter_valid_map,
+            cell_area_m2=1.0e-4,
+            material=material,
+            displacement_m=0.005,
+            displacement_velocity_mps=0.0,
+            device="cpu"
+        )
+        self.assertGreater(result.force_n, 0.0)
+        self.assertGreater(result.loss, 0.0)
+
+    def test_baked_batch_fit_reduces_loss(self):
+        # 1. Create a dummy/synthetic BakedMidsoleGeometry
+        thickness_map = np.full((10, 10), 0.03, dtype=np.float64)
+        top_map = np.full((10, 10), 0.015, dtype=np.float64)
+        bottom_map = np.full((10, 10), -0.015, dtype=np.float64)
+        mins_uv = np.array([-0.05, -0.05], dtype=np.float64)
+        maxs_uv = np.array([0.05, 0.05], dtype=np.float64)
+        from projects.digital_instron_v2 import MeshFrame
+        frame = MeshFrame(
+            plane_axes=(0, 1),
+            thickness_axis=2,
+            center_m=np.zeros(3),
+            extents_m=np.array([0.1, 0.1, 0.03])
+        )
+        baked_geo = BakedMidsoleGeometry(
+            thickness_map=thickness_map,
+            top_map=top_map,
+            bottom_map=bottom_map,
+            mins_uv=mins_uv,
+            maxs_uv=maxs_uv,
+            frame=frame
+        )
+
+        xy = np.asarray([[0.0, 0.0]], dtype=np.float64)
+        indenter_map = np.full((10, 10), 0.015, dtype=np.float64)
+        indenter_valid_map = np.full((10, 10), 1.0, dtype=np.float64)
+
+        true_material = FoundationMaterial(
+            stiffness_pa=2.0e6,
+            ogden_alpha=2.0,
+            lock_strain=0.65,
+            damping_pa_s=1.0e4,
+            damping_power=1.0
+        )
+        initial = FoundationMaterial(
+            stiffness_pa=8.0e5,
+            ogden_alpha=2.0,
+            lock_strain=0.65,
+            damping_pa_s=1.0e4,
+            damping_power=1.0
+        )
+
+        # Build a batch
+        displacement = np.asarray([0.002, 0.004, 0.006], dtype=np.float64)
+        velocity = np.zeros(3, dtype=np.float64)
+        dt = np.asarray([0.0, 0.01, 0.01], dtype=np.float64)
+        weights = np.full(3, 1.0 / 3.0, dtype=np.float64)
+
+        from projects.digital_instron_v2.foundation import evaluate_foundation_baked_batch
+
+        dummy_batch_template = FoundationTrialBatch(
+            name="synthetic_baked_batch",
+            current_length_m=None, # Not used in baked path
+            slack_length_m=None,   # Not used in baked path
+            velocity_mps=velocity,
+            measured_force_n=np.zeros(3, dtype=np.float64),
+            sample_weight=weights,
+            cell_area_m2=np.asarray([1.0e-4], dtype=np.float64),
+            time_s=np.array([0.0, 0.01, 0.02], dtype=np.float64),
+            dt_s=dt,
+            displacement_m=displacement,
+            phase=("loading", "loading", "loading")
+        )
+
+        # Generate "measured" force using true material
+        res_true = evaluate_foundation_baked_batch(
+            xy,
+            baked_geo,
+            indenter_map,
+            indenter_valid_map,
+            dummy_batch_template,
+            material=true_material,
+            device="cpu"
+        )
+
+        batch = FoundationTrialBatch(
+            name="synthetic_baked_batch",
+            current_length_m=None,
+            slack_length_m=None,
+            velocity_mps=velocity,
+            measured_force_n=res_true.predicted_force_n,
+            sample_weight=weights,
+            cell_area_m2=np.asarray([1.0e-4], dtype=np.float64),
+            time_s=np.array([0.0, 0.01, 0.02], dtype=np.float64),
+            dt_s=dt,
+            displacement_m=displacement,
+            phase=("loading", "loading", "loading")
+        )
+
+        # Initial loss with initial params
+        res_initial = evaluate_foundation_baked_batch(
+            xy,
+            baked_geo,
+            indenter_map,
+            indenter_valid_map,
+            batch,
+            material=initial,
+            device="cpu"
+        )
+
+        # Fit
+        indenter_maps_by_trial = {batch.name: (indenter_map, indenter_valid_map)}
+        fit_res = fit_foundation_material_baked_batches_autodiff(
+            xy,
+            baked_geo,
+            indenter_maps_by_trial,
+            [batch],
+            initial_material=initial,
+            iterations=5,
+            device="cpu"
+        )
+
+        self.assertLess(fit_res.history[-1]["loss"], res_initial.loss)
+        self.assertGreater(fit_res.material.stiffness_pa, initial.stiffness_pa)
+
+    def test_baked_contact_ignores_legacy_displacement_split(self):
+        thickness_map = np.full((10, 10), 0.03, dtype=np.float64)
+        top_map = np.full((10, 10), 0.015, dtype=np.float64)
+        bottom_map = np.full((10, 10), -0.015, dtype=np.float64)
+        mins_uv = np.array([-0.05, -0.05], dtype=np.float64)
+        maxs_uv = np.array([0.05, 0.05], dtype=np.float64)
+        from projects.digital_instron_v2 import MeshFrame
+
+        frame = MeshFrame(
+            plane_axes=(0, 1),
+            thickness_axis=2,
+            center_m=np.zeros(3),
+            extents_m=np.array([0.1, 0.1, 0.03]),
+        )
+        baked_geo = BakedMidsoleGeometry(
+            thickness_map=thickness_map,
+            top_map=top_map,
+            bottom_map=bottom_map,
+            mins_uv=mins_uv,
+            maxs_uv=maxs_uv,
+            frame=frame,
+        )
+        xy = np.asarray([[0.0, 0.0]], dtype=np.float64)
+        indenter_map = np.full((10, 10), 0.015, dtype=np.float64)
+        indenter_valid_map = np.full((10, 10), 1.0, dtype=np.float64)
+        material = FoundationMaterial(2.0e6, 2.0, 0.65, 0.0)
+
+        result_a = evaluate_foundation_baked(
+            xy,
+            baked_geo,
+            indenter_map,
+            indenter_valid_map,
+            cell_area_m2=1.0e-4,
+            material=material,
+            displacement_m=0.005,
+            displacement_velocity_mps=0.0,
+            top_fraction=0.1,
+            bottom_fraction=0.9,
+            device="cpu",
+        )
+        result_b = evaluate_foundation_baked(
+            xy,
+            baked_geo,
+            indenter_map,
+            indenter_valid_map,
+            cell_area_m2=1.0e-4,
+            material=material,
+            displacement_m=0.005,
+            displacement_velocity_mps=0.0,
+            top_fraction=0.9,
+            bottom_fraction=0.1,
+            device="cpu",
+        )
+
+        self.assertAlmostEqual(result_a.force_n, result_b.force_n, places=7)
+
+    def test_baked_fit_locks_out_pasternak_parameter(self):
+        thickness_map = np.full((10, 10), 0.03, dtype=np.float64)
+        top_map = np.full((10, 10), 0.015, dtype=np.float64)
+        bottom_map = np.full((10, 10), -0.015, dtype=np.float64)
+        mins_uv = np.array([-0.05, -0.05], dtype=np.float64)
+        maxs_uv = np.array([0.05, 0.05], dtype=np.float64)
+        from projects.digital_instron_v2 import MeshFrame
+
+        frame = MeshFrame(
+            plane_axes=(0, 1),
+            thickness_axis=2,
+            center_m=np.zeros(3),
+            extents_m=np.array([0.1, 0.1, 0.03]),
+        )
+        baked_geo = BakedMidsoleGeometry(
+            thickness_map=thickness_map,
+            top_map=top_map,
+            bottom_map=bottom_map,
+            mins_uv=mins_uv,
+            maxs_uv=maxs_uv,
+            frame=frame,
+        )
+        xy = np.asarray([[0.0, 0.0]], dtype=np.float64)
+        indenter_map = np.full((10, 10), 0.015, dtype=np.float64)
+        indenter_valid_map = np.full((10, 10), 1.0, dtype=np.float64)
+        batch = FoundationTrialBatch(
+            name="synthetic_baked_batch",
+            current_length_m=None,
+            slack_length_m=None,
+            velocity_mps=np.zeros(2, dtype=np.float64),
+            measured_force_n=np.asarray([1.0, 2.0], dtype=np.float64),
+            sample_weight=np.full(2, 0.5, dtype=np.float64),
+            cell_area_m2=np.asarray([1.0e-4], dtype=np.float64),
+            time_s=np.array([0.0, 0.01], dtype=np.float64),
+            dt_s=np.array([0.01, 0.01], dtype=np.float64),
+            displacement_m=np.asarray([0.002, 0.004], dtype=np.float64),
+            phase=("loading", "loading"),
+        )
+        initial = FoundationMaterial(
+            stiffness_pa=8.0e5,
+            ogden_alpha=2.0,
+            lock_strain=0.65,
+            damping_pa_s=1.0e4,
+            damping_power=1.0,
+            pasternak_stiffness_n_per_m=5.0e5,
+        )
+
+        fit_res = fit_foundation_material_baked_batches_autodiff(
+            xy,
+            baked_geo,
+            {batch.name: (indenter_map, indenter_valid_map)},
+            [batch],
+            initial_material=initial,
+            iterations=1,
+            device="cpu",
+        )
+
+        self.assertEqual(fit_res.material.pasternak_stiffness_n_per_m, 0.0)
+        self.assertEqual(fit_res.history[-1]["pasternak_stiffness_n_per_m"], 0.0)
+        self.assertEqual(fit_res.history[-1]["grad_pasternak_stiffness_n_per_m"], 0.0)
 
 
 if __name__ == "__main__":

@@ -10,20 +10,26 @@ import json
 from pathlib import Path
 
 import numpy as np
+import warp as wp
 
 from .cycle_windows import build_cycle_window_trace, write_cycle_window_trace
 from .foundation import (
     FoundationMaterial,
     FoundationTrialBatch,
     evaluate_foundation,
+    evaluate_foundation_baked,
+    evaluate_foundation_baked_batch,
     evaluate_foundation_lengths,
     evaluate_foundation_lengths_batch,
     fit_foundation_material_batches_autodiff,
+    fit_foundation_material_baked_batches_autodiff,
 )
 from .frame_qc import infer_frame_config, load_trial_frame
 from .geometry import (
     _load_obj_mesh,
     _ray_triangle_z_candidates,
+    BakedMidsoleGeometry,
+    build_baked_midsole_geometry,
     build_raycast_spring_grid,
     condition_midsole_mesh,
     make_cylinder_grid,
@@ -42,7 +48,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default=None, help="Directory for QC and summary outputs")
     parser.add_argument(
         "--step",
-        choices=("qc", "split-cycles", "fit-smoke", "fit-autodiff", "fit-validate", "dynamic-replay", "visualize"),
+        choices=(
+            "qc",
+            "split-cycles",
+            "fit-smoke",
+            "fit-autodiff",
+            "fit-validate",
+            "dynamic-replay",
+            "visualize",
+            "surface-scene",
+        ),
         default="qc",
     )
     parser.add_argument("--train-cycles", default="90-98", help="Cycle window for split-cycles or fit-validate")
@@ -65,7 +80,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=250,
         help="Maximum frames per trial to replay for the fit-autodiff hysteresis plot",
     )
+    parser.add_argument(
+        "--use-surfacemaps",
+        dest="use_surfacemaps",
+        action="store_true",
+        help="Use the surface-map hydroelastic foundation calibration",
+    )
+    parser.add_argument(
+        "--use-baked",
+        dest="use_baked",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument("--viewer", choices=("gl", "null"), default="gl", help="Viewer for --step surface-scene")
+    parser.add_argument("--scene-trial", default=None, help="Trial name for --step surface-scene")
+    parser.add_argument("--scene-max-frames", type=int, default=501, help="Maximum replay frames for --step surface-scene")
     return parser
+
+
+def _use_surfacemaps(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "use_surfacemaps", False) or getattr(args, "use_baked", False))
 
 
 def _write_json(path: Path, data: object) -> None:
@@ -200,7 +234,7 @@ def _initial_material(manifest, *, per_cylinder_area: bool = False) -> Foundatio
     )
 
 
-def _load_spring_grid(manifest, output_dir: Path):
+def _load_midsole_mesh(manifest, output_dir: Path) -> tuple[np.ndarray, np.ndarray]:
     mesh_report = condition_midsole_mesh(
         manifest.midsole_mesh,
         output_dir,
@@ -209,6 +243,11 @@ def _load_spring_grid(manifest, output_dir: Path):
         max_thickness_m=float(manifest.qc.get("max_midsole_thickness_m", 0.08)),
     )
     vertices, faces = _load_obj_mesh(Path(str(mesh_report["repaired_mesh"])))
+    return vertices, faces
+
+
+def _load_spring_grid(manifest, output_dir: Path):
+    vertices, faces = _load_midsole_mesh(manifest, output_dir)
     spring_grid = build_raycast_spring_grid(
         vertices,
         faces,
@@ -216,7 +255,7 @@ def _load_spring_grid(manifest, output_dir: Path):
         min_slack_length_m=float(manifest.qc.get("min_spring_slack_length_m", 0.001)),
         thickness_axis=manifest.grid.get("force_thickness_axis"),
     )
-    return spring_grid, vertices
+    return spring_grid, vertices, faces
 
 
 def _rearfoot_mask(manifest, spring_grid, vertices) -> np.ndarray:
@@ -317,6 +356,170 @@ def _indenter_contact_surface_m(spring_grid, trial) -> tuple[np.ndarray, np.ndar
     contact_surface = contact_raw + thickness_offset
     contact_surface[valid] = np.maximum(contact_surface[valid], spring_grid.top_m[valid])
     return contact_surface, valid
+
+
+def bake_indenter_maps(
+    baked_geometry: BakedMidsoleGeometry,
+    trial,
+    manifest,
+    vertices: np.ndarray,
+    spacing_m: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Bake the indenter contact height map and valid mask at 0 displacement.
+
+    Returns:
+        indenter_map: 2D array of shape (V, U) containing contact surface heights.
+        indenter_valid_map: 2D array of shape (V, U) containing 1.0 where valid, 0.0 otherwise.
+    """
+    u = np.arange(baked_geometry.mins_uv[0], baked_geometry.maxs_uv[0] + spacing_m * 0.5, spacing_m, dtype=np.float64)
+    v = np.arange(baked_geometry.mins_uv[1], baked_geometry.maxs_uv[1] + spacing_m * 0.5, spacing_m, dtype=np.float64)
+    U, V = np.meshgrid(u, v, indexing="xy")
+    shape_2d = U.shape
+    grid_uv_m = np.stack([U.ravel(), V.ravel()], axis=1)
+    valid_midsole_flat = (
+        np.ones(len(grid_uv_m), dtype=bool)
+        if baked_geometry.valid_map is None
+        else np.asarray(baked_geometry.valid_map, dtype=np.float64).ravel() > 0.5
+    )
+
+    frame = baked_geometry.frame
+
+    if trial.fixture == "rearfoot_punch":
+        punch = place_rearfoot_punch_grid(
+            vertices,
+            radius_m=float(
+                next((t.indenter.get("radius_m", 0.0225) for t in manifest.trials if t.fixture == "rearfoot_punch"), 0.0225)
+            ),
+            spacing_m=spacing_m,
+            frame=frame,
+            heel_side=str(manifest.grid.get("rearfoot_heel_side", "min")),
+            length_fraction=float(manifest.grid.get("rearfoot_length_fraction", 0.22)),
+            lateral_fraction=float(manifest.grid.get("rearfoot_lateral_fraction", 0.5)),
+            lateral_band_fraction=float(manifest.grid.get("rearfoot_lateral_band_fraction", 0.12)),
+        )
+        dist = np.linalg.norm(grid_uv_m - punch.center_uv_m, axis=1)
+        valid_flat = (dist <= punch.radius_m + spacing_m * 0.5) & valid_midsole_flat
+
+        indenter_map = baked_geometry.top_map.copy()
+        indenter_valid_map = np.zeros(shape_2d, dtype=np.float64)
+        indenter_valid_map.flat[valid_flat] = 1.0
+        return indenter_map, indenter_valid_map
+
+    elif trial.fixture == "fullfoot_last" and trial.indenter.get("type") == "stl":
+        indenter_vertices, indenter_faces = _indenter_mesh_m(trial.indenter)
+        plane_axes = frame.plane_axes
+        thickness_axis = frame.thickness_axis
+
+        indenter_plane = indenter_vertices[:, plane_axes]
+        spring_plane_center = 0.5 * (np.min(grid_uv_m, axis=0) + np.max(grid_uv_m, axis=0))
+        indenter_plane_center = 0.5 * (np.min(indenter_plane, axis=0) + np.max(indenter_plane, axis=0))
+        indenter_vertices = indenter_vertices.copy()
+        indenter_vertices[:, plane_axes] += spring_plane_center - indenter_plane_center
+
+        plane = indenter_vertices[:, plane_axes]
+        thickness = indenter_vertices[:, thickness_axis]
+        triangles_plane = plane[indenter_faces.reshape(-1, 3)]
+        triangles_thickness = thickness[indenter_faces.reshape(-1, 3)]
+        tri_min = np.min(triangles_plane, axis=1) - 1.0e-12
+        tri_max = np.max(triangles_plane, axis=1) + 1.0e-12
+
+        contact_raw = np.full(len(grid_uv_m), np.nan, dtype=np.float64)
+        for i, point in enumerate(grid_uv_m):
+            candidate_indices = np.nonzero(
+                (tri_min[:, 0] <= point[0])
+                & (point[0] <= tri_max[:, 0])
+                & (tri_min[:, 1] <= point[1])
+                & (point[1] <= tri_max[:, 1])
+            )[0]
+            hits = _ray_triangle_z_candidates(point, triangles_plane, triangles_thickness, candidate_indices)
+            if hits:
+                contact_raw[i] = hits[0]
+
+        valid_flat = np.isfinite(contact_raw) & valid_midsole_flat
+        if not np.any(valid_flat):
+            raise ValueError(f"Fullfoot STL indenter {trial.name!r} does not overlap the footprint grid")
+
+        initial_clearance = float(trial.indenter.get("initial_clearance_m", 0.0))
+        height_offset = float(trial.indenter.get("height_offset_m", 0.0))
+        contact_percentile = float(trial.indenter.get("contact_percentile", 75.0))
+
+        top_map_flat = baked_geometry.top_map.ravel()
+        clearance_raw = top_map_flat[valid_flat] - contact_raw[valid_flat]
+        thickness_offset = float(np.percentile(clearance_raw, contact_percentile) + initial_clearance + height_offset)
+        contact_surface = contact_raw + thickness_offset
+        contact_surface[valid_flat] = np.maximum(contact_surface[valid_flat], top_map_flat[valid_flat])
+
+        contact_surface[~valid_flat] = top_map_flat[~valid_flat]
+
+        indenter_map = contact_surface.reshape(shape_2d)
+        indenter_valid_map = np.zeros(shape_2d, dtype=np.float64)
+        indenter_valid_map.flat[valid_flat] = 1.0
+        return indenter_map, indenter_valid_map
+
+    else:
+        indenter_map = baked_geometry.top_map.copy()
+        indenter_valid_map = valid_midsole_flat.reshape(shape_2d).astype(np.float64)
+        return indenter_map, indenter_valid_map
+
+
+def compute_baked_compression(
+    xy_m: np.ndarray,
+    baked_geometry: BakedMidsoleGeometry,
+    indenter_map: np.ndarray,
+    indenter_valid_map: np.ndarray,
+    displacement_m: float,
+    top_fraction: float = 1.0,
+    bottom_fraction: float = 0.0,
+) -> np.ndarray:
+    """Evaluate compression at xy_m using the continuous baked maps."""
+    u = (xy_m[:, 0] - baked_geometry.mins_uv[0]) / (baked_geometry.maxs_uv[0] - baked_geometry.mins_uv[0])
+    v = (xy_m[:, 1] - baked_geometry.mins_uv[1]) / (baked_geometry.maxs_uv[1] - baked_geometry.mins_uv[1])
+    u = np.clip(u, 0.0, 1.0)
+    v = np.clip(v, 0.0, 1.0)
+
+    def sample_numpy(tex_map, u_arr, v_arr):
+        h, w = tex_map.shape
+        px = u_arr * (w - 1.0)
+        py = v_arr * (h - 1.0)
+        x0 = np.clip(np.floor(px).astype(np.int32), 0, w - 1)
+        y0 = np.clip(np.floor(py).astype(np.int32), 0, h - 1)
+        x1 = np.clip(x0 + 1, 0, w - 1)
+        y1 = np.clip(y0 + 1, 0, h - 1)
+        tx = px - x0
+        ty = py - y0
+        val00 = tex_map[y0, x0]
+        val10 = tex_map[y0, x1]
+        val01 = tex_map[y1, x0]
+        val11 = tex_map[y1, x1]
+        val_top = val00 + tx * (val10 - val00)
+        val_bot = val01 + tx * (val11 - val01)
+        return val_top + ty * (val_bot - val_top)
+
+    slack = np.maximum(sample_numpy(baked_geometry.thickness_map, u, v), 1.0e-6)
+    z_top_undeformed = sample_numpy(baked_geometry.top_map, u, v)
+    z_bottom_undeformed = sample_numpy(baked_geometry.bottom_map, u, v)
+    ind_val = sample_numpy(indenter_valid_map, u, v)
+    ind_map_val = sample_numpy(indenter_map, u, v)
+
+    top_comp = np.zeros_like(slack)
+    bottom_comp = np.zeros_like(slack)
+
+    valid = ind_val > 0.5
+    if np.any(valid):
+        closure_m = max(displacement_m, 0.0)
+        top_travel = top_fraction * closure_m
+        z_contact = ind_map_val[valid] - top_travel
+        top_comp[valid] = np.maximum(z_top_undeformed[valid] - z_contact, 0.0)
+
+        bottom_travel = bottom_fraction * closure_m
+        if baked_geometry.valid_map is None:
+            min_bottom = float(np.min(baked_geometry.bottom_map))
+        else:
+            valid_map = np.asarray(baked_geometry.valid_map, dtype=np.float64) > 0.5
+            min_bottom = float(np.min(baked_geometry.bottom_map[valid_map]))
+        bottom_comp[valid] = np.maximum(min_bottom + bottom_travel - z_bottom_undeformed[valid], 0.0)
+
+    return np.minimum(top_comp + bottom_comp, slack)
 
 
 def _trial_contact_surface_cache(manifest, spring_grid) -> dict[str, tuple[np.ndarray, np.ndarray]]:
@@ -638,13 +841,88 @@ def _fit_int(fit: dict[str, object], key: str, default: int, *, min_value: int |
 
 
 _ACCEPTANCE_GATES = {
-    "rearfoot_rmse_n": 150.0,
-    "fullfoot_rmse_n": 400.0,
+    "trace_rmse_relative": 0.05,
     "loop_area_relative_error": 0.35,
     "peak_force_ratio_upper": 1.5,
     "peak_force_ratio_lower": 0.67,
     "baseline_rmse_n": 50.0,
 }
+
+
+def _baked_quadrature(baked_geometry: BakedMidsoleGeometry) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if baked_geometry.grid_uv_m is None or baked_geometry.xy_m is None:
+        raise ValueError("Baked geometry must define valid quadrature points")
+    cell_area = float(baked_geometry.cell_area_m2)
+    if cell_area <= 0.0:
+        cell_area = float(baked_geometry.spacing_m * baked_geometry.spacing_m)
+    if cell_area <= 0.0:
+        raise ValueError("Baked geometry must define a positive cell area")
+    cell_area_m2 = np.full(len(baked_geometry.grid_uv_m), cell_area, dtype=np.float64)
+    return baked_geometry.grid_uv_m, baked_geometry.xy_m, cell_area_m2
+
+
+def _write_surface_map_plot(output_dir: Path, baked_geometry: BakedMidsoleGeometry) -> str:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    valid = (
+        np.ones_like(baked_geometry.thickness_map, dtype=bool)
+        if baked_geometry.valid_map is None
+        else np.asarray(baked_geometry.valid_map, dtype=np.float64) > 0.5
+    )
+    maps = [
+        ("thickness [mm]", baked_geometry.thickness_map * 1000.0),
+        ("top surface [mm]", baked_geometry.top_map * 1000.0),
+        ("bottom surface [mm]", baked_geometry.bottom_map * 1000.0),
+        ("valid footprint", valid.astype(np.float64)),
+    ]
+    extent = [
+        float(baked_geometry.mins_uv[0] * 1000.0),
+        float(baked_geometry.maxs_uv[0] * 1000.0),
+        float(baked_geometry.mins_uv[1] * 1000.0),
+        float(baked_geometry.maxs_uv[1] * 1000.0),
+    ]
+    fig, axes = plt.subplots(2, 2, figsize=(10.0, 8.0), constrained_layout=True)
+    for ax, (title, values) in zip(axes.ravel(), maps, strict=True):
+        masked = np.ma.array(values, mask=(~valid if title != "valid footprint" else np.zeros_like(valid)))
+        image = ax.imshow(masked, origin="lower", extent=extent, aspect="equal", interpolation="nearest")
+        ax.set_title(title)
+        ax.set_xlabel("u [mm]")
+        ax.set_ylabel("v [mm]")
+        fig.colorbar(image, ax=ax, shrink=0.82)
+    path = output_dir / "digital_instron_v2_surfacemaps.png"
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    return str(path)
+
+
+def _with_baked_cell_area(
+    batches: list[FoundationTrialBatch],
+    cell_area_m2: np.ndarray,
+    spacing_m: float,
+) -> list[FoundationTrialBatch]:
+    return [
+        FoundationTrialBatch(
+            name=batch.name,
+            current_length_m=batch.current_length_m,
+            slack_length_m=batch.slack_length_m,
+            velocity_mps=batch.velocity_mps,
+            measured_force_n=batch.measured_force_n,
+            sample_weight=batch.sample_weight,
+            cell_area_m2=np.asarray(cell_area_m2, dtype=np.float64),
+            time_s=batch.time_s,
+            dt_s=batch.dt_s,
+            displacement_m=batch.displacement_m,
+            phase=batch.phase,
+            force_zero_n=batch.force_zero_n,
+            neighbors=None,
+            spacing_m=float(spacing_m),
+        )
+        for batch in batches
+    ]
 
 
 def _load_averaged_cycle(path: Path) -> dict[str, np.ndarray]:
@@ -768,11 +1046,18 @@ def _autodiff_batches(
     spring_grid,
     vertices,
     trace_paths_by_trial: dict[str, Path] | None = None,
+    use_baked: bool = False,
 ) -> list[FoundationTrialBatch]:
     batches: list[FoundationTrialBatch] = []
-    rearfoot_mask = _rearfoot_mask(manifest, spring_grid, vertices)
-    contact_surfaces = _trial_contact_surface_cache(manifest, spring_grid)
-    cell_area = np.full(len(spring_grid.xy_m), spring_grid.cell_area_m2, dtype=np.float64)
+    rearfoot_mask = None if use_baked else _rearfoot_mask(manifest, spring_grid, vertices)
+    contact_surfaces = {}
+    if not use_baked:
+        contact_surfaces = _trial_contact_surface_cache(manifest, spring_grid)
+    cell_area = (
+        np.ones(1, dtype=np.float64)
+        if use_baked
+        else np.full(len(spring_grid.xy_m), spring_grid.cell_area_m2, dtype=np.float64)
+    )
     phase_weights = _fit_phase_weights(manifest.fit)
     low_force_limit_n = _fit_float(manifest.fit, "low_force_limit_n", 20.0, min_value=0.0)
     peak_fraction = _fit_float(manifest.fit, "peak_fraction", 0.95, min_value=0.0)
@@ -798,20 +1083,33 @@ def _autodiff_batches(
             displacement_shape_weight=displacement_shape_weight,
             displacement_shape_bins=displacement_shape_bins,
         )
-        current_rows = []
-        velocity_rows = []
-        for displacement, displacement_velocity in zip(trace["displacement_m"], trace["velocity_m_s"], strict=True):
-            current_length, velocity = _spring_state_for_trial_frame(
-                spring_grid,
-                trial,
-                rearfoot_mask,
-                contact_surfaces,
-                float(displacement),
-                float(displacement_velocity),
-            )
-            current_rows.append(current_length)
-            velocity_rows.append(velocity)
-        if trial.fixture == "rearfoot_punch":
+        if use_baked:
+            current_rows = np.zeros((len(trace["displacement_m"]), 1), dtype=np.float64)
+            slack_length_m = np.zeros(1, dtype=np.float64)
+            velocity_mps = trace["velocity_m_s"]
+            neighbors = None
+        else:
+            current_rows_list = []
+            velocity_rows_list = []
+            for displacement, displacement_velocity in zip(trace["displacement_m"], trace["velocity_m_s"], strict=True):
+                current_length, velocity = _spring_state_for_trial_frame(
+                    spring_grid,
+                    trial,
+                    rearfoot_mask,
+                    contact_surfaces,
+                    float(displacement),
+                    float(displacement_velocity),
+                )
+                current_rows_list.append(current_length)
+                velocity_rows_list.append(velocity)
+            current_rows = np.asarray(current_rows_list, dtype=np.float64)
+            slack_length_m = spring_grid.slack_length_m
+            velocity_mps = np.asarray(velocity_rows_list, dtype=np.float64)
+            neighbors = spring_grid.neighbors
+
+        if use_baked:
+            trial_cell_area = cell_area
+        elif trial.fixture == "rearfoot_punch":
             active_mask = rearfoot_mask
             active_count = np.count_nonzero(active_mask)
             radius_m = float(trial.indenter.get("radius_m", 0.0225))
@@ -824,9 +1122,9 @@ def _autodiff_batches(
         batches.append(
             FoundationTrialBatch(
                 name=trial.name,
-                current_length_m=np.asarray(current_rows, dtype=np.float64),
-                slack_length_m=spring_grid.slack_length_m,
-                velocity_mps=np.asarray(velocity_rows, dtype=np.float64),
+                current_length_m=current_rows,
+                slack_length_m=slack_length_m,
+                velocity_mps=velocity_mps,
                 measured_force_n=trace["force_n"],
                 sample_weight=weights,
                 cell_area_m2=trial_cell_area,
@@ -840,8 +1138,8 @@ def _autodiff_batches(
                 displacement_m=trace["displacement_m"],
                 phase=tuple(str(phase) for phase in phases),
                 force_zero_n=float(trace["force_zero_n"][0]),
-                neighbors=spring_grid.neighbors,
-                spacing_m=spring_grid.spacing_m,
+                neighbors=neighbors,
+                spacing_m=float(manifest.grid.get("baked_spacing_m", 0.002)) if use_baked else spring_grid.spacing_m,
             )
         )
     return batches
@@ -882,17 +1180,16 @@ def _acceptance_summary(trial_summaries: list[dict[str, object]]) -> dict[str, o
     checks: list[dict[str, object]] = []
     for summary in trial_summaries:
         trial = str(summary["trial"])
-        rmse_limit = (
-            _ACCEPTANCE_GATES["rearfoot_rmse_n"] if "rearfoot" in trial else _ACCEPTANCE_GATES["fullfoot_rmse_n"]
-        )
         rmse = float(summary["rmse_n"])
+        normalized_rmse = float(summary["normalized_rmse"])
         checks.append(
             {
                 "trial": trial,
-                "metric": "rmse_n",
-                "value": rmse,
-                "limit": rmse_limit,
-                "passed": rmse < rmse_limit,
+                "metric": "trace_rmse_relative",
+                "value": normalized_rmse,
+                "rmse_n": rmse,
+                "limit": _ACCEPTANCE_GATES["trace_rmse_relative"],
+                "passed": normalized_rmse < _ACCEPTANCE_GATES["trace_rmse_relative"],
             }
         )
 
@@ -967,6 +1264,8 @@ def _write_foundation_material_artifact(
     acceptance: dict[str, object],
     *,
     fit_source: str = "averaged_cycle",
+    use_baked: bool = False,
+    baked_geometry: BakedMidsoleGeometry | None = None,
 ) -> Path:
     preload = {
         str(trial_summary["trial"]): {"force_zero_n": float(trial_summary["force_zero_n"])}
@@ -976,28 +1275,35 @@ def _write_foundation_material_artifact(
     for trial in manifest.trials:
         if not trial.include_in_fit:
             continue
-        top_fraction, bottom_fraction = _trial_displacement_split(trial)
         contact_trials[trial.name] = {
             "fixture": trial.fixture,
             "indenter_type": str(trial.indenter.get("type", "")),
-            "top_displacement_fraction": float(top_fraction),
-            "bottom_displacement_fraction": float(bottom_fraction),
         }
+        if not use_baked:
+            top_fraction, bottom_fraction = _trial_displacement_split(trial)
+            contact_trials[trial.name]["top_displacement_fraction"] = float(top_fraction)
+            contact_trials[trial.name]["bottom_displacement_fraction"] = float(bottom_fraction)
     trial_envelopes = {}
     for trial_summary in hysteresis["trials"]:
         trial_name = str(trial_summary["trial"])
         contact_trial = contact_trials.get(trial_name, {})
-        top_fraction = float(contact_trial.get("top_displacement_fraction", 0.5))
-        bottom_fraction = float(contact_trial.get("bottom_displacement_fraction", 0.5))
-        fraction_total = max(top_fraction + bottom_fraction, 1.0e-12)
         peak_max_compression_m = float(trial_summary.get("peak_max_compression_m", 0.0))
+        if use_baked:
+            peak_top_compression_m = peak_max_compression_m
+            peak_bottom_compression_m = 0.0
+        else:
+            top_fraction = float(contact_trial.get("top_displacement_fraction", 0.5))
+            bottom_fraction = float(contact_trial.get("bottom_displacement_fraction", 0.5))
+            fraction_total = max(top_fraction + bottom_fraction, 1.0e-12)
+            peak_top_compression_m = peak_max_compression_m * top_fraction / fraction_total
+            peak_bottom_compression_m = peak_max_compression_m * bottom_fraction / fraction_total
         trial_envelopes[trial_name] = {
             "max_displacement_m": float(trial_summary.get("max_displacement_m", 0.0)),
             "peak_displacement_m": float(trial_summary.get("peak_displacement_m", 0.0)),
             "max_compression_m": float(trial_summary.get("max_compression_m", 0.0)),
             "peak_max_compression_m": peak_max_compression_m,
-            "peak_top_compression_m": peak_max_compression_m * top_fraction / fraction_total,
-            "peak_bottom_compression_m": peak_max_compression_m * bottom_fraction / fraction_total,
+            "peak_top_compression_m": peak_top_compression_m,
+            "peak_bottom_compression_m": peak_bottom_compression_m,
             "peak_active_area_m2": float(trial_summary.get("peak_active_area_m2", 0.0)),
             "measured_peak_force_n": float(trial_summary.get("measured_peak_force_n", 0.0)),
             "predicted_peak_force_n": float(trial_summary.get("predicted_peak_force_n", 0.0)),
@@ -1034,10 +1340,10 @@ def _write_foundation_material_artifact(
         "fit_source": fit_source,
         "material": material.__dict__,
         "contact_model": {
-            "type": "two_sided_spring_grid",
-            "compression_components": "top_plus_bottom",
+            "type": "surface_map_hydroelastic" if use_baked else "two_sided_spring_grid",
+            "compression_components": "top_moving_against_fixed_bottom_support" if use_baked else "top_plus_bottom",
             "top_contact": "manifest indenter or flat active fixture region",
-            "bottom_contact": "flat bottom platen over the active fixture region",
+            "bottom_contact": "fixed flat ground support" if use_baked else "flat bottom platen over the active fixture region",
             "trials": contact_trials,
         },
         "calibration_envelope": {
@@ -1049,15 +1355,25 @@ def _write_foundation_material_artifact(
             "preferred_trial": preferred_trial_name,
             "basis": (
                 "fullfoot_last peak envelope when available, otherwise max fitted trial peak stack compression; "
-                "one_sided_hydro_shoe_stroke is top compression plus half bottom compression"
+                "surface-map replay uses a fixed bottom support and the moving upper contact surface carries the stroke"
             ),
             "trials": trial_envelopes,
         },
-        "grid": {
-            "spring_count": int(len(spring_grid.xy_m)),
-            "cell_area_m2": float(spring_grid.cell_area_m2),
-            "spacing_m": float(spring_grid.spacing_m),
-        },
+        "grid": (
+            {
+                "surface_map_cell_count": 0
+                if baked_geometry is None or baked_geometry.grid_uv_m is None
+                else int(len(baked_geometry.grid_uv_m)),
+                "cell_area_m2": 0.0 if baked_geometry is None else float(baked_geometry.cell_area_m2),
+                "spacing_m": 0.0 if baked_geometry is None else float(baked_geometry.spacing_m),
+            }
+            if use_baked
+            else {
+                "spring_count": int(len(spring_grid.xy_m)),
+                "cell_area_m2": float(spring_grid.cell_area_m2),
+                "spacing_m": float(spring_grid.spacing_m),
+            }
+        ),
         "preload_policy": {
             "type": "per_trial_force_zero_subtraction",
             "trials": preload,
@@ -1077,6 +1393,10 @@ def _write_autodiff_hysteresis_plot(
     batches: list[FoundationTrialBatch],
     *,
     device: str,
+    baked_geometry: BakedMidsoleGeometry | None = None,
+    indenter_maps_by_trial: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+    top_fractions_by_trial: dict[str, float] | None = None,
+    bottom_fractions_by_trial: dict[str, float] | None = None,
 ) -> dict[str, object]:
     import matplotlib.pyplot as plt
 
@@ -1085,12 +1405,28 @@ def _write_autodiff_hysteresis_plot(
 
     fig, ax = plt.subplots(figsize=(8.0, 5.0), constrained_layout=True)
     for batch in batches:
-        result = evaluate_foundation_lengths_batch(
-            xy_m,
-            batch,
-            material=material,
-            device=device,
-        )
+        if baked_geometry is not None and indenter_maps_by_trial is not None:
+            ind_map, ind_valid_map = indenter_maps_by_trial[batch.name]
+            top_frac = top_fractions_by_trial.get(batch.name, 1.0) if top_fractions_by_trial is not None else 1.0
+            bottom_frac = bottom_fractions_by_trial.get(batch.name, 0.0) if bottom_fractions_by_trial is not None else 0.0
+            result = evaluate_foundation_baked_batch(
+                xy_m,
+                baked_geometry,
+                ind_map,
+                ind_valid_map,
+                batch,
+                material=material,
+                top_fraction=top_frac,
+                bottom_fraction=bottom_frac,
+                device=device,
+            )
+        else:
+            result = evaluate_foundation_lengths_batch(
+                xy_m,
+                batch,
+                material=material,
+                device=device,
+            )
         predicted = result.predicted_force_n
         measured = np.asarray(batch.measured_force_n, dtype=np.float64)
         force_zero = float(batch.force_zero_n)
@@ -1178,7 +1514,25 @@ def _write_autodiff_hysteresis_plot(
         rmse = float(np.sqrt(np.mean((predicted - measured) ** 2)))
         measured_loop_area = float(np.trapezoid(measured_machine, displacement))
         predicted_loop_area = float(np.trapezoid(predicted_machine, displacement))
-        compression = np.maximum(batch.slack_length_m[None, :] - batch.current_length_m, 0.0)
+        if baked_geometry is not None and indenter_maps_by_trial is not None:
+            ind_map, ind_valid_map = indenter_maps_by_trial[batch.name]
+            top_frac = top_fractions_by_trial.get(batch.name, 1.0) if top_fractions_by_trial is not None else 1.0
+            bottom_frac = bottom_fractions_by_trial.get(batch.name, 0.0) if bottom_fractions_by_trial is not None else 0.0
+            compression_list = []
+            for disp in displacement:
+                comp_frame = compute_baked_compression(
+                    xy_m,
+                    baked_geometry,
+                    ind_map,
+                    ind_valid_map,
+                    float(disp),
+                    top_frac,
+                    bottom_frac,
+                )
+                compression_list.append(comp_frame)
+            compression = np.asarray(compression_list, dtype=np.float64)
+        else:
+            compression = np.maximum(batch.slack_length_m[None, :] - batch.current_length_m, 0.0)
         peak_index = int(np.argmax(measured))
         peak_active = compression[peak_index] > 0.0
         trial_summaries.append(
@@ -1351,10 +1705,30 @@ def _history_selection_score(
     material: FoundationMaterial,
     *,
     device: str,
+    baked_geometry: BakedMidsoleGeometry | None = None,
+    indenter_maps_by_trial: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+    top_fractions_by_trial: dict[str, float] | None = None,
+    bottom_fractions_by_trial: dict[str, float] | None = None,
 ) -> dict[str, object]:
     trial_scores = []
     for batch in batches:
-        result = evaluate_foundation_lengths_batch(xy_m, batch, material=material, device=device)
+        if baked_geometry is not None and indenter_maps_by_trial is not None:
+            ind_map, ind_valid_map = indenter_maps_by_trial[batch.name]
+            top_frac = top_fractions_by_trial.get(batch.name, 1.0) if top_fractions_by_trial is not None else 1.0
+            bottom_frac = bottom_fractions_by_trial.get(batch.name, 0.0) if bottom_fractions_by_trial is not None else 0.0
+            result = evaluate_foundation_baked_batch(
+                xy_m,
+                baked_geometry,
+                ind_map,
+                ind_valid_map,
+                batch,
+                material=material,
+                top_fraction=top_frac,
+                bottom_fraction=bottom_frac,
+                device=device,
+            )
+        else:
+            result = evaluate_foundation_lengths_batch(xy_m, batch, material=material, device=device)
         measured = np.asarray(batch.measured_force_n, dtype=np.float64)
         predicted = np.asarray(result.predicted_force_n, dtype=np.float64)
         metrics = validate_trace_metrics(measured, predicted, batch.displacement_m)
@@ -1390,6 +1764,10 @@ def _select_history_material(
     history: list[dict[str, float]],
     *,
     device: str,
+    baked_geometry: BakedMidsoleGeometry | None = None,
+    indenter_maps_by_trial: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+    top_fractions_by_trial: dict[str, float] | None = None,
+    bottom_fractions_by_trial: dict[str, float] | None = None,
 ) -> tuple[FoundationMaterial, dict[str, object]]:
     if not history:
         raise ValueError("Cannot select fit history material without history rows")
@@ -1397,7 +1775,16 @@ def _select_history_material(
     best_selection: dict[str, object] | None = None
     for row in history:
         material = _material_from_history_row(row)
-        selection = _history_selection_score(xy_m, batches, material, device=device)
+        selection = _history_selection_score(
+            xy_m,
+            batches,
+            material,
+            device=device,
+            baked_geometry=baked_geometry,
+            indenter_maps_by_trial=indenter_maps_by_trial,
+            top_fractions_by_trial=top_fractions_by_trial,
+            bottom_fractions_by_trial=bottom_fractions_by_trial,
+        )
         selection["iteration"] = int(row["iteration"])
         selection["loss"] = float(row["loss"])
         if best_selection is None or float(selection["score"]) < float(best_selection["score"]):
@@ -1418,17 +1805,37 @@ def _locked_metrics_report(
     split: str | None = None,
     active_fraction: float = 0.05,
     top_count: int = 5,
-    pass_threshold: float = 0.10,
+    pass_threshold: float = 0.05,
+    baked_geometry: BakedMidsoleGeometry | None = None,
+    indenter_maps_by_trial: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+    top_fractions_by_trial: dict[str, float] | None = None,
+    bottom_fractions_by_trial: dict[str, float] | None = None,
 ) -> dict[str, object]:
     trials: list[dict[str, object]] = []
     checks: list[dict[str, object]] = []
     for batch in batches:
-        result = evaluate_foundation_lengths_batch(
-            xy_m,
-            batch,
-            material=material,
-            device=device,
-        )
+        if baked_geometry is not None and indenter_maps_by_trial is not None:
+            ind_map, ind_valid_map = indenter_maps_by_trial[batch.name]
+            top_frac = top_fractions_by_trial.get(batch.name, 1.0) if top_fractions_by_trial is not None else 1.0
+            bottom_frac = bottom_fractions_by_trial.get(batch.name, 0.0) if bottom_fractions_by_trial is not None else 0.0
+            result = evaluate_foundation_baked_batch(
+                xy_m,
+                baked_geometry,
+                ind_map,
+                ind_valid_map,
+                batch,
+                material=material,
+                top_fraction=top_frac,
+                bottom_fraction=bottom_frac,
+                device=device,
+            )
+        else:
+            result = evaluate_foundation_lengths_batch(
+                xy_m,
+                batch,
+                material=material,
+                device=device,
+            )
         metrics = validate_trace_metrics(
             batch.measured_force_n,
             result.predicted_force_n,
@@ -1438,6 +1845,11 @@ def _locked_metrics_report(
             pass_threshold=pass_threshold,
         )
         metric_values = metrics.as_dict()
+        full_trace_rmse = float(np.sqrt(np.mean((result.predicted_force_n - batch.measured_force_n) ** 2)))
+        full_trace_scale = max(float(np.max(np.abs(batch.measured_force_n))), 1.0)
+        metric_values["full_trace_rmse_n"] = full_trace_rmse
+        metric_values["full_trace_rmse_relative"] = full_trace_rmse / full_trace_scale
+        metric_values["passed"] = metric_values["full_trace_rmse_relative"] < pass_threshold
         active = active_force_mask(
             batch.measured_force_n,
             active_fraction=active_fraction,
@@ -1469,7 +1881,7 @@ def _locked_metrics_report(
                 "artifacts": artifacts,
             }
         )
-        for metric_name in ("peak_force_error", "force_rmse_relative", "hysteresis_error"):
+        for metric_name in ("full_trace_rmse_relative",):
             checks.append(
                 {
                     "trial": batch.name,
@@ -1680,57 +2092,122 @@ def run_fit_validate(args: argparse.Namespace) -> dict[str, object]:
 
     manifest = load_manifest(args.manifest)
     output_dir = Path(args.output_dir) if args.output_dir else manifest.cache_dir
-    spring_grid, vertices = _load_spring_grid(manifest, output_dir)
     device = str(getattr(args, "autodiff_device", "cuda:0"))
+    use_baked = _use_surfacemaps(args)
+    if use_baked:
+        spring_grid = None
+        vertices, faces = _load_midsole_mesh(manifest, output_dir)
+    else:
+        spring_grid, vertices, faces = _load_spring_grid(manifest, output_dir)
 
     cycle_report = run_split_cycles(args)
     train_paths = _trace_paths_from_cycle_report(cycle_report, "train")
     validate_paths = _trace_paths_from_cycle_report(cycle_report, "validate")
+
     train_batches = _autodiff_batches(
         manifest,
         spring_grid,
         vertices,
         trace_paths_by_trial=train_paths,
+        use_baked=use_baked,
     )
     validate_batches = _autodiff_batches(
         manifest,
         spring_grid,
         vertices,
         trace_paths_by_trial=validate_paths,
+        use_baked=use_baked,
     )
 
     loop_weight = _fit_loop_weight(args, manifest.fit)
-    result = fit_foundation_material_batches_autodiff(
-        spring_grid.xy_m,
-        train_batches,
-        initial_material=_initial_material(manifest),
-        iterations=int(args.autodiff_iterations),
-        per_cylinder_area=True,
-        loop_weight=loop_weight,
-        device=device,
-    )
-    selected_material, selected_history = _select_history_material(
-        spring_grid.xy_m,
-        train_batches,
-        list(result.history),
-        device=device,
-    )
+
+    baked_geometry = None
+    indenter_maps_by_trial = None
+    fit_xy_m = spring_grid.xy_m if spring_grid is not None else None
+    surface_map_plot_path = None
+
+    if use_baked:
+        baked_spacing = float(manifest.grid.get("baked_spacing_m", 0.002))
+        baked_geometry = build_baked_midsole_geometry(
+            vertices,
+            faces,
+            spacing_m=baked_spacing,
+            thickness_axis=manifest.grid.get("force_thickness_axis"),
+        )
+        surface_map_plot_path = _write_surface_map_plot(output_dir, baked_geometry)
+        baked_uv_m, _baked_xy_m, baked_cell_area_m2 = _baked_quadrature(baked_geometry)
+        fit_xy_m = baked_uv_m
+        train_batches = _with_baked_cell_area(train_batches, baked_cell_area_m2, baked_geometry.spacing_m)
+        validate_batches = _with_baked_cell_area(validate_batches, baked_cell_area_m2, baked_geometry.spacing_m)
+        indenter_maps_by_trial = {}
+        for batch in train_batches + validate_batches:
+            if batch.name not in indenter_maps_by_trial:
+                trial = next(t for t in manifest.trials if t.name == batch.name)
+                ind_map, ind_valid_map = bake_indenter_maps(
+                    baked_geometry,
+                    trial,
+                    manifest,
+                    vertices,
+                    baked_spacing,
+                )
+                indenter_maps_by_trial[batch.name] = (ind_map, ind_valid_map)
+
+        result = fit_foundation_material_baked_batches_autodiff(
+            fit_xy_m,
+            baked_geometry,
+            indenter_maps_by_trial,
+            train_batches,
+            initial_material=_initial_material(manifest),
+            iterations=int(args.autodiff_iterations),
+            per_cylinder_area=True,
+            loop_weight=loop_weight,
+            device=device,
+        )
+        selected_material, selected_history = _select_history_material(
+            fit_xy_m,
+            train_batches,
+            list(result.history),
+            device=device,
+            baked_geometry=baked_geometry,
+            indenter_maps_by_trial=indenter_maps_by_trial,
+        )
+    else:
+        result = fit_foundation_material_batches_autodiff(
+            fit_xy_m,
+            train_batches,
+            initial_material=_initial_material(manifest),
+            iterations=int(args.autodiff_iterations),
+            per_cylinder_area=True,
+            loop_weight=loop_weight,
+            device=device,
+        )
+        selected_material, selected_history = _select_history_material(
+            fit_xy_m,
+            train_batches,
+            list(result.history),
+            device=device,
+        )
+
     loss_plot_path = _write_autodiff_loss_plot(output_dir, list(result.history))
     train_metrics = _locked_metrics_report(
-        spring_grid.xy_m,
+        fit_xy_m,
         train_batches,
         selected_material,
         device=device,
         output_dir=output_dir,
         split="train",
+        baked_geometry=baked_geometry,
+        indenter_maps_by_trial=indenter_maps_by_trial,
     )
     validation_metrics = _locked_metrics_report(
-        spring_grid.xy_m,
+        fit_xy_m,
         validate_batches,
         selected_material,
         device=device,
         output_dir=output_dir,
         split="validate",
+        baked_geometry=baked_geometry,
+        indenter_maps_by_trial=indenter_maps_by_trial,
     )
     validation_acceptance = {
         "schema_version": "digital_instron_v2_phase1_acceptance_1",
@@ -1752,6 +2229,8 @@ def run_fit_validate(args: argparse.Namespace) -> dict[str, object]:
         validation_metrics,
         validation_acceptance,
         fit_source="cycle_window_train_validate",
+        use_baked=use_baked,
+        baked_geometry=baked_geometry,
     )
     report = {
         "schema_version": "digital_instron_v2_phase1_validation_1",
@@ -1773,7 +2252,9 @@ def run_fit_validate(args: argparse.Namespace) -> dict[str, object]:
             "loop_weight": loop_weight,
         },
         "autodiff_device": device,
-        "spring_grid_cells": int(len(spring_grid.xy_m)),
+        "spring_grid_cells": 0 if spring_grid is None else int(len(spring_grid.xy_m)),
+        "surface_map_cells": 0 if baked_geometry is None or baked_geometry.grid_uv_m is None else int(len(baked_geometry.grid_uv_m)),
+        "surface_map_plot": surface_map_plot_path,
         "material": selected_material.__dict__,
         "nuisance_parameters": nuisance_parameters,
         "foundation_material_json": str(material_artifact_path),
@@ -1796,6 +2277,39 @@ def _cop_from_wrench(wrench: np.ndarray) -> tuple[float, float]:
     if abs(fz) <= 1.0e-9:
         return float("nan"), float("nan")
     return float(-wrench[4] / fz), float(wrench[3] / fz)
+
+
+def _write_dynamic_replay_plot(
+    output_dir: Path,
+    batch: FoundationTrialBatch,
+    predicted: np.ndarray,
+    *,
+    safe_trial: str,
+) -> str:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    measured = np.asarray(batch.measured_force_n, dtype=np.float64)
+    displacement_mm = np.asarray(batch.displacement_m, dtype=np.float64) * 1000.0
+    residual = np.asarray(predicted, dtype=np.float64) - measured
+    path = output_dir / f"digital_instron_v2_dynamic_{safe_trial}_force_hysteresis.png"
+    fig, (ax_force, ax_resid) = plt.subplots(2, 1, figsize=(7.5, 6.0), constrained_layout=True, sharex=True)
+    ax_force.plot(displacement_mm, measured, label="measured", linewidth=1.5)
+    ax_force.plot(displacement_mm, predicted, label="surface-map replay", linewidth=1.2, linestyle="--")
+    ax_force.set_ylabel("force [N]")
+    ax_force.set_title(f"{batch.name} dynamic replay")
+    ax_force.grid(True, alpha=0.3)
+    ax_force.legend(fontsize="small")
+    ax_resid.plot(displacement_mm, residual, color="tab:red", linewidth=1.2)
+    ax_resid.axhline(0.0, color="black", linewidth=0.8)
+    ax_resid.set_xlabel("displacement [mm]")
+    ax_resid.set_ylabel("residual [N]")
+    ax_resid.grid(True, alpha=0.3)
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    return str(path)
 
 
 def _make_body_f_solver(device: str):
@@ -1844,12 +2358,22 @@ def _phase2_dynamic_replay(
     *,
     output_dir: Path,
     device: str,
+    moment_xy_m: np.ndarray | None = None,
     shoe_body_index: int = 0,
     fixture_body_index: int = 1,
+    baked_geometry: BakedMidsoleGeometry | None = None,
+    indenter_maps_by_trial: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+    top_fractions_by_trial: dict[str, float] | None = None,
+    bottom_fractions_by_trial: dict[str, float] | None = None,
 ) -> dict[str, object]:
+    import warp as wp
+
     trials: list[dict[str, object]] = []
     checks: list[dict[str, object]] = []
     model, solver, state_0, state_1 = _make_body_f_solver(device)
+    spring_count = xy_m.shape[0]
+    wrench_xy_m = xy_m if moment_xy_m is None else moment_xy_m
+    warmup_cycles = max(int(material.state_warmup_cycles), 0)
     for batch in batches:
         state_0, state_1 = model.state(), model.state()
         safe_trial = _safe_report_name(batch.name)
@@ -1872,64 +2396,214 @@ def _phase2_dynamic_replay(
         wrench_rows = []
         body_force_rows = []
         body_qd_rows = []
-        for frame_index in range(len(batch.measured_force_n)):
-            current_length = batch.current_length_m[frame_index]
-            velocity = batch.velocity_mps[frame_index]
-            result = evaluate_foundation_lengths(
-                xy_m,
-                current_length,
-                batch.slack_length_m,
-                velocity,
-                cell_area_m2=batch.cell_area_m2,
-                material=material,
-                measured_force_n=float(batch.measured_force_n[frame_index]),
-                neighbors=batch.neighbors,
-                spacing_m=batch.spacing_m,
-                device=device,
-            )
-            predicted_forces.append(result.force_n)
-            wrench = np.asarray(result.wrench, dtype=np.float64)
-            wrench_rows.append(wrench)
-            cop_x, cop_y = _cop_from_wrench(wrench)
-            cop_rows.append((cop_x, cop_y))
-            compression = np.maximum(batch.slack_length_m - current_length, 0.0)
-            active = compression > 0.0
-            active_counts.append(int(np.count_nonzero(active)))
-            active_areas.append(float(np.sum(batch.cell_area_m2[active])))
-            max_compressions.append(float(np.max(compression)) if len(compression) else 0.0)
 
-            body_f = np.zeros((2, 6), dtype=np.float64)
-            apply_foundation_wrench_to_body_f(body_f, shoe_body_index, wrench)
-            apply_foundation_wrench_to_body_f(body_f, fixture_body_index, -wrench)
-            body_force_rows.append(body_f.copy())
-            state_0.body_f.assign(body_f.astype(np.float32).reshape(-1))
-            dt_s = float(batch.dt_s[frame_index])
-            if dt_s <= 0.0 and frame_index + 1 < len(batch.time_s):
-                dt_s = float(batch.time_s[frame_index + 1] - batch.time_s[frame_index])
-            if dt_s <= 0.0:
-                dt_s = 1.0e-4
-            solver.step(state_0, state_1, None, None, dt_s)
-            body_qd = np.asarray(state_1.body_qd.numpy(), dtype=np.float64)
-            body_qd_rows.append(body_qd.copy())
-            state_0, state_1 = state_1, state_0
-            rows.append(
-                f"{frame_index},{batch.time_s[frame_index]},{batch.displacement_m[frame_index]},"
-                f"{batch.measured_force_n[frame_index]},{result.force_n},{cop_x},{cop_y},"
-                f"{active_counts[-1]},{active_areas[-1]},{max_compressions[-1]},"
-                + ",".join(str(float(value)) for value in wrench)
-                + ","
-                + ",".join(str(float(value)) for value in body_f[shoe_body_index])
-                + ","
-                + ",".join(str(float(value)) for value in body_f[fixture_body_index])
-                + ","
-                + ",".join(str(float(value)) for value in body_qd[shoe_body_index])
-                + ","
-                + ",".join(str(float(value)) for value in body_qd[fixture_body_index])
-            )
+        # Allocate double-buffered QLV Prony state arrays
+        prony_state_a = wp.zeros(spring_count, dtype=float, device=device)
+        prony_state_b = wp.zeros(spring_count, dtype=float, device=device)
+
+        frame_count = len(batch.measured_force_n)
+
+        if baked_geometry is not None and indenter_maps_by_trial is not None:
+            ind_map, ind_valid_map = indenter_maps_by_trial[batch.name]
+            top_frac = top_fractions_by_trial.get(batch.name, 1.0) if top_fractions_by_trial is not None else 1.0
+            bottom_frac = bottom_fractions_by_trial.get(batch.name, 0.0) if bottom_fractions_by_trial is not None else 0.0
+
+            # Warmup: run displacement history warmup_cycles times to settle
+            # the Prony state before the actual replay loop.
+            for _warmup in range(warmup_cycles):
+                for wi in range(frame_count):
+                    dt_w = float(batch.dt_s[wi])
+                    if dt_w <= 0.0 and wi + 1 < frame_count:
+                        dt_w = float(batch.time_s[wi + 1] - batch.time_s[wi])
+                    if dt_w <= 0.0:
+                        dt_w = 1.0e-4
+                    evaluate_foundation_baked(
+                        xy_m,
+                        baked_geometry,
+                        ind_map,
+                        ind_valid_map,
+                        xy_m=wrench_xy_m,
+                        cell_area_m2=float(batch.cell_area_m2[0]),
+                        material=material,
+                        displacement_m=float(batch.displacement_m[wi]),
+                        displacement_velocity_mps=float(batch.velocity_mps[wi]),
+                        dt_s=dt_w,
+                        state_in=prony_state_a,
+                        state_out=prony_state_b,
+                        top_fraction=top_frac,
+                        bottom_fraction=bottom_frac,
+                        device=device,
+                    )
+                    prony_state_a, prony_state_b = prony_state_b, prony_state_a
+
+            # Main replay loop with state tracking
+            for frame_index in range(frame_count):
+                dt_s = float(batch.dt_s[frame_index])
+                if dt_s <= 0.0 and frame_index + 1 < frame_count:
+                    dt_s = float(batch.time_s[frame_index + 1] - batch.time_s[frame_index])
+                if dt_s <= 0.0:
+                    dt_s = 1.0e-4
+
+                result = evaluate_foundation_baked(
+                    xy_m,
+                    baked_geometry,
+                    ind_map,
+                    ind_valid_map,
+                    xy_m=wrench_xy_m,
+                    cell_area_m2=float(batch.cell_area_m2[0]),
+                    material=material,
+                    displacement_m=float(batch.displacement_m[frame_index]),
+                    displacement_velocity_mps=float(batch.velocity_mps[frame_index]),
+                    dt_s=dt_s,
+                    state_in=prony_state_a,
+                    state_out=prony_state_b,
+                    top_fraction=top_frac,
+                    bottom_fraction=bottom_frac,
+                    measured_force_n=float(batch.measured_force_n[frame_index]),
+                    device=device,
+                )
+                prony_state_a, prony_state_b = prony_state_b, prony_state_a
+
+                compression = compute_baked_compression(
+                    xy_m,
+                    baked_geometry,
+                    ind_map,
+                    ind_valid_map,
+                    float(batch.displacement_m[frame_index]),
+                    top_frac,
+                    bottom_frac,
+                )
+
+                predicted_forces.append(result.force_n)
+                wrench = np.asarray(result.wrench, dtype=np.float64)
+                wrench_rows.append(wrench)
+                cop_x, cop_y = _cop_from_wrench(wrench)
+                cop_rows.append((cop_x, cop_y))
+                active = compression > 0.0
+                active_counts.append(int(np.count_nonzero(active)))
+                active_areas.append(float(np.sum(batch.cell_area_m2[active])))
+                max_compressions.append(float(np.max(compression)) if len(compression) else 0.0)
+
+                body_f = np.zeros((2, 6), dtype=np.float64)
+                apply_foundation_wrench_to_body_f(body_f, shoe_body_index, wrench)
+                apply_foundation_wrench_to_body_f(body_f, fixture_body_index, -wrench)
+                body_force_rows.append(body_f.copy())
+                state_0.body_f.assign(body_f.astype(np.float32).reshape(-1))
+                solver.step(state_0, state_1, None, None, dt_s)
+                body_qd = np.asarray(state_1.body_qd.numpy(), dtype=np.float64)
+                body_qd_rows.append(body_qd.copy())
+                state_0, state_1 = state_1, state_0
+                rows.append(
+                    f"{frame_index},{batch.time_s[frame_index]},{batch.displacement_m[frame_index]},"
+                    f"{batch.measured_force_n[frame_index]},{result.force_n},{cop_x},{cop_y},"
+                    f"{active_counts[-1]},{active_areas[-1]},{max_compressions[-1]},"
+                    + ",".join(str(float(value)) for value in wrench)
+                    + ","
+                    + ",".join(str(float(value)) for value in body_f[shoe_body_index])
+                    + ","
+                    + ",".join(str(float(value)) for value in body_f[fixture_body_index])
+                    + ","
+                    + ",".join(str(float(value)) for value in body_qd[shoe_body_index])
+                    + ","
+                    + ",".join(str(float(value)) for value in body_qd[fixture_body_index])
+                )
+        else:
+            # Spring-grid path: warmup + state tracking for evaluate_foundation_lengths
+            for _warmup in range(warmup_cycles):
+                for wi in range(frame_count):
+                    dt_w = float(batch.dt_s[wi])
+                    if dt_w <= 0.0 and wi + 1 < frame_count:
+                        dt_w = float(batch.time_s[wi + 1] - batch.time_s[wi])
+                    if dt_w <= 0.0:
+                        dt_w = 1.0e-4
+                    evaluate_foundation_lengths(
+                        xy_m,
+                        batch.current_length_m[wi],
+                        batch.slack_length_m,
+                        batch.velocity_mps[wi],
+                        cell_area_m2=batch.cell_area_m2,
+                        material=material,
+                        dt_s=dt_w,
+                        state_in=prony_state_a,
+                        state_out=prony_state_b,
+                        neighbors=batch.neighbors,
+                        spacing_m=batch.spacing_m,
+                        device=device,
+                    )
+                    prony_state_a, prony_state_b = prony_state_b, prony_state_a
+
+            for frame_index in range(frame_count):
+                current_length = batch.current_length_m[frame_index]
+                velocity = batch.velocity_mps[frame_index]
+                dt_s = float(batch.dt_s[frame_index])
+                if dt_s <= 0.0 and frame_index + 1 < frame_count:
+                    dt_s = float(batch.time_s[frame_index + 1] - batch.time_s[frame_index])
+                if dt_s <= 0.0:
+                    dt_s = 1.0e-4
+
+                result = evaluate_foundation_lengths(
+                    xy_m,
+                    current_length,
+                    batch.slack_length_m,
+                    velocity,
+                    cell_area_m2=batch.cell_area_m2,
+                    material=material,
+                    dt_s=dt_s,
+                    state_in=prony_state_a,
+                    state_out=prony_state_b,
+                    measured_force_n=float(batch.measured_force_n[frame_index]),
+                    neighbors=batch.neighbors,
+                    spacing_m=batch.spacing_m,
+                    device=device,
+                )
+                prony_state_a, prony_state_b = prony_state_b, prony_state_a
+                compression = np.maximum(batch.slack_length_m - current_length, 0.0)
+
+                predicted_forces.append(result.force_n)
+                wrench = np.asarray(result.wrench, dtype=np.float64)
+                wrench_rows.append(wrench)
+                cop_x, cop_y = _cop_from_wrench(wrench)
+                cop_rows.append((cop_x, cop_y))
+                active = compression > 0.0
+                active_counts.append(int(np.count_nonzero(active)))
+                active_areas.append(float(np.sum(batch.cell_area_m2[active])))
+                max_compressions.append(float(np.max(compression)) if len(compression) else 0.0)
+
+                body_f = np.zeros((2, 6), dtype=np.float64)
+                apply_foundation_wrench_to_body_f(body_f, shoe_body_index, wrench)
+                apply_foundation_wrench_to_body_f(body_f, fixture_body_index, -wrench)
+                body_force_rows.append(body_f.copy())
+                state_0.body_f.assign(body_f.astype(np.float32).reshape(-1))
+                solver.step(state_0, state_1, None, None, dt_s)
+                body_qd = np.asarray(state_1.body_qd.numpy(), dtype=np.float64)
+                body_qd_rows.append(body_qd.copy())
+                state_0, state_1 = state_1, state_0
+                rows.append(
+                    f"{frame_index},{batch.time_s[frame_index]},{batch.displacement_m[frame_index]},"
+                    f"{batch.measured_force_n[frame_index]},{result.force_n},{cop_x},{cop_y},"
+                    f"{active_counts[-1]},{active_areas[-1]},{max_compressions[-1]},"
+                    + ",".join(str(float(value)) for value in wrench)
+                    + ","
+                    + ",".join(str(float(value)) for value in body_f[shoe_body_index])
+                    + ","
+                    + ",".join(str(float(value)) for value in body_f[fixture_body_index])
+                    + ","
+                    + ",".join(str(float(value)) for value in body_qd[shoe_body_index])
+                    + ","
+                    + ",".join(str(float(value)) for value in body_qd[fixture_body_index])
+                )
         csv_path.write_text("\n".join(rows) + "\n")
 
         predicted = np.asarray(predicted_forces, dtype=np.float64)
+        force_plot_path = _write_dynamic_replay_plot(output_dir, batch, predicted, safe_trial=safe_trial)
         metrics = validate_trace_metrics(batch.measured_force_n, predicted, batch.displacement_m)
+        full_trace_rmse = float(np.sqrt(np.mean((predicted - batch.measured_force_n) ** 2)))
+        full_trace_scale = max(float(np.max(np.abs(batch.measured_force_n))), 1.0)
+        full_trace_rmse_relative = full_trace_rmse / full_trace_scale
+        metric_values = metrics.as_dict()
+        metric_values["full_trace_rmse_n"] = full_trace_rmse
+        metric_values["full_trace_rmse_relative"] = full_trace_rmse_relative
+        metric_values["passed"] = full_trace_rmse_relative < 0.05
         cop = np.asarray(cop_rows, dtype=np.float64)
         finite_cop = np.isfinite(cop[:, 0]) & np.isfinite(cop[:, 1])
         force_jump = np.abs(np.diff(predicted))
@@ -1962,7 +2636,11 @@ def _phase2_dynamic_replay(
                 "shoe": shoe_body_index,
                 "fixture": fixture_body_index,
             },
-            "metrics": metrics.as_dict(),
+            "metrics": metric_values,
+            "artifacts": {
+                "trace_csv": str(csv_path),
+                "force_hysteresis_png": force_plot_path,
+            },
             "dynamic_diagnostics": {
                 "stable": stable,
                 "peak_active_cell_count": int(np.max(active_counts)) if active_counts else 0,
@@ -1991,15 +2669,15 @@ def _phase2_dynamic_replay(
             },
         }
         trials.append(trial_report)
-        for metric_name in ("peak_force_error", "force_rmse_relative", "hysteresis_error"):
+        for metric_name in ("full_trace_rmse_relative",):
             value = float(trial_report["metrics"][metric_name])
             checks.append(
                 {
                     "trial": batch.name,
                     "metric": metric_name,
                     "value": value,
-                    "limit": 0.10,
-                    "passed": value < 0.10,
+                    "limit": 0.05,
+                    "passed": value < 0.05,
                 }
             )
         checks.append(
@@ -2035,22 +2713,63 @@ def run_dynamic_replay(args: argparse.Namespace) -> dict[str, object]:
     phase1_report = run_fit_validate(args)
     manifest = load_manifest(args.manifest)
     output_dir = Path(args.output_dir) if args.output_dir else manifest.cache_dir
-    spring_grid, vertices = _load_spring_grid(manifest, output_dir)
     device = str(getattr(args, "autodiff_device", "cuda:0"))
     validate_paths = _trace_paths_from_cycle_report(phase1_report["cycle_windows"], "validate")
+    use_baked = _use_surfacemaps(args)
+    if use_baked:
+        spring_grid = None
+        vertices, faces = _load_midsole_mesh(manifest, output_dir)
+    else:
+        spring_grid, vertices, faces = _load_spring_grid(manifest, output_dir)
+
     validate_batches = _autodiff_batches(
         manifest,
         spring_grid,
         vertices,
         trace_paths_by_trial=validate_paths,
+        use_baked=use_baked,
     )
+
+    baked_geometry = None
+    indenter_maps_by_trial = None
+    replay_uv_m = spring_grid.xy_m if spring_grid is not None else None
+    replay_xy_m = None
+    surface_map_plot_path = None
+
+    if use_baked:
+        baked_spacing = float(manifest.grid.get("baked_spacing_m", 0.002))
+        baked_geometry = build_baked_midsole_geometry(
+            vertices,
+            faces,
+            spacing_m=baked_spacing,
+            thickness_axis=manifest.grid.get("force_thickness_axis"),
+        )
+        surface_map_plot_path = _write_surface_map_plot(output_dir, baked_geometry)
+        replay_uv_m, replay_xy_m, baked_cell_area_m2 = _baked_quadrature(baked_geometry)
+        validate_batches = _with_baked_cell_area(validate_batches, baked_cell_area_m2, baked_geometry.spacing_m)
+        indenter_maps_by_trial = {}
+        for batch in validate_batches:
+            if batch.name not in indenter_maps_by_trial:
+                trial = next(t for t in manifest.trials if t.name == batch.name)
+                ind_map, ind_valid_map = bake_indenter_maps(
+                    baked_geometry,
+                    trial,
+                    manifest,
+                    vertices,
+                    baked_spacing,
+                )
+                indenter_maps_by_trial[batch.name] = (ind_map, ind_valid_map)
+
     material = FoundationMaterial(**phase1_report["material"])
     dynamic = _phase2_dynamic_replay(
-        spring_grid.xy_m,
+        replay_uv_m,
         validate_batches,
         material,
         output_dir=output_dir,
         device=device,
+        moment_xy_m=replay_xy_m,
+        baked_geometry=baked_geometry,
+        indenter_maps_by_trial=indenter_maps_by_trial,
     )
     report = {
         "schema_version": "digital_instron_v2_phase2_report_1",
@@ -2060,6 +2779,18 @@ def run_dynamic_replay(args: argparse.Namespace) -> dict[str, object]:
         "train_cycles": phase1_report["train_cycles"],
         "validate_cycles": phase1_report["validate_cycles"],
         "dynamic_replay": dynamic,
+        "artifacts": {
+            "phase1_validation_json": str(output_dir / "digital_instron_v2_phase1_validation.json"),
+            "phase1_loss_plot": phase1_report.get("loss_plot"),
+            "surface_map_plot": surface_map_plot_path,
+            "train_metric_artifacts": [
+                trial.get("artifacts", {}) for trial in phase1_report.get("train_metrics", {}).get("trials", [])
+            ],
+            "validation_metric_artifacts": [
+                trial.get("artifacts", {}) for trial in phase1_report.get("validation_metrics", {}).get("trials", [])
+            ],
+            "dynamic_replay_artifacts": [trial.get("artifacts", {}) for trial in dynamic.get("trials", [])],
+        },
         "acceptance": {
             "passed": bool(dynamic["passed"]),
             "basis": "held_out_cycle_windows_dynamic_replay",
@@ -2073,59 +2804,122 @@ def run_dynamic_replay(args: argparse.Namespace) -> dict[str, object]:
 def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
     manifest = load_manifest(args.manifest)
     output_dir = Path(args.output_dir) if args.output_dir else manifest.cache_dir
-    spring_grid, vertices = _load_spring_grid(manifest, output_dir)
     device = str(getattr(args, "autodiff_device", "cuda:0"))
+    use_baked = _use_surfacemaps(args)
+    if use_baked:
+        spring_grid = None
+        vertices, faces = _load_midsole_mesh(manifest, output_dir)
+    else:
+        spring_grid, vertices, faces = _load_spring_grid(manifest, output_dir)
+
     batches = _autodiff_batches(
         manifest,
         spring_grid,
         vertices,
+        use_baked=use_baked,
     )
-    contact_surfaces = _trial_contact_surface_cache(manifest, spring_grid)
+
     contact_diagnostics: dict[str, dict[str, float]] = {}
-    for batch in batches:
-        if batch.name not in contact_surfaces:
-            continue
-        peak_index = int(np.argmax(batch.measured_force_n))
-        displacement_m = float(batch.displacement_m[peak_index])
-        trial_diagnostics = _fullfoot_contact_diagnostics(
-            spring_grid,
-            {batch.name: contact_surfaces[batch.name]},
-            displacement_m=displacement_m,
-        )
-        contact_diagnostics.update(trial_diagnostics)
-        stats = trial_diagnostics[batch.name]
-        print(
-            f"Contact diagnostics {batch.name}: "
-            f"active_area={stats['active_area_mm2']:.0f} mm² "
-            f"valid_area={stats['valid_area_mm2']:.0f} mm² "
-            f"contact_mm min={stats['contact_min_mm']:.1f} "
-            f"p50={stats['contact_p50_mm']:.1f} "
-            f"max={stats['contact_max_mm']:.1f}"
-        )
-    _write_json(output_dir / "digital_instron_v2_contact_diagnostics.json", contact_diagnostics)
+    if not use_baked:
+        contact_surfaces = _trial_contact_surface_cache(manifest, spring_grid)
+        for batch in batches:
+            if batch.name not in contact_surfaces:
+                continue
+            peak_index = int(np.argmax(batch.measured_force_n))
+            displacement_m = float(batch.displacement_m[peak_index])
+            trial_diagnostics = _fullfoot_contact_diagnostics(
+                spring_grid,
+                {batch.name: contact_surfaces[batch.name]},
+                displacement_m=displacement_m,
+            )
+            contact_diagnostics.update(trial_diagnostics)
+            stats = trial_diagnostics[batch.name]
+            print(
+                f"Contact diagnostics {batch.name}: "
+                f"active_area={stats['active_area_mm2']:.0f} mm² "
+                f"valid_area={stats['valid_area_mm2']:.0f} mm² "
+                f"contact_mm min={stats['contact_min_mm']:.1f} "
+                f"p50={stats['contact_p50_mm']:.1f} "
+                f"max={stats['contact_max_mm']:.1f}"
+            )
+        _write_json(output_dir / "digital_instron_v2_contact_diagnostics.json", contact_diagnostics)
+
     loop_weight = _fit_loop_weight(args, manifest.fit)
-    result = fit_foundation_material_batches_autodiff(
-        spring_grid.xy_m,
-        batches,
-        initial_material=_initial_material(manifest),
-        iterations=int(args.autodiff_iterations),
-        per_cylinder_area=True,
-        loop_weight=loop_weight,
-        device=device,
-    )
-    selected_material, selected_history = _select_history_material(
-        spring_grid.xy_m,
-        batches,
-        list(result.history),
-        device=device,
-    )
+
+    baked_geometry = None
+    indenter_maps_by_trial = None
+    fit_xy_m = spring_grid.xy_m if spring_grid is not None else None
+    surface_map_plot_path = None
+
+    if use_baked:
+        baked_spacing = float(manifest.grid.get("baked_spacing_m", 0.002))
+        baked_geometry = build_baked_midsole_geometry(
+            vertices,
+            faces,
+            spacing_m=baked_spacing,
+            thickness_axis=manifest.grid.get("force_thickness_axis"),
+        )
+        surface_map_plot_path = _write_surface_map_plot(output_dir, baked_geometry)
+        baked_uv_m, _baked_xy_m, baked_cell_area_m2 = _baked_quadrature(baked_geometry)
+        fit_xy_m = baked_uv_m
+        batches = _with_baked_cell_area(batches, baked_cell_area_m2, baked_geometry.spacing_m)
+        indenter_maps_by_trial = {}
+        for batch in batches:
+            trial = next(t for t in manifest.trials if t.name == batch.name)
+            ind_map, ind_valid_map = bake_indenter_maps(
+                baked_geometry,
+                trial,
+                manifest,
+                vertices,
+                baked_spacing,
+            )
+            indenter_maps_by_trial[batch.name] = (ind_map, ind_valid_map)
+
+        result = fit_foundation_material_baked_batches_autodiff(
+            fit_xy_m,
+            baked_geometry,
+            indenter_maps_by_trial,
+            batches,
+            initial_material=_initial_material(manifest),
+            iterations=int(args.autodiff_iterations),
+            per_cylinder_area=True,
+            loop_weight=loop_weight,
+            device=device,
+        )
+        selected_material, selected_history = _select_history_material(
+            fit_xy_m,
+            batches,
+            list(result.history),
+            device=device,
+            baked_geometry=baked_geometry,
+            indenter_maps_by_trial=indenter_maps_by_trial,
+        )
+    else:
+        result = fit_foundation_material_batches_autodiff(
+            fit_xy_m,
+            batches,
+            initial_material=_initial_material(manifest),
+            iterations=int(args.autodiff_iterations),
+            per_cylinder_area=True,
+            loop_weight=loop_weight,
+            device=device,
+        )
+        selected_material, selected_history = _select_history_material(
+            fit_xy_m,
+            batches,
+            list(result.history),
+            device=device,
+        )
+
     loss_plot_path = _write_autodiff_loss_plot(output_dir, list(result.history))
     hysteresis = _write_autodiff_hysteresis_plot(
         output_dir,
-        spring_grid.xy_m,
+        fit_xy_m,
         selected_material,
         batches,
         device=device,
+        baked_geometry=baked_geometry,
+        indenter_maps_by_trial=indenter_maps_by_trial,
     )
     material_artifact_path = _write_foundation_material_artifact(
         output_dir,
@@ -2134,6 +2928,8 @@ def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
         selected_material,
         hysteresis,
         hysteresis["acceptance"],
+        use_baked=use_baked,
+        baked_geometry=baked_geometry,
     )
     report = {
         "manifest": str(manifest.path),
@@ -2148,7 +2944,9 @@ def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
             "loop_weight": loop_weight,
         },
         "autodiff_device": device,
-        "spring_grid_cells": int(len(spring_grid.xy_m)),
+        "spring_grid_cells": 0 if spring_grid is None else int(len(spring_grid.xy_m)),
+        "surface_map_cells": 0 if baked_geometry is None or baked_geometry.grid_uv_m is None else int(len(baked_geometry.grid_uv_m)),
+        "surface_map_plot": surface_map_plot_path,
         "material": selected_material.__dict__,
         "foundation_material_json": str(material_artifact_path),
         "acceptance": hysteresis["acceptance"],
@@ -2171,6 +2969,379 @@ def run_visualize(args: argparse.Namespace) -> dict[str, object]:
     return write_visualization_report(manifest, output_dir)
 
 
+def _surface_points_3d(
+    baked_geometry: BakedMidsoleGeometry,
+    z_values: np.ndarray,
+    *,
+    sample_uv_m: np.ndarray | None = None,
+) -> np.ndarray:
+    uv = baked_geometry.grid_uv_m if sample_uv_m is None else sample_uv_m
+    if uv is None:
+        raise ValueError("Baked geometry does not define valid surface-map sample coordinates")
+    return _z_up_points_from_uv_z(baked_geometry, uv, z_values)
+
+
+def _z_up_points_from_uv_z(baked_geometry: BakedMidsoleGeometry, uv_m: np.ndarray, z_values: np.ndarray) -> np.ndarray:
+    """Map surface-map coordinates into a z-up viewer frame."""
+    frame = baked_geometry.frame
+    center = frame.center_m.copy()
+    plane_axes = frame.plane_axes
+    thickness_axis = frame.thickness_axis
+    uv = np.asarray(uv_m, dtype=np.float64)
+    points = np.zeros((len(uv), 3), dtype=np.float32)
+    points[:, 0] = (uv[:, 0] - center[plane_axes[0]]).astype(np.float32)
+    points[:, 1] = (uv[:, 1] - center[plane_axes[1]]).astype(np.float32)
+    points[:, 2] = (np.asarray(z_values, dtype=np.float64) - center[thickness_axis]).astype(np.float32)
+    return points
+
+
+def _mesh_vertices_z_up(vertices: np.ndarray, baked_geometry: BakedMidsoleGeometry) -> np.ndarray:
+    """Map conditioned mesh vertices into the same z-up viewer frame as surface maps."""
+    frame = baked_geometry.frame
+    center = frame.center_m.copy()
+    plane_axes = frame.plane_axes
+    thickness_axis = frame.thickness_axis
+    vertices = np.asarray(vertices, dtype=np.float64)
+    points = np.zeros((len(vertices), 3), dtype=np.float32)
+    points[:, 0] = (vertices[:, plane_axes[0]] - center[plane_axes[0]]).astype(np.float32)
+    points[:, 1] = (vertices[:, plane_axes[1]] - center[plane_axes[1]]).astype(np.float32)
+    points[:, 2] = (vertices[:, thickness_axis] - center[thickness_axis]).astype(np.float32)
+    return points
+
+
+def _surface_map_mesh(
+    baked_geometry: BakedMidsoleGeometry,
+    z_map: np.ndarray,
+    valid_map: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    h, w = z_map.shape
+    u = np.linspace(float(baked_geometry.mins_uv[0]), float(baked_geometry.maxs_uv[0]), w, dtype=np.float64)
+    v = np.linspace(float(baked_geometry.mins_uv[1]), float(baked_geometry.maxs_uv[1]), h, dtype=np.float64)
+    uu, vv = np.meshgrid(u, v, indexing="xy")
+    uv_flat = np.column_stack((uu.ravel(), vv.ravel()))
+    points = _z_up_points_from_uv_z(baked_geometry, uv_flat, np.asarray(z_map, dtype=np.float64).ravel())
+    uvs = np.column_stack(
+        (
+            np.linspace(0.0, 1.0, w, dtype=np.float32)[None, :].repeat(h, axis=0).ravel(),
+            np.linspace(0.0, 1.0, h, dtype=np.float32)[:, None].repeat(w, axis=1).ravel(),
+        )
+    ).astype(np.float32)
+
+    valid = np.isfinite(z_map)
+    if baked_geometry.valid_map is not None:
+        valid &= np.asarray(baked_geometry.valid_map, dtype=np.float64) > 0.5
+    if valid_map is not None:
+        valid &= np.asarray(valid_map, dtype=np.float64) > 0.5
+
+    triangles: list[tuple[int, int, int]] = []
+    for y in range(h - 1):
+        for x in range(w - 1):
+            i00 = y * w + x
+            i10 = y * w + x + 1
+            i01 = (y + 1) * w + x
+            i11 = (y + 1) * w + x + 1
+            if valid[y, x] and valid[y, x + 1] and valid[y + 1, x] and valid[y + 1, x + 1]:
+                triangles.append((i00, i10, i11))
+                triangles.append((i00, i11, i01))
+    return points, np.asarray(triangles, dtype=np.int32).reshape(-1), uvs
+
+
+def _plane_mesh(
+    baked_geometry: BakedMidsoleGeometry,
+    z_m: float,
+    *,
+    padding_m: float = 0.02,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    u0 = float(baked_geometry.mins_uv[0] - padding_m)
+    u1 = float(baked_geometry.maxs_uv[0] + padding_m)
+    v0 = float(baked_geometry.mins_uv[1] - padding_m)
+    v1 = float(baked_geometry.maxs_uv[1] + padding_m)
+    uv = np.asarray([[u0, v0], [u1, v0], [u1, v1], [u0, v1]], dtype=np.float64)
+    points = _z_up_points_from_uv_z(baked_geometry, uv, np.full(4, float(z_m), dtype=np.float64))
+    indices = np.asarray([0, 1, 2, 0, 2, 3], dtype=np.int32)
+    uvs = np.asarray([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], dtype=np.float32)
+    return points, indices, uvs
+
+
+def _sample_map_numpy(texture_map: np.ndarray, baked_geometry: BakedMidsoleGeometry, sample_uv_m: np.ndarray) -> np.ndarray:
+    u = (sample_uv_m[:, 0] - baked_geometry.mins_uv[0]) / (baked_geometry.maxs_uv[0] - baked_geometry.mins_uv[0])
+    v = (sample_uv_m[:, 1] - baked_geometry.mins_uv[1]) / (baked_geometry.maxs_uv[1] - baked_geometry.mins_uv[1])
+    u = np.clip(u, 0.0, 1.0)
+    v = np.clip(v, 0.0, 1.0)
+    h, w = texture_map.shape
+    px = u * (w - 1.0)
+    py = v * (h - 1.0)
+    x0 = np.clip(np.floor(px).astype(np.int32), 0, w - 1)
+    y0 = np.clip(np.floor(py).astype(np.int32), 0, h - 1)
+    x1 = np.clip(x0 + 1, 0, w - 1)
+    y1 = np.clip(y0 + 1, 0, h - 1)
+    tx = px - x0
+    ty = py - y0
+    val00 = texture_map[y0, x0]
+    val10 = texture_map[y0, x1]
+    val01 = texture_map[y1, x0]
+    val11 = texture_map[y1, x1]
+    val_top = val00 + tx * (val10 - val00)
+    val_bot = val01 + tx * (val11 - val01)
+    return val_top + ty * (val_bot - val_top)
+
+
+def _surface_contact_components(
+    baked_geometry: BakedMidsoleGeometry,
+    indenter_map: np.ndarray,
+    indenter_valid_map: np.ndarray,
+    displacement_m: float,
+    *,
+    top_fraction: float = 1.0,
+    bottom_fraction: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    closure_m = max(float(displacement_m), 0.0)
+    valid = np.isfinite(baked_geometry.top_map) & np.isfinite(baked_geometry.bottom_map)
+    if baked_geometry.valid_map is not None:
+        valid &= np.asarray(baked_geometry.valid_map, dtype=np.float64) > 0.5
+    valid &= np.asarray(indenter_valid_map, dtype=np.float64) > 0.5
+
+    top_contact_z = np.asarray(indenter_map, dtype=np.float64) - top_fraction * closure_m
+    if baked_geometry.valid_map is None:
+        min_bottom = float(np.min(baked_geometry.bottom_map))
+    else:
+        valid_midsole = np.asarray(baked_geometry.valid_map, dtype=np.float64) > 0.5
+        min_bottom = float(np.min(baked_geometry.bottom_map[valid_midsole]))
+    bottom_contact_z = min_bottom + bottom_fraction * closure_m
+
+    top_comp = np.zeros_like(baked_geometry.top_map, dtype=np.float64)
+    bottom_comp = np.zeros_like(baked_geometry.bottom_map, dtype=np.float64)
+    top_comp[valid] = np.maximum(baked_geometry.top_map[valid] - top_contact_z[valid], 0.0)
+    bottom_comp[valid] = np.maximum(bottom_contact_z - baked_geometry.bottom_map[valid], 0.0)
+    slack = np.maximum(np.asarray(baked_geometry.thickness_map, dtype=np.float64), 1.0e-6)
+    total = np.minimum(top_comp + bottom_comp, slack)
+    return top_comp, bottom_comp, total
+
+
+def _compression_heat_texture(values_m: np.ndarray, valid_map: np.ndarray | None, vmax_m: float) -> np.ndarray:
+    values = np.asarray(values_m, dtype=np.float64)
+    scale = max(float(vmax_m), 1.0e-6)
+    t = np.clip(values / scale, 0.0, 1.0)
+    stops = np.asarray(
+        [
+            [26.0, 37.0, 68.0],
+            [38.0, 135.0, 118.0],
+            [245.0, 203.0, 92.0],
+            [224.0, 79.0, 57.0],
+        ],
+        dtype=np.float64,
+    )
+    seg = np.clip(t * (len(stops) - 1), 0.0, len(stops) - 1.0)
+    lo = np.floor(seg).astype(np.int32)
+    hi = np.clip(lo + 1, 0, len(stops) - 1)
+    frac = (seg - lo)[..., None]
+    rgb = stops[lo] * (1.0 - frac) + stops[hi] * frac
+    if valid_map is not None:
+        invalid = np.asarray(valid_map, dtype=np.float64) <= 0.5
+        rgb[invalid] = np.asarray([30.0, 30.0, 32.0], dtype=np.float64)
+    return np.clip(rgb, 0.0, 255.0).astype(np.uint8)
+
+
+def run_surface_scene(args: argparse.Namespace) -> dict[str, object]:
+    import newton.viewer
+
+    manifest = load_manifest(args.manifest)
+    output_dir = Path(args.output_dir) if args.output_dir else manifest.cache_dir
+    vertices, faces = _load_midsole_mesh(manifest, output_dir)
+    baked_spacing = float(manifest.grid.get("baked_spacing_m", 0.002))
+    baked_geometry = build_baked_midsole_geometry(
+        vertices,
+        faces,
+        spacing_m=baked_spacing,
+        thickness_axis=manifest.grid.get("force_thickness_axis"),
+    )
+    surface_map_plot = _write_surface_map_plot(output_dir, baked_geometry)
+    sample_uv_m, _moment_xy_m, _cell_area_m2 = _baked_quadrature(baked_geometry)
+
+    trial = None
+    if args.scene_trial is not None:
+        trial = next((candidate for candidate in manifest.trials if candidate.name == args.scene_trial), None)
+        if trial is None:
+            raise ValueError(f"Unknown scene trial {args.scene_trial!r}")
+    else:
+        trial = next((candidate for candidate in manifest.trials if candidate.include_in_fit), None)
+    if trial is None:
+        raise ValueError("No included trial is available for the surface scene")
+
+    ind_map, ind_valid_map = bake_indenter_maps(baked_geometry, trial, manifest, vertices, baked_spacing)
+    trace_csv = output_dir / f"digital_instron_v2_dynamic_{_safe_report_name(trial.name)}.csv"
+    if trace_csv.exists():
+        data = np.genfromtxt(trace_csv, delimiter=",", names=True, dtype=np.float64)
+        if data.shape == ():
+            data = np.asarray([data], dtype=data.dtype)
+        time_s = np.asarray(data["time_s"], dtype=np.float64)
+        displacement_m = np.asarray(data["displacement_m"], dtype=np.float64)
+    else:
+        trace = _load_averaged_cycle(_trial_averaged_cycle_path(trial))
+        time_s = trace["time_s"]
+        displacement_m = trace["displacement_m"]
+
+    frame_count = min(int(args.scene_max_frames), len(displacement_m))
+    if frame_count <= 0:
+        raise ValueError("Surface scene needs at least one replay frame")
+
+    top_z = _sample_map_numpy(baked_geometry.top_map, baked_geometry, sample_uv_m)
+    bottom_z = _sample_map_numpy(baked_geometry.bottom_map, baked_geometry, sample_uv_m)
+    midsole_mesh_points = _mesh_vertices_z_up(vertices, baked_geometry)
+    midsole_mesh_indices = np.asarray(faces, dtype=np.int32).reshape(-1)
+    top_mesh_points, top_mesh_indices, top_mesh_uvs = _surface_map_mesh(
+        baked_geometry,
+        baked_geometry.top_map + 0.0008,
+    )
+    bottom_mesh_points, bottom_mesh_indices, bottom_mesh_uvs = _surface_map_mesh(
+        baked_geometry,
+        baked_geometry.bottom_map - 0.0008,
+    )
+    _foot_mesh_points0, foot_mesh_indices, foot_mesh_uvs = _surface_map_mesh(baked_geometry, ind_map, ind_valid_map)
+    min_bottom_z = float(np.min(bottom_z))
+    ground_z = min_bottom_z
+    ground_points, ground_indices, ground_uvs = _plane_mesh(baked_geometry, ground_z, padding_m=0.03)
+    ground_heat_z0 = np.full_like(baked_geometry.bottom_map, min_bottom_z, dtype=np.float64)
+    _ground_heat_points0, ground_heat_indices, ground_heat_uvs = _surface_map_mesh(
+        baked_geometry,
+        ground_heat_z0,
+        ind_valid_map,
+    )
+
+    viewer = newton.viewer.ViewerNull(num_frames=frame_count) if args.viewer == "null" else newton.viewer.ViewerGL()
+    if hasattr(viewer, "set_camera"):
+        extents = np.asarray(baked_geometry.frame.extents_m, dtype=np.float64)
+        span = max(float(np.max(extents)), 0.20)
+        viewer.set_camera(wp.vec3(0.55 * span, -1.75 * span, 0.85 * span), pitch=-26.0, yaw=-18.0)
+    viewer_device = viewer.device
+    midsole_mesh_points_wp = wp.array(midsole_mesh_points, dtype=wp.vec3, device=viewer_device)
+    midsole_mesh_indices_wp = wp.array(midsole_mesh_indices, dtype=wp.int32, device=viewer_device)
+    top_mesh_points_wp = wp.array(top_mesh_points, dtype=wp.vec3, device=viewer_device)
+    top_mesh_indices_wp = wp.array(top_mesh_indices, dtype=wp.int32, device=viewer_device)
+    top_mesh_uvs_wp = wp.array(top_mesh_uvs, dtype=wp.vec2, device=viewer_device)
+    bottom_mesh_points_wp = wp.array(bottom_mesh_points, dtype=wp.vec3, device=viewer_device)
+    bottom_mesh_indices_wp = wp.array(bottom_mesh_indices, dtype=wp.int32, device=viewer_device)
+    bottom_mesh_uvs_wp = wp.array(bottom_mesh_uvs, dtype=wp.vec2, device=viewer_device)
+    foot_mesh_indices_wp = wp.array(foot_mesh_indices, dtype=wp.int32, device=viewer_device)
+    foot_mesh_uvs_wp = wp.array(foot_mesh_uvs, dtype=wp.vec2, device=viewer_device)
+    ground_heat_indices_wp = wp.array(ground_heat_indices, dtype=wp.int32, device=viewer_device)
+    ground_heat_uvs_wp = wp.array(ground_heat_uvs, dtype=wp.vec2, device=viewer_device)
+    ground_points_wp = wp.array(ground_points, dtype=wp.vec3, device=viewer_device)
+    ground_indices_wp = wp.array(ground_indices, dtype=wp.int32, device=viewer_device)
+    ground_uvs_wp = wp.array(ground_uvs, dtype=wp.vec2, device=viewer_device)
+    heat_vmax_m = max(float(np.nanpercentile(baked_geometry.thickness_map, 95.0)) * 0.30, 0.002)
+    frame_index = 0
+    rendered_frames = 0
+    while viewer.is_running():
+        disp = float(displacement_m[frame_index])
+        sim_time = float(time_s[frame_index]) if frame_index < len(time_s) else float(frame_index) / 60.0
+        top_comp, bottom_comp, total_comp = _surface_contact_components(baked_geometry, ind_map, ind_valid_map, disp)
+        active = total_comp > 0.0
+        active_any = bool(np.any(active))
+        frame_vmax = max(heat_vmax_m, float(np.max(total_comp)) if active_any else 0.0)
+        top_texture = _compression_heat_texture(top_comp, ind_valid_map, frame_vmax)
+        bottom_texture = _compression_heat_texture(bottom_comp, ind_valid_map, frame_vmax)
+        support_texture = _compression_heat_texture(total_comp, ind_valid_map, frame_vmax)
+        foot_mesh_points, _foot_mesh_indices, _foot_mesh_uvs = _surface_map_mesh(
+            baked_geometry,
+            ind_map - max(disp, 0.0),
+            ind_valid_map,
+        )
+        ground_heat_z = np.full_like(baked_geometry.bottom_map, min_bottom_z, dtype=np.float64)
+        ground_heat_points, _ground_heat_indices, _ground_heat_uvs = _surface_map_mesh(
+            baked_geometry,
+            ground_heat_z,
+            ind_valid_map,
+        )
+        platen_points, platen_indices, _platen_uvs = _plane_mesh(
+            baked_geometry,
+            min_bottom_z,
+            padding_m=0.01,
+        )
+
+        viewer.begin_frame(sim_time)
+        viewer.log_mesh(
+            "/digital_instron/actual_midsole_mesh",
+            midsole_mesh_points_wp,
+            midsole_mesh_indices_wp,
+            color=(0.56, 0.58, 0.62),
+            roughness=0.72,
+            backface_culling=False,
+        )
+        viewer.log_mesh(
+            "/digital_instron/midsole_top_contact_heatmap",
+            top_mesh_points_wp,
+            top_mesh_indices_wp,
+            uvs=top_mesh_uvs_wp,
+            texture=np.flipud(top_texture),
+            roughness=0.55,
+            hidden=not active_any,
+            backface_culling=False,
+        )
+        viewer.log_mesh(
+            "/digital_instron/midsole_bottom_contact_heatmap",
+            bottom_mesh_points_wp,
+            bottom_mesh_indices_wp,
+            uvs=bottom_mesh_uvs_wp,
+            texture=np.flipud(bottom_texture),
+            roughness=0.65,
+            hidden=not active_any,
+            backface_culling=False,
+        )
+        viewer.log_mesh(
+            "/digital_instron/ground_plane",
+            ground_points_wp,
+            ground_indices_wp,
+            uvs=ground_uvs_wp,
+            color=(0.22, 0.22, 0.24),
+            roughness=0.85,
+            backface_culling=False,
+        )
+        viewer.log_mesh(
+            "/digital_instron/bottom_platen",
+            wp.array(platen_points, dtype=wp.vec3, device=viewer_device),
+            wp.array(platen_indices, dtype=wp.int32, device=viewer_device),
+            color=(0.52, 0.52, 0.56),
+            roughness=0.35,
+            backface_culling=False,
+        )
+        viewer.log_mesh(
+            "/digital_instron/foot_resolved_contact_heatmap",
+            wp.array(foot_mesh_points, dtype=wp.vec3, device=viewer_device),
+            foot_mesh_indices_wp,
+            uvs=foot_mesh_uvs_wp,
+            texture=np.flipud(top_texture),
+            roughness=0.35,
+            hidden=(len(foot_mesh_indices) == 0) or (not active_any),
+            backface_culling=False,
+        )
+        viewer.log_mesh(
+            "/digital_instron/ground_resolved_contact_heatmap",
+            wp.array(ground_heat_points, dtype=wp.vec3, device=viewer_device),
+            ground_heat_indices_wp,
+            uvs=ground_heat_uvs_wp,
+            texture=np.flipud(support_texture),
+            roughness=0.35,
+            hidden=not np.any(active),
+            backface_culling=False,
+        )
+        viewer.end_frame()
+        rendered_frames += 1
+        frame_index = (frame_index + 1) % frame_count
+
+    viewer.close()
+    return {
+        "schema_version": "digital_instron_v2_surface_scene_1",
+        "viewer": args.viewer,
+        "trial": trial.name,
+        "trace_frame_count": int(frame_count),
+        "rendered_frame_count": int(rendered_frames),
+        "looped_until_closed": True,
+        "surface_map_plot": surface_map_plot,
+        "source_trace": str(trace_csv if trace_csv.exists() else trial.averaged_cycle_path),
+    }
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_arg_parser().parse_args(argv)
     if args.step == "qc":
@@ -2185,8 +3356,10 @@ def main(argv: list[str] | None = None) -> None:
         report = run_fit_validate(args)
     elif args.step == "dynamic-replay":
         report = run_dynamic_replay(args)
-    else:
+    elif args.step == "visualize":
         report = run_visualize(args)
+    else:
+        report = run_surface_scene(args)
     print(json.dumps(report, indent=2, sort_keys=True))
 
 

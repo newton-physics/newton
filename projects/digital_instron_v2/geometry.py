@@ -54,6 +54,23 @@ class SpringSurfaceGrid:
 
 
 @dataclass(frozen=True)
+class BakedMidsoleGeometry:
+    """Baked 2D thickness and surface height maps for grid-independent hydroelastic calibration."""
+
+    thickness_map: np.ndarray  # 2D array of shape (V, U)
+    top_map: np.ndarray        # 2D array of shape (V, U)
+    bottom_map: np.ndarray     # 2D array of shape (V, U)
+    mins_uv: np.ndarray        # (2,) minimum footprint coordinate [min_u, min_v]
+    maxs_uv: np.ndarray        # (2,) maximum footprint coordinate [max_u, max_v]
+    frame: MeshFrame
+    valid_map: np.ndarray | None = None  # 2D mask of valid midsole pixels
+    grid_uv_m: np.ndarray | None = None  # valid quadrature positions in footprint coordinates [m]
+    xy_m: np.ndarray | None = None       # valid quadrature positions centered for wrenches [m]
+    cell_area_m2: float = 0.0
+    spacing_m: float = 0.0
+
+
+@dataclass(frozen=True)
 class PlacedCylinderGrid:
     """Circular indenter grid placed in mesh footprint coordinates."""
 
@@ -377,6 +394,59 @@ def build_raycast_spring_grid(
         spacing_m=spacing_m,
         frame=frame,
         neighbors=neighbors,
+    )
+
+
+def build_baked_midsole_geometry(
+    vertices_m: np.ndarray,
+    faces: np.ndarray,
+    *,
+    spacing_m: float = 0.002,
+    min_slack_length_m: float = 0.001,
+    thickness_axis: int | None = None,
+) -> BakedMidsoleGeometry:
+    """Raycast midsole mesh to build dense 2D thickness, top height, and bottom height maps."""
+
+    grid_uv, frame = make_footprint_grid(vertices_m, spacing_m=spacing_m, thickness_axis=thickness_axis)
+    ray = raycast_grid_thickness(vertices_m, faces, grid_uv, frame=frame)
+
+    plane = vertices_m[:, frame.plane_axes]
+    mins_uv = np.min(plane, axis=0)
+    maxs_uv = np.max(plane, axis=0)
+
+    # Determine texture grid dimensions based on meshgrid indexing="xy" (rows=V, cols=U)
+    u = np.arange(mins_uv[0], maxs_uv[0] + spacing_m * 0.5, spacing_m, dtype=np.float64)
+    v = np.arange(mins_uv[1], maxs_uv[1] + spacing_m * 0.5, spacing_m, dtype=np.float64)
+    shape_2d = (len(v), len(u))
+
+    thickness_raw = ray["thickness_m"]
+    valid = np.isfinite(thickness_raw) & (thickness_raw >= min_slack_length_m)
+    if not np.any(valid):
+        raise MeshQCError("Baked midsole geometry has no valid cells")
+
+    thickness = np.zeros_like(thickness_raw, dtype=np.float64)
+    top = np.zeros_like(ray["top_m"], dtype=np.float64)
+    bottom = np.zeros_like(ray["bottom_m"], dtype=np.float64)
+    thickness[valid] = thickness_raw[valid]
+    top[valid] = ray["top_m"][valid]
+    bottom[valid] = ray["bottom_m"][valid]
+
+    center_uv = frame.center_m[list(frame.plane_axes)]
+    grid_uv_valid = np.ascontiguousarray(ray["grid_uv_m"][valid], dtype=np.float64)
+    xy_valid = np.ascontiguousarray(grid_uv_valid - center_uv, dtype=np.float64)
+
+    return BakedMidsoleGeometry(
+        thickness_map=np.ascontiguousarray(thickness.reshape(shape_2d), dtype=np.float64),
+        top_map=np.ascontiguousarray(top.reshape(shape_2d), dtype=np.float64),
+        bottom_map=np.ascontiguousarray(bottom.reshape(shape_2d), dtype=np.float64),
+        mins_uv=mins_uv,
+        maxs_uv=maxs_uv,
+        frame=frame,
+        valid_map=np.ascontiguousarray(valid.reshape(shape_2d), dtype=np.float64),
+        grid_uv_m=grid_uv_valid,
+        xy_m=xy_valid,
+        cell_area_m2=float(spacing_m * spacing_m),
+        spacing_m=float(spacing_m),
     )
 
 
