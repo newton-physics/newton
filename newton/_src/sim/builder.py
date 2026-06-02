@@ -4838,16 +4838,16 @@ class ModelBuilder:
     def collapse_fixed_joints(
         self,
         verbose: bool = False,
-        joints_to_keep: list[str] | None = None,
-        joint_indices_to_keep: set[int] | None = None,
+        joints_to_keep: Sequence[str | int] | None = None,
     ) -> dict[str, Any]:
         """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.
 
         Args:
             verbose: If True, print additional information about the collapsed joints.
-            joints_to_keep: An optional list of joint labels to be excluded from the collapse process.
-            joint_indices_to_keep: An optional set of joint indices to be excluded from the collapse process.
+            joints_to_keep: An optional sequence of joint labels or original joint indices to be excluded from
+                the collapse process.
         """
+        joints_to_keep = set(joints_to_keep or ())
 
         body_data = {}
         body_children = {-1: []}
@@ -4958,7 +4958,6 @@ class ModelBuilder:
             nonlocal retained_joints
             nonlocal retained_bodies
             nonlocal body_data
-            nonlocal joints_to_keep
 
             joint = joint_data[(parent_body, child_body)]
             # Don't merge fixed joints if the child body is referenced in an equality constraint
@@ -4966,11 +4965,7 @@ class ModelBuilder:
             should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
 
             # Don't merge fixed joints listed in joints_to_keep list
-            if joints_to_keep is None:
-                joints_to_keep = []
-            joint_in_keep_list = joint["label"] in joints_to_keep or (
-                joint_indices_to_keep is not None and joint["original_id"] in joint_indices_to_keep
-            )
+            joint_in_keep_list = joint["label"] in joints_to_keep or joint["original_id"] in joints_to_keep
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
                 # Skip merging this fixed joint because the body is referenced in an equality constraint

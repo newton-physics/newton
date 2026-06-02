@@ -266,7 +266,7 @@ def collapse_massless_fixed_root_joints(
         for joint_idx in range(builder.joint_count)
         if builder.joint_type[joint_idx] == JointType.FIXED and joint_idx not in fixed_joint_indices_to_collapse
     }
-    builder.collapse_fixed_joints(joint_indices_to_keep=fixed_joint_indices_to_keep)
+    builder.collapse_fixed_joints(joints_to_keep=fixed_joint_indices_to_keep)
 
 
 def is_xml_content(source: str) -> bool:

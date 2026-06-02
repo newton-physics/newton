@@ -2801,10 +2801,4 @@ def parse_mjcf(
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()
     elif collapse_massless_fixed_root:
-        root_joint_indices = []
-        for i, (start_idx, _) in enumerate(root_body_boundaries):
-            end_idx = root_body_boundaries[i + 1][0] if i + 1 < len(root_body_boundaries) else len(joint_indices)
-            root_joints = joint_indices[start_idx:end_idx]
-            if root_joints:
-                root_joint_indices.append(root_joints[0])
-        collapse_massless_fixed_root_joints(builder, joint_indices, root_joint_indices)
+        collapse_massless_fixed_root_joints(builder, joint_indices)
