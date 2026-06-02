@@ -4,7 +4,6 @@
 """Defines the Warp kernels used by the Forward Kinematics solver."""
 
 from functools import cache
-from typing import Any
 
 import warp as wp
 
@@ -33,6 +32,8 @@ from .types import FKJointDoFType
 __all__ = [
     "_add_regularizer_to_diagonal",
     "_apply_line_search_step",
+    "_copy_bool_mask_to_int32",
+    "_copy_int32_mask_to_bool",
     "_correct_actuator_coords",
     "_eval_actuator_coords",
     "_eval_body_velocities",
@@ -101,12 +102,46 @@ def read_quat_from_array(array: wp.array[wp.float32], offset: int, normalize: bo
 
 
 @wp.kernel
+def _copy_bool_mask_to_int32(
+    # Inputs
+    mask: wp.array[bool],
+    # Outputs
+    out: wp.array[wp.int32],
+):
+    """Copy a boolean mask into an integer mask buffer.
+
+    Args:
+        mask: Per-world boolean source mask.
+        out: Destination mask with 1 for active worlds and 0 for skipped worlds.
+    """
+    wid = wp.tid()
+    out[wid] = wp.int32(mask[wid])
+
+
+@wp.kernel
+def _copy_int32_mask_to_bool(
+    # Inputs
+    mask: wp.array[wp.int32],
+    # Outputs
+    out: wp.array[bool],
+):
+    """Copy an integer mask into a boolean mask buffer.
+
+    Args:
+        mask: Source mask with non-zero values for active worlds.
+        out: Destination boolean mask.
+    """
+    wid = wp.tid()
+    out[wid] = mask[wid] != 0
+
+
+@wp.kernel
 def _reset_state(
     # Inputs
     num_bodies: wp.array[wp.int32],
     first_body_id: wp.array[wp.int32],
     bodies_q_0_flat: wp.array[wp.float32],
-    world_mask: wp.array[Any],
+    world_mask: wp.array[bool],
     # Outputs
     bodies_q_flat: wp.array[wp.float32],
 ):
@@ -117,7 +152,7 @@ def _reset_state(
         num_bodies: Num bodies per world
         first_body_id: First body id per world
         bodies_q_0_flat: Reference state, flattened
-        world_mask: Per-world flag to perform the operation (0 = skip)
+        world_mask: Per-world boolean flag to perform the operation (False = skip)
     Outputs:
         bodies_q_flat: State to reset, flattened
     """
@@ -140,7 +175,7 @@ def _reset_state_base_q(
     num_bodies: wp.array[wp.int32],
     first_body_id: wp.array[wp.int32],
     bodies_q_0: wp.array[wp.transformf],
-    world_mask: wp.array[Any],
+    world_mask: wp.array[bool],
     # Outputs
     bodies_q: wp.array[wp.transformf],
 ):
@@ -158,7 +193,7 @@ def _reset_state_base_q(
         num_bodies: Num bodies per world
         first_body_id: First body id per world
         bodies_q_0: Reference body poses
-        world_mask: Per-world flag to perform the operation (0 = skip)
+        world_mask: Per-world boolean flag to perform the operation (False = skip)
     Outputs:
         bodies_q: Body poses to reset
     """
@@ -459,7 +494,7 @@ def _eval_incremental_target_actuator_coords(
     actuators_q_next: wp.array[wp.float32],
     delta_q_max: wp.array[wp.float32],
     iteration: wp.array[wp.int32],
-    world_mask: wp.array[Any],
+    world_mask: wp.array[bool],
     # Outputs
     actuators_q_curr: wp.array[wp.float32],
 ):
@@ -474,7 +509,7 @@ def _eval_incremental_target_actuator_coords(
         actuators_q_next: Next actuator coordinates (= target).
         delta_q_max: Maximal allowed step per coordinate, for one Newton iteration.
         iteration: Current Newton iteration per world.
-        world_mask: Per-world flag to perform the computation (0 = skip).
+        world_mask: Per-world boolean flag to perform the computation (False = skip).
     Outputs:
         actuators_q_curr: Actuator coordinates to use as target for the current iteration (= incremental target).
     """
@@ -691,7 +726,7 @@ def _eval_unit_quaternion_constraints(
     num_bodies: wp.array[wp.int32],
     first_body_id: wp.array[wp.int32],
     bodies_q: wp.array[wp.transformf],
-    world_mask: wp.array[Any],
+    world_mask: wp.array[bool],
     # Outputs
     constraints: wp.array2d[wp.float32],
 ):
@@ -702,7 +737,7 @@ def _eval_unit_quaternion_constraints(
             num_bodies: Num bodies per world
             first_body_id: First body id per world
             bodies_q: Body poses
-            world_mask: Per-world flag to perform the computation (0 = skip)
+            world_mask: Per-world boolean flag to perform the computation (False = skip)
         Outputs:
             constraints: Constraint vector per world
     ):
@@ -742,7 +777,7 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
         bodies_q: wp.array[wp.transformf],
         pos_control_transforms: wp.array[wp.transformf],
         ct_full_to_red_map: wp.array[wp.int32],
-        world_mask: wp.array[Any],
+        world_mask: wp.array[bool],
         # Outputs
         constraints: wp.array2d[wp.float32],
     ):
@@ -768,7 +803,7 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
             bodies_q: Body poses
             pos_control_transforms: Joint position-control transformation
             ct_full_to_red_map: Map from full to reduced constraint id
-            world_mask: Per-world flag to perform the computation (0 = skip)
+            world_mask: Per-world boolean flag to perform the computation (False = skip)
         Outputs:
             constraints: Constraint vector per world
         """
@@ -860,7 +895,7 @@ def _eval_unit_quaternion_constraints_jacobian(
     num_bodies: wp.array[wp.int32],
     first_body_id: wp.array[wp.int32],
     bodies_q: wp.array[wp.transformf],
-    world_mask: wp.array[Any],
+    world_mask: wp.array[bool],
     # Outputs
     constraints_jacobian: wp.array3d[wp.float32],
 ):
@@ -872,7 +907,7 @@ def _eval_unit_quaternion_constraints_jacobian(
         num_bodies: Num bodies per world
         first_body_id: First body id per world
         bodies_q: Body poses
-        world_mask: Per-world flag to perform the computation (0 = skip)
+        world_mask: Per-world boolean flag to perform the computation (False = skip)
     Outputs:
         constraints_jacobian: Constraints Jacobian per world
     """
@@ -900,7 +935,7 @@ def _eval_unit_quaternion_constraints_sparse_jacobian(
     first_body_id: wp.array[wp.int32],
     bodies_q: wp.array[wp.transformf],
     rb_nzb_id: wp.array[wp.int32],
-    world_mask: wp.array[Any],
+    world_mask: wp.array[bool],
     # Outputs
     jacobian_nzb: wp.array[block_type],
 ):
@@ -913,7 +948,7 @@ def _eval_unit_quaternion_constraints_sparse_jacobian(
         first_body_id: First body id per world
         bodies_q: Body poses
         rb_nzb_id: Id of the nzb corresponding to the constraint per body
-        world_mask: Per-world flag to perform the computation (0 = skip)
+        world_mask: Per-world boolean flag to perform the computation (False = skip)
     Outputs:
         jacobian_nzb: Non-zero blocks of the sparse Jacobian
     """
@@ -957,7 +992,7 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
         bodies_q: wp.array[wp.transformf],
         pos_control_transforms: wp.array[wp.transformf],
         ct_full_to_red_map: wp.array[wp.int32],
-        world_mask: wp.array[Any],
+        world_mask: wp.array[bool],
         # Outputs
         constraints_jacobian: wp.array3d[wp.float32],
     ):
@@ -980,7 +1015,7 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
             bodies_q: Body poses
             pos_control_transforms: Joint position-control transformation
             ct_full_to_red_map: Map from full to reduced constraint id
-            world_mask: Per-world flag to perform the computation (0 = skip)
+            world_mask: Per-world boolean flag to perform the computation (False = skip)
         Outputs:
             constraints_jacobian: Constraint Jacobian per world
         """
@@ -1123,7 +1158,7 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
         pos_control_transforms: wp.array[wp.transformf],
         ct_nzb_id_base: wp.array[wp.int32],
         ct_nzb_id_follower: wp.array[wp.int32],
-        world_mask: wp.array[Any],
+        world_mask: wp.array[bool],
         # Outputs
         jacobian_nzb: wp.array[block_type],
     ):
@@ -1147,7 +1182,7 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
             pos_control_transforms: Joint position-control transformation
             ct_nzb_id_base: Map from full constraint id to nzb id, for the base body blocks
             ct_nzb_id_base: Map from full constraint id to nzb id, for the follower body blocks
-            world_mask: Per-world flag to perform the computation (0 = skip)
+            world_mask: Per-world boolean flag to perform the computation (False = skip)
         Outputs:
             jacobian_nzb: Non-zero blocks of the sparse Jacobian
         """
@@ -1335,7 +1370,7 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
         # Inputs
         constraints_jacobian: wp.array3d[wp.float32],
         tile_sparsity_pattern: wp.array3d[wp.int32],
-        world_mask: wp.array[Any],
+        world_mask: wp.array[bool],
         # Outputs
         jacobian_T_jacobian: wp.array3d[wp.float32],
     ):
@@ -1345,7 +1380,7 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
         Inputs:
             constraints_jacobian: Constraint Jacobian per world
             tile_sparsity_pattern: Per-tile sparsity pattern of the Jacobian (0 = tile is fully zero)
-            world_mask: Per-world flag to perform the computation (0 = skip)
+            world_mask: Per-world boolean flag to perform the computation (False = skip)
         Outputs:
             jacobian_T_jacobian: Jacobian^T * Jacobian per world
         """
@@ -1389,7 +1424,7 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
         constraints_jacobian: wp.array3d[wp.float32],
         constraints: wp.array2d[wp.float32],
         tile_sparsity_pattern: wp.array3d[wp.int32],
-        world_mask: wp.array[Any],
+        world_mask: wp.array[bool],
         # Outputs
         jacobian_T_constraints: wp.array2d[wp.float32],
     ):
@@ -1400,7 +1435,7 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
             constraints_jacobian: Constraint Jacobian per world
             constraints: Constraint vector per world
             tile_sparsity_pattern: Per-tile sparsity pattern of the Jacobian (0 = tile is fully zero)
-            world_mask: Per-world flag to perform the computation (0 = skip)
+            world_mask: Per-world boolean flag to perform the computation (False = skip)
         Outputs:
             jacobian_T_constraints: Jacobian^T * Constraints per world
         """
@@ -1627,7 +1662,7 @@ def _add_regularizer_to_diagonal(
     # Inputs
     reg_weight: wp.float32,
     active_size: wp.array[wp.int32],
-    world_mask: wp.array[Any],
+    world_mask: wp.array[bool],
     # Outputs
     A: wp.array3d[wp.float32],
 ):
@@ -1637,7 +1672,7 @@ def _add_regularizer_to_diagonal(
     Inputs:
         reg_weight: Regularization weight to add to diagonal coefficients.
         active_size: Active size of the matrix in each world, from the top-left corner.
-        world_mask: Per-world flag to perform the computation (0 = skip).
+        world_mask: Per-world boolean flag to perform the computation (False = skip).
     Outputs:
         A: Stack of system matrices (one per world) to regularize.
     """
@@ -1654,7 +1689,7 @@ def _eval_regularizer_gradient(
     reg_weight: wp.float32,
     bodies_q_flat: wp.array[wp.float32],
     bodies_q_ref_flat: wp.array[wp.float32],
-    world_mask: wp.array[Any],
+    world_mask: wp.array[bool],
     # Outputs
     gradient: wp.array2d[wp.float32],
 ):
@@ -1668,7 +1703,7 @@ def _eval_regularizer_gradient(
         reg_weight: Regularizer weight.
         bodies_q_flat: Flattened array of current body poses.
         bodies_q_ref_flat: Flattened array of reference body poses.
-        world_mask: Per-world flag to perform the computation (0 = skip).
+        world_mask: Per-world boolean flag to perform the computation (False = skip).
     Outputs:
         gradient: Gradient vector, to which to add the regularizer gradient.
     """
@@ -1690,7 +1725,7 @@ def _eval_linear_combination(
     beta: wp.float32,
     y: wp.array2d[wp.float32],
     num_rows: wp.array[wp.int32],
-    world_mask: wp.array[Any],
+    world_mask: wp.array[bool],
     # Outputs
     z: wp.array2d[wp.float32],
 ):
@@ -1703,7 +1738,7 @@ def _eval_linear_combination(
         beta: Scalar coefficient
         y: Stack of vectors (one per world) to be multiplied by beta
         num_rows: Active size of the vectors (x, y and z) per world
-        world_mask: Per-world flag to perform the computation (0 = skip)
+        world_mask: Per-world boolean flag to perform the computation (False = skip)
     Outputs:
         z: Output stack of vectors
     """
@@ -1720,7 +1755,7 @@ def _eval_stepped_state(
     bodies_q_0_flat: wp.array[wp.float32],
     alpha: wp.array[wp.float32],
     step: wp.array2d[wp.float32],
-    world_mask: wp.array[Any],
+    world_mask: wp.array[bool],
     # Outputs
     bodies_q_alpha_flat: wp.array[wp.float32],
 ):
@@ -1733,7 +1768,7 @@ def _eval_stepped_state(
         bodies_q_0_flat: Previous state (for step size 0), flattened
         alpha: Step size per world
         step: Step direction per world
-        world_mask: Per-world flag to perform the computation (0 = skip)
+        world_mask: Per-world boolean flag to perform the computation (False = skip)
     Outputs:
         bodies_q_alpha_flat: New state (for step size alpha), flattened
     """
@@ -1889,7 +1924,7 @@ def _eval_target_constraint_velocities(
     actuated_dofs_offset: wp.array[wp.int32],
     ct_full_to_red_map: wp.array[wp.int32],
     actuators_u: wp.array[wp.float32],
-    world_mask: wp.array[Any],
+    world_mask: wp.array[bool],
     # Outputs
     target_cts_u: wp.array2d[wp.float32],
 ):
@@ -1905,7 +1940,7 @@ def _eval_target_constraint_velocities(
         actuated_dofs_offset: Joint first actuated dof id, among all actuated dofs in all worlds
         ct_full_to_red_map: Map from full to reduced constraint id
         actuators_u: Actuated joint velocities
-        world_mask: Per-world flag to perform the computation (0 = skip)
+        world_mask: Per-world boolean flag to perform the computation (False = skip)
     Outputs:
         target_cts_u: Target constraint velocities (assumed to be zero-initialized)
     """
@@ -1959,7 +1994,7 @@ def _eval_body_velocities(
     first_body_id: wp.array[wp.int32],
     bodies_q: wp.array[wp.transformf],
     bodies_q_dot: wp.array2d[wp.float32],
-    world_mask: wp.array[Any],
+    world_mask: wp.array[bool],
     # Outputs
     bodies_u: wp.array[vec6f],
 ):
@@ -1972,7 +2007,7 @@ def _eval_body_velocities(
         first_body_id: First body id per world
         bodies_q: Body poses
         bodies_q_dot: Time derivative of body poses
-        world_mask: Per-world flag to perform the computation (0 = skip)
+        world_mask: Per-world boolean flag to perform the computation (False = skip)
     Outputs:
         bodies_u: Body velocities (twists)
     """
@@ -2005,7 +2040,7 @@ def _eval_body_velocities(
 def _update_cg_tolerance_kernel(
     # Input
     max_residual: wp.array[wp.float32],
-    world_mask: wp.array[Any],
+    world_mask: wp.array[bool],
     # Output
     atol: wp.array[wp.float32],
     rtol: wp.array[wp.float32],

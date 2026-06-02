@@ -120,6 +120,60 @@ class JacobianCheckForwardKinematics(unittest.TestCase):
         self.assertTrue(success)
 
 
+class WorldMaskInitializationForwardKinematics(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def tearDown(self):
+        self.default_device = None
+
+    def test_initial_line_search_success_honors_world_mask(self):
+        num_worlds = 3
+        solver = ForwardKinematicsSolver.__new__(ForwardKinematicsSolver)
+        solver.device = self.default_device
+        solver.num_worlds = num_worlds
+        solver.config = ForwardKinematicsSolver.Config(
+            max_newton_iterations=1,
+            reset_state=False,
+            use_incremental_solve=False,
+            use_regularization=False,
+        )
+
+        with wp.ScopedDevice(self.default_device):
+            solver.all_worlds_mask = wp.full(shape=(num_worlds,), value=True, dtype=wp.bool)
+            solver.newton_iteration = wp.empty(shape=(num_worlds,), dtype=wp.int32)
+            solver.newton_success = wp.empty(shape=(num_worlds,), dtype=wp.int32)
+            solver.newton_mask = wp.empty(shape=(num_worlds,), dtype=wp.bool)
+            solver.min_newton_iterations = wp.empty(shape=(num_worlds,), dtype=wp.int32)
+            solver.max_newton_iterations = wp.array([solver.config.max_newton_iterations], dtype=wp.int32)
+            solver.newton_loop_condition = wp.empty(shape=(1,), dtype=wp.int32)
+            solver.line_search_success = wp.empty(shape=(num_worlds,), dtype=wp.int32)
+            solver.tolerance = wp.array([solver.config.tolerance], dtype=wp.float32)
+            solver.jacobian_early_update_mask = wp.empty(shape=0, dtype=wp.bool)
+            solver.jacobian_late_update_mask = wp.empty(shape=0, dtype=wp.bool)
+            solver.base_q_default = wp.empty(shape=(num_worlds,), dtype=wp.transformf)
+            solver.actuators_q_next = wp.empty(shape=0, dtype=wp.float32)
+            solver.pos_control_transforms = wp.empty(shape=0, dtype=wp.transformf)
+            solver.constraints = wp.empty(shape=(num_worlds, 0), dtype=wp.float32)
+            solver.grad = wp.empty(shape=(num_worlds, 0), dtype=wp.float32)
+            solver.max_residual = wp.zeros(shape=(num_worlds,), dtype=wp.float32)
+            actuators_q = wp.empty(shape=0, dtype=wp.float32)
+            bodies_q = wp.empty(shape=0, dtype=wp.transformf)
+            world_mask = wp.array([True, False, True], dtype=wp.bool)
+
+        solver._eval_target_actuators_q = lambda base_q, actuators_q, actuators_q_next: None
+        solver._eval_position_control_transformations = lambda actuators_q_next, pos_control_transforms: None
+        solver._eval_kinematic_constraints = lambda bodies_q, pos_control_transforms, world_mask, constraints: None
+        solver._eval_max_residual = lambda constraints, grad, max_residual: None
+        solver._run_newton_iteration = lambda bodies_q: None
+
+        solver.run_fk_solve(actuators_q, bodies_q, world_mask=world_mask)
+
+        np.testing.assert_array_equal(solver.line_search_success.numpy(), np.array([1, 0, 1], dtype=np.int32))
+
+
 def get_actuators_q_quaternion_first_ids(model: ModelKamino):
     """Lists the first index of every unit quaternion 4-segment in the model's actuated coordinates."""
     act_types = model.joints.act_type.numpy()
