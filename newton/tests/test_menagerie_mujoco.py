@@ -2185,7 +2185,6 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
     # 15-trial native-vs-native qvel diff is bit-exact (0); newton-vs-native
     # max 1.43e-6 (float32 noise). Tolerance set ~7x for headroom.
     dynamics_tolerance = 1e-5
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"ngeom"}
 
     def _align_models(self, newton_solver, native_mjw_model, mj_model):
         native_mjw_model.opt.integrator = newton_solver.mjw_model.opt.integrator

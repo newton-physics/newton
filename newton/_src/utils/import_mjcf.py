@@ -2353,14 +2353,15 @@ def parse_mjcf(
             )
 
         # -----------------
-        # add static geoms
+        # add static geoms — partition by class so `parse_visuals=False` /
+        # `parse_visuals_as_colliders=True` apply uniformly to worldbody
+        # geoms too (not just geoms inside bodies).
 
-        parse_shapes(
+        _process_body_geoms(
+            geoms=world.findall("geom"),
             defaults=world_defaults,
             body_name="world",
             link=-1,
-            geoms=world.findall("geom"),
-            density=default_shape_density,
             incoming_xform=xform,
             label_prefix=root_label_path,
         )
