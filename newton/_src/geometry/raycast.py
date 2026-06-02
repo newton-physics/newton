@@ -850,7 +850,7 @@ def intersect_ray(
     ray_origins: wp.array[wp.vec3],
     ray_directions: wp.array[wp.vec3],
     ray_worlds: wp.array[wp.int32],
-    enable_global_world: bool = False,
+    enable_global_world: bool = True,
     out_dist: wp.array[float] | None = None,
     out_shape_id: wp.array[wp.int32] | None = None,
     out_normal: wp.array[wp.vec3] | None = None,
