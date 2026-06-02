@@ -158,13 +158,13 @@ for _ in range(steps):
 group.reset(state_0, mask=reset_mask)
 ```
 
-A `Controller`'s `__init__` validates and stashes bindings; it does not allocate device buffers. `ControlGroup.__init__` picks the device, validates all controllers agree, calls `controller.finalize(device, num_outputs)` on each (allocating per-controller private buffers such as PID's `next_integral` scratch or DiffIK's internal Model + State + Jacobian buffer), and collects every controller's `outputs()` bindings into a flat list to be zeroed at the start of each step.
+A `Controller`'s `__init__` validates and stashes bindings; it does not allocate device buffers. `ControlGroup.__init__` picks the device, validates all controllers agree, calls `controller.finalize(device, num_outputs)` on each (allocating per-controller private buffers and the public `controller.reset_state`), and collects every controller's `outputs()` bindings into a flat list to be zeroed at the start of each step.
 
 ---
 
 ## Output accumulation (direct write)
 
-`ControlGroup` zeros all output destinations before any controller's `compute()` is called. At the start of each `step()`, it walks the flat list of `(array, port_indices)` bindings collected from every controller's `outputs()` and, for each one, launches a kernel that writes zero into `array[port_indices[i]]`. No dedupe: two controllers binding overlapping slots will have those slots zeroed twice, which is harmless (zero is idempotent) and avoids the fragility of comparing `wp.array` references for identity.
+`ControlGroup` zeros all output destinations before any controller's `compute()` is called. At the start of each `step()`, it walks the flat list of `(array, port_indices)` bindings collected from every controller's `outputs()` and, for each one, launches a kernel that writes zero into `array[port_indices[i]]`. Two controllers binding overlapping slots will have those slots zeroed twice.
 
 Each `Controller.compute()` then writes directly into its bound output array(s) using `+=`:
 
@@ -175,7 +175,7 @@ out_idx = output_indices[i]
 output_array[out_idx] += controller_contribution
 ```
 
-Controllers run **serially** (sequential `wp.launch` calls). Two controllers with overlapping output indices simply accumulate; no atomic_add is needed.
+Controllers run **serially** (sequential `wp.launch` calls, made much more efficient by graphing). Two controllers with overlapping output indices simply accumulate; no atomic_add is needed.
 
 **Composition semantics.** `ControllerPID + ControllerGravityComp + ControllerFeedforward` all writing to the same `joint_target_force` array produce the sum of their contributions. There are no overlap checks; users compose at their own risk.
 
@@ -185,13 +185,32 @@ Controllers run **serially** (sequential `wp.launch` calls). Two controllers wit
 
 ## Reset semantics
 
-`Controller.State.reset(mask)` is the universal reset entry point. `mask` is `wp.array[wp.bool] | None` of length `len(indices)` — DOF-shaped. Each `Controller.State` subclass decides how to project that mask onto its own state shape:
+Reset is a controller-defined operation that updates the live State from a per-controller "reset target" State. Each controller has a public attribute `reset_state: Controller.State`, allocated at `finalize()` and zero-initialized. The user mutates `controller.reset_state` to customize what reset writes; they can do so any time after `finalize()` and before the next reset call.
 
-- DOF-shaped state (e.g. `ControllerPID.State.integral`, shape `(len(indices),)`): zero the entries where the mask is True.
-- Per-robot state (e.g. hidden state for an RNN-flavor controller, shape `(num_robots, hidden_dim)`): OR-reduce the mask across each robot's `dofs_per_robot` consecutive entries, then zero (or re-initialize) the per-robot rows where the reduction is True.
-- History buffers (shape `(history_len, len(indices))`): broadcast the mask across the history dim.
+**User-facing call:**
 
-Coupled controllers may optionally expose a second reset method, `Controller.State.reset_per_robot(mask)`, where `mask` is length `num_robots`. The base `Controller.State` provides this method with a `NotImplementedError` default; subclasses with meaningful per-robot semantics override. `ControlGroup.State.reset_per_robot(mask)` fans out to each controller's `reset_per_robot` method.
+```python
+group.reset(state, mask)
+```
+
+- `state` is a `ControlGroup.State`.
+- `mask` is a `wp.array[wp.bool]` containing one boolean per *global DOF starting index*. `mask[g] = True` means "reset the DOF at global starting index `g`." The mask is the same shape regardless of how many controllers exist or how their internal state is laid out.
+
+To customize what reset writes, mutate the controller's stash ahead of time:
+
+```python
+pid = nc.ControllerPID(...)
+group = nc.ControlGroup([pid])              # finalize allocates pid.reset_state (zeros)
+pid.reset_state.integral.fill_(0.5)         # bias the reset target
+
+group.reset(state_0, mask=reset_mask)       # PID's masked entries → 0.5
+```
+
+**DOF starting indices, not slot indices.** Each entry in `mask` corresponds to one DOF — but a DOF's footprint inside a controller's State may be larger than one element (e.g., a quaternion-tracking filter that stores 4 floats per DOF). The `mask` is still indexed by DOF starting index, not by per-element slot. How a DOF's starting index expands into a chunk of state (1 element, 4 elements, …) is the controller author's business.
+
+**How it works.** `ControlGroup.reset(state, mask)` walks `(controller, sub_state)` pairs and calls `controller.reset(sub_state, mask)` for each non-None sub_state. There is *no* framework-level interpretation of what the mask means for each controller's state — the controller is handed the raw mask and decides how to use it. A typical pattern is to launch a kernel of `len(self._indices)` threads where thread `i` reads `mask[self._indices[i]]` and resets the corresponding chunk of state from `self.reset_state`.
+
+The same kernel is callable from C++ directly with the raw `(state_field, reset_state_field, controller_indices, mask)` array pointers — there is no Python-only sugar in the kernel-level contract.
 
 ---
 
@@ -209,13 +228,7 @@ for _ in range(steps):
     state_0, state_1 = state_1, state_0
 ```
 
-The group reads from `state_0` and writes to `state_1` on each step. After step, the caller swaps. Reset uses a bool mask:
-
-```python
-group.reset(state_0, mask: wp.array[wp.bool] | None = None)
-```
-
-`mask=None` resets every entry.
+The group reads from `state_0` and writes to `state_1` on each step. After step, the caller swaps. Reset uses a bool mask; see *Reset semantics* above.
 
 ---
 
@@ -225,9 +238,13 @@ group.reset(state_0, mask: wp.array[wp.bool] | None = None)
 class Controller:
     @dataclass
     class State:
-        def reset(self, mask: wp.array[wp.bool] | None = None) -> None: ...
-        def reset_per_robot(self, mask: wp.array[wp.bool] | None = None) -> None:
-            raise NotImplementedError("Per-robot reset not supported for this controller.")
+        """Pure data container. Subclasses declare their fields (e.g.
+        integral arrays, history buffers). No methods — reset is on Controller."""
+
+    # Set at finalize() to a zero-initialized State. Users mutate this attribute
+    # to customize what subsequent reset() calls write. Stateless controllers
+    # leave this as None.
+    reset_state: Controller.State | None
 
     def __init__(self, **ports):
         """Validate shapes / dtypes, normalize each port to (array, port_indices)
@@ -242,9 +259,11 @@ class Controller:
         the controller."""
 
     def finalize(self, device: wp.Device, num_outputs: int) -> None:
-        """Allocate device-side private buffers (e.g. next-state scratches,
-        internal Model + State for coupled controllers). Called by
-        ControlGroup after construction. num_outputs == len(indices)."""
+        """Allocate device-side private buffers (e.g. internal Model +
+        State + Jacobian buffers for coupled controllers) AND the
+        reset_state (zero-initialized via self.state(num_outputs, device)
+        for stateful controllers). Called by ControlGroup after
+        construction. num_outputs == len(indices)."""
 
     def state(self, num_outputs: int, device: wp.Device) -> Controller.State | None:
         """Allocate a fresh State, or None if stateless."""
@@ -268,6 +287,20 @@ class Controller:
         """Read bound inputs, write `+=` into bound outputs, write next_state.
         Called by ControlGroup.step. The device is fixed at finalize()
         time, so compute() does not take one."""
+
+    def reset(
+        self,
+        state: Controller.State,
+        mask: wp.array[wp.bool],
+    ) -> None:
+        """Update `state` from `self.reset_state` for the DOFs flagged in
+        `mask`. `mask` is a bool array indexed by global DOF starting
+        index — `mask[g] = True` means "reset DOF g." A typical
+        implementation launches a kernel of len(self._indices) threads
+        where thread i reads mask[self._indices[i]] and resets the
+        corresponding chunk of state from self.reset_state.
+
+        Stateless controllers leave this as a no-op (or don't override)."""
 ```
 
 The base class is neutral about the per-DOF vs. coupled distinction. Subclasses decide whether to take a `model=` kwarg, what their `indices`-length divisibility constraint is, and what kernel launch dimensionality to use.
@@ -291,12 +324,6 @@ class ControllerPID(Controller):
     class State(Controller.State):
         integral: wp.array[float] | None = None
 
-        def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
-            if mask is None:
-                self.integral.zero_()
-            else:
-                wp.launch(_masked_zero_1d, dim=len(mask), inputs=[self.integral, mask])
-
     def __init__(
         self,
         *,
@@ -318,7 +345,7 @@ class ControllerPID(Controller):
         self._output            = _normalize_port(output,            indices, name="output")
 
     def finalize(self, device, num_outputs):
-        pass
+        self.reset_state = self.state(num_outputs, device)   # zero-initialized; user may mutate
 
     def is_stateful(self): return True
     def is_graphable(self): return True
@@ -356,9 +383,29 @@ class ControllerPID(Controller):
             ],
             outputs=[out, next_state.integral],
         )
+
+    def reset(self, state, mask):
+        wp.launch(
+            _pid_masked_reset_kernel,
+            dim=len(self._indices),
+            inputs=[state.integral, self.reset_state.integral, self._indices, mask],
+        )
 ```
 
-The kernel computes `position_error = setp[setp_idx[i]] - meas[meas_idx[i]]`, `velocity_error = setp_rate[srate_idx[i]] - meas_rate[mrate_idx[i]]`, integrates with anti-windup, then does `out[out_idx[i]] += kp[kp_idx[i]] * position_error + ki[ki_idx[i]] * integral + kd[kd_idx[i]] * velocity_error`.
+```python
+@wp.kernel
+def _pid_masked_reset_kernel(
+    integral: wp.array[float],
+    target_integral: wp.array[float],
+    controller_indices: wp.array[wp.uint32],
+    mask: wp.array[wp.bool],
+):
+    i = wp.tid()
+    if mask[controller_indices[i]]:
+        integral[i] = target_integral[i]
+```
+
+The compute kernel computes `position_error = setp[setp_idx[i]] - meas[meas_idx[i]]`, `velocity_error = setp_rate[srate_idx[i]] - meas_rate[mrate_idx[i]]`, integrates with anti-windup, then does `out[out_idx[i]] += kp[kp_idx[i]] * position_error + ki[ki_idx[i]] * integral + kd[kd_idx[i]] * velocity_error`. The reset kernel is a separate, simpler launch that runs only when `group.reset(...)` is called.
 
 ### Example: ControllerDifferentialIK (coupled flavor)
 
@@ -513,21 +560,20 @@ class ControlGroup:
            2. For each controller (in registration order), call compute()
               which += writes into its bound output array(s)."""
 
-    def reset(self, state, mask: wp.array[wp.bool] | None = None) -> None:
-        """Fan the mask out to each controller's State.reset(mask)."""
-
-    def reset_per_robot(self, state, mask: wp.array[wp.bool] | None = None) -> None:
-        """Fan the per-robot mask out to each controller's State.reset_per_robot(mask).
-        Raises if any controller doesn't implement reset_per_robot."""
+    def reset(self, state: ControlGroup.State, mask: wp.array[wp.bool]) -> None:
+        """For each (controller, sub_state) pair where sub_state is not
+        None, call controller.reset(sub_state, mask). No framework-level
+        interpretation of `mask` — each controller handles it according
+        to its own state layout."""
 ```
 
 ```python
 @dataclass
 class ControlGroup.State:
     controller_states: list[Controller.State | None]
-    def reset(self, mask=None): ...
-    def reset_per_robot(self, mask=None): ...
 ```
+
+`ControlGroup.State` is a pure data container; reset is driven from `ControlGroup.reset(state, mask)` (which has access to each controller's `reset_state`).
 
 ---
 
