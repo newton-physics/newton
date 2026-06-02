@@ -492,6 +492,20 @@ class ModelKamino:
         """Whether the model was finalized (see :meth:`ModelBuilder.finalize`) with gradient computation enabled."""
         return self._requires_grad
 
+    @property
+    def use_coord_layout_targets(self) -> bool:
+        """Target-layout snapshot. Returns the wrapped
+        :class:`newton.Model`'s snapshot when this ``ModelKamino`` was built
+        via :meth:`from_newton`; falls back to the live module global
+        :data:`newton.use_coord_layout_targets` for native Kamino models built
+        through :class:`ModelBuilderKamino` (no wrapped Newton model).
+        """
+        if self._model is not None:
+            return self._model.use_coord_layout_targets
+        import newton  # noqa: PLC0415
+
+        return newton.use_coord_layout_targets
+
     ###
     # Factories
     ###

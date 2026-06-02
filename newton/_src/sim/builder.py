@@ -1140,10 +1140,10 @@ class ModelBuilder:
         """Joint limit stiffness values accumulated for :attr:`Model.joint_limit_ke`."""
         self.joint_limit_kd: list[float] = []
         """Joint limit damping values accumulated for :attr:`Model.joint_limit_kd`."""
-        self.joint_target_pos: list[float] = []
-        """Joint position targets accumulated for :attr:`Model.joint_target_pos`."""
-        self.joint_target_vel: list[float] = []
-        """Joint velocity targets accumulated for :attr:`Model.joint_target_vel`."""
+        self.joint_target_q: list[float] = []
+        """Joint position targets in :attr:`joint_q` (coord) layout, accumulated for :attr:`Model.joint_target_q`."""
+        self.joint_target_qd: list[float] = []
+        """Joint velocity targets per DOF, accumulated for :attr:`Model.joint_target_qd`."""
         self.joint_effort_limit: list[float] = []
         """Joint effort limits accumulated for :attr:`Model.joint_effort_limit`."""
         self.joint_velocity_limit: list[float] = []
@@ -2152,6 +2152,106 @@ class ModelBuilder:
         """
         return len(self.articulation_start)
 
+    @property
+    def joint_target_pos(self) -> list[float]:
+        """Deprecated read-only alias for :attr:`joint_target_q` (DOF-shape).
+
+        Returns a fresh DOF-shaped list — for FREE/BALL/DISTANCE the quat-w
+        slot is dropped; other joints copy verbatim. Mutations do not
+        propagate back. Raises :class:`AttributeError` under
+        :data:`newton.use_coord_layout_targets` ``True``.
+        """
+        import newton  # noqa: PLC0415
+
+        if newton.use_coord_layout_targets:
+            raise AttributeError(
+                "ModelBuilder.joint_target_pos is unavailable when "
+                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_q."
+            )
+        warnings.warn(
+            "ModelBuilder.joint_target_pos is deprecated; use ModelBuilder.joint_target_q "
+            "(coord-shaped). For per-axis configuration set JointDofConfig.target_pos before "
+            "calling add_joint*(). The attribute will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._project_target_q_to_dof()
+
+    @property
+    def joint_target_vel(self) -> list[float]:
+        """Deprecated read-only alias for :attr:`joint_target_qd`. Returns a
+        fresh copy — mutations do not propagate back. Raises
+        :class:`AttributeError` under
+        :data:`newton.use_coord_layout_targets` ``True``.
+        """
+        import newton  # noqa: PLC0415
+
+        if newton.use_coord_layout_targets:
+            raise AttributeError(
+                "ModelBuilder.joint_target_vel is unavailable when "
+                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_qd."
+            )
+        warnings.warn(
+            "ModelBuilder.joint_target_vel is deprecated; use ModelBuilder.joint_target_qd. "
+            "The attribute will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return list(self.joint_target_qd)
+
+    def _project_target_q_to_dof(self) -> list[float]:
+        """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
+        the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped list.
+
+        Under :data:`newton.use_coord_layout_targets` ``False`` the builder
+        stores raw per-axis angles (extrinsic ZYX) in the first 3 quat slots
+        and a placeholder ``1.0`` in the 4th — this method just slices the
+        placeholder off to produce the legacy DOF-shaped ``Model.joint_target_q``.
+        """
+        result: list[float] = []
+        for j, jtype in enumerate(self.joint_type):
+            q_start = self.joint_q_start[j]
+            if jtype == JointType.BALL:
+                result.extend(self.joint_target_q[q_start : q_start + 3])
+            elif jtype == JointType.FREE or jtype == JointType.DISTANCE:
+                result.extend(self.joint_target_q[q_start : q_start + 6])
+            elif jtype == JointType.FIXED:
+                pass
+            else:
+                num_lin, num_ang = self.joint_dof_dim[j]
+                result.extend(self.joint_target_q[q_start : q_start + num_lin + num_ang])
+        return result
+
+    @staticmethod
+    def _quat_from_axis_targets(t_x: float, t_y: float, t_z: float) -> tuple[float, float, float, float]:
+        """Compose per-axis angles into a unit quaternion using extrinsic ZYX
+        (yaw-pitch-roll) — equivalent to
+        ``wp.quat_from_euler(wp.vec3(t_x, t_y, t_z), 2, 1, 0)``. Matches
+        Kamino's ``target_dofs_to_coords_conversion_kernel`` convention.
+
+        Args:
+            t_x: Rotation around X [rad].
+            t_y: Rotation around Y [rad].
+            t_z: Rotation around Z [rad].
+
+        Returns:
+            ``(qx, qy, qz, qw)`` in Newton/Warp's vector-first storage order.
+        """
+        import math  # noqa: PLC0415
+
+        cx = math.cos(t_x * 0.5)
+        sx = math.sin(t_x * 0.5)
+        cy = math.cos(t_y * 0.5)
+        sy = math.sin(t_y * 0.5)
+        cz = math.cos(t_z * 0.5)
+        sz = math.sin(t_z * 0.5)
+        return (
+            sx * cy * cz + cx * sy * sz,  # qx
+            cx * sy * cz - sx * cy * sz,  # qy
+            cx * cy * sz + sx * sy * cz,  # qz
+            cx * cy * cz - sx * sy * sz,  # qw
+        )
+
     # endregion
 
     def replicate(
@@ -2319,6 +2419,7 @@ class ModelBuilder:
         joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
         bodies_follow_joint_ordering: bool = True,
         collapse_fixed_joints: bool = False,
+        collapse_massless_fixed_root: bool = False,
         mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
@@ -2412,6 +2513,7 @@ class ModelBuilder:
             joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
             bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
+            collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
             force_position_velocity_actuation: If True and both position (stiffness) and velocity
                 (damping) gains are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
@@ -2439,6 +2541,7 @@ class ModelBuilder:
             joint_ordering=joint_ordering,
             bodies_follow_joint_ordering=bodies_follow_joint_ordering,
             collapse_fixed_joints=collapse_fixed_joints,
+            collapse_massless_fixed_root=collapse_massless_fixed_root,
             mesh_maxhullvert=mesh_maxhullvert,
             force_position_velocity_actuation=force_position_velocity_actuation,
             override_root_xform=override_root_xform,
@@ -2702,6 +2805,7 @@ class ModelBuilder:
         enable_self_collisions: bool = True,
         ignore_inertial_definitions: bool = False,
         collapse_fixed_joints: bool = False,
+        collapse_massless_fixed_root: bool = False,
         verbose: bool = False,
         skip_equality_constraints: bool = False,
         convert_mjc_equality_constraints: bool = True,
@@ -2808,6 +2912,7 @@ class ModelBuilder:
             enable_self_collisions: If True, self-collisions are enabled.
             ignore_inertial_definitions: If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
+            collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
             verbose: If True, print additional information about parsing the MJCF.
             skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
@@ -2819,7 +2924,7 @@ class ModelBuilder:
                 where control comes directly from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
                 See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
                 actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
-                from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
+                from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
             path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
         """
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
@@ -2851,6 +2956,7 @@ class ModelBuilder:
             enable_self_collisions=enable_self_collisions,
             ignore_inertial_definitions=ignore_inertial_definitions,
             collapse_fixed_joints=collapse_fixed_joints,
+            collapse_massless_fixed_root=collapse_massless_fixed_root,
             verbose=verbose,
             skip_equality_constraints=skip_equality_constraints,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
@@ -3142,6 +3248,7 @@ class ModelBuilder:
             start_X_p = len(self.joint_X_p)
             self.joint_X_p.extend(builder.joint_X_p)
             self.joint_q.extend(builder.joint_q)
+            self.joint_target_q.extend(builder.joint_target_q)
             if xform is not None:
                 for i in range(len(builder.joint_X_p)):
                     if builder.joint_type[i] == JointType.FREE:
@@ -3308,8 +3415,7 @@ class ModelBuilder:
             "joint_cts",
             "joint_f",
             "joint_act",
-            "joint_target_pos",
-            "joint_target_vel",
+            "joint_target_qd",
             "joint_limit_lower",
             "joint_limit_upper",
             "joint_limit_ke",
@@ -3904,8 +4010,7 @@ class ModelBuilder:
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
-            self.joint_target_pos.append(dim.target_pos)
-            self.joint_target_vel.append(dim.target_vel)
+            self.joint_target_qd.append(dim.target_vel)
 
             # Use actuator_mode if explicitly set, otherwise infer from gains
             if dim.actuator_mode is not None:
@@ -3945,6 +4050,9 @@ class ModelBuilder:
 
         for _ in range(coord_count):
             self.joint_q.append(0.0)
+        target_q_offset = len(self.joint_target_q)
+        for _ in range(coord_count):
+            self.joint_target_q.append(0.0)
         for _ in range(dof_count):
             self.joint_qd.append(0.0)
             self.joint_f.append(0.0)
@@ -3955,6 +4063,36 @@ class ModelBuilder:
         if joint_type == JointType.FREE or joint_type == JointType.DISTANCE or joint_type == JointType.BALL:
             # ensure that a valid quaternion is used for the angular dofs
             self.joint_q[-1] = 1.0
+
+        if joint_type == JointType.BALL or joint_type == JointType.FREE or joint_type == JointType.DISTANCE:
+            if joint_type == JointType.BALL:
+                quat_offset = target_q_offset
+            else:
+                for i, dim in enumerate(linear_axes):
+                    self.joint_target_q[target_q_offset + i] = dim.target_pos
+                quat_offset = target_q_offset + 3
+
+            import newton  # noqa: PLC0415
+
+            if newton.use_coord_layout_targets:
+                qx, qy, qz, qw = self._quat_from_axis_targets(
+                    angular_axes[0].target_pos,
+                    angular_axes[1].target_pos,
+                    angular_axes[2].target_pos,
+                )
+                self.joint_target_q[quat_offset + 0] = qx
+                self.joint_target_q[quat_offset + 1] = qy
+                self.joint_target_q[quat_offset + 2] = qz
+                self.joint_target_q[quat_offset + 3] = qw
+            else:
+                for i, dim in enumerate(angular_axes):
+                    self.joint_target_q[quat_offset + i] = dim.target_pos
+                self.joint_target_q[quat_offset + 3] = 1.0
+        elif joint_type != JointType.FIXED:
+            for i, dim in enumerate(linear_axes):
+                self.joint_target_q[target_q_offset + i] = dim.target_pos
+            for i, dim in enumerate(angular_axes):
+                self.joint_target_q[target_q_offset + len(linear_axes) + i] = dim.target_pos
 
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
@@ -4918,13 +5056,19 @@ class ModelBuilder:
             plt.legend(loc="upper left", fontsize=6)
         plt.show()
 
-    def collapse_fixed_joints(self, verbose: bool = False, joints_to_keep: list[str] | None = None) -> dict[str, Any]:
+    def collapse_fixed_joints(
+        self,
+        verbose: bool = False,
+        joints_to_keep: Sequence[str | int] | None = None,
+    ) -> dict[str, Any]:
         """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.
 
         Args:
             verbose: If True, print additional information about the collapsed joints.
-            joints_to_keep: An optional list of joint labels to be excluded from the collapse process.
+            joints_to_keep: An optional sequence of joint labels or original joint indices to be excluded from
+                the collapse process.
         """
+        joints_to_keep = set(joints_to_keep or ())
 
         body_data = {}
         body_children = {-1: []}
@@ -4972,7 +5116,9 @@ class ModelBuilder:
             data = {
                 "type": self.joint_type[i],
                 "q": self.joint_q[q_start : q_start + q_dim],
+                "target_q": self.joint_target_q[q_start : q_start + q_dim],
                 "qd": self.joint_qd[qd_start : qd_start + qd_dim],
+                "target_qd": self.joint_target_qd[qd_start : qd_start + qd_dim],
                 "cts": self.joint_cts[cts_start : cts_start + cts_dim],
                 "armature": self.joint_armature[qd_start : qd_start + qd_dim],
                 "q_start": q_start,
@@ -5001,8 +5147,6 @@ class ModelBuilder:
                         "limit_kd": self.joint_limit_kd[j],
                         "limit_lower": self.joint_limit_lower[j],
                         "limit_upper": self.joint_limit_upper[j],
-                        "target_pos": self.joint_target_pos[j],
-                        "target_vel": self.joint_target_vel[j],
                         "effort_limit": self.joint_effort_limit[j],
                     }
                 )
@@ -5035,7 +5179,6 @@ class ModelBuilder:
             nonlocal retained_joints
             nonlocal retained_bodies
             nonlocal body_data
-            nonlocal joints_to_keep
 
             joint = joint_data[(parent_body, child_body)]
             # Don't merge fixed joints if the child body is referenced in an equality constraint
@@ -5043,9 +5186,7 @@ class ModelBuilder:
             should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
 
             # Don't merge fixed joints listed in joints_to_keep list
-            if joints_to_keep is None:
-                joints_to_keep = []
-            joint_in_keep_list = joint["label"] in joints_to_keep
+            joint_in_keep_list = joint["label"] in joints_to_keep or joint["original_id"] in joints_to_keep
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
                 # Skip merging this fixed joint because the body is referenced in an equality constraint
@@ -5349,8 +5490,8 @@ class ModelBuilder:
         self.joint_effort_limit.clear()
         self.joint_limit_kd.clear()
         self.joint_dof_dim.clear()
-        self.joint_target_pos.clear()
-        self.joint_target_vel.clear()
+        self.joint_target_q.clear()
+        self.joint_target_qd.clear()
         self.joint_world.clear()
         self.joint_articulation.clear()
         for joint in retained_joints:
@@ -5362,7 +5503,9 @@ class ModelBuilder:
             self.joint_qd_start.append(len(self.joint_qd))
             self.joint_cts_start.append(len(self.joint_cts))
             self.joint_q.extend(joint["q"])
+            self.joint_target_q.extend(joint["target_q"])
             self.joint_qd.extend(joint["qd"])
+            self.joint_target_qd.extend(joint["target_qd"])
             self.joint_cts.extend(joint["cts"])
             self.joint_armature.extend(joint["armature"])
             self.joint_enabled.append(joint["enabled"])
@@ -5391,8 +5534,6 @@ class ModelBuilder:
                 self.joint_limit_upper.append(axis["limit_upper"])
                 self.joint_limit_ke.append(axis["limit_ke"])
                 self.joint_limit_kd.append(axis["limit_kd"])
-                self.joint_target_pos.append(axis["target_pos"])
-                self.joint_target_vel.append(axis["target_vel"])
                 self.joint_effort_limit.append(axis["effort_limit"])
 
         # Update DOF and coordinate counts to match the rebuilt arrays
@@ -9714,8 +9855,7 @@ class ModelBuilder:
                 ("joint_limit_upper", self.joint_limit_upper),
                 ("joint_limit_ke", self.joint_limit_ke),
                 ("joint_limit_kd", self.joint_limit_kd),
-                ("joint_target_pos", self.joint_target_pos),
-                ("joint_target_vel", self.joint_target_vel),
+                ("joint_target_qd", self.joint_target_qd),
                 ("joint_effort_limit", self.joint_effort_limit),
                 ("joint_velocity_limit", self.joint_velocity_limit),
                 ("joint_friction", self.joint_friction),
@@ -9731,6 +9871,7 @@ class ModelBuilder:
             # Per-coord arrays should have length == joint_coord_count
             coord_arrays = [
                 ("joint_q", self.joint_q),
+                ("joint_target_q", self.joint_target_q),
             ]
             for name, arr in coord_arrays:
                 if len(arr) != self.joint_coord_count:
@@ -10145,13 +10286,30 @@ class ModelBuilder:
             m.shape_flags = wp.array(self.shape_flags, dtype=wp.int32)
             m.body_shapes = self.body_shapes
 
-            # build list of ids for geometry sources (meshes, sdfs)
+            # build list of ids for geometry sources (meshes, sdfs, heightfields)
             geo_sources = []
             finalized_geos = {}  # do not duplicate geometry
             gaussians = []
+            heightfield_meshes = []
             for geo in self.shape_source:
                 geo_hash = hash(geo)  # avoid repeated hash computations
-                if geo and not isinstance(geo, Heightfield):
+                if isinstance(geo, Heightfield):
+                    if geo_hash not in finalized_geos:
+                        # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
+                        # while Heightfield stores row-major data (row=Y, col=X).
+                        actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
+                        hf_geo = Mesh.create_heightfield(
+                            heightfield=actual_heights.T,
+                            extent_x=geo.hx * 2.0,
+                            extent_y=geo.hy * 2.0,
+                            ground_z=geo.min_z,
+                            compute_inertia=False,
+                        )
+                        finalized_geos[geo_hash] = hf_geo.finalize(device=device)
+                        # keep mesh alive for the model's lifetime
+                        heightfield_meshes.append(hf_geo.mesh)
+                    geo_sources.append(finalized_geos[geo_hash])
+                elif geo:
                     if geo_hash not in finalized_geos:
                         if isinstance(geo, Mesh):
                             finalized_geos[geo_hash] = geo.finalize(device=device)
@@ -10162,11 +10320,11 @@ class ModelBuilder:
                             finalized_geos[geo_hash] = geo.finalize()
                     geo_sources.append(finalized_geos[geo_hash])
                 else:
-                    # add null pointer
                     geo_sources.append(0)
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
+            m.heightfield_meshes = heightfield_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
             m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
@@ -10623,9 +10781,9 @@ class ModelBuilder:
                         hd.nrow = hf.nrow
                         hd.ncol = hf.ncol
                         # Bake the per-instance scale into the extents so narrow-phase
-                        # collision and raycast (which read from HeightfieldData) apply
-                        # scale consistently. ``abs`` on hx/hy because the raycast DDA
-                        # and parallel-slab checks assume non-negative planar extents;
+                        # collision (which reads from HeightfieldData) apply
+                        # scale consistently. ``abs`` on hx/hy because the
+                        # parallel-slab checks assume non-negative planar extents;
                         # z uses raw multiplication so ``sz < 0`` inverts the surface
                         # (``min_z > max_z`` already encodes an inverted heightfield).
                         sx, sy, sz = self.shape_scale[i]
@@ -10900,8 +11058,14 @@ class ModelBuilder:
             m.joint_target_mode = wp.array(self.joint_target_mode, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_target_vel = wp.array(self.joint_target_vel, dtype=wp.float32, requires_grad=requires_grad)
+            import newton  # noqa: PLC0415
+
+            if newton.use_coord_layout_targets:
+                target_q_values = self.joint_target_q
+            else:
+                target_q_values = self._project_target_q_to_dof()
+            m.joint_target_q = wp.array(target_q_values, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_target_qd = wp.array(self.joint_target_qd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_act = wp.array(self.joint_act, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
@@ -11057,12 +11221,18 @@ class ModelBuilder:
                     )
                     clamping_objs.append(comp_class(**comp_arrays, **shared_kw))
 
+                target_pos_indices_arg = (
+                    pos_indices_arg if (pos_indices_arg is not None and m.use_coord_layout_targets) else indices
+                )
                 actuator = Actuator(
                     indices=indices,
                     controller=controller,
                     delay=delay_obj,
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,
+                    target_pos_indices=target_pos_indices_arg,
+                    control_target_pos_attr="joint_target_q",
+                    control_target_vel_attr="joint_target_qd",
                     requires_grad=requires_grad,
                 )
 
