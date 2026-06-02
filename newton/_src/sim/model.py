@@ -943,7 +943,7 @@ class Model:
             world: If provided, set gravity only for this world.
 
         Note:
-            Call ``solver.notify_model_changed(SolverModelFlags.MODEL_PROPERTIES)`` after.
+            Call ``solver.notify_model_changed(ModelFlags.MODEL_PROPERTIES)`` after.
 
             Global entities (particles/bodies not assigned to a specific world) use
             gravity from world 0.

@@ -4,8 +4,7 @@
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, State
-from ..flags import SolverModelFlags
+from ...sim import Contacts, Control, Model, ModelFlags, State
 from ..solver import SolverBase
 from .kernels import (
     accumulate_weighted_contact_impulse,
@@ -142,7 +141,7 @@ class SolverXPBD(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int) -> None:
-        if flags & (SolverModelFlags.BODY_PROPERTIES | SolverModelFlags.BODY_INERTIAL_PROPERTIES):
+        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
 
     def copy_kinematic_body_state(self, model: Model, state_in: State, state_out: State):

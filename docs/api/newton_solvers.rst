@@ -418,15 +418,15 @@ See the `DiffSim examples on GitHub`_ for the current reference workflows.
    :toctree: _generated
    :nosignatures:
 
+   ModelFlags
    SolverBase
    SolverFeatherstone
    SolverImplicitMPM
    SolverKamino
-   SolverModelFlags
    SolverMuJoCo
    SolverNotifyFlags
    SolverSemiImplicit
-   SolverStateFlags
    SolverStyle3D
    SolverVBD
    SolverXPBD
+   StateFlags

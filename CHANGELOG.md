@@ -20,9 +20,9 @@
 - Add `newton.utils.OnnxRuntime`, a graph-capturable ONNX inference engine backed solely by Warp kernels (no `onnxruntime` or `torch` runtime dependency); used by `ControllerNeuralMLP` and `ControllerNeuralLSTM` to load `.onnx` policies. To migrate a TorchScript policy, run `torch.onnx.export(model, dummy_input, "policy.onnx", opset_version=17)` once and point the controllers at the resulting `.onnx` file. The `onnx` package is now an optional extra (`pip install newton[onnx]`); install it explicitly to use the ONNX runtime.
 - Add USD parsing for `NewtonSiteAPI` to mark shapes as sites.
 - Add `ViewerRTX`, a real-time ray-traced viewer powered by NVIDIA OVRTX.
-- Add `SolverBase.reset()` method for in-place solver state resets with optional `world_mask` and `SolverStateFlags`; default implementation is a no-op
-- Add `SolverStateFlags` enum to control which state attributes are reset
-- Add `SolverModelFlags` as the canonical name for model-change notification flags
+- Add `SolverBase.reset()` method for in-place solver state resets with optional `world_mask` and `StateFlags`; default implementation is a no-op
+- Add `StateFlags` enum to control which state attributes are reset
+- Add `ModelFlags` as the canonical name for model-change notification flags
 - Support negative (mirrored) scale on mesh, convex hull, and SDF shapes, so a single `Mesh` instance can be shared across shapes with different signed scales without re-baking
 - Add `newton.utils.ColorSpace`, `color_srgb_to_linear()`, `color_linear_to_srgb()`, and `SensorTiledCamera.RenderConfig.output_color_space` for color-space boundaries
 - Add USD parsing for `NewtonMassAPI`: shell mass model (`newton:massModel`), shell thickness (`newton:shellThickness`), and compact inertia tensor (`newton:inertia`)
@@ -43,16 +43,18 @@
 - Reject negative scale components on `ModelBuilder.add_shape_cone()` and heightfield shapes (previously silently accepted, produced invalid geometry). To mirror a cone, apply the flip through the shape's `xform`; to mirror a heightfield, pre-mirror the source height data and pass a positive scale.
 - Change `SolverKamino.reset()` signature from `reset(state_out, ...)` to `reset(state, ...)` to match `SolverBase.reset()` and reset in place on `state`; migrate `state_out=` calls to `state=`
 - Change `SensorTiledCamera` default packed `color` and `albedo` outputs to sRGB-encoded bytes so authored display colors render at the expected display brightness; pass `RenderConfig(output_color_space=ColorSpace.LINEAR)` to preserve the previous linear-byte behavior.
+- Accept plain `int` flag bitmasks in solver reset and model-change notification APIs so users can define extension bits beyond `StateFlags` and `ModelFlags`.
 - Bump `newton-usd-schemas` to `>=0.3.0`
 
 ### Deprecated
 
 - Deprecate loading `.pt` / `.pth` (TorchScript) checkpoints via `ControllerNeuralMLP`; the legacy TorchScript / dict-checkpoint path still works (with a `DeprecationWarning`) when PyTorch is installed but will be removed in a future release. `ControllerNeuralLSTM` requires re-exporting to ONNX with the metadata properties documented in its class docstring; pointing it at a `.pt` checkpoint now raises `NotImplementedError` with migration guidance. Convert the MLP checkpoint to ONNX once with `torch.onnx.export(model, dummy_input, "policy.onnx", opset_version=17)` and load the resulting `.onnx` file.
-- Deprecate `SolverNotifyFlags` in favor of `SolverModelFlags`; migrate calls such as `SolverNotifyFlags.MODEL_PROPERTIES` to `SolverModelFlags.MODEL_PROPERTIES`
+- Deprecate `SolverNotifyFlags` in favor of `ModelFlags`; migrate calls such as `SolverNotifyFlags.MODEL_PROPERTIES` to `ModelFlags.MODEL_PROPERTIES`
 - Deprecate implicit positive Dahl defaults in `SolverVBD.register_custom_attributes()`. Pass `dahl_defaults_enabled=False` and explicitly author positive `model.vbd.dahl_eps_max` and `model.vbd.dahl_tau` values when Dahl cable friction is desired, instead of relying on registered default values.
 
 ### Removed
 
+- Remove `SolverModelFlags` and `SolverStateFlags`; use `ModelFlags` and `StateFlags` instead.
 - Remove `SensorContact.net_force` (deprecated in 1.1.0); use `SensorContact.total_force` and `SensorContact.force_matrix` instead
 - Remove beta `SolverKamino.reset(state_out=...)` and legacy positional reset-target compatibility; pass the reset state as `reset(state, ...)` or `reset(state=...)` and provide reset targets by keyword, such as `base_q=...`
 - Remove `include_total` parameter from `SensorContact` (deprecated in 1.1.0); use `measure_total` instead

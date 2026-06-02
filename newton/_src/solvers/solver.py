@@ -4,8 +4,7 @@
 import warp as wp
 
 from ..geometry import ParticleFlags
-from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, State
-from .flags import SolverStateFlags
+from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, State, StateFlags
 
 
 @wp.kernel
@@ -303,7 +302,7 @@ class SolverBase:
         self,
         state: State,
         world_mask: wp.array | None = None,
-        flags: SolverStateFlags | None = None,
+        flags: StateFlags | int | None = None,
     ) -> None:
         """Reset the solver internal state data.
 
@@ -319,7 +318,7 @@ class SolverBase:
             world_mask: Optional boolean mask of shape ``(num_worlds,)``
                 specifying which worlds to reset.  If ``None``, all worlds
                 are reset.
-            flags: Optional :class:`SolverStateFlags` bitmask controlling
+            flags: Optional :class:`~newton.StateFlags` or ``int`` bitmask controlling
                 which state attributes need to be reset.  If ``None``, all
                 state attributes are reset.
         """
@@ -346,7 +345,7 @@ class SolverBase:
         """Notify the solver that parts of the :class:`~newton.Model` were modified.
 
         The *flags* argument is a bit-mask composed of the
-        :class:`~newton.solvers.SolverModelFlags` enums defined in :mod:`newton.solvers`.
+        :class:`~newton.ModelFlags` enums or custom ``int`` bits.
         Each flag represents a category of model data that may have been
         updated after the solver was created.  Passing the appropriate
         combination of flags enables a solver implementation to refresh its
@@ -356,20 +355,20 @@ class SolverBase:
         ==============================================  =============================================================
         Constant                                        Description
         ==============================================  =============================================================
-        ``SolverModelFlags.JOINT_PROPERTIES``            Joint transforms or coordinates have changed.
-        ``SolverModelFlags.JOINT_DOF_PROPERTIES``        Joint axis limits, targets, modes, DOF state, or force buffers have changed.
-        ``SolverModelFlags.BODY_PROPERTIES``             Rigid-body pose or velocity buffers have changed.
-        ``SolverModelFlags.BODY_INERTIAL_PROPERTIES``    Rigid-body mass or inertia tensors have changed.
-        ``SolverModelFlags.SHAPE_PROPERTIES``            Shape transforms or geometry have changed.
-        ``SolverModelFlags.MODEL_PROPERTIES``            Model global properties (e.g., gravity) have changed.
-        ``SolverModelFlags.CONSTRAINT_PROPERTIES``       Constraint definitions, coefficients, or enable flags have changed.
-        ``SolverModelFlags.TENDON_PROPERTIES``           Tendon stiffness or related tendon properties have changed.
-        ``SolverModelFlags.ACTUATOR_PROPERTIES``         Actuator gains, biases, limits, or force properties have changed.
+        ``ModelFlags.JOINT_PROPERTIES``            Joint transforms or coordinates have changed.
+        ``ModelFlags.JOINT_DOF_PROPERTIES``        Joint axis limits, targets, modes, DOF state, or force buffers have changed.
+        ``ModelFlags.BODY_PROPERTIES``             Rigid-body pose or velocity buffers have changed.
+        ``ModelFlags.BODY_INERTIAL_PROPERTIES``    Rigid-body mass or inertia tensors have changed.
+        ``ModelFlags.SHAPE_PROPERTIES``            Shape transforms or geometry have changed.
+        ``ModelFlags.MODEL_PROPERTIES``            Model global properties (e.g., gravity) have changed.
+        ``ModelFlags.CONSTRAINT_PROPERTIES``       Constraint definitions, coefficients, or enable flags have changed.
+        ``ModelFlags.TENDON_PROPERTIES``           Tendon stiffness or related tendon properties have changed.
+        ``ModelFlags.ACTUATOR_PROPERTIES``         Actuator gains, biases, limits, or force properties have changed.
         ==============================================  =============================================================
 
         Args:
-            flags (int): Bit-mask of :class:`SolverModelFlags` indicating which
-                model properties changed.
+            flags: Bit-mask of :class:`~newton.ModelFlags` or custom ``int``
+                bits indicating which model properties changed.
 
         """
         pass

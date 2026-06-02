@@ -21,9 +21,10 @@ from ...sim import (
     JointType,
     Model,
     ModelBuilder,
+    ModelFlags,
     State,
+    StateFlags,
 )
-from ..flags import SolverModelFlags, SolverStateFlags
 from ..solver import SolverBase
 
 if TYPE_CHECKING:
@@ -442,7 +443,7 @@ class SolverKamino(SolverBase):
         self,
         state: State,
         world_mask: wp.array | None = None,
-        flags: SolverStateFlags | None = None,
+        flags: StateFlags | int | None = None,
         *,
         actuator_q: wp.array | None = None,
         actuator_u: wp.array | None = None,
@@ -465,7 +466,7 @@ class SolverKamino(SolverBase):
             world_mask: Optional array of per-world masks indicating which
                 worlds should be reset.
                 Shape of ``(num_worlds,)`` and type :class:`wp.int8` | :class:`wp.bool`.
-            flags: Optional :class:`SolverStateFlags` bitmask controlling
+            flags: Optional :class:`~newton.StateFlags` or ``int`` bitmask controlling
                 which state attributes need to be reset.  If ``None``, all
                 state attributes are reset.
             actuator_q: Optional array of target actuated joint coordinates.
@@ -484,7 +485,7 @@ class SolverKamino(SolverBase):
         if state is None:
             raise ValueError("'state' argument is required.")
 
-        state_flags = SolverStateFlags.ALL if flags is None else SolverStateFlags(flags)
+        state_flags = int(StateFlags.ALL if flags is None else flags)
 
         # Convert base pose from body-origin to COM frame
         if base_q is not None:
@@ -507,15 +508,15 @@ class SolverKamino(SolverBase):
         # partial resets become part of a captured reset graph.
         restore_after_reset: list[tuple[wp.array, wp.array]] = []
 
-        def _preserve_if_unset(array: wp.array | None, flag: SolverStateFlags) -> None:
+        def _preserve_if_unset(array: wp.array | None, flag: int) -> None:
             if array is not None and not (state_flags & flag):
                 restore_after_reset.append((array, wp.clone(array, device=array.device)))
 
-        _preserve_if_unset(state_out_kamino.q_j, SolverStateFlags.JOINT_Q)
-        _preserve_if_unset(state_out_kamino.q_j_p, SolverStateFlags.JOINT_Q)
-        _preserve_if_unset(state_out_kamino.dq_j, SolverStateFlags.JOINT_QD)
-        _preserve_if_unset(state_out_kamino.q_i, SolverStateFlags.BODY_Q)
-        _preserve_if_unset(state_out_kamino.u_i, SolverStateFlags.BODY_QD)
+        _preserve_if_unset(state_out_kamino.q_j, StateFlags.JOINT_Q)
+        _preserve_if_unset(state_out_kamino.q_j_p, StateFlags.JOINT_Q)
+        _preserve_if_unset(state_out_kamino.dq_j, StateFlags.JOINT_QD)
+        _preserve_if_unset(state_out_kamino.q_i, StateFlags.BODY_Q)
+        _preserve_if_unset(state_out_kamino.u_i, StateFlags.BODY_QD)
 
         # Execute the reset operation of the Kamino solver,
         # to write the reset state to `state_out_kamino`.
@@ -617,41 +618,41 @@ class SolverKamino(SolverBase):
         """Propagate Newton model property changes to Kamino's internal ModelKamino.
 
         Args:
-            flags: Bitmask of :class:`SolverModelFlags` indicating which properties changed.
+            flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which properties changed.
         """
-        if flags & SolverModelFlags.MODEL_PROPERTIES:
+        if flags & ModelFlags.MODEL_PROPERTIES:
             self._update_gravity()
 
-        if flags & SolverModelFlags.BODY_PROPERTIES:
+        if flags & ModelFlags.BODY_PROPERTIES:
             pass  # TODO: convert to CoM-frame if body_q_i_0 is changed at runtime?
 
-        if flags & SolverModelFlags.BODY_INERTIAL_PROPERTIES:
+        if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
             # Kamino's RigidBodiesModel references Newton's arrays directly
             # (m_i, inv_m_i, i_I_i, inv_i_I_i, i_r_com_i), so no copy needed.
             pass
 
-        if flags & SolverModelFlags.SHAPE_PROPERTIES:
+        if flags & ModelFlags.SHAPE_PROPERTIES:
             pass  # TODO: ???
 
-        if flags & SolverModelFlags.JOINT_PROPERTIES:
+        if flags & ModelFlags.JOINT_PROPERTIES:
             self._update_joint_transforms()
 
-        if flags & SolverModelFlags.JOINT_DOF_PROPERTIES:
+        if flags & ModelFlags.JOINT_DOF_PROPERTIES:
             # Joint limits (q_j_min, q_j_max, dq_j_max, tau_j_max) are direct
             # references to Newton's arrays, so no copy needed.
             pass
 
-        if flags & SolverModelFlags.ACTUATOR_PROPERTIES:
+        if flags & ModelFlags.ACTUATOR_PROPERTIES:
             pass  # TODO: ???
 
-        if flags & SolverModelFlags.CONSTRAINT_PROPERTIES:
+        if flags & ModelFlags.CONSTRAINT_PROPERTIES:
             pass  # TODO: ???
 
         unsupported = flags & ~(
-            SolverModelFlags.MODEL_PROPERTIES
-            | SolverModelFlags.BODY_INERTIAL_PROPERTIES
-            | SolverModelFlags.JOINT_PROPERTIES
-            | SolverModelFlags.JOINT_DOF_PROPERTIES
+            ModelFlags.MODEL_PROPERTIES
+            | ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.JOINT_PROPERTIES
+            | ModelFlags.JOINT_DOF_PROPERTIES
         )
         if unsupported:
             self._kamino.msg.warning(
@@ -829,7 +830,7 @@ class SolverKamino(SolverBase):
         """
         Updates Kamino's :class:`GravityModel` from Newton's model.gravity.
 
-        Called when :data:`SolverModelFlags.MODEL_PROPERTIES` is raised,
+        Called when :data:`~newton.ModelFlags.MODEL_PROPERTIES` is raised,
         indicating that ``model.gravity`` may have changed at runtime.
         """
         self._kamino.convert_model_gravity(self.model, self._model_kamino.gravity)
@@ -838,7 +839,7 @@ class SolverKamino(SolverBase):
         """
         Re-derive Kamino joint anchors and axes from Newton's joint_X_p / joint_X_c.
 
-        Called when :data:`SolverModelFlags.JOINT_PROPERTIES` is raised,
+        Called when :data:`~newton.ModelFlags.JOINT_PROPERTIES` is raised,
         indicating that ``model.joint_X_p`` or ``model.joint_X_c`` may have
         changed at runtime (e.g. animated root transforms).
         """

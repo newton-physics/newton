@@ -5,8 +5,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...sim import BodyFlags, Contacts, Control, JointType, Model, State
-from ..flags import SolverModelFlags
+from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
     eval_particle_body_contact_forces,
@@ -242,7 +241,7 @@ class SolverFeatherstone(SolverBase):
 
     @override
     def notify_model_changed(self, flags: int) -> None:
-        if flags & (SolverModelFlags.BODY_PROPERTIES | SolverModelFlags.JOINT_DOF_PROPERTIES):
+        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
             self._update_kinematic_state()
             self._mass_matrix_dirty = True
 
