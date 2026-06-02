@@ -210,6 +210,7 @@ def _sum_kernel(values: wp.array[float], out: wp.array[float]):
 # -------------------------------------------------------------------------
 
 
+@unittest.skipUnless(_HAS_ONNX, "onnx not installed")
 class TestControllerNeuralMLP(unittest.TestCase):
     """ControllerNeuralMLP — load via model_path, call compute() directly."""
 
@@ -405,7 +406,26 @@ class TestControllerNeuralMLP(unittest.TestCase):
                 err_msg=f"target={tgt}: graph replay diverged from eager",
             )
 
-    @unittest.skipUnless(_HAS_TORCH, "torch not installed")
+
+@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+class TestControllerNeuralMLPLegacyTorchScript(unittest.TestCase):
+    """Regression tests for the deprecated ``.pt`` MLP checkpoint path.
+
+    ``ControllerNeuralMLP`` was rewritten to load ``.onnx`` checkpoints backed
+    by Newton's ONNX runtime, but legacy TorchScript checkpoints created against
+    the pre-ONNX API are still supported via ``_TorchModuleAdapter`` for one
+    deprecation cycle. These tests pin that contract so we catch any future
+    regression that breaks legacy checkpoint loading before the deprecation
+    window closes.
+    """
+
+    def setUp(self):
+        self.device = wp.get_device()
+        self._tmp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
     def test_finalize_legacy_torchscript_checkpoint(self):
         """Legacy ``.pt`` checkpoints must finalize without a KeyError.
 
@@ -1108,34 +1128,46 @@ class TestDelayedActuator(unittest.TestCase):
         self.assertEqual(ds.write_idx.numpy()[0], max_delay - 1)
         np.testing.assert_array_equal(ds.num_pushes.numpy(), [0, 0])
 
-    def test_latency(self):
-        """Delay=N gives exactly N steps of delay; empty buffer falls back to current targets."""
-        n, delay_val = 1, 2
+    def test_compute(self):
+        """Walk the three read regimes of :class:`Delay` with the same step call.
+
+        Each block below repeats the same ``read + push`` operation via the
+        ``step(target)`` helper and asserts the delayed value, varying only
+        the target. Mirrors the flat ``compute + assert`` structure used by
+        :meth:`TestControllerPD.test_compute` and
+        :meth:`TestControllerPID.test_compute`.
+        """
+        n, delay_val = 1, 3
         device = wp.get_device()
         delays = wp.array([delay_val], dtype=wp.int32, device=device)
         delay = Delay(delay_steps=delays, max_delay=delay_val)
         delay.finalize(device, n)
-
         indices = wp.array([0], dtype=wp.uint32, device=device)
         state_0 = delay.state(n, device)
         state_1 = delay.state(n, device)
 
-        read_history = []
-        for step_i in range(delay_val + 3):
-            target_val = float(step_i + 1) * 10.0
+        def step(target_val: float) -> float:
+            """Read the delayed target, push ``target_val``, return the read value."""
+            nonlocal state_0, state_1
             tgt_pos = wp.array([target_val], dtype=wp.float32, device=device)
             tgt_vel = wp.zeros(1, dtype=wp.float32, device=device)
-
-            out_pos, _out_vel, _out_act = delay.get_delayed_targets(tgt_pos, tgt_vel, None, indices, indices, state_0)
-            read_history.append(out_pos.numpy()[0])
+            out_pos, _, _ = delay.get_delayed_targets(tgt_pos, tgt_vel, None, indices, indices, state_0)
             delay.update_state(tgt_pos, tgt_vel, None, indices, indices, state_0, state_1)
             state_0, state_1 = state_1, state_0
+            return float(out_pos.numpy()[0])
 
-        self.assertAlmostEqual(read_history[0], 10.0, places=4, msg="step 0: empty buffer -> current target")
-        self.assertAlmostEqual(read_history[1], 10.0, places=4, msg="step 1: 1 entry, lag clamped -> oldest (10)")
-        self.assertAlmostEqual(read_history[2], 10.0, places=4, msg="step 2: full delay=2 -> reads step 0 (10)")
-        self.assertAlmostEqual(read_history[3], 20.0, places=4, msg="step 3: full delay=2 -> reads step 1 (20)")
-        self.assertAlmostEqual(read_history[4], 30.0, places=4, msg="step 4: full delay=2 -> reads step 2 (30)")
+        # Regime A — empty buffer: num_pushes == 0 ⇒ current target.
+        self.assertAlmostEqual(step(10.0), 10.0, places=4, msg="empty buffer -> current target (10)")
+
+        # Regime B — underfilled: 0 < num_pushes < delays ⇒ lag clamps to
+        # num_pushes-1, returning the oldest entry present.
+        self.assertAlmostEqual(step(20.0), 10.0, places=4, msg="1 entry, clamped -> oldest (10)")
+        self.assertAlmostEqual(step(30.0), 10.0, places=4, msg="2 entries, clamped -> oldest of 2 (10)")
+
+        # Regime C — fully populated: num_pushes >= delays ⇒ natural lag
+        # delays-1; circular buffer wraps so the oldest slot is overwritten.
+        self.assertAlmostEqual(step(40.0), 10.0, places=4, msg="full delay=3 -> step 0 (10)")
+        self.assertAlmostEqual(step(50.0), 20.0, places=4, msg="full delay=3, wrapped -> step 1 (20)")
 
     def test_mixed_delay_zero_and_nonzero(self):
         """delay=0 DOFs pass through current targets; delay=1 DOFs lag by one step."""
