@@ -850,9 +850,9 @@ def intersect_ray(
     ray_directions: wp.array[wp.vec3],
     ray_worlds: wp.array[wp.int32],
     enable_global_world: bool,
-    out_dist: wp.array[float],
-    out_shape_id: wp.array[wp.int32],
-    out_normal: wp.array[wp.vec3],
+    out_dist: wp.array[float] | None = None,
+    out_shape_id: wp.array[wp.int32] | None = None,
+    out_normal: wp.array[wp.vec3] | None = None,
 ) -> None:
     """Intersect rays with model shapes.
 
@@ -860,6 +860,9 @@ def intersect_ray(
     ``ray_worlds``) and against the shapes of the global world (index ``-1``),
     which are accessible from every world. A ray whose world is ``-1`` is cast
     against the global world only.
+
+    ``out_dist``, ``out_shape_id`` and ``out_normal`` are optional outputs. If not
+    provided, the corresponding output is written to the array.
 
     Args:
         model: Model containing the shapes to query.
@@ -869,10 +872,14 @@ def intersect_ray(
         ray_worlds: Per-ray world index, shape [ray_count]. Use ``-1`` for the
             global world.
         enable_global_world: Whether to enable global world raycasting.
-        out_dist: Output hit distances [m], shape [ray_count]. ``-1`` on miss.
-        out_shape_id: Output hit shape indices, shape [ray_count]. ``-1`` on miss.
-        out_normal: Output hit normals, shape [ray_count, 3].
+        out_dist: Optional output hit distances [m], shape [ray_count]. ``-1`` on miss.
+        out_shape_id: Optional output hit shape indices, shape [ray_count]. ``-1`` on miss.
+        out_normal: Optional output hit normals, shape [ray_count, 3].
     """
+
+    write_dist = out_dist is not None
+    write_shape_id = out_shape_id is not None
+    write_normal = out_normal is not None
 
     @wp.kernel
     def _intersect_ray_kernel(
@@ -931,12 +938,12 @@ def intersect_ray(
                     min_shape_id = shape_id
                     min_normal = hit_normal
 
-        if min_shape_id < 0:
-            out_dist[rayid] = -1.0
-        else:
-            out_dist[rayid] = min_dist
-        out_shape_id[rayid] = min_shape_id
-        out_normal[rayid] = min_normal
+        if wp.static(write_dist):
+            out_dist[rayid] = wp.where(min_shape_id < 0, -1.0, min_dist)
+        if wp.static(write_shape_id):
+            out_shape_id[rayid] = min_shape_id
+        if wp.static(write_normal):
+            out_normal[rayid] = min_normal
 
     wp.launch(
         kernel=_intersect_ray_kernel,
