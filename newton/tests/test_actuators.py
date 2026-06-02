@@ -2559,6 +2559,7 @@ class TestActuatorStep(unittest.TestCase):
         *,
         target_pos_attr: str = "joint_target_q",
         dofs: list[int] | None = None,
+        target_indices: list[int] | None = None,
         dt: float = 0.01,
         atol: float = 1e-3,
     ):
@@ -2575,6 +2576,10 @@ class TestActuatorStep(unittest.TestCase):
             expected_forces: ``expected_forces[step_i][k]`` for the k-th DOF in ``dofs``.
             target_pos_attr: Attribute on ``control`` the actuator reads targets from.
             dofs: DOF indices into ``control.joint_f``. ``None`` ⇒ ``range(actuator.num_actuators)``.
+            target_indices: Indices into ``control.<target_pos_attr>`` for writing
+                per-DOF targets. ``None`` ⇒ same as ``dofs`` (legacy DOF layout); pass
+                ``actuator.pos_indices`` under coord layout where the target array is
+                coord-shaped.
             dt: Simulation timestep.
             atol: Absolute tolerance for force comparisons.
 
@@ -2583,6 +2588,8 @@ class TestActuatorStep(unittest.TestCase):
         """
         if dofs is None:
             dofs = list(range(actuator.num_actuators))
+        if target_indices is None:
+            target_indices = dofs
         target_arr = getattr(control, target_pos_attr)
         s0, s1 = (actuator.state(), actuator.state()) if actuator.is_stateful() else (None, None)
 
@@ -2591,7 +2598,7 @@ class TestActuatorStep(unittest.TestCase):
             if len(tp_per_dof) != len(dofs):
                 raise ValueError(f"target_schedule[{step_i}] has {len(tp_per_dof)} values, dofs has {len(dofs)}")
             target_np = target_arr.numpy()
-            for d, v in zip(dofs, tp_per_dof, strict=True):
+            for d, v in zip(target_indices, tp_per_dof, strict=True):
                 target_np[d] = v
             wp.copy(target_arr, wp.array(target_np, dtype=float, device=target_arr.device))
 
@@ -2611,13 +2618,26 @@ class TestActuatorStep(unittest.TestCase):
         return s0, s1
 
     def test_full_pipeline(self):
-        """End-to-end ``Actuator.step``: PD + per-DOF delay + DC-motor clamp on a free + 2 revolute template.
+        """End-to-end ``Actuator.step`` matrix over ``newton.use_coord_layout_targets``.
 
-        The free joint contributes 7 coords / 6 DOFs, so the actuator's
-        ``pos_indices`` (coord layout) and ``target_pos_indices`` (DOF layout)
-        differ by one. Combined with distinct per-joint targets at every step,
-        a wrong-index read into ``joint_target_q`` would surface as a
-        wrong-sign force on at least one joint.
+        Runs the same scenario (free + 2 revolute joints x 3 envs, PD + per-DOF
+        delay + DC-motor clamp) under both layouts via :meth:`subTest`. The
+        coord-layout branch asserts ``pos_indices == target_pos_indices`` (the
+        target array is coord-shaped, indexed by ``pos_indices``); the DOF-layout
+        branch asserts the divergence enforced by the free joint's 7-vs-6 coord/DOF
+        gap. Force expectations are identical for both layouts.
+        """
+        prev = newton.use_coord_layout_targets
+        try:
+            for use_coord in (False, True):
+                newton.use_coord_layout_targets = use_coord
+                with self.subTest(use_coord_layout_targets=use_coord):
+                    self._run_full_pipeline(use_coord_layout=use_coord)
+        finally:
+            newton.use_coord_layout_targets = prev
+
+    def _run_full_pipeline(self, *, use_coord_layout: bool):
+        """Body of :meth:`test_full_pipeline`, parameterized over the layout flag.
 
         Per step we expect ``force = dc_clamp(kp*(delayed_target - q) + kd*(0 - qd), qd)``
         where ``dc_clamp`` is the DC-motor velocity-dependent torque envelope.
@@ -2661,10 +2681,22 @@ class TestActuatorStep(unittest.TestCase):
 
         pos_idx = actuator.pos_indices.numpy()
         target_pos_idx = actuator.target_pos_indices.numpy()
-        self.assertFalse(
-            np.array_equal(pos_idx, target_pos_idx),
-            f"Free joint should give coord/DOF index mismatch; pos={pos_idx} target_pos={target_pos_idx}",
-        )
+        if use_coord_layout:
+            # Under coord layout target_pos_indices defaults to pos_indices —
+            # alignment is the whole point of the new layout.
+            np.testing.assert_array_equal(
+                pos_idx,
+                target_pos_idx,
+                err_msg=f"Under coord layout target_pos_indices must match pos_indices; pos={pos_idx} target_pos={target_pos_idx}",
+            )
+            target_indices = pos_idx.tolist()
+        else:
+            # Under DOF layout the free joint forces the coord/DOF divergence.
+            self.assertFalse(
+                np.array_equal(pos_idx, target_pos_idx),
+                f"Free joint should give coord/DOF index mismatch; pos={pos_idx} target_pos={target_pos_idx}",
+            )
+            target_indices = actuator.indices.numpy().tolist()
 
         expected_delays = [delay_a, delay_b] * num_envs
         np.testing.assert_array_equal(actuator.delay.delay_steps.numpy(), expected_delays)
@@ -2704,6 +2736,7 @@ class TestActuatorStep(unittest.TestCase):
             expected_forces,
             target_pos_attr="joint_target_q",
             dofs=dofs,
+            target_indices=target_indices,
         )
 
         np.testing.assert_array_equal(
