@@ -606,14 +606,14 @@ class ModelView:
             device=parent.device,
         )
 
-    def deactivate_particles(self, particle_indices: wp.array[int]) -> None:
+    def disable_particles(self, particle_indices: wp.array[int]) -> None:
         """Clear the active flag for the given particle indices in this view.
 
         Creates a view-local copy of ``particle_flags`` on first write. The
         parent model is never mutated.
 
         Args:
-            particle_indices: 1-D int array of particle indices to deactivate.
+            particle_indices: 1-D int array of particle indices to disable.
         """
         parent = object.__getattribute__(self, "_parent")
         if parent.particle_count == 0 or particle_indices.shape[0] == 0:
@@ -678,7 +678,7 @@ class ModelView:
             device=parent.device,
         )
 
-    def scale_particle_mass(self, factor: float, particle_indices: wp.array[int] | None = None) -> None:
+    def scale_particle_mass(self, particle_indices: wp.array[int] | None, factor: float) -> None:
         """Scale mass for particles on this view by ``factor``.
 
         Multiplying mass by ``factor`` means dividing ``particle_inv_mass`` by
@@ -690,9 +690,9 @@ class ModelView:
         model is never mutated.
 
         Args:
-            factor: Multiplicative scale applied to particle masses.
             particle_indices: Optional 1-D int array of particle indices to
-                scale. When omitted, all particles are scaled.
+                scale. When ``None``, all particles are scaled.
+            factor: Multiplicative scale applied to particle masses.
         """
         if factor <= 0.0:
             raise ValueError(f"Particle mass scale factor must be > 0, got {factor}")

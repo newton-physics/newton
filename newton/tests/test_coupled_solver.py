@@ -37,7 +37,7 @@ from newton.solvers import (
 from newton.solvers.experimental.coupled import (
     ModelView,
     SolverCoupled,
-    SolverCoupledAdmm,
+    SolverCoupledADMM,
     SolverCoupledProxy,
 )
 
@@ -171,6 +171,31 @@ class _ParticleForceRecordingSolver(SolverBase, CouplingInterface):
         self.input_particle_f.append(state_in.particle_f.numpy().copy())
         wp.copy(state_out.particle_q, state_in.particle_q)
         wp.copy(state_out.particle_qd, state_in.particle_qd)
+
+
+class _ControlRecordingSolver(SolverBase, CouplingInterface):
+    """Test solver that records entry-local control arrays."""
+
+    instances: ClassVar[list] = []
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.joint_f = []
+        self.joint_target_pos = []
+        self.instances.append(self)
+
+    def step(self, state_in, state_out, control, contacts, dt):
+        del contacts, dt
+        self.joint_f.append(None if control is None or control.joint_f is None else control.joint_f.numpy().copy())
+        self.joint_target_pos.append(
+            None if control is None or control.joint_target_pos is None else control.joint_target_pos.numpy().copy()
+        )
+        if state_in.body_q is not None and state_out.body_q is not None:
+            wp.copy(state_out.body_q, state_in.body_q)
+            wp.copy(state_out.body_qd, state_in.body_qd)
+        if state_in.joint_q is not None and state_out.joint_q is not None:
+            wp.copy(state_out.joint_q, state_in.joint_q)
+            wp.copy(state_out.joint_qd, state_in.joint_qd)
 
 
 class _InPlaceRecordingParticleSolver(SolverBase, CouplingInterface):
@@ -476,8 +501,10 @@ class _ContactRecordingCopySolver(_StepCountingCopySolver):
         super().__init__(model)
         self.rigid_shape0_steps = []
         self.rigid_shape1_steps = []
+        self.step_contacts = []
 
     def step(self, state_in, state_out, control, contacts, dt):
+        self.step_contacts.append(contacts)
         if contacts is not None and contacts.rigid_contact_count is not None:
             contact_count = int(contacts.rigid_contact_count.numpy()[0])
             self.rigid_shape0_steps.append(contacts.rigid_contact_shape0.numpy()[:contact_count].copy())
@@ -490,10 +517,15 @@ class _ContactRecordingBodyHarvestSolver(_ContactRecordingCopySolver):
 
     instances: ClassVar[dict[str, "_ContactRecordingBodyHarvestSolver"]] = {}
 
+    def __init__(self, model):
+        super().__init__(model)
+        self.harvest_contacts = []
+
     def coupling_harvest_proxy_wrenches(
         self, body_local_to_proxy_global, out_body_f, *, state=None, state_out=None, contacts=None, dt=0.0
     ):
-        del body_local_to_proxy_global, out_body_f, state, state_out, contacts, dt
+        del body_local_to_proxy_global, out_body_f, state, state_out, dt
+        self.harvest_contacts.append(contacts)
 
 
 class _ProxyContactRecordingSolver(_StepCountingCopySolver):
@@ -531,8 +563,8 @@ class _UnsupportedProxyContactRecordingSolver(_ProxyContactRecordingSolver):
 class _FakeProxyCollisionPipeline:
     """Minimal collision pipeline used to test proxy-coupler scheduling."""
 
-    def __init__(self, device):
-        self.contacts_obj = newton.Contacts(0, 0, device=device)
+    def __init__(self, device, contacts=None):
+        self.contacts_obj = contacts if contacts is not None else newton.Contacts(0, 0, device=device)
         self.contacts_calls = 0
         self.collide_calls = 0
 
@@ -688,8 +720,8 @@ class TestModelView(unittest.TestCase):
         self.assertNotEqual(view_flags[1] & int(newton.BodyFlags.PROXY), 0)
         self.assertEqual(parent_flags[1] & int(newton.BodyFlags.PROXY), 0)
 
-    def test_deactivate_particles(self):
-        """deactivate_particles should clear only view-local active flags."""
+    def test_disable_particles(self):
+        """disable_particles should clear only view-local active flags."""
         builder = newton.ModelBuilder()
         builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
         builder.add_particle(pos=(0.1, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
@@ -697,7 +729,7 @@ class TestModelView(unittest.TestCase):
 
         view = ModelView(model, "test")
         indices = wp.array([1], dtype=int, device="cpu")
-        view.deactivate_particles(indices)
+        view.disable_particles(indices)
 
         active = int(newton.ParticleFlags.ACTIVE)
         view_flags = view.particle_flags.numpy()
@@ -843,6 +875,90 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertEqual(view_b.body_flags.numpy()[0] & int(newton.BodyFlags.KINEMATIC), 0)
         self.assertNotEqual(view_b.body_flags.numpy()[0] & int(newton.BodyFlags.DYNAMIC), 0)
 
+    def test_entry_visualization_accessors(self):
+        """SolverCoupled should expose entry-local views and states for rendering."""
+        coupled = SolverCoupled(
+            model=self.model,
+            entries=[
+                SolverCoupled.Entry(name="A", solver=SolverSemiImplicit, bodies=[0]),
+                SolverCoupled.Entry(name="B", solver=SolverSemiImplicit, bodies=[1]),
+            ],
+        )
+
+        self.assertEqual(coupled.entry_names(), ("A", "B"))
+        self.assertIs(coupled.entry_view("A"), coupled.view("A"))
+        self.assertFalse(coupled.entry_output_state_valid())
+        self.assertIs(coupled.entry_state("A"), coupled._entries["A"].state_0)
+        self.assertIs(coupled.entry_state("A", phase="input"), coupled._entries["A"].state_0)
+        self.assertIs(coupled.entry_state("A", phase="output"), coupled._entries["A"].state_1)
+        self.assertIsNone(coupled.entry_contacts("A", None))
+        with self.assertRaises(ValueError):
+            coupled.entry_state("A", phase="bad")
+
+        state_0 = self.model.state()
+        state_1 = self.model.state()
+        coupled.step(state_0, state_1, control=None, contacts=None, dt=1.0 / 60.0)
+
+        self.assertTrue(coupled.entry_output_state_valid())
+        self.assertIs(coupled.entry_state("A"), coupled._entries["A"].state_1)
+
+        coupled.sync_entry_states(state_1)
+        self.assertFalse(coupled.entry_output_state_valid())
+        self.assertIs(coupled.entry_state("A"), coupled._entries["A"].state_0)
+
+    def test_entry_contacts_unavailable_for_compact_shape_ids(self):
+        """Entry contacts should not be exposed when shape ids were compacted."""
+        coupled = SolverCoupled(
+            model=self.model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="A",
+                    solver=SolverSemiImplicit,
+                    bodies=[0],
+                    preserve_shape_ids=False,
+                ),
+                SolverCoupled.Entry(
+                    name="B",
+                    solver=SolverSemiImplicit,
+                    bodies=[1],
+                    preserve_shape_ids=False,
+                ),
+            ],
+        )
+
+        self.assertIsNone(coupled.entry_contacts("A", self.model.contacts()))
+
+    def test_entry_control_arrays_are_mapped_to_local_dofs(self):
+        """Entry solvers should receive control arrays in their local DOF namespace."""
+        _ControlRecordingSolver.instances.clear()
+        builder = newton.ModelBuilder()
+        body_a = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        body_b = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint_a = builder.add_joint_revolute(parent=-1, child=body_a, axis=(0.0, 0.0, 1.0))
+        joint_b = builder.add_joint_revolute(parent=-1, child=body_b, axis=(0.0, 0.0, 1.0))
+        builder.add_articulation([joint_a])
+        builder.add_articulation([joint_b])
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="A", solver=_ControlRecordingSolver, bodies=[body_a], joints=[joint_a]),
+                SolverCoupled.Entry(name="B", solver=_ControlRecordingSolver, bodies=[body_b], joints=[joint_b]),
+            ],
+        )
+        control = model.control()
+        control.joint_f.assign(np.array([3.0, 7.0], dtype=np.float32))
+        control.joint_target_pos.assign(np.array([11.0, 13.0], dtype=np.float32))
+
+        coupled.step(model.state(), model.state(), control, contacts=None, dt=1.0 / 60.0)
+
+        solver_a, solver_b = _ControlRecordingSolver.instances
+        np.testing.assert_array_equal(solver_a.joint_f[0], np.array([3.0], dtype=np.float32))
+        np.testing.assert_array_equal(solver_b.joint_f[0], np.array([7.0], dtype=np.float32))
+        np.testing.assert_array_equal(solver_a.joint_target_pos[0], np.array([11.0], dtype=np.float32))
+        np.testing.assert_array_equal(solver_b.joint_target_pos[0], np.array([13.0], dtype=np.float32))
+
     def test_notify_model_changed_refreshes_view_inertial_masks(self):
         """Runtime parent inertial edits should refresh derived view masks."""
         coupled = SolverCoupled(
@@ -864,13 +980,13 @@ class TestSolverCoupledBasic(unittest.TestCase):
     def test_admm_notify_model_changed_reapplies_proximal_body_scaling(self):
         """ADMM proximal body mass scaling should refresh from parent inertia."""
         gamma = 0.5
-        coupled = SolverCoupledAdmm(
+        coupled = SolverCoupledADMM(
             model=self.model,
             entries=[
                 SolverCoupled.Entry(name="A", solver=_StepCountingCopySolver, bodies=[0]),
                 SolverCoupled.Entry(name="B", solver=_StepCountingCopySolver, bodies=[1]),
             ],
-            coupling=SolverCoupledAdmm.Config(iterations=1, gamma=gamma),
+            coupling=SolverCoupledADMM.Config(iterations=1, gamma=gamma),
         )
 
         parent_mass = np.array([4.0, 8.0], dtype=np.float32)
@@ -908,16 +1024,250 @@ class TestSolverCoupledBasic(unittest.TestCase):
         collide = int(newton.ShapeFlags.COLLIDE_SHAPES)
         view_a = coupled.view("A")
         view_b = coupled.view("B")
+        flags_a = view_a.shape_flags.numpy()
+        flags_b = view_b.shape_flags.numpy()
 
-        self.assertNotEqual(int(view_a.shape_flags.numpy()[0]) & collide, 0)
-        self.assertEqual(view_a.shape_flags.shape[0], 1)
+        self.assertEqual(view_a.shape_flags.shape[0], self.model.shape_count)
+        self.assertNotEqual(int(flags_a[0]) & collide, 0)
+        self.assertEqual(int(flags_a[1]) & collide, 0)
+        np.testing.assert_array_equal(view_a.shape_body.numpy(), np.array([0, -1], dtype=np.int32))
         self.assertEqual(view_a.shape_contact_pair_count, 0)
 
-        self.assertNotEqual(int(view_b.shape_flags.numpy()[0]) & collide, 0)
-        self.assertEqual(view_b.shape_flags.shape[0], 1)
+        self.assertEqual(view_b.shape_flags.shape[0], self.model.shape_count)
+        self.assertEqual(int(flags_b[0]) & collide, 0)
+        self.assertNotEqual(int(flags_b[1]) & collide, 0)
+        np.testing.assert_array_equal(view_b.shape_body.numpy(), np.array([-1, 0], dtype=np.int32))
         self.assertEqual(view_b.shape_contact_pair_count, 0)
 
         self.assertEqual(self.model.shape_contact_pair_count, 1)
+
+    def test_entries_preserve_global_shape_ids_by_default(self):
+        """Entry shape views should keep global shape arrays with hidden dummies."""
+        coupled = SolverCoupled(
+            model=self.model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="A",
+                    solver=SolverSemiImplicit,
+                    bodies=[0],
+                    shapes=[0],
+                ),
+                SolverCoupled.Entry(name="B", solver=SolverSemiImplicit, bodies=[1], shapes=[1]),
+            ],
+        )
+
+        view_a = coupled.view("A")
+        flags = view_a.shape_flags.numpy()
+        collide = int(newton.ShapeFlags.COLLIDE_SHAPES)
+
+        self.assertEqual(view_a.body_count, 1)
+        self.assertEqual(view_a.shape_count, self.model.shape_count)
+        self.assertEqual(view_a.shape_flags.shape[0], self.model.shape_count)
+        np.testing.assert_array_equal(view_a.shape_body.numpy(), np.array([0, -1], dtype=np.int32))
+        self.assertEqual(view_a.body_shapes, {-1: [], 0: [0]})
+        self.assertNotEqual(int(flags[0]) & collide, 0)
+        self.assertEqual(int(flags[1]) & collide, 0)
+        self.assertEqual(view_a.shape_contact_pair_count, 0)
+
+    def test_particle_entry_without_shapes_keeps_global_static_shapes(self):
+        """Particle-only entries should inherit global static shapes by default."""
+        builder = newton.ModelBuilder()
+        ground_shape = builder.add_ground_plane()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        dynamic_shape = builder.add_shape_sphere(body=body, radius=0.1)
+        particle = builder.add_particle(pos=(0.0, 0.0, 0.5), vel=(0.0, 0.0, 0.0), mass=1.0)
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="particles", solver=SolverSemiImplicit, particles=[particle]),
+            ],
+        )
+
+        view = coupled.view("particles")
+        flags = view.shape_flags.numpy()
+        collide_particles = int(newton.ShapeFlags.COLLIDE_PARTICLES)
+
+        self.assertEqual(view.shape_count, model.shape_count)
+        self.assertEqual(view.body_shapes[-1], [ground_shape])
+        self.assertNotIn(dynamic_shape, view.body_shapes[-1])
+        self.assertNotEqual(int(flags[ground_shape]) & collide_particles, 0)
+        self.assertEqual(int(flags[dynamic_shape]) & collide_particles, 0)
+        body_shape_ids = np.array(view.body_shapes[-1], dtype=int)
+        particle_collider_shapes = body_shape_ids[(flags[body_shape_ids] & collide_particles) > 0]
+        np.testing.assert_array_equal(particle_collider_shapes, np.array([ground_shape], dtype=int))
+
+    def test_entry_can_compact_shape_ids_when_requested(self):
+        """Entry views should still support compact local shape ids by opt-out."""
+        coupled = SolverCoupled(
+            model=self.model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="A",
+                    solver=SolverSemiImplicit,
+                    bodies=[0],
+                    shapes=[0],
+                    preserve_shape_ids=False,
+                ),
+                SolverCoupled.Entry(
+                    name="B",
+                    solver=SolverSemiImplicit,
+                    bodies=[1],
+                    shapes=[1],
+                    preserve_shape_ids=False,
+                ),
+            ],
+        )
+
+        view_a = coupled.view("A")
+        view_b = coupled.view("B")
+
+        self.assertEqual(view_a.shape_count, 1)
+        self.assertEqual(view_a.shape_flags.shape[0], 1)
+        np.testing.assert_array_equal(view_a.shape_body.numpy(), np.array([0], dtype=np.int32))
+        self.assertEqual(view_b.shape_count, 1)
+        self.assertEqual(view_b.shape_flags.shape[0], 1)
+        np.testing.assert_array_equal(view_b.shape_body.numpy(), np.array([0], dtype=np.int32))
+
+    def test_preserved_global_shape_ids_remap_hidden_shapes_in_prefix_views(self):
+        """Preserved shape ids should not leave hidden shapes attached to omitted bodies."""
+        builder = newton.ModelBuilder()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(body=0, radius=0.1)
+        builder.add_shape_sphere(body=1, radius=0.1)
+        builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="A",
+                    solver=SolverSemiImplicit,
+                    bodies=[0],
+                    particles=[0],
+                    shapes=[0],
+                ),
+                SolverCoupled.Entry(name="B", solver=SolverSemiImplicit, bodies=[1], shapes=[1]),
+            ],
+        )
+
+        view_a = coupled.view("A")
+
+        self.assertEqual(view_a.body_count, 1)
+        self.assertEqual(view_a.particle_count, 1)
+        self.assertEqual(view_a.shape_count, model.shape_count)
+        np.testing.assert_array_equal(view_a.shape_body.numpy(), np.array([0, -1], dtype=np.int32))
+        self.assertEqual(view_a.body_shapes, {-1: [], 0: [0]})
+
+    def test_preserved_global_shape_contacts_are_filtered_without_reindexing(self):
+        """Entry contact filtering should keep only visible global shape ids."""
+        builder = newton.ModelBuilder()
+        ground_shape = builder.add_ground_plane()
+        body_b = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        shape_b = builder.add_shape_sphere(body=body_b, radius=0.1)
+        body_a = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        shape_a = builder.add_shape_sphere(body=body_a, radius=0.1)
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="A",
+                    solver=SolverSemiImplicit,
+                    bodies=[body_a],
+                    shapes=[ground_shape, shape_a],
+                ),
+                SolverCoupled.Entry(name="B", solver=SolverSemiImplicit, bodies=[body_b], shapes=[shape_b]),
+            ],
+        )
+
+        contacts = newton.Contacts(3, 0, device=model.device)
+        contacts.rigid_contact_count.assign(np.array([3], dtype=np.int32))
+        contacts.rigid_contact_shape0.assign(np.array([ground_shape, ground_shape, shape_a], dtype=np.int32))
+        contacts.rigid_contact_shape1.assign(np.array([shape_a, shape_b, shape_b], dtype=np.int32))
+
+        filtered = coupled._contacts_for_entry(coupled._entries["A"], contacts)
+
+        self.assertIsNot(filtered, contacts)
+        self.assertEqual(int(filtered.rigid_contact_count.numpy()[0]), 1)
+        np.testing.assert_array_equal(filtered.rigid_contact_shape0.numpy()[:1], np.array([ground_shape]))
+        np.testing.assert_array_equal(filtered.rigid_contact_shape1.numpy()[:1], np.array([shape_a]))
+        self.assertGreater(shape_a, 1)
+
+    def test_preserved_global_shape_contact_filter_reuses_same_generation_rows(self):
+        """Entry contact filtering should not recompact unchanged contact generations."""
+        builder = newton.ModelBuilder()
+        ground_shape = builder.add_ground_plane()
+        body_b = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        shape_b = builder.add_shape_sphere(body=body_b, radius=0.1)
+        body_a = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        shape_a = builder.add_shape_sphere(body=body_a, radius=0.1)
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="A",
+                    solver=SolverSemiImplicit,
+                    bodies=[body_a],
+                    shapes=[ground_shape, shape_a],
+                ),
+                SolverCoupled.Entry(name="B", solver=SolverSemiImplicit, bodies=[body_b], shapes=[shape_b]),
+            ],
+        )
+
+        contacts = newton.Contacts(4, 0, device=model.device, contact_matching=True)
+        contacts.rigid_contact_count.assign(np.array([4], dtype=np.int32))
+        contacts.rigid_contact_shape0.assign(
+            np.array([ground_shape, ground_shape, shape_a, ground_shape], dtype=np.int32)
+        )
+        contacts.rigid_contact_shape1.assign(np.array([shape_a, shape_b, ground_shape, shape_b], dtype=np.int32))
+
+        filtered = coupled._contacts_for_entry(coupled._entries["A"], contacts)
+        self.assertEqual(int(filtered.rigid_contact_count.numpy()[0]), 2)
+        np.testing.assert_array_equal(
+            coupled._entry_rigid_contact_src_to_dst["A"].numpy(),
+            np.array([0, -1, 1, -1], dtype=np.int32),
+        )
+
+        contacts.clear()
+        contacts.rigid_contact_count.assign(np.array([3], dtype=np.int32))
+        contacts.rigid_contact_shape0.assign(np.array([ground_shape, shape_a, ground_shape, -1], dtype=np.int32))
+        contacts.rigid_contact_shape1.assign(np.array([shape_a, ground_shape, shape_b, -1], dtype=np.int32))
+        contacts.rigid_contact_match_index.assign(np.array([2, 1, -1, -1], dtype=np.int32))
+
+        filtered = coupled._contacts_for_entry(coupled._entries["A"], contacts)
+
+        self.assertEqual(int(filtered.rigid_contact_count.numpy()[0]), 2)
+        np.testing.assert_array_equal(
+            filtered.rigid_contact_match_index.numpy()[:2],
+            np.array([-1, -1], dtype=np.int32),
+        )
+
+        contacts.rigid_contact_shape0.assign(np.array([ground_shape, ground_shape, ground_shape, -1], dtype=np.int32))
+        contacts.rigid_contact_shape1.assign(np.array([shape_b, shape_b, shape_b, -1], dtype=np.int32))
+        contacts.rigid_contact_match_index.assign(np.array([-2, -2, -2, -2], dtype=np.int32))
+
+        filtered = coupled._contacts_for_entry(coupled._entries["A"], contacts)
+
+        self.assertEqual(int(filtered.rigid_contact_count.numpy()[0]), 2)
+        np.testing.assert_array_equal(
+            filtered.rigid_contact_shape0.numpy()[:2],
+            np.array([ground_shape, shape_a], dtype=np.int32),
+        )
+        np.testing.assert_array_equal(
+            filtered.rigid_contact_shape1.numpy()[:2],
+            np.array([shape_a, ground_shape], dtype=np.int32),
+        )
+        np.testing.assert_array_equal(
+            filtered.rigid_contact_match_index.numpy()[:2],
+            np.array([-1, -1], dtype=np.int32),
+        )
 
     def test_proxy_shape_visibility_keeps_proxy_contact_pairs(self):
         """Proxy destination views should keep shape pairs touching proxy bodies."""
@@ -943,6 +1293,107 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertNotEqual(int(view_b.shape_flags.numpy()[1]) & collide, 0)
         self.assertEqual(view_b.shape_contact_pair_count, 1)
         np.testing.assert_array_equal(view_b.shape_contact_pairs.numpy(), np.array([[0, 1]], dtype=np.int32))
+
+    def test_proxy_harvest_uses_filtered_preserved_shape_contacts(self):
+        """Custom proxy harvest should receive the contacts used by the step."""
+        _StepCountingCopySolver.instances.clear()
+        _ContactRecordingBodyHarvestSolver.instances.clear()
+
+        builder = newton.ModelBuilder(gravity=0.0)
+        ground_shape = builder.add_ground_plane()
+        src_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        src_shape = builder.add_shape_sphere(body=src_body, radius=0.1)
+        dst_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        dst_shape = builder.add_shape_sphere(body=dst_body, radius=0.1)
+        hidden_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        hidden_shape = builder.add_shape_sphere(body=hidden_body, radius=0.1)
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupledProxy(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=_StepCountingCopySolver, bodies=[src_body], shapes=[src_shape]),
+                SolverCoupled.Entry(
+                    name="dst",
+                    solver=_ContactRecordingBodyHarvestSolver,
+                    bodies=[dst_body],
+                    shapes=[ground_shape, dst_shape],
+                ),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(source="src", destination="dst", bodies=[src_body]),
+                ],
+            ),
+        )
+
+        contacts = newton.Contacts(2, 0, device=model.device)
+        contacts.rigid_contact_count.assign(np.array([2], dtype=np.int32))
+        contacts.rigid_contact_shape0.assign(np.array([ground_shape, ground_shape], dtype=np.int32))
+        contacts.rigid_contact_shape1.assign(np.array([dst_shape, hidden_shape], dtype=np.int32))
+
+        coupled.step(model.state(), model.state(), control=None, contacts=contacts, dt=1.0 / 60.0)
+
+        dst_solver = _ContactRecordingBodyHarvestSolver.instances["dst"]
+        self.assertEqual(len(dst_solver.step_contacts), 1)
+        self.assertEqual(len(dst_solver.harvest_contacts), 1)
+        self.assertIs(dst_solver.harvest_contacts[0], dst_solver.step_contacts[0])
+        self.assertIsNot(dst_solver.step_contacts[0], contacts)
+        self.assertEqual(int(dst_solver.step_contacts[0].rigid_contact_count.numpy()[0]), 1)
+        np.testing.assert_array_equal(dst_solver.rigid_shape1_steps[0], np.array([dst_shape], dtype=np.int32))
+
+    def test_proxy_collision_contacts_bypass_preserved_shape_filter(self):
+        """Proxy-local contacts are already generated in the destination view."""
+        _StepCountingCopySolver.instances.clear()
+        _ContactRecordingBodyHarvestSolver.instances.clear()
+
+        builder = newton.ModelBuilder(gravity=0.0)
+        ground_shape = builder.add_ground_plane()
+        src_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        src_shape = builder.add_shape_sphere(body=src_body, radius=0.1)
+        dst_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        dst_shape = builder.add_shape_sphere(body=dst_body, radius=0.1)
+        model = builder.finalize(device="cpu")
+
+        proxy_contacts = newton.Contacts(1, 0, device=model.device)
+        proxy_contacts.rigid_contact_count.assign(np.array([1], dtype=np.int32))
+        proxy_contacts.rigid_contact_shape0.assign(np.array([ground_shape], dtype=np.int32))
+        proxy_contacts.rigid_contact_shape1.assign(np.array([dst_shape], dtype=np.int32))
+
+        def make_pipeline(view):
+            del view
+            return _FakeProxyCollisionPipeline(model.device, contacts=proxy_contacts)
+
+        coupled = SolverCoupledProxy(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=_StepCountingCopySolver, bodies=[src_body], shapes=[src_shape]),
+                SolverCoupled.Entry(
+                    name="dst",
+                    solver=_ContactRecordingBodyHarvestSolver,
+                    bodies=[dst_body],
+                    shapes=[ground_shape, dst_shape],
+                ),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(
+                        source="src",
+                        destination="dst",
+                        bodies=[src_body],
+                        collision_pipeline=make_pipeline,
+                    ),
+                ],
+            ),
+        )
+
+        coupled.step(model.state(), model.state(), control=None, contacts=None, dt=1.0 / 60.0)
+
+        dst_solver = _ContactRecordingBodyHarvestSolver.instances["dst"]
+        self.assertEqual(len(dst_solver.step_contacts), 1)
+        self.assertEqual(len(dst_solver.harvest_contacts), 1)
+        self.assertIs(dst_solver.step_contacts[0], proxy_contacts)
+        self.assertIs(dst_solver.harvest_contacts[0], proxy_contacts)
 
     def test_duplicate_shape_ownership_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "owned by more than one"):
@@ -1127,6 +1578,66 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 ),
             )
 
+    def test_proxy_coupling_rejects_destination_owned_proxy_body(self):
+        """Proxy body ids must not alias bodies owned by the destination."""
+        builder = newton.ModelBuilder(gravity=0.0)
+        body0 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        body1 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        model = builder.finalize(device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "owned by destination entry"):
+            SolverCoupledProxy(
+                model=model,
+                entries=[
+                    SolverCoupled.Entry(name="src", solver=SolverSemiImplicit, bodies=[body0]),
+                    SolverCoupled.Entry(name="dst", solver=SolverSemiImplicit, bodies=[body1]),
+                ],
+                coupling=SolverCoupledProxy.Config(
+                    proxies=[
+                        SolverCoupledProxy.Proxy(
+                            source="src",
+                            destination="dst",
+                            bodies=[body0],
+                            proxy_bodies=[body1],
+                        ),
+                    ],
+                ),
+            )
+
+    def test_proxy_coupling_rejects_destination_owned_proxy_particle(self):
+        """Proxy particle ids must not alias particles owned by the destination."""
+        builder = newton.ModelBuilder(gravity=0.0)
+        particle0 = builder.add_particle(
+            pos=(0.0, 0.0, 0.0),
+            vel=(0.0, 0.0, 0.0),
+            mass=1.0,
+        )
+        particle1 = builder.add_particle(
+            pos=(1.0, 0.0, 0.0),
+            vel=(0.0, 0.0, 0.0),
+            mass=1.0,
+        )
+        model = builder.finalize(device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "owned by destination entry"):
+            SolverCoupledProxy(
+                model=model,
+                entries=[
+                    SolverCoupled.Entry(name="src", solver=SolverSemiImplicit, particles=[particle0]),
+                    SolverCoupled.Entry(name="dst", solver=SolverSemiImplicit, particles=[particle1]),
+                ],
+                coupling=SolverCoupledProxy.Config(
+                    proxies=[
+                        SolverCoupledProxy.Proxy(
+                            source="src",
+                            destination="dst",
+                            particles=[particle0],
+                            proxy_particles=[particle1],
+                        ),
+                    ],
+                ),
+            )
+
     def test_admm_gamma_zero_restores_mutated_input_velocities(self):
         """ADMM iterations should restore input velocities even without a proximal term."""
         _InputMutatingSolver.instances.clear()
@@ -1134,12 +1645,12 @@ class TestSolverCoupledBasic(unittest.TestCase):
         builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         model = builder.finalize(device="cpu")
 
-        coupled = SolverCoupledAdmm(
+        coupled = SolverCoupledADMM(
             model=model,
             entries=[
                 SolverCoupled.Entry(name="A", solver=_InputMutatingSolver, bodies=[0]),
             ],
-            coupling=SolverCoupledAdmm.Config(iterations=2, gamma=0.0),
+            coupling=SolverCoupledADMM.Config(iterations=2, gamma=0.0),
         )
 
         state_0 = model.state()
@@ -2565,7 +3076,8 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         coupled.step(state_0, state_1, control=None, contacts=contacts, dt=1.0 / 60.0)
 
         dst_solver = _ContactRecordingCopySolver.instances["dst"]
-        self.assertTrue(np.any(dst_solver.rigid_shape0_steps[0] < -1) or np.any(dst_solver.rigid_shape1_steps[0] < -1))
+        self.assertEqual(dst_solver.rigid_shape0_steps[0].shape[0], 0)
+        self.assertEqual(dst_solver.rigid_shape1_steps[0].shape[0], 0)
         np.testing.assert_array_equal(contacts.rigid_contact_shape0.numpy()[:contact_count], shape0_before)
         np.testing.assert_array_equal(contacts.rigid_contact_shape1.numpy()[:contact_count], shape1_before)
 

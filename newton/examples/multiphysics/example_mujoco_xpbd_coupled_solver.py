@@ -181,7 +181,7 @@ class Example:
         self.contacts = self.model.contacts()
         self.control = self.model.control()
 
-        self.viewer.set_model(self.model)
+        newton.examples.configure_coupled_view(self, args)
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
@@ -193,7 +193,7 @@ class Example:
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.viewer.apply_forces(self.state_0)
+            newton.examples.apply_coupled_viewer_forces(self, self.state_0)
             self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -219,8 +219,7 @@ class Example:
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        newton.examples.log_coupled_view(self, self.contacts)
         self.viewer.end_frame()
 
     def _emit_rigid_bodies(self, builder: newton.ModelBuilder):
@@ -300,6 +299,7 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        newton.examples.add_coupled_view_args(parser)
         parser.add_argument(
             "--solver",
             "-s",

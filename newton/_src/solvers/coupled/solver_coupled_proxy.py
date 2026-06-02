@@ -164,8 +164,15 @@ class SolverCoupledProxy(SolverCoupled):
         if len(entries) > 2:
             raise ValueError("Proxy coupling currently supports at most two solver entries")
 
-        self._proxy_mappings = self._build_proxy_mappings(model, coupling)
-        self._proxy_particle_mappings = self._build_proxy_particle_mappings(model, coupling)
+        entry_body_sets = {entry.name: {int(i) for i in entry.bodies} for entry in entries}
+        entry_particle_sets = {entry.name: {int(i) for i in entry.particles} for entry in entries}
+
+        self._proxy_mappings = self._build_proxy_mappings(model, coupling, entry_body_sets)
+        self._proxy_particle_mappings = self._build_proxy_particle_mappings(
+            model,
+            coupling,
+            entry_particle_sets,
+        )
         self._proxy_collision_configs = self._build_proxy_collision_configs(coupling)
         self._proxy_groups = self._build_proxy_groups()
 
@@ -195,6 +202,21 @@ class SolverCoupledProxy(SolverCoupled):
             raise ValueError(f"Duplicate {label} ids in proxy mapping")
 
     @staticmethod
+    def _validate_proxy_destination_ids_not_owned(
+        label: str,
+        proxy_ids: Sequence[int],
+        destination: str,
+        destination_owned_ids: set[int] | None,
+    ) -> None:
+        if destination_owned_ids is None:
+            raise ValueError(f"Unknown proxy destination entry {destination!r}")
+        overlap = sorted({int(i) for i in proxy_ids} & destination_owned_ids)
+        if overlap:
+            raise ValueError(
+                f"Proxy destination {label} ids must not be owned by destination entry {destination!r}: {overlap}"
+            )
+
+    @staticmethod
     def _validate_proxy_body_worlds(model: Model, source_ids: Sequence[int], proxy_ids: Sequence[int]) -> None:
         if model.body_world is None:
             return
@@ -214,6 +236,7 @@ class SolverCoupledProxy(SolverCoupled):
         self,
         model: Model,
         coupling: SolverCoupledProxy.Config,
+        entry_body_sets: dict[str, set[int]],
     ) -> list[_ProxyBodyMapping]:
         mappings = []
         device = model.device
@@ -228,6 +251,12 @@ class SolverCoupledProxy(SolverCoupled):
             self._validate_proxy_ids("Proxy destination body", proxy_local_ids, model.body_count)
             self._validate_unique_proxy_ids("source body", src_ids)
             self._validate_unique_proxy_ids("proxy body", proxy_local_ids)
+            self._validate_proxy_destination_ids_not_owned(
+                "body",
+                proxy_local_ids,
+                proxy.destination,
+                entry_body_sets.get(proxy.destination),
+            )
             self._validate_proxy_body_worlds(model, src_ids, proxy_local_ids)
             proxy_global_ids = proxy_local_ids
 
@@ -293,6 +322,7 @@ class SolverCoupledProxy(SolverCoupled):
         self,
         model: Model,
         coupling: SolverCoupledProxy.Config,
+        entry_particle_sets: dict[str, set[int]],
     ) -> list[_ProxyParticleMapping]:
         mappings = []
         device = model.device
@@ -309,6 +339,12 @@ class SolverCoupledProxy(SolverCoupled):
             self._validate_proxy_ids("Proxy destination particle", proxy_local_ids, model.particle_count)
             self._validate_unique_proxy_ids("source particle", src_ids)
             self._validate_unique_proxy_ids("proxy particle", proxy_local_ids)
+            self._validate_proxy_destination_ids_not_owned(
+                "particle",
+                proxy_local_ids,
+                proxy.destination,
+                entry_particle_sets.get(proxy.destination),
+            )
             proxy_global_ids = proxy_local_ids
 
             source_local_to_proxy_local = [-1] * model.particle_count
@@ -785,16 +821,19 @@ class SolverCoupledProxy(SolverCoupled):
 
             dst_contacts = contacts
             contacts_freshly_detected = False
+            filter_dst_contacts = True
             collision_config = self._proxy_collision_configs.get((src_name, dst_name))
             if collision_config is not None:
                 dst_contacts, contacts_freshly_detected = self._proxy_collision_contacts(
                     collision_config, dst.state_0, iteration_restart=iteration_restart
                 )
+                filter_dst_contacts = False
 
             use_body_momentum_harvest = body_proxies and not self._uses_custom_coupling_hook(
                 dst, CouplingHook.BODY_PROXY_HARVEST
             )
             restore_filtered_contacts = False
+            dst_contacts_used = dst_contacts
             try:
                 if body_proxies:
                     if self._uses_custom_coupling_hook(dst, CouplingHook.PROXY_CONTACT_PREPARE):
@@ -830,7 +869,9 @@ class SolverCoupledProxy(SolverCoupled):
                 for proxy in particle_proxies:
                     wp.copy(proxy.proxy_qd_before, dst.state_0.particle_qd)
 
-                self._step_entry(dst, control, dst_contacts, dt)
+                dst_contacts_used = self._step_entry(
+                    dst, control, dst_contacts, dt, filter_contacts=filter_dst_contacts
+                )
             finally:
                 if restore_filtered_contacts:
                     wp.launch(
@@ -852,7 +893,7 @@ class SolverCoupledProxy(SolverCoupled):
                         proxy.coupling_forces,
                         state=dst.state_0,
                         state_out=dst.state_1,
-                        contacts=dst_contacts,
+                        contacts=dst_contacts_used,
                         dt=dt,
                     )
                 else:
@@ -882,7 +923,7 @@ class SolverCoupledProxy(SolverCoupled):
                         proxy.coupling_forces,
                         state=dst.state_0,
                         state_out=dst.state_1,
-                        contacts=dst_contacts,
+                        contacts=dst_contacts_used,
                         dt=dt,
                     )
                 else:

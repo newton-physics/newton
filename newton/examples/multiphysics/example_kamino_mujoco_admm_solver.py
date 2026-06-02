@@ -5,7 +5,7 @@
 # Example Kamino-MuJoCo ADMM Coupled Solver
 #
 # A closed four-bar linkage is split across two rigid solvers: two links are
-# owned by Kamino and two links are owned by MuJoCo. SolverCoupledAdmm detects
+# owned by Kamino and two links are owned by MuJoCo. SolverCoupledADMM detects
 # the model revolute joints that connect bodies owned by different solvers and
 # turns them into ADMM attachments.
 #
@@ -19,7 +19,7 @@ from collections.abc import Callable
 
 import numpy as np
 import warp as wp
-from newton.solvers.experimental.coupled import ModelView, SolverCoupled, SolverCoupledAdmm
+from newton.solvers.experimental.coupled import ModelView, SolverCoupled, SolverCoupledADMM
 
 import newton
 import newton.examples
@@ -137,7 +137,7 @@ class Example:
         kamino_config = _make_kamino_config()
         kamino_config.padmm.max_iterations = args.kamino_iterations
 
-        self.solver = SolverCoupledAdmm(
+        self.solver = SolverCoupledADMM(
             model=self.model,
             entries=[
                 SolverCoupled.Entry(
@@ -157,7 +157,7 @@ class Example:
                     joints=self.mujoco_joints,
                 ),
             ],
-            coupling=SolverCoupledAdmm.Config(
+            coupling=SolverCoupledADMM.Config(
                 iterations=args.admm_iterations,
                 rho=args.rho,
                 gamma=args.gamma,
@@ -174,7 +174,7 @@ class Example:
         self.contacts = self.model.contacts()
         self.control = self.model.control()
 
-        self.viewer.set_model(self.model)
+        newton.examples.configure_coupled_view(self, args)
         self.viewer.set_world_offsets((1.35, 1.35, 0.0))
         if isinstance(self.viewer, newton.viewer.ViewerGL):
             scale = max(1.0, float(np.sqrt(self.world_count)))
@@ -326,7 +326,7 @@ class Example:
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.viewer.apply_forces(self.state_0)
+            newton.examples.apply_coupled_viewer_forces(self, self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -352,13 +352,13 @@ class Example:
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        newton.examples.log_coupled_view(self, self.contacts)
         self.viewer.end_frame()
 
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        newton.examples.add_coupled_view_args(parser)
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=4)
         parser.add_argument("--substeps", type=int, default=3, help="Coupled substeps per rendered frame.")

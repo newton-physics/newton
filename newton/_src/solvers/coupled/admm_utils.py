@@ -13,7 +13,11 @@ from __future__ import annotations
 
 import warp as wp
 
+from ...geometry import ParticleFlags
 from ...math.spatial import velocity_at_point
+
+_PARTICLE_FLAG_ACTIVE = wp.constant(int(ParticleFlags.ACTIVE))
+_INACTIVE_U_MIN = wp.constant(-1.0e8)
 
 
 @wp.kernel(enable_backward=False)
@@ -63,6 +67,45 @@ def velocity_proximal_shift_joint_kernel(
     i = wp.tid()
     inv_denom = 1.0 / (1.0 + gamma)
     v_out[i] = (v_n[i] + gamma * v_k[i]) * inv_denom
+
+
+@wp.kernel(enable_backward=False)
+def body_gravity_compensation_kernel(
+    gamma: float,
+    body_mass: wp.array[float],
+    body_inv_mass: wp.array[float],
+    body_world: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
+    body_f: wp.array[wp.spatial_vector],
+):
+    """Cancel gravity force introduced by ADMM proximal mass scaling."""
+    i = wp.tid()
+    if body_inv_mass[i] <= 0.0:
+        return
+
+    mass = body_mass[i] / (1.0 + gamma)
+    g = gravity[wp.max(body_world[i], 0)]
+    wp.atomic_add(body_f, i, wp.spatial_vector(-gamma * mass * g, wp.vec3(0.0, 0.0, 0.0)))
+
+
+@wp.kernel(enable_backward=False)
+def particle_gravity_compensation_kernel(
+    gamma: float,
+    particle_mass: wp.array[float],
+    particle_inv_mass: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    particle_world: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
+    particle_f: wp.array[wp.vec3],
+):
+    """Cancel gravity force introduced by ADMM proximal mass scaling."""
+    i = wp.tid()
+    if particle_inv_mass[i] <= 0.0 or (particle_flags[i] & _PARTICLE_FLAG_ACTIVE) == 0:
+        return
+
+    mass = particle_mass[i] / (1.0 + gamma)
+    g = gravity[wp.max(particle_world[i], 0)]
+    wp.atomic_add(particle_f, i, -gamma * mass * g)
 
 
 # ----------------------------------------------------------------------
@@ -204,7 +247,7 @@ def contact_u_update_kernel(
         p = p - lambda_k[i] / denom
 
     u_min_i = u_min[i]
-    if u_min_i < -1.0e7:
+    if u_min_i <= _INACTIVE_U_MIN:
         u_out[i] = p
         return
 
@@ -251,7 +294,7 @@ def contact_u_update_active_kernel(
         p = p - lambda_k[i] / denom
 
     u_min_i = u_min[i]
-    if u_min_i < -1.0e7:
+    if u_min_i <= _INACTIVE_U_MIN:
         u_out[i] = p
         return
 
@@ -625,7 +668,7 @@ def contact_rr_compute_u_min_kernel(
     if violation > 0.0 and dt > 0.0:
         u_min[i] = baumgarte * violation / dt
     else:
-        u_min[i] = -1.0e8
+        u_min[i] = _INACTIVE_U_MIN
 
 
 @wp.kernel(enable_backward=False)
@@ -728,7 +771,7 @@ def contact_rr_compute_u_min_active_kernel(
     if violation > 0.0 and dt > 0.0:
         u_min[i] = baumgarte * violation / dt
     else:
-        u_min[i] = -1.0e8
+        u_min[i] = _INACTIVE_U_MIN
 
 
 @wp.kernel(enable_backward=False)
@@ -772,41 +815,36 @@ def contact_rr_accumulate_forces_active_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def contact_rr_snapshot_kernel(
-    active_count: wp.array[int],
-    body_a: wp.array[int],
-    body_b: wp.array[int],
-    shape_a: wp.array[int],
-    shape_b: wp.array[int],
-    point_id: wp.array[int],
-    active: wp.array[int],
-    u: wp.array[wp.vec3],
-    lambda_: wp.array[wp.vec3],
-    prev_body_a: wp.array[int],
-    prev_body_b: wp.array[int],
-    prev_shape_a: wp.array[int],
-    prev_shape_b: wp.array[int],
-    prev_point_id: wp.array[int],
-    prev_active_count: wp.array[int],
-    prev_active: wp.array[int],
-    prev_u: wp.array[wp.vec3],
-    prev_lambda: wp.array[wp.vec3],
+def contact_rr_clear_contact_snapshot_kernel(
+    prev_contact_active: wp.array[int],
+    prev_contact_lambda: wp.array[wp.vec3],
 ):
-    """Snapshot dynamic rigid-rigid contacts for key-based warm starting."""
+    """Clear dynamic rigid-rigid ADMM dual state snapshots."""
     i = wp.tid()
-    if i == 0:
-        prev_active_count[0] = active_count[0]
+    prev_contact_active[i] = 0
+    prev_contact_lambda[i] = wp.vec3(0.0, 0.0, 0.0)
+
+
+@wp.kernel(enable_backward=False)
+def contact_rr_snapshot_by_contact_kernel(
+    active_count: wp.array[int],
+    contact_id: wp.array[int],
+    active: wp.array[int],
+    lambda_: wp.array[wp.vec3],
+    prev_contact_active: wp.array[int],
+    prev_contact_lambda: wp.array[wp.vec3],
+):
+    """Snapshot dynamic rigid-rigid ADMM dual state by collision contact row."""
+    i = wp.tid()
     if i >= active_count[0]:
-        prev_active[i] = 0
         return
-    prev_body_a[i] = body_a[i]
-    prev_body_b[i] = body_b[i]
-    prev_shape_a[i] = shape_a[i]
-    prev_shape_b[i] = shape_b[i]
-    prev_point_id[i] = point_id[i]
-    prev_active[i] = active[i]
-    prev_u[i] = u[i]
-    prev_lambda[i] = lambda_[i]
+
+    cid = contact_id[i]
+    if cid < 0 or cid >= prev_contact_active.shape[0] or active[i] == 0:
+        return
+
+    prev_contact_active[cid] = 1
+    prev_contact_lambda[cid] = lambda_[i]
 
 
 @wp.kernel(enable_backward=False)
@@ -816,6 +854,7 @@ def contact_rr_reset_kernel(
     point_a_local: wp.array[wp.vec3],
     body_b: wp.array[int],
     point_b_local: wp.array[wp.vec3],
+    contact_id: wp.array[int],
     shape_a: wp.array[int],
     shape_b: wp.array[int],
     point_id: wp.array[int],
@@ -838,6 +877,7 @@ def contact_rr_reset_kernel(
     point_a_local[i] = wp.vec3(0.0, 0.0, 0.0)
     body_b[i] = 0
     point_b_local[i] = wp.vec3(0.0, 0.0, 0.0)
+    contact_id[i] = -1
     shape_a[i] = -1
     shape_b[i] = -1
     point_id[i] = -1
@@ -849,7 +889,7 @@ def contact_rr_reset_kernel(
     u[i] = wp.vec3(0.0, 0.0, 0.0)
     lambda_[i] = wp.vec3(0.0, 0.0, 0.0)
     Jv[i] = wp.vec3(0.0, 0.0, 0.0)
-    u_min[i] = -1.0e8
+    u_min[i] = _INACTIVE_U_MIN
 
 
 @wp.kernel(enable_backward=False)
@@ -863,6 +903,7 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     rigid_contact_margin0: wp.array[float],
     rigid_contact_margin1: wp.array[float],
     rigid_contact_point_id: wp.array[int],
+    rigid_contact_match_index: wp.array[wp.int32],
     shape_body: wp.array[int],
     body_mask_a: wp.array[int],
     body_mask_b: wp.array[int],
@@ -875,20 +916,17 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     shape_material_mu: wp.array[float],
     contact_distance_value: float,
     use_contact_margins: int,
+    use_contact_matching: int,
     capacity: int,
     active_count: wp.array[int],
     active_count_max: wp.array[int],
-    prev_shape_a: wp.array[int],
-    prev_shape_b: wp.array[int],
-    prev_point_id: wp.array[int],
-    prev_active_count: wp.array[int],
-    prev_active: wp.array[int],
-    prev_u: wp.array[wp.vec3],
-    prev_lambda: wp.array[wp.vec3],
+    prev_contact_active: wp.array[int],
+    prev_contact_lambda: wp.array[wp.vec3],
     body_a: wp.array[int],
     point_a_local: wp.array[wp.vec3],
     body_b: wp.array[int],
     point_b_local: wp.array[wp.vec3],
+    contact_id: wp.array[int],
     shape_a: wp.array[int],
     shape_b: wp.array[int],
     point_id: wp.array[int],
@@ -958,10 +996,10 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     point_a_local[dst] = pa
     body_b[dst] = bb_local
     point_b_local[dst] = pb
+    contact_id[dst] = i
     shape_a[dst] = sa
     shape_b[dst] = sb
-    pid = rigid_contact_point_id[i]
-    point_id[dst] = pid
+    point_id[dst] = rigid_contact_point_id[i]
     active[dst] = 1
     normal[dst] = n
     if use_contact_margins != 0:
@@ -978,15 +1016,13 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     # Geometric-mean combining of shape material friction (matches AVBD).
     friction[dst] = wp.sqrt(shape_material_mu[sa] * shape_material_mu[sb])
 
-    u_out = wp.vec3(0.0, 0.0, 0.0)
     lambda_out = wp.vec3(0.0, 0.0, 0.0)
-    prev_count = wp.min(prev_active_count[0], capacity)
-    for j in range(prev_count):
-        if prev_active[j] != 0 and prev_shape_a[j] == sa and prev_shape_b[j] == sb and prev_point_id[j] == pid:
-            u_out = prev_u[j]
-            lambda_out = prev_lambda[j]
-            break
-    u[dst] = u_out
+    if use_contact_matching != 0:
+        prev_id = rigid_contact_match_index[i]
+        if prev_id >= 0 and prev_id < prev_contact_active.shape[0] and prev_contact_active[prev_id] != 0:
+            lambda_out = prev_contact_lambda[prev_id]
+
+    u[dst] = wp.vec3(0.0, 0.0, 0.0)
     lambda_[dst] = lambda_out
 
 
@@ -1056,7 +1092,7 @@ def contact_rp_compute_u_min_kernel(
     if violation > 0.0 and dt > 0.0:
         u_min[i] = baumgarte * violation / dt
     else:
-        u_min[i] = -1.0e8
+        u_min[i] = _INACTIVE_U_MIN
 
 
 @wp.kernel(enable_backward=False)
@@ -1151,7 +1187,7 @@ def contact_rp_reset_kernel(
     u[i] = wp.vec3(0.0, 0.0, 0.0)
     lambda_[i] = wp.vec3(0.0, 0.0, 0.0)
     Jv[i] = wp.vec3(0.0, 0.0, 0.0)
-    u_min[i] = -1.0e8
+    u_min[i] = _INACTIVE_U_MIN
 
 
 @wp.kernel(enable_backward=False)
@@ -1301,7 +1337,7 @@ def contact_pp_compute_u_min_kernel(
     if violation > 0.0 and dt > 0.0:
         u_min[i] = baumgarte * violation / dt
     else:
-        u_min[i] = -1.0e8
+        u_min[i] = _INACTIVE_U_MIN
 
 
 @wp.kernel(enable_backward=False)
@@ -1378,7 +1414,7 @@ def contact_pp_reset_kernel(
     u[i] = wp.vec3(0.0, 0.0, 0.0)
     lambda_[i] = wp.vec3(0.0, 0.0, 0.0)
     Jv[i] = wp.vec3(0.0, 0.0, 0.0)
-    u_min[i] = -1.0e8
+    u_min[i] = _INACTIVE_U_MIN
 
 
 @wp.kernel(enable_backward=False)

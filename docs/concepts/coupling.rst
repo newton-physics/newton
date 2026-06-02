@@ -28,7 +28,7 @@ that namespace:
 
    from newton.solvers import SolverMuJoCo, SolverVBD
    from newton.solvers.experimental.coupled import (
-       SolverCoupledAdmm,
+       SolverCoupledADMM,
        SolverCoupled,
        SolverCoupledProxy,
    )
@@ -44,7 +44,7 @@ The main public types are:
   reconciling results.
 - :class:`newton.solvers.experimental.coupled.SolverCoupledProxy`: a lagged or
   staggered proxy coupling wrapper.
-- :class:`newton.solvers.experimental.coupled.SolverCoupledAdmm`: a fixed
+- :class:`newton.solvers.experimental.coupled.SolverCoupledADMM`: a fixed
   iteration ADMM coupling wrapper for model-derived joints, attachments, and
   contacts.
 
@@ -226,7 +226,7 @@ proxy path is often useful with a single lagged or staggered pass.
 
 The implemented ADMM wrapper discovers constraint rows from the shared model and
 enables contact rows through explicit
-:class:`newton.solvers.experimental.coupled.SolverCoupledAdmm.ContactPair`
+:class:`newton.solvers.experimental.coupled.SolverCoupledADMM.ContactPair`
 objects. It does not currently accept arbitrary user-authored endpoint records
 as public API. Supported row sources are:
 
@@ -246,16 +246,16 @@ the experimental API.
 
 Body-particle attachments cover interfaces that cannot be represented by a
 model joint because one endpoint is a particle. The helper
-``SolverCoupledAdmm.add_body_particle_attachment()`` registers and fills custom
+``SolverCoupledADMM.add_body_particle_attachment()`` registers and fills custom
 attributes under ``coupling:body_particle_attachment`` with body id, particle id,
 body-local point, stiffness, damping, and enabled state. Importers can author the
 same custom attributes directly. Rows whose endpoints are unowned or owned by
 the same entry are ignored; only cross-solver attachments are coupled by ADMM.
 
 Contact coupling is enabled by adding one or more ``ContactPair`` values to
-``SolverCoupledAdmm.Config.contact_pairs``. A contact pair names two entries and
+``SolverCoupledADMM.Config.contact_pairs``. A contact pair names two entries and
 optionally overrides ``contact_distance`` and ``detection_margin`` for that
-interface. ``SolverCoupledAdmm.auto_detect_contact_pairs(entries, ...)`` can
+interface. ``SolverCoupledADMM.auto_detect_contact_pairs(entries, ...)`` can
 build the complete pair list for every distinct entry combination.
 
 For enabled contact pairs, the coupler owns private detection data and builds

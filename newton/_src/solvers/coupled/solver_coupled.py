@@ -7,12 +7,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import warp as wp
 
-from ...geometry import ShapeFlags
+from ...geometry import ParticleFlags, ShapeFlags
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .interface import (
@@ -157,11 +157,13 @@ class SolverEntry:
     joint_coord_global_to_local: wp.array
     joint_dof_local_to_global: wp.array
     joint_dof_global_to_local: wp.array
+    preserve_shape_ids: bool
     in_place: bool
     state_0: State | None = None
     state_1: State | None = None
     state_tmp: State | None = None
     state_tmp_1: State | None = None
+    control: Control | None = None
     body_force_input: wp.array = field(default=None)
     particle_force_input: wp.array = field(default=None)
     hook_methods: dict = field(default_factory=dict)
@@ -174,7 +176,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
     ``Model``, ``ModelView`` and ``State``: per-solver views, ownership masks,
     state distribution/reconciliation, per-entry substeps, and shared coupling
     hook dispatch helpers. Algorithm-specific couplers such as
-    :class:`~newton.solvers.experimental.coupled.SolverCoupledAdmm` and
+    :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` and
     :class:`~newton.solvers.experimental.coupled.SolverCoupledProxy` derive from this base class.
 
     Args:
@@ -196,7 +198,23 @@ class SolverCoupled(SolverBase, CouplingInterface):
         :class:`SolverBase`. Bind any extra constructor arguments in the
         factory itself (e.g. ``lambda v: SolverVBD(model=v, iterations=10)``).
         Entry names must be unique. In-place stepping is only valid for solvers
-        that explicitly support it and currently requires ``substeps=1``.
+        that explicitly support it and currently requires ``substeps=1``. Shape
+        ids remain in the parent model namespace by default; set
+        ``preserve_shape_ids=False`` to expose a compact entry-local shape
+        namespace instead.
+
+        Args:
+            name: Unique entry name used by coupling configuration.
+            solver: Factory called with this entry's :class:`ModelView`.
+            bodies: Global body ids owned by this entry.
+            particles: Global particle ids owned by this entry.
+            joints: Global joint ids owned by this entry.
+            shapes: Global shape ids owned by this entry.
+            configure_view: Optional callback for entry-local view overrides.
+            substeps: Number of substeps to run per coupled step.
+            in_place: Whether the sub-solver may step in-place.
+            preserve_shape_ids: Whether shape ids remain in the parent model
+                namespace instead of being compacted.
         """
 
         name: str
@@ -208,6 +226,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         configure_view: Callable[[ModelView], None] | None = None
         substeps: int = 1
         in_place: bool = False
+        preserve_shape_ids: bool = True
 
     def __init__(
         self,
@@ -221,6 +240,15 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self._coupling = coupling
         self._entries: dict[str, SolverEntry] = {}
         self._solver_order: list[str] = []
+        self._entry_contact_buffers: dict[str, Contacts] = {}
+        self._entry_contact_sources: dict[str, Contacts] = {}
+        self._entry_rigid_contact_generation: dict[str, wp.array] = {}
+        self._entry_soft_contact_generation: dict[str, wp.array] = {}
+        self._entry_rigid_contact_update: dict[str, wp.array] = {}
+        self._entry_soft_contact_update: dict[str, wp.array] = {}
+        self._entry_rigid_contact_src_to_dst: dict[str, wp.array] = {}
+        self._entry_soft_contact_src_to_dst: dict[str, wp.array] = {}
+        self._entry_output_state_valid = False
 
         self._validate_entry_names()
         self._body_owner = self._build_owner_map(model.body_count, [e.bodies for e in self._entry_configs])
@@ -296,7 +324,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 if to_zero:
                     to_zero_array = wp.array(to_zero, dtype=int, device=device)
                     view.zero_particle_mass(to_zero_array)
-                    view.deactivate_particles(to_zero_array)
+                    view.disable_particles(to_zero_array)
                 if proxy_particle_keep:
                     view.mark_proxy_particles(wp.array(sorted(proxy_particle_keep), dtype=int, device=device))
 
@@ -316,7 +344,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 view, cfg, proxy_body_keep, proxy_particle_keep, proxy_joint_keep
             )
             if index_lists is None:
-                self._apply_entry_prefix_limits(view, cfg, proxy_body_keep, proxy_particle_keep, proxy_joint_keep)
+                self._apply_entry_prefix_limits(
+                    view,
+                    cfg,
+                    proxy_body_keep,
+                    proxy_particle_keep,
+                    proxy_joint_keep,
+                    preserve_shape_ids=bool(cfg.preserve_shape_ids),
+                )
             self._filter_shape_contact_pairs(view)
 
             index_maps = self._build_entry_index_maps(view, index_lists)
@@ -342,6 +377,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 joint_coord_global_to_local=index_maps.joint_coord_global_to_local,
                 joint_dof_local_to_global=index_maps.joint_dof_local_to_global,
                 joint_dof_global_to_local=index_maps.joint_dof_global_to_local,
+                preserve_shape_ids=bool(cfg.preserve_shape_ids),
                 in_place=bool(cfg.in_place),
             )
 
@@ -350,6 +386,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         for entry in self._entries.values():
             entry.state_0 = entry.view.state()
             entry.state_1 = entry.state_0 if entry.in_place else entry.view.state()
+            entry.control = _entry_control(entry.view)
             if model.body_count:
                 entry.body_force_input = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
             if model.particle_count:
@@ -402,9 +439,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         proxy_body_keep: set[int],
     ) -> None:
         """Restrict shape collisions to entry-owned and proxy-visible shapes."""
-        if not cfg.shapes:
-            return
-
         model = self.model
         if model.shape_count == 0 or model.shape_flags is None:
             return
@@ -414,12 +448,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if shape_id < 0 or shape_id >= model.shape_count:
                 raise IndexError(f"Shape ownership index {shape_id} out of range for count {model.shape_count}")
 
-        shape_body = getattr(model, "shape_body", None)
-        if proxy_body_keep and shape_body is not None:
-            shape_body_np = shape_body.numpy()
-            for shape_id, body_id in enumerate(shape_body_np):
-                if int(body_id) in proxy_body_keep:
-                    visible.add(shape_id)
+        visible_bodies = set(proxy_body_keep)
+        if not cfg.shapes:
+            visible_bodies.update(int(i) for i in cfg.bodies)
+        visible.update(self._entry_visible_shapes(cfg, visible_bodies))
+        if not visible:
+            return
 
         collision_mask = int(ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES | ShapeFlags.HYDROELASTIC)
         shape_flags = view.shape_flags.numpy().copy()
@@ -471,6 +505,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
         proxy_body_keep: set[int],
         proxy_particle_keep: set[int],
         proxy_joint_keep: set[int],
+        *,
+        preserve_shape_ids: bool = False,
     ) -> None:
         """Expose compact body/joint view counts when visible entities form a prefix."""
         visible_bodies = {int(i) for i in cfg.bodies} | {int(i) for i in proxy_body_keep}
@@ -480,7 +516,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self._apply_body_prefix_limit(view, visible_bodies)
         self._apply_particle_prefix_limit(view, visible_particles)
         self._apply_joint_prefix_limit(view, visible_joints)
-        self._apply_shape_prefix_limit(view, cfg, visible_bodies)
+        if preserve_shape_ids:
+            view.shape_count = self.model.shape_count
+            self._apply_preserved_shape_metadata_without_compaction(view, cfg, visible_bodies)
+        else:
+            self._apply_shape_prefix_limit(view, cfg, visible_bodies)
 
     def _apply_body_prefix_limit(self, view: ModelView, visible_bodies: set[int]) -> None:
         body_prefix = self._prefix_length(visible_bodies)
@@ -515,20 +555,34 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.articulation_count = articulation_prefix
 
     def _apply_shape_prefix_limit(self, view: ModelView, cfg: SolverCoupled.Entry, visible_bodies: set[int]) -> None:
-        model = self.model
-        visible_shapes = {int(i) for i in cfg.shapes}
-        if model.shape_count and model.shape_body is not None and visible_bodies:
-            shape_body = model.shape_body.numpy()
-            visible_shapes.update(
-                int(shape_id)
-                for shape_id, body_id in enumerate(shape_body)
-                if int(body_id) < 0 or int(body_id) in visible_bodies
-            )
+        visible_shapes = self._entry_visible_shapes(cfg, visible_bodies)
         if not visible_shapes:
             return
         shape_prefix = self._prefix_length(visible_shapes)
-        if shape_prefix is not None and shape_prefix < model.shape_count:
+        if shape_prefix is not None and shape_prefix < self.model.shape_count:
             view.shape_count = shape_prefix
+
+    def _apply_preserved_shape_metadata_without_compaction(
+        self,
+        view: ModelView,
+        cfg: SolverCoupled.Entry,
+        visible_bodies: set[int],
+    ) -> None:
+        model = self.model
+        visible_shapes = self._entry_visible_shapes(cfg, visible_bodies)
+        body_count = int(getattr(view, "body_count", model.body_count))
+
+        shape_body = getattr(view, "shape_body", None)
+        if shape_body is not None:
+            shape_body_np = shape_body.numpy().copy()
+            for shape_id, body_id in enumerate(shape_body_np):
+                if shape_id not in visible_shapes or int(body_id) >= body_count:
+                    shape_body_np[shape_id] = -1
+            view.shape_body = wp.array(shape_body_np, dtype=wp.int32, device=model.device)
+
+        body_global_to_local = {body_id: body_id for body_id in range(body_count)}
+        view.body_shapes = self._global_shape_body_shapes(model.body_shapes, body_global_to_local, visible_shapes)
+        view.shape_collision_filter_pairs = set(model.shape_collision_filter_pairs)
 
     def _build_entry_index_maps(self, view: ModelView, index_lists: _CompactIndexLists | None) -> _EntryIndexMaps:
         """Build local/global id maps for a completed entry view."""
@@ -607,18 +661,19 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if compact is None:
             return None
 
-        self._apply_compact_entry_view(view, compact)
+        self._apply_compact_entry_view(view, compact, preserve_shape_ids=bool(cfg.preserve_shape_ids))
         return compact
 
     def _entry_visible_shapes(self, cfg: SolverCoupled.Entry, visible_bodies: set[int]) -> set[int]:
         model = self.model
         visible_shapes = {int(i) for i in cfg.shapes}
-        if model.shape_count and model.shape_body is not None and visible_bodies:
+        include_default_static_shapes = not cfg.shapes
+        if model.shape_count and model.shape_body is not None and (visible_bodies or include_default_static_shapes):
             shape_body = model.shape_body.numpy()
             visible_shapes.update(
                 int(shape_id)
                 for shape_id, body_id in enumerate(shape_body)
-                if int(body_id) < 0 or int(body_id) in visible_bodies
+                if (include_default_static_shapes and int(body_id) < 0) or int(body_id) in visible_bodies
             )
         return visible_shapes
 
@@ -833,7 +888,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _constraint_ref_visible(index: int, global_to_local: dict[int, int]) -> bool:
         return index < 0 or index in global_to_local
 
-    def _apply_compact_entry_view(self, view: ModelView, compact: _CompactIndexLists) -> None:
+    def _apply_compact_entry_view(
+        self,
+        view: ModelView,
+        compact: _CompactIndexLists,
+        *,
+        preserve_shape_ids: bool = False,
+    ) -> None:
         """Install compact topology arrays on an entry view."""
         model = self.model
         device = model.device
@@ -841,7 +902,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
         joint_order = compact.joint_local_to_global
         coord_order = compact.joint_coord_local_to_global
         dof_order = compact.joint_dof_local_to_global
-        shape_order = compact.shape_local_to_global
+        visible_shape_order = compact.shape_local_to_global
+        shape_order = list(range(model.shape_count)) if preserve_shape_ids else visible_shape_order
         articulation_order = compact.articulation_local_to_global
         equality_order = compact.equality_constraint_local_to_global
         mimic_order = compact.constraint_mimic_local_to_global
@@ -855,7 +917,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.joint_count = len(joint_order)
         view.joint_coord_count = len(coord_order)
         view.joint_dof_count = len(dof_order)
-        view.shape_count = len(shape_order)
+        view.shape_count = model.shape_count if preserve_shape_ids else len(shape_order)
         view.articulation_count = len(articulation_order)
         view.equality_constraint_count = len(equality_order)
         view.constraint_mimic_count = len(mimic_order)
@@ -889,10 +951,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
             "constraint_mimic_joint0",
             "constraint_mimic_joint1",
         }
+        renamed_attrs = {"joint_target_pos", "joint_target_vel"}
         handled_attrs = self._select_compact_attributes_by_frequency(
             view,
             index_orders_by_frequency,
-            exclude=remapped_or_derived_attrs,
+            exclude=remapped_or_derived_attrs | renamed_attrs,
         )
         self._select_compact_prefix_attributes(
             view,
@@ -905,7 +968,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 "equality_constraint_": (equality_order, model.equality_constraint_count),
                 "constraint_mimic_": (mimic_order, model.constraint_mimic_count),
             },
-            exclude=handled_attrs | remapped_or_derived_attrs,
+            exclude=handled_attrs | remapped_or_derived_attrs | renamed_attrs,
         )
 
         joint_parent = self._select_numpy_array(view, "joint_parent", joint_order)
@@ -955,17 +1018,35 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         shape_body = self._select_numpy_array(view, "shape_body", shape_order)
         if shape_body is not None:
+            visible_shapes = set(visible_shape_order)
             view.shape_body = wp.array(
-                [self._remap_optional_index(int(body), body_global_to_local) for body in shape_body],
+                [
+                    self._remap_shape_body(
+                        global_shape=shape,
+                        body=int(body),
+                        visible_shapes=visible_shapes,
+                        body_global_to_local=body_global_to_local,
+                        preserve_shape_ids=preserve_shape_ids,
+                    )
+                    for shape, body in zip(shape_order, shape_body, strict=True)
+                ],
                 dtype=wp.int32,
                 device=device,
             )
-        view.body_shapes = self._compact_body_shapes(model.body_shapes, body_global_to_local, shape_global_to_local)
-        view.shape_collision_filter_pairs = self._compact_shape_pair_set(
-            model.shape_collision_filter_pairs,
-            shape_global_to_local,
-        )
-        self._compact_shape_contact_pairs(view, shape_global_to_local)
+        if preserve_shape_ids:
+            view.body_shapes = self._global_shape_body_shapes(
+                model.body_shapes,
+                body_global_to_local,
+                set(visible_shape_order),
+            )
+            view.shape_collision_filter_pairs = set(model.shape_collision_filter_pairs)
+        else:
+            view.body_shapes = self._compact_body_shapes(model.body_shapes, body_global_to_local, shape_global_to_local)
+            view.shape_collision_filter_pairs = self._compact_shape_pair_set(
+                model.shape_collision_filter_pairs,
+                shape_global_to_local,
+            )
+            self._compact_shape_contact_pairs(view, shape_global_to_local)
 
         view.articulation_start = wp.array(
             self._compact_articulation_starts(joint_order, articulation_order),
@@ -1119,6 +1200,19 @@ class SolverCoupled(SolverBase, CouplingInterface):
         return -1 if index < 0 else global_to_local[index]
 
     @staticmethod
+    def _remap_shape_body(
+        *,
+        global_shape: int,
+        body: int,
+        visible_shapes: set[int],
+        body_global_to_local: dict[int, int],
+        preserve_shape_ids: bool,
+    ) -> int:
+        if preserve_shape_ids and int(global_shape) not in visible_shapes:
+            return -1
+        return -1 if body < 0 else body_global_to_local[body]
+
+    @staticmethod
     def _rebased_joint_starts(starts: np.ndarray, joint_order: Sequence[int]) -> list[int]:
         rebased: list[int] = []
         cursor = 0
@@ -1145,6 +1239,27 @@ class SolverCoupled(SolverBase, CouplingInterface):
             local_shape = shape_global_to_local.get(int(shape))
             if local_shape is not None:
                 compact[-1].append(local_shape)
+        return compact
+
+    @staticmethod
+    def _global_shape_body_shapes(
+        body_shapes: dict[int, list[int]],
+        body_global_to_local: dict[int, int],
+        visible_shapes: set[int],
+    ) -> dict[int, list[int]]:
+        compact: dict[int, list[int]] = {-1: []}
+        for local_body in body_global_to_local.values():
+            compact[local_body] = []
+        for global_body, shapes in body_shapes.items():
+            if global_body < 0:
+                local_body = -1
+            else:
+                local_body = body_global_to_local.get(int(global_body))
+                if local_body is None:
+                    continue
+            for shape in shapes:
+                if int(shape) in visible_shapes:
+                    compact.setdefault(local_body, []).append(int(shape))
         return compact
 
     @staticmethod
@@ -1609,6 +1724,74 @@ class SolverCoupled(SolverBase, CouplingInterface):
         """Return the :class:`ModelView` for the sub-solver *name*."""
         return self._entries[name].view
 
+    def entry_names(self) -> tuple[str, ...]:
+        """Return coupled sub-solver entry names in stepping order."""
+        return tuple(self._solver_order)
+
+    def entry_view(self, name: str) -> ModelView:
+        """Return the :class:`ModelView` for coupled sub-solver *name*."""
+        return self.view(name)
+
+    def entry_state(self, name: str, phase: Literal["current", "input", "output"] = "current") -> State:
+        """Return an entry-local state suitable for visualization.
+
+        Args:
+            name: Coupled sub-solver entry name.
+            phase: Which state phase to return. ``"input"`` returns the
+                distributed input state, ``"output"`` returns the last
+                sub-solver output state, and ``"current"`` returns output
+                after the coupled solver has stepped at least once or input
+                before the first step.
+
+        Returns:
+            Entry-local state whose arrays match :meth:`entry_view`.
+        """
+        entry = self._entries[name]
+        if phase == "input":
+            return entry.state_0
+        if phase == "output":
+            return entry.state_1
+        if phase != "current":
+            raise ValueError(f"Unsupported coupled entry state phase {phase!r}")
+        if self._entry_output_state_valid:
+            return entry.state_1
+        return entry.state_0
+
+    def entry_contacts(self, name: str, contacts: Contacts | None) -> Contacts | None:
+        """Return contacts filtered for a coupled entry's view, when possible.
+
+        Args:
+            name: Coupled sub-solver entry name.
+            contacts: Parent-model contacts to filter.
+
+        Returns:
+            Entry-local contacts, or ``None`` when no compatible contact buffer
+            is available.
+        """
+        if contacts is None:
+            return None
+        entry = self._entries[name]
+        if not entry.preserve_shape_ids:
+            return None
+        return self._contacts_for_entry(entry, contacts)
+
+    def entry_output_state_valid(self) -> bool:
+        """Return whether entry output states reflect the last coupled step."""
+        return self._entry_output_state_valid
+
+    def sync_entry_states(self, state_in: State, dt: float = 0.0) -> None:
+        """Synchronize entry input states from a parent-model state.
+
+        This is primarily useful for visualization before the first coupled
+        step has produced entry output states.
+
+        Args:
+            state_in: Parent-model state to distribute into entry-local states.
+            dt: Time step metadata forwarded to coupling input-state hooks.
+        """
+        self._distribute_state(state_in, dt=dt)
+        self._entry_output_state_valid = False
+
     # ------------------------------------------------------------------
     # SolverBase interface
     # ------------------------------------------------------------------
@@ -1632,6 +1815,15 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self._step_coupled(state_in, state_out, control, contacts, dt)
         _copy_state(state_in, state_out)
         self._reconcile_state(state_out)
+        self._entry_output_state_valid = True
+
+    def prepare_contacts(self, contacts: Contacts | None) -> None:
+        """Preallocate entry-local filtered contact buffers for graph capture."""
+        if contacts is None:
+            return
+        for entry in self._entries.values():
+            if entry.preserve_shape_ids:
+                self._ensure_entry_contact_buffer(entry, contacts)
 
     def _step_coupled(
         self,
@@ -1889,15 +2081,20 @@ class SolverCoupled(SolverBase, CouplingInterface):
         control: Control | None,
         contacts: Contacts | None,
         dt: float,
-    ) -> None:
+        *,
+        filter_contacts: bool = True,
+    ) -> Contacts | None:
         """Step one sub-solver entry, honoring its local substep count."""
+        if filter_contacts:
+            contacts = self._contacts_for_entry(entry, contacts)
+        control = _copy_control_to_entry(control, entry)
         if entry.in_place:
             entry.solver.step(entry.state_0, entry.state_0, control, contacts, dt)
-            return
+            return contacts
 
         if entry.substeps == 1:
             entry.solver.step(entry.state_0, entry.state_1, control, contacts, dt)
-            return
+            return contacts
 
         substep_dt = dt / float(entry.substeps)
         if entry.state_tmp is None or entry.state_tmp_1 is None:
@@ -1916,6 +2113,227 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 _copy_forces(entry.state_0, state_in)
             entry.solver.step(state_in, state_out, control, contacts, substep_dt)
             state_in = state_out
+        return contacts
+
+    def _contacts_for_entry(self, entry: SolverEntry, contacts: Contacts | None) -> Contacts | None:
+        if contacts is None or not entry.preserve_shape_ids:
+            return contacts
+        if contacts is self._entry_contact_buffers.get(entry.name):
+            return contacts
+
+        filtered = self._ensure_entry_contact_buffer(entry, contacts)
+        force_contact_update = int(self._entry_contact_sources.get(entry.name) is not contacts)
+        if force_contact_update:
+            self._entry_contact_sources[entry.name] = contacts
+
+        if filtered.rigid_contact_force is not None:
+            filtered.rigid_contact_force.zero_()
+        if filtered.force is not None:
+            filtered.force.zero_()
+
+        contact_update_dim = max(
+            contacts.rigid_contact_max, contacts.soft_contact_max, filtered.contact_counters.shape[0]
+        )
+        if contact_update_dim > 0:
+            wp.launch(
+                _prepare_filtered_contact_update_kernel,
+                dim=contact_update_dim,
+                inputs=[
+                    contacts.contact_generation,
+                    self._entry_rigid_contact_generation[entry.name],
+                    self._entry_soft_contact_generation[entry.name],
+                    self._entry_rigid_contact_update[entry.name],
+                    self._entry_soft_contact_update[entry.name],
+                    filtered.contact_counters,
+                    filtered.contact_counters.shape[0],
+                    self._entry_rigid_contact_src_to_dst[entry.name],
+                    contacts.rigid_contact_max,
+                    self._entry_soft_contact_src_to_dst[entry.name],
+                    contacts.soft_contact_max,
+                    force_contact_update,
+                ],
+                device=self.model.device,
+            )
+
+        if contacts.rigid_contact_max > 0:
+            rigid_src_to_dst = self._entry_rigid_contact_src_to_dst[entry.name]
+            wp.launch(
+                _filter_rigid_contacts_global_shape_ids_kernel,
+                dim=contacts.rigid_contact_max,
+                inputs=[
+                    self._entry_rigid_contact_update[entry.name],
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_point_id,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                    contacts.rigid_contact_offset0,
+                    contacts.rigid_contact_offset1,
+                    contacts.rigid_contact_normal,
+                    contacts.rigid_contact_margin0,
+                    contacts.rigid_contact_margin1,
+                    contacts.rigid_contact_tids,
+                    entry.view.shape_flags,
+                    int(ShapeFlags.COLLIDE_SHAPES),
+                    filtered.rigid_contact_count,
+                    filtered.rigid_contact_shape0,
+                    filtered.rigid_contact_shape1,
+                    filtered.rigid_contact_point_id,
+                    filtered.rigid_contact_point0,
+                    filtered.rigid_contact_point1,
+                    filtered.rigid_contact_offset0,
+                    filtered.rigid_contact_offset1,
+                    filtered.rigid_contact_normal,
+                    filtered.rigid_contact_margin0,
+                    filtered.rigid_contact_margin1,
+                    filtered.rigid_contact_tids,
+                    rigid_src_to_dst,
+                ],
+                device=self.model.device,
+            )
+            if contacts.rigid_contact_stiffness is not None and filtered.rigid_contact_stiffness is not None:
+                wp.launch(
+                    _copy_filtered_rigid_contact_properties_kernel,
+                    dim=contacts.rigid_contact_max,
+                    inputs=[
+                        self._entry_rigid_contact_update[entry.name],
+                        rigid_src_to_dst,
+                        contacts.rigid_contact_stiffness,
+                        contacts.rigid_contact_damping,
+                        contacts.rigid_contact_friction,
+                        filtered.rigid_contact_stiffness,
+                        filtered.rigid_contact_damping,
+                        filtered.rigid_contact_friction,
+                    ],
+                    device=self.model.device,
+                )
+            if contacts.rigid_contact_match_index is not None and filtered.rigid_contact_match_index is not None:
+                wp.launch(
+                    _copy_filtered_rigid_contact_match_index_kernel,
+                    dim=contacts.rigid_contact_max,
+                    inputs=[
+                        self._entry_rigid_contact_update[entry.name],
+                        rigid_src_to_dst,
+                        contacts.rigid_contact_match_index,
+                        filtered.rigid_contact_match_index,
+                    ],
+                    device=self.model.device,
+                )
+            if contacts.rigid_contact_diff_distance is not None and filtered.rigid_contact_diff_distance is not None:
+                wp.launch(
+                    _copy_filtered_rigid_contact_diff_kernel,
+                    dim=contacts.rigid_contact_max,
+                    inputs=[
+                        self._entry_rigid_contact_update[entry.name],
+                        rigid_src_to_dst,
+                        contacts.rigid_contact_diff_distance,
+                        contacts.rigid_contact_diff_normal,
+                        contacts.rigid_contact_diff_point0_world,
+                        contacts.rigid_contact_diff_point1_world,
+                        filtered.rigid_contact_diff_distance,
+                        filtered.rigid_contact_diff_normal,
+                        filtered.rigid_contact_diff_point0_world,
+                        filtered.rigid_contact_diff_point1_world,
+                    ],
+                    device=self.model.device,
+                )
+
+        if contacts.soft_contact_max > 0 and int(entry.view.particle_count) > 0:
+            soft_src_to_dst = self._entry_soft_contact_src_to_dst[entry.name]
+            wp.launch(
+                _filter_soft_contacts_global_shape_ids_kernel,
+                dim=contacts.soft_contact_max,
+                inputs=[
+                    self._entry_soft_contact_update[entry.name],
+                    contacts.soft_contact_count,
+                    contacts.soft_contact_particle,
+                    contacts.soft_contact_shape,
+                    contacts.soft_contact_body_pos,
+                    contacts.soft_contact_body_vel,
+                    contacts.soft_contact_normal,
+                    contacts.soft_contact_tids,
+                    entry.view.shape_flags,
+                    entry.view.particle_flags,
+                    int(ShapeFlags.COLLIDE_PARTICLES),
+                    int(ParticleFlags.ACTIVE),
+                    filtered.soft_contact_count,
+                    filtered.soft_contact_particle,
+                    filtered.soft_contact_shape,
+                    filtered.soft_contact_body_pos,
+                    filtered.soft_contact_body_vel,
+                    filtered.soft_contact_normal,
+                    filtered.soft_contact_tids,
+                    soft_src_to_dst,
+                ],
+                device=self.model.device,
+            )
+
+        return filtered
+
+    def _ensure_entry_contact_buffer(self, entry: SolverEntry, contacts: Contacts) -> Contacts:
+        filtered = self._entry_contact_buffers.get(entry.name)
+        if filtered is None or not self._entry_contact_buffer_matches(filtered, contacts):
+            from ...sim import Contacts  # noqa: PLC0415
+
+            requested = {"force"} if contacts.force is not None else None
+            filtered = Contacts(
+                contacts.rigid_contact_max,
+                contacts.soft_contact_max,
+                requires_grad=contacts.requires_grad,
+                device=contacts.device,
+                per_contact_shape_properties=contacts.per_contact_shape_properties,
+                requested_attributes=requested,
+                contact_matching=contacts.rigid_contact_match_index is not None,
+            )
+            self._entry_contact_buffers[entry.name] = filtered
+            self._entry_contact_sources[entry.name] = contacts
+            self._entry_rigid_contact_generation[entry.name] = wp.full(
+                1,
+                -1,
+                dtype=wp.int32,
+                device=contacts.device,
+            )
+            self._entry_soft_contact_generation[entry.name] = wp.full(
+                1,
+                -1,
+                dtype=wp.int32,
+                device=contacts.device,
+            )
+            self._entry_rigid_contact_update[entry.name] = wp.zeros(
+                1,
+                dtype=wp.int32,
+                device=contacts.device,
+            )
+            self._entry_soft_contact_update[entry.name] = wp.zeros(
+                1,
+                dtype=wp.int32,
+                device=contacts.device,
+            )
+            self._entry_rigid_contact_src_to_dst[entry.name] = wp.full(
+                contacts.rigid_contact_max,
+                -1,
+                dtype=wp.int32,
+                device=contacts.device,
+            )
+            self._entry_soft_contact_src_to_dst[entry.name] = wp.full(
+                contacts.soft_contact_max,
+                -1,
+                dtype=wp.int32,
+                device=contacts.device,
+            )
+        return filtered
+
+    @staticmethod
+    def _entry_contact_buffer_matches(filtered: Contacts, contacts: Contacts) -> bool:
+        return (
+            filtered.rigid_contact_max == contacts.rigid_contact_max
+            and filtered.soft_contact_max == contacts.soft_contact_max
+            and filtered.requires_grad == contacts.requires_grad
+            and filtered.per_contact_shape_properties == contacts.per_contact_shape_properties
+            and (filtered.force is not None) == (contacts.force is not None)
+            and (filtered.rigid_contact_match_index is not None) == (contacts.rigid_contact_match_index is not None)
+        )
 
     def _refresh_model_view_overrides(self, flags: int) -> None:
         """Refresh parent-derived view overrides before solver notification."""
@@ -1938,6 +2356,98 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self._refresh_model_view_overrides(flags)
         for entry in self._entries.values():
             entry.solver.notify_model_changed(flags)
+
+
+def _entry_control(view: ModelView) -> Control:
+    """Allocate standard entry-local control arrays for a model view."""
+    from ...sim import Control  # noqa: PLC0415
+
+    control = Control()
+    use_coord_layout_targets = bool(getattr(view.parent, "use_coord_layout_targets", False))
+    control._use_coord_layout_targets = use_coord_layout_targets
+    target_q_count = int(view.joint_coord_count if use_coord_layout_targets else view.joint_dof_count)
+    dof_count = int(view.joint_dof_count)
+    requires_grad = bool(getattr(view.parent, "requires_grad", False))
+    device = view.parent.device
+    if target_q_count or dof_count:
+        if target_q_count:
+            control.joint_target_q = wp.zeros(
+                target_q_count,
+                dtype=float,
+                device=device,
+                requires_grad=requires_grad,
+            )
+        if dof_count:
+            control.joint_target_qd = wp.zeros(dof_count, dtype=float, device=device, requires_grad=requires_grad)
+        control.joint_act = wp.zeros(dof_count, dtype=float, device=device, requires_grad=requires_grad)
+        control.joint_f = wp.zeros(dof_count, dtype=float, device=device, requires_grad=requires_grad)
+    if int(view.tri_count):
+        control.tri_activations = wp.clone(view.tri_activations, requires_grad=requires_grad)
+    if int(view.tet_count):
+        control.tet_activations = wp.clone(view.tet_activations, requires_grad=requires_grad)
+    if int(view.muscle_count):
+        control.muscle_activations = wp.clone(view.muscle_activations, requires_grad=requires_grad)
+    return control
+
+
+def _copy_control_to_entry(src: Control | None, entry: SolverEntry) -> Control | None:
+    """Copy full-model controls into an entry-local control object."""
+    if src is None:
+        return None
+    dst = entry.control
+    if dst is None:
+        return src
+
+    device = entry.view.parent.device
+    dof_map = entry.joint_dof_local_to_global
+    use_coord_layout_targets = bool(getattr(entry.view.parent, "use_coord_layout_targets", False))
+    target_q_map = entry.joint_coord_local_to_global if use_coord_layout_targets else dof_map
+    for name, local_to_global in (
+        ("joint_f", dof_map),
+        ("joint_target_q", target_q_map),
+        ("joint_target_qd", dof_map),
+        ("joint_act", dof_map),
+    ):
+        _copy_control_float_array(src, dst, name, local_to_global, device)
+    for name in ("tri_activations", "tet_activations", "muscle_activations"):
+        _copy_control_prefix_float_array(src, dst, name)
+    return dst
+
+
+def _copy_control_float_array(
+    src_control: Control,
+    dst_control: Control,
+    name: str,
+    local_to_global: wp.array,
+    device,
+) -> None:
+    src = getattr(src_control, name, None)
+    dst = getattr(dst_control, name, None)
+    if dst is None:
+        return
+    if src is None:
+        dst.zero_()
+        return
+    if int(src.shape[0]) == int(dst.shape[0]):
+        wp.copy(dst, src)
+        return
+    wp.launch(
+        _copy_mapped_float,
+        dim=local_to_global.shape[0],
+        inputs=[local_to_global, src, dst],
+        device=device,
+    )
+
+
+def _copy_control_prefix_float_array(src_control: Control, dst_control: Control, name: str) -> None:
+    dst = getattr(dst_control, name, None)
+    if dst is None:
+        return
+    src = getattr(src_control, name, None)
+    if src is None:
+        dst.zero_()
+        return
+    _copy_prefix(dst, src, name)
 
 
 def _copy_state_to_entry(src: State, dst: State, entry: SolverEntry) -> None:
@@ -2238,3 +2748,230 @@ def _add_mapped_particle_forces_kernel(
         return
 
     dst_f[local_id] = dst_f[local_id] + src_f[global_id]
+
+
+@wp.kernel(enable_backward=False)
+def _prepare_filtered_contact_update_kernel(
+    src_generation: wp.array[wp.int32],
+    rigid_generation: wp.array[wp.int32],
+    soft_generation: wp.array[wp.int32],
+    rigid_update_out: wp.array[wp.int32],
+    soft_update_out: wp.array[wp.int32],
+    dst_counters: wp.array[wp.int32],
+    counter_count: int,
+    rigid_src_to_dst: wp.array[wp.int32],
+    rigid_contact_max: int,
+    soft_src_to_dst: wp.array[wp.int32],
+    soft_contact_max: int,
+    force_update: int,
+):
+    tid = wp.tid()
+    rigid_update = wp.int32(0)
+    if force_update != 0 or src_generation[0] != rigid_generation[0]:
+        rigid_update = wp.int32(1)
+    soft_update = wp.int32(0)
+    if force_update != 0 or src_generation[0] != soft_generation[0]:
+        soft_update = wp.int32(1)
+    if tid == 0:
+        rigid_update_out[0] = rigid_update
+        soft_update_out[0] = soft_update
+        if rigid_update != 0:
+            rigid_generation[0] = src_generation[0]
+        if soft_update != 0:
+            soft_generation[0] = src_generation[0]
+        if rigid_update != 0 and counter_count > 0:
+            dst_counters[0] = 0
+        if soft_update != 0 and counter_count > 1:
+            dst_counters[1] = 0
+    if rigid_update != 0 and tid < rigid_contact_max:
+        rigid_src_to_dst[tid] = -1
+    if soft_update != 0 and tid < soft_contact_max:
+        soft_src_to_dst[tid] = -1
+
+
+@wp.kernel(enable_backward=False)
+def _filter_rigid_contacts_global_shape_ids_kernel(
+    update_filter: wp.array[wp.int32],
+    src_count: wp.array[wp.int32],
+    src_shape0: wp.array[wp.int32],
+    src_shape1: wp.array[wp.int32],
+    src_point_id: wp.array[wp.int32],
+    src_point0: wp.array[wp.vec3],
+    src_point1: wp.array[wp.vec3],
+    src_offset0: wp.array[wp.vec3],
+    src_offset1: wp.array[wp.vec3],
+    src_normal: wp.array[wp.vec3],
+    src_margin0: wp.array[wp.float32],
+    src_margin1: wp.array[wp.float32],
+    src_tids: wp.array[wp.int32],
+    shape_flags: wp.array[wp.int32],
+    collide_mask: int,
+    dst_count: wp.array[wp.int32],
+    dst_shape0: wp.array[wp.int32],
+    dst_shape1: wp.array[wp.int32],
+    dst_point_id: wp.array[wp.int32],
+    dst_point0: wp.array[wp.vec3],
+    dst_point1: wp.array[wp.vec3],
+    dst_offset0: wp.array[wp.vec3],
+    dst_offset1: wp.array[wp.vec3],
+    dst_normal: wp.array[wp.vec3],
+    dst_margin0: wp.array[wp.float32],
+    dst_margin1: wp.array[wp.float32],
+    dst_tids: wp.array[wp.int32],
+    src_to_dst: wp.array[wp.int32],
+):
+    if update_filter[0] == 0:
+        return
+
+    contact_id = wp.tid()
+    if contact_id >= src_count[0]:
+        return
+
+    shape0 = src_shape0[contact_id]
+    shape1 = src_shape1[contact_id]
+    if shape0 < 0 or shape1 < 0:
+        return
+    if shape0 >= shape_flags.shape[0] or shape1 >= shape_flags.shape[0]:
+        return
+    if (shape_flags[shape0] & collide_mask) == 0 or (shape_flags[shape1] & collide_mask) == 0:
+        return
+
+    dst_id = wp.atomic_add(dst_count, 0, wp.int32(1))
+    src_to_dst[contact_id] = dst_id
+
+    dst_shape0[dst_id] = shape0
+    dst_shape1[dst_id] = shape1
+    dst_point_id[dst_id] = src_point_id[contact_id]
+    dst_point0[dst_id] = src_point0[contact_id]
+    dst_point1[dst_id] = src_point1[contact_id]
+    dst_offset0[dst_id] = src_offset0[contact_id]
+    dst_offset1[dst_id] = src_offset1[contact_id]
+    dst_normal[dst_id] = src_normal[contact_id]
+    dst_margin0[dst_id] = src_margin0[contact_id]
+    dst_margin1[dst_id] = src_margin1[contact_id]
+    dst_tids[dst_id] = src_tids[contact_id]
+
+
+@wp.kernel(enable_backward=False)
+def _copy_filtered_rigid_contact_properties_kernel(
+    update_filter: wp.array[wp.int32],
+    src_to_dst: wp.array[wp.int32],
+    src_stiffness: wp.array[wp.float32],
+    src_damping: wp.array[wp.float32],
+    src_friction: wp.array[wp.float32],
+    dst_stiffness: wp.array[wp.float32],
+    dst_damping: wp.array[wp.float32],
+    dst_friction: wp.array[wp.float32],
+):
+    if update_filter[0] == 0:
+        return
+
+    src_id = wp.tid()
+    dst_id = src_to_dst[src_id]
+    if dst_id < 0:
+        return
+
+    dst_stiffness[dst_id] = src_stiffness[src_id]
+    dst_damping[dst_id] = src_damping[src_id]
+    dst_friction[dst_id] = src_friction[src_id]
+
+
+@wp.kernel(enable_backward=False)
+def _copy_filtered_rigid_contact_match_index_kernel(
+    update_filter: wp.array[wp.int32],
+    src_to_dst: wp.array[wp.int32],
+    src_match_index: wp.array[wp.int32],
+    dst_match_index: wp.array[wp.int32],
+):
+    if update_filter[0] == 0:
+        return
+
+    src_id = wp.tid()
+    dst_id = src_to_dst[src_id]
+    if dst_id < 0:
+        return
+
+    match_id = src_match_index[src_id]
+    if match_id < 0:
+        dst_match_index[dst_id] = match_id
+    else:
+        dst_match_index[dst_id] = -1
+
+
+@wp.kernel(enable_backward=False)
+def _copy_filtered_rigid_contact_diff_kernel(
+    update_filter: wp.array[wp.int32],
+    src_to_dst: wp.array[wp.int32],
+    src_distance: wp.array[wp.float32],
+    src_normal: wp.array[wp.vec3],
+    src_point0_world: wp.array[wp.vec3],
+    src_point1_world: wp.array[wp.vec3],
+    dst_distance: wp.array[wp.float32],
+    dst_normal: wp.array[wp.vec3],
+    dst_point0_world: wp.array[wp.vec3],
+    dst_point1_world: wp.array[wp.vec3],
+):
+    if update_filter[0] == 0:
+        return
+
+    src_id = wp.tid()
+    dst_id = src_to_dst[src_id]
+    if dst_id < 0:
+        return
+
+    dst_distance[dst_id] = src_distance[src_id]
+    dst_normal[dst_id] = src_normal[src_id]
+    dst_point0_world[dst_id] = src_point0_world[src_id]
+    dst_point1_world[dst_id] = src_point1_world[src_id]
+
+
+@wp.kernel(enable_backward=False)
+def _filter_soft_contacts_global_shape_ids_kernel(
+    update_filter: wp.array[wp.int32],
+    src_count: wp.array[wp.int32],
+    src_particle: wp.array[int],
+    src_shape: wp.array[int],
+    src_body_pos: wp.array[wp.vec3],
+    src_body_vel: wp.array[wp.vec3],
+    src_normal: wp.array[wp.vec3],
+    src_tids: wp.array[int],
+    shape_flags: wp.array[wp.int32],
+    particle_flags: wp.array[wp.int32],
+    collide_particles_mask: int,
+    active_particle_mask: int,
+    dst_count: wp.array[wp.int32],
+    dst_particle: wp.array[int],
+    dst_shape: wp.array[int],
+    dst_body_pos: wp.array[wp.vec3],
+    dst_body_vel: wp.array[wp.vec3],
+    dst_normal: wp.array[wp.vec3],
+    dst_tids: wp.array[int],
+    src_to_dst: wp.array[wp.int32],
+):
+    if update_filter[0] == 0:
+        return
+
+    contact_id = wp.tid()
+    if contact_id >= src_count[0]:
+        return
+
+    particle = src_particle[contact_id]
+    shape = src_shape[contact_id]
+    if particle < 0 or shape < 0:
+        return
+    if particle >= particle_flags.shape[0] or shape >= shape_flags.shape[0]:
+        return
+    if (shape_flags[shape] & collide_particles_mask) == 0:
+        return
+    if (particle_flags[particle] & active_particle_mask) == 0:
+        return
+
+    dst_id = wp.atomic_add(dst_count, 0, wp.int32(1))
+    src_to_dst[contact_id] = dst_id
+
+    dst_particle[dst_id] = particle
+    dst_shape[dst_id] = shape
+    dst_body_pos[dst_id] = src_body_pos[contact_id]
+    dst_body_vel[dst_id] = src_body_vel[contact_id]
+    dst_normal[dst_id] = src_normal[contact_id]
+    dst_tids[dst_id] = src_tids[contact_id]

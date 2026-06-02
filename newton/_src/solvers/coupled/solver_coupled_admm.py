@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import warp as wp
@@ -34,6 +34,7 @@ from .admm_utils import (
     attach_rr_revolute_angular_local_accumulate_forces_kernel,
     attach_rr_revolute_angular_local_compute_Jv_kernel,
     attach_rr_revolute_angular_local_compute_u_target_kernel,
+    body_gravity_compensation_kernel,
     contact_lambda_update_active_kernel,
     contact_lambda_update_kernel,
     contact_pp_accumulate_forces_kernel,
@@ -50,16 +51,18 @@ from .admm_utils import (
     contact_rp_snapshot_kernel,
     contact_rr_accumulate_forces_active_kernel,
     contact_rr_accumulate_forces_kernel,
+    contact_rr_clear_contact_snapshot_kernel,
     contact_rr_compute_Jv_active_kernel,
     contact_rr_compute_Jv_kernel,
     contact_rr_compute_u_min_active_kernel,
     contact_rr_fill_from_rigid_contacts_kernel,
     contact_rr_reset_kernel,
-    contact_rr_snapshot_kernel,
+    contact_rr_snapshot_by_contact_kernel,
     contact_u_update_active_kernel,
     contact_u_update_kernel,
     joint_box_friction_u_update_kernel,
     lambda_update_kernel,
+    particle_gravity_compensation_kernel,
     particle_particle_contacts_hashgrid_kernel,
     u_update_quadratic_kernel,
     velocity_proximal_shift_body_kernel,
@@ -204,6 +207,7 @@ class _AdmmRigidRigidContactGroup:
     point_a: wp.array
     body_ids_b: wp.array
     point_b: wp.array
+    contact_ids: wp.array
     normal: wp.array
     contact_distance: wp.array
     W: wp.array
@@ -219,21 +223,14 @@ class _AdmmRigidRigidContactGroup:
     shape_ids_a: wp.array | None = None
     shape_ids_b: wp.array | None = None
     point_ids: wp.array | None = None
+    prev_contact_active: wp.array | None = None
+    prev_contact_lambda: wp.array | None = None
     body_mask_a: wp.array | None = None
     body_mask_b: wp.array | None = None
     shape_mask_a: wp.array | None = None
     shape_mask_b: wp.array | None = None
     contact_distance_value: float = 0.0
     use_contact_margins: bool = False
-    prev_body_ids_a: wp.array | None = None
-    prev_body_ids_b: wp.array | None = None
-    prev_shape_ids_a: wp.array | None = None
-    prev_shape_ids_b: wp.array | None = None
-    prev_point_ids: wp.array | None = None
-    prev_active_count: wp.array | None = None
-    prev_active: wp.array | None = None
-    prev_u: wp.array | None = None
-    prev_lambda: wp.array | None = None
 
     @property
     def count(self) -> int:
@@ -363,7 +360,7 @@ class _AdmmJointProxyMapping:
     body_ids_local: wp.array | None = None
 
 
-class SolverCoupledAdmm(SolverCoupled):
+class SolverCoupledADMM(SolverCoupled):
     """Couple multiple solvers with linearized ADMM over model-derived constraints."""
 
     BODY_PARTICLE_ATTACHMENT_FREQUENCY = "coupling:body_particle_attachment"
@@ -380,7 +377,7 @@ class SolverCoupledAdmm(SolverCoupled):
 
         The registered ``coupling:body_particle_attachment`` custom frequency
         stores model-level rigid-body-to-particle attachment annotations. During
-        construction, :class:`SolverCoupledAdmm` converts rows whose body and
+        construction, :class:`SolverCoupledADMM` converts rows whose body and
         particle endpoints are owned by different solver entries into ADMM
         attachment constraints.
 
@@ -554,9 +551,16 @@ class SolverCoupledAdmm(SolverCoupled):
                 keeps the default symmetric visibility.
             joint_proximal_mass_scale: Multiplier applied to source effective
                 masses before installing cross-solver joint proxy inertias.
+            rigid_contact_matching: Frame-to-frame contact matching mode for
+                collision-detected rigid-rigid ADMM contacts. Use
+                ``"disabled"`` to reset dynamic rigid contact state every
+                refresh, ``"latest"`` to warm start matched contacts from the
+                previous refresh, or ``"sticky"`` to also replay matched contact
+                geometry. Matched contacts reuse only ADMM dual warm-start
+                state; primal contact state is reset on every refresh.
             contact_pairs: Per-interface contact pairs to enable. Empty list
                 disables ADMM-managed contacts. Use
-                :meth:`SolverCoupledAdmm.auto_detect_contact_pairs` to build the
+                :meth:`SolverCoupledADMM.auto_detect_contact_pairs` to build the
                 old auto-discovery list.
         """
 
@@ -571,13 +575,14 @@ class SolverCoupledAdmm(SolverCoupled):
         joint_proximal_bodies: bool = True
         joint_proximal_destination_entries: Sequence[str] | None = None
         joint_proximal_mass_scale: float = 1.0
-        contact_pairs: Sequence[SolverCoupledAdmm.ContactPair] = ()
+        rigid_contact_matching: Literal["disabled", "latest", "sticky"] = "disabled"
+        contact_pairs: Sequence[SolverCoupledADMM.ContactPair] = ()
 
     def __init__(
         self,
         model: Model,
         entries: Sequence[SolverCoupled.Entry],
-        coupling: SolverCoupledAdmm.Config,
+        coupling: SolverCoupledADMM.Config,
     ) -> None:
         self._admm_buffers: dict[str, _AdmmBuffers] = {}
         self._admm_rr_groups: list[_AdmmRigidRigidAttachmentGroup] = []
@@ -853,7 +858,7 @@ class SolverCoupledAdmm(SolverCoupled):
         scale = 1.0 + gamma
         if body_indices.shape[0] > 0:
             view.scale_body_mass(body_indices, scale)
-        view.scale_particle_mass(scale)
+        view.scale_particle_mass(None, scale)
 
     def _disable_admm_joint_proxy_shape_collisions(self, name: str, view: ModelView) -> None:
         proxy_bodies = self._admm_joint_proxy_body_keep.get(name)
@@ -887,7 +892,7 @@ class SolverCoupledAdmm(SolverCoupled):
                 self._body_indices_to_local_array(entry, entry.body_dynamics_disabled_indices)
             )
 
-    def _setup_admm(self, coupling: SolverCoupledAdmm.Config) -> None:
+    def _setup_admm(self, coupling: SolverCoupledADMM.Config) -> None:
         for entry in self._entries.values():
             buf = _AdmmBuffers()
             s0 = entry.state_0
@@ -951,6 +956,9 @@ class SolverCoupledAdmm(SolverCoupled):
                 rigid_contact_max=rigid_contact_max,
                 soft_contact_max=None if self._admm_rigid_particle_contact_specs else 0,
                 soft_contact_margin=float(self._rigid_particle_detection_margin()),
+                contact_matching=(
+                    coupling.rigid_contact_matching if self._admm_rigid_rigid_contact_specs else "disabled"
+                ),
             )
             if self._admm_rigid_particle_contact_specs:
                 self._admm_dynamic_rp_contact_groups = self._build_collision_rigid_particle_contact_groups()
@@ -1041,7 +1049,7 @@ class SolverCoupledAdmm(SolverCoupled):
             return ((m_a * m_b) / (m_a + m_b)) ** 0.5
         return 1.0
 
-    def _setup_admm_contact_specs(self, coupling: SolverCoupledAdmm.Config) -> None:
+    def _setup_admm_contact_specs(self, coupling: SolverCoupledADMM.Config) -> None:
         """Populate dynamic ADMM contact specs from configured contact pairs."""
         if not coupling.contact_pairs:
             return
@@ -1050,7 +1058,7 @@ class SolverCoupledAdmm(SolverCoupled):
         # /particle-particle entry per cross-owner combination), then keep only those
         # whose owner pair appears in the user's ContactPair list. ContactPair fields
         # override per-pair friction/contact_distance.
-        pair_by_owners: dict[frozenset[str], SolverCoupledAdmm.ContactPair] = {}
+        pair_by_owners: dict[frozenset[str], SolverCoupledADMM.ContactPair] = {}
         for pair in coupling.contact_pairs:
             if pair.source == pair.destination:
                 raise ValueError(f"ADMM ContactPair requires distinct source and destination, got {pair.source!r}")
@@ -1110,7 +1118,7 @@ class SolverCoupledAdmm(SolverCoupled):
         *,
         contact_distance: float | None = None,
         detection_margin: float | None = None,
-    ) -> list[SolverCoupledAdmm.ContactPair]:
+    ) -> list[SolverCoupledADMM.ContactPair]:
         """Return ContactPair entries for every cross-owner interface.
 
         Mirrors the prior auto-detection behavior: a pair is emitted for every
@@ -1121,12 +1129,12 @@ class SolverCoupledAdmm(SolverCoupled):
 
         Args:
             entries: Sub-solver entries that will be passed to
-                :class:`SolverCoupledAdmm`.
+                :class:`SolverCoupledADMM`.
             contact_distance: Default minimum contact gap [m].
             detection_margin: Default detection margin [m].
         """
         names = [e.name for e in entries]
-        pairs: list[SolverCoupledAdmm.ContactPair] = []
+        pairs: list[SolverCoupledADMM.ContactPair] = []
         for i, a in enumerate(names):
             for b in names[i + 1 :]:
                 pairs.append(
@@ -1152,7 +1160,10 @@ class SolverCoupledAdmm(SolverCoupled):
         rigid-particle ``ContactPair.detection_margin`` values (defaulting to
         :data:`_DEFAULT_DETECTION_MARGIN` when unset).
         """
-        margin = _DEFAULT_DETECTION_MARGIN
+        if not self._admm_rigid_particle_contact_specs:
+            return _DEFAULT_DETECTION_MARGIN
+
+        margin = 0.0
         for spec in self._admm_rigid_particle_contact_specs:
             value = _DEFAULT_DETECTION_MARGIN if spec.detection_margin is None else float(spec.detection_margin)
             margin = max(margin, value)
@@ -1471,7 +1482,7 @@ class SolverCoupledAdmm(SolverCoupled):
         if self._joint_owner[joint] >= 0:
             raise ValueError(
                 f"ADMM cross-solver joint {joint} must not be owned by a sub-solver entry; "
-                "leave it to SolverCoupledAdmm so the constraint is not applied twice"
+                "leave it to SolverCoupledADMM so the constraint is not applied twice"
             )
         return child_entry, parent_entry
 
@@ -1490,7 +1501,7 @@ class SolverCoupledAdmm(SolverCoupled):
         inertia_b = self._inertia_scalar(props_b[1][0])
         return self._interface_weight(inertia_a, inertia_b)
 
-    def _build_admm_joint_groups(self, coupling: SolverCoupledAdmm.Config) -> None:
+    def _build_admm_joint_groups(self, coupling: SolverCoupledADMM.Config) -> None:
         """Build quadratic ADMM attachments from cross-solver model joints."""
         if (
             coupling.joint_stiffness < 0.0
@@ -1772,7 +1783,7 @@ class SolverCoupledAdmm(SolverCoupled):
         )
         if coupling_ns is None or any(not hasattr(coupling_ns, attr) for attr in required_attrs):
             raise ValueError(
-                "ADMM body-particle attachments require SolverCoupledAdmm.register_custom_attributes(builder) "
+                "ADMM body-particle attachments require SolverCoupledADMM.register_custom_attributes(builder) "
                 "before finalizing the model"
             )
 
@@ -1921,30 +1932,29 @@ class SolverCoupledAdmm(SolverCoupled):
             entry_b = self._entries[group.body_entry_name_b]
             buf_a = self._admm_buffers[group.body_entry_name_a]
             buf_b = self._admm_buffers[group.body_entry_name_b]
+            rigid_contact_match_index = self._admm_internal_contacts.rigid_contact_match_index
+            use_contact_matching = rigid_contact_match_index is not None
+            if rigid_contact_match_index is None:
+                rigid_contact_match_index = group.prev_contact_active
             wp.launch(
-                contact_rr_snapshot_kernel,
+                contact_rr_clear_contact_snapshot_kernel,
+                dim=group.prev_contact_active.shape[0],
+                inputs=[
+                    group.prev_contact_active,
+                    group.prev_contact_lambda,
+                ],
+                device=self.model.device,
+            )
+            wp.launch(
+                contact_rr_snapshot_by_contact_kernel,
                 dim=group.count,
                 inputs=[
                     group.active_count,
-                    group.body_ids_a,
-                    group.body_ids_b,
-                    group.shape_ids_a,
-                    group.shape_ids_b,
-                    group.point_ids,
+                    group.contact_ids,
                     group.active,
-                    group.u,
                     group.lambda_,
-                ],
-                outputs=[
-                    group.prev_body_ids_a,
-                    group.prev_body_ids_b,
-                    group.prev_shape_ids_a,
-                    group.prev_shape_ids_b,
-                    group.prev_point_ids,
-                    group.prev_active_count,
-                    group.prev_active,
-                    group.prev_u,
-                    group.prev_lambda,
+                    group.prev_contact_active,
+                    group.prev_contact_lambda,
                 ],
                 device=self.model.device,
             )
@@ -1957,6 +1967,7 @@ class SolverCoupledAdmm(SolverCoupled):
                     group.point_a,
                     group.body_ids_b,
                     group.point_b,
+                    group.contact_ids,
                     group.shape_ids_a,
                     group.shape_ids_b,
                     group.point_ids,
@@ -1985,6 +1996,7 @@ class SolverCoupledAdmm(SolverCoupled):
                     self._admm_internal_contacts.rigid_contact_margin0,
                     self._admm_internal_contacts.rigid_contact_margin1,
                     self._admm_internal_contacts.rigid_contact_point_id,
+                    rigid_contact_match_index,
                     self.model.shape_body,
                     group.body_mask_a,
                     group.body_mask_b,
@@ -1997,22 +2009,19 @@ class SolverCoupledAdmm(SolverCoupled):
                     self.model.shape_material_mu,
                     float(group.contact_distance_value),
                     1 if group.use_contact_margins else 0,
+                    1 if use_contact_matching else 0,
                     int(group.count),
                     group.active_count,
                     group.active_count_max,
-                    group.prev_shape_ids_a,
-                    group.prev_shape_ids_b,
-                    group.prev_point_ids,
-                    group.prev_active_count,
-                    group.prev_active,
-                    group.prev_u,
-                    group.prev_lambda,
+                    group.prev_contact_active,
+                    group.prev_contact_lambda,
                 ],
                 outputs=[
                     group.body_ids_a,
                     group.point_a,
                     group.body_ids_b,
                     group.point_b,
+                    group.contact_ids,
                     group.shape_ids_a,
                     group.shape_ids_b,
                     group.point_ids,
@@ -2267,6 +2276,7 @@ class SolverCoupledAdmm(SolverCoupled):
             shapes_b = self._shape_contact_candidates(spec.owner_b, spec.shapes_b)
             # Primitive pairs may emit a small manifold rather than one row.
             capacity = 8 * len(self._rigid_rigid_spec_shape_pairs(spec))
+            contact_capacity = self._admm_rigid_contact_capacity()
             if capacity == 0:
                 continue
             self._require_effective_mass(spec.owner_a, CouplingEndpointKind.BODY)
@@ -2280,6 +2290,7 @@ class SolverCoupledAdmm(SolverCoupled):
                     point_a=wp.zeros(capacity, dtype=wp.vec3, device=device),
                     body_ids_b=wp.zeros(capacity, dtype=int, device=device),
                     point_b=wp.zeros(capacity, dtype=wp.vec3, device=device),
+                    contact_ids=wp.full(capacity, -1, dtype=int, device=device),
                     normal=wp.zeros(capacity, dtype=wp.vec3, device=device),
                     contact_distance=wp.zeros(capacity, dtype=float, device=device),
                     W=wp.zeros(capacity, dtype=float, device=device),
@@ -2295,21 +2306,14 @@ class SolverCoupledAdmm(SolverCoupled):
                     shape_ids_a=wp.full(capacity, -1, dtype=int, device=device),
                     shape_ids_b=wp.full(capacity, -1, dtype=int, device=device),
                     point_ids=wp.full(capacity, -1, dtype=int, device=device),
+                    prev_contact_active=wp.zeros(contact_capacity, dtype=int, device=device),
+                    prev_contact_lambda=wp.zeros(contact_capacity, dtype=wp.vec3, device=device),
                     body_mask_a=self._make_int_mask_array(self.model.body_count, self._entry_body_sets[spec.owner_a]),
                     body_mask_b=self._make_int_mask_array(self.model.body_count, self._entry_body_sets[spec.owner_b]),
                     shape_mask_a=self._make_int_mask_array(self.model.shape_count, set(shapes_a)),
                     shape_mask_b=self._make_int_mask_array(self.model.shape_count, set(shapes_b)),
                     contact_distance_value=0.0 if spec.contact_distance is None else float(spec.contact_distance),
                     use_contact_margins=spec.contact_distance is None,
-                    prev_body_ids_a=wp.zeros(capacity, dtype=int, device=device),
-                    prev_body_ids_b=wp.zeros(capacity, dtype=int, device=device),
-                    prev_shape_ids_a=wp.full(capacity, -1, dtype=int, device=device),
-                    prev_shape_ids_b=wp.full(capacity, -1, dtype=int, device=device),
-                    prev_point_ids=wp.full(capacity, -1, dtype=int, device=device),
-                    prev_active_count=wp.zeros(1, dtype=int, device=device),
-                    prev_active=wp.zeros(capacity, dtype=int, device=device),
-                    prev_u=wp.zeros(capacity, dtype=wp.vec3, device=device),
-                    prev_lambda=wp.zeros(capacity, dtype=wp.vec3, device=device),
                 )
             )
 
@@ -2681,6 +2685,20 @@ class SolverCoupledAdmm(SolverCoupled):
                 )
             else:
                 buf.body_f.zero_()
+            if apply_proximal and entry.view.body_count > 0:
+                wp.launch(
+                    body_gravity_compensation_kernel,
+                    dim=entry.view.body_count,
+                    inputs=[
+                        gamma,
+                        entry.view.body_mass,
+                        entry.view.body_inv_mass,
+                        entry.view.body_world,
+                        entry.view.gravity,
+                    ],
+                    outputs=[buf.body_f],
+                    device=self.model.device,
+                )
         if buf.particle_f is not None:
             if state_in.particle_f is not None:
                 wp.launch(
@@ -2691,6 +2709,21 @@ class SolverCoupledAdmm(SolverCoupled):
                 )
             else:
                 buf.particle_f.zero_()
+            if apply_proximal and entry.view.particle_count > 0:
+                wp.launch(
+                    particle_gravity_compensation_kernel,
+                    dim=entry.view.particle_count,
+                    inputs=[
+                        gamma,
+                        entry.view.particle_mass,
+                        entry.view.particle_inv_mass,
+                        entry.view.particle_flags,
+                        entry.view.particle_world,
+                        entry.view.gravity,
+                    ],
+                    outputs=[buf.particle_f],
+                    device=self.model.device,
+                )
 
     def _apply_admm_force_inputs(self, entry: SolverEntry, buf: _AdmmBuffers, dt: float) -> None:
         if entry.body_indices.shape[0] > 0:
