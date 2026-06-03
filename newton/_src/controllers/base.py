@@ -84,14 +84,16 @@ class Controller:
         raise NotImplementedError(f"{type(self).__name__} must implement compute().")
 
     def reset(self, state: Controller.State, mask: wp.array[wp.bool]) -> None:
-        """Update ``state`` from :attr:`reset_state` for DOFs flagged in ``mask``.
+        """Update ``state`` from :attr:`reset_state` where ``mask`` is True.
 
-        ``mask`` is a bool array indexed by global DOF starting index —
-        ``mask[g] = True`` means "reset DOF g." How a DOF's starting index
-        expands into a chunk of state is controller-specific. A typical
-        implementation launches a kernel of ``len(self.indices)`` threads
-        where thread ``i`` reads ``mask[self.indices[i]]`` and resets the
-        corresponding state chunk from :attr:`reset_state`.
+        ``mask`` is a bool array of length equal to this controller's
+        ``num_outputs`` (the shared outer length of all output bindings
+        returned by :meth:`outputs`). ``mask[i] = True`` means "reset slot
+        ``i``." Slot ``i`` corresponds to whichever portion of the state
+        the controller associates with output slot ``i`` — for a simple
+        per-DOF controller like :class:`ControllerPID`, that's a single
+        state element; for a controller with multi-component-per-output
+        state, it may be a wider chunk.
 
         The default implementation is a no-op (suitable for stateless
         controllers).

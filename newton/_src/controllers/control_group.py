@@ -41,10 +41,16 @@ class ControlGroup:
             raise ValueError("ControlGroup requires at least one controller.")
         self._controllers = list(controllers)
 
-        # Pick the device from the first bound output array; validate agreement.
+        # Walk every output binding once: pick the device, enforce device
+        # agreement, and enforce that all bindings share an outer length
+        # (the group-wide num_outputs / reset-mask length).
         device = None
+        num_outputs = None
         for c in self._controllers:
-            for out_array, _ in c.outputs():
+            bindings = c.outputs()
+            if not bindings:
+                raise ValueError(f"ControlGroup: {type(c).__name__} returned no output bindings.")
+            for out_array, out_indices in bindings:
                 if device is None:
                     device = out_array.device
                 elif out_array.device != device:
@@ -52,15 +58,20 @@ class ControlGroup:
                         f"ControlGroup: controllers' output arrays are on different devices "
                         f"({device} vs {out_array.device})."
                     )
-        if device is None:
-            raise ValueError("ControlGroup: no output arrays found on any controller.")
+                n = len(out_indices)
+                if num_outputs is None:
+                    num_outputs = n
+                elif n != num_outputs:
+                    raise ValueError(
+                        f"ControlGroup: all controllers must share num_outputs (the outer length "
+                        f"of their output bindings); got {num_outputs} and {n}."
+                    )
         self._device = device
+        self._num_outputs = num_outputs
 
-        # Finalize each controller (allocates private buffers + reset_state).
         for c in self._controllers:
             c.finalize(self._device, len(c.indices))
 
-        # Collect bindings to be zeroed at the start of every step.
         self._output_bindings: list[tuple[wp.array, wp.array[wp.uint32]]] = []
         for c in self._controllers:
             self._output_bindings.extend(c.outputs())
@@ -68,6 +79,12 @@ class ControlGroup:
     @property
     def device(self) -> wp.Device:
         return self._device
+
+    @property
+    def num_outputs(self) -> int:
+        """Shared outer length of every controller's output bindings; also the
+        required length of the ``mask`` passed to :meth:`reset`."""
+        return self._num_outputs
 
     def is_stateful(self) -> bool:
         return any(c.is_stateful() for c in self._controllers)
@@ -102,12 +119,15 @@ class ControlGroup:
             c.compute(cur_s, nxt_s, dt)
 
     def reset(self, state: ControlGroup.State, mask: wp.array[wp.bool]) -> None:
-        """Reset masked DOFs in ``state``.
+        """Reset slots flagged by ``mask`` in every stateful controller.
 
-        Calls ``controller.reset(sub_state, mask)`` for every controller whose
-        sub-state is not ``None``. No framework-level interpretation of
-        ``mask`` — each controller handles it according to its own layout.
+        ``mask`` is a bool array of length :attr:`num_outputs` (the
+        group-wide shared output length validated at construction).
+        ``controller.reset(sub_state, mask)`` is called for every controller
+        whose sub-state is not ``None``.
         """
+        if len(mask) != self._num_outputs:
+            raise ValueError(f"ControlGroup.reset: mask length {len(mask)} must equal num_outputs={self._num_outputs}.")
         for c, sub_state in zip(self._controllers, state.controller_states, strict=True):
             if sub_state is not None:
                 c.reset(sub_state, mask)

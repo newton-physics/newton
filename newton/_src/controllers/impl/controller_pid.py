@@ -54,11 +54,10 @@ def _pid_kernel(
 def _pid_masked_reset_kernel(
     integral: wp.array[float],
     target_integral: wp.array[float],
-    controller_indices: wp.array[wp.uint32],
     mask: wp.array[wp.bool],
 ):
     i = wp.tid()
-    if mask[controller_indices[i]]:
+    if mask[i]:
         integral[i] = target_integral[i]
 
 
@@ -194,5 +193,5 @@ class ControllerPID(Controller):
         wp.launch(
             _pid_masked_reset_kernel,
             dim=len(self.indices),
-            inputs=[state.integral, self.reset_state.integral, self.indices, mask],
+            inputs=[state.integral, self.reset_state.integral, mask],
         )

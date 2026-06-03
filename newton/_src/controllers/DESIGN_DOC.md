@@ -190,6 +190,10 @@ Controllers run **serially** (sequential `wp.launch` calls, made much more effic
 
 Reset is a controller-defined operation that updates the live State from a per-controller "reset target" State. Each controller has a public attribute `reset_state: Controller.State`, allocated at `finalize()` and zero-initialized. The user mutates `controller.reset_state` to customize what reset writes; they can do so any time after `finalize()` and before the next reset call.
 
+**Mask shape.** `mask` is a `wp.array[wp.bool]` of length equal to the controller's `num_outputs` — the shared outer length of every output binding the controller declares via `outputs()`. `mask[i] = True` means "reset output slot `i`." For multi-output controllers, *all* of the controller's output arrays must share the same outer length (e.g., a controller with a `wp.array[wp.vec3]` position output and a `wp.array[wp.quat]` orientation output must size both arrays to the same length); the single mask then refers to corresponding slots across all outputs.
+
+**Group-level invariant.** A `ControlGroup` requires every controller to share `num_outputs`; this is validated at `ControlGroup.__init__`. The group-wide mask passed to `group.reset(state, mask)` has that shared length.
+
 **User-facing call:**
 
 ```python
@@ -197,7 +201,7 @@ group.reset(state, mask)
 ```
 
 - `state` is a `ControlGroup.State`.
-- `mask` is a `wp.array[wp.bool]` containing one boolean per *global DOF starting index*. `mask[g] = True` means "reset the DOF at global starting index `g`." The mask is the same shape regardless of how many controllers exist or how their internal state is laid out.
+- `mask` is a `wp.array[wp.bool]` of length `group.num_outputs`.
 
 To customize what reset writes, mutate the controller's stash ahead of time:
 
@@ -206,14 +210,14 @@ pid = nc.ControllerPID(...)
 group = nc.ControlGroup([pid])              # finalize allocates pid.reset_state (zeros)
 pid.reset_state.integral.fill_(0.5)         # bias the reset target
 
-group.reset(state_0, mask=reset_mask)       # PID's masked entries → 0.5
+group.reset(state_0, mask=reset_mask)       # masked slots → 0.5
 ```
 
-**DOF starting indices, not slot indices.** Each entry in `mask` corresponds to one DOF — but a DOF's footprint inside a controller's State may be larger than one element (e.g., a quaternion-tracking filter that stores 4 floats per DOF). The `mask` is still indexed by DOF starting index, not by per-element slot. How a DOF's starting index expands into a chunk of state (1 element, 4 elements, …) is the controller author's business.
+**Slot, not necessarily one float.** Each entry in `mask` refers to *one output slot*. The chunk of state associated with a slot is controller-defined: it may be a single scalar (e.g., PID's `integral[i]`), a `wp.vec3` (a per-robot position), a `wp.quat` (a per-robot orientation), or a wider buffer (e.g., a filter that holds K floats per slot). The controller's `reset` implementation knows the stride and writes the right thing.
 
-**How it works.** `ControlGroup.reset(state, mask)` walks `(controller, sub_state)` pairs and calls `controller.reset(sub_state, mask)` for each non-None sub_state. There is *no* framework-level interpretation of what the mask means for each controller's state — the controller is handed the raw mask and decides how to use it. A typical pattern is to launch a kernel of `len(self._indices)` threads where thread `i` reads `mask[self._indices[i]]` and resets the corresponding chunk of state from `self.reset_state`.
+**How it works.** `ControlGroup.reset(state, mask)` walks `(controller, sub_state)` pairs and calls `controller.reset(sub_state, mask)` for each non-None sub_state. The controller's kernel iterates over `num_outputs` threads and reads `mask[i]` directly — no indirection through any per-controller index array, because the mask is already in the controller's local frame.
 
-The same kernel is callable from C++ directly with the raw `(state_field, reset_state_field, controller_indices, mask)` array pointers — there is no Python-only sugar in the kernel-level contract.
+The same kernel is callable from C++ directly with the raw `(state_field, reset_state_field, mask)` array pointers — there is no Python-only sugar in the kernel-level contract.
 
 ---
 
@@ -296,12 +300,11 @@ class Controller:
         state: Controller.State,
         mask: wp.array[wp.bool],
     ) -> None:
-        """Update `state` from `self.reset_state` for the DOFs flagged in
-        `mask`. `mask` is a bool array indexed by global DOF starting
-        index — `mask[g] = True` means "reset DOF g." A typical
-        implementation launches a kernel of len(self._indices) threads
-        where thread i reads mask[self._indices[i]] and resets the
-        corresponding chunk of state from self.reset_state.
+        """Update `state` from `self.reset_state` where `mask` is True.
+        `mask` is a bool array of length num_outputs (the shared outer
+        length of every binding returned by outputs()). `mask[i] = True`
+        means "reset slot i." The implementation typically launches a
+        kernel of num_outputs threads doing a direct mask[i] check.
 
         Stateless controllers leave this as a no-op (or don't override)."""
 ```
