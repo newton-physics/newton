@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import logging
+import warnings
+from collections.abc import Callable
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +18,8 @@ from ..core.types import Devicelike
 from .contacts import Contacts
 from .control import Control
 from .state import State
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
@@ -117,12 +122,47 @@ class Model:
             Args:
                 name: The name of the namespace
             """
-            self._name: str = name
+            object.__setattr__(self, "_name", name)
+            object.__setattr__(self, "_deprecated_aliases", {})
+
+        def add_deprecated_alias(self, name: str, getter: Callable[[], Any], message: str) -> None:
+            """Add a deprecated attribute alias.
+
+            Args:
+                name: Alias name exposed on the namespace.
+                getter: Callable returning the canonical target object.
+                message: Deprecation warning message.
+            """
+            if name in self.__dict__ or name in self._deprecated_aliases:
+                raise AttributeError(f"Attribute already exists: {self._name}.{name}")
+            self._deprecated_aliases[name] = (getter, message)
+
+        def __getattr__(self, name: str) -> Any:
+            aliases = self.__dict__.get("_deprecated_aliases", {})
+            if name in aliases:
+                getter, message = aliases[name]
+                warnings.warn(message, DeprecationWarning, stacklevel=2)
+                return getter()
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+        def __setattr__(self, name: str, value: Any) -> None:
+            if not name.startswith("_"):
+                aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
+                if name in aliases:
+                    getter, message = aliases[name]
+                    warnings.warn(message, DeprecationWarning, stacklevel=2)
+                    target = getter()
+                    if isinstance(target, wp.array):
+                        target.assign(value)
+                        return
+                    raise AttributeError(f"Deprecated alias '{self._name}.{name}' does not support assignment")
+            object.__setattr__(self, name, value)
 
         def __repr__(self):
             """Return a string representation showing the namespace and its attributes."""
             # List all public attributes (not starting with _)
             attrs = [k for k in self.__dict__ if not k.startswith("_")]
+            attrs.extend(k for k in self._deprecated_aliases if k not in attrs)
             return f"AttributeNamespace('{self._name}', attributes={attrs})"
 
     def __init__(self, device: Devicelike | None = None):
@@ -314,23 +354,30 @@ class Model:
         self.shape_edge_range: wp.array[wp.vec2i] | None = None
         """Per-shape (start, count) into mesh_edge_indices, shape [shape_count]. (-1,0) if no edges."""
 
-        # SDF storage (compact table + per-shape index indirection)
-        self.shape_sdf_index: wp.array[wp.int32] | None = None
+        # SDF storage (compact table + per-shape index indirection).
+        # All SDF arrays are private; the public attribute names are exposed
+        # via deprecated property aliases further down for back-compat.
+        #
+        # .. experimental::
+        #     The SDF storage on ``Model`` is part of the experimental SDF API
+        #     (see :class:`~newton.SDF`) and may change without notice.
+        self._shape_sdf_index: wp.array[wp.int32] | None = None
         """Per-shape SDF index, shape [shape_count]. -1 means shape has no SDF."""
-        self.sdf_block_coords: wp.array[wp.vec3us] | None = None
-        """Compact flat array of active SDF block coordinates."""
-        self.sdf_index2blocks: wp.array[wp.vec2i] | None = None
-        """Per-SDF [start, end) indices into sdf_block_coords, shape [num_sdfs, 2]."""
 
         # Texture SDF storage
-        self.texture_sdf_data = None
+        self._texture_sdf_data = None
         """Compact array of TextureSDFData structs, shape [num_sdfs]."""
-        self.texture_sdf_coarse_textures = []
-        """Coarse 3D textures matching texture_sdf_data by index. Kept for reference counting."""
-        self.texture_sdf_subgrid_textures = []
-        """Subgrid 3D textures matching texture_sdf_data by index. Kept for reference counting."""
-        self.texture_sdf_subgrid_start_slots = []
-        """Subgrid start slot arrays matching texture_sdf_data by index. Kept for reference counting."""
+        self._texture_sdf_coarse_textures: list = []
+        """Coarse 3D textures matching _texture_sdf_data by index. Kept for reference counting."""
+        self._texture_sdf_subgrid_textures: list = []
+        """Subgrid 3D textures matching _texture_sdf_data by index. Kept for reference counting."""
+        self._texture_sdf_subgrid_start_slots: list = []
+        """Subgrid start slot arrays matching _texture_sdf_data by index. Kept for reference counting."""
+
+        # Caches for the deprecated lazy ``sdf_block_coords`` / ``sdf_index2blocks``
+        # properties. Populated on first access; cleared when SDF storage changes.
+        self._sdf_block_coords_cache: wp.array | None = None
+        self._sdf_index2blocks_cache: wp.array | None = None
 
         # Local AABB and voxel grid for contact reduction
         # Note: These are stored in Model (not Contacts) because they are static geometry properties
@@ -497,6 +544,8 @@ class Model:
         """Joint stiffness [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_kd: wp.array[wp.float32] | None = None
         """Joint damping [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float."""
+        self.joint_damping: wp.array[wp.float32] | None = None
+        """Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint, shape [joint_dof_count], float."""
         self.joint_effort_limit: wp.array[wp.float32] | None = None
         """Joint effort (force/torque) limits [N or N·m, depending on joint type], shape [joint_dof_count], float."""
         self.joint_velocity_limit: wp.array[wp.float32] | None = None
@@ -832,6 +881,7 @@ class Model:
         self.attribute_frequency["joint_target_mode"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_ke"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_kd"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_damping"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_lower"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_upper"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_ke"] = Model.AttributeFrequency.JOINT_DOF
@@ -864,6 +914,220 @@ class Model:
 
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
+
+    # ----- Deprecated SDF aliases -------------------------------------------
+    # The underlying SDF members on ``Model`` are now underscore-prefixed.
+    # The properties below preserve the historical attribute names for one
+    # release cycle and emit ``DeprecationWarning`` on access.
+
+    @property
+    def shape_sdf_index(self) -> wp.array[wp.int32] | None:
+        """Deprecated alias for :attr:`_shape_sdf_index`.
+
+        .. deprecated:: 1.3
+            Use the underscored private member or the appropriate accessor.
+            This alias will be removed in Newton 1.5.
+        """
+        warnings.warn(
+            "Model.shape_sdf_index is deprecated; use Model._shape_sdf_index. "
+            "The public alias will be removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._shape_sdf_index
+
+    @shape_sdf_index.setter
+    def shape_sdf_index(self, value):
+        warnings.warn(
+            "Model.shape_sdf_index is deprecated; assign to Model._shape_sdf_index. "
+            "The public alias will be removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._shape_sdf_index = value
+
+    @property
+    def texture_sdf_data(self):
+        """Deprecated alias for :attr:`_texture_sdf_data`.
+
+        .. deprecated:: 1.3
+            Use the underscored private member. The alias will be removed in
+            Newton 1.5.
+        """
+        warnings.warn(
+            "Model.texture_sdf_data is deprecated; use Model._texture_sdf_data. "
+            "The public alias will be removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._texture_sdf_data
+
+    @texture_sdf_data.setter
+    def texture_sdf_data(self, value):
+        warnings.warn(
+            "Model.texture_sdf_data is deprecated; assign to Model._texture_sdf_data. "
+            "The public alias will be removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._texture_sdf_data = value
+        self._sdf_block_coords_cache = None
+        self._sdf_index2blocks_cache = None
+
+    @property
+    def texture_sdf_coarse_textures(self) -> list:
+        """Deprecated alias for :attr:`_texture_sdf_coarse_textures`.
+
+        .. deprecated:: 1.3
+            Use the underscored private member. The alias will be removed in
+            Newton 1.5.
+        """
+        warnings.warn(
+            "Model.texture_sdf_coarse_textures is deprecated; use "
+            "Model._texture_sdf_coarse_textures. The public alias will be "
+            "removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._texture_sdf_coarse_textures
+
+    @texture_sdf_coarse_textures.setter
+    def texture_sdf_coarse_textures(self, value):
+        warnings.warn(
+            "Model.texture_sdf_coarse_textures is deprecated; assign to "
+            "Model._texture_sdf_coarse_textures. The public alias will be "
+            "removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._texture_sdf_coarse_textures = value
+        self._sdf_block_coords_cache = None
+        self._sdf_index2blocks_cache = None
+
+    @property
+    def texture_sdf_subgrid_textures(self) -> list:
+        """Deprecated alias for :attr:`_texture_sdf_subgrid_textures`.
+
+        .. deprecated:: 1.3
+            Use the underscored private member. The alias will be removed in
+            Newton 1.5.
+        """
+        warnings.warn(
+            "Model.texture_sdf_subgrid_textures is deprecated; use "
+            "Model._texture_sdf_subgrid_textures. The public alias will be "
+            "removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._texture_sdf_subgrid_textures
+
+    @texture_sdf_subgrid_textures.setter
+    def texture_sdf_subgrid_textures(self, value):
+        warnings.warn(
+            "Model.texture_sdf_subgrid_textures is deprecated; assign to "
+            "Model._texture_sdf_subgrid_textures. The public alias will be "
+            "removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._texture_sdf_subgrid_textures = value
+
+    @property
+    def texture_sdf_subgrid_start_slots(self) -> list:
+        """Deprecated alias for :attr:`_texture_sdf_subgrid_start_slots`.
+
+        .. deprecated:: 1.3
+            Use the underscored private member. The alias will be removed in
+            Newton 1.5.
+        """
+        warnings.warn(
+            "Model.texture_sdf_subgrid_start_slots is deprecated; use "
+            "Model._texture_sdf_subgrid_start_slots. The public alias will be "
+            "removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._texture_sdf_subgrid_start_slots
+
+    @texture_sdf_subgrid_start_slots.setter
+    def texture_sdf_subgrid_start_slots(self, value):
+        warnings.warn(
+            "Model.texture_sdf_subgrid_start_slots is deprecated; assign to "
+            "Model._texture_sdf_subgrid_start_slots. The public alias will be "
+            "removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._texture_sdf_subgrid_start_slots = value
+
+    @property
+    def sdf_block_coords(self):
+        """Deprecated.  Lazily-computed flat ``wp.vec3us`` block coords.
+
+        Per-SDF active-block coordinates were dropped when the hydroelastic
+        broadphase started deriving them arithmetically from each SDF's
+        coarse-texture dimensions. This property recomputes the legacy
+        layout on first access (and caches it) so external callers that
+        still read the attribute keep working.
+
+        .. deprecated:: 1.3
+            This attribute will be removed in Newton 1.5.
+        """
+        warnings.warn(
+            "Model.sdf_block_coords is deprecated and will be removed in "
+            "Newton 1.5. The hydroelastic broadphase now derives block "
+            "coordinates arithmetically from each SDF's coarse-texture "
+            "dimensions and no longer needs this attribute.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._ensure_legacy_sdf_block_arrays()
+        return self._sdf_block_coords_cache
+
+    @property
+    def sdf_index2blocks(self):
+        """Deprecated.  Lazily-computed per-SDF ``[start, end)`` ranges.
+
+        Per-SDF ``[start, end)`` indices into ``sdf_block_coords`` were
+        dropped when the hydroelastic broadphase started deriving block
+        ranges arithmetically from each SDF's coarse-texture dimensions.
+        This property recomputes the legacy layout on first access (and
+        caches it) so external callers that still read the attribute keep
+        working.
+
+        .. deprecated:: 1.3
+            This attribute will be removed in Newton 1.5.
+        """
+        warnings.warn(
+            "Model.sdf_index2blocks is deprecated and will be removed in "
+            "Newton 1.5. The hydroelastic broadphase now derives block "
+            "ranges arithmetically from each SDF's coarse-texture "
+            "dimensions and no longer needs this attribute.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._ensure_legacy_sdf_block_arrays()
+        return self._sdf_index2blocks_cache
+
+    def _ensure_legacy_sdf_block_arrays(self) -> None:
+        """Populate the legacy SDF block-coord caches on demand."""
+        if self._sdf_block_coords_cache is not None and self._sdf_index2blocks_cache is not None:
+            return
+        # Local import keeps the deprecated module out of the normal load path.
+        from ..geometry._deprecated_sdf_block_coords import (  # noqa: PLC0415
+            build_legacy_sdf_block_arrays,
+        )
+
+        subgrid_size = 8
+        if self._texture_sdf_data is not None and len(self._texture_sdf_data) > 0:
+            subgrid_size = int(self._texture_sdf_data.numpy()[0]["subgrid_size"])
+        block_coords, index2blocks = build_legacy_sdf_block_arrays(
+            self._texture_sdf_coarse_textures,
+            subgrid_size=subgrid_size,
+            device=self.device,
+        )
+        self._sdf_block_coords_cache = block_coords
+        self._sdf_index2blocks_cache = index2blocks
 
     @property
     def joint_target_q_start(self) -> wp.array | None:
@@ -1264,7 +1528,7 @@ class Model:
                 setattr(self, namespace, Model.AttributeNamespace(namespace))
 
             ns_obj = getattr(self, namespace)
-            if hasattr(ns_obj, name):
+            if name in ns_obj.__dict__ or name in ns_obj._deprecated_aliases:
                 raise AttributeError(f"Attribute already exists: {namespace}.{name}")
 
             setattr(ns_obj, name, attrib)

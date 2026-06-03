@@ -128,7 +128,35 @@ components directly:
        controller=ControllerPD(kp=kp, kd=kd),
        delay=Delay(delay_steps=wp.array([5], dtype=wp.int32), max_delay=5),
        clamping=[ClampingMaxEffort(max_effort=max_e)],
+       control_target_pos_attr="joint_target_q",
+       control_target_vel_attr="joint_target_qd",
    )
+
+The simulator state and control objects do not need to be a full
+:class:`newton.Model` / :class:`newton.Control` — any objects exposing
+``joint_q``, ``joint_qd``, ``joint_target_q``, ``joint_target_qd``,
+``joint_act`` (optional), and ``joint_f`` will do.  This makes actuators
+reusable from a custom simulator or test harness:
+
+.. testcode:: actuator-usage
+
+   import types
+
+   sim_state = types.SimpleNamespace(
+       joint_q=wp.array([0.0], dtype=wp.float32),
+       joint_qd=wp.array([0.0], dtype=wp.float32),
+   )
+   sim_control = types.SimpleNamespace(
+       joint_target_q=wp.array([1.0], dtype=wp.float32),
+       joint_target_qd=wp.array([0.0], dtype=wp.float32),
+       joint_act=None,
+       joint_f=wp.zeros(1, dtype=wp.float32),
+   )
+
+   state_a = actuator.state()
+   state_b = actuator.state()
+   sim_control.joint_f.zero_()
+   actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
 
 
 Stateful Actuators

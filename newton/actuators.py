@@ -24,6 +24,7 @@ from ._src.actuators import (
     ControllerPD,
     ControllerPID,
     Delay,
+    SchemaNames,
     parse_actuator_prim,
     register_actuator_component,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "ControllerPD",
     "ControllerPID",
     "Delay",
+    "SchemaNames",
     "parse_actuator_prim",
     "register_actuator_component",
 ]

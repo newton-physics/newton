@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.metadata as importlib_metadata
+import math
 import os
 import re
 import warnings
@@ -102,6 +103,59 @@ else:
 
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
+
+_DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE = (
+    "Model.mujoco.dof_passive_damping is deprecated and will be removed in a future release. "
+    "Use Model.joint_damping instead."
+)
+
+
+def _finalize_deprecated_dof_passive_damping(
+    builder: ModelBuilder, model: Model, custom_attr: ModelBuilder.CustomAttribute
+) -> None:
+    if custom_attr.values:
+        updated_joint_damping = None
+        if isinstance(custom_attr.values, dict):
+            damping_items = custom_attr.values.items()
+        else:
+            damping_items = enumerate(custom_attr.values)
+
+        for index, value in damping_items:
+            if value is None:
+                continue
+            damping_index = int(index)
+            canonical_value = builder.joint_damping[damping_index]
+            if canonical_value == value:
+                continue
+
+            alias_value = float(value)
+            canonical_value = float(canonical_value)
+            if canonical_value != 0.0 and not math.isclose(canonical_value, alias_value, rel_tol=1e-05, abs_tol=1e-08):
+                raise ValueError(
+                    "Model.mujoco.dof_passive_damping conflicts with Model.joint_damping "
+                    f"at DOF {damping_index}: {alias_value} != {canonical_value}."
+                )
+            if updated_joint_damping is None:
+                updated_joint_damping = list(builder.joint_damping)
+            updated_joint_damping[damping_index] = alias_value
+
+        if updated_joint_damping is not None:
+            model.joint_damping.assign(np.asarray(updated_joint_damping, dtype=np.float32))
+
+    if custom_attr.namespace is None:
+        raise ValueError(f"Deprecated attribute alias '{custom_attr.name}' requires a namespace")
+
+    if not hasattr(model, custom_attr.namespace):
+        setattr(model, custom_attr.namespace, Model.AttributeNamespace(custom_attr.namespace))
+
+    ns_obj = getattr(model, custom_attr.namespace)
+    ns_obj.add_deprecated_alias(
+        custom_attr.name,
+        lambda model=model: model.joint_damping,
+        _DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE,
+    )
+    model.attribute_frequency[custom_attr.key] = custom_attr.frequency
+    model.attribute_assignment[custom_attr.key] = custom_attr.assignment
 
 
 def _required_specifier(package: str, requirements: Iterable[str]) -> str | None:
@@ -836,6 +890,8 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                # Deprecated alias for Model.joint_damping. Kept registered so
+                # legacy MJCF/USD parsing and model access continue to work.
                 name="dof_passive_damping",
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
@@ -845,6 +901,10 @@ class SolverMuJoCo(SolverBase):
                 usd_attribute_name="mjc:damping",
                 mjcf_attribute_name="damping",
             )
+        )
+        builder._add_custom_attribute_model_finalizer(
+            "mujoco:dof_passive_damping",
+            _finalize_deprecated_dof_passive_damping,
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -3627,6 +3687,38 @@ class SolverMuJoCo(SolverBase):
             device=model.device,
         )
 
+    def _sync_mjw_inertias_to_mjc_cpu(self) -> None:
+        """Synchronize the complete MJWarp inertial representation to MuJoCo CPU."""
+        mjw_body_inertia = self.mjw_model.body_inertia.numpy()[0]
+        mjw_body_iquat = self.mjw_model.body_iquat.numpy()[0]
+
+        inertia_changed = ~np.isclose(
+            self.mj_model.body_inertia,
+            mjw_body_inertia,
+            rtol=1.0e-6,
+            atol=1.0e-8,
+        ).all(axis=1)
+        iquat_changed = ~np.isclose(
+            self.mj_model.body_iquat,
+            mjw_body_iquat,
+            rtol=1.0e-6,
+            atol=1.0e-8,
+        ).all(axis=1)
+        changed_bodies = inertia_changed | iquat_changed
+
+        if not np.any(changed_bodies):
+            return
+
+        self.mj_model.body_inertia[:] = mjw_body_inertia
+        self.mj_model.body_iquat[:] = mjw_body_iquat
+
+        # ``body_inertia`` and ``body_iquat`` are coupled. Once the inertial
+        # frame changes, MuJoCo CPU's compiled simple-path metadata may still
+        # describe the old frame, so invalidate it before ``mj_setConst()``.
+        self.mj_model.body_sameframe[changed_bodies] = int(self._mujoco.mjtSameFrame.mjSAMEFRAME_NONE)
+        self.mj_model.body_simple[changed_bodies] = 0
+        self.mj_model.dof_simplenum[:] = 0
+
     @override
     def notify_model_changed(self, flags: int) -> None:
         need_const_fixed = False
@@ -3694,17 +3786,7 @@ class SolverMuJoCo(SolverBase):
                 self.mj_model.body_ipos[:] = self.mjw_model.body_ipos.numpy()[0]
                 self.mj_model.body_mass[:] = self.mjw_model.body_mass.numpy()[0]
                 self.mj_model.body_gravcomp[:] = self.mjw_model.body_gravcomp.numpy()[0]
-                self.mj_model.body_inertia[:] = self.mjw_model.body_inertia.numpy()[0]
-                # Do not overwrite ``mj_model.body_iquat``: MuJoCo's compiler
-                # picks a canonical principal-axes basis (including a stable
-                # choice in degenerate sub-spaces of repeated eigenvalues) and
-                # the C solver's internal state is consistent with it. Newton's
-                # ``wp.eig3()`` may return an arbitrary valid basis for
-                # repeated eigenvalues, and replacing the compiled basis at
-                # runtime can destabilise stiff constraints (e.g. WELD loops
-                # on thin rods). Mass/density randomization scales principal
-                # moments without rotating the principal-axes frame, so the
-                # compiled ``body_iquat`` remains correct.
+                self._sync_mjw_inertias_to_mjc_cpu()
             if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
                 self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
                 self.mj_model.dof_frictionloss[:] = self.mjw_model.dof_frictionloss.numpy()[0]
@@ -4600,7 +4682,7 @@ class SolverMuJoCo(SolverBase):
         joint_dof_solref = get_custom_attribute("solreffriction")
         joint_dof_solimp = get_custom_attribute("solimpfriction")
         joint_stiffness = get_custom_attribute("dof_passive_stiffness")
-        joint_damping = get_custom_attribute("dof_passive_damping")
+        joint_damping = model.joint_damping.numpy() if model.joint_damping is not None else None
         joint_actgravcomp = get_custom_attribute("jnt_actgravcomp")
         body_gravcomp = get_custom_attribute("gravcomp")
         joint_springref = get_custom_attribute("dof_springref")
@@ -6550,7 +6632,6 @@ class SolverMuJoCo(SolverBase):
 
         # Update DOF properties (armature, friction, damping, solimp, solref) - iterate over MuJoCo DOFs
         mujoco_attrs = getattr(self.model, "mujoco", None)
-        joint_damping = getattr(mujoco_attrs, "dof_passive_damping", None) if mujoco_attrs is not None else None
         dof_solimp = getattr(mujoco_attrs, "solimpfriction", None) if mujoco_attrs is not None else None
         dof_solref = getattr(mujoco_attrs, "solreffriction", None) if mujoco_attrs is not None else None
 
@@ -6565,7 +6646,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.body_flags,
                 self.model.joint_armature,
                 self.model.joint_friction,
-                joint_damping,
+                self.model.joint_damping,
                 dof_solimp,
                 dof_solref,
             ],
