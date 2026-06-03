@@ -1208,6 +1208,8 @@ class ModelBuilder:
         """Per-world joint starts accumulated for :attr:`Model.joint_world_start`."""
         self.articulation_world_start: list[int] = []
         """Per-world articulation starts accumulated for :attr:`Model.articulation_world_start`."""
+        self._equality_constraint_world_start: list[int] = []
+        """Per-world equality-constraint starts accumulated for ``model.mujoco.equality_constraint_world_start``."""
         self.joint_dof_world_start: list[int] = []
         """Per-world joint DoF starts accumulated for :attr:`Model.joint_dof_world_start`."""
         self.joint_coord_world_start: list[int] = []
@@ -1348,19 +1350,18 @@ class ModelBuilder:
 
     @property
     def equality_constraint_world_start(self) -> list[int]:
-        """Deprecated in Newton 1.3; will be removed in a future release. Equality constraints have no per-world start array.
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_world_start``.
 
-        Derive per-world bounds from the per-row ``mujoco:equality_constraint_world`` values.
+        The per-world start array is built during :meth:`finalize`; before then this returns an empty list.
         """
         warnings.warn(
             "ModelBuilder.equality_constraint_world_start is deprecated in Newton 1.3 and is "
-            "scheduled for removal in a future release. Equality constraints are a custom frequency "
-            "and have no per-world start array; derive per-world bounds from the per-row "
-            "``mujoco:equality_constraint_world`` values instead.",
+            "scheduled for removal in a future release. Read the finalized per-world starts from "
+            "``model.mujoco.equality_constraint_world_start`` instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        return []
+        return list(self._equality_constraint_world_start)
 
     def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
         """Add a collision filter pair in canonical order.
@@ -9991,6 +9992,12 @@ class ModelBuilder:
             (self.shape_world_start, self.shape_count, self.shape_world, "shape"),
             (self.joint_world_start, self.joint_count, self.joint_world, "joint"),
             (self.articulation_world_start, self.articulation_count, self.articulation_world, "articulation"),
+            (
+                self._equality_constraint_world_start,
+                self._equality_constraint_count,
+                self._eq_list("equality_constraint_world"),
+                "equality constraint",
+            ),
         ]
 
         def build_entity_start_array(
@@ -11115,6 +11122,7 @@ class ModelBuilder:
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
             m.mujoco.equality_constraint_count = self._equality_constraint_count
+            m.mujoco.equality_constraint_world_start = wp.array(self._equality_constraint_world_start, dtype=wp.int32)
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
             self.find_shape_contact_pairs(m)
