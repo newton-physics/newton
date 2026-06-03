@@ -187,7 +187,11 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_anymal_c_walk.jpg" alt="Anymal C Walk">
       </a>
     </td>
-    <td></td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_policy.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_policy.jpg" alt="Policy">
+      </a>
+    </td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -196,13 +200,11 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     <td align="center" width="33%">
       <code>python -m newton.examples robot_anymal_c_walk</code>
     </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples robot_policy</code>
+    </td>
   </tr>
   <tr>
-    <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_policy.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_policy.jpg" alt="Policy">
-      </a>
-    </td>
     <td align="center" width="33%">
       <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_ur10.py">
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_ur10.jpg" alt="UR10">
@@ -213,36 +215,21 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_panda_hydro.jpg" alt="Panda Hydro">
       </a>
     </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_allegro_hand.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_allegro_hand.jpg" alt="Allegro Hand">
+      </a>
+    </td>
   </tr>
   <tr>
-    <td align="center" width="33%">
-      <code>python -m newton.examples robot_policy</code>
-    </td>
     <td align="center" width="33%">
       <code>python -m newton.examples robot_ur10</code>
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples robot_panda_hydro</code>
     </td>
-  </tr>
-  <tr>
-    <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_allegro_hand.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_allegro_hand.jpg" alt="Allegro Hand">
-      </a>
-    </td>
-    <td align="center" width="33%">
-    </td>
-    <td align="center" width="33%">
-    </td>
-  </tr>
-  <tr>
     <td align="center" width="33%">
       <code>python -m newton.examples robot_allegro_hand</code>
-    </td>
-    <td align="center" width="33%">
-    </td>
-    <td align="center" width="33%">
     </td>
   </tr>
   <tr>
