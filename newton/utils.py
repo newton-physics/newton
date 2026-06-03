@@ -42,6 +42,22 @@ __all__ += [
 ]
 
 # ==================================================================================
+# color utils
+# ==================================================================================
+
+from ._src.utils.color import (  # noqa: E402
+    ColorSpace,
+    color_linear_to_srgb,
+    color_srgb_to_linear,
+)
+
+__all__ += [
+    "ColorSpace",
+    "color_linear_to_srgb",
+    "color_srgb_to_linear",
+]
+
+# ==================================================================================
 # cable utils
 # ==================================================================================
 from ._src.utils.cable import (  # noqa: E402
@@ -107,4 +123,14 @@ from ._src.utils.texture import load_texture, normalize_texture  # noqa: E402
 __all__ += [
     "load_texture",
     "normalize_texture",
+]
+
+# ==================================================================================
+# ONNX inference runtime
+# ==================================================================================
+
+from ._src.utils.onnx_runtime import OnnxRuntime  # noqa: E402
+
+__all__ += [
+    "OnnxRuntime",
 ]

@@ -298,13 +298,15 @@ class Model:
 
         # Heightfield collision data (compact table + per-shape index indirection)
         self.has_heightfields: bool = False
-        """True iff the model contains at least one ``GeoType.HFIELD`` shape. Lets launch sites pick lean kernel variants."""
+        """True iff the model contains at least one ``GeoType.HFIELD`` shape."""
         self.shape_heightfield_index: wp.array[wp.int32] | None = None
         """Per-shape heightfield index, shape [shape_count]. -1 means shape has no heightfield."""
         self.heightfield_data: wp.array[HeightfieldData] | None = None
         """Compact array of HeightfieldData structs, one per actual heightfield shape."""
         self.heightfield_elevations: wp.array[wp.float32] | None = None
         """Concatenated 1D elevation array for all heightfields. Kernels index via HeightfieldData.data_offset."""
+        self.heightfield_meshes: list[wp.Mesh] = []
+        """wp.Mesh objects built from heightfield shapes, kept alive for the model's lifetime."""
 
         # Mesh edge data (packed array + per-shape slice)
         self.mesh_edge_indices: wp.array[wp.vec2i] | None = None
@@ -453,10 +455,22 @@ class Model:
         self.joint_f: wp.array[wp.float32] | None = None
         """Default generalized joint forces [N or N·m, depending on joint type] used to initialize :attr:`newton.Control.joint_f`, shape [joint_dof_count], float.
         For FREE and DISTANCE joints, the linear entries are world-frame force at the child COM and the angular entries are world-frame torque about the child COM."""
-        self.joint_target_pos: wp.array[wp.float32] | None = None
-        """Generalized joint position targets [m or rad, depending on joint type], shape [joint_dof_count], float."""
-        self.joint_target_vel: wp.array[wp.float32] | None = None
-        """Generalized joint velocity targets [m/s or rad/s, depending on joint type], shape [joint_dof_count], float."""
+        self.joint_target_q: wp.array[wp.float32] | None = None
+        """Generalized joint position targets [m or rad, depending on joint type] used to initialize :attr:`newton.Control.joint_target_q`, shape ``[joint_coord_count]`` or ``[joint_dof_count]``, float.
+
+        Shape matches :attr:`joint_q` (``joint_coord_count``) when
+        :attr:`newton.use_coord_layout_targets` is ``True``; otherwise the array
+        is shaped ``(joint_dof_count,)`` for backward compatibility with the
+        deprecated :attr:`joint_target_pos` alias. Index via
+        :attr:`joint_target_q_start`, which aliases :attr:`joint_q_start` or
+        :attr:`joint_qd_start` to match the active layout.
+        """
+        self.joint_target_qd: wp.array[wp.float32] | None = None
+        """Generalized joint velocity targets [m/s or rad/s, depending on joint type] used to initialize :attr:`newton.Control.joint_target_qd`, shape [joint_dof_count], float.
+
+        Matches the layout of :attr:`joint_qd`. Replaces the deprecated
+        :attr:`joint_target_vel`.
+        """
         self.joint_act: wp.array[wp.float32] | None = None
         """Per-DOF feedforward actuation input for control initialization, shape [joint_dof_count], float."""
         self.joint_type: wp.array[wp.int32] | None = None
@@ -583,7 +597,14 @@ class Model:
         """
 
         self.articulation_start: wp.array[wp.int32] | None = None
-        """Articulation start index, shape [articulation_count], int."""
+        """Articulation start index plus sentinel, shape [articulation_count + 1], int.
+
+        The sentinel still bounds each articulation's full joint range, including
+        converted loop-closing joints. Use :attr:`articulation_end` for the
+        exclusive end of regular tree joints.
+        """
+        self.articulation_end: wp.array[wp.int32] | None = None
+        """Exclusive end index of regular tree joints per articulation, shape [articulation_count], int."""
         self.articulation_label: list[str] = []
         """Articulation labels, shape [articulation_count], str."""
         self.articulation_world: wp.array[wp.int32] | None = None
@@ -733,6 +754,13 @@ class Model:
         self.device: wp.Device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
+        import newton  # noqa: PLC0415
+
+        self.use_coord_layout_targets: bool = newton.use_coord_layout_targets
+        """Snapshot of :data:`newton.use_coord_layout_targets` taken at
+        :meth:`ModelBuilder.finalize`. All layout decisions for this Model
+        consult this — toggling the global later doesn't change behavior."""
+
         self.attribute_frequency: dict[str, Model.AttributeFrequency | str] = {}
         """Classifies each attribute using Model.AttributeFrequency enum values (per body, per joint, per DOF, etc.)
         or custom frequencies for custom entity types (e.g., ``"mujoco:pair"``)."""
@@ -777,15 +805,28 @@ class Model:
         self.attribute_frequency["joint_twist_lower"] = Model.AttributeFrequency.JOINT
         self.attribute_frequency["joint_twist_upper"] = Model.AttributeFrequency.JOINT
 
+        # attributes per articulation
+        self.attribute_frequency["articulation_end"] = Model.AttributeFrequency.ARTICULATION
+
         # attributes per joint coord
         self.attribute_frequency["joint_q"] = Model.AttributeFrequency.JOINT_COORD
+
+        target_q_freq = (
+            Model.AttributeFrequency.JOINT_COORD
+            if self.use_coord_layout_targets
+            else Model.AttributeFrequency.JOINT_DOF
+        )
+        self.attribute_frequency["joint_target_q"] = target_q_freq
+        if not self.use_coord_layout_targets:
+            self.attribute_frequency["joint_target_pos"] = target_q_freq
 
         # attributes per joint dof
         self.attribute_frequency["joint_qd"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_f"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_armature"] = Model.AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_target_pos"] = Model.AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_target_vel"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_target_qd"] = Model.AttributeFrequency.JOINT_DOF
+        if not self.use_coord_layout_targets:
+            self.attribute_frequency["joint_target_vel"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_act"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_axis"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_mode"] = Model.AttributeFrequency.JOINT_DOF
@@ -823,6 +864,83 @@ class Model:
 
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
+
+    @property
+    def joint_target_q_start(self) -> wp.array | None:
+        """Per-joint start index into :attr:`joint_target_q`, shape
+        ``(joint_count + 1,)``. Aliases :attr:`joint_q_start` under coord
+        layout, :attr:`joint_qd_start` otherwise. Solvers and actuators should
+        index :attr:`joint_target_q` through this regardless of layout.
+        """
+        return self.joint_q_start if self.use_coord_layout_targets else self.joint_qd_start
+
+    @property
+    def joint_target_pos(self) -> wp.array | None:
+        """Deprecated alias for :attr:`joint_target_q` (DOF-shape only).
+        Raises :class:`AttributeError` when this Model was built under
+        :attr:`use_coord_layout_targets` ``True``.
+        """
+        import warnings  # noqa: PLC0415
+
+        from .control import _JOINT_TARGET_POS_DEPRECATION_MSG, _JOINT_TARGET_POS_UNAVAILABLE_MSG  # noqa: PLC0415
+
+        if self.use_coord_layout_targets:
+            raise AttributeError(_JOINT_TARGET_POS_UNAVAILABLE_MSG.replace("Control.", "Model."))
+        warnings.warn(
+            _JOINT_TARGET_POS_DEPRECATION_MSG.replace("Control.", "Model."),
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.joint_target_q
+
+    @joint_target_pos.setter
+    def joint_target_pos(self, value: wp.array | None) -> None:
+        import warnings  # noqa: PLC0415
+
+        from .control import _JOINT_TARGET_POS_DEPRECATION_MSG, _JOINT_TARGET_POS_UNAVAILABLE_MSG  # noqa: PLC0415
+
+        if self.use_coord_layout_targets:
+            raise AttributeError(_JOINT_TARGET_POS_UNAVAILABLE_MSG.replace("Control.", "Model."))
+        warnings.warn(
+            _JOINT_TARGET_POS_DEPRECATION_MSG.replace("Control.", "Model."),
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.joint_target_q = value
+
+    @property
+    def joint_target_vel(self) -> wp.array | None:
+        """Deprecated alias for :attr:`joint_target_qd`. Raises
+        :class:`AttributeError` when this Model was built under
+        :attr:`use_coord_layout_targets` ``True``.
+        """
+        import warnings  # noqa: PLC0415
+
+        from .control import _JOINT_TARGET_VEL_DEPRECATION_MSG, _JOINT_TARGET_VEL_UNAVAILABLE_MSG  # noqa: PLC0415
+
+        if self.use_coord_layout_targets:
+            raise AttributeError(_JOINT_TARGET_VEL_UNAVAILABLE_MSG.replace("Control.", "Model."))
+        warnings.warn(
+            _JOINT_TARGET_VEL_DEPRECATION_MSG.replace("Control.", "Model."),
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.joint_target_qd
+
+    @joint_target_vel.setter
+    def joint_target_vel(self, value: wp.array | None) -> None:
+        import warnings  # noqa: PLC0415
+
+        from .control import _JOINT_TARGET_VEL_DEPRECATION_MSG, _JOINT_TARGET_VEL_UNAVAILABLE_MSG  # noqa: PLC0415
+
+        if self.use_coord_layout_targets:
+            raise AttributeError(_JOINT_TARGET_VEL_UNAVAILABLE_MSG.replace("Control.", "Model."))
+        warnings.warn(
+            _JOINT_TARGET_VEL_DEPRECATION_MSG.replace("Control.", "Model."),
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.joint_target_qd = value
 
     def state(self, requires_grad: bool | None = None) -> State:
         """
@@ -892,12 +1010,15 @@ class Model:
             The initialized control object.
         """
         c = Control()
+        c._use_coord_layout_targets = self.use_coord_layout_targets
         if requires_grad is None:
             requires_grad = self.requires_grad
         if clone_variables:
             if self.joint_count:
-                c.joint_target_pos = wp.clone(self.joint_target_pos, requires_grad=requires_grad)
-                c.joint_target_vel = wp.clone(self.joint_target_vel, requires_grad=requires_grad)
+                if self.joint_target_q is not None:
+                    c.joint_target_q = wp.clone(self.joint_target_q, requires_grad=requires_grad)
+                if self.joint_target_qd is not None:
+                    c.joint_target_qd = wp.clone(self.joint_target_qd, requires_grad=requires_grad)
                 c.joint_act = wp.clone(self.joint_act, requires_grad=requires_grad)
                 c.joint_f = wp.clone(self.joint_f, requires_grad=requires_grad)
             if self.tri_count:
@@ -907,8 +1028,8 @@ class Model:
             if self.muscle_count:
                 c.muscle_activations = wp.clone(self.muscle_activations, requires_grad=requires_grad)
         else:
-            c.joint_target_pos = self.joint_target_pos
-            c.joint_target_vel = self.joint_target_vel
+            c.joint_target_q = self.joint_target_q
+            c.joint_target_qd = self.joint_target_qd
             c.joint_act = self.joint_act
             c.joint_f = self.joint_f
             c.tri_activations = self.tri_activations

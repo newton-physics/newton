@@ -116,13 +116,18 @@ class ViewerBase(ABC):
         # Center-of-mass visualization
         self._com_positions = None
         self._com_colors = None
-        self._com_radii = None
 
         # World offset support
         self.world_offsets = None
         self._user_spacing: tuple[float, float, float] | None = None
         self._visible_worlds: set[int] | None = None
         self._visible_worlds_mask: wp.array | None = None
+
+        # Characteristic body size in world units, used to auto-scale
+        # visualization helpers (contact arrows, joint axes, COM markers).
+        # Set in :meth:`set_model` from :meth:`_estimate_scene_scale`; falls
+        # back to 1.0 when no dynamic shapes are present.
+        self.scene_scale: float = 1.0
 
         # Picking
         self.picking_enabled = True
@@ -209,6 +214,8 @@ class ViewerBase(ABC):
             self._shape_sdf_index_host = model.shape_sdf_index.numpy() if model.shape_sdf_index is not None else None
             self._build_visible_worlds_mask()
             self._populate_shapes()
+
+            self.scene_scale = self._estimate_scene_scale() or 1.0
 
             # Auto-compute world offsets if not already set
             if self.world_offsets is None:
@@ -380,6 +387,40 @@ class ViewerBase(ABC):
 
         # Convert to warp array
         self.world_offsets = wp.array(full_offsets, dtype=wp.vec3, device=self.device)
+
+    def _estimate_scene_scale(self) -> float:
+        """Estimate a characteristic body size in world units.
+
+        Returns ``median(collision_radius)`` over shapes attached to a body
+        (``shape_body >= 0``). Static, world-attached shapes (heightfields,
+        ground planes, fixtures) carry ``shape_body == -1`` and are excluded,
+        so the scale tracks the bodies that actually move in the scene, not
+        the world they move in.
+
+        Returns:
+            float: Characteristic body size, or 0.0 if no body-attached shapes.
+        """
+        if self.model is None or self.model.shape_count == 0:
+            return 0.0
+
+        radii = self.model.shape_collision_radius.numpy()
+        shape_body = self.model.shape_body.numpy()
+        keep = (shape_body >= 0) & (radii > 0.0) & (radii < 1.0e5)
+        if not keep.any():
+            return 0.0
+        return float(np.median(radii[keep]))
+
+    def _arrow_scale(self) -> float:
+        """User multiplier on contact-arrow length and pixel width. Default 1.0."""
+        return 1.0
+
+    def _joint_scale(self) -> float:
+        """User multiplier on joint-axis line length. Default 1.0."""
+        return 1.0
+
+    def _com_scale(self) -> float:
+        """User multiplier on COM sphere radius. Default 1.0."""
+        return 1.0
 
     def _get_world_extents(self) -> tuple[float, float, float] | None:
         """Get the maximum extents of all worlds in the model."""
@@ -648,7 +689,7 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_offset0,
                     contacts.rigid_contact_normal,
-                    0.1,  # line length scale factor
+                    self.scene_scale * self._arrow_scale(),
                 ],
                 outputs=[
                     self._contact_points0,  # line start points
@@ -1405,8 +1446,10 @@ class ViewerBase(ABC):
             )
 
     # returns a unique (non-stable) identifier for a geometry configuration
-    def _hash_geometry(self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None) -> int:
-        return hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid)))
+    def _hash_geometry(
+        self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None, mirror: bool = False
+    ) -> int:
+        return hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
 
     def _hash_shape(self, geo_hash, shape_static, shape_flags) -> int:
         return hash((geo_hash, shape_static, shape_flags))
@@ -1439,10 +1482,17 @@ class ViewerBase(ABC):
         thickness: float,
         is_solid: bool,
         geo_src=None,
+        mirror: bool = False,
     ) -> str:
         """Ensure a geometry mesh exists and return its mesh path.
 
         Computes a stable hash from the parameters; creates and caches the mesh path if needed.
+
+        When ``mirror`` is True and ``geo_type`` is :class:`newton.GeoType.MESH` or
+        :class:`newton.GeoType.CONVEX_MESH`, a winding-flipped variant of the source
+        mesh is cached (at most one extra entry per source mesh, regardless of the
+        actual signed scale). The instance is still rendered with its signed scale
+        so the shader's normal transform stays consistent.
         """
 
         # normalize
@@ -1458,6 +1508,7 @@ class ViewerBase(ABC):
             float(thickness),
             bool(is_solid),
             geo_src,
+            bool(mirror),
         )
 
         if geo_hash in self._geometry_cache:
@@ -1480,19 +1531,61 @@ class ViewerBase(ABC):
             raise ValueError(f"Unsupported geo_type for ensure_geometry: {geo_type}")
 
         mesh_path = f"/geometry/{base_name}_{len(self._geometry_cache)}"
-        self.log_geo(
-            mesh_path,
-            int(geo_type),
-            tuple(scale_list),
-            float(thickness),
-            bool(is_solid),
-            geo_src=geo_src
-            if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
-            else None,
-            hidden=True,
-        )
+
+        if mirror and geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) and geo_src is not None:
+            self._log_mesh_winding_flipped(mesh_path, geo_src, thickness, is_solid, hidden=True)
+        else:
+            self.log_geo(
+                mesh_path,
+                int(geo_type),
+                tuple(scale_list),
+                float(thickness),
+                bool(is_solid),
+                geo_src=geo_src
+                if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
+                else None,
+                hidden=True,
+            )
         self._geometry_cache[geo_hash] = mesh_path
         return mesh_path
+
+    def _log_mesh_winding_flipped(
+        self, name: str, src: newton.Mesh, thickness: float, is_solid: bool, hidden: bool
+    ) -> None:
+        """Upload a winding-flipped copy of ``src`` for use with mirrored (det<0) instances.
+
+        The cached mesh has triangle indices swapped and any explicit per-vertex normals
+        negated so back-face culling stays consistent on a mirrored instance and the
+        shader's determinant-based normal flip yields outward shading normals.
+        """
+        if not is_solid:
+            indices, points = solidify_mesh(src.indices, src.vertices, thickness)
+        else:
+            indices, points = src.indices, src.vertices
+
+        idx_flipped = np.asarray(indices, dtype=np.int32).reshape(-1, 3).copy()
+        idx_flipped[:, [1, 2]] = idx_flipped[:, [2, 1]]
+
+        points_wp = wp.array(points, dtype=wp.vec3, device=self.device)
+        indices_wp = wp.array(idx_flipped.flatten(), dtype=wp.int32, device=self.device)
+
+        normals_wp = None
+        if src._normals is not None:
+            normals_wp = wp.array(-np.asarray(src._normals, dtype=np.float32), dtype=wp.vec3, device=self.device)
+
+        uvs_wp = None
+        if src._uvs is not None:
+            uvs_wp = wp.array(src._uvs, dtype=wp.vec2, device=self.device)
+
+        self.log_mesh(
+            name,
+            points_wp,
+            indices_wp,
+            normals_wp,
+            uvs_wp,
+            hidden=hidden,
+            texture=getattr(src, "texture", None),
+        )
 
     # creates meshes and instances for each shape in the Model
     def _populate_shapes(self):
@@ -1522,6 +1615,16 @@ class ViewerBase(ABC):
             geo_is_solid = bool(shape_geo_is_solid[s])
             geo_src = shape_geo_src[s]
 
+            # Mesh-class shapes can carry signed scale. When det(scale) < 0 the GPU
+            # mirrors the geometry, which reverses screen-space triangle winding;
+            # cache a single winding-flipped variant per source mesh so back-face
+            # culling stays consistent. The signed scale is still applied to the
+            # instance so the shader's normal transform mirrors normals correctly.
+            mirror = (
+                geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH)
+                and geo_scale[0] * geo_scale[1] * geo_scale[2] < 0.0
+            )
+
             # Gaussians bypass the mesh instancing pipeline; render as point clouds.
             if geo_type == newton.GeoType.GAUSSIAN:
                 if isinstance(geo_src, newton.Gaussian):
@@ -1533,20 +1636,27 @@ class ViewerBase(ABC):
                     )
                 continue
 
-            # check whether we can instance an already created shape with the same geometry
+            # check whether we can instance an already created shape with the same geometry.
+            # For the mirrored variant of a mesh-class shape, the cached geometry is
+            # independent of the actual scale magnitude (scale is applied at instance
+            # time), so we collapse the magnitude in the cache key. Combined with the
+            # ``mirror`` bit this guarantees at most one extra cached entry per source
+            # mesh, irrespective of how many distinct signed scales share that source.
+            hash_scale = (1.0, 1.0, 1.0) if mirror else tuple(geo_scale)
             geo_hash = self._hash_geometry(
                 int(geo_type),
-                tuple(geo_scale),
+                hash_scale,
                 float(geo_thickness),
                 bool(geo_is_solid),
                 geo_src,
+                mirror,
             )
 
             # ensure geometry exists and get mesh path
             if geo_hash not in self._geometry_cache:
                 mesh_name = self._populate_geometry(
                     int(geo_type),
-                    tuple(geo_scale),
+                    hash_scale,
                     float(geo_thickness),
                     bool(geo_is_solid),
                     geo_src=geo_src
@@ -1557,6 +1667,7 @@ class ViewerBase(ABC):
                         newton.GeoType.HFIELD,
                     )
                     else None,
+                    mirror=mirror,
                 )
             else:
                 mesh_name = self._geometry_cache[geo_hash]
@@ -2114,7 +2225,7 @@ class ViewerBase(ABC):
                 self._visible_worlds_mask,
                 self.model.shape_collision_radius,
                 self.model.shape_body,
-                0.1,  # line scale factor
+                self.scene_scale * self._joint_scale(),
             ],
             outputs=[
                 self._joint_points0,
@@ -2135,7 +2246,8 @@ class ViewerBase(ABC):
         if self._com_positions is None or len(self._com_positions) < num_bodies:
             self._com_positions = wp.zeros(num_bodies, dtype=wp.vec3, device=self.device)
             self._com_colors = wp.full(num_bodies, wp.vec3(1.0, 0.8, 0.0), device=self.device)
-            self._com_radii = wp.full(num_bodies, 0.05, dtype=float, device=self.device)
+
+        com_radius = 0.5 * self.scene_scale * self._com_scale()
 
         from .kernels import compute_com_positions  # noqa: PLC0415
 
@@ -2153,7 +2265,7 @@ class ViewerBase(ABC):
             device=self.device,
         )
 
-        self.log_points("/model/com", self._com_positions, self._com_radii, self._com_colors, hidden=not self.show_com)
+        self.log_points("/model/com", self._com_positions, com_radius, self._com_colors, hidden=not self.show_com)
 
     def _log_triangles(self, state: newton.State):
         if self.model.tri_count:

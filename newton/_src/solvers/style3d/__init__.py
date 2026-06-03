@@ -5,8 +5,7 @@
 Style3D solver module.
 
 This module provides helper functions for setting up Style3D cloth assets.
-Use :class:`~newton.solvers.SolverStyle3D` as the canonical public solver
-import path.
+Use :class:`~newton.solvers.SolverStyle3D` as the canonical public solver class.
 """
 
 from .cloth import (
