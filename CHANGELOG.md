@@ -43,9 +43,11 @@
 - Add `ViewerGL.log_scalar()` for live scalar time-series plots in the viewer
 - Add `deterministic` flag to `CollisionPipeline` and `NarrowPhase` for GPU-thread-scheduling-independent contact ordering via radix sort and deterministic fingerprint tiebreaking in contact reduction
 - Add `ViewerBase.log_arrows()` for arrow rendering (wide line + arrowhead) in the GL viewer with a dedicated geometry shader
+- Add cable cross-slide table example with transparent pulley visuals
 
 ### Changed
 
+- Make the cup, gripper pads, and MPM viscous funnel transparent in example viewer output
 - Switch mesh-SDF collision from triangle-based gradient descent to edge-based Brent's method to reduce contact jitter
 - Unify heightfield and mesh collision pipeline paths; the separate `heightfield_midphase_kernel` and `shape_pairs_heightfield` buffer are removed in favor of the shared mesh midphase
 - Replace per-shape `Model.shape_heightfield_data` / `Model.heightfield_elevation_data` with compact `Model.shape_heightfield_index` / `Model.heightfield_data` / `Model.heightfield_elevations`, matching the SDF indirection pattern

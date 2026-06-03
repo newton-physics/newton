@@ -33,6 +33,10 @@ class SceneType(Enum):
     CUBE = "cube"
 
 
+GRIPPER_PAD_OPACITY = 0.6
+CUP_OPACITY = 0.5
+
+
 def quat_to_vec4(q: wp.quat) -> wp.vec4:
     """Convert a quaternion to a vec4."""
     return wp.vec4(q[0], q[1], q[2], q[3])
@@ -172,8 +176,20 @@ class Example:
             wp.vec3(0.0, 0.005, 0.045),
             wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -np.pi),
         )
-        builder.add_shape_mesh(body=left_finger_idx, mesh=pad_mesh, xform=pad_xform, cfg=shape_cfg_meshes)
-        builder.add_shape_mesh(body=right_finger_idx, mesh=pad_mesh, xform=pad_xform, cfg=shape_cfg_meshes)
+        builder.add_shape_mesh(
+            body=left_finger_idx,
+            mesh=pad_mesh,
+            xform=pad_xform,
+            cfg=shape_cfg_meshes,
+            opacity=GRIPPER_PAD_OPACITY,
+        )
+        builder.add_shape_mesh(
+            body=right_finger_idx,
+            mesh=pad_mesh,
+            xform=pad_xform,
+            cfg=shape_cfg_meshes,
+            opacity=GRIPPER_PAD_OPACITY,
+        )
 
         # Table
         box_size = 0.05
@@ -249,7 +265,7 @@ class Example:
                 wp.quat_identity(),
             )
             cup_body = builder.add_body(label="cup", xform=cup_xform)
-            builder.add_shape_mesh(body=cup_body, mesh=cup_mesh, cfg=shape_cfg_meshes)
+            builder.add_shape_mesh(body=cup_body, mesh=cup_mesh, cfg=shape_cfg_meshes, opacity=CUP_OPACITY)
 
         # build model for IK
         self.model_single = copy.deepcopy(builder).finalize()
