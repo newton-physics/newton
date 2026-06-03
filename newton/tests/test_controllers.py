@@ -99,7 +99,7 @@ class TestControllerPID(unittest.TestCase):
         s0 = group.state()
         s1 = group.state()
         # Without clamping the integral would reach 2.0 after 20 steps.
-        for _ in range(20):
+        for _ in range(21):
             group.step(s0, s1, dt=0.1)
             s0, s1 = s1, s0
 
