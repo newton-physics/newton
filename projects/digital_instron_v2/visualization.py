@@ -284,7 +284,7 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
     fig.savefig(force_heatmap_png, dpi=180)
     plt.close(fig)
 
-    from .workflow import (
+    from .workflow import (  # noqa: PLC0415
         _rearfoot_mask,
         _spring_compression_components_for_trial_frame,
         _spring_state_for_trial_frame,
@@ -332,7 +332,7 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
             displacement_m = _trial_peak_displacement_m(trial)
             if displacement_m is None:
                 displacement_m = snapshot_displacement_m
-            current_length, velocity = _spring_state_for_trial_frame(
+            current_length, _velocity = _spring_state_for_trial_frame(
                 footprint_grid,
                 trial,
                 rearfoot_mask,
@@ -341,7 +341,7 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
                 0.0,
             )
             compression = np.maximum(footprint_grid.slack_length_m - current_length, 0.0)
-            top_compression, bottom_compression, top_active, bottom_active = (
+            top_compression, bottom_compression, _top_active, bottom_active = (
                 _spring_compression_components_for_trial_frame(
                     footprint_grid,
                     trial,
@@ -593,7 +593,25 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
             ax_side.legend(loc="best", fontsize="small")
             title = fig_anim.suptitle("")
 
-            def update(frame_number: int):
+            def update(
+                frame_number: int,
+                *,
+                compressions=compressions,
+                top_scatter=top_scatter,
+                side_scatter=side_scatter,
+                deformed_tops=deformed_tops,
+                bottom_scatter=bottom_scatter,
+                deformed_bottoms=deformed_bottoms,
+                bottom_compressions=bottom_compressions,
+                contact_lines=contact_lines,
+                contact_scatter=contact_scatter,
+                bottom_contact_lines=bottom_contact_lines,
+                bottom_contact_scatter=bottom_contact_scatter,
+                frame_indices=frame_indices,
+                title=title,
+                trial=trial,
+                trace=trace,
+            ):
                 compression = compressions[frame_number]
                 top_scatter.set_array(compression * 1000.0)
                 side_scatter.set_offsets(np.column_stack((x_mm, deformed_tops[frame_number] * 1000.0)))

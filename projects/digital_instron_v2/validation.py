@@ -38,35 +38,6 @@ class TraceValidationMetrics:
         }
 
 
-def baseline_correct_force(
-    force_n: np.ndarray,
-    *,
-    inactive_mask: np.ndarray | None = None,
-    fallback_zero_n: float | None = None,
-) -> tuple[np.ndarray, float]:
-    """Baseline-correct a force trace and return ``(corrected, zero)``."""
-
-    force = np.asarray(force_n, dtype=np.float64)
-    if force.ndim != 1:
-        raise ValueError("force_n must be a 1D array")
-    if inactive_mask is not None:
-        mask = np.asarray(inactive_mask, dtype=bool)
-        if mask.shape != force.shape:
-            raise ValueError("inactive_mask must match force_n")
-        finite = mask & np.isfinite(force)
-        if np.any(finite):
-            zero = float(np.median(force[finite]))
-            return force - zero, zero
-    if fallback_zero_n is not None:
-        zero = float(fallback_zero_n)
-        return force - zero, zero
-    finite_force = force[np.isfinite(force)]
-    if len(finite_force) == 0:
-        raise ValueError("force_n contains no finite samples")
-    zero = float(np.min(finite_force))
-    return force - zero, zero
-
-
 def robust_peak(force_n: np.ndarray, active_mask: np.ndarray | None = None, *, top_count: int = 5) -> float:
     """Mean of the top ``top_count`` active force samples."""
 

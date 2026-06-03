@@ -58,14 +58,14 @@ class BakedMidsoleGeometry:
     """Baked 2D thickness and surface height maps for grid-independent hydroelastic calibration."""
 
     thickness_map: np.ndarray  # 2D array of shape (V, U)
-    top_map: np.ndarray        # 2D array of shape (V, U)
-    bottom_map: np.ndarray     # 2D array of shape (V, U)
-    mins_uv: np.ndarray        # (2,) minimum footprint coordinate [min_u, min_v]
-    maxs_uv: np.ndarray        # (2,) maximum footprint coordinate [max_u, max_v]
+    top_map: np.ndarray  # 2D array of shape (V, U)
+    bottom_map: np.ndarray  # 2D array of shape (V, U)
+    mins_uv: np.ndarray  # (2,) minimum footprint coordinate [min_u, min_v]
+    maxs_uv: np.ndarray  # (2,) maximum footprint coordinate [max_u, max_v]
     frame: MeshFrame
     valid_map: np.ndarray | None = None  # 2D mask of valid midsole pixels
     grid_uv_m: np.ndarray | None = None  # valid quadrature positions in footprint coordinates [m]
-    xy_m: np.ndarray | None = None       # valid quadrature positions centered for wrenches [m]
+    xy_m: np.ndarray | None = None  # valid quadrature positions centered for wrenches [m]
     cell_area_m2: float = 0.0
     spacing_m: float = 0.0
 

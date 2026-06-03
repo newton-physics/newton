@@ -12,8 +12,6 @@ from typing import Any
 
 import numpy as np
 
-from .manifest import validate_frame_config
-
 
 class FrameQCError(ValueError):
     """Raised when a trace cannot support a trustworthy frame choice."""
@@ -70,7 +68,9 @@ def _find_column(columns: dict[str, np.ndarray], candidates: tuple[str, ...], la
     raise FrameQCError(f"Could not infer {label} column from CSV columns: {', '.join(columns)}")
 
 
-def infer_frame_config(path: str | Path, *, min_force_span_n: float = 50.0, min_position_span_mm: float = 1.0) -> FrameConfig:
+def infer_frame_config(
+    path: str | Path, *, min_force_span_n: float = 50.0, min_position_span_mm: float = 1.0
+) -> FrameConfig:
     """Infer column/sign choices and fail on implausible traces."""
 
     csv_path = Path(path)
@@ -109,37 +109,3 @@ def infer_frame_config(path: str | Path, *, min_force_span_n: float = 50.0, min_
         force_sign=force_sign,
         displacement_zero=float(position[0]),
     )
-
-
-def load_trial_frame(path: str | Path, config: FrameConfig | dict[str, Any]) -> dict[str, np.ndarray]:
-    """Load one trace using an explicit saved frame configuration."""
-
-    if isinstance(config, dict):
-        validate_frame_config(config)
-        frame = FrameConfig(
-            time_column=config["time_column"],
-            position_column=config["position_column"],
-            force_column=config["force_column"],
-            position_sign=float(config["position_sign"]),
-            force_sign=float(config["force_sign"]),
-            displacement_zero=float(config.get("displacement_zero", 0.0)),
-        )
-    else:
-        frame = config
-
-    columns = _read_numeric_csv(Path(path))
-    missing = [name for name in (frame.time_column, frame.position_column, frame.force_column) if name not in columns]
-    if missing:
-        raise FrameQCError(f"CSV is missing saved frame columns: {', '.join(missing)}")
-
-    time_s = columns[frame.time_column]
-    displacement_m = frame.position_sign * (columns[frame.position_column] - frame.displacement_zero) * 0.001
-    force_n = frame.force_sign * columns[frame.force_column]
-    finite = np.isfinite(time_s) & np.isfinite(displacement_m) & np.isfinite(force_n)
-    if int(np.count_nonzero(finite)) < 3:
-        raise FrameQCError("Saved frame config produced fewer than three finite samples")
-    return {
-        "time_s": time_s[finite],
-        "displacement_m": displacement_m[finite],
-        "force_n": force_n[finite],
-    }

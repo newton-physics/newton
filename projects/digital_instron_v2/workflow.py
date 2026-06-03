@@ -16,29 +16,23 @@ from .cycle_windows import build_cycle_window_trace, write_cycle_window_trace
 from .foundation import (
     FoundationMaterial,
     FoundationTrialBatch,
-    evaluate_foundation,
-    evaluate_foundation_baked,
     evaluate_foundation_baked_batch,
-    evaluate_foundation_lengths,
     evaluate_foundation_lengths_batch,
-    fit_foundation_material_batches_autodiff,
     fit_foundation_material_baked_batches_autodiff,
 )
-from .frame_qc import infer_frame_config, load_trial_frame
+from .frame_qc import infer_frame_config
 from .geometry import (
+    BakedMidsoleGeometry,
     _load_obj_mesh,
     _ray_triangle_z_candidates,
-    BakedMidsoleGeometry,
     build_baked_midsole_geometry,
     build_raycast_spring_grid,
     condition_midsole_mesh,
-    make_cylinder_grid,
     place_rearfoot_punch_grid,
 )
 from .manifest import load_manifest
-from .mujoco_adapter import apply_foundation_wrench_to_body_f
 from .sdf_utils import _load_stl_mesh
-from .validation import active_force_mask, validate_trace_metrics
+from .validation import validate_trace_metrics
 from .visualization import write_visualization_report
 
 
@@ -51,10 +45,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=(
             "qc",
             "split-cycles",
-            "fit-smoke",
             "fit-autodiff",
-            "fit-validate",
-            "dynamic-replay",
             "visualize",
             "surface-scene",
         ),
@@ -67,6 +58,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cycle-phase-count", type=int, default=501, help="Phase samples per generated cycle trace")
     parser.add_argument("--autodiff-iterations", type=int, default=25, help="Iterations for --step fit-autodiff")
     parser.add_argument("--loop-weight", type=float, default=None, help="Override fit.loop_weight for autodiff fitting")
+    parser.add_argument(
+        "--shape-weight",
+        type=float,
+        default=None,
+        help="Override fit.displacement_shape_weight (0..1) to emphasise full-curve shape matching",
+    )
     parser.add_argument(
         "--autodiff-sample-count",
         type=int,
@@ -92,14 +89,38 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--no-equilibrium",
+        dest="use_equilibrium",
+        action="store_false",
+        help="Disable through-thickness pressure equilibrium (use the legacy top/bottom travel split)",
+    )
+    parser.set_defaults(use_equilibrium=True)
+    parser.add_argument(
+        "--no-subcell-coverage",
+        dest="use_subcell_coverage",
+        action="store_false",
+        help="Disable analytic sub-cell contact coverage (use the legacy binary cell gate)",
+    )
+    parser.set_defaults(use_subcell_coverage=True)
     parser.add_argument("--viewer", choices=("gl", "null"), default="gl", help="Viewer for --step surface-scene")
     parser.add_argument("--scene-trial", default=None, help="Trial name for --step surface-scene")
-    parser.add_argument("--scene-max-frames", type=int, default=501, help="Maximum replay frames for --step surface-scene")
+    parser.add_argument(
+        "--scene-max-frames", type=int, default=501, help="Maximum replay frames for --step surface-scene"
+    )
     return parser
 
 
 def _use_surfacemaps(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "use_surfacemaps", False) or getattr(args, "use_baked", False))
+
+
+def _use_equilibrium(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "use_equilibrium", True))
+
+
+def _use_subcell_coverage(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "use_subcell_coverage", True))
 
 
 def _write_json(path: Path, data: object) -> None:
@@ -131,72 +152,6 @@ def run_qc(args: argparse.Namespace) -> dict[str, object]:
 
     report = {"manifest": str(manifest.path), "mesh": mesh_report, "frames": frame_reports}
     _write_json(output_dir / "digital_instron_v2_qc.json", report)
-    return report
-
-
-def run_fit_smoke(args: argparse.Namespace) -> dict[str, object]:
-    manifest = load_manifest(args.manifest)
-    output_dir = Path(args.output_dir) if args.output_dir else manifest.cache_dir
-    grid = make_cylinder_grid(
-        radius_m=float(manifest.grid.get("cylinder_radius_m", 0.0225)),
-        spacing_m=float(manifest.grid.get("coarse_spacing_m", 0.005)),
-    )
-    material = FoundationMaterial(
-        stiffness_pa=float(manifest.fit.get("initial_stiffness_pa", 2.0e6)),
-        ogden_alpha=float(manifest.fit.get("initial_ogden_alpha", 2.0)),
-        lock_strain=float(manifest.fit.get("initial_lock_strain", 0.65)),
-        damping_pa_s=float(manifest.fit.get("initial_damping_pa_s", 1.0e4)),
-        damping_power=float(manifest.fit.get("initial_damping_power", 1.0)),
-        pasternak_stiffness_n_per_m=float(
-            manifest.fit.get(
-                "initial_pasternak_stiffness_n_per_m",
-                manifest.fit.get("initial_shear_modulus_pa", 0.0),
-            )
-        ),
-        spatial_slope=float(manifest.fit.get("initial_spatial_slope", 0.0)),
-    )
-
-    summaries = []
-    for trial in manifest.trials:
-        if not trial.include_in_fit:
-            continue
-        frame_config = trial.frame
-        if frame_config is None:
-            frame_config_path = output_dir / f"{trial.name}.frame_config.json"
-            frame_config = json.loads(frame_config_path.read_text())
-        trace = load_trial_frame(trial.csv_path, frame_config)
-        index = int(np.argmax(trace["force_n"]))
-        compression = np.full(len(grid.xy_m), max(float(trace["displacement_m"][index]), 0.0), dtype=np.float64)
-        velocity = np.zeros_like(compression)
-        if trial.fixture == "rearfoot_punch":
-            radius_m = float(trial.indenter.get("radius_m", 0.0225))
-            analytical_area = np.pi * (radius_m**2)
-            active_count = len(grid.xy_m)
-            cell_area_val = analytical_area / active_count if active_count > 0 else grid.cell_area_m2
-        else:
-            cell_area_val = grid.cell_area_m2
-
-        result = evaluate_foundation(
-            grid.xy_m,
-            compression,
-            velocity,
-            cell_area_m2=cell_area_val,
-            thickness_m=float(manifest.fit.get("nominal_midsole_thickness_m", 0.03)),
-            material=material,
-            measured_force_n=float(trace["force_n"][index]),
-        )
-        summaries.append(
-            {
-                "trial": trial.name,
-                "sample": index,
-                "measured_force_n": float(trace["force_n"][index]),
-                "predicted_force_n": result.force_n,
-                "loss": result.loss,
-            }
-        )
-
-    report = {"manifest": str(manifest.path), "material": material.__dict__, "fit_smoke": summaries}
-    _write_json(output_dir / "digital_instron_v2_fit_smoke.json", report)
     return report
 
 
@@ -388,7 +343,10 @@ def bake_indenter_maps(
         punch = place_rearfoot_punch_grid(
             vertices,
             radius_m=float(
-                next((t.indenter.get("radius_m", 0.0225) for t in manifest.trials if t.fixture == "rearfoot_punch"), 0.0225)
+                next(
+                    (t.indenter.get("radius_m", 0.0225) for t in manifest.trials if t.fixture == "rearfoot_punch"),
+                    0.0225,
+                )
             ),
             spacing_m=spacing_m,
             frame=frame,
@@ -398,11 +356,16 @@ def bake_indenter_maps(
             lateral_band_fraction=float(manifest.grid.get("rearfoot_lateral_band_fraction", 0.12)),
         )
         dist = np.linalg.norm(grid_uv_m - punch.center_uv_m, axis=1)
-        valid_flat = (dist <= punch.radius_m + spacing_m * 0.5) & valid_midsole_flat
+        # Analytic sub-cell coverage: linear ramp of the signed distance to the
+        # disk boundary over one cell width. Cells fully inside the punch get
+        # 1.0, fully outside get 0.0, and boundary cells get the fraction of the
+        # cell width that lies inside the circle. This makes the integrated
+        # contact area converge at O(h^2) instead of staircasing at O(h).
+        coverage_flat = np.clip(0.5 + (punch.radius_m - dist) / spacing_m, 0.0, 1.0)
+        coverage_flat[~valid_midsole_flat] = 0.0
 
         indenter_map = baked_geometry.top_map.copy()
-        indenter_valid_map = np.zeros(shape_2d, dtype=np.float64)
-        indenter_valid_map.flat[valid_flat] = 1.0
+        indenter_valid_map = coverage_flat.reshape(shape_2d).astype(np.float64)
         return indenter_map, indenter_valid_map
 
     elif trial.fixture == "fullfoot_last" and trial.indenter.get("type") == "stl":
@@ -452,6 +415,10 @@ def bake_indenter_maps(
         contact_surface[~valid_flat] = top_map_flat[~valid_flat]
 
         indenter_map = contact_surface.reshape(shape_2d)
+        # The fullfoot last is a smooth, large-area indenter: its contact patch
+        # has soft edges, so a binary cell mask already integrates the area at
+        # O(h^2). (Sub-cell area supersampling does not help here and the
+        # resolution variation is dominated by the curved height-map resampling.)
         indenter_valid_map = np.zeros(shape_2d, dtype=np.float64)
         indenter_valid_map.flat[valid_flat] = 1.0
         return indenter_map, indenter_valid_map
@@ -1047,6 +1014,7 @@ def _autodiff_batches(
     vertices,
     trace_paths_by_trial: dict[str, Path] | None = None,
     use_baked: bool = False,
+    shape_weight_override: float | None = None,
 ) -> list[FoundationTrialBatch]:
     batches: list[FoundationTrialBatch] = []
     rearfoot_mask = None if use_baked else _rearfoot_mask(manifest, spring_grid, vertices)
@@ -1064,6 +1032,10 @@ def _autodiff_batches(
     if peak_fraction > 1.0:
         raise ValueError("fit.peak_fraction must be <= 1")
     displacement_shape_weight = _fit_float(manifest.fit, "displacement_shape_weight", 0.0, min_value=0.0)
+    if shape_weight_override is not None:
+        if shape_weight_override < 0.0:
+            raise ValueError("--shape-weight must be >= 0")
+        displacement_shape_weight = float(shape_weight_override)
     if displacement_shape_weight > 1.0:
         raise ValueError("fit.displacement_shape_weight must be <= 1")
     displacement_shape_bins = _fit_int(manifest.fit, "displacement_shape_bins", 12, min_value=1)
@@ -1143,15 +1115,6 @@ def _autodiff_batches(
             )
         )
     return batches
-
-
-def _trace_paths_from_cycle_report(report: dict[str, object], split: str) -> dict[str, Path]:
-    paths: dict[str, Path] = {}
-    for trial in report["trials"]:
-        trial_report = dict(trial)
-        split_report = dict(trial_report[split])
-        paths[str(trial_report["trial"])] = Path(str(split_report["csv"]))
-    return paths
 
 
 def _safe_report_name(name: str) -> str:
@@ -1333,7 +1296,9 @@ def _write_foundation_material_artifact(
     preferred_peak_top_compression_m = float(preferred_trial_envelope.get("peak_top_compression_m", 0.0))
     preferred_peak_bottom_compression_m = float(preferred_trial_envelope.get("peak_bottom_compression_m", 0.0))
     preferred_peak_stack_compression_m = float(preferred_trial_envelope.get("peak_max_compression_m", 0.0))
-    preferred_one_sided_hydro_shoe_stroke_m = preferred_peak_top_compression_m + 0.5 * preferred_peak_bottom_compression_m
+    preferred_one_sided_hydro_shoe_stroke_m = (
+        preferred_peak_top_compression_m + 0.5 * preferred_peak_bottom_compression_m
+    )
     artifact = {
         "schema_version": "digital_instron_v2_foundation_material_1",
         "manifest": str(manifest.path),
@@ -1343,7 +1308,9 @@ def _write_foundation_material_artifact(
             "type": "surface_map_hydroelastic" if use_baked else "two_sided_spring_grid",
             "compression_components": "top_moving_against_fixed_bottom_support" if use_baked else "top_plus_bottom",
             "top_contact": "manifest indenter or flat active fixture region",
-            "bottom_contact": "fixed flat ground support" if use_baked else "flat bottom platen over the active fixture region",
+            "bottom_contact": "fixed flat ground support"
+            if use_baked
+            else "flat bottom platen over the active fixture region",
             "trials": contact_trials,
         },
         "calibration_envelope": {
@@ -1397,6 +1364,8 @@ def _write_autodiff_hysteresis_plot(
     indenter_maps_by_trial: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
     top_fractions_by_trial: dict[str, float] | None = None,
     bottom_fractions_by_trial: dict[str, float] | None = None,
+    use_equilibrium: bool = True,
+    use_subcell_coverage: bool = True,
 ) -> dict[str, object]:
     import matplotlib.pyplot as plt
 
@@ -1408,7 +1377,9 @@ def _write_autodiff_hysteresis_plot(
         if baked_geometry is not None and indenter_maps_by_trial is not None:
             ind_map, ind_valid_map = indenter_maps_by_trial[batch.name]
             top_frac = top_fractions_by_trial.get(batch.name, 1.0) if top_fractions_by_trial is not None else 1.0
-            bottom_frac = bottom_fractions_by_trial.get(batch.name, 0.0) if bottom_fractions_by_trial is not None else 0.0
+            bottom_frac = (
+                bottom_fractions_by_trial.get(batch.name, 0.0) if bottom_fractions_by_trial is not None else 0.0
+            )
             result = evaluate_foundation_baked_batch(
                 xy_m,
                 baked_geometry,
@@ -1418,6 +1389,7 @@ def _write_autodiff_hysteresis_plot(
                 material=material,
                 top_fraction=top_frac,
                 bottom_fraction=bottom_frac,
+                use_equilibrium=use_equilibrium,
                 device=device,
             )
         else:
@@ -1517,7 +1489,9 @@ def _write_autodiff_hysteresis_plot(
         if baked_geometry is not None and indenter_maps_by_trial is not None:
             ind_map, ind_valid_map = indenter_maps_by_trial[batch.name]
             top_frac = top_fractions_by_trial.get(batch.name, 1.0) if top_fractions_by_trial is not None else 1.0
-            bottom_frac = bottom_fractions_by_trial.get(batch.name, 0.0) if bottom_fractions_by_trial is not None else 0.0
+            bottom_frac = (
+                bottom_fractions_by_trial.get(batch.name, 0.0) if bottom_fractions_by_trial is not None else 0.0
+            )
             compression_list = []
             for disp in displacement:
                 comp_frame = compute_baked_compression(
@@ -1709,13 +1683,17 @@ def _history_selection_score(
     indenter_maps_by_trial: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
     top_fractions_by_trial: dict[str, float] | None = None,
     bottom_fractions_by_trial: dict[str, float] | None = None,
+    use_equilibrium: bool = True,
+    use_subcell_coverage: bool = True,
 ) -> dict[str, object]:
     trial_scores = []
     for batch in batches:
         if baked_geometry is not None and indenter_maps_by_trial is not None:
             ind_map, ind_valid_map = indenter_maps_by_trial[batch.name]
             top_frac = top_fractions_by_trial.get(batch.name, 1.0) if top_fractions_by_trial is not None else 1.0
-            bottom_frac = bottom_fractions_by_trial.get(batch.name, 0.0) if bottom_fractions_by_trial is not None else 0.0
+            bottom_frac = (
+                bottom_fractions_by_trial.get(batch.name, 0.0) if bottom_fractions_by_trial is not None else 0.0
+            )
             result = evaluate_foundation_baked_batch(
                 xy_m,
                 baked_geometry,
@@ -1725,6 +1703,8 @@ def _history_selection_score(
                 material=material,
                 top_fraction=top_frac,
                 bottom_fraction=bottom_frac,
+                use_equilibrium=use_equilibrium,
+                use_subcell_coverage=use_subcell_coverage,
                 device=device,
             )
         else:
@@ -1768,6 +1748,8 @@ def _select_history_material(
     indenter_maps_by_trial: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
     top_fractions_by_trial: dict[str, float] | None = None,
     bottom_fractions_by_trial: dict[str, float] | None = None,
+    use_equilibrium: bool = True,
+    use_subcell_coverage: bool = True,
 ) -> tuple[FoundationMaterial, dict[str, object]]:
     if not history:
         raise ValueError("Cannot select fit history material without history rows")
@@ -1784,6 +1766,8 @@ def _select_history_material(
             indenter_maps_by_trial=indenter_maps_by_trial,
             top_fractions_by_trial=top_fractions_by_trial,
             bottom_fractions_by_trial=bottom_fractions_by_trial,
+            use_equilibrium=use_equilibrium,
+            use_subcell_coverage=use_subcell_coverage,
         )
         selection["iteration"] = int(row["iteration"])
         selection["loss"] = float(row["loss"])
@@ -1795,1028 +1779,23 @@ def _select_history_material(
     return best_material, best_selection
 
 
-def _locked_metrics_report(
-    xy_m: np.ndarray,
-    batches: list[FoundationTrialBatch],
-    material: FoundationMaterial,
-    *,
-    device: str,
-    output_dir: Path | None = None,
-    split: str | None = None,
-    active_fraction: float = 0.05,
-    top_count: int = 5,
-    pass_threshold: float = 0.05,
-    baked_geometry: BakedMidsoleGeometry | None = None,
-    indenter_maps_by_trial: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
-    top_fractions_by_trial: dict[str, float] | None = None,
-    bottom_fractions_by_trial: dict[str, float] | None = None,
-) -> dict[str, object]:
-    trials: list[dict[str, object]] = []
-    checks: list[dict[str, object]] = []
-    for batch in batches:
-        if baked_geometry is not None and indenter_maps_by_trial is not None:
-            ind_map, ind_valid_map = indenter_maps_by_trial[batch.name]
-            top_frac = top_fractions_by_trial.get(batch.name, 1.0) if top_fractions_by_trial is not None else 1.0
-            bottom_frac = bottom_fractions_by_trial.get(batch.name, 0.0) if bottom_fractions_by_trial is not None else 0.0
-            result = evaluate_foundation_baked_batch(
-                xy_m,
-                baked_geometry,
-                ind_map,
-                ind_valid_map,
-                batch,
-                material=material,
-                top_fraction=top_frac,
-                bottom_fraction=bottom_frac,
-                device=device,
-            )
-        else:
-            result = evaluate_foundation_lengths_batch(
-                xy_m,
-                batch,
-                material=material,
-                device=device,
-            )
-        metrics = validate_trace_metrics(
-            batch.measured_force_n,
-            result.predicted_force_n,
-            batch.displacement_m,
-            active_fraction=active_fraction,
-            top_count=top_count,
-            pass_threshold=pass_threshold,
-        )
-        metric_values = metrics.as_dict()
-        full_trace_rmse = float(np.sqrt(np.mean((result.predicted_force_n - batch.measured_force_n) ** 2)))
-        full_trace_scale = max(float(np.max(np.abs(batch.measured_force_n))), 1.0)
-        metric_values["full_trace_rmse_n"] = full_trace_rmse
-        metric_values["full_trace_rmse_relative"] = full_trace_rmse / full_trace_scale
-        metric_values["passed"] = metric_values["full_trace_rmse_relative"] < pass_threshold
-        active = active_force_mask(
-            batch.measured_force_n,
-            active_fraction=active_fraction,
-            top_count=top_count,
-        )
-        residual_diagnostics = _residual_diagnostics(
-            batch.displacement_m,
-            batch.measured_force_n,
-            result.predicted_force_n,
-            active,
-            measured_peak_force_n=metrics.measured_peak_force_n,
-        )
-        artifacts = {}
-        if output_dir is not None and split is not None:
-            artifacts = _write_locked_metric_artifacts(
-                output_dir,
-                split,
-                batch,
-                result.predicted_force_n,
-                active,
-            )
-        trials.append(
-            {
-                "trial": batch.name,
-                "frame_count": int(len(batch.measured_force_n)),
-                "force_zero_n": float(batch.force_zero_n),
-                "metrics": metric_values,
-                "residual_diagnostics": residual_diagnostics,
-                "artifacts": artifacts,
-            }
-        )
-        for metric_name in ("full_trace_rmse_relative",):
-            checks.append(
-                {
-                    "trial": batch.name,
-                    "metric": metric_name,
-                    "value": float(metric_values[metric_name]),
-                    "limit": pass_threshold,
-                    "passed": float(metric_values[metric_name]) < pass_threshold,
-                }
-            )
-    return {
-        "schema_version": "digital_instron_v2_locked_metrics_1",
-        "active_fraction": active_fraction,
-        "top_count": top_count,
-        "pass_threshold": pass_threshold,
-        "passed": all(bool(trial["metrics"]["passed"]) for trial in trials),
-        "checks": checks,
-        "trials": trials,
-    }
-
-
-def _rmse_summary(residual: np.ndarray, scale: float) -> dict[str, float | int]:
-    if len(residual) == 0:
-        return {
-            "frame_count": 0,
-            "rmse_n": float("nan"),
-            "rmse_relative": float("nan"),
-            "mean_residual_n": float("nan"),
-            "max_abs_residual_n": float("nan"),
-        }
-    rmse = float(np.sqrt(np.mean(residual**2)))
-    return {
-        "frame_count": int(len(residual)),
-        "rmse_n": rmse,
-        "rmse_relative": float(rmse / max(abs(scale), 1.0e-9)),
-        "mean_residual_n": float(np.mean(residual)),
-        "max_abs_residual_n": float(np.max(np.abs(residual))),
-    }
-
-
-def _residual_diagnostics(
-    displacement_m: np.ndarray,
-    measured_force_n: np.ndarray,
-    predicted_force_n: np.ndarray,
-    active_mask: np.ndarray,
-    *,
-    measured_peak_force_n: float,
-) -> dict[str, object]:
-    displacement = np.asarray(displacement_m, dtype=np.float64)
-    measured = np.asarray(measured_force_n, dtype=np.float64)
-    predicted = np.asarray(predicted_force_n, dtype=np.float64)
-    active = np.asarray(active_mask, dtype=bool)
-    residual = predicted - measured
-    active_indices = np.nonzero(active & np.isfinite(displacement) & np.isfinite(residual))[0]
-    if len(active_indices) == 0:
-        return {
-            "active": _rmse_summary(np.asarray([], dtype=np.float64), measured_peak_force_n),
-            "loading": _rmse_summary(np.asarray([], dtype=np.float64), measured_peak_force_n),
-            "unloading": _rmse_summary(np.asarray([], dtype=np.float64), measured_peak_force_n),
-        }
-    peak_index = int(active_indices[np.argmax(displacement[active_indices])])
-    loading_indices = active_indices[active_indices <= peak_index]
-    unloading_indices = active_indices[active_indices >= peak_index]
-    return {
-        "active": _rmse_summary(residual[active_indices], measured_peak_force_n),
-        "loading": _rmse_summary(residual[loading_indices], measured_peak_force_n),
-        "unloading": _rmse_summary(residual[unloading_indices], measured_peak_force_n),
-        "peak_displacement_frame": peak_index,
-    }
-
-
-def _write_locked_metric_artifacts(
-    output_dir: Path,
-    split: str,
-    batch: FoundationTrialBatch,
-    predicted_force_n: np.ndarray,
-    active_mask: np.ndarray,
-) -> dict[str, str]:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    safe_trial = _safe_report_name(batch.name)
-    prefix = output_dir / f"digital_instron_v2_{split}_{safe_trial}"
-    trace_csv = prefix.with_name(f"{prefix.name}_measured_vs_predicted.csv")
-    fd_png = prefix.with_name(f"{prefix.name}_force_displacement.png")
-    hysteresis_png = prefix.with_name(f"{prefix.name}_hysteresis.png")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    measured = np.asarray(batch.measured_force_n, dtype=np.float64)
-    predicted = np.asarray(predicted_force_n, dtype=np.float64)
-    displacement = np.asarray(batch.displacement_m, dtype=np.float64)
-    active = np.asarray(active_mask, dtype=bool)
-    force_zero = float(batch.force_zero_n)
-    residual = predicted - measured
-
-    rows = [
-        "frame_index,time_s,displacement_m,phase,active,measured_force_n,predicted_force_n,"
-        "residual_force_n,measured_machine_force_n,predicted_machine_force_n,sample_weight"
-    ]
-    for index, (time_s, disp, phase, is_active, measured_force, predicted_force, residual_force, weight) in enumerate(
-        zip(
-            batch.time_s,
-            displacement,
-            batch.phase,
-            active,
-            measured,
-            predicted,
-            residual,
-            batch.sample_weight,
-            strict=True,
-        )
-    ):
-        rows.append(
-            f"{index},{time_s},{disp},{phase},{int(is_active)},{measured_force},{predicted_force},"
-            f"{residual_force},{measured_force + force_zero},{predicted_force + force_zero},{weight}"
-        )
-    trace_csv.write_text("\n".join(rows) + "\n")
-
-    fig, (ax_force, ax_residual) = plt.subplots(2, 1, figsize=(7.5, 6.0), constrained_layout=True, sharex=True)
-    x_mm = displacement * 1000.0
-    ax_force.plot(x_mm, measured, label="measured", linewidth=1.5)
-    ax_force.plot(x_mm, predicted, label="predicted", linewidth=1.2, linestyle="--")
-    ax_force.scatter(x_mm[active], measured[active], s=12.0, alpha=0.45, label="active")
-    ax_force.set_ylabel("force [N]")
-    ax_force.set_title(f"{split} {batch.name} force-displacement")
-    ax_force.grid(True, alpha=0.3)
-    ax_force.legend(fontsize="small")
-    ax_residual.plot(x_mm, residual, color="tab:red", linewidth=1.2)
-    ax_residual.axhline(0.0, color="black", linewidth=0.8)
-    ax_residual.set_xlabel("displacement [mm]")
-    ax_residual.set_ylabel("residual [N]")
-    ax_residual.grid(True, alpha=0.3)
-    fig.savefig(fd_png, dpi=150)
-    plt.close(fig)
-
-    active_indices = np.nonzero(active)[0]
-    fig, ax = plt.subplots(figsize=(7.0, 4.5), constrained_layout=True)
-    if len(active_indices):
-        peak_index = int(active_indices[np.argmax(displacement[active_indices])])
-        loading = active_indices[active_indices <= peak_index]
-        unloading = active_indices[active_indices >= peak_index]
-        ax.plot(x_mm[loading], measured[loading], label="measured loading", linewidth=1.5)
-        ax.plot(x_mm[unloading], measured[unloading], label="measured unloading", linewidth=1.5)
-        ax.plot(x_mm[loading], predicted[loading], label="predicted loading", linewidth=1.2, linestyle="--")
-        ax.plot(x_mm[unloading], predicted[unloading], label="predicted unloading", linewidth=1.2, linestyle="--")
-    else:
-        ax.plot(x_mm, measured, label="measured", linewidth=1.5)
-        ax.plot(x_mm, predicted, label="predicted", linewidth=1.2, linestyle="--")
-    ax.set_title(f"{split} {batch.name} hysteresis")
-    ax.set_xlabel("displacement [mm]")
-    ax.set_ylabel("force [N]")
-    ax.grid(True, alpha=0.3)
-    ax.legend(fontsize="small")
-    fig.savefig(hysteresis_png, dpi=150)
-    plt.close(fig)
-
-    return {
-        "measured_vs_predicted_csv": str(trace_csv),
-        "force_displacement_png": str(fd_png),
-        "hysteresis_png": str(hysteresis_png),
-    }
-
-
-def _nuisance_parameter_report(
-    manifest,
-    output_dir: Path,
-    train_batches: list[FoundationTrialBatch],
-    validate_batches: list[FoundationTrialBatch],
-) -> dict[str, object]:
-    train_by_name = {batch.name: batch for batch in train_batches}
-    validate_by_name = {batch.name: batch for batch in validate_batches}
-    trials: dict[str, object] = {}
-    for trial in manifest.trials:
-        if not trial.include_in_fit:
-            continue
-        frame_config = _trial_frame_config(manifest, output_dir, trial)
-        train_batch = train_by_name.get(trial.name)
-        validate_batch = validate_by_name.get(trial.name)
-        trials[trial.name] = {
-            "fixture": trial.fixture,
-            "force_zero_policy": "per_generated_trace_min_force_subtraction",
-            "force_zero_n": {
-                "train": None if train_batch is None else float(train_batch.force_zero_n),
-                "validate": None if validate_batch is None else float(validate_batch.force_zero_n),
-            },
-            "displacement_zero_policy": "frame_config_displacement_zero",
-            "displacement_zero": float(frame_config.get("displacement_zero", 0.0)),
-            "geometry_alignment_policy": "manifest_fixture_geometry",
-            "indenter": trial.indenter,
-        }
-    return {
-        "allowed_only": True,
-        "disallowed_parameters": [
-            "fixture_specific_stiffness",
-            "fixture_specific_damping",
-            "fixture_specific_hysteresis_state",
-            "arbitrary_force_scaling",
-            "per_trial_pressure_multiplier",
-            "manual_cop_shift",
-        ],
-        "trials": trials,
-    }
-
-
-def run_fit_validate(args: argparse.Namespace) -> dict[str, object]:
-    """Fit on training cycles and validate on held-out cycles with locked metrics."""
-
-    manifest = load_manifest(args.manifest)
-    output_dir = Path(args.output_dir) if args.output_dir else manifest.cache_dir
-    device = str(getattr(args, "autodiff_device", "cuda:0"))
-    use_baked = _use_surfacemaps(args)
-    if use_baked:
-        spring_grid = None
-        vertices, faces = _load_midsole_mesh(manifest, output_dir)
-    else:
-        spring_grid, vertices, faces = _load_spring_grid(manifest, output_dir)
-
-    cycle_report = run_split_cycles(args)
-    train_paths = _trace_paths_from_cycle_report(cycle_report, "train")
-    validate_paths = _trace_paths_from_cycle_report(cycle_report, "validate")
-
-    train_batches = _autodiff_batches(
-        manifest,
-        spring_grid,
-        vertices,
-        trace_paths_by_trial=train_paths,
-        use_baked=use_baked,
-    )
-    validate_batches = _autodiff_batches(
-        manifest,
-        spring_grid,
-        vertices,
-        trace_paths_by_trial=validate_paths,
-        use_baked=use_baked,
-    )
-
-    loop_weight = _fit_loop_weight(args, manifest.fit)
-
-    baked_geometry = None
-    indenter_maps_by_trial = None
-    fit_xy_m = spring_grid.xy_m if spring_grid is not None else None
-    surface_map_plot_path = None
-
-    if use_baked:
-        baked_spacing = float(manifest.grid.get("baked_spacing_m", 0.002))
-        baked_geometry = build_baked_midsole_geometry(
-            vertices,
-            faces,
-            spacing_m=baked_spacing,
-            thickness_axis=manifest.grid.get("force_thickness_axis"),
-        )
-        surface_map_plot_path = _write_surface_map_plot(output_dir, baked_geometry)
-        baked_uv_m, _baked_xy_m, baked_cell_area_m2 = _baked_quadrature(baked_geometry)
-        fit_xy_m = baked_uv_m
-        train_batches = _with_baked_cell_area(train_batches, baked_cell_area_m2, baked_geometry.spacing_m)
-        validate_batches = _with_baked_cell_area(validate_batches, baked_cell_area_m2, baked_geometry.spacing_m)
-        indenter_maps_by_trial = {}
-        for batch in train_batches + validate_batches:
-            if batch.name not in indenter_maps_by_trial:
-                trial = next(t for t in manifest.trials if t.name == batch.name)
-                ind_map, ind_valid_map = bake_indenter_maps(
-                    baked_geometry,
-                    trial,
-                    manifest,
-                    vertices,
-                    baked_spacing,
-                )
-                indenter_maps_by_trial[batch.name] = (ind_map, ind_valid_map)
-
-        result = fit_foundation_material_baked_batches_autodiff(
-            fit_xy_m,
-            baked_geometry,
-            indenter_maps_by_trial,
-            train_batches,
-            initial_material=_initial_material(manifest),
-            iterations=int(args.autodiff_iterations),
-            per_cylinder_area=True,
-            loop_weight=loop_weight,
-            device=device,
-        )
-        selected_material, selected_history = _select_history_material(
-            fit_xy_m,
-            train_batches,
-            list(result.history),
-            device=device,
-            baked_geometry=baked_geometry,
-            indenter_maps_by_trial=indenter_maps_by_trial,
-        )
-    else:
-        result = fit_foundation_material_batches_autodiff(
-            fit_xy_m,
-            train_batches,
-            initial_material=_initial_material(manifest),
-            iterations=int(args.autodiff_iterations),
-            per_cylinder_area=True,
-            loop_weight=loop_weight,
-            device=device,
-        )
-        selected_material, selected_history = _select_history_material(
-            fit_xy_m,
-            train_batches,
-            list(result.history),
-            device=device,
-        )
-
-    loss_plot_path = _write_autodiff_loss_plot(output_dir, list(result.history))
-    train_metrics = _locked_metrics_report(
-        fit_xy_m,
-        train_batches,
-        selected_material,
-        device=device,
-        output_dir=output_dir,
-        split="train",
-        baked_geometry=baked_geometry,
-        indenter_maps_by_trial=indenter_maps_by_trial,
-    )
-    validation_metrics = _locked_metrics_report(
-        fit_xy_m,
-        validate_batches,
-        selected_material,
-        device=device,
-        output_dir=output_dir,
-        split="validate",
-        baked_geometry=baked_geometry,
-        indenter_maps_by_trial=indenter_maps_by_trial,
-    )
-    validation_acceptance = {
-        "schema_version": "digital_instron_v2_phase1_acceptance_1",
-        "passed": bool(validation_metrics["passed"]),
-        "basis": "held_out_cycle_windows",
-        "checks": validation_metrics["checks"],
-    }
-    nuisance_parameters = _nuisance_parameter_report(
-        manifest,
-        output_dir,
-        train_batches,
-        validate_batches,
-    )
-    material_artifact_path = _write_foundation_material_artifact(
-        output_dir,
-        manifest,
-        spring_grid,
-        selected_material,
-        validation_metrics,
-        validation_acceptance,
-        fit_source="cycle_window_train_validate",
-        use_baked=use_baked,
-        baked_geometry=baked_geometry,
-    )
-    report = {
-        "schema_version": "digital_instron_v2_phase1_validation_1",
-        "manifest": str(manifest.path),
-        "fit_source": "cycle_window_train_validate",
-        "train_cycles": cycle_report["train_cycles"],
-        "validate_cycles": cycle_report["validate_cycles"],
-        "cycle_windows": cycle_report,
-        "sample_count": {
-            "train": int(sum(len(batch.measured_force_n) for batch in train_batches)),
-            "validate": int(sum(len(batch.measured_force_n) for batch in validate_batches)),
-        },
-        "sample_weight_config": {
-            "phase_weights": _fit_phase_weights(manifest.fit),
-            "low_force_limit_n": _fit_float(manifest.fit, "low_force_limit_n", 20.0, min_value=0.0),
-            "peak_fraction": _fit_float(manifest.fit, "peak_fraction", 0.95, min_value=0.0),
-            "displacement_shape_weight": _fit_float(manifest.fit, "displacement_shape_weight", 0.0, min_value=0.0),
-            "displacement_shape_bins": _fit_int(manifest.fit, "displacement_shape_bins", 12, min_value=1),
-            "loop_weight": loop_weight,
-        },
-        "autodiff_device": device,
-        "spring_grid_cells": 0 if spring_grid is None else int(len(spring_grid.xy_m)),
-        "surface_map_cells": 0 if baked_geometry is None or baked_geometry.grid_uv_m is None else int(len(baked_geometry.grid_uv_m)),
-        "surface_map_plot": surface_map_plot_path,
-        "material": selected_material.__dict__,
-        "nuisance_parameters": nuisance_parameters,
-        "foundation_material_json": str(material_artifact_path),
-        "acceptance": validation_acceptance,
-        "loss_plot": loss_plot_path,
-        "selected_iteration": int(selected_history["iteration"]),
-        "selected_loss": float(selected_history["loss"]),
-        "selected_score": float(selected_history["score"]),
-        "selected_score_trials": selected_history["trials"],
-        "history": list(result.history),
-        "train_metrics": train_metrics,
-        "validation_metrics": validation_metrics,
-    }
-    _write_json(output_dir / "digital_instron_v2_phase1_validation.json", report)
-    return report
-
-
-def _cop_from_wrench(wrench: np.ndarray) -> tuple[float, float]:
-    fz = float(wrench[2])
-    if abs(fz) <= 1.0e-9:
-        return float("nan"), float("nan")
-    return float(-wrench[4] / fz), float(wrench[3] / fz)
-
-
-def _write_dynamic_replay_plot(
-    output_dir: Path,
-    batch: FoundationTrialBatch,
-    predicted: np.ndarray,
-    *,
-    safe_trial: str,
-) -> str:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    measured = np.asarray(batch.measured_force_n, dtype=np.float64)
-    displacement_mm = np.asarray(batch.displacement_m, dtype=np.float64) * 1000.0
-    residual = np.asarray(predicted, dtype=np.float64) - measured
-    path = output_dir / f"digital_instron_v2_dynamic_{safe_trial}_force_hysteresis.png"
-    fig, (ax_force, ax_resid) = plt.subplots(2, 1, figsize=(7.5, 6.0), constrained_layout=True, sharex=True)
-    ax_force.plot(displacement_mm, measured, label="measured", linewidth=1.5)
-    ax_force.plot(displacement_mm, predicted, label="surface-map replay", linewidth=1.2, linestyle="--")
-    ax_force.set_ylabel("force [N]")
-    ax_force.set_title(f"{batch.name} dynamic replay")
-    ax_force.grid(True, alpha=0.3)
-    ax_force.legend(fontsize="small")
-    ax_resid.plot(displacement_mm, residual, color="tab:red", linewidth=1.2)
-    ax_resid.axhline(0.0, color="black", linewidth=0.8)
-    ax_resid.set_xlabel("displacement [mm]")
-    ax_resid.set_ylabel("residual [N]")
-    ax_resid.grid(True, alpha=0.3)
-    fig.savefig(path, dpi=180)
-    plt.close(fig)
-    return str(path)
-
-
-def _make_body_f_solver(device: str):
-    import newton
-    import warp as wp
-
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
-    for label in ("shoe", "fixture"):
-        body = builder.add_link(
-            mass=1000.0,
-            inertia=wp.mat33(1000.0, 0.0, 0.0, 0.0, 1000.0, 0.0, 0.0, 0.0, 1000.0),
-            label=label,
-            lock_inertia=True,
-        )
-        builder.add_shape_box(
-            body,
-            hx=0.20,
-            hy=0.10,
-            hz=0.04,
-            cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False, density=0.0),
-        )
-        joint = builder.add_joint_d6(
-            -1,
-            body,
-            linear_axes=[
-                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X),
-                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y),
-                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z),
-            ],
-            angular_axes=[
-                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X),
-                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y),
-                newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z),
-            ],
-        )
-        builder.add_articulation([joint])
-    model = builder.finalize(device=device)
-    solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, njmax=16)
-    return model, solver, model.state(), model.state()
-
-
-def _phase2_dynamic_replay(
-    xy_m: np.ndarray,
-    batches: list[FoundationTrialBatch],
-    material: FoundationMaterial,
-    *,
-    output_dir: Path,
-    device: str,
-    moment_xy_m: np.ndarray | None = None,
-    shoe_body_index: int = 0,
-    fixture_body_index: int = 1,
-    baked_geometry: BakedMidsoleGeometry | None = None,
-    indenter_maps_by_trial: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
-    top_fractions_by_trial: dict[str, float] | None = None,
-    bottom_fractions_by_trial: dict[str, float] | None = None,
-) -> dict[str, object]:
-    import warp as wp
-
-    trials: list[dict[str, object]] = []
-    checks: list[dict[str, object]] = []
-    model, solver, state_0, state_1 = _make_body_f_solver(device)
-    spring_count = xy_m.shape[0]
-    wrench_xy_m = xy_m if moment_xy_m is None else moment_xy_m
-    warmup_cycles = max(int(material.state_warmup_cycles), 0)
-    for batch in batches:
-        state_0, state_1 = model.state(), model.state()
-        safe_trial = _safe_report_name(batch.name)
-        csv_path = output_dir / f"digital_instron_v2_dynamic_{safe_trial}.csv"
-        predicted_forces = []
-        rows = [
-            "frame_index,time_s,displacement_m,measured_force_n,predicted_force_n,"
-            "cop_x_m,cop_y_m,active_cell_count,active_area_m2,max_compression_m,"
-            "wrench_fx,wrench_fy,wrench_fz,wrench_tx,wrench_ty,wrench_tz,"
-            "shoe_body_f_fx,shoe_body_fy,shoe_body_fz,shoe_body_tx,shoe_body_ty,shoe_body_tz,"
-            "fixture_body_f_fx,fixture_body_fy,fixture_body_fz,fixture_body_tx,fixture_body_ty,fixture_body_tz,"
-            "shoe_body_qd_vx,shoe_body_qd_vy,shoe_body_qd_vz,shoe_body_qd_wx,shoe_body_qd_wy,shoe_body_qd_wz,"
-            "fixture_body_qd_vx,fixture_body_qd_vy,fixture_body_qd_vz,"
-            "fixture_body_qd_wx,fixture_body_qd_wy,fixture_body_qd_wz"
-        ]
-        cop_rows = []
-        active_counts = []
-        active_areas = []
-        max_compressions = []
-        wrench_rows = []
-        body_force_rows = []
-        body_qd_rows = []
-
-        # Allocate double-buffered QLV Prony state arrays
-        prony_state_a = wp.zeros(spring_count, dtype=float, device=device)
-        prony_state_b = wp.zeros(spring_count, dtype=float, device=device)
-
-        frame_count = len(batch.measured_force_n)
-
-        if baked_geometry is not None and indenter_maps_by_trial is not None:
-            ind_map, ind_valid_map = indenter_maps_by_trial[batch.name]
-            top_frac = top_fractions_by_trial.get(batch.name, 1.0) if top_fractions_by_trial is not None else 1.0
-            bottom_frac = bottom_fractions_by_trial.get(batch.name, 0.0) if bottom_fractions_by_trial is not None else 0.0
-
-            # Warmup: run displacement history warmup_cycles times to settle
-            # the Prony state before the actual replay loop.
-            for _warmup in range(warmup_cycles):
-                for wi in range(frame_count):
-                    dt_w = float(batch.dt_s[wi])
-                    if dt_w <= 0.0 and wi + 1 < frame_count:
-                        dt_w = float(batch.time_s[wi + 1] - batch.time_s[wi])
-                    if dt_w <= 0.0:
-                        dt_w = 1.0e-4
-                    evaluate_foundation_baked(
-                        xy_m,
-                        baked_geometry,
-                        ind_map,
-                        ind_valid_map,
-                        xy_m=wrench_xy_m,
-                        cell_area_m2=float(batch.cell_area_m2[0]),
-                        material=material,
-                        displacement_m=float(batch.displacement_m[wi]),
-                        displacement_velocity_mps=float(batch.velocity_mps[wi]),
-                        dt_s=dt_w,
-                        state_in=prony_state_a,
-                        state_out=prony_state_b,
-                        top_fraction=top_frac,
-                        bottom_fraction=bottom_frac,
-                        device=device,
-                    )
-                    prony_state_a, prony_state_b = prony_state_b, prony_state_a
-
-            # Main replay loop with state tracking
-            for frame_index in range(frame_count):
-                dt_s = float(batch.dt_s[frame_index])
-                if dt_s <= 0.0 and frame_index + 1 < frame_count:
-                    dt_s = float(batch.time_s[frame_index + 1] - batch.time_s[frame_index])
-                if dt_s <= 0.0:
-                    dt_s = 1.0e-4
-
-                result = evaluate_foundation_baked(
-                    xy_m,
-                    baked_geometry,
-                    ind_map,
-                    ind_valid_map,
-                    xy_m=wrench_xy_m,
-                    cell_area_m2=float(batch.cell_area_m2[0]),
-                    material=material,
-                    displacement_m=float(batch.displacement_m[frame_index]),
-                    displacement_velocity_mps=float(batch.velocity_mps[frame_index]),
-                    dt_s=dt_s,
-                    state_in=prony_state_a,
-                    state_out=prony_state_b,
-                    top_fraction=top_frac,
-                    bottom_fraction=bottom_frac,
-                    measured_force_n=float(batch.measured_force_n[frame_index]),
-                    device=device,
-                )
-                prony_state_a, prony_state_b = prony_state_b, prony_state_a
-
-                compression = compute_baked_compression(
-                    xy_m,
-                    baked_geometry,
-                    ind_map,
-                    ind_valid_map,
-                    float(batch.displacement_m[frame_index]),
-                    top_frac,
-                    bottom_frac,
-                )
-
-                predicted_forces.append(result.force_n)
-                wrench = np.asarray(result.wrench, dtype=np.float64)
-                wrench_rows.append(wrench)
-                cop_x, cop_y = _cop_from_wrench(wrench)
-                cop_rows.append((cop_x, cop_y))
-                active = compression > 0.0
-                active_counts.append(int(np.count_nonzero(active)))
-                active_areas.append(float(np.sum(batch.cell_area_m2[active])))
-                max_compressions.append(float(np.max(compression)) if len(compression) else 0.0)
-
-                body_f = np.zeros((2, 6), dtype=np.float64)
-                apply_foundation_wrench_to_body_f(body_f, shoe_body_index, wrench)
-                apply_foundation_wrench_to_body_f(body_f, fixture_body_index, -wrench)
-                body_force_rows.append(body_f.copy())
-                state_0.body_f.assign(body_f.astype(np.float32).reshape(-1))
-                solver.step(state_0, state_1, None, None, dt_s)
-                body_qd = np.asarray(state_1.body_qd.numpy(), dtype=np.float64)
-                body_qd_rows.append(body_qd.copy())
-                state_0, state_1 = state_1, state_0
-                rows.append(
-                    f"{frame_index},{batch.time_s[frame_index]},{batch.displacement_m[frame_index]},"
-                    f"{batch.measured_force_n[frame_index]},{result.force_n},{cop_x},{cop_y},"
-                    f"{active_counts[-1]},{active_areas[-1]},{max_compressions[-1]},"
-                    + ",".join(str(float(value)) for value in wrench)
-                    + ","
-                    + ",".join(str(float(value)) for value in body_f[shoe_body_index])
-                    + ","
-                    + ",".join(str(float(value)) for value in body_f[fixture_body_index])
-                    + ","
-                    + ",".join(str(float(value)) for value in body_qd[shoe_body_index])
-                    + ","
-                    + ",".join(str(float(value)) for value in body_qd[fixture_body_index])
-                )
-        else:
-            # Spring-grid path: warmup + state tracking for evaluate_foundation_lengths
-            for _warmup in range(warmup_cycles):
-                for wi in range(frame_count):
-                    dt_w = float(batch.dt_s[wi])
-                    if dt_w <= 0.0 and wi + 1 < frame_count:
-                        dt_w = float(batch.time_s[wi + 1] - batch.time_s[wi])
-                    if dt_w <= 0.0:
-                        dt_w = 1.0e-4
-                    evaluate_foundation_lengths(
-                        xy_m,
-                        batch.current_length_m[wi],
-                        batch.slack_length_m,
-                        batch.velocity_mps[wi],
-                        cell_area_m2=batch.cell_area_m2,
-                        material=material,
-                        dt_s=dt_w,
-                        state_in=prony_state_a,
-                        state_out=prony_state_b,
-                        neighbors=batch.neighbors,
-                        spacing_m=batch.spacing_m,
-                        device=device,
-                    )
-                    prony_state_a, prony_state_b = prony_state_b, prony_state_a
-
-            for frame_index in range(frame_count):
-                current_length = batch.current_length_m[frame_index]
-                velocity = batch.velocity_mps[frame_index]
-                dt_s = float(batch.dt_s[frame_index])
-                if dt_s <= 0.0 and frame_index + 1 < frame_count:
-                    dt_s = float(batch.time_s[frame_index + 1] - batch.time_s[frame_index])
-                if dt_s <= 0.0:
-                    dt_s = 1.0e-4
-
-                result = evaluate_foundation_lengths(
-                    xy_m,
-                    current_length,
-                    batch.slack_length_m,
-                    velocity,
-                    cell_area_m2=batch.cell_area_m2,
-                    material=material,
-                    dt_s=dt_s,
-                    state_in=prony_state_a,
-                    state_out=prony_state_b,
-                    measured_force_n=float(batch.measured_force_n[frame_index]),
-                    neighbors=batch.neighbors,
-                    spacing_m=batch.spacing_m,
-                    device=device,
-                )
-                prony_state_a, prony_state_b = prony_state_b, prony_state_a
-                compression = np.maximum(batch.slack_length_m - current_length, 0.0)
-
-                predicted_forces.append(result.force_n)
-                wrench = np.asarray(result.wrench, dtype=np.float64)
-                wrench_rows.append(wrench)
-                cop_x, cop_y = _cop_from_wrench(wrench)
-                cop_rows.append((cop_x, cop_y))
-                active = compression > 0.0
-                active_counts.append(int(np.count_nonzero(active)))
-                active_areas.append(float(np.sum(batch.cell_area_m2[active])))
-                max_compressions.append(float(np.max(compression)) if len(compression) else 0.0)
-
-                body_f = np.zeros((2, 6), dtype=np.float64)
-                apply_foundation_wrench_to_body_f(body_f, shoe_body_index, wrench)
-                apply_foundation_wrench_to_body_f(body_f, fixture_body_index, -wrench)
-                body_force_rows.append(body_f.copy())
-                state_0.body_f.assign(body_f.astype(np.float32).reshape(-1))
-                solver.step(state_0, state_1, None, None, dt_s)
-                body_qd = np.asarray(state_1.body_qd.numpy(), dtype=np.float64)
-                body_qd_rows.append(body_qd.copy())
-                state_0, state_1 = state_1, state_0
-                rows.append(
-                    f"{frame_index},{batch.time_s[frame_index]},{batch.displacement_m[frame_index]},"
-                    f"{batch.measured_force_n[frame_index]},{result.force_n},{cop_x},{cop_y},"
-                    f"{active_counts[-1]},{active_areas[-1]},{max_compressions[-1]},"
-                    + ",".join(str(float(value)) for value in wrench)
-                    + ","
-                    + ",".join(str(float(value)) for value in body_f[shoe_body_index])
-                    + ","
-                    + ",".join(str(float(value)) for value in body_f[fixture_body_index])
-                    + ","
-                    + ",".join(str(float(value)) for value in body_qd[shoe_body_index])
-                    + ","
-                    + ",".join(str(float(value)) for value in body_qd[fixture_body_index])
-                )
-        csv_path.write_text("\n".join(rows) + "\n")
-
-        predicted = np.asarray(predicted_forces, dtype=np.float64)
-        force_plot_path = _write_dynamic_replay_plot(output_dir, batch, predicted, safe_trial=safe_trial)
-        metrics = validate_trace_metrics(batch.measured_force_n, predicted, batch.displacement_m)
-        full_trace_rmse = float(np.sqrt(np.mean((predicted - batch.measured_force_n) ** 2)))
-        full_trace_scale = max(float(np.max(np.abs(batch.measured_force_n))), 1.0)
-        full_trace_rmse_relative = full_trace_rmse / full_trace_scale
-        metric_values = metrics.as_dict()
-        metric_values["full_trace_rmse_n"] = full_trace_rmse
-        metric_values["full_trace_rmse_relative"] = full_trace_rmse_relative
-        metric_values["passed"] = full_trace_rmse_relative < 0.05
-        cop = np.asarray(cop_rows, dtype=np.float64)
-        finite_cop = np.isfinite(cop[:, 0]) & np.isfinite(cop[:, 1])
-        force_jump = np.abs(np.diff(predicted))
-        force_scale = max(float(metrics.measured_peak_force_n), 1.0)
-        max_force_jump = float(np.max(force_jump)) if len(force_jump) else 0.0
-        max_force_jump_relative = float(max_force_jump / force_scale)
-        wrench_array = np.asarray(wrench_rows, dtype=np.float64)
-        body_force_array = np.asarray(body_force_rows, dtype=np.float64)
-        body_qd_array = np.asarray(body_qd_rows, dtype=np.float64)
-        equal_opposite_error = float(
-            np.max(np.abs(body_force_array[:, shoe_body_index, :] + body_force_array[:, fixture_body_index, :]))
-        )
-        solver_advanced = bool(len(body_qd_array) and np.any(np.abs(body_qd_array) > 0.0))
-        peak_body_qd_abs = [float(value) for value in np.max(np.abs(body_qd_array), axis=(0, 1))]
-        body_qd_bound = 1.0e6
-        body_qd_plausible = bool(np.max(np.abs(body_qd_array)) < body_qd_bound)
-        stable = bool(
-            np.all(np.isfinite(predicted))
-            and np.all(np.isfinite(wrench_array))
-            and np.all(np.isfinite(body_qd_array))
-            and equal_opposite_error < 1.0e-9
-            and solver_advanced
-            and body_qd_plausible
-        )
-        trial_report = {
-            "trial": batch.name,
-            "trace_csv": str(csv_path),
-            "frame_count": int(len(batch.measured_force_n)),
-            "body_ids": {
-                "shoe": shoe_body_index,
-                "fixture": fixture_body_index,
-            },
-            "metrics": metric_values,
-            "artifacts": {
-                "trace_csv": str(csv_path),
-                "force_hysteresis_png": force_plot_path,
-            },
-            "dynamic_diagnostics": {
-                "stable": stable,
-                "peak_active_cell_count": int(np.max(active_counts)) if active_counts else 0,
-                "peak_active_area_m2": float(np.max(active_areas)) if active_areas else 0.0,
-                "mean_active_area_m2": float(np.mean(active_areas)) if active_areas else 0.0,
-                "max_compression_m": float(np.max(max_compressions)) if max_compressions else 0.0,
-                "max_force_jump_n": max_force_jump,
-                "max_force_jump_relative": max_force_jump_relative,
-                "mean_cop_x_m": float(np.mean(cop[finite_cop, 0])) if np.any(finite_cop) else float("nan"),
-                "mean_cop_y_m": float(np.mean(cop[finite_cop, 1])) if np.any(finite_cop) else float("nan"),
-                "peak_cop_x_m": float(cop[np.nanargmax(np.abs(cop[:, 0])), 0])
-                if np.any(np.isfinite(cop[:, 0]))
-                else float("nan"),
-                "peak_cop_y_m": float(cop[np.nanargmax(np.abs(cop[:, 1])), 1])
-                if np.any(np.isfinite(cop[:, 1]))
-                else float("nan"),
-                "equal_opposite_wrench_error": equal_opposite_error,
-                "solver_advanced_state": solver_advanced,
-                "solver_step_count": int(len(body_qd_rows)),
-                "peak_body_qd_abs": peak_body_qd_abs,
-                "body_qd_bound": body_qd_bound,
-                "body_qd_plausible": body_qd_plausible,
-                "predicted_signed_work_j": float(np.trapezoid(predicted, batch.displacement_m)),
-                "measured_signed_work_j": float(np.trapezoid(batch.measured_force_n, batch.displacement_m)),
-                "net_wrench_peak_abs": [float(value) for value in np.max(np.abs(wrench_array), axis=0)],
-            },
-        }
-        trials.append(trial_report)
-        for metric_name in ("full_trace_rmse_relative",):
-            value = float(trial_report["metrics"][metric_name])
-            checks.append(
-                {
-                    "trial": batch.name,
-                    "metric": metric_name,
-                    "value": value,
-                    "limit": 0.05,
-                    "passed": value < 0.05,
-                }
-            )
-        checks.append(
-            {
-                "trial": batch.name,
-                "metric": "dynamic_stability",
-                "value": stable,
-                "limit": True,
-                "passed": stable,
-            }
-        )
-    return {
-        "schema_version": "digital_instron_v2_phase2_dynamic_replay_1",
-        "solver": {
-            "name": "SolverMuJoCo",
-            "coupling": "Newton state.body_f wrench application",
-            "mujoco_warp_status": "measured trajectory drives contact law; SolverMuJoCo advances body_f response state",
-            "model_body_count": int(model.body_count),
-        },
-        "body_ids": {
-            "shoe": shoe_body_index,
-            "fixture": fixture_body_index,
-        },
-        "passed": all(bool(check["passed"]) for check in checks),
-        "checks": checks,
-        "trials": trials,
-    }
-
-
-def run_dynamic_replay(args: argparse.Namespace) -> dict[str, object]:
-    """Run the Phase 2 measured-trajectory body_f replay report."""
-
-    phase1_report = run_fit_validate(args)
-    manifest = load_manifest(args.manifest)
-    output_dir = Path(args.output_dir) if args.output_dir else manifest.cache_dir
-    device = str(getattr(args, "autodiff_device", "cuda:0"))
-    validate_paths = _trace_paths_from_cycle_report(phase1_report["cycle_windows"], "validate")
-    use_baked = _use_surfacemaps(args)
-    if use_baked:
-        spring_grid = None
-        vertices, faces = _load_midsole_mesh(manifest, output_dir)
-    else:
-        spring_grid, vertices, faces = _load_spring_grid(manifest, output_dir)
-
-    validate_batches = _autodiff_batches(
-        manifest,
-        spring_grid,
-        vertices,
-        trace_paths_by_trial=validate_paths,
-        use_baked=use_baked,
-    )
-
-    baked_geometry = None
-    indenter_maps_by_trial = None
-    replay_uv_m = spring_grid.xy_m if spring_grid is not None else None
-    replay_xy_m = None
-    surface_map_plot_path = None
-
-    if use_baked:
-        baked_spacing = float(manifest.grid.get("baked_spacing_m", 0.002))
-        baked_geometry = build_baked_midsole_geometry(
-            vertices,
-            faces,
-            spacing_m=baked_spacing,
-            thickness_axis=manifest.grid.get("force_thickness_axis"),
-        )
-        surface_map_plot_path = _write_surface_map_plot(output_dir, baked_geometry)
-        replay_uv_m, replay_xy_m, baked_cell_area_m2 = _baked_quadrature(baked_geometry)
-        validate_batches = _with_baked_cell_area(validate_batches, baked_cell_area_m2, baked_geometry.spacing_m)
-        indenter_maps_by_trial = {}
-        for batch in validate_batches:
-            if batch.name not in indenter_maps_by_trial:
-                trial = next(t for t in manifest.trials if t.name == batch.name)
-                ind_map, ind_valid_map = bake_indenter_maps(
-                    baked_geometry,
-                    trial,
-                    manifest,
-                    vertices,
-                    baked_spacing,
-                )
-                indenter_maps_by_trial[batch.name] = (ind_map, ind_valid_map)
-
-    material = FoundationMaterial(**phase1_report["material"])
-    dynamic = _phase2_dynamic_replay(
-        replay_uv_m,
-        validate_batches,
-        material,
-        output_dir=output_dir,
-        device=device,
-        moment_xy_m=replay_xy_m,
-        baked_geometry=baked_geometry,
-        indenter_maps_by_trial=indenter_maps_by_trial,
-    )
-    report = {
-        "schema_version": "digital_instron_v2_phase2_report_1",
-        "manifest": str(manifest.path),
-        "phase1_validation_json": str(output_dir / "digital_instron_v2_phase1_validation.json"),
-        "material": material.__dict__,
-        "train_cycles": phase1_report["train_cycles"],
-        "validate_cycles": phase1_report["validate_cycles"],
-        "dynamic_replay": dynamic,
-        "artifacts": {
-            "phase1_validation_json": str(output_dir / "digital_instron_v2_phase1_validation.json"),
-            "phase1_loss_plot": phase1_report.get("loss_plot"),
-            "surface_map_plot": surface_map_plot_path,
-            "train_metric_artifacts": [
-                trial.get("artifacts", {}) for trial in phase1_report.get("train_metrics", {}).get("trials", [])
-            ],
-            "validation_metric_artifacts": [
-                trial.get("artifacts", {}) for trial in phase1_report.get("validation_metrics", {}).get("trials", [])
-            ],
-            "dynamic_replay_artifacts": [trial.get("artifacts", {}) for trial in dynamic.get("trials", [])],
-        },
-        "acceptance": {
-            "passed": bool(dynamic["passed"]),
-            "basis": "held_out_cycle_windows_dynamic_replay",
-            "checks": dynamic["checks"],
-        },
-    }
-    _write_json(output_dir / "digital_instron_v2_phase2_dynamic_replay.json", report)
-    return report
-
-
 def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
     manifest = load_manifest(args.manifest)
     output_dir = Path(args.output_dir) if args.output_dir else manifest.cache_dir
     device = str(getattr(args, "autodiff_device", "cuda:0"))
     use_baked = _use_surfacemaps(args)
-    if use_baked:
-        spring_grid = None
-        vertices, faces = _load_midsole_mesh(manifest, output_dir)
-    else:
-        spring_grid, vertices, faces = _load_spring_grid(manifest, output_dir)
-
+    if not use_baked:
+        raise SystemExit("fit-autodiff requires --use-surfacemaps")
+    use_equilibrium = _use_equilibrium(args)
+    use_subcell_coverage = _use_subcell_coverage(args)
+    spring_grid = None
+    vertices, faces = _load_midsole_mesh(manifest, output_dir)
     batches = _autodiff_batches(
         manifest,
         spring_grid,
         vertices,
         use_baked=use_baked,
+        shape_weight_override=getattr(args, "shape_weight", None),
     )
 
     contact_diagnostics: dict[str, dict[str, float]] = {}
@@ -2884,6 +1863,8 @@ def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
             iterations=int(args.autodiff_iterations),
             per_cylinder_area=True,
             loop_weight=loop_weight,
+            use_equilibrium=use_equilibrium,
+            use_subcell_coverage=use_subcell_coverage,
             device=device,
         )
         selected_material, selected_history = _select_history_material(
@@ -2893,22 +1874,8 @@ def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
             device=device,
             baked_geometry=baked_geometry,
             indenter_maps_by_trial=indenter_maps_by_trial,
-        )
-    else:
-        result = fit_foundation_material_batches_autodiff(
-            fit_xy_m,
-            batches,
-            initial_material=_initial_material(manifest),
-            iterations=int(args.autodiff_iterations),
-            per_cylinder_area=True,
-            loop_weight=loop_weight,
-            device=device,
-        )
-        selected_material, selected_history = _select_history_material(
-            fit_xy_m,
-            batches,
-            list(result.history),
-            device=device,
+            use_equilibrium=use_equilibrium,
+            use_subcell_coverage=use_subcell_coverage,
         )
 
     loss_plot_path = _write_autodiff_loss_plot(output_dir, list(result.history))
@@ -2920,6 +1887,8 @@ def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
         device=device,
         baked_geometry=baked_geometry,
         indenter_maps_by_trial=indenter_maps_by_trial,
+        use_equilibrium=use_equilibrium,
+        use_subcell_coverage=use_subcell_coverage,
     )
     material_artifact_path = _write_foundation_material_artifact(
         output_dir,
@@ -2945,7 +1914,9 @@ def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
         },
         "autodiff_device": device,
         "spring_grid_cells": 0 if spring_grid is None else int(len(spring_grid.xy_m)),
-        "surface_map_cells": 0 if baked_geometry is None or baked_geometry.grid_uv_m is None else int(len(baked_geometry.grid_uv_m)),
+        "surface_map_cells": 0
+        if baked_geometry is None or baked_geometry.grid_uv_m is None
+        else int(len(baked_geometry.grid_uv_m)),
         "surface_map_plot": surface_map_plot_path,
         "material": selected_material.__dict__,
         "foundation_material_json": str(material_artifact_path),
@@ -2967,18 +1938,6 @@ def run_visualize(args: argparse.Namespace) -> dict[str, object]:
     manifest = load_manifest(args.manifest)
     output_dir = Path(args.output_dir) if args.output_dir else manifest.cache_dir
     return write_visualization_report(manifest, output_dir)
-
-
-def _surface_points_3d(
-    baked_geometry: BakedMidsoleGeometry,
-    z_values: np.ndarray,
-    *,
-    sample_uv_m: np.ndarray | None = None,
-) -> np.ndarray:
-    uv = baked_geometry.grid_uv_m if sample_uv_m is None else sample_uv_m
-    if uv is None:
-        raise ValueError("Baked geometry does not define valid surface-map sample coordinates")
-    return _z_up_points_from_uv_z(baked_geometry, uv, z_values)
 
 
 def _z_up_points_from_uv_z(baked_geometry: BakedMidsoleGeometry, uv_m: np.ndarray, z_values: np.ndarray) -> np.ndarray:
@@ -3063,7 +2022,9 @@ def _plane_mesh(
     return points, indices, uvs
 
 
-def _sample_map_numpy(texture_map: np.ndarray, baked_geometry: BakedMidsoleGeometry, sample_uv_m: np.ndarray) -> np.ndarray:
+def _sample_map_numpy(
+    texture_map: np.ndarray, baked_geometry: BakedMidsoleGeometry, sample_uv_m: np.ndarray
+) -> np.ndarray:
     u = (sample_uv_m[:, 0] - baked_geometry.mins_uv[0]) / (baked_geometry.maxs_uv[0] - baked_geometry.mins_uv[0])
     v = (sample_uv_m[:, 1] - baked_geometry.mins_uv[1]) / (baked_geometry.maxs_uv[1] - baked_geometry.mins_uv[1])
     u = np.clip(u, 0.0, 1.0)
@@ -3143,7 +2104,7 @@ def _compression_heat_texture(values_m: np.ndarray, valid_map: np.ndarray | None
 
 
 def run_surface_scene(args: argparse.Namespace) -> dict[str, object]:
-    import newton.viewer
+    import newton.viewer  # noqa: PLC0415
 
     manifest = load_manifest(args.manifest)
     output_dir = Path(args.output_dir) if args.output_dir else manifest.cache_dir
@@ -3185,7 +2146,6 @@ def run_surface_scene(args: argparse.Namespace) -> dict[str, object]:
     if frame_count <= 0:
         raise ValueError("Surface scene needs at least one replay frame")
 
-    top_z = _sample_map_numpy(baked_geometry.top_map, baked_geometry, sample_uv_m)
     bottom_z = _sample_map_numpy(baked_geometry.bottom_map, baked_geometry, sample_uv_m)
     midsole_mesh_points = _mesh_vertices_z_up(vertices, baked_geometry)
     midsole_mesh_indices = np.asarray(faces, dtype=np.int32).reshape(-1)
@@ -3348,14 +2308,8 @@ def main(argv: list[str] | None = None) -> None:
         report = run_qc(args)
     elif args.step == "split-cycles":
         report = run_split_cycles(args)
-    elif args.step == "fit-smoke":
-        report = run_fit_smoke(args)
     elif args.step == "fit-autodiff":
         report = run_fit_autodiff(args)
-    elif args.step == "fit-validate":
-        report = run_fit_validate(args)
-    elif args.step == "dynamic-replay":
-        report = run_dynamic_replay(args)
     elif args.step == "visualize":
         report = run_visualize(args)
     else:
