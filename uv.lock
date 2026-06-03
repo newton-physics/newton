@@ -3703,7 +3703,7 @@ requires-dist = [
     { name = "newton", extras = ["importers"], marker = "extra == 'rtx'" },
     { name = "newton", extras = ["onnx"], marker = "extra == 'examples'" },
     { name = "newton", extras = ["sim"], marker = "extra == 'examples'" },
-    { name = "newton-actuators", marker = "extra == 'sim'", specifier = ">=0.1.0" },
+    { name = "newton-actuators", marker = "extra == 'sim'", specifier = ">=0.1.0,<0.1.1" },
     { name = "newton-usd-schemas", marker = "extra == 'importers'", specifier = ">=0.3.1" },
     { name = "onnx", marker = "extra == 'onnx'", specifier = ">=1.16.0" },
     { name = "open3d", marker = "(python_full_version < '3.13' and platform_machine != 'aarch64' and extra == 'importers') or (python_full_version < '3.13' and sys_platform != 'linux' and extra == 'importers')", specifier = ">=0.19.0" },

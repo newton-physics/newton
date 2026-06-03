@@ -17,6 +17,7 @@
 - Add `contact_reduction_hashtable_size_factor` to `CollisionPipeline`, `NarrowPhase`, and `HydroelasticSDF.Config` for increasing contact reduction hashtable capacity when fill/failure warnings appear.
 - Add `rec_id` parameter to `ViewerRerun` for specifying the recording ID, enabling multiple processes to share a single Rerun recording
 - Add `ArticulationView.joint_template_labels`, `link_template_labels` (aliased as `body_template_labels`), and `shape_template_labels` exposing the raw template-articulation labels alongside the existing leaf-only `*_names`, so callers can disambiguate selected entries whose leaf names collide.
+- Add `newton.actuators.SchemaNames` exposing the canonical USD schema token constants used by `parse_actuator_prim` for actuator USD parsing
 - Parse URDF `<material>` colors (inline `<color rgba>` and named material references) during import and apply them to `ModelBuilder.shape_color` for all shape types
 - Add robotics tutorial notebook covering ModelBuilder, solvers, CUDA graphs, IK, and pick-and-place
 - Add `newton.utils.OnnxRuntime`, a graph-capturable ONNX inference engine backed solely by Warp kernels (no `onnxruntime` or `torch` runtime dependency); used by `ControllerNeuralMLP` and `ControllerNeuralLSTM` to load `.onnx` policies. To migrate a TorchScript policy, run `torch.onnx.export(model, dummy_input, "policy.onnx", opset_version=17)` once and point the controllers at the resulting `.onnx` file. The `onnx` package is now an optional extra (`pip install newton[onnx]`); install it explicitly to use the ONNX runtime.
@@ -26,6 +27,7 @@
 - Add `SolverBase.reset()` method for in-place solver state resets with optional `world_mask` and `StateFlags`; default implementation is a no-op
 - Add `StateFlags` enum to control which state attributes are reset
 - Add `ModelFlags` as the canonical name for model-change notification flags
+- Add edge overlay toggle (`renderer.draw_edges`) for wireframe visualization on top of solid geometry
 - Add functional `newton.intersect_ray()` shape query helper for composing custom raycast sensors
 - Support negative (mirrored) scale on mesh, convex hull, and SDF shapes, so a single `Mesh` instance can be shared across shapes with different signed scales without re-baking
 - Add `newton.utils.ColorSpace`, `color_srgb_to_linear()`, `color_linear_to_srgb()`, and `SensorTiledCamera.RenderConfig.output_color_space` for color-space boundaries
@@ -50,7 +52,6 @@
 - Change `SolverKamino.reset()` signature from `reset(state_out, ...)` to `reset(state, ...)` to match `SolverBase.reset()` and reset in place on `state`; migrate `state_out=` calls to `state=`
 - Change `SensorTiledCamera` default packed `color` and `albedo` outputs to sRGB-encoded bytes so authored display colors render at the expected display brightness; pass `RenderConfig(output_color_space=ColorSpace.LINEAR)` to preserve the previous linear-byte behavior.
 - Accept plain `int` flag bitmasks in solver reset and model-change notification APIs so users can define extension bits beyond `StateFlags` and `ModelFlags`.
-- Bump `newton-usd-schemas` to `>=0.3.0`
 - Bump `newton-usd-schemas` to `>=0.3.1`
 
 ### Deprecated
@@ -64,7 +65,6 @@
 
 ### Removed
 
-- Remove `SolverModelFlags` and `SolverStateFlags`; use `ModelFlags` and `StateFlags` instead.
 - Remove `SensorRaycast` (deprecated in 1.2); use `SensorTiledCamera` with `SensorTiledCamera.utils.compute_pinhole_camera_rays()` and `create_depth_image_output()` instead
 - Remove `SensorContact.net_force` (deprecated in 1.1.0); use `SensorContact.total_force` and `SensorContact.force_matrix` instead
 - Remove beta `SolverKamino.reset(state_out=...)` and legacy positional reset-target compatibility; pass the reset state as `reset(state, ...)` or `reset(state=...)` and provide reset targets by keyword, such as `base_q=...`
@@ -84,6 +84,7 @@
 - Fix mesh-convex and heightfield-convex contacts missing when shapes are separated by margin but still within the contact envelope.
 - Fix `brick_stacking` example contact gaps to avoid oversized contact envelopes around the robot, table, and ground.
 - Fix `ModelBuilder.collapse_fixed_joints()` producing a NaN center of mass when collapsing joints between zero-mass bodies.
+- Fix mesh and convex-mesh contact sign classification for watertight meshes with nearby opposing surfaces or inconsistent triangle winding.
 - Fix `SolverMuJoCo` returning `State.joint_qd` in world frame for root `FREE` joints with non-identity `parent_xform`, violating the documented parent-frame contract and corrupting derived `body_qd`.
 - Fix `SolverVBD` custom attribute setup so `vbd:joint_is_hard` can be authored without implicitly enabling Dahl cable friction by calling `SolverVBD.register_custom_attributes(..., dahl_defaults_enabled=False)`.
 - Fix `example_softbody_gift` emitting spurious non-manifold edge warnings caused by mismatched 5-tet diagonals across adjacent cubes in the soft body mesh.
@@ -234,6 +235,7 @@
 - Fix MJCF importer creating finite planes from MuJoCo visual half-sizes instead of infinite planes
 - Honor authored `mujoco.solreflimit_mode` even when a non-zero `mujoco.solreflimit` is also present, so the explicit mode (force-space or raw) is authoritative
 - Fix `SolverMuJoCo` CPU backend overwriting `mj_model.body_iquat` with Newton's eigendecomposition result on every `BODY_INERTIAL_PROPERTIES` notify; the compiled principal-axes basis is now preserved, fixing single-contact box equilibrium (incorrect normal force) and stiff WELD-loop instabilities (`Nan, Inf or huge value in QACC`) caused by basis ambiguity on repeated eigenvalues
+- Fix `SolverMuJoCo` CPU backend dynamics for asymmetric MJCF `diaginertia` models whose principal moments are reordered during Newton/MJWarp synchronization
 - Fix `SolverMuJoCo` honoring force-space `shape_material_ke` / `shape_material_kd` for contacts (`use_mujoco_contacts=False`); authored `mjc:solref` is preserved via new `mujoco.solref` / `mujoco.solref_mode` per-shape custom attributes. Force-space scaling is unsupported on `use_mujoco_contacts=True` and the MuJoCo CPU backend.
 - Fix USD custom-frequency parsing to respect `ModelBuilder.add_usd(root_path=...)`, avoiding rows from sibling subtrees
 - Fix USD import of joint limit stiffness/damping from `MjcJointAPI`: `SchemaResolverMjc` now reads the schema-correct `mjc:solreflimit` attribute instead of the generic `mjc:solref`, which was never authored on joints
