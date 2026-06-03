@@ -1052,13 +1052,13 @@ def _baked_compression(
     if do_compute != 0:
         if use_equilibrium != 0:
             # Through-thickness pressure equilibrium: a homogeneous foam column
-            # squeezed between the descending indenter and the fixed ground plate
-            # carries a single uniform compressive stress (1-D series column), so
-            # the column shortens by whatever indenter travel remains after the
-            # indenter-to-top gap and the bottom-to-ground gap have both closed.
+            # squeezed between the descending indenter and its fixed local bottom
+            # support carries a single uniform compressive stress (1-D series
+            # column), so measured top travel shortens the column after the
+            # indenter-to-top gap closes. The baked bottom map defines local
+            # column thickness; it is not an additional air gap to a global plane.
             gap_top = wp.max(indenter_z - z_top_undeformed, 0.0)
-            gap_bottom = wp.max(z_bottom_undeformed - min_bottom, 0.0)
-            comp = wp.clamp(disp - gap_top - gap_bottom, 0.0, slack)
+            comp = wp.clamp(disp - gap_top, 0.0, slack)
         else:
             top_travel = top_fraction * disp
             z_contact = indenter_z - top_travel

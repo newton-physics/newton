@@ -123,6 +123,24 @@ def _use_subcell_coverage(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "use_subcell_coverage", True))
 
 
+def _soften_binary_coverage(valid: np.ndarray) -> np.ndarray:
+    """Soften a binary mask by averaging over a 3x3 neighborhood, returning 0 where invalid."""
+    valid_pad = np.pad(valid, 1, mode="constant", constant_values=False)
+    neighbors_sum = (
+        valid_pad[:-2, :-2].astype(float)
+        + valid_pad[:-2, 1:-1].astype(float)
+        + valid_pad[:-2, 2:].astype(float)
+        + valid_pad[1:-1, :-2].astype(float)
+        + valid_pad[1:-1, 1:-1].astype(float)
+        + valid_pad[1:-1, 2:].astype(float)
+        + valid_pad[2:, :-2].astype(float)
+        + valid_pad[2:, 1:-1].astype(float)
+        + valid_pad[2:, 2:].astype(float)
+    )
+    smoothed = neighbors_sum / 9.0
+    return np.where(valid, smoothed, 0.0)
+
+
 def _write_json(path: Path, data: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
@@ -415,12 +433,7 @@ def bake_indenter_maps(
         contact_surface[~valid_flat] = top_map_flat[~valid_flat]
 
         indenter_map = contact_surface.reshape(shape_2d)
-        # The fullfoot last is a smooth, large-area indenter: its contact patch
-        # has soft edges, so a binary cell mask already integrates the area at
-        # O(h^2). (Sub-cell area supersampling does not help here and the
-        # resolution variation is dominated by the curved height-map resampling.)
-        indenter_valid_map = np.zeros(shape_2d, dtype=np.float64)
-        indenter_valid_map.flat[valid_flat] = 1.0
+        indenter_valid_map = _soften_binary_coverage(valid_flat.reshape(shape_2d))
         return indenter_map, indenter_valid_map
 
     else:
@@ -437,6 +450,8 @@ def compute_baked_compression(
     displacement_m: float,
     top_fraction: float = 1.0,
     bottom_fraction: float = 0.0,
+    use_equilibrium: bool = True,
+    use_subcell_coverage: bool = True,
 ) -> np.ndarray:
     """Evaluate compression at xy_m using the continuous baked maps."""
     u = (xy_m[:, 0] - baked_geometry.mins_uv[0]) / (baked_geometry.maxs_uv[0] - baked_geometry.mins_uv[0])
@@ -468,25 +483,32 @@ def compute_baked_compression(
     ind_val = sample_numpy(indenter_valid_map, u, v)
     ind_map_val = sample_numpy(indenter_map, u, v)
 
-    top_comp = np.zeros_like(slack)
-    bottom_comp = np.zeros_like(slack)
+    comp = np.zeros_like(slack)
+    disp = max(displacement_m, 0.0)
 
-    valid = ind_val > 0.5
-    if np.any(valid):
-        closure_m = max(displacement_m, 0.0)
-        top_travel = top_fraction * closure_m
-        z_contact = ind_map_val[valid] - top_travel
-        top_comp[valid] = np.maximum(z_top_undeformed[valid] - z_contact, 0.0)
+    if use_subcell_coverage:
+        do_compute = ind_val > 1.0e-6
+    else:
+        do_compute = ind_val > 0.5
 
-        bottom_travel = bottom_fraction * closure_m
-        if baked_geometry.valid_map is None:
-            min_bottom = float(np.min(baked_geometry.bottom_map))
+    if np.any(do_compute):
+        if use_equilibrium:
+            gap_top = np.maximum(ind_map_val - z_top_undeformed, 0.0)
+            comp[do_compute] = np.clip(disp - gap_top[do_compute], 0.0, slack[do_compute])
         else:
-            valid_map = np.asarray(baked_geometry.valid_map, dtype=np.float64) > 0.5
-            min_bottom = float(np.min(baked_geometry.bottom_map[valid_map]))
-        bottom_comp[valid] = np.maximum(min_bottom + bottom_travel - z_bottom_undeformed[valid], 0.0)
+            top_travel = top_fraction * disp
+            z_contact = ind_map_val - top_travel
+            top_comp = np.maximum(z_top_undeformed - z_contact, 0.0)
+            bottom_travel = bottom_fraction * disp
+            if baked_geometry.valid_map is None:
+                min_bottom = float(np.min(baked_geometry.bottom_map))
+            else:
+                valid_map = np.asarray(baked_geometry.valid_map, dtype=np.float64) > 0.5
+                min_bottom = float(np.min(baked_geometry.bottom_map[valid_map]))
+            bottom_comp = np.maximum(min_bottom + bottom_travel - z_bottom_undeformed, 0.0)
+            comp[do_compute] = np.minimum(top_comp[do_compute] + bottom_comp[do_compute], slack[do_compute])
 
-    return np.minimum(top_comp + bottom_comp, slack)
+    return comp
 
 
 def _trial_contact_surface_cache(manifest, spring_grid) -> dict[str, tuple[np.ndarray, np.ndarray]]:
@@ -756,8 +778,8 @@ def _hysteresis_segments(displacement_m: np.ndarray) -> list[np.ndarray]:
 _PHASE_WEIGHTS = {
     "baseline_pre": 0.25,
     "loading": 1.0,
-    "peak": 2.0,
-    "unloading": 1.5,
+    "peak": 1.0,
+    "unloading": 1.0,
     "baseline_post": 0.25,
 }
 
@@ -1390,6 +1412,7 @@ def _write_autodiff_hysteresis_plot(
                 top_fraction=top_frac,
                 bottom_fraction=bottom_frac,
                 use_equilibrium=use_equilibrium,
+                use_subcell_coverage=use_subcell_coverage,
                 device=device,
             )
         else:
@@ -1502,6 +1525,8 @@ def _write_autodiff_hysteresis_plot(
                     float(disp),
                     top_frac,
                     bottom_frac,
+                    use_equilibrium=use_equilibrium,
+                    use_subcell_coverage=use_subcell_coverage,
                 )
                 compression_list.append(comp_frame)
             compression = np.asarray(compression_list, dtype=np.float64)
