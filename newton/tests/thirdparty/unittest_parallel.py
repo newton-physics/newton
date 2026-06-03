@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 from contextlib import contextmanager
 from io import StringIO
 
@@ -92,6 +93,13 @@ def main(argv=None):
     )
     parser.add_argument(
         "--junit-report-xml", metavar="FILE", help="Generate JUnit report format XML file"
+    )  # NVIDIA Modification
+    parser.add_argument(
+        "--deprecations-as-errors",
+        action="store_true",
+        default=False,
+        help="Treat DeprecationWarnings as errors. Off by default so verifying an installation does not "
+        "fail on deprecations from Newton or its dependencies; enabled in CI to surface deprecation debt.",
     )  # NVIDIA Modification
     group_parallel = parser.add_argument_group("parallelization options")
     group_parallel.add_argument(
@@ -506,6 +514,12 @@ class ParallelTestManager:
         newton.tests.unittest_utils.coverage_enabled = self.args.coverage
         newton.tests.unittest_utils.coverage_temp_dir = self.temp_dir
         newton.tests.unittest_utils.coverage_branch = self.args.coverage_branch
+
+        # Expose the deprecation policy to test modules (e.g. test_examples.py) and
+        # escalate deprecations to errors in this worker process when requested.
+        newton.tests.unittest_utils.deprecations_as_errors = self.args.deprecations_as_errors
+        if self.args.deprecations_as_errors:
+            warnings.simplefilter("error", DeprecationWarning)
 
         if self.args.junit_report_xml:
             resultclass = ParallelJunitTestResult

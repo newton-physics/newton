@@ -31,6 +31,12 @@ coverage_enabled = False
 coverage_temp_dir = None
 coverage_branch = None
 
+# Set by the test runner from the --deprecations-as-errors flag. When True, the
+# example subprocesses spawned by test_examples.py escalate DeprecationWarnings
+# to errors. Off by default so verifying an installation does not fail on
+# deprecations the user cannot act on.
+deprecations_as_errors = False
+
 try:
     if sys.platform == "win32":
         LIBC = ctypes.CDLL("ucrtbase.dll")

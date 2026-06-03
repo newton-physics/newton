@@ -103,9 +103,12 @@ def add_example_test(
         if usd_required and not USD_AVAILABLE:
             test.skipTest("Requires usd-core")
 
-        # Deprecations should fail example tests by default. Opt out only for
-        # a known third-party or asset issue that still needs follow-up.
+        # Escalate deprecations to errors in the example subprocess only when the
+        # runner was invoked with --deprecations-as-errors (CI) and the example has
+        # not opted out. Passed as a -W argument on the command line below, so a
+        # consumer's `python -m newton.tests` stays lenient without touching the env.
         allow_deprecation_warnings = options.pop("allow_deprecation_warnings", False)
+        deprecations_as_errors = newton.tests.unittest_utils.deprecations_as_errors and not allow_deprecation_warnings
 
         # Pass the parent dir; the subprocess's init_kernel_cache appends the version.
         warp_cache_path = wp.config.kernel_cache_dir
@@ -113,10 +116,9 @@ def add_example_test(
         env_vars = os.environ.copy()
         if warp_cache_path is not None:
             env_vars["WARP_CACHE_PATH"] = os.path.dirname(warp_cache_path)
-        if not allow_deprecation_warnings:
-            env_vars["PYTHONWARNINGS"] = "error::DeprecationWarning"
-        else:
-            env_vars.pop("PYTHONWARNINGS", None)
+
+        # Interpreter warning flags, applied from startup of the subprocess.
+        warning_args = ["-W", "error::DeprecationWarning"] if deprecations_as_errors else []
 
         if newton.tests.unittest_utils.coverage_enabled:
             # Generate a random coverage data file name - file is deleted along with containing directory
@@ -125,13 +127,13 @@ def add_example_test(
             ) as coverage_file:
                 pass
 
-            command = ["coverage", "run", f"--data-file={coverage_file.name}"]
+            command = [sys.executable, *warning_args, "-m", "coverage", "run", f"--data-file={coverage_file.name}"]
 
             if newton.tests.unittest_utils.coverage_branch:
                 command.append("--branch")
 
         else:
-            command = [sys.executable]
+            command = [sys.executable, *warning_args]
 
         # Append Warp commands
         command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test", "--quiet"])
