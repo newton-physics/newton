@@ -361,132 +361,51 @@ mask = wp.array([True, False, True, False, True, False], dtype=wp.bool, device=d
 group.reset(state_0, mask=mask)
 ```
 
-### Example: ControllerDifferentialIK (coupled flavor)
+### Example: using ControllerDifferentialIK (coupled flavor)
+
+Reference implementation: `newton/_src/controllers/impl/controller_diff_ik.py`.
+
+The controller takes a `newton.ModelBuilder` containing K topologically-identical articulations (K ≥ 1), replicates it R times internally at `finalize()` via `ModelBuilder.replicate`, and runs a damped-least-squares Jacobian solve per robot at every step. Stateless. Tracks the end-effector body's COM position and body orientation.
 
 ```python
-class ControllerDifferentialIK(Controller):
-    """One-step damped-least-squares differential IK for a single end-effector
-    per robot. Coupled per-robot: each robot's joint-velocity solution depends
-    on its full configuration q.
+import warp as wp
+import newton
+import newton.controllers as nc
 
-    Ports:
-        indices                       — flat global DOF indices; len(indices) % model.joint_dof_count == 0
-        measurement                   — global joint_q (per-DOF lookup)
-        measurement_rate              — global joint_qd (per-DOF lookup)
-        target_pos                    — per-group: wp.array[wp.vec3], length num_robots, in base frame
-        target_quat                   — per-group: wp.array[wp.quat], length num_robots, in base frame
-        damping                       — per-group: wp.array[float], length num_robots (DLS λ)
-        output_qd                     — global joint_qd_target (per-DOF lookup)
-        output_q                      — global joint_q_target (per-DOF lookup)
+# Build a single-robot 2-DOF planar arm template (K=1).
+builder = newton.ModelBuilder()
+link0 = builder.add_link()
+link1 = builder.add_link()
+j0 = builder.add_joint_revolute(parent=-1, child=link0, axis=wp.vec3(0.0, 0.0, 1.0))
+j1 = builder.add_joint_revolute(parent=link0, child=link1, axis=wp.vec3(0.0, 0.0, 1.0),
+                                parent_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0)))
+builder.add_articulation([j0, j1], label="arm")
 
-    Model assumption: the supplied Model contains K=model.articulation_count
-    topologically identical articulations, each with its base at the origin.
-    All K articulations must share DOF count, link/joint count, and joint
-    types; they may differ in physical parameters. Target poses are
-    expressed in that shared base frame. The controller tiles the Model
-    R = len(indices) // model.joint_dof_count times internally at finalize().
-    num_robots = K * R.
-    """
+device = wp.get_device()
+N = 2                                                            # DOFs (one robot, two joints)
+indices = wp.array([0, 1], dtype=wp.uint32, device=device)
 
-    def __init__(
-        self,
-        *,
-        model: newton.Model,            # K articulations, topologically identical
-        indices,                        # flat; len(indices) % model.joint_dof_count == 0
-        end_effector_link: int,         # link index within one articulation
-        measurement,
-        measurement_rate,
-        target_pos,                     # wp.array[wp.vec3], length num_robots
-        target_quat,                    # wp.array[wp.quat], length num_robots
-        damping,                        # wp.array[float], length num_robots
-        output_qd,
-        output_q,
-    ):
-        self._template_model    = model
-        self._end_effector_link = end_effector_link
-        K = model.articulation_count
-        if model.joint_dof_count % K != 0:
-            raise ValueError(
-                f"ControllerDifferentialIK: model.joint_dof_count={model.joint_dof_count} is not "
-                f"divisible by model.articulation_count={K}; the K articulations must share DOF count."
-            )
-        self._dofs_per_robot = model.joint_dof_count // K
-        _validate_homogeneous_articulations(model)   # same dof count, link count, joint types per articulation
-        if len(indices) % model.joint_dof_count != 0:
-            raise ValueError(
-                f"ControllerDifferentialIK: len(indices)={len(indices)} is not a multiple "
-                f"of model.joint_dof_count={model.joint_dof_count} (K={K} articulations)."
-            )
-        self._replication_count = len(indices) // model.joint_dof_count
-        self._num_robots = K * self._replication_count
-        self._indices = indices
-        self._target_pos  = _validate_per_group(target_pos,  self._num_robots, wp.vec3,    "target_pos")
-        self._target_quat = _validate_per_group(target_quat, self._num_robots, wp.quat,    "target_quat")
-        self._damping     = _validate_per_group(damping,     self._num_robots, wp.float32, "damping")
-        self._measurement      = _normalize_port(measurement,      indices, name="measurement")
-        self._measurement_rate = _normalize_port(measurement_rate, indices, name="measurement_rate")
-        self._output_qd        = _normalize_port(output_qd,        indices, name="output_qd")
-        self._output_q         = _normalize_port(output_q,         indices, name="output_q")
+diffik = nc.ControllerDifferentialIK(
+    model_builder=builder,
+    indices=indices,
+    end_effector_link=link1,
+    measurement=wp.zeros(N, dtype=wp.float32, device=device),
+    measurement_rate=wp.zeros(N, dtype=wp.float32, device=device),
+    target_pos=wp.array([wp.vec3(1.0, 0.1, 0.0)], dtype=wp.vec3, device=device),
+    target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
+    damping=wp.array([0.05], dtype=wp.float32, device=device),
+    output_qd=wp.zeros(N, dtype=wp.float32, device=device),
+    output_q=wp.zeros(N, dtype=wp.float32, device=device),
+)
+group = nc.ControlGroup([diffik])
 
-    def finalize(self, device, num_outputs):
-        self._model = _replicate_model(self._template_model, self._replication_count, device)
-        self._state = self._model.state()
-        self._joint_q_local  = wp.zeros((self._num_robots, self._dofs_per_robot), dtype=wp.float32, device=device)
-        self._joint_qd_local = wp.zeros((self._num_robots, self._dofs_per_robot), dtype=wp.float32, device=device)
-        self._jacobian = wp.zeros(
-            (self._num_robots, 6 * self._model.body_count_per_articulation, self._dofs_per_robot),
-            dtype=wp.float32, device=device,
-        )
-        self._qd_target_local = wp.zeros((self._num_robots, self._dofs_per_robot), dtype=wp.float32, device=device)
-
-    def is_stateful(self): return False
-    def is_graphable(self): return True
-
-    def outputs(self):
-        return [self._output_qd, self._output_q]
-
-    def compute(self, state, next_state, dt):
-        # 1. Gather joint_q / joint_qd from global arrays into local buffers
-        #    via the controller's indices.
-        meas, meas_idx       = self._measurement
-        meas_rate, mrate_idx = self._measurement_rate
-        wp.launch(_gather_to_local_2d,
-                  dim=(self._num_robots, self._dofs_per_robot),
-                  inputs=[meas, meas_idx, self._dofs_per_robot],
-                  outputs=[self._joint_q_local])
-        wp.launch(_gather_to_local_2d,
-                  dim=(self._num_robots, self._dofs_per_robot),
-                  inputs=[meas_rate, mrate_idx, self._dofs_per_robot],
-                  outputs=[self._joint_qd_local])
-
-        # 2. Forward kinematics on the replicated Model.
-        newton.eval_fk(self._model, self._joint_q_local, self._joint_qd_local, self._state)
-
-        # 3. Spatial Jacobian.
-        newton.eval_jacobian(self._model, self._state, J=self._jacobian)
-
-        # 4. Damped least squares solve per robot. For each robot r:
-        #    - Extract J_r (the 6-row sub-Jacobian for end_effector_link).
-        #    - Compute task-space error e_r from (current EE pose vs. target pose).
-        #    - Solve (J_r J_rᵀ + λ²I) y = e_r via in-kernel Cholesky on the 6×6 SPD system.
-        #    - q̇_r = J_rᵀ y.
-        wp.launch(_diff_ik_dls_kernel,
-                  dim=self._num_robots,
-                  inputs=[self._jacobian, self._state.body_q, self._target_pos, self._target_quat,
-                          self._damping, self._end_effector_link, self._dofs_per_robot],
-                  outputs=[self._qd_target_local])
-
-        # 5. Accumulate into the global output arrays via the bound output indices.
-        out_qd, out_qd_idx = self._output_qd
-        out_q,  out_q_idx  = self._output_q
-        wp.launch(_accumulate_qd_and_integrate_q_kernel,
-                  dim=(self._num_robots, self._dofs_per_robot),
-                  inputs=[self._qd_target_local, self._joint_q_local, dt,
-                          out_qd_idx, out_q_idx, self._dofs_per_robot],
-                  outputs=[out_qd, out_q])
+state_0, state_1 = group.state(), group.state()
+for _ in range(steps):
+    group.step(state_0, state_1, dt=0.01)
+    state_0, state_1 = state_1, state_0
 ```
 
-Kernel sequence: gather → FK → Jacobian → DLS solve (in-kernel 6×6 Cholesky, left-damping form `(JJᵀ + λ²I)y = ẋ_d, q̇ = Jᵀy`) → accumulate `q̇` and integrate `q = q_current + q̇ * dt`. The "fixed base" assumption is in the template Model: the user constructs it with the root body at the origin; per-robot world-frame placement isn't tracked because the controller operates entirely in the base frame.
+Internally the compute step is: gather joint_q/qd → `eval_fk` → `eval_jacobian` → in-kernel 6x6 Cholesky DLS solve per robot → accumulate `q_dot` and integrate `q = q_current + q_dot * dt`.
 
 ---
 
@@ -594,8 +513,8 @@ Users write `from newton.controllers import ControlGroup, ControllerPID, Control
 - Helpers in `newton/_src/controllers/utils.py`:
   - `_normalize_port(port, controller_indices, name)` — normalize bare-array or tuple to `(array, port_indices)` with validation.
   - `_validate_per_group(array, num_robots, dtype, name)` — shape + dtype check for per-group ports.
-  - `_validate_homogeneous_articulations(model)` — verify all `K = model.articulation_count` articulations share DOF count, link/joint count, and joint types. Raises on mismatch.
-  - `_replicate_model(template, replication_count, device)` — tile a K-articulation Model `replication_count` times, producing a Model with `K * replication_count` articulations. The K=1 case yields a straight replication; K>1 yields variant-interleaved replication (used by `ControllerDifferentialIK` and any future articulated coupled controller).
+  - `_validate_per_group(array, num_robots, dtype, name)` — shape + dtype check for per-group ports (e.g. DiffIK's `target_pos`, `target_quat`).
+  - Replication uses :meth:`newton.ModelBuilder.replicate` directly at `finalize()` time; no separate helper. K-articulation homogeneity is asserted via `joint_dof_count % articulation_count == 0` in the consuming controller's `__init__` (necessary check; users are responsible for matching link/joint counts across articulations).
 - For each shipped controller: math-correctness tests, integral / state accumulation across the `state_0` / `state_1` swap, masked reset, accumulation when multiple controllers overlap, one-big-array binding sanity tests.
 
 **Implementation order.**
@@ -659,6 +578,4 @@ Users write `from newton.controllers import ControlGroup, ControllerPID, Control
 ## Open questions
 
 1. **Per-controller specs.** See *Controllers to design* above.
-2. **In-kernel small-system solver helper.** `ControllerDifferentialIK` needs a 6×6 Cholesky; future controllers may need similar. Inline for v0; extract to `controllers/utils.py` if a second user appears.
-3. **Task-space orientation error formulation for `ControllerDifferentialIK`.** Rotation-vector (axis-angle log map) vs. quaternion vector-part? Pick one and document.
-4. **`_replicate_model` implementation.** Use `newton.ModelBuilder` to clone? Or a lower-level Model-array tiling?
+2. **In-kernel small-system solver helper.** `ControllerDifferentialIK` ships an inline 6x6 Cholesky. If a second coupled controller needs the same SPD solve, extract it to `controllers/utils.py`.

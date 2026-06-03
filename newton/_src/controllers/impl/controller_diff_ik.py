@@ -1,0 +1,350 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+"""ControllerDifferentialIK — one-step damped-least-squares differential IK.
+
+Stateless. For each robot in the batch, computes a joint-velocity command
+that drives the end-effector COM pose toward a target (position + orientation),
+using a damped pseudoinverse of the per-robot spatial Jacobian.
+"""
+
+from __future__ import annotations
+
+import warp as wp
+
+from ...sim.articulation import eval_fk, eval_jacobian
+from ...sim.builder import ModelBuilder
+from ..base import Controller
+from ..utils import _normalize_port, _validate_per_group
+
+
+@wp.kernel
+def _gather_local_kernel(
+    global_arr: wp.array[float],
+    lookup_indices: wp.array[wp.uint32],
+    local_arr: wp.array[float],
+):
+    i = wp.tid()
+    local_arr[i] = global_arr[lookup_indices[i]]
+
+
+@wp.kernel
+def _diff_ik_solve_kernel(
+    # The full spatial Jacobian for the replicated model, shape
+    # (num_robots, max_links * 6, max_dofs). Per-robot, row stride 6 per link,
+    # with the first 3 rows being linear (COM-velocity) and the last 3
+    # angular, per Newton's body-twist convention (v_com_world, omega_world).
+    jacobian: wp.array3d[float],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    target_pos: wp.array[wp.vec3],
+    target_quat: wp.array[wp.quat],
+    damping: wp.array[float],
+    end_effector_link: int,
+    bodies_per_robot: int,
+    dofs_per_robot: int,
+    # Output, length num_robots * dofs_per_robot.
+    qd_target_local: wp.array[float],
+):
+    r = wp.tid()
+    ee_body = r * bodies_per_robot + end_effector_link
+    j_row = end_effector_link * 6
+
+    # --- 1. Current EE pose (COM in world, body orientation) ---
+    # The Jacobian's linear rows give velocity at the COM, so we track the
+    # COM position (not the body's reference frame origin) to keep position
+    # and Jacobian consistent.
+    T = body_q[ee_body]
+    current_pos = wp.transform_point(T, body_com[ee_body])
+    current_quat = wp.transform_get_rotation(T)
+
+    # --- 2. Task-space error e ∈ R^6 (3 position + 3 orientation) ---
+    pos_err = target_pos[r] - current_pos
+
+    # Orientation error via quaternion vector-part doubled.
+    #
+    # We form q_err = target * conj(current). q_err is the rotation that
+    # takes current → target. Its scalar part is cos(theta/2) and its
+    # vector part is sin(theta/2) * axis (where theta is the rotation
+    # angle around `axis`).
+    #
+    # Doubling the vector part gives 2 * sin(theta/2) * axis, which equals
+    # the rotation vector theta * axis for small theta and is a smooth,
+    # singularity-free residual everywhere. This is the standard "quaternion
+    # vector-part" residual used in damped-LS IK.
+    #
+    # Quaternions double-cover SO(3): q and -q represent the same rotation
+    # but their vector parts differ in sign. Multiplying by sign(q_err.w)
+    # picks the representative with positive scalar part, i.e. the shorter
+    # rotation (theta in [0, pi] rather than [pi, 2*pi]).
+    q_err = target_quat[r] * wp.quat_inverse(current_quat)
+    s = wp.sign(q_err[3])
+    rot_err = wp.vec3(2.0 * s * q_err[0], 2.0 * s * q_err[1], 2.0 * s * q_err[2])
+
+    # Pack e into 6 scalars.
+    e0 = pos_err[0]
+    e1 = pos_err[1]
+    e2 = pos_err[2]
+    e3 = rot_err[0]
+    e4 = rot_err[1]
+    e5 = rot_err[2]
+
+    # --- 3. Build A = J J^T + lambda^2 * I (6x6 SPD) ---
+    # A is small enough to keep in 36 thread-local scalars.
+    lam_sq = damping[r] * damping[r]
+    a = wp.spatial_matrix()
+    for i in range(6):
+        for k in range(i, 6):
+            acc = float(0.0)
+            for j in range(dofs_per_robot):
+                acc += jacobian[r, j_row + i, j] * jacobian[r, j_row + k, j]
+            if i == k:
+                acc += lam_sq
+            a[i, k] = acc
+            a[k, i] = acc
+
+    # --- 4. Cholesky decomposition A = L L^T (L lower triangular) ---
+    ell = wp.spatial_matrix()
+    for i in range(6):
+        for j in range(i + 1):
+            s_ij = a[i, j]
+            for k in range(j):
+                s_ij -= ell[i, k] * ell[j, k]
+            if i == j:
+                ell[i, i] = wp.sqrt(s_ij)
+            else:
+                ell[i, j] = s_ij / ell[j, j]
+
+    # --- 5. Forward substitution: L z = e ---
+    z0 = e0 / ell[0, 0]
+    z1 = (e1 - ell[1, 0] * z0) / ell[1, 1]
+    z2 = (e2 - ell[2, 0] * z0 - ell[2, 1] * z1) / ell[2, 2]
+    z3 = (e3 - ell[3, 0] * z0 - ell[3, 1] * z1 - ell[3, 2] * z2) / ell[3, 3]
+    z4 = (e4 - ell[4, 0] * z0 - ell[4, 1] * z1 - ell[4, 2] * z2 - ell[4, 3] * z3) / ell[4, 4]
+    z5 = (e5 - ell[5, 0] * z0 - ell[5, 1] * z1 - ell[5, 2] * z2 - ell[5, 3] * z3 - ell[5, 4] * z4) / ell[5, 5]
+
+    # --- 6. Back substitution: L^T y = z ---
+    y5 = z5 / ell[5, 5]
+    y4 = (z4 - ell[5, 4] * y5) / ell[4, 4]
+    y3 = (z3 - ell[5, 3] * y5 - ell[4, 3] * y4) / ell[3, 3]
+    y2 = (z2 - ell[5, 2] * y5 - ell[4, 2] * y4 - ell[3, 2] * y3) / ell[2, 2]
+    y1 = (z1 - ell[5, 1] * y5 - ell[4, 1] * y4 - ell[3, 1] * y3 - ell[2, 1] * y2) / ell[1, 1]
+    y0 = (z0 - ell[5, 0] * y5 - ell[4, 0] * y4 - ell[3, 0] * y3 - ell[2, 0] * y2 - ell[1, 0] * y1) / ell[0, 0]
+
+    # --- 7. q_dot = J^T y ---
+    for j in range(dofs_per_robot):
+        qd = (
+            jacobian[r, j_row + 0, j] * y0
+            + jacobian[r, j_row + 1, j] * y1
+            + jacobian[r, j_row + 2, j] * y2
+            + jacobian[r, j_row + 3, j] * y3
+            + jacobian[r, j_row + 4, j] * y4
+            + jacobian[r, j_row + 5, j] * y5
+        )
+        qd_target_local[r * dofs_per_robot + j] = qd
+
+
+@wp.kernel
+def _accumulate_outputs_kernel(
+    qd_target_local: wp.array[float],
+    joint_q_local: wp.array[float],
+    dt: float,
+    output_qd_indices: wp.array[wp.uint32],
+    output_q_indices: wp.array[wp.uint32],
+    output_qd: wp.array[float],
+    output_q: wp.array[float],
+):
+    i = wp.tid()
+    qd = qd_target_local[i]
+    output_qd[output_qd_indices[i]] = output_qd[output_qd_indices[i]] + qd
+    output_q[output_q_indices[i]] = output_q[output_q_indices[i]] + (joint_q_local[i] + qd * dt)
+
+
+class ControllerDifferentialIK(Controller):
+    """One-step damped-least-squares differential IK for a single
+    end-effector per robot.
+
+    Coupled per-robot: each robot's joint-velocity solution depends on its
+    full configuration ``q``. Stateless — no internal accumulators between
+    steps. Tracks the **COM** of the end-effector body in world frame
+    (Newton's Jacobian is defined for COM velocity); set ``body_com=(0,0,0)``
+    on the EE link if you want body-frame origin tracking.
+
+    Solve form (per robot, ``J`` is the 6xN spatial Jacobian for the EE link):
+
+    .. code-block:: text
+
+        e        = [target_pos - current_pos ;  2 * sign(q_err.w) * q_err.xyz]
+        A        = J J^T + lambda^2 * I_6                                       (6x6 SPD)
+        L L^T    = A                                                            (Cholesky)
+        L L^T y  = e                                                            (solve)
+        q_dot    = J^T y
+
+    where ``q_err = target_quat * conj(current_quat)``. ``output_q`` is
+    written as ``q_current + q_dot * dt``.
+
+    Construction takes a :class:`newton.ModelBuilder` containing K
+    topologically-identical articulations (K = ``model_builder.articulation_count``,
+    K ≥ 1). All K articulations must share DOF count, link/joint count,
+    and joint types; they may differ in physical parameters (mass, inertia,
+    joint limits). At :meth:`finalize`, the controller replicates the
+    builder ``R = len(indices) // model_builder.joint_dof_count`` times
+    via :meth:`newton.ModelBuilder.replicate`, finalizes it on the chosen
+    device, and allocates internal buffers.
+
+    The controller assumes:
+
+    - All joints in the template are **scalar-DOF** (revolute or prismatic),
+      so ``joint_q.shape == joint_qd.shape == (joint_dof_count,)``.
+    - Each articulation's base is at the world origin in the template
+      (fixed base). World-frame and base-frame coincide per robot.
+
+    Ports:
+
+        indices: Global DOF indices this controller writes to. Length
+            ``num_robots * dofs_per_robot``. ``len(indices) % model_builder.joint_dof_count == 0``.
+        measurement: Per-DOF port. Source of joint positions ``q``.
+        measurement_rate: Per-DOF port. Source of joint velocities ``q_dot``
+            (used by ``eval_fk`` to populate ``body_qd``; the solve uses
+            position-only error).
+        target_pos: Per-group ``wp.array[wp.vec3]`` of length ``num_robots``.
+            EE COM position target in world (base) frame.
+        target_quat: Per-group ``wp.array[wp.quat]`` of length ``num_robots``.
+            EE orientation target.
+        damping: Per-group ``wp.array[float]`` of length ``num_robots``. DLS
+            ``lambda`` per robot. ``A = J J^T + lambda^2 * I``.
+        output_qd: Per-DOF port. Destination for ``q_dot`` (accumulated ``+=``).
+        output_q: Per-DOF port. Destination for ``q_current + q_dot * dt`` (accumulated ``+=``).
+    """
+
+    def __init__(
+        self,
+        *,
+        model_builder: ModelBuilder,
+        indices: wp.array[wp.uint32],
+        end_effector_link: int,
+        measurement,
+        measurement_rate,
+        target_pos,
+        target_quat,
+        damping,
+        output_qd,
+        output_q,
+    ):
+        if not isinstance(model_builder, ModelBuilder):
+            raise TypeError(
+                f"ControllerDifferentialIK: model_builder must be a newton.ModelBuilder, "
+                f"got {type(model_builder).__name__}."
+            )
+        K = model_builder.articulation_count
+        if K < 1:
+            raise ValueError("ControllerDifferentialIK: model_builder has no articulations.")
+        if model_builder.joint_dof_count % K != 0:
+            raise ValueError(
+                f"ControllerDifferentialIK: model_builder.joint_dof_count={model_builder.joint_dof_count} "
+                f"is not divisible by articulation_count={K}; the K articulations must share DOF count."
+            )
+        self._template = model_builder
+        self._dofs_per_robot = model_builder.joint_dof_count // K
+        if len(indices) % model_builder.joint_dof_count != 0:
+            raise ValueError(
+                f"ControllerDifferentialIK: len(indices)={len(indices)} is not a multiple of "
+                f"model_builder.joint_dof_count={model_builder.joint_dof_count}."
+            )
+        self._replication_count = len(indices) // model_builder.joint_dof_count
+        self._num_robots = K * self._replication_count
+        self.indices = indices
+        self._end_effector_link = int(end_effector_link)
+
+        self._target_pos = _validate_per_group(target_pos, self._num_robots, wp.vec3, name="target_pos")
+        self._target_quat = _validate_per_group(target_quat, self._num_robots, wp.quat, name="target_quat")
+        self._damping = _validate_per_group(damping, self._num_robots, wp.float32, name="damping")
+
+        self._measurement = _normalize_port(measurement, indices, name="measurement")
+        self._measurement_rate = _normalize_port(measurement_rate, indices, name="measurement_rate")
+        self._output_qd = _normalize_port(output_qd, indices, name="output_qd")
+        self._output_q = _normalize_port(output_q, indices, name="output_q")
+
+    def finalize(self, device: wp.Device, num_outputs: int) -> None:
+        # Replicate the K-articulation template R times into a fresh builder,
+        # then finalize on the target device.
+        builder = ModelBuilder()
+        builder.replicate(self._template, world_count=self._replication_count)
+        self._model = builder.finalize(device=device)
+        self._state = self._model.state()
+
+        if self._model.body_count % self._num_robots != 0:
+            # Should not happen if the template's K articulations are homogeneous,
+            # but guard against silent indexing errors.
+            raise ValueError(
+                f"ControllerDifferentialIK: replicated model body_count={self._model.body_count} is "
+                f"not divisible by num_robots={self._num_robots}."
+            )
+        self._bodies_per_robot = self._model.body_count // self._num_robots
+
+        n_total_dofs = self._num_robots * self._dofs_per_robot
+        self._joint_q_local = wp.zeros(n_total_dofs, dtype=wp.float32, device=device)
+        self._joint_qd_local = wp.zeros(n_total_dofs, dtype=wp.float32, device=device)
+        self._qd_target_local = wp.zeros(n_total_dofs, dtype=wp.float32, device=device)
+        self._jacobian = wp.zeros(
+            (self._num_robots, self._model.max_joints_per_articulation * 6, self._model.max_dofs_per_articulation),
+            dtype=wp.float32,
+            device=device,
+        )
+
+    def is_stateful(self) -> bool:
+        return False
+
+    def is_graphable(self) -> bool:
+        return True
+
+    def outputs(self) -> list[tuple[wp.array, wp.array[wp.uint32]]]:
+        return [self._output_qd, self._output_q]
+
+    def compute(
+        self,
+        state: Controller.State | None,
+        next_state: Controller.State | None,
+        dt: float,
+    ) -> None:
+        n = len(self.indices)
+
+        meas, meas_idx = self._measurement
+        meas_rate, mrate_idx = self._measurement_rate
+        wp.launch(_gather_local_kernel, dim=n, inputs=[meas, meas_idx], outputs=[self._joint_q_local])
+        wp.launch(_gather_local_kernel, dim=n, inputs=[meas_rate, mrate_idx], outputs=[self._joint_qd_local])
+
+        eval_fk(self._model, self._joint_q_local, self._joint_qd_local, self._state)
+        eval_jacobian(self._model, self._state, J=self._jacobian)
+
+        wp.launch(
+            _diff_ik_solve_kernel,
+            dim=self._num_robots,
+            inputs=[
+                self._jacobian,
+                self._state.body_q,
+                self._model.body_com,
+                self._target_pos,
+                self._target_quat,
+                self._damping,
+                self._end_effector_link,
+                self._bodies_per_robot,
+                self._dofs_per_robot,
+            ],
+            outputs=[self._qd_target_local],
+        )
+
+        out_qd, out_qd_idx = self._output_qd
+        out_q, out_q_idx = self._output_q
+        wp.launch(
+            _accumulate_outputs_kernel,
+            dim=n,
+            inputs=[
+                self._qd_target_local,
+                self._joint_q_local,
+                dt,
+                out_qd_idx,
+                out_q_idx,
+            ],
+            outputs=[out_qd, out_q],
+        )

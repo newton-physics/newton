@@ -14,11 +14,13 @@ into effort.
 from ._src.controllers import (
     ControlGroup,
     Controller,
+    ControllerDifferentialIK,
     ControllerPID,
 )
 
 __all__ = [
     "ControlGroup",
     "Controller",
+    "ControllerDifferentialIK",
     "ControllerPID",
 ]

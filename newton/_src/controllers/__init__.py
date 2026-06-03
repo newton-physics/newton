@@ -3,10 +3,11 @@
 
 from .base import Controller
 from .control_group import ControlGroup
-from .impl import ControllerPID
+from .impl import ControllerDifferentialIK, ControllerPID
 
 __all__ = [
     "ControlGroup",
     "Controller",
+    "ControllerDifferentialIK",
     "ControllerPID",
 ]

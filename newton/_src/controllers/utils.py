@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import warp as wp
 
 
@@ -46,3 +48,29 @@ def _normalize_port(
     else:
         raise TypeError(f"Port '{name}': expected wp.array or (wp.array, wp.array) tuple, got {type(port).__name__}.")
     return array, port_indices
+
+
+def _validate_per_group(
+    array: Any,
+    num_robots: int,
+    dtype: Any,
+    name: str,
+) -> wp.array:
+    """Validate a per-group port: a bare wp.array of length ``num_robots``.
+
+    Args:
+        array: The user-supplied port value.
+        num_robots: Expected outer length.
+        dtype: Expected Warp element dtype (e.g. ``wp.vec3``, ``wp.quat``, ``wp.float32``).
+        name: Port name used in error messages.
+
+    Returns:
+        The same array, unchanged.
+    """
+    if not isinstance(array, wp.array):
+        raise TypeError(f"Port '{name}': expected wp.array of length {num_robots}, got {type(array).__name__}.")
+    if array.shape != (num_robots,):
+        raise ValueError(f"Port '{name}': shape {array.shape} must equal ({num_robots},).")
+    if array.dtype != dtype:
+        raise TypeError(f"Port '{name}': dtype must be {dtype}, got {array.dtype}.")
+    return array

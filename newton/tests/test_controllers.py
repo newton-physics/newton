@@ -8,7 +8,8 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton.controllers import ControlGroup, ControllerPID
+import newton
+from newton.controllers import ControlGroup, ControllerDifferentialIK, ControllerPID
 
 
 class TestControllerPID(unittest.TestCase):
@@ -172,6 +173,156 @@ class TestControllerPID(unittest.TestCase):
         self.assertAlmostEqual(float(after[0]), 0.7, places=5)
         self.assertAlmostEqual(float(after[1]), float(before[1]), places=5)
         self.assertAlmostEqual(float(after[2]), 0.9, places=5)
+
+
+class TestControllerDifferentialIK(unittest.TestCase):
+    def test_target_equals_current_gives_zero_velocity(self):
+        """With target == current EE pose, the DLS solve produces q_dot ≈ 0."""
+        device = wp.get_device()
+
+        # Build a 2-link planar arm rotating about z.
+        # Joint 0: world → link0 at origin. Joint 1: link0 → link1 at link0's local (1,0,0).
+        # At q = [0, 0]: link1's world-frame origin = (1, 0, 0), orientation = identity.
+        builder = newton.ModelBuilder()
+        link0 = builder.add_link()
+        link1 = builder.add_link()
+        j0 = builder.add_joint_revolute(
+            parent=-1,
+            child=link0,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        j1 = builder.add_joint_revolute(
+            parent=link0,
+            child=link1,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0)),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j0, j1], label="arm")
+
+        indices = wp.array([0, 1], dtype=wp.uint32, device=device)
+        output_qd = wp.zeros(2, dtype=wp.float32, device=device)
+        output_q = wp.zeros(2, dtype=wp.float32, device=device)
+        diffik = ControllerDifferentialIK(
+            model_builder=builder,
+            indices=indices,
+            end_effector_link=link1,
+            measurement=wp.zeros(2, dtype=wp.float32, device=device),
+            measurement_rate=wp.zeros(2, dtype=wp.float32, device=device),
+            target_pos=wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device),
+            target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
+            damping=wp.array([0.05], dtype=wp.float32, device=device),
+            output_qd=output_qd,
+            output_q=output_q,
+        )
+        group = ControlGroup([diffik])
+
+        s0 = group.state()
+        s1 = group.state()
+        group.step(s0, s1, dt=0.01)
+
+        np.testing.assert_allclose(output_qd.numpy(), [0.0, 0.0], atol=1e-5)
+        np.testing.assert_allclose(output_q.numpy(), [0.0, 0.0], atol=1e-5)
+
+    def test_pulls_first_joint_toward_offset_target(self):
+        """Target offset in +y from EE at q=[0,0] drives positive q_dot on joint 0."""
+        device = wp.get_device()
+
+        builder = newton.ModelBuilder()
+        link0 = builder.add_link()
+        link1 = builder.add_link()
+        j0 = builder.add_joint_revolute(
+            parent=-1,
+            child=link0,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        j1 = builder.add_joint_revolute(
+            parent=link0,
+            child=link1,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0)),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j0, j1], label="arm")
+
+        indices = wp.array([0, 1], dtype=wp.uint32, device=device)
+        output_qd = wp.zeros(2, dtype=wp.float32, device=device)
+        output_q = wp.zeros(2, dtype=wp.float32, device=device)
+        diffik = ControllerDifferentialIK(
+            model_builder=builder,
+            indices=indices,
+            end_effector_link=link1,
+            measurement=wp.zeros(2, dtype=wp.float32, device=device),
+            measurement_rate=wp.zeros(2, dtype=wp.float32, device=device),
+            # Target shifted +0.1 in y from the current EE position (1, 0, 0).
+            target_pos=wp.array([wp.vec3(1.0, 0.1, 0.0)], dtype=wp.vec3, device=device),
+            target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
+            damping=wp.array([0.05], dtype=wp.float32, device=device),
+            output_qd=output_qd,
+            output_q=output_q,
+        )
+        group = ControlGroup([diffik])
+
+        s0 = group.state()
+        s1 = group.state()
+        group.step(s0, s1, dt=0.01)
+
+        # Positive q0 rotation moves link1's origin in +y direction at q=[0,0].
+        self.assertGreater(float(output_qd.numpy()[0]), 0.0)
+
+    def test_output_q_equals_current_q_plus_qdot_dt(self):
+        """output_q is integrated as q_current + q_dot * dt."""
+        device = wp.get_device()
+
+        builder = newton.ModelBuilder()
+        link0 = builder.add_link()
+        link1 = builder.add_link()
+        j0 = builder.add_joint_revolute(
+            parent=-1,
+            child=link0,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        j1 = builder.add_joint_revolute(
+            parent=link0,
+            child=link1,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0)),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j0, j1], label="arm")
+
+        indices = wp.array([0, 1], dtype=wp.uint32, device=device)
+        # Start with q = (0.2, -0.3) so q_current is non-zero in the integration check.
+        joint_q = wp.array([0.2, -0.3], dtype=wp.float32, device=device)
+        output_qd = wp.zeros(2, dtype=wp.float32, device=device)
+        output_q = wp.zeros(2, dtype=wp.float32, device=device)
+        diffik = ControllerDifferentialIK(
+            model_builder=builder,
+            indices=indices,
+            end_effector_link=link1,
+            measurement=joint_q,
+            measurement_rate=wp.zeros(2, dtype=wp.float32, device=device),
+            target_pos=wp.array([wp.vec3(1.5, 0.2, 0.0)], dtype=wp.vec3, device=device),
+            target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
+            damping=wp.array([0.05], dtype=wp.float32, device=device),
+            output_qd=output_qd,
+            output_q=output_q,
+        )
+        group = ControlGroup([diffik])
+
+        s0 = group.state()
+        s1 = group.state()
+        dt = 0.02
+        group.step(s0, s1, dt=dt)
+
+        expected_q = joint_q.numpy() + output_qd.numpy() * dt
+        np.testing.assert_allclose(output_q.numpy(), expected_q, atol=1e-5)
 
 
 if __name__ == "__main__":
