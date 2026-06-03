@@ -1246,6 +1246,7 @@ class ViewerFile(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        opacity: float | None = None,
     ):
         """File viewer does not render meshes.
 
@@ -1258,7 +1259,9 @@ class ViewerFile(ViewerBase):
             texture: Optional texture path/URL or image array.
             hidden: Whether the mesh is hidden.
             backface_culling: Whether back-face culling is enabled.
+            opacity: Optional display opacity in [0, 1].
         """
+        del opacity
         pass
 
     @override

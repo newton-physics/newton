@@ -6556,6 +6556,31 @@ def Xform "BodyWithoutVisuals" (
         self.assertAlmostEqual(loaded_mesh.opacity, 0.33, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_display_opacity_primvar_loads_as_tet_mesh_opacity(self):
+        """USD displayOpacity primvars should resolve into imported TetMesh opacity."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        tet_mesh = UsdGeom.TetMesh.Define(stage, "/SoftTet")
+        tet_mesh.CreatePointsAttr().Set(
+            [
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ]
+        )
+        tet_mesh.CreateTetVertexIndicesAttr().Set([(0, 1, 2, 3)])
+        UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
+            "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
+        ).Set([0.44])
+
+        loaded_mesh = usd.get_tetmesh(tet_mesh.GetPrim())
+
+        self.assertAlmostEqual(loaded_mesh.opacity, 0.44, places=6)
+        self.assertNotIn("displayOpacity", loaded_mesh.custom_attributes)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visible_collision_mesh_texture_does_not_change_body_mass(self):
         """Render-only UV loading must not perturb collider mass or inertia."""
         stage = self._create_stage_with_pbr_collision_mesh(color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75)

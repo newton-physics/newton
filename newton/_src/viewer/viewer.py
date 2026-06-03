@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import enum
+import hashlib
 import os
 import sys
 import warnings
@@ -89,6 +90,8 @@ class ViewerBase(ABC):
 
         # Shape instance batches (shape hash -> ShapeInstances)
         self._shape_instances = {}
+        self._triangle_opacity_groups: list[tuple[str, wp.array[wp.int32], float]] | None = None
+        self._triangle_opacity_signature: tuple[int, str] | None = None
         # Inertia box wireframe line vertices (12 lines per body)
         self._inertia_box_points0 = None
         self._inertia_box_points1 = None
@@ -263,6 +266,8 @@ class ViewerBase(ABC):
         self._slot_to_shape_wp = None
         self._shape_to_batch = None
         self._shape_transparent_mask = None
+        self._triangle_opacity_groups = None
+        self._triangle_opacity_signature = None
 
         self._populate_shapes()
         if self._user_spacing is not None:
@@ -1052,6 +1057,7 @@ class ViewerBase(ABC):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        opacity: float | None = None,
     ):
         """
         Register or update a mesh prototype in the viewer backend.
@@ -1065,6 +1071,7 @@ class ViewerBase(ABC):
             texture: Optional texture image array or path.
             hidden: Whether the mesh should be hidden.
             backface_culling: Whether back-face culling should be enabled.
+            opacity: Optional display opacity in [0, 1].
         """
         pass
 
@@ -2196,15 +2203,85 @@ class ViewerBase(ABC):
 
         self.log_points("/model/com", self._com_positions, self._com_radii, self._com_colors, hidden=not self.show_com)
 
+    def _get_triangle_opacity_groups(
+        self,
+    ) -> tuple[
+        list[tuple[str, wp.array[wp.int32], float]],
+        list[tuple[str, wp.array[wp.int32], float]],
+    ]:
+        """Return cached triangle index groups split by display opacity."""
+        if self.model is None or not self.model.tri_count:
+            stale_groups = self._triangle_opacity_groups or []
+            self._triangle_opacity_groups = []
+            self._triangle_opacity_signature = None
+            return [], stale_groups
+
+        tri_count = self.model.tri_count
+        if self.model.tri_opacity is None:
+            opacities = np.ones(tri_count, dtype=np.float32)
+        else:
+            opacities = np.clip(self.model.tri_opacity.numpy().astype(np.float32).reshape(-1), 0.0, 1.0)
+            if len(opacities) == 1:
+                opacities = np.full(tri_count, float(opacities[0]), dtype=np.float32)
+            elif len(opacities) != tri_count:
+                opacities = np.ones(tri_count, dtype=np.float32)
+
+        signature = (
+            tri_count,
+            hashlib.blake2s(np.ascontiguousarray(opacities, dtype=np.float32).tobytes(), digest_size=8).hexdigest(),
+        )
+        if signature == self._triangle_opacity_signature and self._triangle_opacity_groups is not None:
+            return self._triangle_opacity_groups, []
+
+        stale_groups = self._triangle_opacity_groups or []
+        tri_indices_np = self.model.tri_indices.numpy().astype(np.int32).reshape(-1, 3)
+
+        if np.all(opacities == opacities[0]):
+            groups = [
+                (
+                    "/model/triangles",
+                    self.model.tri_indices.flatten(),
+                    float(opacities[0]),
+                )
+            ]
+        else:
+            groups = []
+            for group_idx, opacity_value in enumerate(np.unique(opacities)):
+                tri_ids = np.flatnonzero(opacities == opacity_value)
+                group_indices_np = tri_indices_np[tri_ids].reshape(-1)
+                digest = hashlib.blake2s(group_indices_np.tobytes(), digest_size=4).hexdigest()
+                group_indices = wp.array(group_indices_np, dtype=wp.int32, device=self.device)
+                groups.append((f"/model/triangles/opacity_{group_idx}_{digest}", group_indices, float(opacity_value)))
+
+        self._triangle_opacity_groups = groups
+        self._triangle_opacity_signature = signature
+        return groups, stale_groups
+
     def _log_triangles(self, state: newton.State):
         if self.model.tri_count:
-            self.log_mesh(
-                "/model/triangles",
-                state.particle_q,
-                self.model.tri_indices.flatten(),
-                hidden=not self.show_triangles,
-                backface_culling=False,
-            )
+            groups, stale_groups = self._get_triangle_opacity_groups()
+            visible_paths = {name for name, _, _ in groups}
+
+            for name, indices, opacity in groups:
+                self.log_mesh(
+                    name,
+                    state.particle_q,
+                    indices,
+                    hidden=not self.show_triangles,
+                    backface_culling=False,
+                    opacity=opacity,
+                )
+
+            for name, indices, opacity in stale_groups:
+                if name not in visible_paths:
+                    self.log_mesh(
+                        name,
+                        state.particle_q,
+                        indices,
+                        hidden=True,
+                        backface_culling=False,
+                        opacity=opacity,
+                    )
 
     def _log_particles(self, state: newton.State):
         if self.model.particle_count:

@@ -173,6 +173,8 @@ class MeshGL:
         self.indices = None
         self.normals = None  # scratch buffer used during normal recomputation
         self.texture_id = None
+        self.opacity = 1.0
+        self._sort_center = None
 
         # Set up vertex attributes in the packed format the shaders expect
         self.vertex_byte_size = 12 + 12 + 8
@@ -258,12 +260,13 @@ class MeshGL:
             # Ignore any errors if the GL context has already been torn down
             pass
 
-    def update(self, points, indices, normals, uvs, texture=None):
+    def update(self, points, indices, normals, uvs, texture=None, opacity=None):
         """Update vertex positions in the VBO.
 
         Args:
             points: New point positions (warp array or numpy array)
             scale: Scaling factor for positions
+            opacity: Display opacity in [0, 1].
         """
         gl = RendererGL.gl
 
@@ -271,6 +274,8 @@ class MeshGL:
             raise RuntimeError("Number of points does not match")
 
         self._points = points
+        self.opacity = float(np.clip(1.0 if opacity is None else opacity, 0.0, 1.0))
+        self._sort_center = None
 
         # only update indices the first time (no topology changes)
         if self.indices is None:
@@ -310,6 +315,12 @@ class MeshGL:
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_vertices.nbytes, host_vertices.ctypes.data, gl.GL_STATIC_DRAW)
 
         self.update_texture(texture)
+
+        if self.has_transparency() and self.indices is not None and len(self.indices) > 0:
+            points_np = points.numpy() if isinstance(points, wp.array) else np.asarray(points)
+            indices_np = self.indices.numpy().reshape(-1)
+            if len(indices_np) > 0:
+                self._sort_center = np.asarray(points_np[indices_np].mean(axis=0), dtype=np.float32)
 
     def recompute_normals(self):
         if self._points is None or self.indices is None:
@@ -366,8 +377,21 @@ class MeshGL:
                 gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
 
             gl.glBindVertexArray(self.vao)
+            gl.glVertexAttrib1f(9, self.opacity)
             gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)
             gl.glBindVertexArray(0)
+
+    def has_transparency(self) -> bool:
+        """Return True when this mesh needs transparent rendering."""
+        return not self.hidden and self.opacity < 0.999
+
+    def sort_depth(self, camera_pos, camera_front) -> float:
+        """Return a camera-space depth key for back-to-front object sorting."""
+        if self._sort_center is None:
+            return -np.inf
+        camera_pos_np = np.asarray(camera_pos, dtype=np.float32).reshape(3)
+        camera_front_np = np.asarray(camera_front, dtype=np.float32).reshape(3)
+        return float((self._sort_center - camera_pos_np) @ camera_front_np)
 
 
 class LinesGL:

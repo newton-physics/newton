@@ -27,6 +27,32 @@ class _ShapeColorProbe(ViewerNull):
         self.last_opacities = None if opacities is None else opacities.numpy().copy()
 
 
+class _TriangleOpacityProbe(ViewerNull):
+    """Captures mesh opacity values passed through ``log_mesh``."""
+
+    def __init__(self):
+        """Initialize the probe with storage for mesh opacity values."""
+        super().__init__(num_frames=1)
+        self.mesh_opacities = {}
+
+    def log_mesh(
+        self,
+        name,
+        points,
+        indices,
+        normals=None,
+        uvs=None,
+        texture=None,
+        hidden=False,
+        backface_culling=True,
+        opacity=None,
+    ):
+        """Capture opacity for visible triangle mesh logs."""
+        del points, indices, normals, uvs, texture, backface_culling
+        if not hidden:
+            self.mesh_opacities[name] = opacity
+
+
 class TestShapeColors(unittest.TestCase):
     """Regression tests for shape color storage and viewer synchronization."""
 
@@ -47,6 +73,20 @@ class TestShapeColors(unittest.TestCase):
         )
         indices = np.array([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3], dtype=np.int32)
         return newton.Mesh(vertices, indices, color=color, opacity=opacity)
+
+    def _make_soft_tet_mesh(self, opacity=None):
+        """Create a one-tet deformable mesh with optional surface opacity."""
+        vertices = np.array(
+            [
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ],
+            dtype=np.float32,
+        )
+        indices = np.array([0, 1, 2, 3], dtype=np.int32)
+        return newton.TetMesh(vertices, indices, opacity=opacity)
 
     def test_collision_shape_without_explicit_color_uses_default_palette(self):
         """Verify collision shapes fall back to the default viewer palette."""
@@ -117,6 +157,119 @@ class TestShapeColors(unittest.TestCase):
         model = builder.finalize(device=self.device)
 
         np.testing.assert_allclose(model.shape_opacity.numpy()[shape], 0.8, atol=1e-6, rtol=1e-6)
+
+    def test_cloth_opacity_defaults_to_opaque(self):
+        """Verify cloth triangles default to fully opaque display opacity."""
+        builder = newton.ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=1,
+            dim_y=1,
+            cell_x=1.0,
+            cell_y=1.0,
+            mass=1.0,
+        )
+
+        model = builder.finalize(device=self.device)
+
+        self.assertEqual(model.tri_count, 2)
+        np.testing.assert_allclose(
+            model.tri_opacity.numpy(),
+            np.ones(2, dtype=np.float32),
+            atol=1e-6,
+            rtol=1e-6,
+        )
+
+    def test_cloth_grid_stores_explicit_opacity(self):
+        """Verify cloth helper opacity is stored per generated surface triangle."""
+        builder = newton.ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=1,
+            dim_y=1,
+            cell_x=1.0,
+            cell_y=1.0,
+            mass=1.0,
+            opacity=0.4,
+        )
+
+        model = builder.finalize(device=self.device)
+
+        self.assertEqual(model.tri_count, 2)
+        np.testing.assert_allclose(model.tri_opacity.numpy(), [0.4, 0.4], atol=1e-6, rtol=1e-6)
+
+    def test_soft_mesh_uses_tet_mesh_opacity_when_opacity_is_none(self):
+        """Verify soft meshes inherit display opacity from their TetMesh."""
+        builder = newton.ModelBuilder()
+        mesh = self._make_soft_tet_mesh(opacity=0.35)
+        builder.add_soft_mesh(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            mesh=mesh,
+        )
+
+        model = builder.finalize(device=self.device)
+
+        self.assertEqual(model.tri_count, 4)
+        np.testing.assert_allclose(
+            model.tri_opacity.numpy(),
+            np.full(4, 0.35, dtype=np.float32),
+            atol=1e-6,
+            rtol=1e-6,
+        )
+
+    def test_explicit_soft_mesh_opacity_overrides_tet_mesh_opacity(self):
+        """Verify explicit soft mesh opacity overrides opacity embedded in TetMesh."""
+        builder = newton.ModelBuilder()
+        mesh = self._make_soft_tet_mesh(opacity=0.35)
+        builder.add_soft_mesh(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            mesh=mesh,
+            opacity=0.75,
+        )
+
+        model = builder.finalize(device=self.device)
+
+        self.assertEqual(model.tri_count, 4)
+        np.testing.assert_allclose(
+            model.tri_opacity.numpy(),
+            np.full(4, 0.75, dtype=np.float32),
+            atol=1e-6,
+            rtol=1e-6,
+        )
+
+    def test_viewer_logs_triangle_mesh_opacity_from_model(self):
+        """Verify triangle mesh logging passes model triangle opacity to viewers."""
+        builder = newton.ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=1,
+            dim_y=1,
+            cell_x=1.0,
+            cell_y=1.0,
+            mass=1.0,
+            opacity=0.4,
+        )
+        model = builder.finalize(device=self.device)
+        state = model.state()
+
+        viewer = _TriangleOpacityProbe()
+        viewer.set_model(model)
+        viewer.log_state(state)
+
+        self.assertIn("/model/triangles", viewer.mesh_opacities)
+        np.testing.assert_allclose(viewer.mesh_opacities["/model/triangles"], 0.4, atol=1e-6, rtol=1e-6)
 
     def test_ground_plane_keeps_checkerboard_material_with_resolved_shape_colors(self):
         """Verify the ground plane keeps its checkerboard material after color resolution."""

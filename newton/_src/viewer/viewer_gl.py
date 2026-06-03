@@ -717,6 +717,7 @@ class ViewerGL(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        opacity: float | None = None,
     ):
         """
         Log a mesh for rendering.
@@ -730,6 +731,7 @@ class ViewerGL(ViewerBase):
             texture: Texture path/URL or image array (H, W, C).
             hidden: Whether the mesh is hidden.
             backface_culling: Enable backface culling.
+            opacity: Optional display opacity in [0, 1].
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -741,7 +743,7 @@ class ViewerGL(ViewerBase):
                 len(points), len(indices), self.device, hidden=hidden, backface_culling=backface_culling
             )
 
-        self.objects[name].update(points, indices, normals, uvs, texture)
+        self.objects[name].update(points, indices, normals, uvs, texture, opacity=opacity)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
 

@@ -352,6 +352,8 @@ class Model:
         Stored per-element; kernels multiply by rest area internally."""
         self.tri_areas: wp.array[wp.float32] | None = None
         """Triangle element rest areas [m²], shape [tri_count], float."""
+        self.tri_opacity: wp.array[wp.float32] | None = None
+        """Triangle surface display opacity [0, 1], shape [tri_count], float."""
 
         self.edge_indices: wp.array[wp.int32] | None = None
         """Bending edge indices, shape [edge_count*4], int, each row is [o0, o1, v1, v2], where v1, v2 are on the edge."""
@@ -805,6 +807,9 @@ class Model:
         self.attribute_frequency["shape_color"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_opacity"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_filter"] = Model.AttributeFrequency.SHAPE
+
+        # attributes per triangle
+        self.attribute_frequency["tri_opacity"] = Model.AttributeFrequency.TRIANGLE
 
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""

@@ -973,6 +973,8 @@ class ModelBuilder:
         """Triangle material rows accumulated for :attr:`Model.tri_materials`."""
         self.tri_areas: list[float] = []
         """Triangle rest areas [m^2] accumulated for :attr:`Model.tri_areas`."""
+        self.tri_opacity: list[float] = []
+        """Triangle surface display opacities accumulated for :attr:`Model.tri_opacity`."""
 
         # edges (bending)
         self.edge_indices: list[tuple[int, int, int, int]] = []
@@ -3115,6 +3117,7 @@ class ModelBuilder:
             "tri_activations",
             "tri_materials",
             "tri_areas",
+            "tri_opacity",
             "tet_poses",
             "tet_activations",
             "tet_materials",
@@ -7116,6 +7119,7 @@ class ModelBuilder:
         tri_kd: float | None = None,
         tri_drag: float | None = None,
         tri_lift: float | None = None,
+        opacity: float | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> float:
         """Adds a triangular FEM element between three particles in the system.
@@ -7132,6 +7136,7 @@ class ModelBuilder:
             tri_kd: The damping stiffness of the triangle. If None, the default value (:attr:`default_tri_kd`) is used.
             tri_drag: The drag coefficient of the triangle. If None, the default value (:attr:`default_tri_drag`) is used.
             tri_lift: The lift coefficient of the triangle. If None, the default value (:attr:`default_tri_lift`) is used.
+            opacity: Display opacity in [0, 1]. If None, the triangle is fully opaque.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Return:
@@ -7178,6 +7183,7 @@ class ModelBuilder:
             self.tri_activations.append(0.0)
             self.tri_materials.append((tri_ke, tri_ka, tri_kd, tri_drag, tri_lift))
             self.tri_areas.append(area)
+            self.tri_opacity.append(1.0 if opacity is None else float(opacity))
 
             # Process custom attributes
             if custom_attributes:
@@ -7199,6 +7205,7 @@ class ModelBuilder:
         tri_kd: list[float] | None = None,
         tri_drag: list[float] | None = None,
         tri_lift: list[float] | None = None,
+        opacity: float | list[float] | np.ndarray | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> list[float]:
         """Adds triangular FEM elements between groups of three particles in the system.
@@ -7215,6 +7222,8 @@ class ModelBuilder:
             tri_kd: The damping stiffness of the triangles. If None, the default value (:attr:`default_tri_kd`) is used.
             tri_drag: The drag coefficient of the triangles. If None, the default value (:attr:`default_tri_drag`) is used.
             tri_lift: The lift coefficient of the triangles. If None, the default value (:attr:`default_tri_lift`) is used.
+            opacity: Display opacity in [0, 1]. If scalar, applied to all triangles.
+                If array-like, values are applied per triangle.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Return:
@@ -7278,6 +7287,11 @@ class ModelBuilder:
         tri_kd = init_if_none(tri_kd, self.default_tri_kd)
         tri_drag = init_if_none(tri_drag, self.default_tri_drag)
         tri_lift = init_if_none(tri_lift, self.default_tri_lift)
+        opacity_arr = np.asarray(1.0 if opacity is None else opacity, dtype=np.float32).flatten()
+        if opacity_arr.size == 1:
+            opacity_arr = np.full(len(areas), float(opacity_arr[0]), dtype=np.float32)
+        else:
+            opacity_arr = np.broadcast_to(opacity_arr, len(areas))
 
         self.tri_materials.extend(
             zip(
@@ -7289,6 +7303,7 @@ class ModelBuilder:
                 strict=False,
             )
         )
+        self.tri_opacity.extend(opacity_arr[valid_inds].tolist())
         areas = areas.tolist()
         self.tri_areas.extend(areas)
 
@@ -7563,6 +7578,7 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
+        opacity: float | None = None,
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
@@ -7586,6 +7602,7 @@ class ModelBuilder:
             fix_right: Make the right-most edge of particles kinematic
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
+            opacity: Display opacity in [0, 1] for the cloth surface.
         """
 
         def grid_index(x, y, dim_x):
@@ -7633,6 +7650,7 @@ class ModelBuilder:
             spring_ke=spring_ke,
             spring_kd=spring_kd,
             particle_radius=particle_radius,
+            opacity=opacity,
             custom_attributes_particles=custom_attributes_particles,
             custom_attributes_triangles=custom_attributes_triangles,
             custom_attributes_edges=custom_attributes_edges,
@@ -7677,6 +7695,7 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
+        opacity: float | None = None,
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
         custom_attributes_triangles: dict[str, Any] | None = None,
@@ -7695,6 +7714,7 @@ class ModelBuilder:
             indices: A list of triangle indices, 3 entries per-face
             density: The density per-area of the mesh
             particle_radius: The particle_radius which controls particle based collisions.
+            opacity: Display opacity in [0, 1] for the cloth surface.
             custom_attributes_particles: Dictionary of custom attribute names to values for the particles.
             custom_attributes_edges: Dictionary of custom attribute names to values for the edges.
             custom_attributes_triangles: Dictionary of custom attribute names to values for the triangles.
@@ -7747,6 +7767,7 @@ class ModelBuilder:
             [tri_kd] * num_tris,
             [tri_drag] * num_tris,
             [tri_lift] * num_tris,
+            opacity=opacity,
             custom_attributes=custom_attributes_triangles,
         )
         for t in range(num_tris):
@@ -7920,6 +7941,7 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
+        opacity: float | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
 
@@ -7955,6 +7977,7 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
+            opacity: Display opacity in [0, 1] for the generated surface mesh.
 
         Note:
             The generated surface triangles and optional edges are for collision purposes.
@@ -8039,7 +8062,7 @@ class ModelBuilder:
         # add surface triangles
         start_tri = len(self.tri_indices)
         for _k, v in faces.items():
-            self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+            self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift, opacity=opacity)
         end_tri = len(self.tri_indices)
 
         if add_surface_mesh_edges:
@@ -8077,6 +8100,7 @@ class ModelBuilder:
         edge_ke: float = 0.0,
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
+        opacity: float | None = None,
     ) -> None:
         """Helper to create a tetrahedral model from an input tetrahedral mesh.
 
@@ -8115,6 +8139,8 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance).
+            opacity: Display opacity in [0, 1] for the generated surface mesh.
+                Overrides ``mesh.opacity`` if both are provided.
 
         Note:
             **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`
@@ -8145,6 +8171,8 @@ class ModelBuilder:
                 k_lambda = mesh.k_lambda
             if k_damp is None:
                 k_damp = mesh.k_damp
+            if opacity is None:
+                opacity = mesh.opacity
 
         if vertices is None or indices is None:
             raise ValueError("Either 'mesh' or both 'vertices' and 'indices' must be provided.")
@@ -8156,6 +8184,8 @@ class ModelBuilder:
             k_lambda = self.default_tet_k_lambda
         if k_damp is None:
             k_damp = self.default_tet_k_damp
+        if opacity is None:
+            opacity = 1.0
 
         num_tets = int(len(indices) / 4)
         k_mu_arr = np.broadcast_to(np.asarray(k_mu, dtype=np.float32).flatten(), num_tets)
@@ -8244,6 +8274,7 @@ class ModelBuilder:
                 tri_kd,
                 tri_drag,
                 tri_lift,
+                opacity=opacity,
                 custom_attributes=tr_custom,
             )
         end_tri = len(self.tri_indices)
@@ -10099,6 +10130,7 @@ class ModelBuilder:
             m.tri_activations = _to_wp_array(self.tri_activations, wp.float32, requires_grad=requires_grad)
             m.tri_materials = _to_wp_array(self.tri_materials, wp.float32, requires_grad=requires_grad)
             m.tri_areas = _to_wp_array(self.tri_areas, wp.float32, requires_grad=requires_grad)
+            m.tri_opacity = _to_wp_array(self.tri_opacity, wp.float32, requires_grad=False)
 
             # ---------------------
             # edges

@@ -217,6 +217,7 @@ class ViewerRerun(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        opacity: float | None = None,
     ):
         """
         Log a mesh to rerun for visualization.
@@ -230,6 +231,7 @@ class ViewerRerun(ViewerBase):
             texture: Optional texture path/URL or image array.
             hidden: Whether the mesh is hidden.
             backface_culling: Whether to enable backface culling (unused).
+            opacity: Optional display opacity in [0, 1].
         """
         if not hidden:
             assert isinstance(points, wp.array)
@@ -285,6 +287,7 @@ class ViewerRerun(ViewerBase):
             "texture_image": texture_image,
             "texture_buffer": texture_buffer,
             "texture_format": texture_format,
+            "opacity": opacity,
         }
 
         if hidden:
@@ -302,6 +305,15 @@ class ViewerRerun(ViewerBase):
             mesh_kwargs["albedo_texture_format"] = texture_format
         elif texture_image is not None and self._mesh3d_supports("albedo_texture"):
             mesh_kwargs["albedo_texture"] = texture_image
+
+        if opacity is not None:
+            opacity_u8 = int(round(float(np.clip(opacity, 0.0, 1.0)) * 255.0))
+            has_texture = texture_buffer is not None or texture_image is not None
+            if not has_texture:
+                vertex_color = np.array([180, 180, 180, opacity_u8], dtype=np.uint8)
+                mesh_kwargs["vertex_colors"] = np.tile(vertex_color, (len(points_np), 1))
+            elif self._mesh3d_supports("albedo_factor"):
+                mesh_kwargs["albedo_factor"] = (255, 255, 255, opacity_u8)
 
         # Log the mesh as a static asset
         mesh_3d = self._call_rr_constructor(rr.Mesh3D, **mesh_kwargs)

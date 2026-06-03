@@ -1142,6 +1142,7 @@ _TETMESH_SCHEMA_ATTRS = frozenset(
         "orientation",
         "purpose",
         "visibility",
+        "displayOpacity",
         "xformOpOrder",
         "proxyPrim",
     }
@@ -1225,6 +1226,8 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
         if density_val is not None:
             density = float(density_val)
 
+    material_props = resolve_material_properties_for_prim(prim)
+
     # Read custom primvars and attributes (per-vertex, per-tet, etc.)
     # Primvar interpolation is used to determine the attribute frequency
     # when available, falling back to length-based inference in TetMesh.__init__.
@@ -1245,7 +1248,7 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
     primvars_api = UsdGeom.PrimvarsAPI(prim)
     for primvar in primvars_api.GetPrimvarsWithValues():
         name = primvar.GetPrimvarName()
-        if name in ("st", "normals"):
+        if name in ("st", "normals", "displayColor", "displayOpacity"):
             continue  # skip well-known primvars handled elsewhere
         val = primvar.Get()
         if val is not None:
@@ -1282,6 +1285,7 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
         k_mu=k_mu,
         k_lambda=k_lambda,
         density=density,
+        opacity=material_props.get("opacity"),
         custom_attributes=custom_attributes if custom_attributes else None,
     )
 

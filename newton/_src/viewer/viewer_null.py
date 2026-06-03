@@ -67,6 +67,7 @@ class ViewerNull(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        opacity: float | None = None,
     ):
         """
         No-op implementation for logging a mesh.
@@ -80,7 +81,9 @@ class ViewerNull(ViewerBase):
             texture: Optional texture path/URL or image array.
             hidden: Whether the mesh is hidden.
             backface_culling: Whether to enable backface culling.
+            opacity: Optional display opacity in [0, 1].
         """
+        del opacity
         pass
 
     @override

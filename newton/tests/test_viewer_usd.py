@@ -146,6 +146,28 @@ class TestViewerUSD(unittest.TestCase):
                 atol=1e-6,
             )
 
+    def test_log_mesh_authors_display_opacity(self):
+        viewer = self._make_viewer()
+
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh("/opacity_mesh_standalone", points, indices, opacity=0.35)
+
+        prim = viewer.stage.GetPrimAtPath("/root/opacity_mesh_standalone")
+        display_opacity = UsdGeom.PrimvarsAPI(prim).GetPrimvar("displayOpacity")
+
+        self.assertTrue(display_opacity)
+        np.testing.assert_allclose(
+            np.asarray(display_opacity.Get(viewer._frame_index), dtype=np.float32),
+            np.array([0.35], dtype=np.float32),
+            atol=1e-6,
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

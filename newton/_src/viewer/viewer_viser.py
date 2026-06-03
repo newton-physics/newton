@@ -369,6 +369,7 @@ class ViewerViser(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        opacity: float | None = None,
     ):
         """
         Log a mesh to viser for visualization.
@@ -382,6 +383,7 @@ class ViewerViser(ViewerBase):
             texture: Texture path/URL or image array (H, W, C).
             hidden: Whether the mesh is hidden.
             backface_culling: Whether to enable backface culling.
+            opacity: Optional display opacity in [0, 1].
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -422,6 +424,7 @@ class ViewerViser(ViewerBase):
             "uvs": uvs_np,
             "texture": texture_image,
             "trimesh": trimesh_mesh,
+            "opacity": opacity,
         }
 
         # Remove existing mesh if present
@@ -436,21 +439,25 @@ class ViewerViser(ViewerBase):
 
         # Add mesh to viser scene
         if trimesh_mesh is not None:
-            handle = self._call_scene_method(
-                self._server.scene.add_mesh_trimesh,
-                name=name,
-                mesh=trimesh_mesh,
-            )
+            mesh_kwargs = {
+                "name": name,
+                "mesh": trimesh_mesh,
+            }
+            if opacity is not None:
+                mesh_kwargs["opacity"] = float(np.clip(opacity, 0.0, 1.0))
+            handle = self._call_scene_method(self._server.scene.add_mesh_trimesh, **mesh_kwargs)
         else:
-            handle = self._call_scene_method(
-                self._server.scene.add_mesh_simple,
-                name=name,
-                vertices=points_np,
-                faces=indices_np,
-                color=(180, 180, 180),  # Default gray color
-                wireframe=False,
-                side="double" if not backface_culling else "front",
-            )
+            mesh_kwargs = {
+                "name": name,
+                "vertices": points_np,
+                "faces": indices_np,
+                "color": (180, 180, 180),  # Default gray color
+                "wireframe": False,
+                "side": "double" if not backface_culling else "front",
+            }
+            if opacity is not None:
+                mesh_kwargs["opacity"] = float(np.clip(opacity, 0.0, 1.0))
+            handle = self._call_scene_method(self._server.scene.add_mesh_simple, **mesh_kwargs)
         self._scene_handles[name] = handle
 
     @override

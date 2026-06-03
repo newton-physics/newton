@@ -214,6 +214,7 @@ class ViewerUSD(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        opacity: float | None = None,
     ):
         """
         Create a USD mesh prototype from vertex and index data.
@@ -227,6 +228,7 @@ class ViewerUSD(ViewerBase):
             texture: Optional texture path/URL or image array.
             hidden: If True, mesh will be hidden.
             backface_culling: If True, enable backface culling.
+            opacity: Optional display opacity in [0, 1].
         """
 
         # Convert warp arrays to numpy
@@ -262,6 +264,15 @@ class ViewerUSD(ViewerBase):
 
         # how to hide the prototype mesh but not the instances in USD?
         mesh_prim.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
+
+        if opacity is not None:
+            primvars = UsdGeom.PrimvarsAPI(mesh_prim)
+            display_opacity = primvars.GetPrimvar("displayOpacity")
+            if not display_opacity:
+                display_opacity = primvars.CreatePrimvar(
+                    "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
+                )
+            display_opacity.Set([float(np.clip(opacity, 0.0, 1.0))], self._frame_index)
 
     # log a set of instances as individual mesh prims, slower but makes it easier
     # to do post-editing of instance materials etc. default for Newton shapes
