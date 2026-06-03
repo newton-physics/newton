@@ -614,7 +614,7 @@ class SolverKamino(SolverBase):
         )
 
     @override
-    def notify_model_changed(self, flags: int) -> None:
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Propagate Newton model property changes to Kamino's internal ModelKamino.
 
         Args:

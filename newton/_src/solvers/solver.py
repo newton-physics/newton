@@ -4,7 +4,7 @@
 import warp as wp
 
 from ..geometry import ParticleFlags
-from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, State, StateFlags
+from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
 
 
 @wp.kernel
@@ -341,7 +341,7 @@ class SolverBase:
         """
         raise NotImplementedError()
 
-    def notify_model_changed(self, flags: int) -> None:
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Notify the solver that parts of the :class:`~newton.Model` were modified.
 
         The *flags* argument is a bit-mask composed of the
@@ -352,19 +352,24 @@ class SolverBase:
         internal buffers without having to recreate the whole solver object.
         Valid flags are:
 
-        ==============================================  =============================================================
-        Constant                                        Description
-        ==============================================  =============================================================
-        ``ModelFlags.JOINT_PROPERTIES``            Joint transforms or coordinates have changed.
-        ``ModelFlags.JOINT_DOF_PROPERTIES``        Joint axis limits, targets, modes, DOF state, or force buffers have changed.
-        ``ModelFlags.BODY_PROPERTIES``             Rigid-body pose or velocity buffers have changed.
-        ``ModelFlags.BODY_INERTIAL_PROPERTIES``    Rigid-body mass or inertia tensors have changed.
-        ``ModelFlags.SHAPE_PROPERTIES``            Shape transforms or geometry have changed.
-        ``ModelFlags.MODEL_PROPERTIES``            Model global properties (e.g., gravity) have changed.
-        ``ModelFlags.CONSTRAINT_PROPERTIES``       Constraint definitions, coefficients, or enable flags have changed.
-        ``ModelFlags.TENDON_PROPERTIES``           Tendon stiffness or related tendon properties have changed.
-        ``ModelFlags.ACTUATOR_PROPERTIES``         Actuator gains, biases, limits, or force properties have changed.
-        ==============================================  =============================================================
+        * ``ModelFlags.JOINT_PROPERTIES``: Joint transforms or coordinates
+          have changed.
+        * ``ModelFlags.JOINT_DOF_PROPERTIES``: Joint axis limits, targets,
+          modes, DOF state, or force buffers have changed.
+        * ``ModelFlags.BODY_PROPERTIES``: Rigid-body pose or velocity buffers
+          have changed.
+        * ``ModelFlags.BODY_INERTIAL_PROPERTIES``: Rigid-body mass or inertia
+          tensors have changed.
+        * ``ModelFlags.SHAPE_PROPERTIES``: Shape transforms or geometry have
+          changed.
+        * ``ModelFlags.MODEL_PROPERTIES``: Model global properties (e.g.,
+          gravity) have changed.
+        * ``ModelFlags.CONSTRAINT_PROPERTIES``: Constraint definitions,
+          coefficients, or enable flags have changed.
+        * ``ModelFlags.TENDON_PROPERTIES``: Tendon stiffness or related tendon
+          properties have changed.
+        * ``ModelFlags.ACTUATOR_PROPERTIES``: Actuator gains, biases, limits,
+          or force properties have changed.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` or custom ``int``

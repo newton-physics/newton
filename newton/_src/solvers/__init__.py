@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from ..sim.enums import ModelFlags, StateFlags
 from .featherstone import SolverFeatherstone
 from .flags import SolverNotifyFlags
 from .implicit_mpm import SolverImplicitMPM
@@ -14,7 +13,6 @@ from .vbd import SolverVBD
 from .xpbd import SolverXPBD
 
 __all__ = [
-    "ModelFlags",
     "SolverBase",
     "SolverFeatherstone",
     "SolverImplicitMPM",
@@ -25,5 +23,4 @@ __all__ = [
     "SolverStyle3D",
     "SolverVBD",
     "SolverXPBD",
-    "StateFlags",
 ]

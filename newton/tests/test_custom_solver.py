@@ -28,7 +28,7 @@ class DummySolver(newton.solvers.SolverBase):
         self.model_epoch: int | None = None
         self.reset_epoch: int | None = None
 
-    def notify_model_changed(self, flags: int) -> None:
+    def notify_model_changed(self, flags: newton.ModelFlags | int) -> None:
         """Consume both built-in model flags and a custom solver flag."""
         self.notify_flags = flags
         self.saw_body_properties = bool(flags & newton.ModelFlags.BODY_PROPERTIES)

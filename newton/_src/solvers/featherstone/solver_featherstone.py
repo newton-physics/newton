@@ -244,7 +244,7 @@ class SolverFeatherstone(SolverBase):
                     self.joint_armature_effective = wp.array(joint_armature, dtype=float, device=model.device)
 
     @override
-    def notify_model_changed(self, flags: int) -> None:
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
             self._update_kinematic_state()
             self._mass_matrix_dirty = True

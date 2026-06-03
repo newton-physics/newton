@@ -418,7 +418,6 @@ See the `DiffSim examples on GitHub`_ for the current reference workflows.
    :toctree: _generated
    :nosignatures:
 
-   ModelFlags
    SolverBase
    SolverFeatherstone
    SolverImplicitMPM
@@ -429,4 +428,3 @@ See the `DiffSim examples on GitHub`_ for the current reference workflows.
    SolverStyle3D
    SolverVBD
    SolverXPBD
-   StateFlags

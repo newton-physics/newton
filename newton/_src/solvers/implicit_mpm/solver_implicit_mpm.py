@@ -1086,7 +1086,7 @@ class SolverImplicitMPM(SolverBase):
             scratch.release_temporaries()
 
     @override
-    def notify_model_changed(self, flags: int) -> None:
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
         if flags & ModelFlags.MODEL_PROPERTIES:
             self._mpm_model.notify_particle_material_changed()
 

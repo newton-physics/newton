@@ -401,7 +401,6 @@ See the `DiffSim examples on GitHub`_ for the current reference workflows.
 
 # solver types
 from ._src.solvers import (
-    ModelFlags,
     SolverBase,
     SolverFeatherstone,
     SolverImplicitMPM,
@@ -411,7 +410,6 @@ from ._src.solvers import (
     SolverStyle3D,
     SolverVBD,
     SolverXPBD,
-    StateFlags,
     style3d,
 )
 
@@ -419,7 +417,6 @@ from ._src.solvers import (
 from ._src.solvers.flags import SolverNotifyFlags
 
 __all__ = [
-    "ModelFlags",
     "SolverBase",
     "SolverFeatherstone",
     "SolverImplicitMPM",
@@ -430,6 +427,5 @@ __all__ = [
     "SolverStyle3D",
     "SolverVBD",
     "SolverXPBD",
-    "StateFlags",
     "style3d",
 ]
