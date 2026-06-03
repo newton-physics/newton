@@ -20,6 +20,7 @@ from .kernels import (
     bending_constraint,
     convert_contact_impulse_to_force,
     convert_joint_impulse_to_parent_f,
+    convert_joint_impulse_to_reaction_f,
     copy_kinematic_body_state_kernel,
     solve_body_contact_positions,
     solve_body_joints,
@@ -56,9 +57,9 @@ class SolverXPBD(TendonStateMixin, SolverBase):
         computed using the harmonic mean of the two bodies' contact counts,
         which is symmetric but not exact.
 
-        **Reported parent-joint forces** (see :attr:`~newton.State.body_parent_f`,
-        populated when the extended state attribute is requested) are
-        approximate.  XPBD applies relaxation factors
+        **Reported joint reaction forces** (see :attr:`joint_reaction_f`, and
+        optionally :attr:`~newton.State.body_parent_f` when the extended state
+        attribute is requested) are approximate. XPBD applies relaxation factors
         (``joint_linear_relaxation``, ``joint_angular_relaxation``) to each
         joint constraint correction, and with a finite ``iterations`` count
         residual constraint error remains at end-of-step, so the reported
@@ -136,6 +137,13 @@ class SolverXPBD(TendonStateMixin, SolverBase):
         self.compute_body_velocity_from_position_delta = False
 
         self._init_kinematic_state()
+        self.joint_reaction_f = wp.zeros(model.joint_count, dtype=wp.spatial_vector, device=model.device)
+        """Per-joint reaction wrench [N, N*m], shape (joint_count,).
+
+        The wrench is transmitted from the joint parent to the child, expressed
+        in world frame at the child body's center of mass. It is refreshed by
+        :meth:`step` from the accumulated XPBD joint impulse.
+        """
 
         # helper variables to track constraint resolution vars
         self._particle_delta_counter = 0
@@ -301,10 +309,11 @@ class SolverXPBD(TendonStateMixin, SolverBase):
                     contacts.rigid_contact_max, dtype=wp.spatial_vector, device=model.device
                 )
 
-        # Optional per-joint accumulated child-side spatial impulse, used to
-        # populate ``state_out.body_parent_f`` after the iteration loop.
+        # Per-joint accumulated child-side spatial impulse, used to populate
+        # ``self.joint_reaction_f`` and optionally ``state_out.body_parent_f``
+        # after the iteration loop.
         joint_impulse = None
-        if state_out.body_parent_f is not None and model.joint_count > 0:
+        if model.joint_count > 0:
             joint_impulse = wp.zeros(model.joint_count, dtype=wp.spatial_vector, device=model.device)
 
         if control is None:
@@ -343,11 +352,10 @@ class SolverXPBD(TendonStateMixin, SolverBase):
                 if model.joint_count:
                     # Avoid accumulating joint_f into the persistent state body_f buffer.
                     body_f_tmp = wp.clone(state_in.body_f)
-                    # ``joint_impulse`` (may be ``None`` when ``body_parent_f``
-                    # was not requested) accumulates both the joint_f wrench
+                    # ``joint_impulse`` accumulates both the joint_f wrench
                     # contribution recorded here and the constraint-correction
                     # contribution added by :func:`solve_body_joints` inside
-                    # the iteration loop.  Together they recover the total
+                    # the iteration loop. Together they recover the total
                     # wrench transmitted to the child body, matching the
                     # :attr:`State.body_parent_f` convention.
                     wp.launch(
@@ -768,10 +776,24 @@ class SolverXPBD(TendonStateMixin, SolverBase):
             self._contact_impulse_capacity = contacts.rigid_contact_max if contacts is not None else 0
             self._last_dt = dt
 
-            # Populate optional ``state_out.body_parent_f`` (incoming joint
-            # wrench per body) from the per-joint accumulated child-side
-            # impulse.  Bodies without an inbound joint (roots / free bodies)
-            # remain zero-initialized, matching MuJoCo's behavior.
+            # Populate the per-joint reaction force diagnostic and optional
+            # ``state_out.body_parent_f`` (incoming joint wrench per body)
+            # from the accumulated child-side impulse.
+            if joint_impulse is not None:
+                wp.launch(
+                    kernel=convert_joint_impulse_to_reaction_f,
+                    dim=model.joint_count,
+                    inputs=[
+                        joint_impulse,
+                        model.joint_enabled,
+                        model.joint_type,
+                        model.joint_child,
+                        dt,
+                    ],
+                    outputs=[self.joint_reaction_f],
+                    device=model.device,
+                )
+
             if state_out.body_parent_f is not None:
                 state_out.body_parent_f.zero_()
                 if joint_impulse is not None:

@@ -2461,6 +2461,41 @@ def convert_joint_impulse_to_parent_f(
 
 
 @wp.kernel
+def convert_joint_impulse_to_reaction_f(
+    joint_impulse: wp.array[wp.spatial_vector],
+    joint_enabled: wp.array[bool],
+    joint_type: wp.array[int],
+    joint_child: wp.array[int],
+    dt: float,
+    # output
+    joint_reaction_f: wp.array[wp.spatial_vector],
+):
+    """Convert accumulated child-side joint impulse to per-joint reaction force.
+
+    The output convention matches ``State.body_parent_f`` for the corresponding
+    child body: spatial wrench transmitted from the parent through this joint to
+    the child, expressed in world frame at the child body's COM. FREE joints
+    report zero because they do not transmit a constraint reaction.
+    """
+    tid = wp.tid()
+
+    joint_reaction_f[tid] = wp.spatial_vector()
+
+    if not joint_enabled[tid]:
+        return
+    if joint_type[tid] == JointType.FREE:
+        return
+    if joint_child[tid] < 0:
+        return
+
+    inv_dt = 1.0 / dt
+    impulse = joint_impulse[tid]
+    f = wp.spatial_top(impulse) * inv_dt
+    tau = wp.spatial_bottom(impulse) * inv_dt
+    joint_reaction_f[tid] = wp.spatial_vector(f, tau)
+
+
+@wp.kernel
 def update_body_velocities(
     poses: wp.array[wp.transform],
     poses_prev: wp.array[wp.transform],

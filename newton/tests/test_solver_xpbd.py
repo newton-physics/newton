@@ -1171,6 +1171,165 @@ def test_xpbd_parent_f_balances_fixed_body_tendon_load(test, device):
     )
 
 
+def test_xpbd_joint_reaction_f_balances_centered_tendon_load(test, device):
+    """Solver-side per-joint reaction should balance a centered tendon load."""
+    compliance = 1.0e-3
+    rest_length = 0.8
+    length = 1.0
+    expected_tension = (length - rest_length) / compliance
+
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    anchor = builder.add_body(
+        xform=wp.transform(p=wp.vec3(length, 0.0, 0.0)),
+        mass=0.0,
+        is_kinematic=True,
+    )
+    builder.add_shape_sphere(anchor, radius=0.02)
+
+    body = builder.add_link(xform=wp.transform_identity(), mass=1.0)
+    builder.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05)
+    joint = builder.add_joint_fixed(
+        -1,
+        body,
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([joint])
+
+    builder.add_tendon()
+    builder.add_tendon_link(
+        body=anchor,
+        link_type=int(newton.TendonLinkType.ATTACHMENT),
+        offset=(0.0, 0.0, 0.0),
+        axis=(0.0, 1.0, 0.0),
+    )
+    builder.add_tendon_link(
+        body=body,
+        link_type=int(newton.TendonLinkType.ATTACHMENT),
+        offset=(0.0, 0.0, 0.0),
+        axis=(0.0, 1.0, 0.0),
+        compliance=compliance,
+        damping=0.0,
+        rest_length=rest_length,
+    )
+
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverXPBD(
+        model,
+        iterations=32,
+        joint_linear_relaxation=1.0,
+        joint_angular_relaxation=1.0,
+    )
+    state_in = model.state()
+    state_out = model.state()
+    control = model.control()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+    test.assertIsNone(state_in.body_parent_f)
+    test.assertEqual(solver.joint_reaction_f.shape[0], model.joint_count)
+
+    dt = 1.0 / 60.0
+    for _ in range(3):
+        solver.step(state_in, state_out, control, None, dt)
+        state_in, state_out = state_out, state_in
+
+    joint_reaction = solver.joint_reaction_f.numpy()[joint]
+    tendon_tension = float(-solver.tendon_seg_lambda.numpy()[0] / dt)
+
+    np.testing.assert_allclose(
+        tendon_tension,
+        expected_tension,
+        rtol=1.0e-4,
+        atol=1.0e-2,
+        err_msg="Tendon tension should match stretch / compliance",
+    )
+    np.testing.assert_allclose(
+        joint_reaction,
+        np.array([-tendon_tension, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        rtol=1.0e-4,
+        atol=1.0e-2,
+        err_msg="Per-joint reaction should balance the centered tendon pull",
+    )
+
+
+def test_xpbd_joint_reaction_f_includes_offset_tendon_torque(test, device):
+    """Per-joint reaction should include the torque needed to balance an offset cable."""
+    compliance = 1.0e-3
+    rest_length = 0.8
+    length = 1.0
+    y_offset = 0.2
+    expected_tension = (length - rest_length) / compliance
+
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    anchor = builder.add_body(
+        xform=wp.transform(p=wp.vec3(length, 0.0, 0.0)),
+        mass=0.0,
+        is_kinematic=True,
+    )
+    builder.add_shape_sphere(anchor, radius=0.02)
+
+    body = builder.add_link(xform=wp.transform_identity(), mass=1.0)
+    builder.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05)
+    joint = builder.add_joint_fixed(
+        -1,
+        body,
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([joint])
+
+    builder.add_tendon()
+    builder.add_tendon_link(
+        body=anchor,
+        link_type=int(newton.TendonLinkType.ATTACHMENT),
+        offset=(0.0, y_offset, 0.0),
+        axis=(0.0, 1.0, 0.0),
+    )
+    builder.add_tendon_link(
+        body=body,
+        link_type=int(newton.TendonLinkType.ATTACHMENT),
+        offset=(0.0, y_offset, 0.0),
+        axis=(0.0, 1.0, 0.0),
+        compliance=compliance,
+        damping=0.0,
+        rest_length=rest_length,
+    )
+
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverXPBD(
+        model,
+        iterations=128,
+        joint_linear_relaxation=1.0,
+        joint_angular_relaxation=1.0,
+    )
+    state_in = model.state()
+    state_out = model.state()
+    control = model.control()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+    dt = 1.0 / 60.0
+    for _ in range(3):
+        solver.step(state_in, state_out, control, None, dt)
+        state_in, state_out = state_out, state_in
+
+    joint_reaction = solver.joint_reaction_f.numpy()[joint]
+    tendon_tension = float(-solver.tendon_seg_lambda.numpy()[0] / dt)
+
+    np.testing.assert_allclose(
+        tendon_tension,
+        expected_tension,
+        rtol=1.0e-4,
+        atol=1.0e-2,
+        err_msg="Offset tendon tension should match stretch / compliance",
+    )
+    np.testing.assert_allclose(
+        joint_reaction,
+        np.array([-tendon_tension, 0.0, 0.0, 0.0, 0.0, y_offset * tendon_tension]),
+        rtol=1.0e-4,
+        atol=1.0e-2,
+        err_msg="Per-joint reaction should balance both force and torque from the offset tendon",
+    )
+
+
 def test_xpbd_parent_f_centripetal_zero_g(test, device):
     """Two free bodies on a hinge, zero gravity, in steady-state rotation.
 
@@ -1671,6 +1830,22 @@ add_function_test(
     TestSolverXPBD,
     "test_xpbd_parent_f_balances_fixed_body_tendon_load",
     test_xpbd_parent_f_balances_fixed_body_tendon_load,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_joint_reaction_f_balances_centered_tendon_load",
+    test_xpbd_joint_reaction_f_balances_centered_tendon_load,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_joint_reaction_f_includes_offset_tendon_torque",
+    test_xpbd_joint_reaction_f_includes_offset_tendon_torque,
     devices=devices,
     check_output=False,
 )
