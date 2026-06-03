@@ -8,8 +8,6 @@ This module provides data structures and utilities for managing multiple
 independent linear systems, including rectangular and square systems.
 """
 
-from __future__ import annotations
-
 import functools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, get_args
@@ -442,7 +440,7 @@ class BlockSparseMatrices:
         self.num_nzb.zero_()
         self.nzb_coords.zero_()
 
-    def zero(self, matrix_mask: wp.array[bool] | None = None):
+    def zero(self, matrix_mask: wp.array | None = None):
         """
         Sets non-zero block data to zero, for all or a subset of the matrices.
 
@@ -749,7 +747,7 @@ def _make_dense_to_bsm_copy_kernel(block_size: int):
 
 
 def allocate_block_sparse_from_dense(
-    dense_op: DenseLinearOperatorData,
+    dense_op: "DenseLinearOperatorData",
     block_size: int,
     sparsity_threshold: float = 1.0,
     device: wp.DeviceLike | None = None,
@@ -803,7 +801,7 @@ def allocate_block_sparse_from_dense(
 
 
 def dense_to_block_sparse_copy_values(
-    dense_op: DenseLinearOperatorData,
+    dense_op: "DenseLinearOperatorData",
     bsm: BlockSparseMatrices,
     block_size: int,
 ) -> None:

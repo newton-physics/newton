@@ -180,12 +180,6 @@ class BatchedLinearOperator:
 # ---------------
 
 
-@wp.func
-def lt_mask(a: Any, b: Any):
-    """Return 1 if a < b, else 0"""
-    return wp.where(a < b, type(a)(1), type(a)(0))
-
-
 @wp.kernel
 def check_termination(
     maxiter: wp.array[int],
@@ -200,18 +194,17 @@ def check_termination(
     wid = wp.tid()
 
     # Update iteration
-    active = wp.int32(world_active[wid])
-    condition = world_condition[wid]
-    world_stepped = active * condition
-    iter = world_stepped * loop_granularity + cur_iter[wid]
-    cur_iter[wid] = iter
+    condition = world_condition[wid] != 0
+    world_stepped = world_active[wid] and condition
+    iteration = cur_iter[wid]
+    if world_stepped:
+        iteration += loop_granularity
+    cur_iter[wid] = iteration
 
     # Check convergence
-    cont_norm = wp.int32(lt_mask(atol_sq[wid], r_norm_sq[wid]))
-    cont_iter = wp.int32(lt_mask(iter, maxiter[wid]))
-    cont = cont_iter * cont_norm * world_stepped
-    world_condition[wid] = cont
-    if cont > 0:
+    continue_world = world_stepped and atol_sq[wid] < r_norm_sq[wid] and iteration < maxiter[wid]
+    world_condition[wid] = wp.int32(continue_world)
+    if continue_world:
         batch_condition[0] = 1
 
 
