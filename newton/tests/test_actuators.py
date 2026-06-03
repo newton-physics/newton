@@ -1581,6 +1581,7 @@ class TestClamping(unittest.TestCase):
 # -------------------------------------------------------------------------
 
 
+@unittest.skipUnless(_HAS_LEGACY_ACTUATORS, "newton_actuators not installed")
 class TestLegacyActuatorCompat(unittest.TestCase):
     """Deprecated ``newton_actuators`` calling conventions must still work."""
 
@@ -2009,6 +2010,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 # -------------------------------------------------------------------------
 
 
+@unittest.skipUnless(HAS_USD, "pxr not installed")
 class TestUsdParsing(unittest.TestCase):
     """Exercise the ``NewtonActuator`` USD schema and
     :func:`parse_actuator_prim`.
