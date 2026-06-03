@@ -22,12 +22,14 @@ class _ViewerGeometryBatchingProbe(ViewerNull):
         self.log_capsules_calls = 0
         self.log_instances_calls = 0
 
-    def _hash_geometry(self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None) -> int:
+    def _hash_geometry(
+        self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None, mirror: bool = False
+    ) -> int:
         # Match ViewerGL's capsule batching behavior: ignore capsule dimensions in the hash so
         # varying-radius / varying-half_height capsules can share one cached geometry identity.
         if geo_type == newton.GeoType.CAPSULE:
             geo_scale = (1.0, 1.0)
-        return super()._hash_geometry(geo_type, geo_scale, thickness, is_solid, geo_src)
+        return super()._hash_geometry(geo_type, geo_scale, thickness, is_solid, geo_src, mirror)
 
     def set_model(self, model, max_worlds=None):
         super().set_model(model, max_worlds=max_worlds)

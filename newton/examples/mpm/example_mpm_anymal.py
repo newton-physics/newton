@@ -19,7 +19,7 @@ import newton
 import newton.examples
 import newton.utils
 from newton.examples.robot.example_robot_anymal_c_walk import (
-    _build_joint_target_pos_kernel,
+    _build_joint_target_q_kernel,
     _compute_obs_kernel,
     lab_to_mujoco,
     mujoco_to_lab,
@@ -29,6 +29,7 @@ from newton.solvers import SolverImplicitMPM
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         voxel_size = args.voxel_size
         particles_per_cell = args.particles_per_cell
         tolerance = args.tolerance
@@ -181,10 +182,10 @@ class Example:
         self._obs_wp = wp.zeros((1, 48), dtype=wp.float32, device=self.device)
         self._prev_act_wp = wp.zeros((1, 12), dtype=wp.float32, device=self.device)
 
-        # joint_target_pos is allocated by self.model.control() above; ensure
+        # joint_target_q is allocated by self.model.control() above; ensure
         # it lives on device so the kernel can write to it directly.
-        if self.control.joint_target_pos is None or self.control.joint_target_pos.device != self.device:
-            self.control.joint_target_pos = wp.zeros(18, dtype=wp.float32, device=self.device)
+        if self.control.joint_target_q is None or self.control.joint_target_q.device != self.device:
+            self.control.joint_target_q = wp.zeros(7 + 12, dtype=wp.float32, device=self.device)
 
         self._auto_forward = True
 
@@ -207,7 +208,7 @@ class Example:
             self.sand_graph = capture.graph
 
     def apply_control(self):
-        # Build obs -> run policy -> write joint_target_pos, all on device.
+        # Build obs -> run policy -> write joint_target_q, all on device.
         wp.launch(
             _compute_obs_kernel,
             dim=1,
@@ -227,15 +228,15 @@ class Example:
         act_wp = out[self._policy_output_name]
 
         wp.launch(
-            _build_joint_target_pos_kernel,
-            dim=6 + 12,
+            _build_joint_target_q_kernel,
+            dim=7 + 12,
             inputs=[
                 act_wp,
                 self._joint_pos_initial_wp,
                 self._mujoco_to_lab_wp,
                 0.5,
-                6,
-                self.control.joint_target_pos,
+                7,
+                self.control.joint_target_q,
             ],
             device=self.device,
         )

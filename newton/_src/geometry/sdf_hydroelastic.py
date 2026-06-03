@@ -259,6 +259,9 @@ class HydroelasticSDF:
         The reduce kernel selects winners from whatever fits in the buffer, so a smaller
         buffer trades off coverage for memory savings.
         Range: (0, 1]. Only applied when ``reduce_contacts`` is enabled; ignored otherwise."""
+        contact_reduction_hashtable_size_factor: float = 0.25
+        """Multiplier applied to the hydroelastic contact reduction hashtable size.
+        Increase this if reduction hashtable fill/failure warnings appear. Must be positive."""
         grid_size: int = 256 * 8 * 128
         """Grid size for contact handling. Can be tuned for performance."""
         output_contact_surface: bool = False
@@ -292,6 +295,11 @@ class HydroelasticSDF:
             if not (0.0 <= float(self.mc_edge_clamp_min) <= 0.5):
                 raise ValueError(
                     f"HydroelasticSDF.Config.mc_edge_clamp_min must be in [0.0, 0.5], got {self.mc_edge_clamp_min}"
+                )
+            if not float(self.contact_reduction_hashtable_size_factor) > 0.0:
+                raise ValueError(
+                    "HydroelasticSDF.Config.contact_reduction_hashtable_size_factor "
+                    f"must be > 0.0, got {self.contact_reduction_hashtable_size_factor}"
                 )
 
     @dataclass
@@ -436,6 +444,7 @@ class HydroelasticSDF:
                     anchor_contact=self.config.anchor_contact,
                     moment_matching=self.config.moment_matching,
                     margin_contact_area=self.config.margin_contact_area,
+                    hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
                 )
                 self.contact_reduction = HydroelasticContactReduction(
                     capacity=self.max_num_face_contacts,
@@ -450,7 +459,10 @@ class HydroelasticSDF:
                     capacity=self.max_num_face_contacts,
                     device=device,
                     writer_func=writer_func,
-                    config=HydroelasticReductionConfig(margin_contact_area=self.config.margin_contact_area),
+                    config=HydroelasticReductionConfig(
+                        margin_contact_area=self.config.margin_contact_area,
+                        hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
+                    ),
                 )
                 self.decode_contacts_kernel = get_decode_contacts_kernel(
                     self.config.margin_contact_area,
@@ -659,7 +671,7 @@ class HydroelasticSDF:
                 warnings.warn(
                     "Hydroelastic reduction dropped contacts due to hashtable insert "
                     f"failures ({hashtable_failures}). Increase rigid_contact_max "
-                    "and/or HydroelasticSDF.Config.buffer_fraction.",
+                    "and/or HydroelasticSDF.Config.contact_reduction_hashtable_size_factor.",
                     RuntimeWarning,
                     stacklevel=2,
                 )
@@ -1793,7 +1805,7 @@ def verify_collision_step(
     if ht_insert_failures[0] > 0:
         wp.printf(
             "  [hydroelastic] reduction hashtable full: %d insert failures. "
-            "Increase rigid_contact_max and/or buffer_fraction.\n",
+            "Increase contact_reduction_hashtable_size_factor or rigid_contact_max.\n",
             ht_insert_failures[0],
         )
         has_overflow = True

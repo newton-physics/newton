@@ -17,7 +17,7 @@ import warp as wp
 from ....config import ForwardKinematicsSolverConfig
 from ...core.joints import JointActuationType, JointDoFType
 from ...core.model import ModelKamino
-from ...core.types import vec6f
+from ...core.types import assign_to_warp_int32_array, to_warp_int32_array, vec6f
 from ...linalg.blas import (
     block_sparse_ATA_blockwise_3_4_inv_diagonal_2d,
     block_sparse_ATA_inv_diagonal_2d,
@@ -530,27 +530,27 @@ class ForwardKinematicsSolver:
         # Data allocation or transfer from numpy to warp
         with wp.ScopedDevice(self.device):
             # Dimensions
-            self.first_body_id = wp.from_numpy(first_body_id, dtype=wp.int32)
-            self.num_joints = wp.from_numpy(num_joints, dtype=wp.int32)
-            self.first_joint_id = wp.from_numpy(first_joint_id, dtype=wp.int32)
-            self.actuated_coord_offsets = wp.from_numpy(actuated_coord_offsets, dtype=wp.int32)
-            self.actuated_coords_map = wp.from_numpy(np.array(actuated_coords_map), dtype=wp.int32)
-            self.world_actuated_coord_offsets = wp.from_numpy(world_actuated_coord_offsets, dtype=wp.int32)
-            self.actuated_dof_offsets = wp.from_numpy(actuated_dof_offsets, dtype=wp.int32)
-            self.actuated_dofs_map = wp.from_numpy(np.array(actuated_dofs_map), dtype=wp.int32)
-            self.num_states = wp.from_numpy(num_states, dtype=wp.int32)
-            self.num_constraints = wp.from_numpy(num_constraints, dtype=wp.int32)
-            self.constraint_full_to_red_map = wp.from_numpy(constraint_full_to_red_map, dtype=wp.int32)
+            self.first_body_id = to_warp_int32_array(first_body_id)
+            self.num_joints = to_warp_int32_array(num_joints)
+            self.first_joint_id = to_warp_int32_array(first_joint_id)
+            self.actuated_coord_offsets = to_warp_int32_array(actuated_coord_offsets)
+            self.actuated_coords_map = to_warp_int32_array(np.array(actuated_coords_map))
+            self.world_actuated_coord_offsets = to_warp_int32_array(world_actuated_coord_offsets)
+            self.actuated_dof_offsets = to_warp_int32_array(actuated_dof_offsets)
+            self.actuated_dofs_map = to_warp_int32_array(np.array(actuated_dofs_map))
+            self.num_states = to_warp_int32_array(num_states)
+            self.num_constraints = to_warp_int32_array(num_constraints)
+            self.constraint_full_to_red_map = to_warp_int32_array(constraint_full_to_red_map)
 
             # Modified joints
-            self.joints_dof_type = wp.from_numpy(joints_dof_type, dtype=wp.int32)
-            self.joints_act_type = wp.from_numpy(joints_act_type, dtype=wp.int32)
-            self.joints_bid_B = wp.from_numpy(joints_bid_B, dtype=wp.int32)
-            self.joints_bid_F = wp.from_numpy(joints_bid_F, dtype=wp.int32)
+            self.joints_dof_type = to_warp_int32_array(joints_dof_type)
+            self.joints_act_type = to_warp_int32_array(joints_act_type)
+            self.joints_bid_B = to_warp_int32_array(joints_bid_B)
+            self.joints_bid_F = to_warp_int32_array(joints_bid_F)
             self.joints_B_r_Bj = wp.from_numpy(joints_B_r_Bj, dtype=wp.vec3f)
             self.joints_F_r_Fj = wp.from_numpy(joints_F_r_Fj, dtype=wp.vec3f)
             self.joints_X_j = wp.from_numpy(joints_X_j, dtype=wp.mat33f)
-            self.base_joint_id = wp.from_numpy(base_joint_ids, dtype=wp.int32)
+            self.base_joint_id = to_warp_int32_array(base_joint_ids)
 
             # Default base state
             self.base_q_default = wp.from_numpy(base_q_default, dtype=wp.transformf)
@@ -744,7 +744,7 @@ class ForwardKinematicsSolver:
                             pattern[tile_row, tile_col] = 1
                 for wd_id in eq_class:
                     tile_sparsity_pattern_np[wd_id] = pattern
-            self.tile_sparsity_pattern = wp.from_numpy(tile_sparsity_pattern_np, dtype=wp.int32, device=self.device)
+            self.tile_sparsity_pattern = to_warp_int32_array(tile_sparsity_pattern_np, device=self.device)
 
         # Compute sparsity pattern and initialize linear solver for sparse case
         if self.config.use_sparsity:
@@ -806,12 +806,12 @@ class ForwardKinematicsSolver:
             # Transfer data to GPU
             self.sparse_jacobian.finalize(jacobian_dims, num_nzb.tolist())
             self.sparse_jacobian.dims.assign(jacobian_dims)
-            self.sparse_jacobian.num_nzb.assign(num_nzb)
-            self.sparse_jacobian.nzb_coords.assign(np.stack((nzb_row, nzb_col)).T.flatten())
+            assign_to_warp_int32_array(self.sparse_jacobian.num_nzb, num_nzb)
+            assign_to_warp_int32_array(self.sparse_jacobian.nzb_coords, np.stack((nzb_row, nzb_col)).T.flatten())
             with wp.ScopedDevice(self.device):
-                self.rb_nzb_id = wp.from_numpy(rb_nzb_id, dtype=wp.int32)
-                self.ct_nzb_id_base = wp.from_numpy(ct_nzb_id_base, dtype=wp.int32)
-                self.ct_nzb_id_follower = wp.from_numpy(ct_nzb_id_follower, dtype=wp.int32)
+                self.rb_nzb_id = to_warp_int32_array(rb_nzb_id)
+                self.ct_nzb_id_base = to_warp_int32_array(ct_nzb_id_base)
+                self.ct_nzb_id_follower = to_warp_int32_array(ct_nzb_id_follower)
 
             # Initialize Jacobian assembly kernel
             self._eval_joint_constraints_sparse_jacobian_kernel = create_eval_joint_constraints_sparse_jacobian_kernel(

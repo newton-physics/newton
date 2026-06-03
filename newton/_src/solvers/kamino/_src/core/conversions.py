@@ -26,7 +26,7 @@ from .joints import (
 )
 from .materials import MaterialDescriptor, MaterialManager
 from .shapes import max_contacts_for_shape_pair
-from .types import float32, int32, mat33f, mat63f, quatf, transformf, vec2i, vec3f, vec6f
+from .types import float32, int32, mat33f, mat63f, quatf, to_warp_int32_array, transformf, vec2i, vec3f, vec6f
 
 if TYPE_CHECKING:
     from ..core.model import ModelKamino, ModelKaminoInfo
@@ -1348,19 +1348,19 @@ def convert_joints(
     model_info.num_joint_dynamic_cts = num_joint_dynamic_cts
     model_info.num_joint_kinematic_cts = num_joint_kinematic_cts
     with wp.ScopedDevice(model.device):
-        model_info.num_joints = wp.array(num_joints_np, dtype=int32)
-        model_info.joints_offset = wp.array(world_joint_offset_np, dtype=int32)
-        model_info.joint_coords_offset = wp.array(world_joint_coord_offset_np, dtype=int32)
-        model_info.joint_dofs_offset = wp.array(world_joint_dof_offset_np, dtype=int32)
-        model_info.joint_passive_coords_offset = wp.array(world_passive_joint_coord_offset_np, dtype=int32)
-        model_info.joint_passive_dofs_offset = wp.array(world_passive_joint_dofs_offset_np, dtype=int32)
-        model_info.joint_actuated_coords_offset = wp.array(world_actuated_joint_coord_offset_np, dtype=int32)
-        model_info.joint_actuated_dofs_offset = wp.array(world_actuated_joint_dofs_offset_np, dtype=int32)
-        model_info.joint_cts_offset = wp.array(world_joint_cts_offset_np, dtype=int32)
-        model_info.joint_dynamic_cts_offset = wp.array(world_joint_dynamic_cts_offset_np, dtype=int32)
-        model_info.joint_kinematic_cts_offset = wp.array(world_joint_kinematic_cts_offset_np, dtype=int32)
-        model_info.base_body_index = wp.array(base_body_idx_np, dtype=int32)
-        model_info.base_joint_index = wp.array(base_joint_idx_np, dtype=int32)
+        model_info.num_joints = to_warp_int32_array(num_joints_np)
+        model_info.joints_offset = to_warp_int32_array(world_joint_offset_np)
+        model_info.joint_coords_offset = to_warp_int32_array(world_joint_coord_offset_np)
+        model_info.joint_dofs_offset = to_warp_int32_array(world_joint_dof_offset_np)
+        model_info.joint_passive_coords_offset = to_warp_int32_array(world_passive_joint_coord_offset_np)
+        model_info.joint_passive_dofs_offset = to_warp_int32_array(world_passive_joint_dofs_offset_np)
+        model_info.joint_actuated_coords_offset = to_warp_int32_array(world_actuated_joint_coord_offset_np)
+        model_info.joint_actuated_dofs_offset = to_warp_int32_array(world_actuated_joint_dofs_offset_np)
+        model_info.joint_cts_offset = to_warp_int32_array(world_joint_cts_offset_np)
+        model_info.joint_dynamic_cts_offset = to_warp_int32_array(world_joint_dynamic_cts_offset_np)
+        model_info.joint_kinematic_cts_offset = to_warp_int32_array(world_joint_kinematic_cts_offset_np)
+        model_info.base_body_index = to_warp_int32_array(base_body_idx_np)
+        model_info.base_joint_index = to_warp_int32_array(base_joint_idx_np)
 
     # Convert local (per-world) joint offsets to global by adding per-world prefix offsets in-place
     wp.launch(
@@ -1553,7 +1553,7 @@ def convert_geometries(
     # Convert shapes to the Kamino data structure
     with wp.ScopedDevice(model.device):
         geom_gid = wp.zeros((model.shape_count,), dtype=int32)
-        geom_material = wp.from_numpy(geom_material_np, dtype=int32)
+        geom_material = to_warp_int32_array(geom_material_np)
         model_num_collidable_geoms = wp.zeros((1,), dtype=int32)
 
     wp.launch(

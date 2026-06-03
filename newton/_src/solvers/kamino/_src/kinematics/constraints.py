@@ -9,7 +9,7 @@ import warp as wp
 
 from ..core.data import DataKamino
 from ..core.model import ModelKamino
-from ..core.types import float32, int32, vec3f
+from ..core.types import float32, int32, to_warp_int32_array, vec3f
 from ..geometry.contacts import ContactMode, ContactsKamino
 from ..kinematics.limits import LimitsKamino
 
@@ -250,9 +250,9 @@ def make_unilateral_constraints_info(
     # Allocate all constraint info arrays on the target device
     with wp.ScopedDevice(device):
         # Allocate the per-world max constraints count arrays
-        model.info.max_total_cts = wp.array(world_maxncts, dtype=int32)
-        model.info.max_limit_cts = wp.array(world_maxnlc, dtype=int32)
-        model.info.max_contact_cts = wp.array(world_maxncc, dtype=int32)
+        model.info.max_total_cts = to_warp_int32_array(world_maxncts)
+        model.info.max_limit_cts = to_warp_int32_array(world_maxnlc)
+        model.info.max_contact_cts = to_warp_int32_array(world_maxncc)
 
         # Allocate the per-world active constraints count arrays
         # data.info.num_total_cts = wp.clone(model.info.num_joint_cts)
@@ -260,22 +260,22 @@ def make_unilateral_constraints_info(
         data.info.num_contact_cts = wp.zeros(shape=(num_worlds,), dtype=int32)
 
         # Allocate the per-world entity start arrays
-        model.info.limits_offset = wp.array(world_lio[:num_worlds], dtype=int32)
-        model.info.contacts_offset = wp.array(world_cio[:num_worlds], dtype=int32)
-        model.info.unilaterals_offset = wp.array(world_uio[:num_worlds], dtype=int32)
+        model.info.limits_offset = to_warp_int32_array(world_lio[:num_worlds])
+        model.info.contacts_offset = to_warp_int32_array(world_cio[:num_worlds])
+        model.info.unilaterals_offset = to_warp_int32_array(world_uio[:num_worlds])
 
         # Allocate the per-world constraint block/group arrays
-        model.info.total_cts_offset = wp.array(world_ctsio[:num_worlds], dtype=int32)
-        model.info.joint_dynamic_cts_group_offset = wp.array(world_jdcio[:num_worlds], dtype=int32)
-        model.info.joint_kinematic_cts_group_offset = wp.array(world_jkcio[:num_worlds], dtype=int32)
-        data.info.limit_cts_group_offset = wp.array(world_lcio[:num_worlds], dtype=int32)
-        data.info.contact_cts_group_offset = wp.array(world_ccio[:num_worlds], dtype=int32)
+        model.info.total_cts_offset = to_warp_int32_array(world_ctsio[:num_worlds])
+        model.info.joint_dynamic_cts_group_offset = to_warp_int32_array(world_jdcio[:num_worlds])
+        model.info.joint_kinematic_cts_group_offset = to_warp_int32_array(world_jkcio[:num_worlds])
+        data.info.limit_cts_group_offset = to_warp_int32_array(world_lcio[:num_worlds])
+        data.info.contact_cts_group_offset = to_warp_int32_array(world_ccio[:num_worlds])
 
         # Allocate per-joint total constraint vector offsets
-        model.joints.dynamic_cts_offset_joint_cts = wp.array(dynamic_cts_offset_joint_cts, dtype=int32)
-        model.joints.kinematic_cts_offset_joint_cts = wp.array(kinematic_cts_offset_joint_cts, dtype=int32)
-        model.joints.dynamic_cts_offset_total_cts = wp.array(dynamic_cts_offset_total_cts, dtype=int32)
-        model.joints.kinematic_cts_offset_total_cts = wp.array(kinematic_cts_offset_total_cts, dtype=int32)
+        model.joints.dynamic_cts_offset_joint_cts = to_warp_int32_array(dynamic_cts_offset_joint_cts)
+        model.joints.kinematic_cts_offset_joint_cts = to_warp_int32_array(kinematic_cts_offset_joint_cts)
+        model.joints.dynamic_cts_offset_total_cts = to_warp_int32_array(dynamic_cts_offset_total_cts)
+        model.joints.kinematic_cts_offset_total_cts = to_warp_int32_array(kinematic_cts_offset_total_cts)
 
 
 ###

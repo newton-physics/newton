@@ -629,22 +629,21 @@ def test_edge_edge_collision(test, device):
 
 
 def test_particle_collision(test, device):
-    with wp.ScopedDevice(device):
-        contact_radius = 1.23
-        builder1 = newton.ModelBuilder(up_axis=newton.Axis.Y)
-        builder1.add_cloth_grid(
-            pos=wp.vec3(0.0, 0.0, 0.0),
-            rot=wp.quat_identity(),
-            vel=wp.vec3(0.0, 0.0, 0.0),
-            dim_x=100,
-            dim_y=100,
-            cell_x=0.1,
-            cell_y=0.1,
-            mass=0.1,
-            particle_radius=contact_radius,
-        )
+    contact_radius = 1.23
+    builder1 = newton.ModelBuilder(up_axis=newton.Axis.Y)
+    builder1.add_cloth_grid(
+        pos=wp.vec3(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=100,
+        dim_y=100,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.1,
+        particle_radius=contact_radius,
+    )
 
-    cloth_grid = builder1.finalize()
+    cloth_grid = builder1.finalize(device=device)
     cloth_grid_particle_radius = cloth_grid.particle_radius.numpy()
     assert_np_equal(cloth_grid_particle_radius, np.full(cloth_grid_particle_radius.shape, contact_radius), tol=1e-5)
 
@@ -675,7 +674,7 @@ def test_particle_collision(test, device):
         density=0.1,
         particle_radius=contact_radius,
     )
-    cloth_mesh = builder2.finalize()
+    cloth_mesh = builder2.finalize(device=device)
     cloth_mesh_particle_radius = cloth_mesh.particle_radius.numpy()
     assert_np_equal(cloth_mesh_particle_radius, np.full(cloth_mesh_particle_radius.shape, contact_radius), tol=1e-5)
 
@@ -693,6 +692,7 @@ def test_particle_collision(test, device):
             cloth_mesh.particle_radius,
         ],
         outputs=[particle_f],
+        device=device,
     )
     test.assertTrue((np.linalg.norm(particle_f.numpy(), axis=1) != 0).all())
 
@@ -712,7 +712,7 @@ def test_particle_collision(test, device):
         density=0.1,
         particle_radius=0.5,
     )
-    cloth_mesh_2 = builder3.finalize()
+    cloth_mesh_2 = builder3.finalize(device=device)
     cloth_mesh_2_particle_radius = cloth_mesh_2.particle_radius.numpy()
     assert_np_equal(cloth_mesh_2_particle_radius, np.full(cloth_mesh_2_particle_radius.shape, 0.5), tol=1e-5)
 
@@ -730,6 +730,7 @@ def test_particle_collision(test, device):
             cloth_mesh_2.particle_radius,
         ],
         outputs=[particle_f_2],
+        device=device,
     )
     test.assertTrue((np.linalg.norm(particle_f_2.numpy(), axis=1) == 0).all())
 
@@ -1059,7 +1060,7 @@ def test_collision_filtering(test, device):
     wp.synchronize_device(device)
 
 
-devices = get_test_devices(mode="basic")
+devices = get_test_devices()
 
 
 class TestCollision(unittest.TestCase):

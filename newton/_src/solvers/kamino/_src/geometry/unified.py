@@ -30,7 +30,19 @@ from ..core.data import DataKamino
 from ..core.materials import DEFAULT_FRICTION, DEFAULT_RESTITUTION, make_get_material_pair_properties
 from ..core.model import ModelKamino
 from ..core.state import StateKamino
-from ..core.types import float32, int32, quatf, transformf, uint32, uint64, vec2f, vec2i, vec3f, vec4f
+from ..core.types import (
+    float32,
+    int32,
+    quatf,
+    to_warp_int32_array,
+    transformf,
+    uint32,
+    uint64,
+    vec2f,
+    vec2i,
+    vec3f,
+    vec4f,
+)
 from ..geometry.contacts import (
     DEFAULT_GEOM_PAIR_CONTACT_GAP,
     DEFAULT_GEOM_PAIR_MAX_CONTACTS,
@@ -496,7 +508,7 @@ class CollisionPipelineUnifiedKamino:
         # the Kamino model and data do not yet provide
         with wp.ScopedDevice(self._device):
             self.geom_data = wp.zeros(self._num_geoms, dtype=vec4f)
-            self.geom_collision_group = wp.array(geom_collision_group_list, dtype=int32)
+            self.geom_collision_group = to_warp_int32_array(geom_collision_group_list)
             self.collision_radius = wp.zeros(self._num_geoms, dtype=float32)
             self.shape_flags = wp.full(self._num_geoms, default_shape_flag, dtype=int32)
             self.shape_aabb_lower = wp.zeros(self._num_geoms, dtype=wp.vec3)

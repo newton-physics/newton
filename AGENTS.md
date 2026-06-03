@@ -32,6 +32,7 @@
 - Ruff bans heavy optional dependencies as module-level imports in `newton/_src` and `newton/tests`; import packages such as `mujoco`, `torch`, `pxr`, `trimesh`, `scipy`, `pyglet`, etc. lazily where needed. Examples and docs are exempt from this specific rule.
 - Follow Google-style docstrings with types in annotations. In public API docstrings, use shortest Sphinx cross-refs, prefer public paths, never reference `newton._src`.
 - Include SI units for physical public fields/docstrings: positions `[m]`, joint-dependent values `[m or rad]`, spatial vectors `[N, N·m]`; skip non-physical fields.
+- Code comments: brief, and only for non-obvious code. Explain *why* (intent, constraints, edge cases), not *what* the code already shows. Prefer a cross-reference over re-explaining context.
 - SPDX copyright years use the file's creation year; do not create ranges or update the year just because you edited a file.
 - New GitHub Actions must be pinned by SHA with a version comment, matching existing workflow style: `action@<sha>  # vX.Y.Z`.
 

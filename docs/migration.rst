@@ -79,7 +79,7 @@ to locate a joint's slice in the per-DOF arrays.
 
 For free and D6 joints, Newton stores linear DOFs before angular DOFs in per-axis arrays. In
 particular, floating-base slices of :attr:`newton.State.joint_qd`, :attr:`newton.Control.joint_f`,
-:attr:`newton.Control.joint_target_pos`, and :attr:`newton.Control.joint_target_vel` use
+:attr:`newton.Control.joint_target_q`, and :attr:`newton.Control.joint_target_qd` use
 ``(linear, angular)`` ordering, whereas ``warp.sim`` used ``(ang_vel, lin_vel)``.
 For public ``FREE`` and ``DISTANCE`` joints, :attr:`newton.State.joint_qd`
 stores the child-COM twist in the joint parent frame, while
@@ -127,7 +127,7 @@ The signatures of the :func:`newton.eval_fk` and :func:`newton.eval_ik` function
 -----------
 
 The :class:`newton.Control` interface is split by responsibility:
-:attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel` store per-DOF
+:attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd` store joint
 position and velocity targets, :attr:`newton.Control.joint_act` stores feedforward actuator input,
 and :attr:`newton.Control.joint_f` stores generalized forces/torques. Unlike ``warp.sim``,
 ``joint_act`` is no longer the target array.
@@ -139,7 +139,54 @@ In order to match the MuJoCo convention, :attr:`~newton.Control.joint_f` include
 corresponds to :attr:`newton.JointTargetMode.EFFORT` together with
 :attr:`newton.Control.joint_f`, while simultaneous position and velocity target control uses
 :attr:`newton.JointTargetMode.POSITION_VELOCITY` together with
-:attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
+:attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
+
+.. _joint-target-layout:
+
+Joint-target layout (``newton.use_coord_layout_targets``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Historically ``Control.joint_target_pos`` was shaped ``(joint_dof_count,)`` — the same layout as
+:attr:`~newton.State.joint_qd` — even though position targets semantically match
+:attr:`~newton.State.joint_q`. The two layouts diverge whenever an articulation contains a free
+joint (7 coords vs. 6 DOFs) or ball joint (4 coords vs. 3 DOFs); every actuated DOF downstream
+then ends up indexed with the wrong stride.
+
+Newton 1.3 introduces an opt-in flag to switch ``Model.joint_target_q`` / ``Control.joint_target_q``
+to the coord-aligned layout that matches ``joint_q``:
+
+.. code-block:: python
+
+   import newton
+
+   newton.use_coord_layout_targets = True  # set once, before building any model
+
+   builder = newton.ModelBuilder()
+   # ... build articulation ...
+   model = builder.finalize()
+   # model.joint_target_q  has shape (joint_coord_count,)  — matches joint_q
+   # model.joint_target_qd has shape (joint_dof_count,)    — matches joint_qd
+
+Migration steps:
+
+- Replace ``Control.joint_target_pos`` / ``Model.joint_target_pos`` with
+  :attr:`Control.joint_target_q` / :attr:`Model.joint_target_q`. The legacy names emit a
+  :class:`DeprecationWarning` and raise :class:`AttributeError` when
+  ``newton.use_coord_layout_targets`` is ``True``.
+- Replace ``Control.joint_target_vel`` / ``Model.joint_target_vel`` with
+  :attr:`Control.joint_target_qd` / :attr:`Model.joint_target_qd`.
+- On :class:`ModelBuilder`, ``joint_target_pos`` and ``joint_target_vel`` have been removed.
+  Configure per-axis targets via :attr:`ModelBuilder.JointDofConfig.target_pos` /
+  :attr:`~ModelBuilder.JointDofConfig.target_vel` before calling ``add_joint*()``, or write
+  to :attr:`ModelBuilder.joint_target_q` / :attr:`~ModelBuilder.joint_target_qd` directly.
+- When indexing ``joint_target_q`` from user code, use :attr:`Model.joint_target_q_start` (which
+  aliases :attr:`Model.joint_q_start` when the flag is ``True`` and
+  :attr:`Model.joint_qd_start` otherwise). Solvers and the actuator library already do this.
+- When constructing an :class:`Actuator` with a custom ``pos_indices``, drop the
+  ``target_pos_indices`` argument: with the coord layout it defaults to ``pos_indices``.
+
+A subsequent release will flip the flag's default to ``True`` and remove the legacy
+attributes.
 
 
 ``ModelBuilder``

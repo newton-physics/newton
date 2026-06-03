@@ -12,6 +12,7 @@ import warp.examples
 from newton import ModelBuilder
 from newton._src.sim.graph_coloring import (
     ColoringAlgorithm,
+    color_graph,
     construct_trimesh_graph_edges,
     convert_to_color_groups,
     validate_graph_coloring,
@@ -97,6 +98,26 @@ def color_lattice_grid(num_x, num_y):
     return color_groups
 
 
+def test_color_graph_returns_valid_color_groups(test, device):
+    """Newton graph coloring should return valid color groups for a simple graph."""
+    with wp.ScopedDevice(device):
+        graph_edges = wp.array([[0, 1], [1, 2], [2, 3]], dtype=wp.int32, device="cpu")
+
+        color_groups = color_graph(4, graph_edges, balance_colors=True, algorithm=ColoringAlgorithm.MCS)
+
+        test.assertIsInstance(color_groups, list)
+        test.assertGreater(len(color_groups), 0)
+
+        node_colors = np.full(4, -1, dtype=np.int32)
+        for color, group in enumerate(color_groups):
+            group_np = group.numpy() if isinstance(group, wp.array) else group
+            node_colors[group_np] = color
+
+        test.assertTrue(np.all(node_colors >= 0))
+        for edge in graph_edges.numpy():
+            test.assertNotEqual(node_colors[edge[0]], node_colors[edge[1]])
+
+
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 def test_coloring_trimesh(test, device):
     from pxr import Usd, UsdGeom
@@ -122,16 +143,15 @@ def test_coloring_trimesh(test, device):
 
         model = builder.finalize()
 
-        particle_colors = wp.empty(shape=(model.particle_count), dtype=int, device="cpu")
+        particle_colors = wp.empty(shape=(model.particle_count), dtype=wp.int32, device="cpu")
 
-        edge_indices_cpu = wp.array(model.edge_indices.numpy()[:, 2:], dtype=int, device="cpu")
+        edge_indices_cpu = wp.array(model.edge_indices.numpy()[:, 2:], dtype=wp.int32, device="cpu")
 
         # coloring without bending
-        num_colors_greedy = wp._src.context.runtime.core.wp_graph_coloring(
-            model.particle_count,
-            edge_indices_cpu.__ctype__(),
-            ColoringAlgorithm.GREEDY.value,
-            particle_colors.__ctype__(),
+        num_colors_greedy = wp.utils.graph_coloring_assign(
+            edge_indices_cpu,
+            particle_colors,
+            wp.utils.GraphColoringAlgorithm.GREEDY,
         )
         wp.launch(
             kernel=validate_graph_coloring,
@@ -140,11 +160,10 @@ def test_coloring_trimesh(test, device):
             device="cpu",
         )
 
-        num_colors_mcs = wp._src.context.runtime.core.wp_graph_coloring(
-            model.particle_count,
-            edge_indices_cpu.__ctype__(),
-            ColoringAlgorithm.MCS.value,
-            particle_colors.__ctype__(),
+        num_colors_mcs = wp.utils.graph_coloring_assign(
+            edge_indices_cpu,
+            particle_colors,
+            wp.utils.GraphColoringAlgorithm.MCS,
         )
         wp.launch(
             kernel=validate_graph_coloring,
@@ -155,18 +174,16 @@ def test_coloring_trimesh(test, device):
 
         # coloring with bending
         edge_indices_cpu_with_bending = construct_trimesh_graph_edges(model.edge_indices, True)
-        num_colors_greedy = wp._src.context.runtime.core.wp_graph_coloring(
-            model.particle_count,
-            edge_indices_cpu_with_bending.__ctype__(),
-            ColoringAlgorithm.GREEDY.value,
-            particle_colors.__ctype__(),
+        num_colors_greedy = wp.utils.graph_coloring_assign(
+            edge_indices_cpu_with_bending,
+            particle_colors,
+            wp.utils.GraphColoringAlgorithm.GREEDY,
         )
-        wp._src.context.runtime.core.wp_balance_coloring(
-            model.particle_count,
-            edge_indices_cpu_with_bending.__ctype__(),
+        wp.utils.graph_coloring_balance(
+            edge_indices_cpu_with_bending,
+            particle_colors,
             num_colors_greedy,
             1.1,
-            particle_colors.__ctype__(),
         )
         wp.launch(
             kernel=validate_graph_coloring,
@@ -175,18 +192,16 @@ def test_coloring_trimesh(test, device):
             device="cpu",
         )
 
-        num_colors_mcs = wp._src.context.runtime.core.wp_graph_coloring(
-            model.particle_count,
-            edge_indices_cpu_with_bending.__ctype__(),
-            ColoringAlgorithm.MCS.value,
-            particle_colors.__ctype__(),
+        num_colors_mcs = wp.utils.graph_coloring_assign(
+            edge_indices_cpu_with_bending,
+            particle_colors,
+            wp.utils.GraphColoringAlgorithm.MCS,
         )
-        max_min_ratio = wp._src.context.runtime.core.wp_balance_coloring(
-            model.particle_count,
-            edge_indices_cpu_with_bending.__ctype__(),
+        max_min_ratio = wp.utils.graph_coloring_balance(
+            edge_indices_cpu_with_bending,
+            particle_colors,
             num_colors_mcs,
             1.1,
-            particle_colors.__ctype__(),
         )
         wp.launch(
             kernel=validate_graph_coloring,
@@ -299,7 +314,7 @@ def test_combine_coloring(test, device):
         # all particles has been colored exactly once
         assert_np_equal(particle_number_colored, 0)
 
-        edge_indices_cpu = wp.array(model.edge_indices.numpy()[:, 2:], dtype=int, device="cpu")
+        edge_indices_cpu = wp.array(model.edge_indices.numpy()[:, 2:], dtype=wp.int32, device="cpu")
         wp.launch(
             kernel=validate_graph_coloring,
             inputs=[edge_indices_cpu, wp.array(particle_colors, dtype=int, device="cpu")],
@@ -474,6 +489,12 @@ class TestColoring(unittest.TestCase):
 
 add_function_test(TestColoring, "test_coloring_trimesh", test_coloring_trimesh, devices=devices, check_output=False)
 add_function_test(TestColoring, "test_combine_coloring", test_combine_coloring, devices=devices)
+add_function_test(
+    TestColoring,
+    "test_color_graph_returns_valid_color_groups",
+    test_color_graph_returns_valid_color_groups,
+    devices=devices,
+)
 
 # Rigid body coloring tests
 add_function_test(

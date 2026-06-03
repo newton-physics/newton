@@ -889,12 +889,15 @@ class HydroelasticReductionConfig:
             maximum friction moment per normal bin is preserved between reduced
             and unreduced contacts. Automatically enables ``anchor_contact``.
         margin_contact_area: Contact area used for non-penetrating contacts at the margin.
+        hashtable_size_factor: Multiplier applied to the contact buffer capacity
+            when allocating the reduction hashtable. Must be positive.
     """
 
     normal_matching: bool = True
     anchor_contact: bool = False
     moment_matching: bool = False
     margin_contact_area: float = 1e-2
+    hashtable_size_factor: float = 0.25
 
 
 class HydroelasticContactReduction:
@@ -980,6 +983,7 @@ class HydroelasticContactReduction:
             device=device,
             store_hydroelastic_data=True,
             store_moment_data=config.moment_matching,
+            hashtable_size_factor=config.hashtable_size_factor,
         )
 
         # Create reduction kernel

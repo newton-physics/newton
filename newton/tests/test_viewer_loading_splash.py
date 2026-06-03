@@ -14,24 +14,39 @@ class TestViewerGLLoadingSplashState(unittest.TestCase):
 
     def _make_viewer(self):
         # Bypass ``ViewerGL.__init__`` (which would open a GL window) and
-        # hand-initialize only the state the splash API touches.
+        # hand-initialize only the state the splash API touches. State lives on
+        # ViewerGui; the viewer just delegates to ``self.gui``.
         viewer = ViewerGL.__new__(ViewerGL)
-        viewer._loading_splash_active = False
-        viewer._loading_splash_text = None
+        viewer.gui = SimpleNamespace(_loading_splash_active=False, _loading_splash_text=None)
+        viewer.gui.show_loading_splash = lambda text=None: (
+            setattr(viewer.gui, "_loading_splash_active", True),
+            setattr(viewer.gui, "_loading_splash_text", text),
+        )
+        viewer.gui.hide_loading_splash = lambda: (
+            setattr(viewer.gui, "_loading_splash_active", False),
+            setattr(viewer.gui, "_loading_splash_text", None),
+        )
         return viewer
 
     def test_show_sets_active_and_text(self):
         viewer = self._make_viewer()
         viewer.show_loading_splash("Loading...")
-        self.assertTrue(viewer._loading_splash_active)
-        self.assertEqual(viewer._loading_splash_text, "Loading...")
+        self.assertTrue(viewer.gui._loading_splash_active)
+        self.assertEqual(viewer.gui._loading_splash_text, "Loading...")
 
     def test_hide_clears_state(self):
         viewer = self._make_viewer()
         viewer.show_loading_splash("Loading...")
         viewer.hide_loading_splash()
-        self.assertFalse(viewer._loading_splash_active)
-        self.assertIsNone(viewer._loading_splash_text)
+        self.assertFalse(viewer.gui._loading_splash_active)
+        self.assertIsNone(viewer.gui._loading_splash_text)
+
+    def test_headless_no_gui_is_noop(self):
+        viewer = ViewerGL.__new__(ViewerGL)
+        viewer.gui = None
+        # Must not raise even though there is no GUI to drive.
+        viewer.show_loading_splash("Loading...")
+        viewer.hide_loading_splash()
 
 
 class _RecordingViewer:
@@ -69,6 +84,7 @@ class TestLoadingSplashLifecycle(unittest.TestCase):
         defaults = {
             "viewer": "gl",
             "headless": False,
+            "paused": False,
             "device": None,
             "quiet": True,
             "warp_config": [],

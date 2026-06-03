@@ -159,6 +159,18 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                             wp.static(config.enable_backface_culling),
                             closest_hit.distance,
                         )
+                    elif shape_type == GeoType.HFIELD:
+                        hit_distance, hit_normal, hit_u, hit_v, hit_face_id = _ray_intersect_mesh_smooth(
+                            shape_transforms[si],
+                            shape_sizes[si],
+                            ray_origin_world,
+                            ray_dir_world,
+                            shape_source_ptr[si],
+                            wp.int32(-1),
+                            mesh_data,
+                            wp.static(config.enable_backface_culling),
+                            closest_hit.distance,
+                        )
                     elif shape_type == GeoType.PLANE:
                         hit_distance, hit_normal = _plane_hit_with_culling(
                             shape_transforms[si],
@@ -445,6 +457,16 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
                             wp.static(config.enable_backface_culling),
                             closest_hit.distance,
                         )
+                    elif shape_type == GeoType.HFIELD:
+                        hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh(
+                            shape_transforms[si],
+                            ray_origin_world,
+                            ray_dir_world,
+                            shape_sizes[si],
+                            shape_source_ptr[si],
+                            wp.static(config.enable_backface_culling),
+                            closest_hit.distance,
+                        )
                     elif shape_type == GeoType.PLANE:
                         hit_dist, _plane_normal = _plane_hit_with_culling(
                             shape_transforms[si],
@@ -677,6 +699,16 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
 
                     shape_type = shape_types[si]
                     if shape_type == GeoType.MESH:
+                        hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh(
+                            shape_transforms[si],
+                            ray_origin_world,
+                            ray_dir_world,
+                            shape_sizes[si],
+                            shape_source_ptr[si],
+                            False,
+                            max_dist,
+                        )
+                    elif shape_type == GeoType.HFIELD:
                         hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh(
                             shape_transforms[si],
                             ray_origin_world,

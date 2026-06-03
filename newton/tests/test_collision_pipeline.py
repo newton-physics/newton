@@ -10,7 +10,11 @@ import warp.examples
 
 import newton
 from newton import GeoType
+from newton._src.geometry import create_mesh_terrain
+from newton._src.geometry.flags import ParticleFlags, ShapeFlags
+from newton._src.geometry.kernels import create_soft_contacts, mesh_sdf
 from newton._src.sim.collide import _compute_per_world_shape_pairs_max, _estimate_rigid_contact_max
+from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
@@ -100,7 +104,7 @@ class CollisionSetup:
 
         self.graph = None
         if wp.get_device(device).is_cuda:
-            with wp.ScopedCapture() as capture:
+            with wp.ScopedCapture(device=device) as capture:
                 self.simulate()
             self.graph = capture.graph
 
@@ -140,8 +144,8 @@ class CollisionSetup:
             raise NotImplementedError(f"Shape type {shape_type} not implemented")
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
+        if wp.get_device(self._device).is_cuda:
+            with wp.ScopedCapture(device=self._device) as capture:
                 self.simulate()
             self.graph = capture.graph
         else:
@@ -206,6 +210,8 @@ class CollisionSetup:
             )
 
 
+# The exhaustive shape/broad-phase matrix is one of the heaviest GPU suites.
+# Keep it on one CUDA device; targeted deterministic tests below use all selected CUDA devices.
 devices = get_cuda_test_devices(mode="basic")
 
 
@@ -446,6 +452,334 @@ for mode_name, test_func in mesh_mesh_sdf_tests:
             broad_phase=broad_phase,
             check_output=False,  # Disable output checking due to Warp module loading messages
         )
+
+
+# ============================================================================
+# Mesh sign query regressions
+# ============================================================================
+
+
+class TestMeshSignQueries(unittest.TestCase):
+    pass
+
+
+@wp.kernel
+def _query_mesh_signs(
+    mesh: wp.uint64,
+    points: wp.array[wp.vec3],
+    max_dist: float,
+    parity_sign: wp.array[float],
+    normal_sign: wp.array[float],
+):
+    i = wp.tid()
+    p = points[i]
+
+    parity = wp.mesh_query_point_sign_parity(mesh, p, max_dist)
+    parity_sign[i] = parity.sign if parity.result else 0.0
+
+    sign = float(0.0)
+    face = int(0)
+    u = float(0.0)
+    v = float(0.0)
+    normal_hit = wp.mesh_query_point_sign_normal(mesh, p, max_dist, sign, face, u, v)
+    normal_sign[i] = sign if normal_hit else 0.0
+
+
+@wp.kernel
+def _query_mesh_sdf(
+    mesh: wp.uint64,
+    points: wp.array[wp.vec3],
+    max_dist: float,
+    distances: wp.array[float],
+):
+    i = wp.tid()
+    distances[i] = mesh_sdf(mesh, points[i], max_dist)
+
+
+@wp.func
+def _solid_angle(point: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3) -> float:
+    pa = a - point
+    pb = b - point
+    pc = c - point
+    la = wp.length(pa)
+    lb = wp.length(pb)
+    lc = wp.length(pc)
+    numerator = wp.dot(pa, wp.cross(pb, pc))
+    denominator = la * lb * lc + wp.dot(pa, pb) * lc + wp.dot(pb, pc) * la + wp.dot(pc, pa) * lb
+    return 2.0 * wp.atan2(numerator, denominator)
+
+
+@wp.kernel
+def _query_brute_force_winding_signs(
+    vertices: wp.array[wp.vec3],
+    indices: wp.array[int],
+    face_count: int,
+    points: wp.array[wp.vec3],
+    signs: wp.array[float],
+):
+    i = wp.tid()
+    point = points[i]
+    angle_sum = float(0.0)
+
+    for face_index in range(face_count):
+        offset = face_index * 3
+        a = vertices[indices[offset + 0]]
+        b = vertices[indices[offset + 1]]
+        c = vertices[indices[offset + 2]]
+        angle_sum += _solid_angle(point, a, b, c)
+
+    winding_number = angle_sum / 12.566370614359172
+    if wp.abs(winding_number) > 0.5:
+        signs[i] = -1.0
+    else:
+        signs[i] = 1.0
+
+
+def _make_warp_mesh(vertices: np.ndarray, faces: np.ndarray, device) -> wp.Mesh:
+    return wp.Mesh(
+        points=wp.array(vertices.astype(np.float32), dtype=wp.vec3, device=device),
+        indices=wp.array(faces.astype(np.int32).reshape(-1), dtype=wp.int32, device=device),
+    )
+
+
+def _make_mixed_winding_convex_pile_proxy() -> tuple[np.ndarray, np.ndarray]:
+    hx, hy, hz = 0.12, 0.07, 0.05
+    vertices = np.array(
+        [
+            [-hx, -hy, -hz],
+            [hx, -hy, -hz],
+            [hx, hy, -hz],
+            [-hx, hy, -hz],
+            [-hx, -hy, hz],
+            [hx, -hy, hz],
+            [hx, hy, hz],
+            [-hx, hy, hz],
+        ],
+        dtype=np.float32,
+    )
+
+    faces = np.array(
+        [
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [3, 7, 6],
+            [3, 6, 2],
+            [0, 4, 7],
+            [0, 7, 3],
+            # Intentionally mixed winding on the +X face. This reproduces the
+            # failure mode from compacted convex hulls whose triangle winding
+            # is not consistently outward.
+            [1, 6, 2],
+            [1, 5, 6],
+        ],
+        dtype=np.int32,
+    )
+    return vertices, faces
+
+
+def _make_watertight_box(
+    center: tuple[float, float, float],
+    half_extents: tuple[float, float, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    cx, cy, cz = center
+    hx, hy, hz = half_extents
+    vertices = np.array(
+        [
+            [cx - hx, cy - hy, cz - hz],
+            [cx + hx, cy - hy, cz - hz],
+            [cx + hx, cy + hy, cz - hz],
+            [cx - hx, cy + hy, cz - hz],
+            [cx - hx, cy - hy, cz + hz],
+            [cx + hx, cy - hy, cz + hz],
+            [cx + hx, cy + hy, cz + hz],
+            [cx - hx, cy + hy, cz + hz],
+        ],
+        dtype=np.float32,
+    )
+    faces = np.array(
+        [
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [3, 7, 6],
+            [3, 6, 2],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+        ],
+        dtype=np.int32,
+    )
+    return vertices, faces
+
+
+def _make_thin_gap_box_pair() -> tuple[np.ndarray, np.ndarray]:
+    gap = 2.0e-4
+    hx, hy, hz = 0.75, 0.55, 0.45
+    left_vertices, left_faces = _make_watertight_box((-hx - 0.5 * gap, 0.0, 0.0), (hx, hy, hz))
+    right_vertices, right_faces = _make_watertight_box((hx + 0.5 * gap, 0.0, 0.0), (hx, hy, hz))
+    vertices = np.vstack([left_vertices, right_vertices]).astype(np.float32)
+    faces = np.vstack([left_faces, right_faces + left_vertices.shape[0]]).astype(np.int32)
+    return vertices, faces
+
+
+def _sample_thin_gap_points(sample_count: int = 8192) -> np.ndarray:
+    rng = np.random.default_rng(23)
+    gap = 2.0e-4
+    hy, hz = 0.55, 0.45
+    points = np.empty((sample_count, 3), dtype=np.float32)
+    points[:, 0] = rng.uniform(-0.45 * gap, 0.45 * gap, sample_count)
+    points[:, 1] = rng.uniform(-0.8 * hy, 0.8 * hy, sample_count)
+    points[:, 2] = rng.uniform(-0.8 * hz, 0.8 * hz, sample_count)
+    return points
+
+
+def test_mixed_winding_convex_pile_contact_normal(test, device):
+    vertices, faces = _make_mixed_winding_convex_pile_proxy()
+    mesh = _make_warp_mesh(vertices, faces, device)
+
+    query_point = np.array([[0.13, 0.018, 0.012]], dtype=np.float32)
+    points = wp.array(query_point, dtype=wp.vec3, device=device)
+    parity_sign = wp.zeros(1, dtype=wp.float32, device=device)
+    normal_sign = wp.zeros(1, dtype=wp.float32, device=device)
+
+    wp.launch(_query_mesh_signs, dim=1, inputs=[mesh.id, points, 0.1, parity_sign, normal_sign], device=device)
+
+    test.assertGreater(float(parity_sign.numpy()[0]), 0.0)
+    test.assertLess(float(normal_sign.numpy()[0]), 0.0)
+
+    soft_contact_count = wp.zeros(1, dtype=wp.int32, device=device)
+    soft_contact_particle = wp.empty(1, dtype=wp.int32, device=device)
+    soft_contact_shape = wp.empty(1, dtype=wp.int32, device=device)
+    soft_contact_body_pos = wp.empty(1, dtype=wp.vec3, device=device)
+    soft_contact_body_vel = wp.empty(1, dtype=wp.vec3, device=device)
+    soft_contact_normal = wp.empty(1, dtype=wp.vec3, device=device)
+    soft_contact_tids = wp.empty(1, dtype=wp.int32, device=device)
+
+    wp.launch(
+        create_soft_contacts,
+        dim=1,
+        inputs=[
+            points,
+            wp.array([0.05], dtype=wp.float32, device=device),
+            wp.array([int(ParticleFlags.ACTIVE)], dtype=wp.int32, device=device),
+            wp.array([-1], dtype=wp.int32, device=device),
+            wp.empty(0, dtype=wp.transform, device=device),
+            wp.array([wp.transform()], dtype=wp.transform, device=device),
+            wp.array([-1], dtype=wp.int32, device=device),
+            wp.array([int(GeoType.CONVEX_MESH)], dtype=wp.int32, device=device),
+            wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3, device=device),
+            wp.array([mesh.id], dtype=wp.uint64, device=device),
+            wp.array([-1], dtype=wp.int32, device=device),
+            0.0,
+            1,
+            1,
+            wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.empty(0, dtype=HeightfieldData, device=device),
+            wp.empty(0, dtype=wp.float32, device=device),
+        ],
+        outputs=[
+            soft_contact_count,
+            soft_contact_particle,
+            soft_contact_shape,
+            soft_contact_body_pos,
+            soft_contact_body_vel,
+            soft_contact_normal,
+            soft_contact_tids,
+        ],
+        device=device,
+    )
+
+    test.assertEqual(int(soft_contact_count.numpy()[0]), 1)
+    normal = np.asarray(soft_contact_normal.numpy()[0], dtype=np.float32)
+    test.assertGreater(float(np.dot(normal, np.array([1.0, 0.0, 0.0], dtype=np.float32))), 0.99)
+
+
+def test_parity_sign_accuracy_exceeds_normal_query(test, device):
+    vertices, faces = _make_thin_gap_box_pair()
+    points_np = _sample_thin_gap_points()
+    vertices_wp = wp.array(vertices, dtype=wp.vec3, device=device)
+    indices_wp = wp.array(faces.reshape(-1), dtype=wp.int32, device=device)
+    points_wp = wp.array(points_np, dtype=wp.vec3, device=device)
+    mesh = wp.Mesh(points=vertices_wp, indices=indices_wp)
+
+    expected_signs_wp = wp.zeros(points_np.shape[0], dtype=wp.float32, device=device)
+    wp.launch(
+        _query_brute_force_winding_signs,
+        dim=points_np.shape[0],
+        inputs=[vertices_wp, indices_wp, faces.shape[0], points_wp, expected_signs_wp],
+        device=device,
+    )
+
+    parity_signs = wp.zeros(points_np.shape[0], dtype=wp.float32, device=device)
+    normal_signs = wp.zeros(points_np.shape[0], dtype=wp.float32, device=device)
+    wp.launch(
+        _query_mesh_signs,
+        dim=points_np.shape[0],
+        inputs=[mesh.id, points_wp, 10.0, parity_signs, normal_signs],
+        device=device,
+    )
+
+    distances = wp.zeros(points_np.shape[0], dtype=wp.float32, device=device)
+    wp.launch(
+        _query_mesh_sdf,
+        dim=points_np.shape[0],
+        inputs=[mesh.id, points_wp, 10.0, distances],
+        device=device,
+    )
+
+    expected_signs = expected_signs_wp.numpy()
+    production_signs = np.where(distances.numpy() < 0.0, -1.0, 1.0).astype(np.float32)
+    parity_accuracy = float(np.mean(parity_signs.numpy() == expected_signs))
+    production_accuracy = float(np.mean(production_signs == expected_signs))
+    normal_accuracy = float(np.mean(normal_signs.numpy() == expected_signs))
+
+    test.assertTrue(np.all(expected_signs > 0.0))
+    test.assertGreaterEqual(
+        parity_accuracy,
+        0.99,
+        f"Parity query accuracy was {parity_accuracy:.3f} against brute-force winding",
+    )
+    test.assertGreaterEqual(
+        production_accuracy,
+        0.99,
+        f"mesh_sdf accuracy was {production_accuracy:.3f} against brute-force winding",
+    )
+    test.assertLessEqual(
+        normal_accuracy,
+        0.05,
+        f"Expected the old normal query to fail in the thin gap, got accuracy {normal_accuracy:.3f}",
+    )
+    test.assertGreater(
+        production_accuracy,
+        normal_accuracy + 0.9,
+        f"Expected parity-backed mesh_sdf accuracy ({production_accuracy:.3f}) to exceed "
+        f"normal-query accuracy ({normal_accuracy:.3f})",
+    )
+
+
+add_function_test(
+    TestMeshSignQueries,
+    "test_mixed_winding_convex_pile_contact_normal",
+    test_mixed_winding_convex_pile_contact_normal,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
+    "test_parity_sign_accuracy_exceeds_normal_query",
+    test_parity_sign_accuracy_exceeds_normal_query,
+    devices=devices,
+    check_output=False,
+)
 
 
 # ============================================================================
@@ -870,8 +1204,6 @@ class TestShapePairsMaxScaling(unittest.TestCase):
     @staticmethod
     def _make_model(num_worlds, shapes_per_world, num_global=0, shape_flags_value=None):
         """Build a minimal Model with the given world/shape layout."""
-        from newton._src.geometry.flags import ShapeFlags  # noqa: PLC0415
-
         total = num_worlds * shapes_per_world + num_global
         world_ids = np.repeat(np.arange(num_worlds, dtype=np.int32), shapes_per_world)
         if num_global > 0:
@@ -1107,10 +1439,95 @@ class TestDeterministicPipeline(unittest.TestCase):
     pass
 
 
+class TestMeshConvexMidphase(unittest.TestCase):
+    """Test mesh-vs-convex triangle candidate generation."""
+
+    pass
+
+
+class TestHeightfieldConvexMidphase(unittest.TestCase):
+    """Test heightfield-vs-convex triangle candidate generation."""
+
+    pass
+
+
+def test_mesh_convex_midphase_queries_margin_shell(test, device):
+    margin = 0.02
+    gap = 0.005
+    radius = 0.1
+    surface_separation = 0.03
+
+    cfg = newton.ModelBuilder.ShapeConfig(margin=margin, gap=gap)
+    builder = newton.ModelBuilder()
+
+    vertices = np.array(
+        [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    indices = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+    builder.add_shape_mesh(body=-1, mesh=newton.Mesh(vertices, indices), cfg=cfg)
+
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, radius + surface_separation), wp.quat_identity()))
+    builder.add_joint_free(child=body)
+    builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(contact_count, 0)
+
+
+def test_heightfield_convex_midphase_queries_margin_shell_at_lateral_edge(test, device):
+    margin = 0.02
+    gap = 0.005
+    radius = 0.1
+    surface_separation = 0.03
+
+    cfg = newton.ModelBuilder.ShapeConfig(margin=margin, gap=gap)
+    builder = newton.ModelBuilder()
+
+    heightfield = newton.Heightfield(
+        data=np.zeros((3, 3), dtype=np.float32),
+        nrow=3,
+        ncol=3,
+        hx=1.0,
+        hy=1.0,
+        min_z=0.0,
+        max_z=0.0,
+    )
+    builder.add_shape_heightfield(heightfield=heightfield, cfg=cfg)
+
+    body = builder.add_body(
+        xform=wp.transform(wp.vec3(1.0 + radius + surface_separation, 0.0, 0.0), wp.quat_identity())
+    )
+    builder.add_joint_free(child=body)
+    builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(contact_count, 0)
+
+
 def _build_deterministic_scene(device):
     """Build the mixed-shape scene from example_basic_shapes6_determinism."""
-    from newton._src.geometry import create_mesh_terrain  # noqa: PLC0415
-
     builder = newton.ModelBuilder()
 
     # Procedural mesh terrain ground
@@ -1330,7 +1747,7 @@ def test_deterministic_pipeline_500_steps(test, device):
         # ``example_basic_pendulum``).
         _frame()
 
-        with wp.ScopedCapture() as capture:
+        with wp.ScopedCapture(device=device) as capture:
             _frame()
         graph = capture.graph
 
@@ -1459,7 +1876,7 @@ def test_deterministic_pipeline_sticky_500_steps(test, device):
         # the same warm-up state).
         _frame()
 
-        with wp.ScopedCapture() as capture:
+        with wp.ScopedCapture(device=device) as capture:
             _frame()
         graph = capture.graph
 
@@ -1503,6 +1920,22 @@ add_function_test(
     TestDeterministicPipeline,
     "test_deterministic_pipeline_sticky_500_steps",
     test_deterministic_pipeline_sticky_500_steps,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestMeshConvexMidphase,
+    "test_mesh_convex_midphase_queries_margin_shell",
+    test_mesh_convex_midphase_queries_margin_shell,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestHeightfieldConvexMidphase,
+    "test_heightfield_convex_midphase_queries_margin_shell_at_lateral_edge",
+    test_heightfield_convex_midphase_queries_margin_shell_at_lateral_edge,
     devices=get_cuda_test_devices(),
     check_output=False,
 )

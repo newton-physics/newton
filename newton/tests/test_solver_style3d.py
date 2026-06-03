@@ -33,7 +33,7 @@ def test_constructor_precomputes_fixed_pd_matrix(test, device):
     test.assertGreater(int(solver.pd_non_diags.num_nz.numpy().sum()), 0)
 
 
-devices = get_test_devices(mode="basic")
+devices = get_test_devices()
 
 
 class TestSolverStyle3D(unittest.TestCase):

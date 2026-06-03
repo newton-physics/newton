@@ -113,6 +113,7 @@ class ViewerRerun(ViewerBase):
         self,
         *,
         app_id: str | None = None,
+        rec_id: str | None = None,
         address: str | None = None,
         serve_web_viewer: bool = True,
         web_port: int = 9090,
@@ -131,6 +132,9 @@ class ViewerRerun(ViewerBase):
         Args:
             app_id: Application ID for rerun (defaults to 'newton-viewer').
                                  Use different IDs to differentiate between parallel viewer instances.
+            rec_id: Recording ID for rerun. If provided, multiple processes using the
+                                 same recording ID will share a single recording, allowing their data
+                                 to be visualized together. If None, a random ID is generated.
             address: Optional server address to connect to a remote rerun server via gRPC.
                                   You will need to start a stand-alone rerun server first, e.g. by typing ``rerun`` in your terminal.
                                   See rerun.io documentation for supported address formats.
@@ -153,6 +157,7 @@ class ViewerRerun(ViewerBase):
         super().__init__()
 
         self.app_id = app_id or "newton-viewer"
+        self.rec_id = rec_id
         self._running = True
         self._viewer_process = None
         self.keep_historical_data = keep_historical_data
@@ -167,7 +172,7 @@ class ViewerRerun(ViewerBase):
 
         # Initialize rerun using a blueprint that only shows the 3D view and a collapsed time panel
         blueprint = self._get_blueprint()
-        rr.init(self.app_id, default_blueprint=blueprint)
+        rr.init(self.app_id, recording_id=self.rec_id, default_blueprint=blueprint)
 
         if record_to_rrd is not None:
             rr.save(record_to_rrd, default_blueprint=blueprint)

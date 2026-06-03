@@ -41,6 +41,7 @@ def eval_fk_mujoco_kernel(model, joint_q, joint_qd, state):
         dim=model.articulation_count,
         inputs=[
             model.articulation_start,
+            model.articulation_end,
             model.joint_articulation,
             joint_q,
             joint_qd,

@@ -13,6 +13,7 @@ newton.utils
    :toctree: _generated
    :nosignatures:
 
+   ColorSpace
    EventTracer
    MeshAdjacency
    OnnxRuntime
@@ -25,6 +26,8 @@ newton.utils
 
    bourke_color_map
    color_graph
+   color_linear_to_srgb
+   color_srgb_to_linear
    compute_world_offsets
    create_cable_stiffness_from_elastic_moduli
    create_parallel_transport_cable_quaternions

@@ -206,6 +206,72 @@ JOINT_URDF = """
 </robot>
 """
 
+MASSLESS_FIXED_ROOT_URDF = """
+<robot name="massless_fixed_root">
+    <link name="base_link"/>
+    <link name="chassis">
+        <inertial>
+            <mass value="2.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0"
+                     iyy="0.1" iyz="0.0"
+                     izz="0.1"/>
+        </inertial>
+        <collision>
+            <geometry>
+                <box size="1.0 1.0 1.0"/>
+            </geometry>
+        </collision>
+    </link>
+    <joint name="base_to_chassis" type="fixed">
+        <parent link="base_link"/>
+        <child link="chassis"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+</robot>
+"""
+
+MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF = """
+<robot name="massless_fixed_root_internal_fixed">
+    <link name="base_link"/>
+    <link name="chassis">
+        <inertial>
+            <mass value="2.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0"
+                     iyy="0.1" iyz="0.0"
+                     izz="0.1"/>
+        </inertial>
+        <collision>
+            <geometry>
+                <box size="1.0 1.0 1.0"/>
+            </geometry>
+        </collision>
+    </link>
+    <link name="sensor">
+        <inertial>
+            <mass value="0.1"/>
+            <inertia ixx="0.01" ixy="0.0" ixz="0.0"
+                     iyy="0.01" iyz="0.0"
+                     izz="0.01"/>
+        </inertial>
+        <collision>
+            <geometry>
+                <sphere radius="0.1"/>
+            </geometry>
+        </collision>
+    </link>
+    <joint name="base_to_chassis" type="fixed">
+        <parent link="base_link"/>
+        <child link="chassis"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+    <joint name="chassis_to_sensor" type="fixed">
+        <parent link="chassis"/>
+        <child link="sensor"/>
+        <origin xyz="0 0 0.6" rpy="0 0 0"/>
+    </joint>
+</robot>
+"""
+
 JOINT_TREE_URDF = """
 <robot name="joint_tree_test">
 <!-- Mixed ordering of links -->
@@ -489,6 +555,100 @@ class TestImportUrdfBasic(unittest.TestCase):
         assert_np_equal(builder.joint_limit_upper[-1], np.array([3.45]))
         assert_np_equal(builder.joint_axis[-1], np.array([0.0, 0.0, 1.0]))
         assert_np_equal(builder.joint_effort_limit[-1], np.array([6.78]))
+
+    def test_floating_massless_fixed_root_default_preserves_topology(self):
+        builder = newton.ModelBuilder()
+        builder.add_urdf(MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF, floating=True, up_axis="Z")
+
+        self.assertEqual(builder.joint_count, 3)
+        self.assertIn("massless_fixed_root_internal_fixed/floating_base", builder.joint_label)
+        self.assertIn("massless_fixed_root_internal_fixed/base_to_chassis", builder.joint_label)
+        self.assertIn("massless_fixed_root_internal_fixed/chassis_to_sensor", builder.joint_label)
+
+        root_joint = builder.joint_label.index("massless_fixed_root_internal_fixed/floating_base")
+        root_body = builder.joint_child[root_joint]
+        self.assertEqual(builder.joint_type[root_joint], newton.JointType.FREE)
+        self.assertEqual(builder.body_mass[root_body], 0.0)
+
+    def test_floating_massless_fixed_root_urdf_opt_in_is_dynamic(self):
+        dt = 1.0 / 60.0
+        step_count = 5
+        expected_drop = 0.5 * 9.81 * (step_count * dt) ** 2
+        min_drop = 0.5 * expected_drop
+
+        for urdf in [MASSLESS_FIXED_ROOT_URDF, MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF]:
+            with self.subTest(urdf=urdf.splitlines()[1].strip()):
+                builder = newton.ModelBuilder()
+                builder.add_urdf(urdf, floating=True, up_axis="Z", collapse_massless_fixed_root=True)
+
+                self.assertEqual(builder.joint_type[0], newton.JointType.FREE)
+                self.assertGreater(builder.body_mass[0], 0.0)
+
+                model = builder.finalize()
+                state_0 = model.state()
+                state_1 = model.state()
+                control = model.control()
+                contacts = model.contacts()
+                newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+                root_body = int(model.joint_child.numpy()[0])
+                start_z = float(state_0.body_q.numpy()[root_body][2])
+
+                solver = newton.solvers.SolverXPBD(model, iterations=2)
+                for _ in range(step_count):
+                    state_0.clear_forces()
+                    solver.step(state_0, state_1, control, contacts, dt)
+                    state_0, state_1 = state_1, state_0
+
+                end_z = float(state_0.body_q.numpy()[root_body][2])
+                self.assertGreaterEqual(start_z - end_z, min_drop)
+
+    def test_floating_massless_fixed_root_opt_in_preserves_existing_fixed_joints(self):
+        builder = newton.ModelBuilder()
+        root = builder.add_link(mass=1.0, label="pre_root")
+        child = builder.add_link(mass=1.0, label="pre_child")
+        root_joint = builder.add_joint_fixed(parent=-1, child=root, label="pre_world_fixed")
+        child_joint = builder.add_joint_fixed(parent=root, child=child, label="pre_child_fixed")
+        builder.add_articulation([root_joint, child_joint], label="pre_articulation")
+
+        builder.add_urdf(MASSLESS_FIXED_ROOT_URDF, floating=True, up_axis="Z", collapse_massless_fixed_root=True)
+
+        self.assertEqual(builder.joint_count, 3)
+        self.assertIn("pre_world_fixed", builder.joint_label)
+        self.assertIn("pre_child_fixed", builder.joint_label)
+        self.assertIn("massless_fixed_root/floating_base", builder.joint_label)
+        self.assertNotIn("massless_fixed_root/base_to_chassis", builder.joint_label)
+
+        self.assertEqual(builder.joint_type[builder.joint_label.index("pre_world_fixed")], newton.JointType.FIXED)
+        self.assertEqual(builder.joint_type[builder.joint_label.index("pre_child_fixed")], newton.JointType.FIXED)
+        self.assertEqual(
+            builder.joint_type[builder.joint_label.index("massless_fixed_root/floating_base")],
+            newton.JointType.FREE,
+        )
+
+    def test_floating_massless_fixed_root_opt_in_preserves_imported_internal_fixed_joints(self):
+        builder = newton.ModelBuilder()
+        builder.add_urdf(
+            MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF,
+            floating=True,
+            up_axis="Z",
+            collapse_massless_fixed_root=True,
+        )
+
+        self.assertEqual(builder.joint_count, 2)
+        self.assertIn("massless_fixed_root_internal_fixed/floating_base", builder.joint_label)
+        self.assertNotIn("massless_fixed_root_internal_fixed/base_to_chassis", builder.joint_label)
+        self.assertIn("massless_fixed_root_internal_fixed/chassis_to_sensor", builder.joint_label)
+
+        self.assertGreater(builder.body_mass[0], 0.0)
+        self.assertEqual(
+            builder.joint_type[builder.joint_label.index("massless_fixed_root_internal_fixed/floating_base")],
+            newton.JointType.FREE,
+        )
+        self.assertEqual(
+            builder.joint_type[builder.joint_label.index("massless_fixed_root_internal_fixed/chassis_to_sensor")],
+            newton.JointType.FIXED,
+        )
 
     def test_cartpole_urdf(self):
         builder = newton.ModelBuilder()
@@ -1999,6 +2159,104 @@ class TestUrdfJointFriction(unittest.TestCase):
         friction_values = model.joint_friction.numpy()
         for val in friction_values:
             self.assertAlmostEqual(float(val), 0.0, places=5)
+
+    def test_named_material_color_on_primitive(self):
+        """Robot-level named materials should resolve to colors on primitive shapes."""
+        urdf = """
+<robot name="named_mat_test">
+    <material name="red"><color rgba="1.0 0.0 0.0 1.0"/></material>
+    <link name="base_link">
+        <visual>
+            <geometry><sphere radius="0.5"/></geometry>
+            <material name="red"/>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(tuple(builder.shape_color[0]), (1.0, 0.0, 0.0))
+
+    def test_inline_material_color_on_primitive(self):
+        """Inline material color should apply to primitive shapes."""
+        urdf = """
+<robot name="inline_mat_test">
+    <link name="base_link">
+        <visual>
+            <geometry><box size="1 1 1"/></geometry>
+            <material name="green"><color rgba="0.0 1.0 0.0 1.0"/></material>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(tuple(builder.shape_color[0]), (0.0, 1.0, 0.0))
+
+    def test_named_material_color_multiple_primitives(self):
+        """Named materials should resolve for all primitive shape types."""
+        urdf = """
+<robot name="multi_prim_test">
+    <material name="blue"><color rgba="0.0 0.0 1.0 1.0"/></material>
+    <link name="base_link">
+        <visual>
+            <geometry><box size="1 1 1"/></geometry>
+            <material name="blue"/>
+        </visual>
+        <visual>
+            <geometry><cylinder radius="0.5" length="1.0"/></geometry>
+            <material name="blue"/>
+        </visual>
+        <visual>
+            <geometry><sphere radius="0.5"/></geometry>
+            <material name="blue"/>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder)
+        self.assertEqual(builder.shape_count, 3)
+        for i in range(3):
+            self.assertEqual(tuple(builder.shape_color[i]), (0.0, 0.0, 1.0), f"shape {i}")
+
+    def test_inline_overrides_named_material(self):
+        """Inline color on a named material should override the robot-level definition."""
+        urdf = """
+<robot name="override_test">
+    <material name="red"><color rgba="1.0 0.0 0.0 1.0"/></material>
+    <link name="base_link">
+        <visual>
+            <geometry><sphere radius="0.5"/></geometry>
+            <material name="red"><color rgba="0.0 1.0 0.0 1.0"/></material>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(tuple(builder.shape_color[0]), (0.0, 1.0, 0.0))
+
+    def test_named_material_color_on_mesh(self):
+        """Robot-level named materials should resolve to colors on mesh shapes."""
+        urdf = """
+<robot name="mesh_named_mat_test">
+    <material name="red"><color rgba="1.0 0.0 0.0 1.0"/></material>
+    <link name="base_link">
+        <visual>
+            <geometry><mesh filename="cube.obj"/></geometry>
+            <material name="red"/>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder, {"cube.obj": MESH_OBJ})
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(tuple(builder.shape_color[0]), (1.0, 0.0, 0.0))
 
 
 if __name__ == "__main__":

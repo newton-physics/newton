@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import warp as wp
 
-from ..core.types import int32, uint64
+from ..core.types import assign_to_warp_int32_array, int32, to_warp_int32_array, uint64
 
 ###
 # Module interface
@@ -235,7 +235,7 @@ def compute_equivalence_classes(signatures: Iterable[DiscreteSignature]) -> list
             world_ref[i] = ref
         except KeyError:
             world_groups[world_sizes] = [i], i
-    world_ref_wp = wp.array(world_ref, dtype=wp.int32, device=device)
+    world_ref_wp = to_warp_int32_array(world_ref, device=device)
 
     # Run greedy exact comparison within each size group, against the group reference
     # (leading to early exit for homogenous worlds)
@@ -273,7 +273,7 @@ def compute_equivalence_classes(signatures: Iterable[DiscreteSignature]) -> list
         return class_ids_to_classes(class_ids, next_class)
 
     # Hash signatures of remaining worlds
-    class_ids_wp = wp.array(class_ids, dtype=wp.int32, device=device)
+    class_ids_wp = to_warp_int32_array(class_ids, device=device)
     hashes_wp = wp.full(shape=num_worlds, value=1469598103934665603, dtype=wp.uint64, device=device)
     for sig in signatures:
         wp.launch(
@@ -306,7 +306,7 @@ def compute_equivalence_classes(signatures: Iterable[DiscreteSignature]) -> list
 
     while len(world_groups) > 0:
         # Run greedy exact comparison within each hash group
-        world_ref_wp.assign(world_ref)
+        assign_to_warp_int32_array(world_ref_wp, world_ref)
         eq_mask_wp.fill_(True)
         for sig in signatures:
             wp.launch(
