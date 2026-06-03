@@ -10248,13 +10248,30 @@ class ModelBuilder:
             m.shape_flags = wp.array(self.shape_flags, dtype=wp.int32)
             m.body_shapes = self.body_shapes
 
-            # build list of ids for geometry sources (meshes, sdfs)
+            # build list of ids for geometry sources (meshes, sdfs, heightfields)
             geo_sources = []
             finalized_geos = {}  # do not duplicate geometry
             gaussians = []
+            heightfield_meshes = []
             for geo in self.shape_source:
                 geo_hash = hash(geo)  # avoid repeated hash computations
-                if geo and not isinstance(geo, Heightfield):
+                if isinstance(geo, Heightfield):
+                    if geo_hash not in finalized_geos:
+                        # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
+                        # while Heightfield stores row-major data (row=Y, col=X).
+                        actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
+                        hf_geo = Mesh.create_heightfield(
+                            heightfield=actual_heights.T,
+                            extent_x=geo.hx * 2.0,
+                            extent_y=geo.hy * 2.0,
+                            ground_z=geo.min_z,
+                            compute_inertia=False,
+                        )
+                        finalized_geos[geo_hash] = hf_geo.finalize(device=device)
+                        # keep mesh alive for the model's lifetime
+                        heightfield_meshes.append(hf_geo.mesh)
+                    geo_sources.append(finalized_geos[geo_hash])
+                elif geo:
                     if geo_hash not in finalized_geos:
                         if isinstance(geo, Mesh):
                             finalized_geos[geo_hash] = geo.finalize(device=device)
@@ -10265,11 +10282,11 @@ class ModelBuilder:
                             finalized_geos[geo_hash] = geo.finalize()
                     geo_sources.append(finalized_geos[geo_hash])
                 else:
-                    # add null pointer
                     geo_sources.append(0)
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
+            m.heightfield_meshes = heightfield_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
             m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
@@ -10726,9 +10743,9 @@ class ModelBuilder:
                         hd.nrow = hf.nrow
                         hd.ncol = hf.ncol
                         # Bake the per-instance scale into the extents so narrow-phase
-                        # collision and raycast (which read from HeightfieldData) apply
-                        # scale consistently. ``abs`` on hx/hy because the raycast DDA
-                        # and parallel-slab checks assume non-negative planar extents;
+                        # collision (which reads from HeightfieldData) apply
+                        # scale consistently. ``abs`` on hx/hy because the
+                        # parallel-slab checks assume non-negative planar extents;
                         # z uses raw multiplication so ``sz < 0`` inverts the surface
                         # (``min_z > max_z`` already encodes an inverted heightfield).
                         sx, sy, sz = self.shape_scale[i]

@@ -56,6 +56,7 @@ from ._src.geometry import (  # noqa: E402
     ParticleFlags,
     ShapeFlags,
     TetMesh,
+    intersect_ray,
 )
 
 __all__ += [
@@ -67,6 +68,7 @@ __all__ += [
     "ParticleFlags",
     "ShapeFlags",
     "TetMesh",
+    "intersect_ray",
 ]
 
 # ==================================================================================

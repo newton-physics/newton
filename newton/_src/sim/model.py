@@ -336,13 +336,15 @@ class Model:
 
         # Heightfield collision data (compact table + per-shape index indirection)
         self.has_heightfields: bool = False
-        """True iff the model contains at least one ``GeoType.HFIELD`` shape. Lets launch sites pick lean kernel variants."""
+        """True iff the model contains at least one ``GeoType.HFIELD`` shape."""
         self.shape_heightfield_index: wp.array[wp.int32] | None = None
         """Per-shape heightfield index, shape [shape_count]. -1 means shape has no heightfield."""
         self.heightfield_data: wp.array[HeightfieldData] | None = None
         """Compact array of HeightfieldData structs, one per actual heightfield shape."""
         self.heightfield_elevations: wp.array[wp.float32] | None = None
         """Concatenated 1D elevation array for all heightfields. Kernels index via HeightfieldData.data_offset."""
+        self.heightfield_meshes: list[wp.Mesh] = []
+        """wp.Mesh objects built from heightfield shapes, kept alive for the model's lifetime."""
 
         # Mesh edge data (packed array + per-shape slice)
         self.mesh_edge_indices: wp.array[wp.vec2i] | None = None

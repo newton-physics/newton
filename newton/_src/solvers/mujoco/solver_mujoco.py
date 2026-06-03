@@ -3687,6 +3687,38 @@ class SolverMuJoCo(SolverBase):
             device=model.device,
         )
 
+    def _sync_mjw_inertias_to_mjc_cpu(self) -> None:
+        """Synchronize the complete MJWarp inertial representation to MuJoCo CPU."""
+        mjw_body_inertia = self.mjw_model.body_inertia.numpy()[0]
+        mjw_body_iquat = self.mjw_model.body_iquat.numpy()[0]
+
+        inertia_changed = ~np.isclose(
+            self.mj_model.body_inertia,
+            mjw_body_inertia,
+            rtol=1.0e-6,
+            atol=1.0e-8,
+        ).all(axis=1)
+        iquat_changed = ~np.isclose(
+            self.mj_model.body_iquat,
+            mjw_body_iquat,
+            rtol=1.0e-6,
+            atol=1.0e-8,
+        ).all(axis=1)
+        changed_bodies = inertia_changed | iquat_changed
+
+        if not np.any(changed_bodies):
+            return
+
+        self.mj_model.body_inertia[:] = mjw_body_inertia
+        self.mj_model.body_iquat[:] = mjw_body_iquat
+
+        # ``body_inertia`` and ``body_iquat`` are coupled. Once the inertial
+        # frame changes, MuJoCo CPU's compiled simple-path metadata may still
+        # describe the old frame, so invalidate it before ``mj_setConst()``.
+        self.mj_model.body_sameframe[changed_bodies] = int(self._mujoco.mjtSameFrame.mjSAMEFRAME_NONE)
+        self.mj_model.body_simple[changed_bodies] = 0
+        self.mj_model.dof_simplenum[:] = 0
+
     @override
     def notify_model_changed(self, flags: int) -> None:
         need_const_fixed = False
@@ -3754,17 +3786,7 @@ class SolverMuJoCo(SolverBase):
                 self.mj_model.body_ipos[:] = self.mjw_model.body_ipos.numpy()[0]
                 self.mj_model.body_mass[:] = self.mjw_model.body_mass.numpy()[0]
                 self.mj_model.body_gravcomp[:] = self.mjw_model.body_gravcomp.numpy()[0]
-                self.mj_model.body_inertia[:] = self.mjw_model.body_inertia.numpy()[0]
-                # Do not overwrite ``mj_model.body_iquat``: MuJoCo's compiler
-                # picks a canonical principal-axes basis (including a stable
-                # choice in degenerate sub-spaces of repeated eigenvalues) and
-                # the C solver's internal state is consistent with it. Newton's
-                # ``wp.eig3()`` may return an arbitrary valid basis for
-                # repeated eigenvalues, and replacing the compiled basis at
-                # runtime can destabilise stiff constraints (e.g. WELD loops
-                # on thin rods). Mass/density randomization scales principal
-                # moments without rotating the principal-axes frame, so the
-                # compiled ``body_iquat`` remains correct.
+                self._sync_mjw_inertias_to_mjc_cpu()
             if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
                 self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
                 self.mj_model.dof_frictionloss[:] = self.mjw_model.dof_frictionloss.numpy()[0]
