@@ -610,6 +610,47 @@ def Xform "World"
         assert_np_equal(np.array(builder.shape_scale[shape_id]), np.array([1.0, 6.0, 6.0]), tol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_root_scale_parameter(self):
+        from pxr import Usd
+
+        usd_text = """#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Z"
+)
+def PhysicsScene "physicsScene"
+{
+}
+def Xform "World"
+{
+    def Xform "Body" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "Collision" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 2
+        }
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_text)
+
+        builder = newton.ModelBuilder()
+        results = builder.add_usd(stage, scale=(0.5, 0.5, 0.5))
+
+        body_id = results["path_body_map"]["/World/Body"]
+        shape_id = results["path_shape_map"]["/World/Body/Collision"]
+        assert_np_equal(np.array(builder.body_q[body_id].p), np.array([1.0, 0.0, 0.0]), tol=1e-5)
+        assert_np_equal(np.array(builder.shape_scale[shape_id]), np.array([0.5, 0.5, 0.5]), tol=1e-5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_no_visuals(self):
         builder = newton.ModelBuilder()
 

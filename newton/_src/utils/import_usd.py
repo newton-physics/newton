@@ -14,6 +14,7 @@ import os
 import posixpath
 import re
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urljoin
@@ -99,6 +100,7 @@ def parse_usd(
     force_position_velocity_actuation: bool = False,
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
+    scale: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
 
@@ -110,6 +112,7 @@ def parse_usd(
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source: The file path to the USD file, or an existing USD stage instance.
         xform: The transform to apply to the entire scene.
+        scale: The scaling factor to apply to the imported USD root.
         override_root_xform: If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
             preserving only the internal structure (relative body positions). Useful
@@ -286,6 +289,34 @@ def parse_usd(
 
     from .topology import topological_sort_undirected  # noqa: PLC0415
 
+    def _apply_root_scale(stage: Usd.Stage, root_path: str, scale: Sequence[float] | None) -> None:
+        if scale is None:
+            return
+        if len(scale) != 3:
+            raise ValueError("scale must contain exactly three values")
+
+        scale_vec = Gf.Vec3d(float(scale[0]), float(scale[1]), float(scale[2]))
+        if scale_vec == Gf.Vec3d(1.0, 1.0, 1.0):
+            return
+
+        if root_path == "/":
+            if stage.HasDefaultPrim():
+                root_prim = stage.GetDefaultPrim()
+            else:
+                root_children = stage.GetPseudoRoot().GetChildren()
+                root_prim = root_children[0] if root_children else None
+        else:
+            root_prim = stage.GetPrimAtPath(root_path)
+
+        if root_prim is None or not root_prim.IsValid():
+            raise ValueError(f"Unable to apply USD scale because root path '{root_path}' was not found")
+
+        scale_attr = root_prim.GetAttribute("xformOp:scale")
+        if scale_attr.IsValid():
+            scale_attr.Set(scale_vec)
+        else:
+            UsdGeom.Xformable(root_prim).AddScaleOp(UsdGeom.XformOp.PrecisionDouble).Set(scale_vec)
+
     @dataclass
     class PhysicsMaterial:
         staticFriction: float = builder.default_shape_cfg.mu
@@ -331,6 +362,8 @@ def parse_usd(
     else:
         stage = source
         _raise_on_stage_errors(stage, "provided stage")
+
+    _apply_root_scale(stage, root_path, scale)
 
     DegreesToRadian = float(np.pi / 180)
     mass_unit = 1.0
