@@ -3,9 +3,10 @@
 
 """Test examples in the newton.examples package.
 
-Currently, this script mainly checks that the examples can run. It also treats
-deprecation warnings as failures by default so examples do not regress onto
-deprecated APIs.
+Currently, this script mainly checks that the examples can run. When the test
+runner is invoked with ``--deprecations-as-errors`` (as CI does), example
+subprocesses treat deprecation warnings as failures so examples do not regress
+onto deprecated APIs; otherwise deprecations are non-fatal.
 
 The test parameters are typically tuned so that each test can run in 10 seconds
 or less, ignoring module compilation time. A notable exception is the robot
