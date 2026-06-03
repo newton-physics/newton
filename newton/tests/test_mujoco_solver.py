@@ -7216,12 +7216,12 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 0], connect_enabled)
         np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 1], weld_enabled)
 
-        eq_enabled = model.equality_constraint_enabled.numpy()
+        eq_enabled = model.mujoco.equality_constraint_enabled.numpy()
         eq_enabled[0] = False
         eq_enabled[1] = True
         eq_enabled[2] = True
         eq_enabled[3] = False
-        model.equality_constraint_enabled.assign(eq_enabled)
+        model.mujoco.equality_constraint_enabled.assign(eq_enabled)
         solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         np.testing.assert_allclose(solver.mjw_model.eq_data.numpy(), eq_data, rtol=1e-5)
@@ -7902,7 +7902,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         model.constraint_mimic_coef0.assign(np.array([100.0, 200.0], dtype=np.float32))
         model.constraint_mimic_coef1.assign(np.array([300.0, 400.0], dtype=np.float32))
         model.constraint_mimic_enabled.assign(np.array([False, True], dtype=bool))
-        model.equality_constraint_enabled.assign(np.array([False, True], dtype=bool))
+        model.mujoco.equality_constraint_enabled.assign(np.array([False, True], dtype=bool))
         solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :5], polycoef, rtol=1e-5)
@@ -7955,8 +7955,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         model.constraint_mimic_coef0.assign(np.array([100.0], dtype=np.float32))
         model.constraint_mimic_coef1.assign(np.array([300.0], dtype=np.float32))
         model.constraint_mimic_enabled.assign(np.array([False], dtype=bool))
-        model.equality_constraint_polycoef.assign(updated_polycoef)
-        model.equality_constraint_enabled.assign(np.array([False], dtype=bool))
+        model.mujoco.equality_constraint_polycoef.assign(updated_polycoef)
+        model.mujoco.equality_constraint_enabled.assign(np.array([False], dtype=bool))
         model.mujoco.eq_solref.assign(wp.array(updated_solref, dtype=wp.vec2, device=model.device))
         model.mujoco.eq_solimp.assign(wp.array(updated_solimp, dtype=vec5, device=model.device))
         solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)

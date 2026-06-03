@@ -1249,6 +1249,14 @@ class ModelBuilder:
         """Return the per-equality-constraint :class:`CustomAttribute` for the bare ``name`` (no ``mujoco:`` prefix)."""
         return self.custom_attributes[f"mujoco:{name}"]
 
+    def _eq_values_raw(self, name: str) -> list[Any]:
+        """Backing values list for equality field ``name`` (no default-filling); empty list if unset.
+
+        Internal callers (``finalize`` validation/collapse) read this instead of :meth:`_eq_list`
+        to avoid materializing a dense, default-filled copy of every equality row up front.
+        """
+        return self._eq_attr(name).values or []
+
     def _eq_list(self, name: str) -> list[Any]:
         """Dense list of equality-constraint ``name`` values, default-filled to match :meth:`finalize`."""
         attr = self._eq_attr(name)
@@ -9879,12 +9887,24 @@ class ModelBuilder:
         # Validate equality constraint body/joint references
         equality_count = self._equality_constraint_count
         if equality_count > 0:
-            eq_labels = self._eq_list("equality_constraint_label")
+            label_values = self._eq_values_raw("equality_constraint_label")
 
             def _eq_label(idx: int) -> str:
-                return eq_labels[idx] or f"equality_constraint_{idx}"
+                label = label_values[idx] if idx < len(label_values) and label_values[idx] is not None else None
+                return label or f"equality_constraint_{idx}"
 
-            eq_body1 = np.array(self._eq_list("equality_constraint_body1"), dtype=np.int32)
+            def _eq_index_array(name: str) -> np.ndarray:
+                # Coerce raw custom-attribute values straight into the int32 array, applying the
+                # attribute default for missing/``None`` rows, without an intermediate Python list.
+                values = self._eq_values_raw(name)
+                count, default = len(values), self._eq_attr(name).default
+                return np.fromiter(
+                    (values[i] if i < count and values[i] is not None else default for i in range(equality_count)),
+                    dtype=np.int32,
+                    count=equality_count,
+                )
+
+            eq_body1 = _eq_index_array("equality_constraint_body1")
             invalid_mask = (eq_body1 < -1) | (eq_body1 >= body_count)
             if np.any(invalid_mask):
                 idx = int(np.where(invalid_mask)[0][0])
@@ -9893,7 +9913,7 @@ class ModelBuilder:
                     f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
                 )
 
-            eq_body2 = np.array(self._eq_list("equality_constraint_body2"), dtype=np.int32)
+            eq_body2 = _eq_index_array("equality_constraint_body2")
             invalid_mask = (eq_body2 < -1) | (eq_body2 >= body_count)
             if np.any(invalid_mask):
                 idx = int(np.where(invalid_mask)[0][0])
@@ -9902,7 +9922,7 @@ class ModelBuilder:
                     f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
                 )
 
-            eq_joint1 = np.array(self._eq_list("equality_constraint_joint1"), dtype=np.int32)
+            eq_joint1 = _eq_index_array("equality_constraint_joint1")
             invalid_mask = (eq_joint1 < -1) | (eq_joint1 >= joint_count)
             if np.any(invalid_mask):
                 idx = int(np.where(invalid_mask)[0][0])
@@ -9911,7 +9931,7 @@ class ModelBuilder:
                     f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
                 )
 
-            eq_joint2 = np.array(self._eq_list("equality_constraint_joint2"), dtype=np.int32)
+            eq_joint2 = _eq_index_array("equality_constraint_joint2")
             invalid_mask = (eq_joint2 < -1) | (eq_joint2 >= joint_count)
             if np.any(invalid_mask):
                 idx = int(np.where(invalid_mask)[0][0])
