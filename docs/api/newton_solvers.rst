@@ -51,7 +51,7 @@ Supported Features
      - Soft bodies
      - Differentiable
    * - :class:`~newton.solvers.SolverFeatherstone`
-     - Explicit
+     - Semi-implicit
      - ✅
      - ✅ generalized coordinates
      - ✅
@@ -75,7 +75,7 @@ Supported Features
      - ❌
      - ❌
    * - :class:`~newton.solvers.SolverMuJoCo`
-     - Explicit, Semi-implicit, Implicit
+     - Explicit, Semi-implicit, Implicit-in-velocity
      - ✅ :sup:`1`
      - ✅ generalized coordinates
      - ❌

@@ -1473,5 +1473,151 @@ add_function_test(
 )
 
 
+def test_hydroelastic_mesh_empty_sdf_raises_value_error(test, device):
+    mesh = newton.Mesh.create_box(
+        0.1,
+        0.1,
+        0.1,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
+    mesh.sdf = newton.SDF.create_from_data()
+
+    cfg = newton.ModelBuilder.ShapeConfig(is_hydroelastic=True)
+    builder = newton.ModelBuilder()
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
+    builder.add_shape_mesh(body=body_a, mesh=mesh, cfg=cfg)
+    builder.add_shape_mesh(body=body_b, mesh=mesh, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    with test.assertRaisesRegex(ValueError, "requires texture SDF data"):
+        newton.CollisionPipeline(model, broad_phase="explicit")
+
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_mesh_empty_sdf_raises_value_error",
+    test_hydroelastic_mesh_empty_sdf_raises_value_error,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+
+def test_deep_penetration_contact_surface_has_no_central_hole(test, device):
+    """Regression test for newton-physics/newton#2611.
+
+    Two hydroelastic boxes are overlapped by an amount that is much larger
+    than the SDF narrow band.  Before the fix, the broadphase skipped any
+    subgrid whose center fell deeper than the narrow band, so the
+    contact surface formed a thin annulus around the box perimeter with
+    no triangles in the central region (visible in the issue images as a
+    "center hole" in the contact patch).  The fix visits every subgrid
+    arithmetically; the central region of the patch must now be
+    populated.
+
+    The scene mirrors the minimal repro from the issue: two 20 cm boxes,
+    10 cm overlap (5x the 20 mm narrow band), ``kh=1e10``,
+    ``sdf_max_resolution=64``, ``reduce_contacts=False``.
+
+    The assertion is targeted at the *symptom* described in the issue —
+    the contact patch is annular, with no centroids near the center of
+    the overlap region.  A simple total-area check is not enough: a
+    thick perimeter ring could still pass an area threshold without
+    filling the middle, which is exactly what the bug looked like.
+    """
+    box_half = 0.10  # 20 cm box -> 10 cm half-extent (issue #2611)
+    narrow_band = 0.02  # 20 mm narrow band
+    overlap = 0.10  # 10 cm overlap == 5x narrow band
+    contact_gap = 0.02
+
+    cfg = newton.ModelBuilder.ShapeConfig(
+        mu=0.5,
+        kh=1e10,
+        sdf_max_resolution=64,
+        is_hydroelastic=True,
+        sdf_narrow_band_range=(-narrow_band, narrow_band),
+        gap=contact_gap,
+    )
+    builder = newton.ModelBuilder()
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, box_half), wp.quat_identity()))
+    builder.add_shape_box(body=body_a, hx=box_half, hy=box_half, hz=box_half, cfg=cfg)
+    z_b = box_half + 2.0 * box_half - overlap
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, z_b), wp.quat_identity()))
+    builder.add_shape_box(body=body_b, hx=box_half, hy=box_half, hz=box_half, cfg=cfg)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    hydro_config = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        buffer_mult_iso=4,
+        buffer_mult_contact=4,
+    )
+    pipeline = newton.CollisionPipeline(
+        model,
+        rigid_contact_max=200000,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=hydro_config,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+
+    cs = pipeline.hydroelastic_sdf.get_contact_surface()
+    test.assertIsNotNone(cs, "Expected a contact surface for deeply overlapping hydroelastic boxes")
+
+    num_faces = int(cs.face_contact_count.numpy()[0])
+    test.assertGreater(num_faces, 0, "Expected a non-empty contact surface")
+
+    verts = cs.contact_surface_point.numpy()[: num_faces * 3].astype(np.float64).reshape(num_faces, 3, 3)
+    centroids = verts.mean(axis=1)  # (num_faces, 3) world-space face centroids
+
+    # The boxes are stacked on Z, so the *pressure-equilibrium* plane
+    # (where the hydroelastic iso-surface should pass through the
+    # center of the overlap volume) sits at z = mid-overlap.  Look for
+    # face centroids in a thin slab around that mid plane, then require
+    # that some of them fall in the *central XY quarter* of the face
+    # (|x|,|y| <= box_half / 2).  The issue's debug sweep used exactly
+    # this "centroid-in-central-region" coverage metric and reported it
+    # as ``0.00`` for this config under the bug; with the fix the
+    # central XY region of the mid-z slab must be populated.
+    mid_z = 2.0 * box_half - 0.5 * overlap  # midpoint between the two box centers along Z
+    mid_slab_half = 0.5 * narrow_band  # ~5 mm slab around the mid plane
+    in_mid_slab = np.abs(centroids[:, 2] - mid_z) <= mid_slab_half
+    in_central_xy = np.maximum(np.abs(centroids[:, 0]), np.abs(centroids[:, 1])) <= 0.5 * box_half
+    central_count = int((in_mid_slab & in_central_xy).sum())
+    slab_count = int(in_mid_slab.sum())
+
+    test.assertGreater(
+        slab_count,
+        0,
+        f"No contact-surface centroids in the mid-z slab around z={mid_z:.4f} "
+        f"(num_faces={num_faces}); contact surface is not reaching the "
+        f"pressure-equilibrium plane.",
+    )
+    central_frac_of_slab = central_count / slab_count
+    test.assertGreater(
+        central_frac_of_slab,
+        0.05,
+        f"Only {central_count}/{slab_count} = {100.0 * central_frac_of_slab:.2f}% "
+        f"of contact-surface centroids in the mid-z slab fall inside the "
+        f"central XY quarter; the contact patch is annular with a center "
+        f"hole — see newton-physics/newton#2611.",
+    )
+
+
+add_function_test(
+    TestHydroelastic,
+    "test_deep_penetration_contact_surface_has_no_central_hole",
+    test_deep_penetration_contact_surface_has_no_central_hole,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
