@@ -138,6 +138,7 @@ jobs:
           PYTHONFAULTHANDLER: "1"
         run: >
           uv run --extra dev -m newton.tests
+          --deprecations-as-errors
           --parallel-timeout ${{ matrix.os == 'macos-latest' && 6900 || 3300 }}
           --no-cache-clear
           --junit-report-xml rspec.xml
