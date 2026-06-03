@@ -296,6 +296,10 @@ def parse_usd(
         rollingFriction: float = builder.default_shape_cfg.mu_rolling
         restitution: float = builder.default_shape_cfg.restitution
         density: float = builder.default_shape_cfg.density
+        ke: float | None = None
+        kd: float | None = None
+        kf: float | None = None
+        ka: float | None = None
 
     # load joint defaults
     default_joint_friction = builder.default_joint_cfg.friction
@@ -1987,6 +1991,13 @@ def parse_usd(
         if warn_invalid_desc(sdf_path, desc):
             continue
         prim = stage.GetPrimAtPath(sdf_path)
+
+        def _resolve_contact_attr(key, _prim=prim):
+            val = R.get_value(_prim, prim_type=PrimType.MATERIAL, key=key, verbose=verbose)
+            if val is None:
+                return None
+            return float(val)
+
         material_specs[str(sdf_path)] = PhysicsMaterial(
             staticFriction=desc.staticFriction,
             dynamicFriction=desc.dynamicFriction,
@@ -2008,6 +2019,10 @@ def parse_usd(
             # Treat non-positive/unauthored material density as "use importer default".
             # Authored collider/body MassAPI mass+inertia is handled later.
             density=desc.density if desc.density > 0.0 else default_shape_density,
+            ke=_resolve_contact_attr("ke"),
+            kd=_resolve_contact_attr("kd"),
+            kf=_resolve_contact_attr("kf"),
+            ka=_resolve_contact_attr("ka"),
         )
 
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
@@ -2831,7 +2846,6 @@ def parse_usd(
                     shape_density = material.density
                 else:
                     shape_density = default_shape_density
-                prim_and_scene = (prim, physics_scene_prim)
                 local_xform = wp.transform(shape_spec.localPos, usd.value_to_warp(shape_spec.localRot))
                 if body_id == -1:
                     shape_xform = incoming_world_xform * local_xform
@@ -2878,22 +2892,36 @@ def parse_usd(
                 ) and not hide_collider_for_body
                 collider_is_visible = collider_is_visible and _is_effectively_visible(prim)
 
-                shape_ke = R.get_value(
-                    prim,
-                    prim_type=PrimType.SHAPE,
-                    key="ke",
-                    verbose=verbose,
-                )
-                if shape_ke is None:
-                    shape_ke = builder.default_shape_cfg.ke
-                shape_kd = R.get_value(
-                    prim,
-                    prim_type=PrimType.SHAPE,
-                    key="kd",
-                    verbose=verbose,
-                )
-                if shape_kd is None:
-                    shape_kd = builder.default_shape_cfg.kd
+                # Contact response precedence:
+                #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
+                _default = builder.default_shape_cfg
+                mjc_has_priority = False
+                for _r in R.resolvers:
+                    if _r.name == "mjc":
+                        mjc_has_priority = True
+                        break
+                    if _r.name == "newton":
+                        break
+                has_solref = mjc_has_priority and usd.get_attribute(prim, "mjc:solref") is not None
+                shape_contact = {}
+                for _ck in ("ke", "kd", "kf", "ka"):
+                    per_shape_val = R.get_value(prim, prim_type=PrimType.SHAPE, key=_ck, verbose=verbose)
+                    has_shape = per_shape_val is not None and math.isfinite(float(per_shape_val))
+                    mat_val = getattr(material, _ck)
+                    has_mat = mat_val is not None and math.isfinite(mat_val)
+
+                    if has_solref and _ck in ("ke", "kd") and has_shape:
+                        shape_contact[_ck] = float(per_shape_val)
+                    elif has_mat:
+                        shape_contact[_ck] = mat_val
+                    elif has_shape:
+                        shape_contact[_ck] = float(per_shape_val)
+                    else:
+                        shape_contact[_ck] = getattr(_default, _ck)
+                shape_ke = shape_contact["ke"]
+                shape_kd = shape_contact["kd"]
+                shape_kf = shape_contact["kf"]
+                shape_ka = shape_contact["ka"]
 
                 shape_color = material_props.get("color")
 
@@ -3075,12 +3103,8 @@ def parse_usd(
                     "cfg": ModelBuilder.ShapeConfig(
                         ke=shape_ke,
                         kd=shape_kd,
-                        kf=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_kf", builder.default_shape_cfg.kf
-                        ),
-                        ka=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_ka", builder.default_shape_cfg.ka
-                        ),
+                        kf=shape_kf,
+                        ka=shape_ka,
                         margin=inertia_margin,
                         gap=gap_val,
                         mu=material.dynamicFriction,
@@ -4219,7 +4243,8 @@ def parse_usd(
     #
     #   USD MjcActuator rows targeting a joint DOF with the position/velocity
     #   shape and default dyntype/gaintype/gear are imported as JOINT_TARGET
-    #   and driven by Control.joint_target_pos / joint_target_vel.
+    #   and driven by Control.joint_target_q / joint_target_qd (or the legacy
+    #   joint_target_pos / joint_target_vel aliases under the DOF layout).
     #
     # Rows that author non-default dyntype (filter, integrator, ...), gaintype,
     # gear, or carry an unresolved dampratio placeholder (positive biasprm[2])
@@ -4272,7 +4297,7 @@ def parse_usd(
             # values for those force the actuator to stay CTRL_DIRECT.
             #
             # Authored ctrlrange/forcerange are not gating: ctrlrange has no
-            # equivalent under Control.joint_target_pos/vel (matching MJCF's
+            # equivalent under Control.joint_target_q/qd (matching MJCF's
             # behavior), and forcerange is propagated below into joint_effort_limit.
             if (
                 int(_row("mujoco:actuator_biastype", row)) != biastype_affine

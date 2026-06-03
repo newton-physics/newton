@@ -135,6 +135,8 @@ MuJoCo geometry model. They are only available through Newton's
 collision pipeline (see `Collision pipeline`_ below).
 
 
+.. _joint-limit-stiffness-and-damping:
+
 Joint-limit stiffness and damping
 ---------------------------------
 
@@ -186,6 +188,49 @@ authored native value such as ``solreflimit="0 0"`` or USD
    ``joint_limit_kd`` from the original ``SOLREF_MODE_FORCE_SPACE`` /
    ``SOLREF_MODE_MJCF_DEFAULT`` joints will not be preserved — reapply
    them on the rebuilt model if you need them.
+
+
+.. _shape-material-contact-stiffness-and-damping:
+
+Shape-material contact stiffness and damping
+--------------------------------------------
+
+Shape-material contact gains follow the same force-space contract as
+:ref:`joint limits <joint-limit-stiffness-and-damping>` (issue #2009).
+:attr:`~newton.Model.shape_material_ke` and
+:attr:`~newton.Model.shape_material_kd` are force-space stiffness and
+damping (``N/m`` and ``N·s/m``). For the Newton-contacts path
+(``SolverMuJoCo(..., use_mujoco_contacts=False)``, the default),
+:class:`~newton.solvers.SolverMuJoCo` writes a per-contact
+``solref = (-ke * factor, -kd * factor)`` with
+``factor = (body_invweight0[A] + body_invweight0[B]) * (1 - dmax)``,
+where ``A`` and ``B`` are the two contacting bodies and
+``dmax = solimp[1]``. The two-body inverse-mass sum makes the contact
+stiffness independent of either body's mass, so :attr:`~newton.Model.shape_material_ke`
+behaves as a true force-space gain.
+
+``model.mujoco.solref_mode`` (per shape) controls how
+``shape_material_ke`` / ``shape_material_kd`` and ``mujoco.solref``
+combine, with the same three states as joint limits:
+
+* ``SOLREF_MODE_FORCE_SPACE`` — Newton force-space gains; the per-contact
+  factor above applies.
+* ``SOLREF_MODE_RAW`` — forward the authored ``mujoco.solref`` (e.g.
+  from an MJCF/USD import) unchanged.
+* ``SOLREF_MODE_MJCF_DEFAULT`` — registered default; preserves MuJoCo's
+  compile-time contact dynamics and the legacy
+  ``convert_solref(ke, kd, 1, 1)`` round-trip in ``geom_solref``. Opt
+  in to force-space scaling by setting
+  ``model.mujoco.solref_mode[shape] = SOLREF_MODE_FORCE_SPACE``.
+
+.. note::
+
+   ``use_mujoco_contacts=True`` and the MuJoCo CPU backend do not
+   apply the per-contact two-body factor — MuJoCo's internal
+   ``contact_params`` averages per-geom ``solref``, which cannot
+   reproduce the inverse-mass sum. ``SOLREF_MODE_FORCE_SPACE`` shapes
+   fall back to the legacy ``convert_solref(ke, kd, 1, 1)``
+   approximation on those paths.
 
 
 Actuators

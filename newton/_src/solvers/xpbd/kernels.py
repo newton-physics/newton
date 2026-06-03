@@ -1509,10 +1509,11 @@ def solve_body_joints(
     joint_limit_lower: wp.array[float],
     joint_limit_upper: wp.array[float],
     joint_qd_start: wp.array[int],
+    joint_target_q_start: wp.array[int],
     joint_dof_dim: wp.array2d[int],
     joint_axis: wp.array[wp.vec3],
-    joint_target_pos: wp.array[float],
-    joint_target_vel: wp.array[float],
+    joint_target_q: wp.array[float],
+    joint_target_qd: wp.array[float],
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
     joint_linear_compliance: float,
@@ -1593,6 +1594,7 @@ def solve_body_joints(
     angular_compliance = joint_angular_compliance
 
     axis_start = joint_qd_start[tid]
+    target_axis_start = joint_target_q_start[tid]
     lin_axis_count = joint_dof_dim[tid, 0]
     ang_axis_count = joint_dof_dim[tid, 1]
 
@@ -1676,36 +1678,38 @@ def solve_body_joints(
             axis_limits = wp.spatial_vector(vec_min(lo_temp, up_temp), vec_max(lo_temp, up_temp))
             ke = joint_target_ke[axis_start]
             kd = joint_target_kd[axis_start]
-            target_pos = joint_target_pos[axis_start]
-            target_vel = joint_target_vel[axis_start]
+            target_pos = joint_target_q[target_axis_start]
+            target_vel = joint_target_qd[axis_start]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
             if kd > 0.0:  # has velocity control
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
         if lin_axis_count > 1:
             axis_idx = axis_start + 1
+            target_axis_idx = target_axis_start + 1
             axis = joint_axis[axis_idx]
             lower = joint_limit_lower[axis_idx]
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
             ke = joint_target_ke[axis_idx]
             kd = joint_target_kd[axis_idx]
-            target_pos = joint_target_pos[axis_idx]
-            target_vel = joint_target_vel[axis_idx]
+            target_pos = joint_target_q[target_axis_idx]
+            target_vel = joint_target_qd[axis_idx]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
             if kd > 0.0:  # has velocity control
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
         if lin_axis_count > 2:
             axis_idx = axis_start + 2
+            target_axis_idx = target_axis_start + 2
             axis = joint_axis[axis_idx]
             lower = joint_limit_lower[axis_idx]
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
             ke = joint_target_ke[axis_idx]
             kd = joint_target_kd[axis_idx]
-            target_pos = joint_target_pos[axis_idx]
-            target_vel = joint_target_vel[axis_idx]
+            target_pos = joint_target_q[target_axis_idx]
+            target_vel = joint_target_qd[axis_idx]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
             if kd > 0.0:  # has velocity control
@@ -1871,42 +1875,45 @@ def solve_body_joints(
         # avoid a for loop here since local variables would need to be modified which is not yet differentiable
         if ang_axis_count > 0:
             axis_idx = axis_start + lin_axis_count
+            target_axis_idx = target_axis_start + lin_axis_count
             axis = joint_axis[axis_idx]
             lo_temp = axis * joint_limit_lower[axis_idx]
             up_temp = axis * joint_limit_upper[axis_idx]
             axis_limits = wp.spatial_vector(vec_min(lo_temp, up_temp), vec_max(lo_temp, up_temp))
             ke = joint_target_ke[axis_idx]
             kd = joint_target_kd[axis_idx]
-            target_pos = joint_target_pos[axis_idx]
-            target_vel = joint_target_vel[axis_idx]
+            target_pos = joint_target_q[target_axis_idx]
+            target_vel = joint_target_qd[axis_idx]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
             if kd > 0.0:  # has velocity control
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
         if ang_axis_count > 1:
             axis_idx = axis_start + lin_axis_count + 1
+            target_axis_idx = target_axis_start + lin_axis_count + 1
             axis = joint_axis[axis_idx]
             lower = joint_limit_lower[axis_idx]
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
             ke = joint_target_ke[axis_idx]
             kd = joint_target_kd[axis_idx]
-            target_pos = joint_target_pos[axis_idx]
-            target_vel = joint_target_vel[axis_idx]
+            target_pos = joint_target_q[target_axis_idx]
+            target_vel = joint_target_qd[axis_idx]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
             if kd > 0.0:  # has velocity control
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
         if ang_axis_count > 2:
             axis_idx = axis_start + lin_axis_count + 2
+            target_axis_idx = target_axis_start + lin_axis_count + 2
             axis = joint_axis[axis_idx]
             lower = joint_limit_lower[axis_idx]
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
             ke = joint_target_ke[axis_idx]
             kd = joint_target_kd[axis_idx]
-            target_pos = joint_target_pos[axis_idx]
-            target_vel = joint_target_vel[axis_idx]
+            target_pos = joint_target_q[target_axis_idx]
+            target_vel = joint_target_qd[axis_idx]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
             if kd > 0.0:  # has velocity control

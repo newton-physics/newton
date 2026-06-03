@@ -941,7 +941,7 @@ class TestActuatorStep(unittest.TestCase):
         control = model.control()
         for step_i in range(5):
             tgt = target_schedule[step_i]
-            _write_dof_values(model, control.joint_target_pos, dofs, [tgt] * n)
+            _write_dof_values(model, control.joint_target_q, dofs, [tgt] * n)
             written_targets.append(tgt)
 
             control.joint_f.zero_()
@@ -1632,7 +1632,7 @@ class TestStateReset(unittest.TestCase):
 
         control = model.control()
         for _step in range(3):
-            _write_dof_values(model, control.joint_target_pos, dofs, [10.0] * n)
+            _write_dof_values(model, control.joint_target_q, dofs, [10.0] * n)
             control.joint_f.zero_()
             actuator.step(state, control, state_0, state_1, 0.01)
             state_0, state_1 = state_1, state_0
@@ -1728,17 +1728,17 @@ class TestDelayGraphCapture(unittest.TestCase):
 
         # --- Eager ---
         solver, s0, s1, ctrl, act, act_a, act_b = _setup()
-        wp.copy(ctrl.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        wp.copy(ctrl.joint_target_q, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
         s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, max_delay)
         eager_results = []
         for tgt in cycle_targets:
-            wp.copy(ctrl.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            wp.copy(ctrl.joint_target_q, wp.full(ndof, tgt, dtype=wp.float32, device=device))
             s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, N)
             eager_results.append(s0.joint_q.numpy().copy())
 
         # --- Graph ---
         solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g = _setup()
-        wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        wp.copy(ctrl_g.joint_target_q, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
         s0_g, s1_g, act_a_g, act_b_g = _loop(solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g, max_delay)
         sub_dt = dt / K
         with wp.ScopedCapture(device=device) as capture:
@@ -1754,7 +1754,7 @@ class TestDelayGraphCapture(unittest.TestCase):
 
         graph_results = []
         for tgt in cycle_targets:
-            wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            wp.copy(ctrl_g.joint_target_q, wp.full(ndof, tgt, dtype=wp.float32, device=device))
             wp.capture_launch(graph)
             graph_results.append(s0_g.joint_q.numpy().copy())
 
@@ -1891,9 +1891,9 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
 
 class TestTargetPosIndicesSeparation(unittest.TestCase):
-    """Actuator must read joint_target_pos via target_pos_indices, not pos_indices."""
+    """Actuator must read the target-position array via target_pos_indices, not pos_indices."""
 
-    def test_target_pos_read_from_dof_index_not_coord_index(self):
+    def _run(self, use_coord_layout: bool):
         device = wp.get_device()
 
         def _a(vals, dtype=wp.float32):
@@ -1902,11 +1902,25 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
         kp = 100.0
         actual_pos = 0.5
         correct_target = 2.0
-        sentinel = 99.0  # placed at coord index 3 to catch wrong index usage
+        sentinel = 99.0  # placed at the wrong slot to catch incorrect index usage
 
         indices = _a([1], dtype=wp.uint32)  # DOF index 1
         pos_indices = _a([3], dtype=wp.uint32)  # coord index 3 (joint_q layout)
-        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (joint_target_pos layout)
+
+        # Under the coord layout, target_pos_indices defaults to pos_indices (=[3]),
+        # so place correct_target at coord index 3 and the sentinel at DOF index 1.
+        # Under the legacy DOF layout the explicit target_pos_indices=[1] picks DOF
+        # index 1, so place correct_target there and the sentinel at coord index 3.
+        if use_coord_layout:
+            target_pos_indices = None  # exercise default = pos_indices
+            target_array = [0.0, sentinel, 0.0, correct_target]
+            target_pos_attr = "joint_target_q"
+            target_vel_attr = "joint_target_qd"
+        else:
+            target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1
+            target_array = [0.0, correct_target, 0.0, sentinel]
+            target_pos_attr = "joint_target_pos"
+            target_vel_attr = "joint_target_vel"
 
         ctrl = ControllerPD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
         actuator = Actuator(
@@ -1914,21 +1928,25 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
             controller=ctrl,
             pos_indices=pos_indices,
             target_pos_indices=target_pos_indices,
+            control_target_pos_attr=target_pos_attr,
+            control_target_vel_attr=target_vel_attr,
         )
 
         # joint_q is coord-shaped; actual position at coord index 3
         joint_q = _a([0.0, 0.0, 0.0, actual_pos])
         joint_qd = _a([0.0, 0.0])
-        # joint_target_pos padded to size 4 so both index 1 (correct) and
-        # index 3 (sentinel) are reachable — lets us distinguish the two code paths
-        joint_target_pos = _a([0.0, correct_target, 0.0, sentinel])
-        joint_target_vel = _a([0.0, 0.0, 0.0, 0.0])
+        # target-position array padded to size 4 so both DOF index 1 and coord index 3
+        # are reachable — lets us distinguish the two code paths
+        target_pos_array = _a(target_array)
+        # joint_target_qd / joint_target_vel are always DOF-shaped (matches joint_qd)
+        # regardless of the flag — only joint_target_q's shape varies by layout.
+        target_vel_array = wp.zeros_like(joint_qd)
+        self.assertEqual(target_vel_array.shape, joint_qd.shape)
         joint_f = wp.zeros(4, dtype=wp.float32, device=device)
 
         sim_state = types.SimpleNamespace(joint_q=joint_q, joint_qd=joint_qd)
         sim_control = types.SimpleNamespace(
-            joint_target_pos=joint_target_pos,
-            joint_target_vel=joint_target_vel,
+            **{target_pos_attr: target_pos_array, target_vel_attr: target_vel_array},
             joint_act=None,
             joint_f=joint_f,
         )
@@ -1947,6 +1965,16 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
                 f"got {got}. If {wrong}, pos_indices was wrongly used for target lookup."
             ),
         )
+
+    def test_target_pos_read_from_dof_index_not_coord_index(self):
+        prev = newton.use_coord_layout_targets
+        try:
+            for use_coord_layout in (False, True):
+                newton.use_coord_layout_targets = use_coord_layout
+                with self.subTest(use_coord_layout_targets=use_coord_layout):
+                    self._run(use_coord_layout)
+        finally:
+            newton.use_coord_layout_targets = prev
 
 
 if __name__ == "__main__":
