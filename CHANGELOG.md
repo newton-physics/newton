@@ -49,7 +49,7 @@
 - Make the `ViewerGL` left control panel movable (drag the title bar) and resizable (drag the bottom-right corner); a vertical scrollbar appears automatically when contents overflow and is operable with the mouse wheel or two-finger trackpad gestures. The initial dock-on-left position is unchanged.
 - Normalize negative scale components to `abs()` in `ModelBuilder.add_shape*` for symmetric primitives (sphere, box, capsule, cylinder, ellipsoid, plane, gaussian); these shapes are point-symmetric so sign flips produce identical geometry. If you relied on a negative scale to flip such a shape, apply the mirror through the shape's transform (`xform`) instead.
 - Reject negative scale components on `ModelBuilder.add_shape_cone()` and heightfield shapes (previously silently accepted, produced invalid geometry). To mirror a cone, apply the flip through the shape's `xform`; to mirror a heightfield, pre-mirror the source height data and pass a positive scale.
-- Change `SolverKamino.reset()` signature from `reset(state_out, ...)` to `reset(state, ...)` to match `SolverBase.reset()` and reset in place on `state`; migrate `state_out=` calls to `state=`
+- Change `SolverKamino.reset()` signature from `reset(state_out, ...)` to `reset(state, ...)` to match `SolverBase.reset()` and reset in place on `state`; remove beta `state_out=` and legacy positional reset-target compatibility, migrate `state_out=` calls to `state=`, and pass reset targets by keyword, such as `base_q=...`
 - Change `SensorTiledCamera` default packed `color` and `albedo` outputs to sRGB-encoded bytes so authored display colors render at the expected display brightness; pass `RenderConfig(output_color_space=ColorSpace.LINEAR)` to preserve the previous linear-byte behavior.
 - Accept plain `int` flag bitmasks in solver reset and model-change notification APIs so users can define extension bits beyond `StateFlags` and `ModelFlags`.
 - Bump `newton-usd-schemas` to `>=0.3.1`
@@ -67,7 +67,6 @@
 
 - Remove `SensorRaycast` (deprecated in 1.2); use `SensorTiledCamera` with `SensorTiledCamera.utils.compute_pinhole_camera_rays()` and `create_depth_image_output()` instead
 - Remove `SensorContact.net_force` (deprecated in 1.1.0); use `SensorContact.total_force` and `SensorContact.force_matrix` instead
-- Remove beta `SolverKamino.reset(state_out=...)` and legacy positional reset-target compatibility; pass the reset state as `reset(state, ...)` or `reset(state=...)` and provide reset targets by keyword, such as `base_q=...`
 - Remove `include_total` parameter from `SensorContact` (deprecated in 1.1.0); use `measure_total` instead
 - Remove `SensorContact.sensing_objs` (deprecated in 1.1.0); use `SensorContact.sensing_obj_idx` and `SensorContact.sensing_obj_type` instead
 - Remove `SensorContact.counterparts` and `SensorContact.reading_indices` (deprecated in 1.1.0); use `SensorContact.counterpart_indices` and `SensorContact.counterpart_type` instead

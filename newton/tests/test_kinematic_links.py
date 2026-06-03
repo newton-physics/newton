@@ -148,7 +148,7 @@ class TestKinematicLinks(unittest.TestCase):
         flags = model.body_flags.numpy()
         flags[body] = int(BodyFlags.DYNAMIC)
         model.body_flags.assign(flags)
-        solver.notify_model_changed(newton.solvers.SolverNotifyFlags.BODY_PROPERTIES)
+        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
 
         state_0.clear_forces()
         _set_body_wrench(state_0, body, applied_wrench)
@@ -580,7 +580,7 @@ def test_kinematic_runtime_toggle(
     flags = model.body_flags.numpy()
     flags[body] = int(BodyFlags.DYNAMIC)
     model.body_flags.assign(flags)
-    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.BODY_PROPERTIES)
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
 
     # Phase 2: body is now dynamic — should move under applied force.
     for _ in range(phase_steps):
@@ -598,7 +598,7 @@ def test_kinematic_runtime_toggle(
     flags = model.body_flags.numpy()
     flags[body] = int(BodyFlags.KINEMATIC)
     model.body_flags.assign(flags)
-    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.BODY_PROPERTIES)
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
 
     pos_before_rekinematic = state_0.body_q.numpy()[body, :3].copy()
 
