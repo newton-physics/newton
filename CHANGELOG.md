@@ -292,7 +292,6 @@
 - Export `ViewerBase` from `newton.viewer` public API
 - Add `custom_attributes` argument to `ModelBuilder.add_shape_convex_hull()`
 - Add RJ45 plug-socket insertion example with SDF contacts, latch joint, and interactive gizmo
-- Add site-targeted actuator support to MuJoCo solver
 
 ### Changed
 
@@ -390,8 +389,6 @@
 - Cap `cbor2` dependency to `<6` to prevent recorder test failures caused by breaking deserialization changes in cbor2 6.0
 - Clamp viewer picking force to prevent explosion when picking light objects near stiff contacts, configurable via `pick_max_acceleration` parameter on the `Picking` class (default 5g of effective articulation mass)
 - Fix `cloth_franka` example Jacobian broken by COM-referenced `body_qd` convention change; adjust robot base height, gripper orientations, and grasp targets for improved reachability (a follow-up PR will migrate the example to `newton.ik`)
-- Fix joint-synthesized CONNECT constraint anchors not updating when `dof_ref` or `joint_X_p` changes at runtime via `notify_model_changed()`
-- Fix WELD constraint data corruption when a model contains both FIXED and revolute/ball loop joints, caused by CONNECT anchor kernels overwriting WELD `eq_data`
 
 ## [1.0.0] - 2026-03-10
 
