@@ -117,6 +117,10 @@ def add_example_test(
         env_vars = os.environ.copy()
         if warp_cache_path is not None:
             env_vars["WARP_CACHE_PATH"] = os.path.dirname(warp_cache_path)
+        # Govern the subprocess's deprecation policy solely through warning_args
+        # below; drop any ambient PYTHONWARNINGS so a stray error::DeprecationWarning
+        # in the caller's environment cannot turn a lenient run strict.
+        env_vars.pop("PYTHONWARNINGS", None)
 
         # Interpreter warning flags, applied from startup of the subprocess.
         warning_args = ["-W", "error::DeprecationWarning"] if deprecations_as_errors else []

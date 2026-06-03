@@ -11,8 +11,15 @@ import unittest
 
 class TestLazyInit(unittest.TestCase):
     def test_import_newton_does_not_init_warp(self):
+        import newton.tests.unittest_utils  # noqa: PLC0415
+
         env = os.environ.copy()
-        env["PYTHONWARNINGS"] = "error::DeprecationWarning"
+        # Escalate import-time deprecations only when the runner opted in
+        # (--deprecations-as-errors); otherwise keep the import lenient so a
+        # dependency deprecation does not fail a consumer's install check.
+        env.pop("PYTHONWARNINGS", None)
+        if newton.tests.unittest_utils.deprecations_as_errors:
+            env["PYTHONWARNINGS"] = "error::DeprecationWarning"
 
         result = subprocess.run(
             [
