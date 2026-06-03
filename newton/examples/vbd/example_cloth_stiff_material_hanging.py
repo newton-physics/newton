@@ -69,7 +69,11 @@ class Example:
         self.model.soft_contact_kd = 1.0e0
         self.model.soft_contact_mu = 1.0
 
-        cloth_size = 50
+        # square_cloth.usd is a square grid; derive the edge length from the
+        # vertex count so the pinned column tracks the asset's resolution
+        # instead of silently pinning the wrong vertices if the mesh changes.
+        cloth_size = int(round(len(vertices) ** 0.5))
+        assert cloth_size * cloth_size == len(vertices), f"expected a square cloth mesh, got {len(vertices)} vertices"
         fixed_side = [cloth_size - 1 + i * cloth_size for i in range(cloth_size)]
 
         flags = self.model.particle_flags.numpy()

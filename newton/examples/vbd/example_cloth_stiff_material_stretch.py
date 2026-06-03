@@ -34,7 +34,14 @@ import newton.examples
 def _theoretical_area_ratio(stretch: float, nu: float) -> float:
     """Closed-form area ratio for the StableNH 2D membrane under uniaxial stretch.
 
-    Assumes mu = tri_ke and lmbd_nh = tri_ka + tri_ke = mu * (1 + nu) / (1 - nu).
+    Assumes ``mu = tri_ke`` and ``lmbd_nh = tri_ka + tri_ke = mu * (1 + nu) / (1 - nu)``.
+
+    Args:
+        stretch: Imposed axial stretch ratio along X.
+        nu: Effective Poisson ratio of the membrane.
+
+    Returns:
+        Predicted bulk area ratio ``A / A_0``.
     """
     if nu >= 1.0 - 1e-9:
         return 1.0  # incompressible limit
@@ -44,7 +51,15 @@ def _theoretical_area_ratio(stretch: float, nu: float) -> float:
 
 
 def _ka_from_nu(tri_ke: float, nu: float) -> float:
-    """Solve tri_ka so the effective Poisson ratio is nu (for the NH membrane)."""
+    """Solve ``tri_ka`` so the effective Poisson ratio equals ``nu`` for the NH membrane.
+
+    Args:
+        tri_ke: Triangle stiffness mapping to the shear modulus ``mu``.
+        nu: Target effective Poisson ratio.
+
+    Returns:
+        The ``tri_ka`` value yielding the requested Poisson ratio.
+    """
     if nu >= 1.0 - 1e-9:
         return tri_ke * 1.0e6  # ~incompressible
     return 2.0 * tri_ke * nu / (1.0 - nu)
@@ -150,6 +165,11 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def _apply_stretch_ramp(self):
+        # Once the ramp completes the right edge is at full stretch and held
+        # there by fix_right; re-asserting it every frame only burns a
+        # GPU<->CPU round-trip, so apply the final position once and stop.
+        if self._frame_index > self.RAMP_FRAMES:
+            return
         if self._frame_index >= self.RAMP_FRAMES:
             target_stretch = self.STRETCH
         else:

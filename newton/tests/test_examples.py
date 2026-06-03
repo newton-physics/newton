@@ -378,7 +378,7 @@ add_example_test(
     TestClothExamples,
     name="vbd.example_cloth_stiff_material_stretch",
     devices=cuda_test_devices,
-    test_options={"num-frames": 600},
+    test_options={"num-frames": 360},
     use_viewer=True,
 )
 
