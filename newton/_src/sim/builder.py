@@ -10721,8 +10721,6 @@ class ModelBuilder:
                     "and wp.Texture3D, which are CUDA-only."
                 )
 
-            sdf_block_coords = []
-            sdf_index2blocks = []
             from ..geometry.sdf_texture import (  # noqa: PLC0415
                 QuantizationMode,
                 TextureSDFData,
@@ -10767,7 +10765,6 @@ class ModelBuilder:
                 is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
-                block_coords = []
                 cache_key = None
                 mesh_sdf = None
 
@@ -10805,12 +10802,6 @@ class ModelBuilder:
                             deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
                         cache_key = ("mesh_sdf", id(mesh_sdf))
-                        if mesh_sdf.texture_block_coords is not None:
-                            block_coords = list(mesh_sdf.texture_block_coords)
-                        elif mesh_sdf.block_coords is not None:
-                            block_coords = list(mesh_sdf.block_coords)
-                        else:
-                            block_coords = []
                 elif is_hydroelastic and has_shape_collision:
                     effective_max_resolution = sdf_max_resolution
                     if sdf_target_voxel_size is None and effective_max_resolution is None:
@@ -10834,7 +10825,6 @@ class ModelBuilder:
                         sdf_cache[cache_key] = sdf_idx
                         shape_sdf_index[i] = sdf_idx
 
-                        tex_block_coords = None
                         if mesh_sdf is not None:
                             tex_data = mesh_sdf.to_texture_kernel_data()
                             if tex_data is not None:
@@ -10842,8 +10832,6 @@ class ModelBuilder:
                                 compact_texture_sdf_coarse_textures.append(mesh_sdf._coarse_texture)
                                 compact_texture_sdf_subgrid_textures.append(mesh_sdf._subgrid_texture)
                                 compact_texture_sdf_subgrid_start_slots.append(tex_data.subgrid_start_slots)
-                                if mesh_sdf.texture_block_coords is not None:
-                                    tex_block_coords = mesh_sdf.texture_block_coords
                             else:
                                 compact_texture_sdf_data.append(create_empty_texture_sdf_data())
                                 compact_texture_sdf_coarse_textures.append(None)
@@ -10858,7 +10846,7 @@ class ModelBuilder:
                                     support_winding_number=True,
                                 )
                                 try:
-                                    tex_data, c_tex, s_tex, tex_bc = create_texture_sdf_from_mesh(
+                                    tex_data, c_tex, s_tex = create_texture_sdf_from_mesh(
                                         prim_wp_mesh,
                                         margin=sdf_gen_margin,
                                         narrow_band_range=tuple(sdf_narrow_band_range),
@@ -10877,38 +10865,27 @@ class ModelBuilder:
                                     tex_data = create_empty_texture_sdf_data()
                                     c_tex = None
                                     s_tex = None
-                                    tex_bc = None
                                 compact_texture_sdf_data.append(tex_data)
                                 compact_texture_sdf_coarse_textures.append(c_tex)
                                 compact_texture_sdf_subgrid_textures.append(s_tex)
                                 compact_texture_sdf_subgrid_start_slots.append(
                                     tex_data.subgrid_start_slots if c_tex is not None else None
                                 )
-                                tex_block_coords = tex_bc
                             else:
                                 compact_texture_sdf_data.append(create_empty_texture_sdf_data())
                                 compact_texture_sdf_coarse_textures.append(None)
                                 compact_texture_sdf_subgrid_textures.append(None)
                                 compact_texture_sdf_subgrid_start_slots.append(None)
 
-                        final_block_coords = list(tex_block_coords) if tex_block_coords is not None else block_coords
-                        block_start_idx = len(sdf_block_coords)
-                        sdf_block_coords.extend(final_block_coords)
-                        sdf_index2blocks.append([block_start_idx, len(sdf_block_coords)])
-
-            m.shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
-            m.sdf_block_coords = wp.array(sdf_block_coords, dtype=wp.vec3us)
-            m.sdf_index2blocks = (
-                wp.array(sdf_index2blocks, dtype=wp.vec2i) if sdf_index2blocks else wp.array([], dtype=wp.vec2i)
-            )
-            m.texture_sdf_data = (
+            m._shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
+            m._texture_sdf_data = (
                 wp.array(compact_texture_sdf_data, dtype=TextureSDFData, device=device)
                 if compact_texture_sdf_data
                 else wp.array([], dtype=TextureSDFData, device=device)
             )
-            m.texture_sdf_coarse_textures = compact_texture_sdf_coarse_textures
-            m.texture_sdf_subgrid_textures = compact_texture_sdf_subgrid_textures
-            m.texture_sdf_subgrid_start_slots = compact_texture_sdf_subgrid_start_slots
+            m._texture_sdf_coarse_textures = compact_texture_sdf_coarse_textures
+            m._texture_sdf_subgrid_textures = compact_texture_sdf_subgrid_textures
+            m._texture_sdf_subgrid_start_slots = compact_texture_sdf_subgrid_start_slots
 
             # ---------------------
             # heightfield collision data

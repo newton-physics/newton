@@ -549,6 +549,75 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
 
         self.assertGreater(checked_count, 0, "No bodies were checked")
 
+    def test_mujoco_cpu_inertia_frame_sync(self):
+        """CPU MuJoCo must use the full MJWarp inertia representation."""
+        mjcf = """
+        <mujoco model="cpu_inertia_frame_sync">
+          <compiler angle="radian" autolimits="true"/>
+          <option gravity="0 0 0" timestep="0.001" integrator="Euler"/>
+          <worldbody>
+            <body name="base">
+              <inertial pos="0 0 0" mass="8.7914" diaginertia="0.115841 0.082211 0.142951"/>
+              <joint name="yaw" type="hinge" axis="0 0 1" armature="0.001" damping="0" frictionloss="0"/>
+              <geom type="cylinder" size="0.25 0.08" mass="0"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <velocity
+              name="yaw_velocity"
+              joint="yaw"
+              kv="1000000"
+              ctrllimited="true"
+              ctrlrange="-4 4"
+              forcelimited="true"
+              forcerange="-600000 600000"/>
+          </actuator>
+        </mujoco>
+        """
+
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native_model = mujoco.MjModel.from_xml_string(mjcf)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=True, ignore_inertial_definitions=False, parse_meshes=False)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True, integrator="euler")
+
+        body_id = 1
+        np.testing.assert_allclose(
+            solver.mj_model.body_inertia[body_id],
+            solver.mjw_model.body_inertia.numpy()[0, body_id],
+            rtol=1e-7,
+            atol=1e-8,
+        )
+        np.testing.assert_allclose(
+            solver.mj_model.body_iquat[body_id],
+            solver.mjw_model.body_iquat.numpy()[0, body_id],
+            rtol=1e-7,
+            atol=1e-8,
+        )
+        self.assertEqual(
+            int(solver.mj_model.body_sameframe[body_id]),
+            int(mujoco.mjtSameFrame.mjSAMEFRAME_NONE),
+        )
+        self.assertEqual(int(solver.mj_model.body_simple[body_id]), 0)
+        np.testing.assert_array_equal(solver.mj_model.dof_simplenum, np.zeros_like(solver.mj_model.dof_simplenum))
+        np.testing.assert_allclose(solver.mj_model.dof_M0[0], native_model.dof_M0[0], rtol=1e-6, atol=1e-7)
+
+        native_data = mujoco.MjData(native_model)
+        native_data.ctrl[0] = 1.0
+        mujoco.mj_step(native_model, native_data)
+
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        control.mujoco.ctrl.assign([1.0])
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        solver.step(state_in, state_out, control, None, 0.001)
+
+        np.testing.assert_allclose(solver.mj_data.qfrc_actuator[0], native_data.qfrc_actuator[0], rtol=1e-7)
+        np.testing.assert_allclose(solver.mj_data.qvel[0], native_data.qvel[0], rtol=1e-6, atol=1e-7)
+
     def test_body_gravcomp(self):
         """
         Tests if the body gravity compensation is updated properly.
