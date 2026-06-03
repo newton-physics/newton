@@ -145,6 +145,7 @@ class Mesh:
         is_solid: bool = True,
         maxhullvert: int | None = None,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
         texture: str | np.ndarray | None = None,
@@ -167,6 +168,7 @@ class Mesh:
             is_solid: If True, mesh is assumed solid for inertia computation (default: True).
             maxhullvert: Max vertices for convex hull approximation (default: :attr:`~newton.Mesh.MAX_HULL_VERTICES`).
             color: Optional per-mesh base color (values in [0, 1]).
+            opacity: Optional per-mesh opacity in [0, 1].
             roughness: Optional mesh roughness in [0, 1].
             metallic: Optional mesh metallic in [0, 1].
             texture: Optional texture path/URL or image data (H, W, C).
@@ -180,6 +182,7 @@ class Mesh:
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
         self._color: Vec3 | None = None
         self.color = color
+        self._opacity = opacity
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
         self._roughness = roughness
@@ -701,6 +704,7 @@ class Mesh:
             normals=self.normals.copy() if self.normals is not None else None,
             uvs=self.uvs.copy() if self.uvs is not None else None,
             color=self.color,
+            opacity=self.opacity,
             texture=self._texture
             if isinstance(self._texture, str)
             else (self._texture.copy() if self._texture is not None else None),
@@ -865,6 +869,15 @@ class Mesh:
     @color.setter
     def color(self, value: Vec3 | None):
         self._color = value
+
+    @property
+    def opacity(self) -> float | None:
+        """Optional display opacity with value in [0, 1]."""
+        return self._opacity
+
+    @opacity.setter
+    def opacity(self, value: float | None):
+        self._opacity = None if value is None else float(value)
 
     @property
     def texture(self) -> str | np.ndarray | None:

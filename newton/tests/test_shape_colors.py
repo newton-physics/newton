@@ -12,17 +12,19 @@ from newton.viewer import ViewerNull
 
 
 class _ShapeColorProbe(ViewerNull):
-    """Captures per-batch colors passed through ``log_instances``."""
+    """Captures per-batch appearance values passed through ``log_instances``."""
 
     def __init__(self):
-        """Initialize the probe with storage for the latest colors."""
+        """Initialize the probe with storage for the latest appearance values."""
         super().__init__(num_frames=1)
         self.last_colors = None
+        self.last_opacities = None
 
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
-        """Capture the most recent instance colors sent to the viewer."""
+    def log_instances(self, name, mesh, xforms, scales, colors, materials, *, opacities=None, hidden=False):
+        """Capture the most recent instance appearance values sent to the viewer."""
         del name, mesh, xforms, scales, materials, hidden
         self.last_colors = None if colors is None else colors.numpy().copy()
+        self.last_opacities = None if opacities is None else opacities.numpy().copy()
 
 
 class TestShapeColors(unittest.TestCase):
@@ -32,8 +34,8 @@ class TestShapeColors(unittest.TestCase):
         """Cache the active Warp device for model finalization."""
         self.device = wp.get_device()
 
-    def _make_tetra_mesh(self, color=None):
-        """Create a small tetrahedral mesh with an optional display color."""
+    def _make_tetra_mesh(self, color=None, opacity=None):
+        """Create a small tetrahedral mesh with optional display appearance."""
         vertices = np.array(
             [
                 (-0.5, 0.0, 0.0),
@@ -44,7 +46,7 @@ class TestShapeColors(unittest.TestCase):
             dtype=np.float32,
         )
         indices = np.array([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3], dtype=np.int32)
-        return newton.Mesh(vertices, indices, color=color)
+        return newton.Mesh(vertices, indices, color=color, opacity=opacity)
 
     def test_collision_shape_without_explicit_color_uses_default_palette(self):
         """Verify collision shapes fall back to the default viewer palette."""
@@ -84,6 +86,38 @@ class TestShapeColors(unittest.TestCase):
 
         np.testing.assert_allclose(model.shape_color.numpy()[shape], [0.9, 0.1, 0.3], atol=1e-6, rtol=1e-6)
 
+    def test_shape_opacity_defaults_to_opaque(self):
+        """Verify shapes default to fully opaque display opacity."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0)
+        shape = builder.add_shape_box(body=body, hx=0.1, hy=0.2, hz=0.3)
+
+        model = builder.finalize(device=self.device)
+
+        np.testing.assert_allclose(model.shape_opacity.numpy()[shape], 1.0, atol=1e-6, rtol=1e-6)
+
+    def test_add_shape_mesh_uses_mesh_opacity_when_opacity_is_none(self):
+        """Verify mesh shapes inherit embedded mesh opacity when no override is given."""
+        mesh = self._make_tetra_mesh(opacity=0.35)
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0)
+        shape = builder.add_shape_mesh(body=body, mesh=mesh)
+
+        model = builder.finalize(device=self.device)
+
+        np.testing.assert_allclose(model.shape_opacity.numpy()[shape], 0.35, atol=1e-6, rtol=1e-6)
+
+    def test_explicit_shape_opacity_overrides_mesh_opacity(self):
+        """Verify explicit shape opacity overrides opacity embedded in meshes."""
+        mesh = self._make_tetra_mesh(opacity=0.35)
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0)
+        shape = builder.add_shape_mesh(body=body, mesh=mesh, opacity=0.8)
+
+        model = builder.finalize(device=self.device)
+
+        np.testing.assert_allclose(model.shape_opacity.numpy()[shape], 0.8, atol=1e-6, rtol=1e-6)
+
     def test_ground_plane_keeps_checkerboard_material_with_resolved_shape_colors(self):
         """Verify the ground plane keeps its checkerboard material after color resolution."""
         builder = newton.ModelBuilder()
@@ -121,6 +155,32 @@ class TestShapeColors(unittest.TestCase):
 
         self.assertIsNotNone(viewer.last_colors)
         np.testing.assert_allclose(viewer.last_colors[0], [0.8, 0.2, 0.1], atol=1e-6, rtol=1e-6)
+
+    def test_viewer_syncs_runtime_shape_opacities_from_model(self):
+        """Verify the viewer reflects runtime updates written to ``model.shape_opacity``."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0)
+        shape = builder.add_shape_box(
+            body=body,
+            hx=0.1,
+            hy=0.2,
+            hz=0.3,
+            opacity=0.4,
+        )
+        model = builder.finalize(device=self.device)
+        state = model.state()
+
+        viewer = _ShapeColorProbe()
+        viewer.set_model(model)
+        viewer.log_state(state)
+        np.testing.assert_allclose(viewer.last_opacities[0], 0.4, atol=1e-6, rtol=1e-6)
+
+        viewer.last_opacities = None
+        model.shape_opacity[shape : shape + 1].fill_(0.7)
+        viewer.log_state(state)
+
+        self.assertIsNotNone(viewer.last_opacities)
+        np.testing.assert_allclose(viewer.last_opacities[0], 0.7, atol=1e-6, rtol=1e-6)
 
     def test_viewer_builds_inverse_shape_color_slot_mapping(self):
         """Verify packed color slots can be mapped back to model shape indices."""
@@ -191,6 +251,44 @@ class TestShapeColors(unittest.TestCase):
 
         expected_colors = model.shape_color.numpy()[slot_to_shape]
         np.testing.assert_allclose(packed_shape_colors.numpy(), expected_colors, atol=1e-6, rtol=1e-6)
+
+    def test_viewer_repacks_runtime_shape_opacities_into_packed_order(self):
+        """Verify runtime opacity sync repacks model opacities into packed viewer order."""
+        builder = newton.ModelBuilder()
+        body0 = builder.add_body(mass=1.0)
+        body1 = builder.add_body(mass=1.0)
+        body2 = builder.add_body(mass=1.0)
+        shape0 = builder.add_shape_box(body=body0, hx=0.1, hy=0.2, hz=0.3, opacity=0.3)
+        shape1 = builder.add_shape_sphere(body=body1, radius=0.15, opacity=0.4)
+        # Reuse the same box geometry so shapes 0 and 2 share a render batch.
+        shape2 = builder.add_shape_box(body=body2, hx=0.1, hy=0.2, hz=0.3, opacity=0.5)
+
+        model = builder.finalize(device=self.device)
+        viewer = ViewerNull()
+        viewer.set_model(model)
+
+        packed_shape_opacities = viewer.model_shape_opacity
+        slot_to_shape = viewer._slot_to_shape
+        self.assertIsNotNone(packed_shape_opacities)
+        self.assertIsNotNone(slot_to_shape)
+        assert packed_shape_opacities is not None
+        assert slot_to_shape is not None
+
+        expected_slot_order = np.array([shape0, shape2, shape1], dtype=np.int32)
+        np.testing.assert_array_equal(slot_to_shape, expected_slot_order)
+
+        updated_opacities = {
+            shape0: 0.8,
+            shape1: 0.6,
+            shape2: 0.7,
+        }
+        for shape_idx, opacity in updated_opacities.items():
+            model.shape_opacity[shape_idx : shape_idx + 1].fill_(opacity)
+
+        viewer._sync_shape_opacities_from_model()
+
+        expected_opacities = model.shape_opacity.numpy()[slot_to_shape]
+        np.testing.assert_allclose(packed_shape_opacities.numpy(), expected_opacities, atol=1e-6, rtol=1e-6)
 
     def test_update_shape_colors_warns_and_writes_model_shape_color(self):
         """Verify deprecated viewer color updates warn and write through to the model."""

@@ -43,6 +43,7 @@ PLUG_Y_OFFSET = -0.025
 
 CABLE_RADIUS = 0.00325
 CABLE_KINEMATIC_COUNT = 4  # first N rod bodies are inside the plug and follow it
+SOCKET_OPACITY = 0.35
 
 # Contact parameters for cable and ground plane (tuned for VBD).
 CABLE_KE = 1.0e8
@@ -248,6 +249,7 @@ class Example:
             mesh=socket_mesh,
             xform=wp.transform(sc, wp.quat_identity()),
             cfg=SHAPE_CFG,
+            opacity=SOCKET_OPACITY,
             label="socket",
         )
 

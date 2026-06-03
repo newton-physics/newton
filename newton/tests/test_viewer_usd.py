@@ -119,6 +119,33 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(interpolation, UsdGeom.Tokens.constant)
         np.testing.assert_allclose(widths, np.array([0.2], dtype=np.float32), atol=1e-6)
 
+    def test_log_instances_authors_display_opacity(self):
+        viewer = self._make_viewer()
+
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        xforms = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform)
+        scales = wp.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]], dtype=wp.vec3)
+        opacities = wp.array([0.25, 0.75], dtype=wp.float32)
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh("/opacity_mesh", points, indices)
+        viewer.log_instances("/opacity_instances", "/opacity_mesh", xforms, scales, None, None, opacities=opacities)
+
+        for i, expected in enumerate((0.25, 0.75)):
+            prim = viewer.stage.GetPrimAtPath(f"/root/opacity_instances/instance_{i}")
+            display_opacity = UsdGeom.PrimvarsAPI(prim).GetPrimvar("displayOpacity")
+
+            self.assertTrue(display_opacity)
+            np.testing.assert_allclose(
+                np.asarray(display_opacity.Get(viewer._frame_index), dtype=np.float32),
+                np.array([expected], dtype=np.float32),
+                atol=1e-6,
+            )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

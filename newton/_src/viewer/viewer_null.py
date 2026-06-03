@@ -92,6 +92,8 @@ class ViewerNull(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
+        *,
+        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
     ):
         """
@@ -104,8 +106,10 @@ class ViewerNull(ViewerBase):
             scales: Instance scales.
             colors: Instance colors.
             materials: Instance materials.
+            opacities: Instance opacities.
             hidden: Whether the instances are hidden.
         """
+        del opacities
         pass
 
     @override

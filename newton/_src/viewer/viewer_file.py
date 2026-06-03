@@ -576,6 +576,8 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
                 "is_solid": x.is_solid,
                 "has_inertia": x.has_inertia,
                 "maxhullvert": x.maxhullvert,
+                "color": x.color,
+                "opacity": x.opacity,
                 "mass": x.mass,
                 "com": [float(x.com[0]), float(x.com[1]), float(x.com[2])],
                 "inertia": serialize_ndarray(np.array(x.inertia), format_type, cache),
@@ -967,6 +969,8 @@ def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | 
                     compute_inertia=False,
                     is_solid=mesh_data["is_solid"],
                     maxhullvert=mesh_data["maxhullvert"],
+                    color=mesh_data.get("color"),
+                    opacity=mesh_data.get("opacity"),
                 )
 
                 # Restore the saved inertia properties
@@ -1266,6 +1270,8 @@ class ViewerFile(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
+        *,
+        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
     ):
         """File viewer does not render instances.
@@ -1277,8 +1283,10 @@ class ViewerFile(ViewerBase):
             scales: Optional per-instance scales.
             colors: Optional per-instance colors.
             materials: Optional per-instance material parameters.
+            opacities: Optional per-instance opacity values.
             hidden: Whether the instance batch is hidden.
         """
+        del opacities
         pass
 
     @override

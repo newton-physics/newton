@@ -317,6 +317,8 @@ class ViewerRerun(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
+        *,
+        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
     ):
         """
@@ -329,6 +331,7 @@ class ViewerRerun(ViewerBase):
             scales: Instance scales.
             colors: Instance colors.
             materials: Instance materials.
+            opacities: Instance opacities.
             hidden: Whether the instances are hidden.
         """
         if hidden:
@@ -342,7 +345,8 @@ class ViewerRerun(ViewerBase):
             raise RuntimeError(f"Mesh {mesh} not found. Call log_mesh first.")
 
         # re-run needs to generate a new mesh for each instancer
-        if name not in self._instances:
+        appearance_changed = colors is not None or opacities is not None
+        if name not in self._instances or appearance_changed:
             mesh_data = self._meshes[mesh]
             has_texture = (
                 mesh_data.get("texture_buffer") is not None and mesh_data.get("texture_format") is not None
@@ -351,13 +355,24 @@ class ViewerRerun(ViewerBase):
             # Handle colors - ReRun doesn't support per-instance colors
             # so we just use the first instance's color for all instances
             vertex_colors = None
+            albedo_factor = None
+            first_opacity = 1.0
+            if opacities is not None and len(opacities) > 0:
+                first_opacity = float(np.clip(self._to_numpy(opacities).astype(np.float32)[0], 0.0, 1.0))
             if colors is not None and not has_texture:
                 colors_np = self._to_numpy(colors).astype(np.float32)
                 # Take the first instance's color and apply to all vertices
                 first_color = colors_np[0]
-                color_rgb = np.array(first_color * 255, dtype=np.uint8)
+                color_rgba = np.array([*first_color, first_opacity], dtype=np.float32)
+                color_rgba = np.array(color_rgba * 255.0, dtype=np.uint8)
                 num_vertices = len(mesh_data["points"])
-                vertex_colors = np.tile(color_rgb, (num_vertices, 1))
+                vertex_colors = np.tile(color_rgba, (num_vertices, 1))
+            elif opacities is not None and not has_texture:
+                color_rgba = np.array([180.0, 180.0, 180.0, first_opacity * 255.0], dtype=np.uint8)
+                num_vertices = len(mesh_data["points"])
+                vertex_colors = np.tile(color_rgba, (num_vertices, 1))
+            elif opacities is not None and self._mesh3d_supports("albedo_factor"):
+                albedo_factor = (255, 255, 255, int(round(first_opacity * 255.0)))
 
             # Log the base mesh with optional colors
             mesh_kwargs = {
@@ -367,6 +382,8 @@ class ViewerRerun(ViewerBase):
             }
             if vertex_colors is not None:
                 mesh_kwargs["vertex_colors"] = vertex_colors
+            if albedo_factor is not None:
+                mesh_kwargs["albedo_factor"] = albedo_factor
             if mesh_data.get("uvs") is not None and self._mesh3d_supports("vertex_texcoords"):
                 mesh_kwargs["vertex_texcoords"] = mesh_data["uvs"]
             if mesh_data.get("texture_buffer") is not None and mesh_data.get("texture_format") is not None:

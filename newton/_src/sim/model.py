@@ -239,6 +239,8 @@ class Model:
         """Shape 3D scale, shape [shape_count], vec3."""
         self.shape_color: wp.array[wp.vec3] | None = None
         """Shape display colors [0, 1], shape [shape_count], vec3."""
+        self.shape_opacity: wp.array[wp.float32] | None = None
+        """Shape display opacity [0, 1], shape [shape_count], float."""
         self.shape_filter: wp.array[wp.int32] | None = None
         """Shape filter group, shape [shape_count], int."""
 
@@ -800,6 +802,8 @@ class Model:
         self.attribute_frequency["shape_margin"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_source_ptr"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_scale"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_color"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_opacity"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_filter"] = Model.AttributeFrequency.SHAPE
 
         self.actuators: list[Actuator] = []

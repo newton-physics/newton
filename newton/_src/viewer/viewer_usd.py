@@ -274,6 +274,8 @@ class ViewerUSD(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
+        *,
+        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
     ):
         """
@@ -286,6 +288,7 @@ class ViewerUSD(ViewerBase):
             scales: Array of scales.
             colors: Array of colors.
             materials: Array of materials.
+            opacities: Array of opacity values.
             hidden: Whether the instances are hidden.
         """
         # Get prototype path
@@ -307,6 +310,8 @@ class ViewerUSD(ViewerBase):
 
         if colors is not None:
             colors = colors.numpy()
+        if opacities is not None:
+            opacities = np.clip(opacities.numpy().astype(np.float32), 0.0, 1.0)
 
         for i in range(len(xforms)):
             instance_path = self._get_path(name) + f"/instance_{i}"
@@ -328,8 +333,21 @@ class ViewerUSD(ViewerBase):
 
             # update color
             if colors is not None:
-                displayColor = UsdGeom.PrimvarsAPI(instance).GetPrimvar("displayColor")
+                primvars = UsdGeom.PrimvarsAPI(instance)
+                displayColor = primvars.GetPrimvar("displayColor")
+                if not displayColor:
+                    displayColor = primvars.CreatePrimvar(
+                        "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
+                    )
                 displayColor.Set(colors[i], self._frame_index)
+            if opacities is not None:
+                primvars = UsdGeom.PrimvarsAPI(instance)
+                displayOpacity = primvars.GetPrimvar("displayOpacity")
+                if not displayOpacity:
+                    displayOpacity = primvars.CreatePrimvar(
+                        "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
+                    )
+                displayOpacity.Set([float(opacities[i])], self._frame_index)
 
     # log a set of instances as a point instancer, faster but less flexible
     def log_instances_point_instancer(
@@ -342,6 +360,8 @@ class ViewerUSD(ViewerBase):
             wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | np.ndarray | None
         ),
         materials: wp.array[wp.vec4] | None,
+        *,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """
         Create or update a PointInstancer for mesh instances.
@@ -353,6 +373,7 @@ class ViewerUSD(ViewerBase):
             scales: Instance scales as a warp array of wp.vec3.
             colors: Instance colors as a warp array of wp.vec3.
             materials: Instance materials as a warp array of wp.vec4.
+            opacities: Instance opacities as a warp array of wp.float32.
 
         Raises:
             RuntimeError: If the mesh prototype is not found.
@@ -373,6 +394,9 @@ class ViewerUSD(ViewerBase):
             instancer.CreateProtoIndicesAttr().Set([0] * num_instances)
             UsdGeom.PrimvarsAPI(instancer).CreatePrimvar(
                 "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.vertex, 1
+            )
+            UsdGeom.PrimvarsAPI(instancer).CreatePrimvar(
+                "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex, 1
             )
 
             # Set the prototype relationship
@@ -427,6 +451,13 @@ class ViewerUSD(ViewerBase):
                 # Explicit identity indices [0, 1, 2, ...], otherwise OV won't pick them up
                 indices = Vt.IntArray(range(num_instances))
                 displayColor.SetIndices(indices, self._frame_index)
+
+            if opacities is not None:
+                opacities_np = self._promote_opacities_to_array(opacities, num_instances)
+                displayOpacity = UsdGeom.PrimvarsAPI(instancer).GetPrimvar("displayOpacity")
+                displayOpacity.Set(opacities_np, self._frame_index)
+                indices = Vt.IntArray(range(num_instances))
+                displayOpacity.SetIndices(indices, self._frame_index)
 
     # Abstract methods that need basic implementations
     @override
@@ -638,6 +669,21 @@ class ViewerUSD(ViewerBase):
         else:
             # Fallback for other formats
             return np.array(colors)
+
+    def _promote_opacities_to_array(self, opacities, num_items):
+        """Promote opacity inputs to a clamped numpy array of shape ``(num_items,)``."""
+        if opacities is None:
+            return None
+        if isinstance(opacities, wp.array):
+            opacities = opacities.numpy()
+        elif isinstance(opacities, list | tuple) and len(opacities) == 1 and np.isscalar(opacities[0]):
+            opacities = np.tile(float(opacities[0]), num_items)
+        elif np.isscalar(opacities):
+            opacities = np.tile(float(opacities), num_items)
+        opacities_np = np.asarray(opacities, dtype=np.float32).reshape(-1)
+        if len(opacities_np) == 1 and num_items > 1:
+            opacities_np = np.tile(float(opacities_np[0]), num_items)
+        return np.clip(opacities_np, 0.0, 1.0)
 
     @staticmethod
     def _is_single_rgb_triplet(colors) -> bool:

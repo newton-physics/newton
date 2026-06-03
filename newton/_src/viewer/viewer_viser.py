@@ -462,6 +462,8 @@ class ViewerViser(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
+        *,
+        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
     ):
         """
@@ -477,6 +479,7 @@ class ViewerViser(ViewerBase):
             scales: Instance scales.
             colors: Instance colors.
             materials: Instance materials.
+            opacities: Instance opacities.
             hidden: Whether the instances are hidden.
         """
         # Check that mesh exists
@@ -509,6 +512,7 @@ class ViewerViser(ViewerBase):
         xforms_np = self._to_numpy(xforms)
         scales_np = self._to_numpy(scales) if scales is not None else None
         colors_np = self._to_numpy(colors) if colors is not None else None
+        opacities_np = self._to_numpy(opacities).astype(np.float32) if opacities is not None else None
 
         num_instances = len(xforms_np)
 
@@ -564,6 +568,9 @@ class ViewerViser(ViewerBase):
                         handle.batched_colors = batched_colors
                         # Cache the colors for future reference
                         self._instances[name]["colors"] = batched_colors
+                    if opacities_np is not None and hasattr(handle, "batched_opacities"):
+                        handle.batched_opacities = np.clip(opacities_np, 0.0, 1.0)
+                        self._instances[name]["opacities"] = opacities_np
                     return
                 except Exception:
                     # If update fails, recreate the mesh
@@ -587,6 +594,7 @@ class ViewerViser(ViewerBase):
                 batched_positions=positions,
                 batched_wxyzs=quats_wxyz,
                 batched_scales=batched_scales,
+                batched_opacities=np.clip(opacities_np, 0.0, 1.0) if opacities_np is not None else None,
                 lod="auto",
             )
         else:
@@ -599,6 +607,7 @@ class ViewerViser(ViewerBase):
                 batched_wxyzs=quats_wxyz,
                 batched_scales=batched_scales,
                 batched_colors=batched_colors,
+                batched_opacities=np.clip(opacities_np, 0.0, 1.0) if opacities_np is not None else None,
                 lod="auto",
             )
 
@@ -607,6 +616,7 @@ class ViewerViser(ViewerBase):
             "mesh": mesh,
             "count": num_instances,
             "colors": batched_colors,  # Cache the colors
+            "opacities": opacities_np,
             "use_trimesh": use_trimesh,
         }
 
