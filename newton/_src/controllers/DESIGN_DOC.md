@@ -365,14 +365,14 @@ group.reset(state_0, mask=mask)
 
 Reference implementation: `newton/_src/controllers/impl/controller_diff_ik.py`.
 
-The controller takes a `newton.ModelBuilder` containing K topologically-identical articulations (K ≥ 1), replicates it R times internally at `finalize()` via `ModelBuilder.replicate`, and runs a damped-least-squares Jacobian solve per robot at every step. Stateless. Tracks the end-effector body's COM position and body orientation.
+The controller takes a `newton.ModelBuilder` containing K topologically-identical articulations (K ≥ 1), replicates it R times internally at `finalize()` via `ModelBuilder.replicate`, and runs a damped-least-squares Jacobian solve per robot at every step. Stateless. Drives a user-defined "site" (a frame attached to the EE body at offset `site_xform`) to a target pose.
 
 ```python
 import warp as wp
 import newton
 import newton.controllers as nc
 
-# Build a single-robot 2-DOF planar arm template (K=1).
+# Build a single-robot 2-DOF planar arm template (K=1). Each link is 1 unit long.
 builder = newton.ModelBuilder()
 link0 = builder.add_link()
 link1 = builder.add_link()
@@ -385,13 +385,17 @@ device = wp.get_device()
 N = 2                                                            # DOFs (one robot, two joints)
 indices = wp.array([0, 1], dtype=wp.uint32, device=device)
 
+# Site at the tip of link1 (1 unit along x in link1's local frame).
+# Target pose is interpreted as this site's world-frame pose. At q=[0,0] the
+# site is at world position (2, 0, 0).
 diffik = nc.ControllerDifferentialIK(
     model_builder=builder,
     indices=indices,
     end_effector_link=link1,
+    site_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()),
     measurement=wp.zeros(N, dtype=wp.float32, device=device),
     measurement_rate=wp.zeros(N, dtype=wp.float32, device=device),
-    target_pos=wp.array([wp.vec3(1.0, 0.1, 0.0)], dtype=wp.vec3, device=device),
+    target_pos=wp.array([wp.vec3(2.0, 0.1, 0.0)], dtype=wp.vec3, device=device),
     target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
     damping=wp.array([0.05], dtype=wp.float32, device=device),
     output_qd=wp.zeros(N, dtype=wp.float32, device=device),
@@ -405,7 +409,7 @@ for _ in range(steps):
     state_0, state_1 = state_1, state_0
 ```
 
-Internally the compute step is: gather joint_q/qd → `eval_fk` → `eval_jacobian` → in-kernel 6x6 Cholesky DLS solve per robot → accumulate `q_dot` and integrate `q = q_current + q_dot * dt`.
+Internally the compute step is: gather `joint_q`/`joint_qd` → `eval_fk` → `eval_jacobian` → in-kernel 6x6 Cholesky DLS solve per robot (converts Newton's COM-frame Jacobian to a site-frame Jacobian via `omega × (site - COM)`) → accumulate `q_dot` and integrate `q = q_current + q_dot * dt`.
 
 ---
 

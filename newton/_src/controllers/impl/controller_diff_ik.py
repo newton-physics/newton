@@ -4,8 +4,8 @@
 """ControllerDifferentialIK — one-step damped-least-squares differential IK.
 
 Stateless. For each robot in the batch, computes a joint-velocity command
-that drives the end-effector COM pose toward a target (position + orientation),
-using a damped pseudoinverse of the per-robot spatial Jacobian.
+that drives a user-defined site pose (position + orientation) toward a
+target, using a damped pseudoinverse of the per-robot spatial Jacobian.
 """
 
 from __future__ import annotations
@@ -28,6 +28,30 @@ def _gather_local_kernel(
     local_arr[i] = global_arr[lookup_indices[i]]
 
 
+@wp.func
+def _site_j(
+    jacobian: wp.array3d[float],
+    r: int,
+    j_row: int,
+    i: int,
+    j: int,
+    offset: wp.vec3,
+) -> float:
+    # Returns the (i, j) element of the site-frame Jacobian.
+    #
+    # Newton's eval_jacobian gives the COM-frame body twist (v_com, omega).
+    # For any other point P fixed on the body, v_P = v_com + omega × (P - com).
+    # We use this with `offset = site_world - com_world` to convert each linear
+    # row of J from "at COM" to "at site". Angular rows are unchanged.
+    if i == 0:
+        return jacobian[r, j_row + 0, j] + jacobian[r, j_row + 4, j] * offset[2] - jacobian[r, j_row + 5, j] * offset[1]
+    if i == 1:
+        return jacobian[r, j_row + 1, j] + jacobian[r, j_row + 5, j] * offset[0] - jacobian[r, j_row + 3, j] * offset[2]
+    if i == 2:
+        return jacobian[r, j_row + 2, j] + jacobian[r, j_row + 3, j] * offset[1] - jacobian[r, j_row + 4, j] * offset[0]
+    return jacobian[r, j_row + i, j]
+
+
 @wp.kernel
 def _diff_ik_solve_kernel(
     # The full spatial Jacobian for the replicated model, shape
@@ -40,6 +64,7 @@ def _diff_ik_solve_kernel(
     target_pos: wp.array[wp.vec3],
     target_quat: wp.array[wp.quat],
     damping: wp.array[float],
+    site_xform: wp.transform,
     end_effector_link: int,
     bodies_per_robot: int,
     dofs_per_robot: int,
@@ -50,16 +75,22 @@ def _diff_ik_solve_kernel(
     ee_body = r * bodies_per_robot + end_effector_link
     j_row = end_effector_link * 6
 
-    # --- 1. Current EE pose (COM in world, body orientation) ---
-    # The Jacobian's linear rows give velocity at the COM, so we track the
-    # COM position (not the body's reference frame origin) to keep position
-    # and Jacobian consistent.
-    T = body_q[ee_body]
-    current_pos = wp.transform_point(T, body_com[ee_body])
-    current_quat = wp.transform_get_rotation(T)
+    # --- 1. Site pose in world frame ---
+    # The site is a frame attached to the EE body at offset `site_xform`
+    # from the body's reference frame. We drive this site's world-frame pose
+    # toward the target, not the body's COM or origin.
+    t_body = body_q[ee_body]
+    t_site = t_body * site_xform
+    site_pos = wp.transform_get_translation(t_site)
+    site_quat = wp.transform_get_rotation(t_site)
+
+    # Vector from COM (where Newton's Jacobian is defined) to the site point.
+    # Used to convert each linear J row to site-frame velocity below.
+    com_world = wp.transform_point(t_body, body_com[ee_body])
+    offset = site_pos - com_world
 
     # --- 2. Task-space error e ∈ R^6 (3 position + 3 orientation) ---
-    pos_err = target_pos[r] - current_pos
+    pos_err = target_pos[r] - site_pos
 
     # Orientation error via quaternion vector-part doubled.
     #
@@ -77,7 +108,7 @@ def _diff_ik_solve_kernel(
     # but their vector parts differ in sign. Multiplying by sign(q_err.w)
     # picks the representative with positive scalar part, i.e. the shorter
     # rotation (theta in [0, pi] rather than [pi, 2*pi]).
-    q_err = target_quat[r] * wp.quat_inverse(current_quat)
+    q_err = target_quat[r] * wp.quat_inverse(site_quat)
     s = wp.sign(q_err[3])
     rot_err = wp.vec3(2.0 * s * q_err[0], 2.0 * s * q_err[1], 2.0 * s * q_err[2])
 
@@ -89,15 +120,15 @@ def _diff_ik_solve_kernel(
     e4 = rot_err[1]
     e5 = rot_err[2]
 
-    # --- 3. Build A = J J^T + lambda^2 * I (6x6 SPD) ---
-    # A is small enough to keep in 36 thread-local scalars.
+    # --- 3. Build A = J_site J_site^T + lambda^2 * I (6x6 SPD) ---
+    # Each element accesses the site-corrected J via _site_j(...).
     lam_sq = damping[r] * damping[r]
     a = wp.spatial_matrix()
     for i in range(6):
         for k in range(i, 6):
             acc = float(0.0)
             for j in range(dofs_per_robot):
-                acc += jacobian[r, j_row + i, j] * jacobian[r, j_row + k, j]
+                acc += _site_j(jacobian, r, j_row, i, j, offset) * _site_j(jacobian, r, j_row, k, j, offset)
             if i == k:
                 acc += lam_sq
             a[i, k] = acc
@@ -131,15 +162,15 @@ def _diff_ik_solve_kernel(
     y1 = (z1 - ell[5, 1] * y5 - ell[4, 1] * y4 - ell[3, 1] * y3 - ell[2, 1] * y2) / ell[1, 1]
     y0 = (z0 - ell[5, 0] * y5 - ell[4, 0] * y4 - ell[3, 0] * y3 - ell[2, 0] * y2 - ell[1, 0] * y1) / ell[0, 0]
 
-    # --- 7. q_dot = J^T y ---
+    # --- 7. q_dot = J_site^T y ---
     for j in range(dofs_per_robot):
         qd = (
-            jacobian[r, j_row + 0, j] * y0
-            + jacobian[r, j_row + 1, j] * y1
-            + jacobian[r, j_row + 2, j] * y2
-            + jacobian[r, j_row + 3, j] * y3
-            + jacobian[r, j_row + 4, j] * y4
-            + jacobian[r, j_row + 5, j] * y5
+            _site_j(jacobian, r, j_row, 0, j, offset) * y0
+            + _site_j(jacobian, r, j_row, 1, j, offset) * y1
+            + _site_j(jacobian, r, j_row, 2, j, offset) * y2
+            + _site_j(jacobian, r, j_row, 3, j, offset) * y3
+            + _site_j(jacobian, r, j_row, 4, j, offset) * y4
+            + _site_j(jacobian, r, j_row, 5, j, offset) * y5
         )
         qd_target_local[r * dofs_per_robot + j] = qd
 
@@ -166,21 +197,25 @@ class ControllerDifferentialIK(Controller):
 
     Coupled per-robot: each robot's joint-velocity solution depends on its
     full configuration ``q``. Stateless — no internal accumulators between
-    steps. Tracks the **COM** of the end-effector body in world frame
-    (Newton's Jacobian is defined for COM velocity); set ``body_com=(0,0,0)``
-    on the EE link if you want body-frame origin tracking.
+    steps. Drives the **site** pose in world frame toward the target. The
+    site is a frame attached to the EE body at a user-specified offset
+    ``site_xform``; pass ``wp.transform_identity()`` to target the EE
+    body's reference frame, or e.g. ``wp.transform(p=tool_tip_offset)``
+    to target a tool tip. The Jacobian's COM-relative linear rows are
+    converted to site-relative rows internally via the offset
+    ``site_world - com_world`` and ``omega × offset``.
 
-    Solve form (per robot, ``J`` is the 6xN spatial Jacobian for the EE link):
+    Solve form (per robot, ``J_site`` is the 6xN site-frame Jacobian):
 
     .. code-block:: text
 
-        e        = [target_pos - current_pos ;  2 * sign(q_err.w) * q_err.xyz]
-        A        = J J^T + lambda^2 * I_6                                       (6x6 SPD)
+        e        = [target_pos - site_pos ;  2 * sign(q_err.w) * q_err.xyz]
+        A        = J_site J_site^T + lambda^2 * I_6                              (6x6 SPD)
         L L^T    = A                                                            (Cholesky)
         L L^T y  = e                                                            (solve)
-        q_dot    = J^T y
+        q_dot    = J_site^T y
 
-    where ``q_err = target_quat * conj(current_quat)``. ``output_q`` is
+    where ``q_err = target_quat * conj(site_quat)``. ``output_q`` is
     written as ``q_current + q_dot * dt``.
 
     Construction takes a :class:`newton.ModelBuilder` containing K
@@ -199,20 +234,26 @@ class ControllerDifferentialIK(Controller):
     - Each articulation's base is at the world origin in the template
       (fixed base). World-frame and base-frame coincide per robot.
 
-    Ports:
-
+    Args:
+        model_builder: Unfinalized K-articulation template.
         indices: Global DOF indices this controller writes to. Length
-            ``num_robots * dofs_per_robot``. ``len(indices) % model_builder.joint_dof_count == 0``.
+            ``num_robots * dofs_per_robot``;
+            ``len(indices) % model_builder.joint_dof_count == 0``.
+        end_effector_link: Body index (within one articulation) of the EE link.
+        site_xform: Offset transform from the EE body's reference frame to the
+            controlled site. Target poses are interpreted as the site's world-frame
+            pose. Pass ``wp.transform_identity()`` to target the EE body's
+            reference frame directly.
         measurement: Per-DOF port. Source of joint positions ``q``.
         measurement_rate: Per-DOF port. Source of joint velocities ``q_dot``
             (used by ``eval_fk`` to populate ``body_qd``; the solve uses
             position-only error).
         target_pos: Per-group ``wp.array[wp.vec3]`` of length ``num_robots``.
-            EE COM position target in world (base) frame.
+            Site position target in world (base) frame.
         target_quat: Per-group ``wp.array[wp.quat]`` of length ``num_robots``.
-            EE orientation target.
+            Site orientation target.
         damping: Per-group ``wp.array[float]`` of length ``num_robots``. DLS
-            ``lambda`` per robot. ``A = J J^T + lambda^2 * I``.
+            ``lambda`` per robot. ``A = J_site J_site^T + lambda^2 * I``.
         output_qd: Per-DOF port. Destination for ``q_dot`` (accumulated ``+=``).
         output_q: Per-DOF port. Destination for ``q_current + q_dot * dt`` (accumulated ``+=``).
     """
@@ -223,6 +264,7 @@ class ControllerDifferentialIK(Controller):
         model_builder: ModelBuilder,
         indices: wp.array[wp.uint32],
         end_effector_link: int,
+        site_xform: wp.transform,
         measurement,
         measurement_rate,
         target_pos,
@@ -255,6 +297,7 @@ class ControllerDifferentialIK(Controller):
         self._num_robots = K * self._replication_count
         self.indices = indices
         self._end_effector_link = int(end_effector_link)
+        self._site_xform = site_xform
 
         self._target_pos = _validate_per_group(target_pos, self._num_robots, wp.vec3, name="target_pos")
         self._target_quat = _validate_per_group(target_quat, self._num_robots, wp.quat, name="target_quat")
@@ -327,6 +370,7 @@ class ControllerDifferentialIK(Controller):
                 self._target_pos,
                 self._target_quat,
                 self._damping,
+                self._site_xform,
                 self._end_effector_link,
                 self._bodies_per_robot,
                 self._dofs_per_robot,

@@ -177,12 +177,13 @@ class TestControllerPID(unittest.TestCase):
 
 class TestControllerDifferentialIK(unittest.TestCase):
     def test_target_equals_current_gives_zero_velocity(self):
-        """With target == current EE pose, the DLS solve produces q_dot ≈ 0."""
+        """With target == current site pose, the DLS solve produces q_dot ≈ 0."""
         device = wp.get_device()
 
-        # Build a 2-link planar arm rotating about z.
+        # 2-link planar arm rotating about z. Each link is 1 unit long.
         # Joint 0: world → link0 at origin. Joint 1: link0 → link1 at link0's local (1,0,0).
-        # At q = [0, 0]: link1's world-frame origin = (1, 0, 0), orientation = identity.
+        # Site is attached at link1's local (1,0,0) — the "tip" of link1.
+        # At q=[0,0]: link1's frame at (1,0,0); site world position = (2,0,0).
         builder = newton.ModelBuilder()
         link0 = builder.add_link()
         link1 = builder.add_link()
@@ -209,9 +210,10 @@ class TestControllerDifferentialIK(unittest.TestCase):
             model_builder=builder,
             indices=indices,
             end_effector_link=link1,
+            site_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()),
             measurement=wp.zeros(2, dtype=wp.float32, device=device),
             measurement_rate=wp.zeros(2, dtype=wp.float32, device=device),
-            target_pos=wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device),
+            target_pos=wp.array([wp.vec3(2.0, 0.0, 0.0)], dtype=wp.vec3, device=device),
             target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
             damping=wp.array([0.05], dtype=wp.float32, device=device),
             output_qd=output_qd,
@@ -227,7 +229,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
         np.testing.assert_allclose(output_q.numpy(), [0.0, 0.0], atol=1e-5)
 
     def test_pulls_first_joint_toward_offset_target(self):
-        """Target offset in +y from EE at q=[0,0] drives positive q_dot on joint 0."""
+        """Target offset in +y from site at q=[0,0] drives positive q_dot on joint 0."""
         device = wp.get_device()
 
         builder = newton.ModelBuilder()
@@ -256,10 +258,11 @@ class TestControllerDifferentialIK(unittest.TestCase):
             model_builder=builder,
             indices=indices,
             end_effector_link=link1,
+            site_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()),
             measurement=wp.zeros(2, dtype=wp.float32, device=device),
             measurement_rate=wp.zeros(2, dtype=wp.float32, device=device),
-            # Target shifted +0.1 in y from the current EE position (1, 0, 0).
-            target_pos=wp.array([wp.vec3(1.0, 0.1, 0.0)], dtype=wp.vec3, device=device),
+            # Site at q=[0,0] is at (2, 0, 0); shift target +0.1 in y from there.
+            target_pos=wp.array([wp.vec3(2.0, 0.1, 0.0)], dtype=wp.vec3, device=device),
             target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
             damping=wp.array([0.05], dtype=wp.float32, device=device),
             output_qd=output_qd,
@@ -271,7 +274,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
         s1 = group.state()
         group.step(s0, s1, dt=0.01)
 
-        # Positive q0 rotation moves link1's origin in +y direction at q=[0,0].
+        # Positive q0 rotation moves the site in +y direction at q=[0,0].
         self.assertGreater(float(output_qd.numpy()[0]), 0.0)
 
     def test_output_q_equals_current_q_plus_qdot_dt(self):
@@ -306,6 +309,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
             model_builder=builder,
             indices=indices,
             end_effector_link=link1,
+            site_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()),
             measurement=joint_q,
             measurement_rate=wp.zeros(2, dtype=wp.float32, device=device),
             target_pos=wp.array([wp.vec3(1.5, 0.2, 0.0)], dtype=wp.vec3, device=device),
