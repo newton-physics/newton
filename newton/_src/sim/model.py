@@ -134,14 +134,13 @@ class Model:
                 raise AttributeError(f"Attribute already exists: {self._name}.{name}")
             self._deprecated_aliases[name] = (getter, message)
 
-        def __getattribute__(self, name: str) -> Any:
-            if not name.startswith("_"):
-                aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
-                if name in aliases:
-                    getter, message = aliases[name]
-                    warnings.warn(message, DeprecationWarning, stacklevel=2)
-                    return getter()
-            return object.__getattribute__(self, name)
+        def __getattr__(self, name: str) -> Any:
+            aliases = self.__dict__.get("_deprecated_aliases", {})
+            if name in aliases:
+                getter, message = aliases[name]
+                warnings.warn(message, DeprecationWarning, stacklevel=2)
+                return getter()
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
         def __setattr__(self, name: str, value: Any) -> None:
             if not name.startswith("_"):
