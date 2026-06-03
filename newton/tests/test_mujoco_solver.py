@@ -8152,6 +8152,62 @@ class TestMuJoCoSolverFreeJointBodyPos(unittest.TestCase):
         )
 
 
+class TestMuJoCoSolverFreeJointNonWorldParent(unittest.TestCase):
+    """SolverMuJoCo warns when a FREE joint has a non-world parent."""
+
+    def _make_world_parent_free_model(self):
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
+        j = builder.add_joint_free(child=body)
+        builder.add_articulation([j])
+        return builder.finalize()
+
+    def _make_non_world_parent_free_model(self, label="floater"):
+        builder = newton.ModelBuilder()
+        parent = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
+        child = builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
+        j_root = builder.add_joint_fixed(parent=-1, child=parent)
+        j_free = builder.add_joint_free(parent=parent, child=child, label=label)
+        builder.add_articulation([j_root, j_free])
+        return builder.finalize()
+
+    def test_free_joint_world_parent_no_warning(self):
+        """SolverMuJoCo must not warn when a FREE joint attaches directly to the world."""
+        try:
+            model = self._make_world_parent_free_model()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                SolverMuJoCo(model)
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed: {e}")
+        self.assertFalse(
+            any("SolverMuJoCo" in str(w.message) for w in caught),
+            f"Unexpected SolverMuJoCo warning for world-parent free joint: {[str(w.message) for w in caught]}",
+        )
+
+    def test_free_joint_non_world_parent_warns(self):
+        """SolverMuJoCo must emit a UserWarning when a FREE joint has a non-world parent.
+
+        MuJoCo only allows free joints directly under the worldbody; a free joint
+        parented to another body will not simulate correctly. MuJoCo also raises a
+        ValueError on compile, but the warning must be emitted before that.
+        """
+        try:
+            model = self._make_non_world_parent_free_model(label="floater")
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                try:
+                    SolverMuJoCo(model)
+                except ValueError:
+                    pass  # MuJoCo rejects free joints not at the top level after warning
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed: {e}")
+        mjc_warnings = [w for w in caught if "SolverMuJoCo" in str(w.message)]
+        self.assertEqual(len(mjc_warnings), 1)
+        self.assertEqual(mjc_warnings[0].category, UserWarning)
+        self.assertIn("floater", str(mjc_warnings[0].message))
+
+
 class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
     def test_zero_mass_body(self):
         """SolverMuJoCo accepts models with zero-mass bodies (e.g. sensor frames).
@@ -10706,6 +10762,403 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
             any("provided a single value" in str(w.message) and "range" in str(w.message) for w in caught),
             f"Non-whitelisted multi-component shorthand must warn; got: {[str(w.message) for w in caught]}",
         )
+
+
+class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
+    """Force-space ``shape_material_ke``/``shape_material_kd`` for the MuJoCo solver.
+
+    Issue #2009: MJCF/USD importers used to convert ``mjc:solref``
+    (acceleration space) directly into Newton ``shape_material_ke`` /
+    ``shape_material_kd`` (force space), corrupting the documented
+    semantics. The fix stores raw ``mjc:solref`` in the
+    ``mujoco.solref`` custom attribute and derives the per-contact
+    ``solref`` from Newton ke/kd plus ``body_invweight0[A] +
+    body_invweight0[B]`` in ``convert_newton_contacts_to_mjwarp_kernel``.
+
+    Tests use ``use_mujoco_contacts=False`` explicitly so the
+    Newton-contacts kernel (where the override lives) runs. They read
+    ``mjw_data.contact.solref`` back directly and compare to
+    ``(-ke·factor, -kd·factor)`` — mirroring the joint-limit suite
+    pattern (:meth:`TestMuJoCoSolverInvweightScaledSolref
+    .test_joint_limit_solref_uses_dof_invweight0`). ``use_mujoco_contacts
+    =True`` and the MuJoCo CPU backend remain unsupported for
+    ``FORCE_SPACE``: MuJoCo's internal ``contact_params`` operates on
+    per-geom ``solref`` and cannot reproduce the two-body invweight sum.
+    """
+
+    @staticmethod
+    def _make_force_space(model) -> None:
+        mode = np.full(model.shape_count, SOLREF_MODE_FORCE_SPACE, dtype=np.int32)
+        model.mujoco.solref_mode.assign(mode)
+
+    def _build_box_on_plane(self, *, mass: float, ke: float, kd: float):
+        builder = newton.ModelBuilder(gravity=-9.81)
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.default_shape_cfg.ke = ke
+        builder.default_shape_cfg.kd = kd
+        builder.add_ground_plane()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.09), wp.quat_identity()), label="dyn")
+        cfg = newton.ModelBuilder.ShapeConfig()
+        cfg.ke = ke
+        cfg.kd = kd
+        cfg.density = mass / 0.008  # Box half-extents 0.1 → volume 0.008 m³.
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+        model = builder.finalize()
+        self._make_force_space(model)
+        return model, body
+
+    def _run_to_first_contact(self, model, solver, *, max_substeps: int = 60, sim_dt: float = 1.0 / 240.0):
+        """Step until at least one contact is generated, then return its index.
+
+        Direct contact-injection via ``CollisionPipeline`` would also work,
+        but stepping the same code path the user does keeps the test honest
+        about the kernel actually firing.
+        """
+        contacts = model.contacts()
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        for _ in range(max_substeps):
+            state_in.clear_forces()
+            model.collide(state_in, contacts)
+            solver.step(state_in, state_out, control, contacts, sim_dt)
+            state_in, state_out = state_out, state_in
+            if int(solver.mjw_data.nacon.numpy()[0]) > 0:
+                return contacts
+        self.fail("No contacts generated; the box never settled onto the plane.")
+
+    def _expected_force_space_solref(self, solver, contact_idx: int, *, ke: float, kd: float):
+        geom_pair = solver.mjw_data.contact.geom.numpy()[contact_idx]
+        geom_a, geom_b = int(geom_pair[0]), int(geom_pair[1])
+        geom_bodyid = solver.mjw_model.geom_bodyid.numpy()
+        body_a, body_b = int(geom_bodyid[geom_a]), int(geom_bodyid[geom_b])
+        body_invweight0 = solver.mjw_model.body_invweight0.numpy()
+        invw_a = float(body_invweight0[0, body_a, 0]) if body_a >= 0 else 0.0
+        invw_b = float(body_invweight0[0, body_b, 0]) if body_b >= 0 else 0.0
+        dmax = float(solver.mjw_data.contact.solimp.numpy()[contact_idx, 1])
+        factor = (invw_a + invw_b) * (1.0 - dmax)
+        return -ke * factor, -kd * factor
+
+    def test_force_space_contact_solref_uses_invweight0_and_dmax(self):
+        """Per-contact ``solref`` must equal ``(-ke·factor, -kd·factor)`` with
+        ``factor = (invw_a + invw_b) * (1 - dmax)``."""
+        ke, kd, mass = 1.0e4, 100.0, 5.0
+        model, _ = self._build_box_on_plane(mass=mass, ke=ke, kd=kd)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
+        self._run_to_first_contact(model, solver)
+
+        nacon = int(solver.mjw_data.nacon.numpy()[0])
+        self.assertGreater(nacon, 0)
+        expected_ref, expected_damp = self._expected_force_space_solref(solver, 0, ke=ke, kd=kd)
+        actual_solref = solver.mjw_data.contact.solref.numpy()[0]
+        rel_tol = 1.0e-4
+        self.assertAlmostEqual(float(actual_solref[0]), expected_ref, delta=abs(expected_ref) * rel_tol)
+        self.assertAlmostEqual(float(actual_solref[1]), expected_damp, delta=abs(expected_damp) * rel_tol)
+        # Sign sanity: the legacy ``convert_solref(ke, kd, 1, 1)`` fallback
+        # would emit a positive ``(timeconst, dampratio)`` pair, never negative.
+        self.assertLess(float(actual_solref[0]), 0.0)
+        self.assertLess(float(actual_solref[1]), 0.0)
+
+    def test_force_space_contact_solref_uses_two_body_invweight_sum(self):
+        """Dynamic-vs-dynamic contact: factor uses the sum of both bodies' invweight0."""
+        ke, kd = 1.0e4, 100.0
+        builder = newton.ModelBuilder(gravity=-9.81)
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.default_shape_cfg.ke = ke
+        builder.default_shape_cfg.kd = kd
+        builder.add_ground_plane()
+        cfg = newton.ModelBuilder.ShapeConfig()
+        cfg.ke = ke
+        cfg.kd = kd
+        cfg.density = 1000.0  # 8 kg (0.008 m³ * 1000 kg/m³)
+        bottom = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.09), wp.quat_identity()), label="bottom")
+        builder.add_shape_box(bottom, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+        top = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.29), wp.quat_identity()), label="top")
+        builder.add_shape_box(top, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+        model = builder.finalize()
+        self._make_force_space(model)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=30, nconmax=30, iterations=10)
+        self._run_to_first_contact(model, solver, max_substeps=120)
+
+        # Find a contact between the two dynamic boxes (both bodies > 0).
+        nacon = int(solver.mjw_data.nacon.numpy()[0])
+        geom_bodyid = solver.mjw_model.geom_bodyid.numpy()
+        geom_pairs = solver.mjw_data.contact.geom.numpy()[:nacon]
+        dyn_dyn_idx = next(
+            (
+                i
+                for i, (ga, gb) in enumerate(geom_pairs)
+                if int(geom_bodyid[int(ga)]) > 0 and int(geom_bodyid[int(gb)]) > 0
+            ),
+            None,
+        )
+        if dyn_dyn_idx is None:
+            self.skipTest("Stack did not settle into a top-bottom contact in time; not the kernel's fault.")
+        expected_ref, expected_damp = self._expected_force_space_solref(solver, dyn_dyn_idx, ke=ke, kd=kd)
+        # The dynamic-dynamic factor sums both invweight0; double-check it's
+        # actually larger than the static-dynamic factor used in test_*_uses_invweight0.
+        body_invweight0 = solver.mjw_model.body_invweight0.numpy()
+        self.assertGreater(float(body_invweight0[0, int(geom_bodyid[int(geom_pairs[dyn_dyn_idx][0])]), 0]), 0.0)
+        self.assertGreater(float(body_invweight0[0, int(geom_bodyid[int(geom_pairs[dyn_dyn_idx][1])]), 0]), 0.0)
+        actual_solref = solver.mjw_data.contact.solref.numpy()[dyn_dyn_idx]
+        rel_tol = 1.0e-4
+        self.assertAlmostEqual(float(actual_solref[0]), expected_ref, delta=abs(expected_ref) * rel_tol)
+        self.assertAlmostEqual(float(actual_solref[1]), expected_damp, delta=abs(expected_damp) * rel_tol)
+
+    def test_force_space_contact_solref_updates_after_mass_change(self):
+        """``BODY_INERTIAL_PROPERTIES`` notify must refresh the per-contact factor.
+
+        Same-solver mass-change regression: catches stale ``body_invweight0``
+        if the contact fast path is not invalidated after a mass update.
+        """
+        ke, kd = 1.0e4, 100.0
+        model, body = self._build_box_on_plane(mass=2.0, ke=ke, kd=kd)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
+        self._run_to_first_contact(model, solver)
+        initial_solref_ref, _ = self._expected_force_space_solref(solver, 0, ke=ke, kd=kd)
+
+        # Double the body mass and inertia; invweight0 should halve.
+        body_mass = model.body_mass.numpy()
+        body_mass[body] *= 4.0
+        model.body_mass.assign(body_mass)
+        body_inv_mass = model.body_inv_mass.numpy()
+        body_inv_mass[body] /= 4.0
+        model.body_inv_mass.assign(body_inv_mass)
+        body_inertia = model.body_inertia.numpy()
+        body_inertia[body] *= 4.0
+        model.body_inertia.assign(body_inertia)
+        body_inv_inertia = model.body_inv_inertia.numpy()
+        body_inv_inertia[body] = np.linalg.inv(body_inertia[body])
+        model.body_inv_inertia.assign(body_inv_inertia)
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+        self._run_to_first_contact(model, solver)
+
+        updated_solref_ref, _ = self._expected_force_space_solref(solver, 0, ke=ke, kd=kd)
+        actual_solref = solver.mjw_data.contact.solref.numpy()[0]
+        rel_tol = 1.0e-4
+        self.assertAlmostEqual(float(actual_solref[0]), updated_solref_ref, delta=abs(updated_solref_ref) * rel_tol)
+        # Heavier body → smaller invweight0 → smaller |factor| → less-negative solref[0].
+        self.assertGreater(updated_solref_ref, initial_solref_ref)
+
+    def test_force_space_contact_mixed_mode_falls_through_to_geom_solref(self):
+        """Mixed-mode (FORCE_SPACE + non-FORCE_SPACE) must bypass the override.
+
+        The override only fires when *both* shapes in a contact are
+        ``FORCE_SPACE``. A force-space box on a default-mode plane must
+        leave the per-geom mixed ``solref`` untouched.
+        """
+        ke, kd = 1.0e4, 100.0
+        model, _ = self._build_box_on_plane(mass=2.0, ke=ke, kd=kd)
+        # Demote the ground-plane (shape 0) to MJCF_DEFAULT, leave the dynamic box at FORCE_SPACE.
+        mode = model.mujoco.solref_mode.numpy()
+        mode[0] = SOLREF_MODE_MJCF_DEFAULT
+        model.mujoco.solref_mode.assign(mode)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
+        self._run_to_first_contact(model, solver)
+        actual_solref = solver.mjw_data.contact.solref.numpy()[0]
+        # Per-geom mixing produces a positive ``(timeconst, dampratio)`` pair;
+        # the force-space override would have produced negatives.
+        self.assertGreater(float(actual_solref[0]), 0.0)
+        self.assertGreater(float(actual_solref[1]), 0.0)
+
+    def test_force_space_contact_solref_dmax_one_disables_override(self):
+        """Guard boundary: ``dmax >= 1`` must skip the override (factor would be zero)."""
+        ke, kd = 1.0e4, 100.0
+        model, _ = self._build_box_on_plane(mass=2.0, ke=ke, kd=kd)
+        # Pin solimp.dmax to 1.0 on every shape (the kernel reads dmax from the
+        # mixed contact solimp; setting both shapes to 1.0 forces the mixed value to 1.0).
+        solimp = model.mujoco.geom_solimp.numpy()
+        solimp[:, 1] = 1.0
+        model.mujoco.geom_solimp.assign(solimp)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
+        self._run_to_first_contact(model, solver)
+        actual_solref = solver.mjw_data.contact.solref.numpy()[0]
+        # With dmax=1 the override's ``factor = m_inv * (1 - dmax) = 0`` is
+        # discarded; per-geom mixing keeps positive (timeconst, dampratio).
+        self.assertGreater(float(actual_solref[0]), 0.0)
+        self.assertGreater(float(actual_solref[1]), 0.0)
+
+    def test_force_space_with_mujoco_contacts_emits_startup_warning(self):
+        """Opting into FORCE_SPACE while running ``use_mujoco_contacts=True`` must warn at startup.
+
+        Force-space scaling silently regresses to ``convert_solref(ke,kd,1,1)``
+        on the MuJoCo-contacts and CPU backends because the per-contact
+        invweight0 override lives in ``convert_newton_contacts_to_mjwarp_kernel``,
+        which only runs with ``use_mujoco_contacts=False``. Without an early
+        warning users hit the original #2009 bug with no signal.
+        """
+        model, _ = self._build_box_on_plane(mass=2.0, ke=1.0e4, kd=100.0)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            SolverMuJoCo(model, use_mujoco_contacts=True, njmax=20, iterations=10)
+        messages = [str(w.message) for w in caught if "SOLREF_MODE_FORCE_SPACE" in str(w.message)]
+        self.assertEqual(len(messages), 1, f"expected one FORCE_SPACE warning, got {messages}")
+
+    def test_force_space_on_newton_contacts_does_not_warn(self):
+        """The Newton-contacts path supports FORCE_SPACE: no warning should fire."""
+        model, _ = self._build_box_on_plane(mass=2.0, ke=1.0e4, kd=100.0)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
+        messages = [str(w.message) for w in caught if "SOLREF_MODE_FORCE_SPACE" in str(w.message)]
+        self.assertEqual(len(messages), 0, f"unexpected FORCE_SPACE warning(s): {messages}")
+
+    def test_force_space_contact_solref_heterogeneous_mix(self):
+        """Heterogeneous ke/kd: the override must blend per-shape values via ``contact_params`` ``mix``.
+
+        ``mix`` reproduces MuJoCo's solmix/priority weighting, so the
+        force-space override has to reuse it; otherwise heterogeneous
+        materials would combine inconsistently with friction/solimp.
+        """
+        ke_a, kd_a = 5.0e3, 50.0
+        ke_b, kd_b = 2.0e4, 200.0
+        builder = newton.ModelBuilder(gravity=-9.81)
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.default_shape_cfg.ke = ke_a
+        builder.default_shape_cfg.kd = kd_a
+        # Ground plane (shape 0) inherits the softer (ke_a, kd_a).
+        builder.add_ground_plane()
+        # Dynamic box uses the stiffer (ke_b, kd_b).
+        cfg = newton.ModelBuilder.ShapeConfig()
+        cfg.ke = ke_b
+        cfg.kd = kd_b
+        cfg.density = 2.0 / 0.008
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.09), wp.quat_identity()), label="dyn")
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+        model = builder.finalize()
+        self._make_force_space(model)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
+        self._run_to_first_contact(model, solver)
+
+        actual_solref = solver.mjw_data.contact.solref.numpy()[0]
+        # Per MuJoCo's solmix rule with equal priority and unit solmix on both
+        # shapes, ``mix == 0.5`` exactly. Recover the mixed ke/kd, then assert
+        # ``contact.solref == -mix_ke * factor`` etc. The blended values fall
+        # strictly between the two endpoints, which is the smoke test for
+        # ``mix`` actually being used.
+        geom_pair = solver.mjw_data.contact.geom.numpy()[0]
+        geom_bodyid = solver.mjw_model.geom_bodyid.numpy()
+        body_a = int(geom_bodyid[int(geom_pair[0])])
+        body_b = int(geom_bodyid[int(geom_pair[1])])
+        body_invweight0 = solver.mjw_model.body_invweight0.numpy()
+        invw_a = float(body_invweight0[0, body_a, 0]) if body_a >= 0 else 0.0
+        invw_b = float(body_invweight0[0, body_b, 0]) if body_b >= 0 else 0.0
+        dmax = float(solver.mjw_data.contact.solimp.numpy()[0, 1])
+        factor = (invw_a + invw_b) * (1.0 - dmax)
+        mix_ke = 0.5 * ke_a + 0.5 * ke_b
+        mix_kd = 0.5 * kd_a + 0.5 * kd_b
+        rel_tol = 1.0e-3
+        self.assertAlmostEqual(float(actual_solref[0]), -mix_ke * factor, delta=abs(mix_ke * factor) * rel_tol)
+        self.assertAlmostEqual(float(actual_solref[1]), -mix_kd * factor, delta=abs(mix_kd * factor) * rel_tol)
+        # Sanity: blended value is between the two extremes, neither endpoint matches.
+        self.assertNotAlmostEqual(float(actual_solref[0]), -ke_a * factor, delta=abs(ke_a * factor) * 0.05)
+        self.assertNotAlmostEqual(float(actual_solref[0]), -ke_b * factor, delta=abs(ke_b * factor) * 0.05)
+
+    def test_mjcf_default_mode_preserved(self):
+        """Unauthored MJCF geoms stay in ``SOLREF_MODE_MJCF_DEFAULT``.
+
+        Force-space scaling is opt-in for shapes: imported MuJoCo geoms
+        keep the compiled contact behavior until the user explicitly sets
+        ``model.mujoco.solref_mode[shape] = SOLREF_MODE_FORCE_SPACE``.
+        Unlike the joint-limit auto-promote (PR #2610), there is no
+        automatic flip when ``shape_material_ke``/``kd`` drift: per-example
+        overrides of ``ModelBuilder.default_shape_cfg.ke``/``kd`` are
+        common and would otherwise produce spurious promotions that
+        change contact dynamics for imported MuJoCo assets.
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                  <geom type="sphere" size="0.05"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """,
+            ignore_inertial_definitions=False,
+        )
+        model = builder.finalize()
+        np.testing.assert_array_equal(model.mujoco.solref_mode.numpy(), [SOLREF_MODE_MJCF_DEFAULT])
+        np.testing.assert_array_equal(model.mujoco.solref.numpy()[0], [0.0, 0.0])
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_MJCF_DEFAULT)
+
+        # Editing ``shape_material_ke`` alone does not promote the mode.
+        ke = model.shape_material_ke.numpy()
+        ke[:] = 5000.0
+        model.shape_material_ke.assign(ke)
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+        self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_MJCF_DEFAULT)
+
+        # Force-space scaling is opt-in via an explicit mode write.
+        mode = model.mujoco.solref_mode.numpy()
+        mode[:] = SOLREF_MODE_FORCE_SPACE
+        model.mujoco.solref_mode.assign(mode)
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+        self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_FORCE_SPACE)
+
+    def test_mjcf_authored_solref_preserved_as_raw(self):
+        """Authored MJCF ``solref`` stays as ``SOLREF_MODE_RAW`` and forwards unscaled."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                  <geom type="sphere" size="0.05" solref="0.05 0.5"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """,
+            ignore_inertial_definitions=False,
+        )
+        model = builder.finalize()
+        # ``mujoco.solref`` is stored as float32; allow a tight tolerance.
+        np.testing.assert_allclose(model.mujoco.solref.numpy()[0], [0.05, 0.5], rtol=1e-6, atol=1e-6)
+        self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_RAW)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        np.testing.assert_allclose(
+            solver.mjw_model.geom_solref.numpy()[0, 0],
+            [0.05, 0.5],
+            rtol=1e-6,
+            atol=1e-6,
+            err_msg="RAW mode shapes must forward the authored mjc:solref into geom_solref unscaled",
+        )
+
+    def test_mjcf_authored_solref_does_not_promote_on_ke_edit(self):
+        """RAW mode is sticky: editing Newton ke/kd does not flip it to FORCE_SPACE."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            """
+            <mujoco>
+              <compiler angle="radian"/>
+              <worldbody>
+                <body name="link">
+                  <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                  <geom type="sphere" size="0.05" solref="0.05 0.5"/>
+                </body>
+              </worldbody>
+            </mujoco>
+            """,
+            ignore_inertial_definitions=False,
+        )
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_RAW)
+
+        ke = model.shape_material_ke.numpy()
+        ke[:] = 5000.0
+        model.shape_material_ke.assign(ke)
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+        # Authored MuJoCo data should not silently switch to Newton scaling.
+        self.assertEqual(int(model.mujoco.solref_mode.numpy()[0]), SOLREF_MODE_RAW)
 
 
 if __name__ == "__main__":

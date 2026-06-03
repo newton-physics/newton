@@ -302,6 +302,12 @@ class ModelBuilder:
             For MuJoCo, stiffness values will internally be scaled by masses.
             Users should choose kh to match their desired force-to-penetration ratio.
         """
+        sdf_padding: float | None = None
+        """SDF AABB padding [m] for primitive texture SDFs. Falls back to
+        :attr:`gap` when ``None``. Distinct from :attr:`gap` (broad-phase
+        inflation) and :attr:`margin` (contact-surface inflation). Rejected on
+        ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
+        :meth:`~newton.geometry.Mesh.build_sdf` instead."""
 
         def configure_sdf(
             self,
@@ -959,6 +965,9 @@ class ModelBuilder:
         """Per-shape SDF maximum resolutions retained until :meth:`finalize <ModelBuilder.finalize>`."""
         self.shape_sdf_texture_format: list[str] = []
         """Per-shape SDF texture format retained until :meth:`finalize <ModelBuilder.finalize>`."""
+        self.shape_sdf_padding: list[float | None] = []
+        """Per-shape SDF generation margins [m] retained until :meth:`finalize <ModelBuilder.finalize>`.
+        When ``None``, :attr:`shape_gap` is used for primitive texture SDF generation."""
 
         # Mesh SDF storage (texture SDF arrays created at finalize)
 
@@ -1101,10 +1110,10 @@ class ModelBuilder:
         """Joint limit stiffness values accumulated for :attr:`Model.joint_limit_ke`."""
         self.joint_limit_kd: list[float] = []
         """Joint limit damping values accumulated for :attr:`Model.joint_limit_kd`."""
-        self.joint_target_pos: list[float] = []
-        """Joint position targets accumulated for :attr:`Model.joint_target_pos`."""
-        self.joint_target_vel: list[float] = []
-        """Joint velocity targets accumulated for :attr:`Model.joint_target_vel`."""
+        self.joint_target_q: list[float] = []
+        """Joint position targets in :attr:`joint_q` (coord) layout, accumulated for :attr:`Model.joint_target_q`."""
+        self.joint_target_qd: list[float] = []
+        """Joint velocity targets per DOF, accumulated for :attr:`Model.joint_target_qd`."""
         self.joint_effort_limit: list[float] = []
         """Joint effort limits accumulated for :attr:`Model.joint_effort_limit`."""
         self.joint_velocity_limit: list[float] = []
@@ -2113,6 +2122,106 @@ class ModelBuilder:
         """
         return len(self.articulation_start)
 
+    @property
+    def joint_target_pos(self) -> list[float]:
+        """Deprecated read-only alias for :attr:`joint_target_q` (DOF-shape).
+
+        Returns a fresh DOF-shaped list — for FREE/BALL/DISTANCE the quat-w
+        slot is dropped; other joints copy verbatim. Mutations do not
+        propagate back. Raises :class:`AttributeError` under
+        :data:`newton.use_coord_layout_targets` ``True``.
+        """
+        import newton  # noqa: PLC0415
+
+        if newton.use_coord_layout_targets:
+            raise AttributeError(
+                "ModelBuilder.joint_target_pos is unavailable when "
+                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_q."
+            )
+        warnings.warn(
+            "ModelBuilder.joint_target_pos is deprecated; use ModelBuilder.joint_target_q "
+            "(coord-shaped). For per-axis configuration set JointDofConfig.target_pos before "
+            "calling add_joint*(). The attribute will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._project_target_q_to_dof()
+
+    @property
+    def joint_target_vel(self) -> list[float]:
+        """Deprecated read-only alias for :attr:`joint_target_qd`. Returns a
+        fresh copy — mutations do not propagate back. Raises
+        :class:`AttributeError` under
+        :data:`newton.use_coord_layout_targets` ``True``.
+        """
+        import newton  # noqa: PLC0415
+
+        if newton.use_coord_layout_targets:
+            raise AttributeError(
+                "ModelBuilder.joint_target_vel is unavailable when "
+                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_qd."
+            )
+        warnings.warn(
+            "ModelBuilder.joint_target_vel is deprecated; use ModelBuilder.joint_target_qd. "
+            "The attribute will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return list(self.joint_target_qd)
+
+    def _project_target_q_to_dof(self) -> list[float]:
+        """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
+        the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped list.
+
+        Under :data:`newton.use_coord_layout_targets` ``False`` the builder
+        stores raw per-axis angles (extrinsic ZYX) in the first 3 quat slots
+        and a placeholder ``1.0`` in the 4th — this method just slices the
+        placeholder off to produce the legacy DOF-shaped ``Model.joint_target_q``.
+        """
+        result: list[float] = []
+        for j, jtype in enumerate(self.joint_type):
+            q_start = self.joint_q_start[j]
+            if jtype == JointType.BALL:
+                result.extend(self.joint_target_q[q_start : q_start + 3])
+            elif jtype == JointType.FREE or jtype == JointType.DISTANCE:
+                result.extend(self.joint_target_q[q_start : q_start + 6])
+            elif jtype == JointType.FIXED:
+                pass
+            else:
+                num_lin, num_ang = self.joint_dof_dim[j]
+                result.extend(self.joint_target_q[q_start : q_start + num_lin + num_ang])
+        return result
+
+    @staticmethod
+    def _quat_from_axis_targets(t_x: float, t_y: float, t_z: float) -> tuple[float, float, float, float]:
+        """Compose per-axis angles into a unit quaternion using extrinsic ZYX
+        (yaw-pitch-roll) — equivalent to
+        ``wp.quat_from_euler(wp.vec3(t_x, t_y, t_z), 2, 1, 0)``. Matches
+        Kamino's ``target_dofs_to_coords_conversion_kernel`` convention.
+
+        Args:
+            t_x: Rotation around X [rad].
+            t_y: Rotation around Y [rad].
+            t_z: Rotation around Z [rad].
+
+        Returns:
+            ``(qx, qy, qz, qw)`` in Newton/Warp's vector-first storage order.
+        """
+        import math  # noqa: PLC0415
+
+        cx = math.cos(t_x * 0.5)
+        sx = math.sin(t_x * 0.5)
+        cy = math.cos(t_y * 0.5)
+        sy = math.sin(t_y * 0.5)
+        cz = math.cos(t_z * 0.5)
+        sz = math.sin(t_z * 0.5)
+        return (
+            sx * cy * cz + cx * sy * sz,  # qx
+            cx * sy * cz - sx * cy * sz,  # qy
+            cx * cy * sz + sx * sy * cz,  # qz
+            cx * cy * cz - sx * sy * sz,  # qw
+        )
+
     # endregion
 
     def replicate(
@@ -2280,6 +2389,7 @@ class ModelBuilder:
         joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
         bodies_follow_joint_ordering: bool = True,
         collapse_fixed_joints: bool = False,
+        collapse_massless_fixed_root: bool = False,
         mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
@@ -2373,6 +2483,7 @@ class ModelBuilder:
             joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
             bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
+            collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
             force_position_velocity_actuation: If True and both position (stiffness) and velocity
                 (damping) gains are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
@@ -2400,6 +2511,7 @@ class ModelBuilder:
             joint_ordering=joint_ordering,
             bodies_follow_joint_ordering=bodies_follow_joint_ordering,
             collapse_fixed_joints=collapse_fixed_joints,
+            collapse_massless_fixed_root=collapse_massless_fixed_root,
             mesh_maxhullvert=mesh_maxhullvert,
             force_position_velocity_actuation=force_position_velocity_actuation,
             override_root_xform=override_root_xform,
@@ -2663,6 +2775,7 @@ class ModelBuilder:
         enable_self_collisions: bool = True,
         ignore_inertial_definitions: bool = False,
         collapse_fixed_joints: bool = False,
+        collapse_massless_fixed_root: bool = False,
         verbose: bool = False,
         skip_equality_constraints: bool = False,
         convert_mjc_equality_constraints: bool = True,
@@ -2769,6 +2882,7 @@ class ModelBuilder:
             enable_self_collisions: If True, self-collisions are enabled.
             ignore_inertial_definitions: If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
+            collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
             verbose: If True, print additional information about parsing the MJCF.
             skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
@@ -2780,7 +2894,7 @@ class ModelBuilder:
                 where control comes directly from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
                 See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
                 actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
-                from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
+                from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
             path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
         """
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
@@ -2812,6 +2926,7 @@ class ModelBuilder:
             enable_self_collisions=enable_self_collisions,
             ignore_inertial_definitions=ignore_inertial_definitions,
             collapse_fixed_joints=collapse_fixed_joints,
+            collapse_massless_fixed_root=collapse_massless_fixed_root,
             verbose=verbose,
             skip_equality_constraints=skip_equality_constraints,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
@@ -3103,6 +3218,7 @@ class ModelBuilder:
             start_X_p = len(self.joint_X_p)
             self.joint_X_p.extend(builder.joint_X_p)
             self.joint_q.extend(builder.joint_q)
+            self.joint_target_q.extend(builder.joint_target_q)
             if xform is not None:
                 for i in range(len(builder.joint_X_p)):
                     if builder.joint_type[i] == JointType.FREE:
@@ -3269,8 +3385,7 @@ class ModelBuilder:
             "joint_cts",
             "joint_f",
             "joint_act",
-            "joint_target_pos",
-            "joint_target_vel",
+            "joint_target_qd",
             "joint_limit_lower",
             "joint_limit_upper",
             "joint_limit_ke",
@@ -3303,6 +3418,7 @@ class ModelBuilder:
             "shape_sdf_max_resolution",
             "shape_sdf_target_voxel_size",
             "shape_sdf_texture_format",
+            "shape_sdf_padding",
             "particle_qd",
             "particle_mass",
             "particle_radius",
@@ -3864,8 +3980,7 @@ class ModelBuilder:
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
-            self.joint_target_pos.append(dim.target_pos)
-            self.joint_target_vel.append(dim.target_vel)
+            self.joint_target_qd.append(dim.target_vel)
 
             # Use actuator_mode if explicitly set, otherwise infer from gains
             if dim.actuator_mode is not None:
@@ -3905,6 +4020,9 @@ class ModelBuilder:
 
         for _ in range(coord_count):
             self.joint_q.append(0.0)
+        target_q_offset = len(self.joint_target_q)
+        for _ in range(coord_count):
+            self.joint_target_q.append(0.0)
         for _ in range(dof_count):
             self.joint_qd.append(0.0)
             self.joint_f.append(0.0)
@@ -3915,6 +4033,36 @@ class ModelBuilder:
         if joint_type == JointType.FREE or joint_type == JointType.DISTANCE or joint_type == JointType.BALL:
             # ensure that a valid quaternion is used for the angular dofs
             self.joint_q[-1] = 1.0
+
+        if joint_type == JointType.BALL or joint_type == JointType.FREE or joint_type == JointType.DISTANCE:
+            if joint_type == JointType.BALL:
+                quat_offset = target_q_offset
+            else:
+                for i, dim in enumerate(linear_axes):
+                    self.joint_target_q[target_q_offset + i] = dim.target_pos
+                quat_offset = target_q_offset + 3
+
+            import newton  # noqa: PLC0415
+
+            if newton.use_coord_layout_targets:
+                qx, qy, qz, qw = self._quat_from_axis_targets(
+                    angular_axes[0].target_pos,
+                    angular_axes[1].target_pos,
+                    angular_axes[2].target_pos,
+                )
+                self.joint_target_q[quat_offset + 0] = qx
+                self.joint_target_q[quat_offset + 1] = qy
+                self.joint_target_q[quat_offset + 2] = qz
+                self.joint_target_q[quat_offset + 3] = qw
+            else:
+                for i, dim in enumerate(angular_axes):
+                    self.joint_target_q[quat_offset + i] = dim.target_pos
+                self.joint_target_q[quat_offset + 3] = 1.0
+        elif joint_type != JointType.FIXED:
+            for i, dim in enumerate(linear_axes):
+                self.joint_target_q[target_q_offset + i] = dim.target_pos
+            for i, dim in enumerate(angular_axes):
+                self.joint_target_q[target_q_offset + len(linear_axes) + i] = dim.target_pos
 
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
@@ -4878,13 +5026,19 @@ class ModelBuilder:
             plt.legend(loc="upper left", fontsize=6)
         plt.show()
 
-    def collapse_fixed_joints(self, verbose: bool = False, joints_to_keep: list[str] | None = None) -> dict[str, Any]:
+    def collapse_fixed_joints(
+        self,
+        verbose: bool = False,
+        joints_to_keep: Sequence[str | int] | None = None,
+    ) -> dict[str, Any]:
         """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.
 
         Args:
             verbose: If True, print additional information about the collapsed joints.
-            joints_to_keep: An optional list of joint labels to be excluded from the collapse process.
+            joints_to_keep: An optional sequence of joint labels or original joint indices to be excluded from
+                the collapse process.
         """
+        joints_to_keep = set(joints_to_keep or ())
 
         body_data = {}
         body_children = {-1: []}
@@ -4932,7 +5086,9 @@ class ModelBuilder:
             data = {
                 "type": self.joint_type[i],
                 "q": self.joint_q[q_start : q_start + q_dim],
+                "target_q": self.joint_target_q[q_start : q_start + q_dim],
                 "qd": self.joint_qd[qd_start : qd_start + qd_dim],
+                "target_qd": self.joint_target_qd[qd_start : qd_start + qd_dim],
                 "cts": self.joint_cts[cts_start : cts_start + cts_dim],
                 "armature": self.joint_armature[qd_start : qd_start + qd_dim],
                 "q_start": q_start,
@@ -4961,8 +5117,6 @@ class ModelBuilder:
                         "limit_kd": self.joint_limit_kd[j],
                         "limit_lower": self.joint_limit_lower[j],
                         "limit_upper": self.joint_limit_upper[j],
-                        "target_pos": self.joint_target_pos[j],
-                        "target_vel": self.joint_target_vel[j],
                         "effort_limit": self.joint_effort_limit[j],
                     }
                 )
@@ -4995,7 +5149,6 @@ class ModelBuilder:
             nonlocal retained_joints
             nonlocal retained_bodies
             nonlocal body_data
-            nonlocal joints_to_keep
 
             joint = joint_data[(parent_body, child_body)]
             # Don't merge fixed joints if the child body is referenced in an equality constraint
@@ -5003,9 +5156,7 @@ class ModelBuilder:
             should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
 
             # Don't merge fixed joints listed in joints_to_keep list
-            if joints_to_keep is None:
-                joints_to_keep = []
-            joint_in_keep_list = joint["label"] in joints_to_keep
+            joint_in_keep_list = joint["label"] in joints_to_keep or joint["original_id"] in joints_to_keep
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
                 # Skip merging this fixed joint because the body is referenced in an equality constraint
@@ -5309,8 +5460,8 @@ class ModelBuilder:
         self.joint_effort_limit.clear()
         self.joint_limit_kd.clear()
         self.joint_dof_dim.clear()
-        self.joint_target_pos.clear()
-        self.joint_target_vel.clear()
+        self.joint_target_q.clear()
+        self.joint_target_qd.clear()
         self.joint_world.clear()
         self.joint_articulation.clear()
         for joint in retained_joints:
@@ -5322,7 +5473,9 @@ class ModelBuilder:
             self.joint_qd_start.append(len(self.joint_qd))
             self.joint_cts_start.append(len(self.joint_cts))
             self.joint_q.extend(joint["q"])
+            self.joint_target_q.extend(joint["target_q"])
             self.joint_qd.extend(joint["qd"])
+            self.joint_target_qd.extend(joint["target_qd"])
             self.joint_cts.extend(joint["cts"])
             self.joint_armature.extend(joint["armature"])
             self.joint_enabled.append(joint["enabled"])
@@ -5351,8 +5504,6 @@ class ModelBuilder:
                 self.joint_limit_upper.append(axis["limit_upper"])
                 self.joint_limit_ke.append(axis["limit_ke"])
                 self.joint_limit_kd.append(axis["limit_kd"])
-                self.joint_target_pos.append(axis["target_pos"])
-                self.joint_target_vel.append(axis["target_vel"])
                 self.joint_effort_limit.append(axis["effort_limit"])
 
         # Update DOF and coordinate counts to match the rebuilt arrays
@@ -5574,20 +5725,35 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
         cfg.validate(shape_type=type)
-        if type == GeoType.MESH:
+        # Both raw meshes and convex-mesh approximations share the mesh-backed
+        # SDF code path; cfg.sdf_* fields belong on Mesh.build_sdf, not the
+        # ShapeConfig, so reject them for both shape types up front instead of
+        # producing empty texture data later in finalize().
+        if type in (GeoType.MESH, GeoType.CONVEX_MESH):
             if (
                 cfg.sdf_max_resolution is not None
                 or cfg.sdf_target_voxel_size is not None
                 or cfg.sdf_narrow_band_range != (-0.1, 0.1)
                 or cfg.sdf_texture_format != "uint16"
+                or cfg.sdf_padding is not None
             ):
                 raise ValueError(
-                    "Mesh shapes do not use cfg.sdf_* for SDF generation. "
+                    "Mesh-backed shapes do not use cfg.sdf_* for SDF generation. "
                     "Build and attach an SDF on the mesh via mesh.build_sdf()."
+                )
+            if type == GeoType.CONVEX_MESH and cfg.is_hydroelastic:
+                # finalize() only consumes mesh-attached SDFs for GeoType.MESH;
+                # a hydroelastic CONVEX_MESH would fall into the primitive
+                # branch where _create_primitive_mesh returns None, leaving an
+                # invalid shape_sdf_index entry. Reject up front.
+                raise ValueError(
+                    "Hydroelastic is not supported on GeoType.CONVEX_MESH. "
+                    "Use add_shape_mesh() with a watertight Mesh whose mesh.sdf "
+                    "was built via Mesh.build_sdf()."
                 )
             if cfg.is_hydroelastic and (src is None or getattr(src, "sdf", None) is None):
                 raise ValueError(
-                    "Hydroelastic mesh shapes require mesh.sdf. "
+                    "Hydroelastic mesh-backed shapes require mesh.sdf. "
                     "Call mesh.build_sdf() before add_shape_mesh(..., cfg=...)."
                 )
         if scale is None:
@@ -5702,6 +5868,7 @@ class ModelBuilder:
         self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
         self.shape_sdf_max_resolution.append(cfg.sdf_max_resolution)
         self.shape_sdf_texture_format.append(cfg.sdf_texture_format)
+        self.shape_sdf_padding.append(cfg.sdf_padding)
 
         if cfg.has_shape_collision and cfg.collision_filter_parent:
             for parent_body, joint_idx in self.joint_parents.get(body, ()):
@@ -6548,6 +6715,23 @@ class ModelBuilder:
                 for i, stype in enumerate(self.shape_type)
                 if stype == GeoType.MESH and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
             ]
+
+        # These methods rewrite shape_type away from MESH; any SDF/hydro state
+        # would be silently dropped at finalize. The USD importer intercepts
+        # this earlier; this guard catches direct Python API misuse.
+        if method in {"coacd", "vhacd", "convex_hull", "bounding_box", "bounding_sphere"}:
+            for shape in shape_indices:
+                has_sdf_state = (
+                    self.shape_sdf_max_resolution[shape] is not None
+                    or self.shape_sdf_target_voxel_size[shape] is not None
+                    or self.shape_sdf_padding[shape] is not None
+                    or bool(self.shape_flags[shape] & ShapeFlags.HYDROELASTIC)
+                )
+                if has_sdf_state:
+                    raise ValueError(
+                        f"Shape {shape}: method '{method}' replaces the mesh with non-mesh "
+                        f"geometry; SDF / hydroelastic configuration cannot be preserved."
+                    )
 
         if keep_visual_shapes:
             # if keeping visual shapes, first copy input shapes, mark the copies as visual-only,
@@ -9594,8 +9778,7 @@ class ModelBuilder:
                 ("joint_limit_upper", self.joint_limit_upper),
                 ("joint_limit_ke", self.joint_limit_ke),
                 ("joint_limit_kd", self.joint_limit_kd),
-                ("joint_target_pos", self.joint_target_pos),
-                ("joint_target_vel", self.joint_target_vel),
+                ("joint_target_qd", self.joint_target_qd),
                 ("joint_effort_limit", self.joint_effort_limit),
                 ("joint_velocity_limit", self.joint_velocity_limit),
                 ("joint_friction", self.joint_friction),
@@ -9611,6 +9794,7 @@ class ModelBuilder:
             # Per-coord arrays should have length == joint_coord_count
             coord_arrays = [
                 ("joint_q", self.joint_q),
+                ("joint_target_q", self.joint_target_q),
             ]
             for name, arr in coord_arrays:
                 if len(arr) != self.joint_coord_count:
@@ -10025,13 +10209,30 @@ class ModelBuilder:
             m.shape_flags = wp.array(self.shape_flags, dtype=wp.int32)
             m.body_shapes = self.body_shapes
 
-            # build list of ids for geometry sources (meshes, sdfs)
+            # build list of ids for geometry sources (meshes, sdfs, heightfields)
             geo_sources = []
             finalized_geos = {}  # do not duplicate geometry
             gaussians = []
+            heightfield_meshes = []
             for geo in self.shape_source:
                 geo_hash = hash(geo)  # avoid repeated hash computations
-                if geo and not isinstance(geo, Heightfield):
+                if isinstance(geo, Heightfield):
+                    if geo_hash not in finalized_geos:
+                        # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
+                        # while Heightfield stores row-major data (row=Y, col=X).
+                        actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
+                        hf_geo = Mesh.create_heightfield(
+                            heightfield=actual_heights.T,
+                            extent_x=geo.hx * 2.0,
+                            extent_y=geo.hy * 2.0,
+                            ground_z=geo.min_z,
+                            compute_inertia=False,
+                        )
+                        finalized_geos[geo_hash] = hf_geo.finalize(device=device)
+                        # keep mesh alive for the model's lifetime
+                        heightfield_meshes.append(hf_geo.mesh)
+                    geo_sources.append(finalized_geos[geo_hash])
+                elif geo:
                     if geo_hash not in finalized_geos:
                         if isinstance(geo, Mesh):
                             finalized_geos[geo_hash] = geo.finalize(device=device)
@@ -10042,11 +10243,11 @@ class ModelBuilder:
                             finalized_geos[geo_hash] = geo.finalize()
                     geo_sources.append(finalized_geos[geo_hash])
                 else:
-                    # add null pointer
                     geo_sources.append(0)
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
+            m.heightfield_meshes = heightfield_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
             m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
@@ -10260,14 +10461,32 @@ class ModelBuilder:
                 and getattr(ssrc, "sdf", None) is not None
                 for stype, ssrc, sflags in zip(self.shape_type, self.shape_source, self.shape_flags, strict=True)
             )
+            # Catch meshes whose SDF is still deferred (built during finalize) so
+            # the CPU-runs-into-build_sdf path also raises here, not deeper down.
+            has_deferred_mesh_sdf = any(
+                stype == GeoType.MESH
+                and ssrc is not None
+                and sflags & ShapeFlags.COLLIDE_SHAPES
+                and getattr(ssrc, "sdf", None) is None
+                and (smax is not None or svox is not None)
+                for stype, ssrc, sflags, smax, svox in zip(
+                    self.shape_type,
+                    self.shape_source,
+                    self.shape_flags,
+                    self.shape_sdf_max_resolution,
+                    self.shape_sdf_target_voxel_size,
+                    strict=True,
+                )
+            )
             has_hydroelastic_shapes = any(
                 (sflags & ShapeFlags.HYDROELASTIC) and (sflags & ShapeFlags.COLLIDE_SHAPES)
                 for sflags in self.shape_flags
             )
-            if (has_mesh_sdf or has_hydroelastic_shapes) and not is_gpu:
+            if (has_mesh_sdf or has_deferred_mesh_sdf or has_hydroelastic_shapes) and not is_gpu:
                 raise ValueError(
-                    "SDF collision paths require a CUDA-capable GPU device. "
-                    "Texture SDFs (used for SDF collision) only support CUDA."
+                    "Building texture SDFs requires a CUDA-capable GPU device. "
+                    "The texture SDF build path uses wp.Volume.allocate_by_tiles "
+                    "and wp.Texture3D, which are CUDA-only."
                 )
 
             sdf_block_coords = []
@@ -10291,6 +10510,14 @@ class ModelBuilder:
             compact_texture_sdf_subgrid_start_slots = []
             shape_sdf_index = [-1] * len(self.shape_type)
             sdf_cache = {}
+            # Deferred-mesh SDFs are built into a temporary Mesh clone keyed by
+            # the parameter tuple. This avoids mutating the user's shared Mesh
+            # while still deduplicating identical (Mesh, params) combinations.
+            deferred_mesh_sdf_cache = {}
+            # Forward simplified collision edges from the deferred SDF clone to
+            # the edge-consumption loop below.
+            deferred_collision_edges_cache: dict[tuple, Any] = {}
+            deferred_collision_edges: dict[int, Any] = {}
 
             for i in range(len(self.shape_type)):
                 shape_type = self.shape_type[i]
@@ -10302,6 +10529,9 @@ class ModelBuilder:
                 sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
                 sdf_tex_fmt = self.shape_sdf_texture_format[i]
+                sdf_padding = self.shape_sdf_padding[i]
+                # Fall back to shape_gap when sdf_padding is unset (see ShapeConfig.sdf_padding).
+                sdf_gen_margin = sdf_padding if sdf_padding is not None else shape_gap
                 is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
@@ -10311,6 +10541,36 @@ class ModelBuilder:
 
                 if shape_type == GeoType.MESH and has_shape_collision and shape_src is not None:
                     mesh_sdf = getattr(shape_src, "sdf", None)
+                    # Build on a Mesh clone so shapes sharing one Mesh at different
+                    # scale/margin/resolution end up with distinct SDFs.
+                    if mesh_sdf is None and (sdf_max_resolution is not None or sdf_target_voxel_size is not None):
+                        sdf_kwargs = {"narrow_band_range": tuple(sdf_narrow_band_range)}
+                        if sdf_max_resolution is not None:
+                            sdf_kwargs["max_resolution"] = sdf_max_resolution
+                        if sdf_target_voxel_size is not None:
+                            sdf_kwargs["target_voxel_size"] = sdf_target_voxel_size
+                        sdf_kwargs["margin"] = sdf_gen_margin
+                        sdf_kwargs["scale"] = tuple(shape_scale)
+                        sdf_kwargs["texture_format"] = sdf_tex_fmt
+                        deferred_key = (
+                            id(shape_src),
+                            tuple(shape_scale),
+                            tuple(sdf_narrow_band_range),
+                            sdf_target_voxel_size,
+                            sdf_max_resolution,
+                            sdf_tex_fmt,
+                            sdf_gen_margin,
+                        )
+                        mesh_sdf = deferred_mesh_sdf_cache.get(deferred_key)
+                        if mesh_sdf is None:
+                            mesh_copy = shape_src.copy()
+                            mesh_copy.build_sdf(**sdf_kwargs)
+                            mesh_sdf = mesh_copy.sdf
+                            deferred_mesh_sdf_cache[deferred_key] = mesh_sdf
+                            if getattr(mesh_copy, "_collision_edges", None) is not None:
+                                deferred_collision_edges_cache[deferred_key] = mesh_copy._collision_edges
+                        if deferred_key in deferred_collision_edges_cache:
+                            deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
                         cache_key = ("mesh_sdf", id(mesh_sdf))
                         if mesh_sdf.texture_block_coords is not None:
@@ -10326,7 +10586,7 @@ class ModelBuilder:
                     cache_key = (
                         "primitive_generated",
                         shape_type,
-                        shape_gap,
+                        sdf_gen_margin,
                         tuple(sdf_narrow_band_range),
                         sdf_target_voxel_size,
                         effective_max_resolution,
@@ -10368,7 +10628,7 @@ class ModelBuilder:
                                 try:
                                     tex_data, c_tex, s_tex, tex_bc = create_texture_sdf_from_mesh(
                                         prim_wp_mesh,
-                                        margin=shape_gap,
+                                        margin=sdf_gen_margin,
                                         narrow_band_range=tuple(sdf_narrow_band_range),
                                         max_resolution=effective_max_resolution,
                                         target_voxel_size=sdf_target_voxel_size,
@@ -10444,9 +10704,9 @@ class ModelBuilder:
                         hd.nrow = hf.nrow
                         hd.ncol = hf.ncol
                         # Bake the per-instance scale into the extents so narrow-phase
-                        # collision and raycast (which read from HeightfieldData) apply
-                        # scale consistently. ``abs`` on hx/hy because the raycast DDA
-                        # and parallel-slab checks assume non-negative planar extents;
+                        # collision (which reads from HeightfieldData) apply
+                        # scale consistently. ``abs`` on hx/hy because the
+                        # parallel-slab checks assume non-negative planar extents;
                         # z uses raw multiplication so ``sz < 0`` inverts the surface
                         # (``min_z > max_z`` already encodes an inverted heightfield).
                         sx, sy, sz = self.shape_scale[i]
@@ -10490,14 +10750,20 @@ class ModelBuilder:
                     and (self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES)
                 ):
                     mesh = self.shape_source[i]
-                    mesh_key = id(mesh)
+                    deferred_edges = deferred_collision_edges.get(i)
+                    if deferred_edges is not None:
+                        mesh_key = ("deferred", id(deferred_edges))
+                    else:
+                        mesh_key = id(mesh)
                     if mesh_key in edge_cache:
                         shape_edge_ranges.append(edge_cache[mesh_key])
                     else:
                         # ``Mesh.build_sdf()`` caches a simplified edge set on
                         # the mesh for SDF-mesh contact generation; fall back
                         # to the full edge list otherwise.
-                        if mesh._collision_edges is not None:
+                        if deferred_edges is not None:
+                            edges = deferred_edges
+                        elif mesh._collision_edges is not None:
                             edges = mesh._collision_edges
                         else:
                             edges = mesh.edges  # lazily computed and cached on the Mesh
@@ -10715,8 +10981,14 @@ class ModelBuilder:
             m.joint_target_mode = wp.array(self.joint_target_mode, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_target_vel = wp.array(self.joint_target_vel, dtype=wp.float32, requires_grad=requires_grad)
+            import newton  # noqa: PLC0415
+
+            if newton.use_coord_layout_targets:
+                target_q_values = self.joint_target_q
+            else:
+                target_q_values = self._project_target_q_to_dof()
+            m.joint_target_q = wp.array(target_q_values, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_target_qd = wp.array(self.joint_target_qd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_act = wp.array(self.joint_act, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
@@ -10872,12 +11144,18 @@ class ModelBuilder:
                     )
                     clamping_objs.append(comp_class(**comp_arrays, **shared_kw))
 
+                target_pos_indices_arg = (
+                    pos_indices_arg if (pos_indices_arg is not None and m.use_coord_layout_targets) else indices
+                )
                 actuator = Actuator(
                     indices=indices,
                     controller=controller,
                     delay=delay_obj,
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,
+                    target_pos_indices=target_pos_indices_arg,
+                    control_target_pos_attr="joint_target_q",
+                    control_target_vel_attr="joint_target_qd",
                     requires_grad=requires_grad,
                 )
 

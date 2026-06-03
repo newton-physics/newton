@@ -867,15 +867,11 @@ def closest_edge_coordinate_cylinder(
 
 @wp.func
 def mesh_sdf(mesh: wp.uint64, point: wp.vec3, max_dist: float):
-    face_index = int(0)
-    face_u = float(0.0)
-    face_v = float(0.0)
-    sign = float(0.0)
-    res = wp.mesh_query_point_sign_normal(mesh, point, max_dist, sign, face_index, face_u, face_v)
+    res = wp.mesh_query_point_sign_parity(mesh, point, max_dist)
 
-    if res:
-        closest = wp.mesh_eval_position(mesh, face_index, face_u, face_v)
-        return wp.length(point - closest) * sign
+    if res.result:
+        closest = wp.mesh_eval_position(mesh, res.face, res.u, res.v)
+        return wp.length(point - closest) * res.sign
     return max_dist
 
 
@@ -896,14 +892,10 @@ def sdf_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: float):
 
 @wp.func
 def closest_point_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: float):
-    face_index = int(0)
-    face_u = float(0.0)
-    face_v = float(0.0)
-    sign = float(0.0)
-    res = wp.mesh_query_point_sign_normal(mesh, point, max_dist, sign, face_index, face_u, face_v)
+    res = wp.mesh_query_point_sign_parity(mesh, point, max_dist)
 
-    if res:
-        return wp.mesh_eval_position(mesh, face_index, face_u, face_v)
+    if res.result:
+        return wp.mesh_eval_position(mesh, res.face, res.u, res.v)
     # return arbitrary point from mesh
     return wp.mesh_eval_position(mesh, 0, 0.0, 0.0)
 
@@ -1102,9 +1094,13 @@ def create_soft_contacts(
         # Use magnitude of components: the search radius must always be positive
         # regardless of mirror parity.
         min_scale = wp.min(wp.min(wp.abs(geo_scale[0]), wp.abs(geo_scale[1])), wp.abs(geo_scale[2]))
-        if wp.mesh_query_point_sign_normal(
-            mesh, wp.cw_div(x_local, geo_scale), margin + radius / min_scale, sign, face_index, face_u, face_v
-        ):
+        query = wp.mesh_query_point_sign_parity(mesh, wp.cw_div(x_local, geo_scale), margin + radius / min_scale)
+        if query.result:
+            sign = query.sign
+            face_index = query.face
+            face_u = query.u
+            face_v = query.v
+
             shape_p = wp.mesh_eval_position(mesh, face_index, face_u, face_v)
             shape_v = wp.mesh_eval_velocity(mesh, face_index, face_u, face_v)
 
