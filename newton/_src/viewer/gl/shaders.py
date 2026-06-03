@@ -86,7 +86,8 @@ void main()
 
 shape_fragment_shader = """
 #version 330 core
-out vec4 FragColor;
+layout (location = 0) out vec4 FragColor;
+layout (location = 1) out vec4 Revealage;
 
 in vec3 Normal;
 in vec3 FragPos;
@@ -118,6 +119,7 @@ uniform float specular_scale;
 uniform bool spotlight_enabled;
 uniform float shadow_extents;
 uniform float exposure;
+uniform bool transparent_pass;
 
 const float PI = 3.14159265359;
 
@@ -381,7 +383,18 @@ void main()
     // gamma correction (sRGB)
     color = pow(color, vec3(1.0 / 2.2));
 
-    FragColor = vec4(color, Opacity);
+    if (transparent_pass)
+    {
+        float alpha = clamp(Opacity, 0.0, 1.0);
+        float depth_weight = clamp(pow(1.0 - gl_FragCoord.z, 2.0) * 8.0 + 0.01, 0.01, 10.0);
+        FragColor = vec4(color * alpha * depth_weight, alpha * depth_weight);
+        Revealage = vec4(alpha);
+    }
+    else
+    {
+        FragColor = vec4(color, Opacity);
+        Revealage = vec4(0.0);
+    }
 }
 """
 
@@ -466,6 +479,27 @@ void main() {
 }
 """
 
+oit_resolve_fragment_shader = """
+#version 330 core
+in vec2 TexCoord;
+
+out vec4 FragColor;
+
+uniform sampler2D opaque_texture;
+uniform sampler2D accum_texture;
+uniform sampler2D reveal_texture;
+
+void main() {
+    vec3 opaque_color = texture(opaque_texture, TexCoord).rgb;
+    vec4 accum = texture(accum_texture, TexCoord);
+    float revealage = clamp(texture(reveal_texture, TexCoord).r, 0.0, 1.0);
+    float alpha = 1.0 - revealage;
+    vec3 transparent_color = accum.a > 1e-5 ? accum.rgb / accum.a : vec3(0.0);
+
+    FragColor = vec4(opaque_color * revealage + transparent_color * alpha, 1.0);
+}
+"""
+
 
 def str_buffer(string: str):
     """Convert string to C-style char pointer for OpenGL."""
@@ -540,6 +574,7 @@ class ShaderShape(ShaderGL):
             self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
             self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
             self.loc_exposure = self._get_uniform_location("exposure")
+            self.loc_transparent_pass = self._get_uniform_location("transparent_pass")
 
     def update(
         self,
@@ -582,6 +617,7 @@ class ShaderShape(ShaderGL):
             self._gl.glUniform1i(self.loc_spotlight_enabled, int(spotlight_enabled))
             self._gl.glUniform1f(self.loc_shadow_extents, shadow_extents)
             self._gl.glUniform1f(self.loc_exposure, exposure)
+            self._gl.glUniform1i(self.loc_transparent_pass, 0)
 
             # Fog and rendering options
             self._gl.glUniform3f(self.loc_fog_color, *fog_color)
@@ -605,6 +641,11 @@ class ShaderShape(ShaderGL):
                 self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
             self._gl.glUniform1i(self.loc_env_map, 2)
             self._gl.glUniform1f(self.loc_env_intensity, float(env_intensity))
+
+    def set_transparent_pass(self, enabled: bool):
+        """Switch shader output between regular color and OIT accumulation."""
+        with self:
+            self._gl.glUniform1i(self.loc_transparent_pass, int(enabled))
 
 
 class ShaderSky(ShaderGL):
@@ -700,6 +741,31 @@ class FrameShader(ShaderGL):
         """Update texture uniform."""
         with self:
             self._gl.glUniform1i(self.loc_texture, texture_unit)
+
+
+class OITResolveShader(ShaderGL):
+    """Shader for compositing weighted blended transparent accumulators."""
+
+    def __init__(self, gl):
+        super().__init__()
+        from pyglet.graphics.shader import Shader, ShaderProgram
+
+        self._gl = gl
+        self.shader_program = ShaderProgram(
+            Shader(frame_vertex_shader, "vertex"), Shader(oit_resolve_fragment_shader, "fragment")
+        )
+
+        with self:
+            self.loc_opaque_texture = self._get_uniform_location("opaque_texture")
+            self.loc_accum_texture = self._get_uniform_location("accum_texture")
+            self.loc_reveal_texture = self._get_uniform_location("reveal_texture")
+
+    def update(self, opaque_unit: int = 0, accum_unit: int = 1, reveal_unit: int = 2):
+        """Update texture uniforms."""
+        with self:
+            self._gl.glUniform1i(self.loc_opaque_texture, opaque_unit)
+            self._gl.glUniform1i(self.loc_accum_texture, accum_unit)
+            self._gl.glUniform1i(self.loc_reveal_texture, reveal_unit)
 
 
 wireframe_vertex_shader = """

@@ -15,6 +15,7 @@ from ...utils.mesh import compute_vertex_normals
 from ...utils.texture import normalize_texture
 from .shaders import (
     FrameShader,
+    OITResolveShader,
     ShaderArrow,
     ShaderLine,
     ShaderShape,
@@ -1123,6 +1124,7 @@ class RendererGL:
         self.spotlight_enabled = True
         self._shadow_extents = 10.0
         self._exposure = 1.6
+        self.enable_weighted_transparency = True
 
         # Hemispherical ambient light colors, interpolated by dot(N, up).
         # Decoupled from the sky background so the visible sky can be a
@@ -1244,6 +1246,11 @@ class RendererGL:
         self._frame_depth_texture = None
         self._frame_fbo = None
         self._frame_pbo = None
+        self._oit_fbo = None
+        self._oit_accum_texture = None
+        self._oit_reveal_texture = None
+        self._oit_opaque_texture = None
+        self._oit_resolve_shader = None
 
         self._sun_direction = None  # set on first render based on camera up_axis
 
@@ -1275,6 +1282,7 @@ class RendererGL:
         self._shadow_shader = ShadowShader(gl)
         self._shape_shader = ShaderShape(gl)
         self._frame_shader = FrameShader(gl)
+        self._oit_resolve_shader = OITResolveShader(gl)
         self._sky_shader = ShaderSky(gl)
         self._wireframe_shader = ShaderLine(gl)
         self._arrow_shader = ShaderArrow(gl)
@@ -1384,8 +1392,14 @@ class RendererGL:
         # reset viewport
         gl.glViewport(0, 0, self._screen_width, self._screen_height)
 
+        use_weighted_oit = self._can_use_weighted_transparency(objects)
+
         # select target framebuffer (MSAA or regular) for scene rendering
-        target_fbo = self._frame_msaa_fbo if getattr(self, "msaa_samples", 0) > 0 else self._frame_fbo
+        target_fbo = (
+            self._frame_fbo
+            if use_weighted_oit
+            else (self._frame_msaa_fbo if getattr(self, "msaa_samples", 0) > 0 else self._frame_fbo)
+        )
 
         # ---------------------------------------
         # Set texture as render target for MSAA resolve
@@ -1397,7 +1411,7 @@ class RendererGL:
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
         gl.glBindVertexArray(0)
 
-        self._render_scene(objects)
+        self._render_scene(objects, use_weighted_oit=use_weighted_oit)
 
         # Render lines after main scene but before MSAA resolve
         if lines:
@@ -1412,7 +1426,7 @@ class RendererGL:
         # ------------------------------------------------------------------
         # If MSAA is enabled, resolve the multi-sample buffer into texture FBO
         # ------------------------------------------------------------------
-        if getattr(self, "msaa_samples", 0) > 0 and self._frame_msaa_fbo is not None:
+        if not use_weighted_oit and getattr(self, "msaa_samples", 0) > 0 and self._frame_msaa_fbo is not None:
             gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, self._frame_msaa_fbo)
             gl.glReadBuffer(gl.GL_COLOR_ATTACHMENT0)
 
@@ -1823,7 +1837,97 @@ class RendererGL:
                 self.msaa_samples = 0
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
+        self._setup_oit_buffer()
+
         check_gl_error()
+
+    def _setup_oit_buffer(self):
+        gl = RendererGL.gl
+
+        if self._oit_accum_texture is None:
+            self._oit_accum_texture = gl.GLuint()
+            gl.glGenTextures(1, self._oit_accum_texture)
+        if self._oit_reveal_texture is None:
+            self._oit_reveal_texture = gl.GLuint()
+            gl.glGenTextures(1, self._oit_reveal_texture)
+        if self._oit_opaque_texture is None:
+            self._oit_opaque_texture = gl.GLuint()
+            gl.glGenTextures(1, self._oit_opaque_texture)
+
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self._oit_accum_texture)
+        gl.glTexImage2D(
+            gl.GL_TEXTURE_2D,
+            0,
+            gl.GL_RGBA16F,
+            self._screen_width,
+            self._screen_height,
+            0,
+            gl.GL_RGBA,
+            gl.GL_FLOAT,
+            None,
+        )
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
+
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self._oit_reveal_texture)
+        gl.glTexImage2D(
+            gl.GL_TEXTURE_2D,
+            0,
+            gl.GL_R16F,
+            self._screen_width,
+            self._screen_height,
+            0,
+            gl.GL_RED,
+            gl.GL_FLOAT,
+            None,
+        )
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
+
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self._oit_opaque_texture)
+        gl.glTexImage2D(
+            gl.GL_TEXTURE_2D,
+            0,
+            gl.GL_RGB,
+            self._screen_width,
+            self._screen_height,
+            0,
+            gl.GL_RGB,
+            gl.GL_UNSIGNED_BYTE,
+            None,
+        )
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+        if self._oit_fbo is None:
+            self._oit_fbo = gl.GLuint()
+            gl.glGenFramebuffers(1, self._oit_fbo)
+
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._oit_fbo)
+        gl.glFramebufferTexture2D(
+            gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, self._oit_accum_texture, 0
+        )
+        gl.glFramebufferTexture2D(
+            gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT1, gl.GL_TEXTURE_2D, self._oit_reveal_texture, 0
+        )
+        gl.glFramebufferTexture2D(
+            gl.GL_FRAMEBUFFER, gl.GL_DEPTH_ATTACHMENT, gl.GL_TEXTURE_2D, self._frame_depth_texture, 0
+        )
+        draw_buffers = (gl.GLenum * 2)(gl.GL_COLOR_ATTACHMENT0, gl.GL_COLOR_ATTACHMENT1)
+        gl.glDrawBuffers(2, draw_buffers)
+
+        if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
+            print("Warning: weighted transparency framebuffer incomplete, disabling weighted transparency.")
+            self.enable_weighted_transparency = False
+
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
     def _setup_frame_mesh(self):
         gl = RendererGL.gl
@@ -1942,7 +2046,7 @@ class RendererGL:
 
         check_gl_error()
 
-    def _render_scene(self, objects):
+    def _render_scene(self, objects, use_weighted_oit: bool = False):
         gl = RendererGL.gl
 
         if self.draw_sky:
@@ -1979,30 +2083,103 @@ class RendererGL:
         with self._shape_shader:
             gl.glDisable(gl.GL_BLEND)
             gl.glDepthMask(True)
+            self._shape_shader.set_transparent_pass(False)
             self._draw_objects(opaque_objects)
 
             if transparent_objects:
-                camera_pos = np.asarray(self.camera.pos, dtype=np.float32)
-                camera_front = np.asarray(self.camera.get_front(), dtype=np.float32)
-                transparent_objects = sorted(
-                    transparent_objects,
-                    key=lambda item: self._object_sort_depth(item[1], camera_pos, camera_front),
-                    reverse=True,
-                )
-                gl.glEnable(gl.GL_BLEND)
-                gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
-                gl.glDepthMask(False)
-                for _name, obj in transparent_objects:
-                    if hasattr(obj, "render_sorted"):
-                        obj.render_sorted(camera_pos, camera_front)
-                    elif hasattr(obj, "render"):
-                        obj.render()
-                gl.glDepthMask(True)
-                gl.glDisable(gl.GL_BLEND)
+                if use_weighted_oit:
+                    self._render_weighted_transparent_objects(transparent_objects)
+                else:
+                    self._render_sorted_transparent_objects(transparent_objects)
 
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
 
         check_gl_error()
+
+    def _can_use_weighted_transparency(self, objects) -> bool:
+        gl = RendererGL.gl
+        if not self.enable_weighted_transparency:
+            return False
+        if self._oit_fbo is None or self._oit_resolve_shader is None:
+            return False
+        if not hasattr(gl, "glBlendFunci"):
+            return False
+        return any(self._object_has_transparency(obj) for obj in objects.values())
+
+    def _render_sorted_transparent_objects(self, transparent_objects):
+        gl = RendererGL.gl
+        camera_pos = np.asarray(self.camera.pos, dtype=np.float32)
+        camera_front = np.asarray(self.camera.get_front(), dtype=np.float32)
+        transparent_objects = sorted(
+            transparent_objects,
+            key=lambda item: self._object_sort_depth(item[1], camera_pos, camera_front),
+            reverse=True,
+        )
+        gl.glEnable(gl.GL_BLEND)
+        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+        gl.glDepthMask(False)
+        for _name, obj in transparent_objects:
+            if hasattr(obj, "render_sorted"):
+                obj.render_sorted(camera_pos, camera_front)
+            elif hasattr(obj, "render"):
+                obj.render()
+        gl.glDepthMask(True)
+        gl.glDisable(gl.GL_BLEND)
+
+    def _render_weighted_transparent_objects(self, transparent_objects):
+        gl = RendererGL.gl
+
+        gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, self._frame_fbo)
+        gl.glReadBuffer(gl.GL_COLOR_ATTACHMENT0)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self._oit_opaque_texture)
+        gl.glCopyTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, 0, 0, self._screen_width, self._screen_height)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._oit_fbo)
+        draw_buffers = (gl.GLenum * 2)(gl.GL_COLOR_ATTACHMENT0, gl.GL_COLOR_ATTACHMENT1)
+        gl.glDrawBuffers(2, draw_buffers)
+        gl.glClearBufferfv(gl.GL_COLOR, 0, (gl.GLfloat * 4)(0.0, 0.0, 0.0, 0.0))
+        gl.glClearBufferfv(gl.GL_COLOR, 1, (gl.GLfloat * 4)(1.0, 1.0, 1.0, 1.0))
+
+        gl.glEnable(gl.GL_BLEND)
+        if hasattr(gl, "glBlendEquationi"):
+            gl.glBlendEquationi(0, gl.GL_FUNC_ADD)
+            gl.glBlendEquationi(1, gl.GL_FUNC_ADD)
+        gl.glBlendFunci(0, gl.GL_ONE, gl.GL_ONE)
+        gl.glBlendFunci(1, gl.GL_ZERO, gl.GL_ONE_MINUS_SRC_COLOR)
+        gl.glDepthMask(False)
+        self._shape_shader.set_transparent_pass(True)
+        for _name, obj in transparent_objects:
+            if hasattr(obj, "render"):
+                obj.render()
+        self._shape_shader.set_transparent_pass(False)
+        gl.glDepthMask(True)
+        gl.glDisable(gl.GL_BLEND)
+
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._frame_fbo)
+        gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
+        gl.glDisable(gl.GL_DEPTH_TEST)
+        gl.glDisable(gl.GL_BLEND)
+        with self._oit_resolve_shader:
+            gl.glActiveTexture(gl.GL_TEXTURE0)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self._oit_opaque_texture)
+            gl.glActiveTexture(gl.GL_TEXTURE1)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self._oit_accum_texture)
+            gl.glActiveTexture(gl.GL_TEXTURE2)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self._oit_reveal_texture)
+            self._oit_resolve_shader.update(0, 1, 2)
+
+            gl.glBindVertexArray(self._frame_vao)
+            gl.glDrawElements(gl.GL_TRIANGLES, len(self._frame_indices), gl.GL_UNSIGNED_INT, None)
+            gl.glBindVertexArray(0)
+
+        gl.glActiveTexture(gl.GL_TEXTURE2)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        gl.glActiveTexture(gl.GL_TEXTURE1)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        gl.glActiveTexture(gl.GL_TEXTURE0)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        gl.glEnable(gl.GL_DEPTH_TEST)
 
     def _render_lines(self, lines):
         """Render all line objects using the geometry-shader wide-line pipeline."""
