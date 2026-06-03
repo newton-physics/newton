@@ -62,6 +62,7 @@ class ControlGroup:
                 if num_outputs is None:
                     num_outputs = n
                 elif n != num_outputs:
+                    # TODO: is this too strict?
                     raise ValueError(
                         f"ControlGroup: all controllers must share num_outputs (the outer length "
                         f"of their output bindings); got {num_outputs} and {n}."
