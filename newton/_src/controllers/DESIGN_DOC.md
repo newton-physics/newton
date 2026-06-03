@@ -2,7 +2,7 @@
 
 A library for composable control blocks. A `Controller` is a single, runnable control law (PID, differential IK, gravity comp, …). A `ControlGroup` is a composer that wraps one or more `Controller`s and orchestrates the per-step zero / compute sequence.
 
-Controllers typically run **before** actuators in a simulation step: a `Controller` produces a desired joint position, velocity, or force; downstream actuators turn that target into effort. Users author their own `@wp.struct` instances for inputs and outputs (or reuse Newton's `State` / `Control`).
+Controllers typically run **before** actuators in a simulation step: a `Controller` produces a desired joint position, velocity, or force; downstream actuators turn that target into effort. Users author their own `@wp.struct` instances for inputs and outputs (which can be views/slices of the `newton.State` or `newton.Control` objects).
 
 ---
 
@@ -11,7 +11,7 @@ Controllers typically run **before** actuators in a simulation step: a `Controll
 - **Controller** — Abstract base for a single control law. Subclass with prefix-first naming: `ControllerPID`, `ControllerFilter`, `ControllerGravityComp`. Lifecycle methods: `finalize(device, num_outputs)`, `state(...)`, `is_stateful()`, `is_graphable()`, `outputs()`, `compute(state, next_state, dt)`. Holds a nested `State` dataclass.
 - **ControlGroup** — Composer of one or more `Controller`s. Owns step / reset / state orchestration.
 
-Multiple `Controller`s may bind to overlapping output slots; their contributions accumulate via `+=` directly into the output array (see *Output accumulation*). There are no overlap checks.
+Multiple `Controller`s may bind to overlapping output slots; their contributions accumulate via `+=` directly into the output array (see *Output accumulation*).
 
 ---
 
@@ -52,7 +52,7 @@ Every input/output port that addresses per-DOF data accepts one of two forms:
 | `array` (bare) | use the controller-level `indices` as the lookup | `array[indices[i]]` |
 | `(array, port_indices)` | tuple; use `port_indices` as the lookup | `array[port_indices[i]]` |
 
-The Python type (bare array vs. tuple) tags the form unambiguously. If the user has an array laid out specifically for this controller and wants pure positional access (`array[i]`), they pass `(array, identity)` where `identity = wp.arange(N, dtype=wp.uint32)` — a one-line allocation reused across every local-style port.
+For many controllers, the indices of all inputs will align, and the bare `wp.array` input is enough. The second option exists for when more flexibility is needed.
 
 ### Validation at `__init__`
 
@@ -61,7 +61,7 @@ The Python type (bare array vs. tuple) tags the form unambiguously. If the user 
 | bare `array` | `array.shape[0] >= max(indices) + 1` |
 | `(array, port_indices)` | `len(port_indices) == len(indices)` and `array.shape[0] >= max(port_indices) + 1` |
 
-The user can store their data wherever is most natural — locally allocated for one controller, globally shared across the sim, sliced into a bigger struct, etc. The form is dictated by *which lookup the user wants*, not by where the array lives.
+The user can store their data wherever is most natural — locally allocated for one controller, globally shared across the sim, sliced into a bigger struct, etc.
 
 ### Per-group ports
 
@@ -79,13 +79,13 @@ Measurement, setpoint, and output all live in the same global `state.x`:
 pid = nc.ControllerPID(
     indices=output_indices,
     measurement=(state.x, measurement_indices),
-    measurement_rate=(state.xd, measurement_rate_indices),
+    measurement_rate=(state.x, measurement_rate_indices),
     setpoint=(state.x, setpoint_indices),
-    setpoint_rate=(state.xd, setpoint_rate_indices),
-    kp=(kp_array, identity),
-    ki=(ki_array, identity),
-    kd=(kd_array, identity),
-    integral_max=(integral_max_array, identity),
+    setpoint_rate=(state.x, setpoint_rate_indices),
+    kp=(kp_array, identity),                        # uses a local array, not part of the sim data.
+    ki=(ki_array, identity),                        # uses a local array, not part of the sim data.
+    kd=(kd_array, identity),                        # uses a local array, not part of the sim data.
+    integral_max=(integral_max_array, identity),    # uses a local array, not part of the sim data.
     output=(state.x, output_indices),
 )
 ```
@@ -154,7 +154,10 @@ for _ in range(steps):
     group.step(state_0, state_1, dt=0.005)
     state_0, state_1 = state_1, state_0
 
+    # ... actuators, stepping sim, etc etc...
+
 # 5. Reset (bool mask, length len(indices)).
+# NOTE: see more about resetting later in this doc.
 group.reset(state_0, mask=reset_mask)
 ```
 
@@ -232,7 +235,7 @@ The group reads from `state_0` and writes to `state_1` on each step. After step,
 
 ---
 
-## Authoring a Controller — the class shape
+## Subclassing a Controller
 
 ```python
 class Controller:
