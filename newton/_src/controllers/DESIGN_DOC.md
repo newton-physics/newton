@@ -305,107 +305,55 @@ class Controller:
 
 The base class is neutral about the per-DOF vs. coupled distinction. Subclasses decide whether to take a `model=` kwarg, what their `indices`-length divisibility constraint is, and what kernel launch dimensionality to use.
 
-### Example: ControllerPID (independent flavor)
+### Example: using ControllerPID (independent flavor)
+
+Reference implementation: `newton/_src/controllers/impl/controller_pid.py`.
 
 ```python
-class ControllerPID(Controller):
-    """Stateful PID controller producing a target signal from a measurement
-    and setpoint. Independent per-DOF: output[i] depends only on input[i].
+import warp as wp
+import numpy as np
+import newton.controllers as nc
 
-    Ports (all per-DOF, unified form):
-        indices                                       — controller-level lookup, length N
-        measurement, measurement_rate                 — process variable + its rate
-        setpoint, setpoint_rate                       — target + its rate
-        kp, ki, kd, integral_max                      — gains
-        output                                        — destination
-    """
+device = wp.get_device()
+N = 6                                                            # DOFs this controller manages
+indices  = wp.array(np.arange(N, dtype=np.uint32), device=device)
+identity = wp.arange(N, dtype=wp.uint32, device=device)          # for any local-layout port
 
-    @dataclass
-    class State(Controller.State):
-        integral: wp.array[float] | None = None
+zeros = lambda: wp.zeros(N, dtype=wp.float32, device=device)
+gain  = lambda v: wp.array([v] * N, dtype=wp.float32, device=device)
 
-    def __init__(
-        self,
-        *,
-        indices,
-        measurement, measurement_rate,
-        setpoint, setpoint_rate,
-        kp, ki, kd, integral_max,
-        output,
-    ):
-        self._indices = indices
-        self._measurement       = _normalize_port(measurement,       indices, name="measurement")
-        self._measurement_rate  = _normalize_port(measurement_rate,  indices, name="measurement_rate")
-        self._setpoint          = _normalize_port(setpoint,          indices, name="setpoint")
-        self._setpoint_rate     = _normalize_port(setpoint_rate,     indices, name="setpoint_rate")
-        self._kp                = _normalize_port(kp,                indices, name="kp")
-        self._ki                = _normalize_port(ki,                indices, name="ki")
-        self._kd                = _normalize_port(kd,                indices, name="kd")
-        self._integral_max      = _normalize_port(integral_max,      indices, name="integral_max")
-        self._output            = _normalize_port(output,            indices, name="output")
+measurement      = zeros()      # bare → looked up via the controller-level `indices`
+measurement_rate = zeros()
+setpoint         = zeros()
+setpoint_rate    = zeros()
+output           = zeros()
 
-    def finalize(self, device, num_outputs):
-        self.reset_state = self.state(num_outputs, device)   # zero-initialized; user may mutate
+pid = nc.ControllerPID(
+    indices=indices,
+    measurement=measurement,
+    measurement_rate=measurement_rate,
+    setpoint=setpoint,
+    setpoint_rate=setpoint_rate,
+    kp=(gain(50.0), identity),                                    # local-layout gain
+    ki=(gain( 1.0), identity),
+    kd=(gain( 5.0), identity),
+    integral_max=(gain(float("inf")), identity),                  # disable clamping
+    output=output,
+)
+group = nc.ControlGroup([pid])
 
-    def is_stateful(self): return True
-    def is_graphable(self): return True
+state_0, state_1 = group.state(), group.state()
 
-    def state(self, num_outputs, device):
-        return ControllerPID.State(integral=wp.zeros(num_outputs, dtype=wp.float32, device=device))
+# Step loop:
+for _ in range(steps):
+    group.step(state_0, state_1, dt=0.005)
+    state_0, state_1 = state_1, state_0
 
-    def outputs(self):
-        return [self._output]
-
-    def compute(self, state, next_state, dt):
-        meas, meas_idx       = self._measurement
-        meas_rate, mrate_idx = self._measurement_rate
-        setp, setp_idx       = self._setpoint
-        setp_rate, srate_idx = self._setpoint_rate
-        kp, kp_idx           = self._kp
-        ki, ki_idx           = self._ki
-        kd, kd_idx           = self._kd
-        imax, imax_idx       = self._integral_max
-        out, out_idx         = self._output
-        wp.launch(
-            _pid_kernel,
-            dim=len(self._indices),
-            inputs=[
-                meas, meas_idx,
-                meas_rate, mrate_idx,
-                setp, setp_idx,
-                setp_rate, srate_idx,
-                kp, kp_idx,
-                ki, ki_idx,
-                kd, kd_idx,
-                imax, imax_idx,
-                dt, state.integral,
-                out_idx,
-            ],
-            outputs=[out, next_state.integral],
-        )
-
-    def reset(self, state, mask):
-        wp.launch(
-            _pid_masked_reset_kernel,
-            dim=len(self._indices),
-            inputs=[state.integral, self.reset_state.integral, self._indices, mask],
-        )
+# Reset some DOFs to the controller's reset_state values:
+#   (pid.reset_state.integral was zero-initialized; mutate it for non-zero reset)
+mask = wp.array([True, False, True, False, True, False], dtype=wp.bool, device=device)
+group.reset(state_0, mask=mask)
 ```
-
-```python
-@wp.kernel
-def _pid_masked_reset_kernel(
-    integral: wp.array[float],
-    target_integral: wp.array[float],
-    controller_indices: wp.array[wp.uint32],
-    mask: wp.array[wp.bool],
-):
-    i = wp.tid()
-    if mask[controller_indices[i]]:
-        integral[i] = target_integral[i]
-```
-
-The compute kernel computes `position_error = setp[setp_idx[i]] - meas[meas_idx[i]]`, `velocity_error = setp_rate[srate_idx[i]] - meas_rate[mrate_idx[i]]`, integrates with anti-windup, then does `out[out_idx[i]] += kp[kp_idx[i]] * position_error + ki[ki_idx[i]] * integral + kd[kd_idx[i]] * velocity_error`. The reset kernel is a separate, simpler launch that runs only when `group.reset(...)` is called.
 
 ### Example: ControllerDifferentialIK (coupled flavor)
 
