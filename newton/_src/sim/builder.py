@@ -10681,8 +10681,7 @@ class ModelBuilder:
             # ---------------------
             # heightfield collision data
             hfield_count = sum(1 for t in self.shape_type if t == GeoType.HFIELD)
-            has_heightfields = hfield_count > 0
-            m.has_heightfields = has_heightfields
+            m.heightfield_count = hfield_count
             if hfield_count > 1:
                 warnings.warn(
                     "Heightfield-vs-heightfield collision is not supported; "
@@ -10695,7 +10694,7 @@ class ModelBuilder:
             elevation_chunks = []
             shape_heightfield_index = [-1] * len(self.shape_type)
             offset = 0
-            if has_heightfields:
+            if hfield_count > 0:
                 for i in range(len(self.shape_type)):
                     if self.shape_type[i] == GeoType.HFIELD and self.shape_source[i] is not None:
                         hf = self.shape_source[i]

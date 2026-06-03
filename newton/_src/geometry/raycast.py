@@ -879,7 +879,7 @@ def intersect_ray(
     """
 
     if model.bvh_shapes is None:
-        raise RuntimeError("BVH raycasting requires a shape BVH to be built first using build_bvh_shape().")
+        raise RuntimeError("BVH raycasting requires a shape BVH to be built first using model.build_bvh_shape(state).")
 
     write_dist = out_dist is not None
     write_shape_id = out_shape_id is not None

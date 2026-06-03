@@ -241,8 +241,8 @@ class Example:
         self.shape_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
         self.semantic_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
 
-        newton.geometry.build_bvh_shape(self.model, self.state)
-        newton.geometry.build_bvh_particle(self.model, self.state)
+        self.model.build_bvh_shape(self.state)
+        self.model.build_bvh_particle(self.state)
 
     def step(self):
         wp.launch(
@@ -270,8 +270,8 @@ class Example:
         self.viewer.end_frame()
 
     def render_sensors(self):
-        newton.geometry.refit_bvh_shape(self.model, self.state)
-        newton.geometry.refit_bvh_particle(self.model, self.state)
+        self.model.refit_bvh_shape(self.state)
+        self.model.refit_bvh_particle(self.state)
         self.tiled_camera_sensor.update(
             self.state,
             self.get_camera_transforms(),

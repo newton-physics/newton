@@ -97,6 +97,23 @@ class TestHeightfield(unittest.TestCase):
         self.assertEqual(builder.shape_type[shape_id], newton.GeoType.HFIELD)
         self.assertIs(builder.shape_source[shape_id], hfield)
 
+    def test_model_heightfield_count_and_deprecated_alias(self):
+        """Model exposes heightfield_count and warns for the legacy boolean."""
+        builder = newton.ModelBuilder()
+        hfield = Heightfield(data=np.zeros((3, 3), dtype=np.float32), nrow=3, ncol=3, hx=1.0, hy=1.0)
+        builder.add_shape_heightfield(heightfield=hfield)
+
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(model.heightfield_count, 1)
+        with self.assertWarns(DeprecationWarning):
+            self.assertTrue(model.has_heightfields)
+
+        empty_model = newton.Model(device="cpu")
+        with self.assertWarns(DeprecationWarning):
+            empty_model.has_heightfields = True
+        self.assertEqual(empty_model.heightfield_count, 1)
+
     def test_mjcf_hfield_parsing(self):
         """Test parsing MJCF file with hfield asset."""
         mjcf = """

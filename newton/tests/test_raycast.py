@@ -8,7 +8,6 @@ import warp as wp
 
 import newton
 from newton import GeoType, Heightfield
-from newton._src.geometry.bvh import build_bvh_shape
 from newton._src.geometry.raycast import (
     ray_intersect_geom,
     ray_intersect_mesh,
@@ -609,7 +608,7 @@ def _make_intersection_model(device: str):
 
     model = builder.finalize(device=device)
     state = model.state()
-    build_bvh_shape(model, state)
+    model.build_bvh_shape(state)
     return model
 
 
@@ -691,7 +690,7 @@ def _make_global_world_model(device: str):
 
     model = builder.finalize(device=device)
     state = model.state()
-    build_bvh_shape(model, state)
+    model.build_bvh_shape(state)
     return model, global_box, sphere0, sphere1
 
 
