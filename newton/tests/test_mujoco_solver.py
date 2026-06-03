@@ -7045,7 +7045,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         sj1 = source.add_joint_revolute(s0, s1)
         source.add_articulation([sj0, sj1])
         sm = source.add_constraint_mimic(joint0=sj1, joint1=sj0)
-        source.add_equality_constraint_connect(
+        _add_equality_constraint(
+            source,
+            constraint_type=newton.EqType.CONNECT,
             body1=s0,
             body2=s1,
             anchor=wp.vec3(0.0),
@@ -7055,7 +7057,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 "mujoco:equality_constraint_objtype": MJC_OBJ_BODY,
             },
         )
-        source.add_equality_constraint_joint(
+        _add_equality_constraint(
+            source,
+            constraint_type=newton.EqType.JOINT,
             joint1=sj1,
             joint2=sj0,
             custom_attributes={
@@ -7089,7 +7093,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         root_joint = builder.add_joint_revolute(-1, root)
         fixed_joint = builder.add_joint_fixed(root, child)
         builder.add_articulation([root_joint, fixed_joint])
-        builder.add_equality_constraint_weld(
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.WELD,
             body1=root,
             body2=child,
             custom_attributes={
@@ -7146,7 +7152,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 child=mid,
                 enabled=bool(connect_enabled[world]),
             )
-            builder.add_equality_constraint_connect(
+            _add_equality_constraint(
+                builder,
+                constraint_type=newton.EqType.CONNECT,
                 body1=root,
                 body2=mid,
                 anchor=wp.vec3(*connect_anchor[world]),
@@ -7164,7 +7172,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 child=tip,
                 enabled=bool(weld_enabled[world]),
             )
-            builder.add_equality_constraint_weld(
+            _add_equality_constraint(
+                builder,
+                constraint_type=newton.EqType.WELD,
                 body1=mid,
                 body2=tip,
                 anchor=wp.vec3(*weld_anchor[world]),
@@ -7860,7 +7870,9 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
                 coef1=20.0 + world,
                 enabled=world == 0,
             )
-            builder.add_equality_constraint_joint(
+            _add_equality_constraint(
+                builder,
+                constraint_type=newton.EqType.JOINT,
                 joint1=j2,
                 joint2=j1,
                 polycoef=polycoef[world].tolist(),
@@ -7917,7 +7929,9 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             coef1=20.0,
             enabled=True,
         )
-        builder.add_equality_constraint_joint(
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.JOINT,
             joint1=j2,
             joint2=j1,
             polycoef=[0.25, 1.5, -0.2, 0.05, 0.01],
