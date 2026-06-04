@@ -400,6 +400,7 @@ diffik = nc.ControllerDifferentialIK(
     target_pos=wp.array([wp.vec3(2.0, 0.1, 0.0)], dtype=wp.vec3, device=device),
     target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
     damping=wp.array([0.05], dtype=wp.float32, device=device),
+    gain=wp.array([1.0], dtype=wp.float32, device=device),    # per-robot multiplier on q_dot after the DLS solve
     output_qd=wp.zeros(N, dtype=wp.float32, device=device),
     output_q=wp.zeros(N, dtype=wp.float32, device=device),
 )

@@ -64,6 +64,7 @@ def _diff_ik_solve_kernel(
     target_pos: wp.array[wp.vec3],
     target_quat: wp.array[wp.quat],
     damping: wp.array[float],
+    gain: wp.array[float],
     site_xform: wp.transform,
     end_effector_link: int,
     bodies_per_robot: int,
@@ -106,8 +107,7 @@ def _diff_ik_solve_kernel(
     #
     # Quaternions double-cover SO(3): q and -q represent the same rotation
     # but their vector parts differ in sign. Multiplying by sign(q_err.w)
-    # picks the representative with positive scalar part, i.e. the shorter
-    # rotation (theta in [0, pi] rather than [pi, 2*pi]).
+    # picks the representative with positive scalar part.
     q_err = target_quat[r] * wp.quat_inverse(site_quat)
     s = wp.sign(q_err[3])
     rot_err = wp.vec3(2.0 * s * q_err[0], 2.0 * s * q_err[1], 2.0 * s * q_err[2])
@@ -163,6 +163,7 @@ def _diff_ik_solve_kernel(
     y0 = (z0 - ell[5, 0] * y5 - ell[4, 0] * y4 - ell[3, 0] * y3 - ell[2, 0] * y2 - ell[1, 0] * y1) / ell[0, 0]
 
     # --- 7. q_dot = J_site^T y ---
+    robot_gain = gain[r]
     for j in range(dofs_per_robot):
         qd = (
             _site_j(jacobian, r, j_row, 0, j, offset) * y0
@@ -171,7 +172,7 @@ def _diff_ik_solve_kernel(
             + _site_j(jacobian, r, j_row, 3, j, offset) * y3
             + _site_j(jacobian, r, j_row, 4, j, offset) * y4
             + _site_j(jacobian, r, j_row, 5, j, offset) * y5
-        )
+        ) * robot_gain
         qd_target_local[r * dofs_per_robot + j] = qd
 
 
@@ -213,10 +214,11 @@ class ControllerDifferentialIK(Controller):
         A        = J_site J_site^T + lambda^2 * I_6                              (6x6 SPD)
         L L^T    = A                                                            (Cholesky)
         L L^T y  = e                                                            (solve)
-        q_dot    = J_site^T y
+        q_dot    = gain * J_site^T y
 
-    where ``q_err = target_quat * conj(site_quat)``. ``output_q`` is
-    written as ``q_current + q_dot * dt``.
+    where ``q_err = target_quat * conj(site_quat)`` and ``gain`` is a
+    per-robot scalar applied uniformly to every output DOF after the DLS
+    solve. ``output_q`` is written as ``q_current + q_dot * dt``.
 
     Construction takes a :class:`newton.ModelBuilder` containing K
     topologically-identical articulations (K = ``model_builder.articulation_count``,
@@ -231,8 +233,7 @@ class ControllerDifferentialIK(Controller):
 
     - All joints in the template are **scalar-DOF** (revolute or prismatic),
       so ``joint_q.shape == joint_qd.shape == (joint_dof_count,)``.
-    - Each articulation's base is at the world origin in the template
-      (fixed base). World-frame and base-frame coincide per robot.
+    - The intended "world frame" is the base frame of the template model builder.
 
     Args:
         model_builder: Unfinalized K-articulation template.
@@ -240,9 +241,7 @@ class ControllerDifferentialIK(Controller):
             ``num_robots * dofs_per_robot``;
             ``len(indices) % model_builder.joint_dof_count == 0``.
         site: Label of the site (added via :meth:`newton.ModelBuilder.add_site`)
-            to drive. Both the EE link (= ``builder.shape_body[site_idx]``) and
-            the body-frame offset transform (= ``builder.shape_transform[site_idx]``)
-            are looked up from the builder by this label; the controller drives the
+            to drive. The controller drives the
             site's world-frame pose toward the target. Add a site at identity xform
             if you want to track an EE body's reference frame directly.
         measurement: Per-DOF port. Source of joint positions ``q``.
@@ -255,6 +254,11 @@ class ControllerDifferentialIK(Controller):
             Site orientation target.
         damping: Per-group ``wp.array[float]`` of length ``num_robots``. DLS
             ``lambda`` per robot. ``A = J_site J_site^T + lambda^2 * I``.
+        gain: Per-group ``wp.array[float]`` of length ``num_robots``. Scalar
+            multiplier applied to the DLS-solve output before writing into
+            ``output_qd`` / integrating into ``output_q``. Use ``1.0`` for the
+            raw DLS solution; raise or lower to tune convergence speed
+            independently from the damping term.
         output_qd: Per-DOF port. Destination for ``q_dot`` (accumulated ``+=``).
         output_q: Per-DOF port. Destination for ``q_current + q_dot * dt`` (accumulated ``+=``).
     """
@@ -270,6 +274,7 @@ class ControllerDifferentialIK(Controller):
         target_pos,
         target_quat,
         damping,
+        gain,
         output_qd,
         output_q,
     ):
@@ -313,6 +318,7 @@ class ControllerDifferentialIK(Controller):
         self._target_pos = _validate_per_group(target_pos, self._num_robots, wp.vec3, name="target_pos")
         self._target_quat = _validate_per_group(target_quat, self._num_robots, wp.quat, name="target_quat")
         self._damping = _validate_per_group(damping, self._num_robots, wp.float32, name="damping")
+        self._gain = _validate_per_group(gain, self._num_robots, wp.float32, name="gain")
 
         self._measurement = _normalize_port(measurement, indices, name="measurement")
         self._measurement_rate = _normalize_port(measurement_rate, indices, name="measurement_rate")
@@ -325,7 +331,7 @@ class ControllerDifferentialIK(Controller):
         builder = ModelBuilder()
         builder.replicate(self._template, world_count=self._replication_count)
         self._model = builder.finalize(device=device)
-        self._state = self._model.state()
+        self._model_state = self._model.state()
 
         if self._model.body_count % self._num_robots != 0:
             # Should not happen if the template's K articulations are homogeneous,
@@ -337,8 +343,6 @@ class ControllerDifferentialIK(Controller):
         self._bodies_per_robot = self._model.body_count // self._num_robots
 
         n_total_dofs = self._num_robots * self._dofs_per_robot
-        self._joint_q_local = wp.zeros(n_total_dofs, dtype=wp.float32, device=device)
-        self._joint_qd_local = wp.zeros(n_total_dofs, dtype=wp.float32, device=device)
         self._qd_target_local = wp.zeros(n_total_dofs, dtype=wp.float32, device=device)
         self._jacobian = wp.zeros(
             (self._num_robots, self._model.max_joints_per_articulation * 6, self._model.max_dofs_per_articulation),
@@ -365,22 +369,23 @@ class ControllerDifferentialIK(Controller):
 
         meas, meas_idx = self._measurement
         meas_rate, mrate_idx = self._measurement_rate
-        wp.launch(_gather_local_kernel, dim=n, inputs=[meas, meas_idx], outputs=[self._joint_q_local])
-        wp.launch(_gather_local_kernel, dim=n, inputs=[meas_rate, mrate_idx], outputs=[self._joint_qd_local])
+        wp.launch(_gather_local_kernel, dim=n, inputs=[meas, meas_idx], outputs=[self._model_state.joint_q])
+        wp.launch(_gather_local_kernel, dim=n, inputs=[meas_rate, mrate_idx], outputs=[self._model_state.joint_qd])
 
-        eval_fk(self._model, self._joint_q_local, self._joint_qd_local, self._state)
-        eval_jacobian(self._model, self._state, J=self._jacobian)
+        eval_fk(self._model, self._model_state.joint_q, self._model_state.joint_qd, self._model_state)
+        eval_jacobian(self._model, self._model_state, J=self._jacobian)
 
         wp.launch(
             _diff_ik_solve_kernel,
             dim=self._num_robots,
             inputs=[
                 self._jacobian,
-                self._state.body_q,
+                self._model_state.body_q,
                 self._model.body_com,
                 self._target_pos,
                 self._target_quat,
                 self._damping,
+                self._gain,
                 self._site_xform,
                 self._end_effector_link,
                 self._bodies_per_robot,
@@ -396,7 +401,7 @@ class ControllerDifferentialIK(Controller):
             dim=n,
             inputs=[
                 self._qd_target_local,
-                self._joint_q_local,
+                self._model_state.joint_q,
                 dt,
                 out_qd_idx,
                 out_q_idx,

@@ -31,10 +31,13 @@ with nullcontext():
     box_width = 0.05
 
     # add a tool frame.
-    arm_model_builder.add_site(
+    tool_site = arm_model_builder.add_site(
         link3, 
         label="tool",
-        xform=wp.transform(p=(box_length, 0., 0.))
+        xform=wp.transform(p=(box_length/2, 0., 0.)),
+        type=newton.GeoType.SPHERE,        # already the default; included for clarity
+        scale=(0.05, 0.05, 0.05),          # how big to render
+        visible=True,                      # turn on rendering
     )
 
     # give all of the links the same simple box geometry:

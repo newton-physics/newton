@@ -217,6 +217,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
             target_pos=wp.array([wp.vec3(2.0, 0.0, 0.0)], dtype=wp.vec3, device=device),
             target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
             damping=wp.array([0.05], dtype=wp.float32, device=device),
+            gain=wp.array([1.0], dtype=wp.float32, device=device),
             output_qd=output_qd,
             output_q=output_q,
         )
@@ -267,6 +268,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
             target_pos=wp.array([wp.vec3(2.0, 0.1, 0.0)], dtype=wp.vec3, device=device),
             target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
             damping=wp.array([0.05], dtype=wp.float32, device=device),
+            gain=wp.array([1.0], dtype=wp.float32, device=device),
             output_qd=output_qd,
             output_q=output_q,
         )
@@ -318,6 +320,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
             target_pos=wp.array([wp.vec3(1.5, 0.2, 0.0)], dtype=wp.vec3, device=device),
             target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
             damping=wp.array([0.05], dtype=wp.float32, device=device),
+            gain=wp.array([1.0], dtype=wp.float32, device=device),
             output_qd=output_qd,
             output_q=output_q,
         )
@@ -330,6 +333,97 @@ class TestControllerDifferentialIK(unittest.TestCase):
 
         expected_q = joint_q.numpy() + output_qd.numpy() * dt
         np.testing.assert_allclose(output_q.numpy(), expected_q, atol=1e-5)
+
+    def test_one_dof_matches_analytical_dls(self):
+        """End-to-end check against a hand-derived DLS solution.
+
+        Robot: single revolute joint about world +z, one link of length 1.
+        body_com defaults to (0, 0, 0). Tool site at body-frame (1, 0, 0)
+        (the tip of the link). Initial config q = 0.
+
+        At q = 0:
+            link0 body frame in world         = identity
+            site world position               = (1, 0, 0)
+            site world orientation            = identity
+            COM world position                = (0, 0, 0)
+            offset = site_world - com_world   = (1, 0, 0)
+
+        Newton's spatial Jacobian J for link0 is COM-frame (v_com_world,
+        omega_world). With axis = (0, 0, 1) and the COM at the origin,
+        a unit q_dot rotates the body about +z without translating the COM,
+        so:
+            J_COM = [0, 0, 0,                   (linear: v_com = 0)
+                     0, 0, 1]^T                 (angular: omega = +z)
+
+        The kernel converts each linear row to "at site" via
+        v_site = v_com + cross(omega_col, offset). For our single column:
+            cross((0,0,1), (1,0,0)) = (0, 1, 0)
+        so
+            J_site_linear  = (0, 0, 0) + (0, 1, 0) = (0, 1, 0)
+            J_site_angular = (0, 0, 1)             (unchanged)
+            J_site = [0, 1, 0, 0, 0, 1]^T          (6 x 1)
+
+        Task-space error, with target_pos = (1, ERR_Y, 0) and
+        target_quat = identity:
+            pos_err = (0, ERR_Y, 0)
+            q_err   = target_quat * conj(site_quat) = identity → rot_err = 0
+            e       = [0, ERR_Y, 0, 0, 0, 0]^T
+
+        The kernel solves the left-damped 6x6 system A y = e with
+        A = J_site J_site^T + lambda^2 * I_6, then q_dot = GAIN * J_site^T y.
+        For a 1-DOF system the equivalent right-damped form is a 1x1 solve
+        and is easier to write down:
+            q_dot = GAIN * J_site^T e / (J_site^T J_site + lambda^2)
+                  = GAIN * (0*0 + 1*ERR_Y + 0 + 0 + 0 + 1*0) / (0+1+0+0+0+1 + lambda^2)
+                  = GAIN * ERR_Y / (2 + lambda^2)
+        Both DLS formulations give the same q_dot, so this is what the
+        kernel must produce.
+        """
+        device = wp.get_device()
+
+        ERR_Y = 0.1
+        LAMBDA = 0.5
+        # Non-unit gain so the test exercises the gain multiplier (a gain of
+        # 1.0 would be indistinguishable from "no gain at all" in the
+        # output, which doesn't tell us the kernel is honoring it).
+        GAIN = 2.0
+
+        builder = newton.ModelBuilder()
+        link0 = builder.add_link()
+        j0 = builder.add_joint_revolute(
+            parent=-1,
+            child=link0,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j0], label="arm")
+        builder.add_site(link0, label="tool", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+
+        indices = wp.array([0], dtype=wp.uint32, device=device)
+        output_qd = wp.zeros(1, dtype=wp.float32, device=device)
+        output_q = wp.zeros(1, dtype=wp.float32, device=device)
+        diffik = ControllerDifferentialIK(
+            model_builder=builder,
+            indices=indices,
+            site="tool",
+            measurement=wp.zeros(1, dtype=wp.float32, device=device),
+            measurement_rate=wp.zeros(1, dtype=wp.float32, device=device),
+            target_pos=wp.array([wp.vec3(1.0, ERR_Y, 0.0)], dtype=wp.vec3, device=device),
+            target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
+            damping=wp.array([LAMBDA], dtype=wp.float32, device=device),
+            gain=wp.array([GAIN], dtype=wp.float32, device=device),
+            output_qd=output_qd,
+            output_q=output_q,
+        )
+        group = ControlGroup([diffik])
+
+        s0 = group.state()
+        s1 = group.state()
+        group.step(s0, s1, dt=0.01)
+
+        expected_qd = GAIN * ERR_Y / (2.0 + LAMBDA**2)
+        self.assertAlmostEqual(float(output_qd.numpy()[0]), expected_qd, places=5)
 
 
 if __name__ == "__main__":
