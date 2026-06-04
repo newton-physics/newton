@@ -705,6 +705,7 @@ class MeshInstancerGL:
         self._host_opacities = None
         self._has_transparency = False
         self._opacity_buffer_opaque = True
+        self._opacity_attribute_enabled = False
 
         self.allocate(num_instances)
         self.active_instances = num_instances
@@ -847,7 +848,8 @@ class MeshInstancerGL:
         )
 
         gl.glVertexAttribPointer(9, 1, gl.GL_FLOAT, gl.GL_FALSE, self.opacity_byte_size, ctypes.c_void_p(0))
-        gl.glEnableVertexAttribArray(9)
+        gl.glDisableVertexAttribArray(9)
+        gl.glVertexAttrib1f(9, 1.0)
         gl.glVertexAttribDivisor(9, 1)
 
         gl.glBindVertexArray(0)
@@ -1008,6 +1010,7 @@ class MeshInstancerGL:
 
         if opacities is None:
             self._has_transparency = False
+            self._set_opacity_attribute_enabled(False)
             if self._opacity_buffer_opaque:
                 return
             host_opacities = np.ones(count, dtype=np.float32)
@@ -1016,12 +1019,28 @@ class MeshInstancerGL:
             host_opacities = np.clip(host_opacities, 0.0, 1.0)
             self._has_transparency = bool(np.any(host_opacities < 0.999))
             if not self._has_transparency and self._opacity_buffer_opaque:
+                self._set_opacity_attribute_enabled(False)
                 return
 
         self._host_opacities[:count] = host_opacities
         self._opacity_buffer_opaque = not self._has_transparency
+        self._set_opacity_attribute_enabled(self._has_transparency)
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_opacity_buffer)
         gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, host_opacities.nbytes, host_opacities.ctypes.data)
+
+    def _set_opacity_attribute_enabled(self, enabled: bool):
+        if self._opacity_attribute_enabled == enabled:
+            return
+
+        gl = RendererGL.gl
+        gl.glBindVertexArray(self.vao)
+        if enabled:
+            gl.glEnableVertexAttribArray(9)
+        else:
+            gl.glDisableVertexAttribArray(9)
+            gl.glVertexAttrib1f(9, 1.0)
+        gl.glBindVertexArray(0)
+        self._opacity_attribute_enabled = enabled
 
     def has_transparency(self) -> bool:
         """Return True when any active instance needs transparent rendering."""
@@ -1086,6 +1105,9 @@ class MeshInstancerGL:
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.mesh.texture_id)
         else:
             gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
+
+        if not self._opacity_attribute_enabled:
+            gl.glVertexAttrib1f(9, 1.0)
 
         gl.glBindVertexArray(self.vao)
         gl.glDrawElementsInstanced(
