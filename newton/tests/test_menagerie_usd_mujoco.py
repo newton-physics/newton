@@ -1540,8 +1540,8 @@ class TestMenagerieUSD(TestMenagerieBase):
             # joint_target_pos (initial DOF targets from the USD posture) would apply
             # nonzero forces every world for actuators we didn't drive — surfaced on
             # WonikAllegro where tha0's initial target 0.8295 stayed in every world.
-            joint_target_pos = np.zeros_like(newton_control.joint_target_pos.numpy())
-            joint_target_vel = np.zeros_like(newton_control.joint_target_vel.numpy())
+            joint_target_pos = np.zeros_like(newton_control.joint_target_q.numpy())
+            joint_target_vel = np.zeros_like(newton_control.joint_target_qd.numpy())
             dofs_per_world = joint_target_pos.shape[0] // num_worlds
 
             native_ctrl_np = np.zeros((num_worlds, num_actuators), dtype=np.float32)
@@ -1566,8 +1566,8 @@ class TestMenagerieUSD(TestMenagerieBase):
                         joint_target_vel[w * dofs_per_world + (-(idx + 2))] = target
             native_mjw_data.ctrl.assign(native_ctrl_np)
             newton_control.mujoco.ctrl.assign(newton_ctrl_np)
-            newton_control.joint_target_pos.assign(joint_target_pos)
-            newton_control.joint_target_vel.assign(joint_target_vel)
+            newton_control.joint_target_q.assign(joint_target_pos)
+            newton_control.joint_target_qd.assign(joint_target_vel)
 
             # qpos / qvel permutation arrays (native_idx -> newton_idx).
             nq = int(native_mjw_data.qpos.shape[1])
