@@ -122,7 +122,7 @@ jobs:
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
-        run: uv run --no-sync -m newton.tests --deprecations-as-errors --junit-report-xml rspec.xml
+        run: uv run --no-sync -m newton.tests --strict-warnings --junit-report-xml rspec.xml
 
       - name: Test Summary
         if: ${{ !cancelled() }}

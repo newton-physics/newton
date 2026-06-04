@@ -4,9 +4,10 @@
 """Test examples in the newton.examples package.
 
 Currently, this script mainly checks that the examples can run. When the test
-runner is invoked with ``--deprecations-as-errors`` (as CI does), example
-subprocesses treat deprecation warnings as failures so examples do not regress
-onto deprecated APIs; otherwise deprecations are non-fatal.
+runner is invoked with ``--strict-warnings`` (as CI does), example subprocesses
+treat deprecation warnings as failures so examples do not regress onto deprecated
+APIs; otherwise deprecations are non-fatal. (The broader newton.* escalation of
+``--strict-warnings`` applies to the in-process tests, not example subprocesses.)
 
 The test parameters are typically tuned so that each test can run in 10 seconds
 or less, ignoring module compilation time. A notable exception is the robot
@@ -105,11 +106,10 @@ def add_example_test(
             test.skipTest("Requires usd-core")
 
         # Escalate deprecations to errors in the example subprocess only when the
-        # runner was invoked with --deprecations-as-errors (CI) and the example has
-        # not opted out. Passed as a -W argument on the command line below, so a
-        # consumer's `python -m newton.tests` stays lenient without touching the env.
+        # runner was invoked with --strict-warnings (CI) and the example has not
+        # opted out.
         allow_deprecation_warnings = options.pop("allow_deprecation_warnings", False)
-        deprecations_as_errors = newton.tests.unittest_utils.deprecations_as_errors and not allow_deprecation_warnings
+        strict_warnings = newton.tests.unittest_utils.strict_warnings and not allow_deprecation_warnings
 
         # Pass the parent dir; the subprocess's init_kernel_cache appends the version.
         warp_cache_path = wp.config.kernel_cache_dir
@@ -117,13 +117,16 @@ def add_example_test(
         env_vars = os.environ.copy()
         if warp_cache_path is not None:
             env_vars["WARP_CACHE_PATH"] = os.path.dirname(warp_cache_path)
-        # Govern the subprocess's deprecation policy solely through warning_args
-        # below; drop any ambient PYTHONWARNINGS so a stray error::DeprecationWarning
-        # in the caller's environment cannot turn a lenient run strict.
+        # Govern the subprocess's deprecation policy through PYTHONWARNINGS so a
+        # consumer's `python -m newton.tests` stays lenient. Drop any ambient value
+        # first so a stray policy in the caller's environment cannot turn a lenient
+        # run strict; for strict runs escalate all deprecations from interpreter
+        # startup. PYTHONWARNINGS (not -W) is required so newton.examples'
+        # _enable_example_deprecation_warnings() defers to this policy instead of
+        # installing its own lenient "default" filter for newton.* deprecations.
         env_vars.pop("PYTHONWARNINGS", None)
-
-        # Interpreter warning flags, applied from startup of the subprocess.
-        warning_args = ["-W", "error::DeprecationWarning"] if deprecations_as_errors else []
+        if strict_warnings:
+            env_vars["PYTHONWARNINGS"] = "error::DeprecationWarning"
 
         if newton.tests.unittest_utils.coverage_enabled:
             # Generate a random coverage data file name - file is deleted along with containing directory
@@ -132,13 +135,13 @@ def add_example_test(
             ) as coverage_file:
                 pass
 
-            command = [sys.executable, *warning_args, "-m", "coverage", "run", f"--data-file={coverage_file.name}"]
+            command = [sys.executable, "-m", "coverage", "run", f"--data-file={coverage_file.name}"]
 
             if newton.tests.unittest_utils.coverage_branch:
                 command.append("--branch")
 
         else:
-            command = [sys.executable, *warning_args]
+            command = [sys.executable]
 
         # Append Warp commands
         command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test", "--quiet"])

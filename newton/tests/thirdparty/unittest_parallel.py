@@ -95,11 +95,12 @@ def main(argv=None):
         "--junit-report-xml", metavar="FILE", help="Generate JUnit report format XML file"
     )  # NVIDIA Modification
     parser.add_argument(
-        "--deprecations-as-errors",
+        "--strict-warnings",
         action="store_true",
         default=False,
-        help="Treat DeprecationWarnings as errors. Off by default so verifying an installation does not "
-        "fail on deprecations from Newton or its dependencies; enabled in CI to surface deprecation debt.",
+        help="Treat warnings we can act on as errors: all DeprecationWarnings (from Newton or its "
+        "dependencies) and any warning attributed to a newton.* module. Off by default so verifying an "
+        "installation does not fail on warnings the user cannot act on; enabled in CI to surface warning debt.",
     )  # NVIDIA Modification
     group_parallel = parser.add_argument_group("parallelization options")
     group_parallel.add_argument(
@@ -515,11 +516,15 @@ class ParallelTestManager:
         newton.tests.unittest_utils.coverage_temp_dir = self.temp_dir
         newton.tests.unittest_utils.coverage_branch = self.args.coverage_branch
 
-        # Expose the deprecation policy to test modules (e.g. test_examples.py) and
-        # escalate deprecations to errors in this worker process when requested.
-        newton.tests.unittest_utils.deprecations_as_errors = self.args.deprecations_as_errors
-        if self.args.deprecations_as_errors:
-            warnings.simplefilter("error", DeprecationWarning)
+        # Expose the warning policy to test modules (e.g. test_examples.py) and
+        # escalate the warnings we can act on to errors in this worker process when
+        # requested: all DeprecationWarnings (any source) plus any warning attributed
+        # to a newton.* module. Dependency-owned non-deprecation warnings stay
+        # warnings, since we cannot act on those.
+        newton.tests.unittest_utils.strict_warnings = self.args.strict_warnings
+        if self.args.strict_warnings:
+            warnings.filterwarnings("error", category=DeprecationWarning)
+            warnings.filterwarnings("error", module=r"newton(\.|$)")
 
         if self.args.junit_report_xml:
             resultclass = ParallelJunitTestResult

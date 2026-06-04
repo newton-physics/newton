@@ -15,10 +15,10 @@ class TestLazyInit(unittest.TestCase):
 
         env = os.environ.copy()
         # Escalate import-time deprecations only when the runner opted in
-        # (--deprecations-as-errors); otherwise keep the import lenient so a
-        # dependency deprecation does not fail a consumer's install check.
+        # (--strict-warnings); otherwise keep the import lenient so a dependency
+        # deprecation does not fail a consumer's install check.
         env.pop("PYTHONWARNINGS", None)
-        if newton.tests.unittest_utils.deprecations_as_errors:
+        if newton.tests.unittest_utils.strict_warnings:
             env["PYTHONWARNINGS"] = "error::DeprecationWarning"
 
         result = subprocess.run(
