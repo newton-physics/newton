@@ -40,7 +40,7 @@ def _site_j(
     # Returns the (i, j) element of the site-frame Jacobian.
     #
     # Newton's eval_jacobian gives the COM-frame body twist (v_com, omega).
-    # For any other point P fixed on the body, v_P = v_com + omega × (P - com).
+    # For any other point P fixed on the body, v_P = v_com + cross(omega, P - com).
     # We use this with `offset = site_world - com_world` to convert each linear
     # row of J from "at COM" to "at site". Angular rows are unchanged.
     if i == 0:
@@ -198,12 +198,12 @@ class ControllerDifferentialIK(Controller):
     Coupled per-robot: each robot's joint-velocity solution depends on its
     full configuration ``q``. Stateless — no internal accumulators between
     steps. Drives the **site** pose in world frame toward the target. The
-    site is a frame attached to the EE body at a user-specified offset
-    ``site_xform``; pass ``wp.transform_identity()`` to target the EE
-    body's reference frame, or e.g. ``wp.transform(p=tool_tip_offset)``
-    to target a tool tip. The Jacobian's COM-relative linear rows are
-    converted to site-relative rows internally via the offset
-    ``site_world - com_world`` and ``omega × offset``.
+    site is identified by the ``label`` you gave it when calling
+    :meth:`newton.ModelBuilder.add_site`; the controller looks up the EE
+    link and the body-frame offset xform from the builder by that label.
+    The Jacobian's COM-relative linear rows are converted to site-relative
+    rows internally via the offset ``site_world - com_world`` and
+    ``cross(omega, offset)``.
 
     Solve form (per robot, ``J_site`` is the 6xN site-frame Jacobian):
 
@@ -239,11 +239,12 @@ class ControllerDifferentialIK(Controller):
         indices: Global DOF indices this controller writes to. Length
             ``num_robots * dofs_per_robot``;
             ``len(indices) % model_builder.joint_dof_count == 0``.
-        end_effector_link: Body index (within one articulation) of the EE link.
-        site_xform: Offset transform from the EE body's reference frame to the
-            controlled site. Target poses are interpreted as the site's world-frame
-            pose. Pass ``wp.transform_identity()`` to target the EE body's
-            reference frame directly.
+        site: Label of the site (added via :meth:`newton.ModelBuilder.add_site`)
+            to drive. Both the EE link (= ``builder.shape_body[site_idx]``) and
+            the body-frame offset transform (= ``builder.shape_transform[site_idx]``)
+            are looked up from the builder by this label; the controller drives the
+            site's world-frame pose toward the target. Add a site at identity xform
+            if you want to track an EE body's reference frame directly.
         measurement: Per-DOF port. Source of joint positions ``q``.
         measurement_rate: Per-DOF port. Source of joint velocities ``q_dot``
             (used by ``eval_fk`` to populate ``body_qd``; the solve uses
@@ -263,8 +264,7 @@ class ControllerDifferentialIK(Controller):
         *,
         model_builder: ModelBuilder,
         indices: wp.array[wp.uint32],
-        end_effector_link: int,
-        site_xform: wp.transform,
+        site: str,
         measurement,
         measurement_rate,
         target_pos,
@@ -296,8 +296,19 @@ class ControllerDifferentialIK(Controller):
         self._replication_count = len(indices) // model_builder.joint_dof_count
         self._num_robots = K * self._replication_count
         self.indices = indices
-        self._end_effector_link = int(end_effector_link)
-        self._site_xform = site_xform
+
+        # Look up the site by label. Sites are stored as shapes inside the
+        # builder; the label, the body it's attached to, and the body-frame
+        # xform all live on parallel lists.
+        try:
+            site_idx = model_builder.shape_label.index(site)
+        except ValueError as e:
+            raise ValueError(
+                f"ControllerDifferentialIK: no shape/site with label '{site}' in model_builder; "
+                f"available labels: {model_builder.shape_label}."
+            ) from e
+        self._end_effector_link = int(model_builder.shape_body[site_idx])
+        self._site_xform = model_builder.shape_transform[site_idx]
 
         self._target_pos = _validate_per_group(target_pos, self._num_robots, wp.vec3, name="target_pos")
         self._target_quat = _validate_per_group(target_quat, self._num_robots, wp.quat, name="target_quat")

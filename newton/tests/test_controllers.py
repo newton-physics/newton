@@ -202,6 +202,8 @@ class TestControllerDifferentialIK(unittest.TestCase):
             child_xform=wp.transform_identity(),
         )
         builder.add_articulation([j0, j1], label="arm")
+        # Site at the tip of link1 — 1 unit further along x in link1's local frame.
+        builder.add_site(link1, label="tip", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
 
         indices = wp.array([0, 1], dtype=wp.uint32, device=device)
         output_qd = wp.zeros(2, dtype=wp.float32, device=device)
@@ -209,8 +211,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
         diffik = ControllerDifferentialIK(
             model_builder=builder,
             indices=indices,
-            end_effector_link=link1,
-            site_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()),
+            site="tip",
             measurement=wp.zeros(2, dtype=wp.float32, device=device),
             measurement_rate=wp.zeros(2, dtype=wp.float32, device=device),
             target_pos=wp.array([wp.vec3(2.0, 0.0, 0.0)], dtype=wp.vec3, device=device),
@@ -250,6 +251,8 @@ class TestControllerDifferentialIK(unittest.TestCase):
             child_xform=wp.transform_identity(),
         )
         builder.add_articulation([j0, j1], label="arm")
+        # Site at the tip of link1 — 1 unit further along x in link1's local frame.
+        builder.add_site(link1, label="tip", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
 
         indices = wp.array([0, 1], dtype=wp.uint32, device=device)
         output_qd = wp.zeros(2, dtype=wp.float32, device=device)
@@ -257,8 +260,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
         diffik = ControllerDifferentialIK(
             model_builder=builder,
             indices=indices,
-            end_effector_link=link1,
-            site_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()),
+            site="tip",
             measurement=wp.zeros(2, dtype=wp.float32, device=device),
             measurement_rate=wp.zeros(2, dtype=wp.float32, device=device),
             # Site at q=[0,0] is at (2, 0, 0); shift target +0.1 in y from there.
@@ -299,6 +301,8 @@ class TestControllerDifferentialIK(unittest.TestCase):
             child_xform=wp.transform_identity(),
         )
         builder.add_articulation([j0, j1], label="arm")
+        # Site at the tip of link1 — 1 unit further along x in link1's local frame.
+        builder.add_site(link1, label="tip", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
 
         indices = wp.array([0, 1], dtype=wp.uint32, device=device)
         # Start with q = (0.2, -0.3) so q_current is non-zero in the integration check.
@@ -308,8 +312,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
         diffik = ControllerDifferentialIK(
             model_builder=builder,
             indices=indices,
-            end_effector_link=link1,
-            site_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()),
+            site="tip",
             measurement=joint_q,
             measurement_rate=wp.zeros(2, dtype=wp.float32, device=device),
             target_pos=wp.array([wp.vec3(1.5, 0.2, 0.0)], dtype=wp.vec3, device=device),

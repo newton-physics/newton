@@ -365,7 +365,7 @@ group.reset(state_0, mask=mask)
 
 Reference implementation: `newton/_src/controllers/impl/controller_diff_ik.py`.
 
-The controller takes a `newton.ModelBuilder` containing K topologically-identical articulations (K ≥ 1), replicates it R times internally at `finalize()` via `ModelBuilder.replicate`, and runs a damped-least-squares Jacobian solve per robot at every step. Stateless. Drives a user-defined "site" (a frame attached to the EE body at offset `site_xform`) to a target pose.
+The controller takes a `newton.ModelBuilder` containing K topologically-identical articulations (K ≥ 1), replicates it R times internally at `finalize()` via `ModelBuilder.replicate`, and runs a damped-least-squares Jacobian solve per robot at every step. Stateless. Drives a **site** (a named frame attached to a body, added to the builder via `builder.add_site(...)`) to a target pose.
 
 ```python
 import warp as wp
@@ -381,18 +381,20 @@ j1 = builder.add_joint_revolute(parent=link0, child=link1, axis=wp.vec3(0.0, 0.0
                                 parent_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0)))
 builder.add_articulation([j0, j1], label="arm")
 
+# Define a "tool" site at the tip of link1. The controller looks up both the EE
+# link (= link1) and the body-frame offset xform from the builder by this label.
+builder.add_site(link1, label="tool",
+                 xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+
 device = wp.get_device()
 N = 2                                                            # DOFs (one robot, two joints)
 indices = wp.array([0, 1], dtype=wp.uint32, device=device)
 
-# Site at the tip of link1 (1 unit along x in link1's local frame).
-# Target pose is interpreted as this site's world-frame pose. At q=[0,0] the
-# site is at world position (2, 0, 0).
+# Target pose is the site's world-frame pose. At q=[0,0] the site is at (2, 0, 0).
 diffik = nc.ControllerDifferentialIK(
     model_builder=builder,
     indices=indices,
-    end_effector_link=link1,
-    site_xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()),
+    site="tool",
     measurement=wp.zeros(N, dtype=wp.float32, device=device),
     measurement_rate=wp.zeros(N, dtype=wp.float32, device=device),
     target_pos=wp.array([wp.vec3(2.0, 0.1, 0.0)], dtype=wp.vec3, device=device),
