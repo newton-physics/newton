@@ -6606,9 +6606,9 @@ def Xform "Articulation" (
         converted_model = converted_builder.finalize()
         converted_solver = SolverMuJoCo(converted_model)
 
-        self.assertEqual(converted_model.equality_constraint_count, 3)
+        self.assertEqual(converted_model.mujoco.equality_constraint_count, 3)
         self.assertEqual(converted_model.constraint_mimic_count, 1)
-        eq_types = converted_model.equality_constraint_type.numpy()
+        eq_types = converted_model.mujoco.equality_constraint_type.numpy()
         target_kinds = converted_model.mujoco.equality_constraint_target_kind.numpy()
         self.assertEqual(eq_types.tolist().count(int(newton.EqType.CONNECT)), 1)
         self.assertEqual(eq_types.tolist().count(int(newton.EqType.WELD)), 1)
@@ -6618,7 +6618,7 @@ def Xform "Articulation" (
         joint_eq = int(np.flatnonzero(eq_types == int(newton.EqType.JOINT))[0])
         self.assertEqual(target_kinds[joint_eq], int(MjcEqualityTargetKind.MIMIC))
         np.testing.assert_allclose(
-            converted_model.equality_constraint_polycoef.numpy()[joint_eq],
+            converted_model.mujoco.equality_constraint_polycoef.numpy()[joint_eq],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
         )
 

@@ -4329,10 +4329,10 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         converted_model = converted_builder.finalize()
         converted_solver = SolverMuJoCo(converted_model)
 
-        self.assertEqual(converted_model.equality_constraint_count, 3)
+        self.assertEqual(converted_model.mujoco.equality_constraint_count, 3)
         self.assertEqual(converted_model.constraint_mimic_count, 1)
         np.testing.assert_array_equal(
-            converted_model.equality_constraint_type.numpy(),
+            converted_model.mujoco.equality_constraint_type.numpy(),
             np.array([int(newton.EqType.CONNECT), int(newton.EqType.WELD), int(newton.EqType.JOINT)]),
         )
         np.testing.assert_array_equal(
@@ -4346,7 +4346,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             ),
         )
         np.testing.assert_allclose(
-            converted_model.equality_constraint_polycoef.numpy()[2],
+            converted_model.mujoco.equality_constraint_polycoef.numpy()[2],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
         )
 
@@ -4386,7 +4386,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             parse_mjcf(builder, mjcf)
         model = builder.finalize()
 
-        self.assertEqual(model.equality_constraint_count, 3)
+        self.assertEqual(model.mujoco.equality_constraint_count, 3)
         self.assertEqual(model.constraint_mimic_count, 1)
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "equality_constraint_target_kind"))
@@ -4402,7 +4402,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             ),
         )
         np.testing.assert_allclose(
-            model.equality_constraint_polycoef.numpy()[2],
+            model.mujoco.equality_constraint_polycoef.numpy()[2],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
         )
 
