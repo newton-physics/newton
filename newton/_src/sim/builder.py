@@ -1254,6 +1254,31 @@ class ModelBuilder:
     # the ``mujoco:equality_constraint`` custom-attribute table. Delete this whole block when
     # the deprecation window closes.
 
+    class _ReadOnlyEqualityList(list):
+        """Read-only snapshot of a deprecated ``ModelBuilder.equality_constraint_*`` list.
+
+        Indexing, iteration, and ``len`` behave like the historical builder lists, but every
+        in-place mutation raises :class:`TypeError`. These accessors are now snapshots over the
+        ``mujoco:equality_constraint`` custom attributes, so mutating one (e.g.
+        ``builder.equality_constraint_type.append(...)``) would silently drop the change instead
+        of updating the builder. Construct equality constraints with
+        :meth:`~newton.ModelBuilder.add_custom_values` using the ``mujoco:equality_constraint_*``
+        keys, and read finalized values from ``model.mujoco.equality_constraint_*``.
+        """
+
+        __slots__ = ()
+
+        def _readonly(self, *args, **kwargs):
+            raise TypeError(
+                "ModelBuilder.equality_constraint_* are deprecated read-only snapshots and cannot "
+                "be mutated in place; the change would be silently dropped. Add equality "
+                'constraints with add_custom_values(**{"mujoco:equality_constraint_*": ...}) and '
+                "read finalized values from model.mujoco.equality_constraint_*."
+            )
+
+        append = extend = insert = remove = pop = clear = sort = reverse = _readonly
+        __setitem__ = __delitem__ = __iadd__ = __imul__ = _readonly
+
     def _eq_attr(self, name: str) -> ModelBuilder.CustomAttribute:
         """Return the per-equality-constraint :class:`CustomAttribute` for the bare ``name`` (no ``mujoco:`` prefix)."""
         return self.custom_attributes[f"mujoco:{name}"]
@@ -1278,7 +1303,13 @@ class ModelBuilder:
         ]
 
     def _deprecated_eq_list(self, name: str) -> list[Any]:
-        """Warn that ``ModelBuilder.<name>`` is deprecated, then return its dense value snapshot."""
+        """Warn that ``ModelBuilder.<name>`` is deprecated, then return a read-only snapshot.
+
+        The snapshot detaches mutable elements (e.g. ``polycoef`` lists, and the shared attribute
+        default returned for missing rows) and is wrapped in :class:`_ReadOnlyEqualityList`, so
+        neither replacing an entry nor mutating one in place can silently corrupt the builder's
+        ``mujoco:equality_constraint`` custom-attribute store.
+        """
         warnings.warn(
             f"ModelBuilder.{name} is deprecated in Newton 1.3 and is scheduled for removal in "
             f"a future release. Populate equality constraints via "
@@ -1287,7 +1318,8 @@ class ModelBuilder:
             DeprecationWarning,
             stacklevel=3,
         )
-        return self._eq_list(name)
+        detached = [list(v) if isinstance(v, list) else v for v in self._eq_list(name)]
+        return ModelBuilder._ReadOnlyEqualityList(detached)
 
     def _warn_deprecated_builder_add_equality_constraint(self, name: str) -> None:
         warnings.warn(

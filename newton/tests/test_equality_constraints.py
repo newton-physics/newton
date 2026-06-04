@@ -3,6 +3,7 @@
 
 import os
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -295,6 +296,48 @@ class TestEqualityConstraints(unittest.TestCase):
         np.testing.assert_allclose(solref[0], default_solref)
         np.testing.assert_allclose(solref[1], default_solref)
         np.testing.assert_allclose(solref[2], [7.0, 7.0])
+
+    def test_deprecated_builder_equality_lists_are_read_only(self):
+        """Deprecated ``ModelBuilder.equality_constraint_*`` snapshots reject mutation.
+
+        Historically these were live builder lists; they are now read-only snapshots over the
+        ``mujoco:equality_constraint`` custom attributes. Mutating one would silently drop the
+        change, so every in-place mutation must raise instead of corrupting the builder.
+        """
+        builder = newton.ModelBuilder()
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.JOINT,
+            joint1=0,
+            joint2=1,
+            polycoef=[1.0, 2.0, 3.0, 0.0, 0.0],
+            label="c0",
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+
+            # Reads still behave like the historical list.
+            self.assertIsInstance(builder.equality_constraint_type, list)
+            self.assertEqual(len(builder.equality_constraint_type), 1)
+            self.assertEqual(builder.equality_constraint_label[0], "c0")
+
+            # Every in-place mutation raises rather than silently dropping the change.
+            self.assertRaises(TypeError, builder.equality_constraint_type.append, 5)
+            self.assertRaises(TypeError, builder.equality_constraint_type.extend, [5])
+            self.assertRaises(TypeError, builder.equality_constraint_type.insert, 0, 5)
+            self.assertRaises(TypeError, builder.equality_constraint_type.pop)
+            self.assertRaises(TypeError, builder.equality_constraint_type.clear)
+            with self.assertRaises(TypeError):
+                builder.equality_constraint_type[0] = 5
+            with self.assertRaises(TypeError):
+                del builder.equality_constraint_type[0]
+
+            # Mutating an inner polycoef list must not reach the builder's backing store.
+            builder.equality_constraint_polycoef[0].append(999.0)
+
+        backing = builder.custom_attributes["mujoco:equality_constraint_polycoef"].values[0]
+        self.assertEqual(list(backing), [1.0, 2.0, 3.0, 0.0, 0.0])
 
     def test_default_equality_constraint_torquescale_is_numeric(self):
         builder = newton.ModelBuilder()
