@@ -926,11 +926,11 @@ class Model:
 
         .. deprecated:: 1.3
             Use the underscored private member or the appropriate accessor.
-            This alias will be removed in Newton 1.5.
+            This alias will be removed in a future release.
         """
         warnings.warn(
             "Model.shape_sdf_index is deprecated; use Model._shape_sdf_index. "
-            "The public alias will be removed in Newton 1.5.",
+            "The public alias will be removed in a future release.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -940,7 +940,7 @@ class Model:
     def shape_sdf_index(self, value):
         warnings.warn(
             "Model.shape_sdf_index is deprecated; assign to Model._shape_sdf_index. "
-            "The public alias will be removed in Newton 1.5.",
+            "The public alias will be removed in a future release.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -952,11 +952,11 @@ class Model:
 
         .. deprecated:: 1.3
             Use the underscored private member. The alias will be removed in
-            Newton 1.5.
+            a future release.
         """
         warnings.warn(
             "Model.texture_sdf_data is deprecated; use Model._texture_sdf_data. "
-            "The public alias will be removed in Newton 1.5.",
+            "The public alias will be removed in a future release.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -966,7 +966,7 @@ class Model:
     def texture_sdf_data(self, value):
         warnings.warn(
             "Model.texture_sdf_data is deprecated; assign to Model._texture_sdf_data. "
-            "The public alias will be removed in Newton 1.5.",
+            "The public alias will be removed in a future release.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -980,12 +980,12 @@ class Model:
 
         .. deprecated:: 1.3
             Use the underscored private member. The alias will be removed in
-            Newton 1.5.
+            a future release.
         """
         warnings.warn(
             "Model.texture_sdf_coarse_textures is deprecated; use "
             "Model._texture_sdf_coarse_textures. The public alias will be "
-            "removed in Newton 1.5.",
+            "removed in a future release.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -996,7 +996,7 @@ class Model:
         warnings.warn(
             "Model.texture_sdf_coarse_textures is deprecated; assign to "
             "Model._texture_sdf_coarse_textures. The public alias will be "
-            "removed in Newton 1.5.",
+            "removed in a future release.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -1010,12 +1010,12 @@ class Model:
 
         .. deprecated:: 1.3
             Use the underscored private member. The alias will be removed in
-            Newton 1.5.
+            a future release.
         """
         warnings.warn(
             "Model.texture_sdf_subgrid_textures is deprecated; use "
             "Model._texture_sdf_subgrid_textures. The public alias will be "
-            "removed in Newton 1.5.",
+            "removed in a future release.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -1026,7 +1026,7 @@ class Model:
         warnings.warn(
             "Model.texture_sdf_subgrid_textures is deprecated; assign to "
             "Model._texture_sdf_subgrid_textures. The public alias will be "
-            "removed in Newton 1.5.",
+            "removed in a future release.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -1038,12 +1038,12 @@ class Model:
 
         .. deprecated:: 1.3
             Use the underscored private member. The alias will be removed in
-            Newton 1.5.
+            a future release.
         """
         warnings.warn(
             "Model.texture_sdf_subgrid_start_slots is deprecated; use "
             "Model._texture_sdf_subgrid_start_slots. The public alias will be "
-            "removed in Newton 1.5.",
+            "removed in a future release.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -1054,7 +1054,7 @@ class Model:
         warnings.warn(
             "Model.texture_sdf_subgrid_start_slots is deprecated; assign to "
             "Model._texture_sdf_subgrid_start_slots. The public alias will be "
-            "removed in Newton 1.5.",
+            "removed in a future release.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -1071,11 +1071,11 @@ class Model:
         still read the attribute keep working.
 
         .. deprecated:: 1.3
-            This attribute will be removed in Newton 1.5.
+            This attribute will be removed in a future release.
         """
         warnings.warn(
             "Model.sdf_block_coords is deprecated and will be removed in "
-            "Newton 1.5. The hydroelastic broadphase now derives block "
+            "a future release. The hydroelastic broadphase now derives block "
             "coordinates arithmetically from each SDF's coarse-texture "
             "dimensions and no longer needs this attribute.",
             DeprecationWarning,
@@ -1096,11 +1096,11 @@ class Model:
         working.
 
         .. deprecated:: 1.3
-            This attribute will be removed in Newton 1.5.
+            This attribute will be removed in a future release.
         """
         warnings.warn(
             "Model.sdf_index2blocks is deprecated and will be removed in "
-            "Newton 1.5. The hydroelastic broadphase now derives block "
+            "a future release. The hydroelastic broadphase now derives block "
             "ranges arithmetically from each SDF's coarse-texture "
             "dimensions and no longer needs this attribute.",
             DeprecationWarning,

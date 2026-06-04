@@ -63,6 +63,9 @@
 - Deprecate `Model.mujoco.dof_passive_damping` in favor of `Model.joint_damping`; MuJoCo `damping` import now populates `Model.joint_damping` and the old namespaced attribute remains a warning alias
 - Deprecate `newton:contact_ke`/`newton:contact_kd`/`newton:contact_kf`/`newton:contact_ka` custom attributes on shape prims; author `newton:contactStiffness`/`newton:contactDamping`/`newton:contactFrictionGain`/`newton:contactAdhesion` on the bound `NewtonMaterialAPI` material instead
 - Deprecate `mjc:solref` on material prims for contact stiffness/damping; author `newton:contactStiffness`/`newton:contactDamping` on the bound `NewtonMaterialAPI` material, or use per-shape `mjc:solref` (`MjcGeomAPI`) which is unchanged
+- Deprecate `SDF.texture_block_coords`; the attribute now always returns `None` and will be removed in a future release. The hydroelastic broadphase now derives block coordinates arithmetically from each SDF's coarse-texture dimensions, so callers no longer need to read them off the `SDF` object
+- Deprecate `Model.sdf_block_coords` and `Model.sdf_index2blocks`; both attributes are now lazily recomputed from each SDF's coarse-texture dimensions (matching the new broadphase semantics) and will be removed in a future release
+- Deprecate the public attribute names `Model.shape_sdf_index`, `Model.texture_sdf_data`, `Model.texture_sdf_coarse_textures`, `Model.texture_sdf_subgrid_textures`, `Model.texture_sdf_subgrid_start_slots` in favor of their underscore-prefixed private counterparts (`Model._shape_sdf_index`, etc.); the public aliases keep working for one release cycle and will be removed in a future release
 
 ### Removed
 
@@ -185,9 +188,6 @@
 - Deprecate `SensorRaycast` in favor of `SensorTiledCamera`; migrate to `SensorTiledCamera.utils.compute_pinhole_camera_rays()` and `create_depth_image_output()` for single-camera depth rendering — see the `SensorRaycast` class docstring for a complete migration example
 - Deprecate and ignore `rigid_enable_dahl_friction` in `SolverVBD`; Dahl friction is now auto-detected from model attributes (`model.vbd.dahl_eps_max` / `model.vbd.dahl_tau`)
 - Deprecate `newton-actuators` package dependency; all actuator functionality is now built into `newton.actuators`. The dependency is kept for backward compatibility and will be removed in a future release; migrate imports from `newton_actuators` to `newton.actuators`
-- Deprecate `SDF.texture_block_coords`; the attribute now always returns `None` and will be removed in Newton 1.5. The hydroelastic broadphase now derives block coordinates arithmetically from each SDF's coarse-texture dimensions, so callers no longer need to read them off the `SDF` object
-- Deprecate `Model.sdf_block_coords` and `Model.sdf_index2blocks`; both attributes are now lazily recomputed from each SDF's coarse-texture dimensions (matching the new broadphase semantics) and will be removed in Newton 1.5
-- Deprecate the public attribute names `Model.shape_sdf_index`, `Model.texture_sdf_data`, `Model.texture_sdf_coarse_textures`, `Model.texture_sdf_subgrid_textures`, `Model.texture_sdf_subgrid_start_slots` in favor of their underscore-prefixed private counterparts (`Model._shape_sdf_index`, etc.); the public aliases keep working for one release cycle and will be removed in Newton 1.5
 
 ### Fixed
 
