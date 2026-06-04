@@ -62,12 +62,12 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
             # After setup, build BVHs once for the initial state.
             state = model.state()
-            model.build_bvh_shape(state)
-            model.build_bvh_particle(state)
+            model.bvh_build_shapes(state)
+            model.bvh_build_particles(state)
 
             # Before each later frame that changes geometry, refit BVHs.
-            model.refit_bvh_shape(state)
-            model.refit_bvh_particle(state)
+            model.bvh_refit_shapes(state)
+            model.bvh_refit_particles(state)
             sensor.update(state, camera_transforms, rays, color_image=color)
 
     See :class:`RenderConfig` for optional rendering settings and :attr:`ClearData` / :attr:`DEFAULT_CLEAR_DATA` /
@@ -182,11 +182,11 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         :meth:`update` calls this automatically when *state* is not None.
 
         Shape and particle BVHs on :attr:`model` must be built once via
-        :meth:`~newton.Model.build_bvh_shape` and
-        :meth:`~newton.Model.build_bvh_particle` before first use. Before
+        :meth:`~newton.Model.bvh_build_shapes` and
+        :meth:`~newton.Model.bvh_build_particles` before first use. Before
         later frames that change geometry, refit them via
-        :meth:`~newton.Model.refit_bvh_shape` and
-        :meth:`~newton.Model.refit_bvh_particle` prior to calling
+        :meth:`~newton.Model.bvh_refit_shapes` and
+        :meth:`~newton.Model.bvh_refit_particles` prior to calling
         :meth:`update`.
 
         Args:
@@ -217,11 +217,11 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         channel is optional -- pass None to skip that channel's rendering entirely.
 
         Shape and particle BVHs on :attr:`model` must be built once for the
-        initial state via :meth:`~newton.Model.build_bvh_shape` and
-        :meth:`~newton.Model.build_bvh_particle` before first use. Before
+        initial state via :meth:`~newton.Model.bvh_build_shapes` and
+        :meth:`~newton.Model.bvh_build_particles` before first use. Before
         later frames that change geometry, refit them for *state* via
-        :meth:`~newton.Model.refit_bvh_shape` and
-        :meth:`~newton.Model.refit_bvh_particle` before calling this method.
+        :meth:`~newton.Model.bvh_refit_shapes` and
+        :meth:`~newton.Model.bvh_refit_particles` before calling this method.
 
         Args:
             state: Simulation state with body and particle transforms.
@@ -243,10 +243,10 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
                 converted to linear when linear output is requested. See
                 :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
             refit_bvh: Refit the BVH before rendering. This is deprecated, use
-                :meth:`~newton.Model.build_bvh_shape`,
-                :meth:`~newton.Model.refit_bvh_shape`,
-                :meth:`~newton.Model.build_bvh_particle`, and
-                :meth:`~newton.Model.refit_bvh_particle` explicitly
+                :meth:`~newton.Model.bvh_build_shapes`,
+                :meth:`~newton.Model.bvh_refit_shapes`,
+                :meth:`~newton.Model.bvh_build_particles`, and
+                :meth:`~newton.Model.bvh_refit_particles` explicitly
                 before calling this method instead.
             hdr_color_image: Output for linear HDR color. None to skip.
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
@@ -261,7 +261,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             warnings.warn(
                 "Passing state=None or refit_bvh to SensorTiledCamera.update() is deprecated. "
                 "Call SensorTiledCamera.sync_transforms(state) and manage BVHs explicitly with "
-                "model.build_bvh_*() / model.refit_bvh_*() before update().",
+                "model.bvh_build_*() / model.bvh_refit_*() before update().",
                 category=DeprecationWarning,
                 stacklevel=2,
             )
@@ -269,15 +269,15 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
             if self.model.shape_count:
                 if self.model.bvh_shapes is None:
-                    self.model.build_bvh_shape(render_state)
+                    self.model.bvh_build_shapes(render_state)
                 elif should_refit:
-                    self.model.refit_bvh_shape(render_state)
+                    self.model.bvh_refit_shapes(render_state)
 
             if render_state.particle_q is not None and render_state.particle_count:
                 if self.model.bvh_particles is None:
-                    self.model.build_bvh_particle(render_state)
+                    self.model.bvh_build_particles(render_state)
                 elif should_refit:
-                    self.model.refit_bvh_particle(render_state)
+                    self.model.bvh_refit_particles(render_state)
 
         self.sync_transforms(render_state)
 

@@ -110,9 +110,17 @@ class TestHeightfield(unittest.TestCase):
             self.assertTrue(model.has_heightfields)
 
         empty_model = newton.Model(device="cpu")
+        self.assertEqual(empty_model.heightfield_count, 0)
+        with self.assertWarns(DeprecationWarning):
+            self.assertFalse(empty_model.has_heightfields)
+
         with self.assertWarns(DeprecationWarning):
             empty_model.has_heightfields = True
         self.assertEqual(empty_model.heightfield_count, 1)
+
+        with self.assertWarns(DeprecationWarning):
+            empty_model.has_heightfields = False
+        self.assertEqual(empty_model.heightfield_count, 0)
 
     def test_mjcf_hfield_parsing(self):
         """Test parsing MJCF file with hfield asset."""

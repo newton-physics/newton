@@ -295,7 +295,7 @@ class Model:
         self.bvh_shape_bounds: wp.array2d[wp.vec3f] | None = None
         """Local-space AABB per shape (min/max) for mesh and gaussian shapes, shape ``[shape_count, 2]`` [m]."""
         self.bvh_shape_world_transforms: wp.array[wp.transformf] | None = None
-        """World-space shape transforms computed during shape BVH refit, shape ``[shape_count]`` [m, unitless quaternion]."""
+        """World-space shape transforms computed during shape BVH build/refit, shape ``[shape_count]`` [m, unitless quaternion]."""
 
         self.bvh_particles: wp.Bvh | None = None
         """BVH over particles. ``None`` until first build."""
@@ -968,11 +968,11 @@ class Model:
         )
         self.joint_target_qd = value
 
-    def build_bvh_shape(self, state: State, *, bvh_constructor: str | None = None) -> None:
+    def bvh_build_shapes(self, state: State, *, bvh_constructor: str | None = None) -> None:
         """Build the shape BVH stored on this model.
 
         Allocates :attr:`bvh_shapes` and related fields from the current
-        shape data and *state*. Call once before :meth:`refit_bvh_shape` and
+        shape data and *state*. Call once before :meth:`bvh_refit_shapes` and
         before rendering or ray queries that require the model shape BVH.
 
         Args:
@@ -1044,10 +1044,10 @@ class Model:
             device=device,
         )
 
-    def refit_bvh_shape(self, state: State) -> None:
+    def bvh_refit_shapes(self, state: State) -> None:
         """Refit the shape BVH stored on this model for the current state.
 
-        Requires :meth:`build_bvh_shape` to have been called beforehand.
+        Requires :meth:`bvh_build_shapes` to have been called beforehand.
         Updates world-space shape transforms from ``state.body_q`` and refits
         the BVH in place.
 
@@ -1059,20 +1059,24 @@ class Model:
             compute_shape_world_transforms_launch,
         )
 
-        if self.shape_count == 0 or self.bvh_shape_count_enabled == 0:
+        if self.shape_count == 0:
+            return
+        if self.bvh_shape_enabled is None:
+            raise RuntimeError("Model.bvh_refit_shapes() requires Model.bvh_build_shapes() to have been called first.")
+        if self.bvh_shape_count_enabled == 0:
             return
         if self.bvh_shapes is None:
-            raise RuntimeError("Model.refit_bvh_shape() requires Model.build_bvh_shape() to have been called first.")
+            raise RuntimeError("Model.bvh_refit_shapes() requires Model.bvh_build_shapes() to have been called first.")
 
         compute_shape_world_transforms_launch(self, state)
         compute_shape_bvh_bounds_launch(self, self.bvh_shapes.lowers, self.bvh_shapes.uppers, self.bvh_shapes.groups)
         self.bvh_shapes.refit()
 
-    def build_bvh_particle(self, state: State, *, bvh_constructor: str | None = None) -> None:
+    def bvh_build_particles(self, state: State, *, bvh_constructor: str | None = None) -> None:
         """Build the particle BVH stored on this model.
 
         Allocates :attr:`bvh_particles` and related fields from particle data
-        in *state*. Call once before :meth:`refit_bvh_particle` and before
+        in *state*. Call once before :meth:`bvh_refit_particles` and before
         rendering or queries that require the model particle BVH.
 
         Args:
@@ -1104,10 +1108,10 @@ class Model:
             device=device,
         )
 
-    def refit_bvh_particle(self, state: State) -> None:
+    def bvh_refit_particles(self, state: State) -> None:
         """Refit the particle BVH stored on this model for the current state.
 
-        Requires :meth:`build_bvh_particle` to have been called beforehand.
+        Requires :meth:`bvh_build_particles` to have been called beforehand.
         Recomputes particle bounds from ``state.particle_q`` and refits the
         BVH in place.
 
@@ -1120,7 +1124,7 @@ class Model:
             return
         if self.bvh_particles is None:
             raise RuntimeError(
-                "Model.refit_bvh_particle() requires Model.build_bvh_particle() to have been called first."
+                "Model.bvh_refit_particles() requires Model.bvh_build_particles() to have been called first."
             )
 
         compute_particle_bvh_bounds_launch(

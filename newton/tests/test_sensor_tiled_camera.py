@@ -97,6 +97,12 @@ class TestSensorTiledCamera(unittest.TestCase):
         return builder.finalize(device="cpu")
 
     @staticmethod
+    def _build_single_particle_scene() -> newton.Model:
+        builder = newton.ModelBuilder()
+        builder.add_particle(pos=wp.vec3(0.0), vel=wp.vec3(0.0), mass=1.0, radius=0.1)
+        return builder.finalize(device="cpu")
+
+    @staticmethod
     def _unpack_rgba(packed: int) -> np.ndarray:
         value = int(packed)
         return np.array(
@@ -126,7 +132,7 @@ class TestSensorTiledCamera(unittest.TestCase):
             device="cpu",
         )
         state = model.state()
-        model.build_bvh_shape(state)
+        model.bvh_build_shapes(state)
 
         for output_color_space in (newton.utils.ColorSpace.SRGB, newton.utils.ColorSpace.LINEAR):
             sensor = SensorTiledCamera(
@@ -168,8 +174,8 @@ class TestSensorTiledCamera(unittest.TestCase):
         depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
 
         state = model.state()
-        model.build_bvh_shape(state)
-        model.build_bvh_particle(state)
+        model.bvh_build_shapes(state)
+        model.bvh_build_particles(state)
         tiled_camera_sensor.update(
             state, camera_transforms, camera_rays, color_image=color_image, depth_image=depth_image
         )
@@ -200,8 +206,8 @@ class TestSensorTiledCamera(unittest.TestCase):
         camera_rays = tiled_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))
 
         state = model.state()
-        model.build_bvh_shape(state)
-        model.build_bvh_particle(state)
+        model.bvh_build_shapes(state)
+        model.bvh_build_particles(state)
 
         color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
         depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
@@ -240,26 +246,41 @@ class TestSensorTiledCamera(unittest.TestCase):
         with self.assertWarns(DeprecationWarning):
             newton.geometry.refit_bvh_shape(model, state)
 
-        with self.assertWarns(DeprecationWarning):
-            newton.geometry.build_bvh_particle(model, state)
+        particle_model = self._build_single_particle_scene()
+        particle_state = particle_model.state()
 
         with self.assertWarns(DeprecationWarning):
-            newton.geometry.refit_bvh_particle(model, state)
+            newton.geometry.build_bvh_particle(particle_model, particle_state, bvh_constructor="median")
+        self.assertIsNotNone(particle_model.bvh_particles)
+
+        with self.assertWarns(DeprecationWarning):
+            newton.geometry.refit_bvh_particle(particle_model, particle_state)
 
     def test_model_bvh_build_accepts_constructor(self) -> None:
         model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
         state = model.state()
 
-        model.build_bvh_shape(state, bvh_constructor="median")
+        model.bvh_build_shapes(state, bvh_constructor="median")
         self.assertIsNotNone(model.bvh_shapes)
 
-        builder = newton.ModelBuilder()
-        builder.add_particle(pos=wp.vec3(0.0), vel=wp.vec3(0.0), mass=1.0, radius=0.1)
-        particle_model = builder.finalize(device="cpu")
+        particle_model = self._build_single_particle_scene()
         particle_state = particle_model.state()
 
-        particle_model.build_bvh_particle(particle_state, bvh_constructor="median")
+        particle_model.bvh_build_particles(particle_state, bvh_constructor="median")
         self.assertIsNotNone(particle_model.bvh_particles)
+
+    def test_model_bvh_refit_requires_build(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        state = model.state()
+
+        with self.assertRaisesRegex(RuntimeError, "bvh_build_shapes"):
+            model.bvh_refit_shapes(state)
+
+        particle_model = self._build_single_particle_scene()
+        particle_state = particle_model.state()
+
+        with self.assertRaisesRegex(RuntimeError, "bvh_build_particles"):
+            particle_model.bvh_refit_particles(particle_state)
 
 
 if __name__ == "__main__":

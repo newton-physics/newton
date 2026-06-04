@@ -608,7 +608,7 @@ def _make_intersection_model(device: str):
 
     model = builder.finalize(device=device)
     state = model.state()
-    model.build_bvh_shape(state)
+    model.bvh_build_shapes(state)
     return model
 
 
@@ -690,7 +690,7 @@ def _make_global_world_model(device: str):
 
     model = builder.finalize(device=device)
     state = model.state()
-    model.build_bvh_shape(state)
+    model.bvh_build_shapes(state)
     return model, global_box, sphere0, sphere1
 
 
