@@ -817,16 +817,20 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
 
 ### Example Options
 
-The examples support the following command-line arguments:
+All examples share a common set of command-line options. The most commonly used ones are:
 
-| Argument        | Description                                                                                         | Default                      |
-| --------------- | --------------------------------------------------------------------------------------------------- | ---------------------------- |
-| `--viewer`      | Viewer type: `gl` (OpenGL window), `usd` (USD file output), `rerun` (ReRun), or `null` (no viewer). | `gl`                         |
-| `--device`      | Compute device to use, e.g., `cpu`, `cuda:0`, etc.                                                  | `None` (default Warp device) |
-| `--num-frames`  | Number of frames to simulate (for USD output).                                                      | `100`                        |
-| `--output-path` | Output path for USD files (required if `--viewer usd` is used).                                     | `None`                       |
+| Argument        | Description                                                              | Default                      |
+| --------------- | ------------------------------------------------------------------------ | ---------------------------- |
+| `--viewer`      | Viewer to use: `gl`, `usd`, `rerun`, `viser`, or `null`.                 | `gl`                         |
+| `--device`      | Compute device to use, e.g., `cpu`, `cuda:0`.                            | `None` (default Warp device) |
+| `--num-frames`  | Total number of frames to simulate.                                      | `100`                        |
+| `--output-path` | Path to the output USD file (used by the `usd` viewer).                  | `output.usd`                 |
 
-Some examples may add additional arguments (see their respective source files for details).
+For the complete, always-current list of options — plus any arguments a specific example adds — run:
+
+```bash
+python -m newton.examples <example_name> --help
+```
 
 ### Example Usage
 
