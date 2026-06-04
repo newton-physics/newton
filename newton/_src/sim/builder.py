@@ -1836,7 +1836,7 @@ class ModelBuilder:
         values are supported within the same group; the buffer is
         sized to ``max(delay_step_values)``.
 
-        .. deprecated::
+        .. deprecated:: 1.2
             The legacy ``newton_actuators`` signature is still accepted::
 
                 add_actuator(ActuatorPD, input_indices=[dof], kp=50.0)
@@ -2153,6 +2153,9 @@ class ModelBuilder:
         slot is dropped; other joints copy verbatim. Mutations do not
         propagate back. Raises :class:`AttributeError` under
         :data:`newton.use_coord_layout_targets` ``True``.
+
+        .. deprecated:: 1.3
+            Use :attr:`joint_target_q` instead.
         """
         import newton  # noqa: PLC0415
 
@@ -2176,6 +2179,9 @@ class ModelBuilder:
         fresh copy — mutations do not propagate back. Raises
         :class:`AttributeError` under
         :data:`newton.use_coord_layout_targets` ``True``.
+
+        .. deprecated:: 1.3
+            Use :attr:`joint_target_qd` instead.
         """
         import newton  # noqa: PLC0415
 
@@ -6090,6 +6096,10 @@ class ModelBuilder:
         The ellipsoid is centered at its local origin as defined by `xform`, with semi-axes
         `rx`, `ry`, `rz` along the local X, Y, Z axes respectively.
 
+        .. deprecated:: 1.1
+            The ``a``, ``b``, ``c`` parameter names are deprecated; use
+            ``rx``, ``ry``, ``rz`` instead.
+
         Note:
             Ellipsoid collision is handled by the GJK/MPR collision pipeline,
             which provides accurate collision detection for all convex shape pairs.
@@ -6520,6 +6530,10 @@ class ModelBuilder:
 
         The Gaussian is attached as a ``GeoType.GAUSSIAN`` shape for rendering.
         Collision is handled separately via *collision_proxy*.
+
+        .. deprecated:: 1.1
+            Passing ``gaussian`` as the second positional argument is
+            deprecated; pass it via the ``gaussian=`` keyword instead.
 
         Args:
             body: The index of the parent body this shape belongs to.
