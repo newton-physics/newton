@@ -821,7 +821,7 @@ All examples share a common set of command-line options. The most commonly used 
 
 | Argument        | Description                                                              | Default                      |
 | --------------- | ------------------------------------------------------------------------ | ---------------------------- |
-| `--viewer`      | Viewer to use: `gl`, `usd`, `rerun`, `viser`, or `null`.                 | `gl`                         |
+| `--viewer`      | Viewer to use: `gl`, `usd`, `rtx`, `rerun`, `viser`, or `null`.          | `gl`                         |
 | `--device`      | Compute device to use, e.g., `cpu`, `cuda:0`.                            | `None` (default Warp device) |
 | `--num-frames`  | Total number of frames to simulate.                                      | `100`                        |
 | `--output-path` | Path to the output USD file (used by the `usd` viewer).                  | `output.usd`                 |
