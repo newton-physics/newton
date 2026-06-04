@@ -11,6 +11,8 @@ from .enums import (
     EqType,
     JointTargetMode,
     JointType,
+    ModelFlags,
+    StateFlags,
 )
 from .model import Model
 from .state import State
@@ -25,7 +27,9 @@ __all__ = [
     "JointType",
     "Model",
     "ModelBuilder",
+    "ModelFlags",
     "State",
+    "StateFlags",
     "eval_fk",
     "eval_ik",
     "eval_jacobian",
