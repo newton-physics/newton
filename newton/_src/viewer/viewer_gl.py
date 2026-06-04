@@ -122,6 +122,9 @@ def _compute_shape_vbo_xforms(
     shape_world: wp.array[int],
     world_offsets: wp.array[wp.vec3],
     write_indices: wp.array[int],
+    shape_opacity: wp.array[wp.float32],
+    packed_shape_opacity: wp.array[wp.float32],
+    opacity_update_flags: wp.array[wp.int32],
     out_world_xforms: wp.array[wp.transformf],
     out_vbo_xforms: wp.array[wp.mat44],
 ):
@@ -158,6 +161,14 @@ def _compute_shape_vbo_xforms(
         s = shape_scale[tid]
     else:
         s = wp.vec3(1.0, 1.0, 1.0)
+
+    opacity = wp.clamp(shape_opacity[tid], 0.0, 1.0)
+    previous_opacity = wp.clamp(packed_shape_opacity[out_idx], 0.0, 1.0)
+    opacity_delta = opacity - previous_opacity
+    if opacity_delta < -1.0e-6 or opacity_delta > 1.0e-6:
+        wp.atomic_max(opacity_update_flags, 0, 1)
+        if (opacity < 0.999) != (previous_opacity < 0.999):
+            wp.atomic_max(opacity_update_flags, 1, 1)
 
     out_vbo_xforms[out_idx] = wp.mat44(
         R[0, 0] * s[0],
@@ -506,6 +517,8 @@ class ViewerGL(ViewerBase):
         self._packed_world_xforms = None
         self._packed_vbo_xforms = None
         self._packed_vbo_xforms_host = None
+        self._shape_opacity_update_flags = None
+        self._shape_opacity_update_flags_host = None
 
         # Clear scalar plot buffers
         self._scalar_buffers.clear()
@@ -617,6 +630,8 @@ class ViewerGL(ViewerBase):
 
         if self.model is None:
             self._packed_groups = []
+            self._shape_opacity_update_flags = None
+            self._shape_opacity_update_flags_host = None
             return
 
         shape_count = self.model.shape_count
@@ -639,6 +654,8 @@ class ViewerGL(ViewerBase):
         self._packed_groups = groups
 
         if total == 0:
+            self._shape_opacity_update_flags = None
+            self._shape_opacity_update_flags_host = None
             return
 
         # Write-index: maps model shape index → packed output position (-1 = skip)
@@ -667,6 +684,8 @@ class ViewerGL(ViewerBase):
         self._packed_world_xforms = all_world_xforms
         self._packed_vbo_xforms = wp.empty(total, dtype=wp.mat44, device=device)
         self._packed_vbo_xforms_host = wp.empty(total, dtype=wp.mat44, device="cpu", pinned=True)
+        self._shape_opacity_update_flags = wp.zeros(2, dtype=wp.int32, device=device)
+        self._shape_opacity_update_flags_host = wp.empty(2, dtype=wp.int32, device="cpu", pinned=True)
 
     def _rebuild_gl_shape_caches(self):
         """Rebuild GL-specific caches after shape instances change.
@@ -1515,12 +1534,30 @@ class ViewerGL(ViewerBase):
             return
 
         self._sync_shape_colors_from_model()
-        if self._shape_opacity_groups_changed():
-            self._rebuild_shape_batches_for_opacity_groups()
-        else:
+
+        use_packed_cuda = (
+            self._packed_vbo_xforms is not None
+            and self.device.is_cuda
+            and self.model.shape_opacity is not None
+            and self.model_shape_opacity is not None
+            and self._shape_opacity_update_flags is not None
+            and self._shape_opacity_update_flags_host is not None
+        )
+
+        if self.model_changed:
+            if self._shape_opacity_groups_changed():
+                self._rebuild_shape_batches_for_opacity_groups()
+                return self.log_state(state)
+            self._sync_shape_opacities_from_model()
+        elif not use_packed_cuda:
+            if self._shape_opacity_groups_changed():
+                self._rebuild_shape_batches_for_opacity_groups()
+                return self.log_state(state)
             self._sync_shape_opacities_from_model()
 
-        if self._packed_vbo_xforms is not None and self.device.is_cuda:
+        if use_packed_cuda:
+            self._shape_opacity_update_flags.zero_()
+
             # ---- Single kernel over all model shapes, scatter-write to grouped output ----
             wp.launch(
                 _compute_shape_vbo_xforms,
@@ -1534,13 +1571,24 @@ class ViewerGL(ViewerBase):
                     self.model.shape_world,
                     self.world_offsets,
                     self._packed_write_indices,
+                    self.model.shape_opacity,
+                    self.model_shape_opacity,
+                    self._shape_opacity_update_flags,
                 ],
                 outputs=[self._packed_world_xforms, self._packed_vbo_xforms],
                 device=self.device,
                 record_tape=False,
             )
             wp.copy(self._packed_vbo_xforms_host, self._packed_vbo_xforms)
+            wp.copy(self._shape_opacity_update_flags_host, self._shape_opacity_update_flags)
             wp.synchronize()  # copy is async (pinned destination), must sync before CPU read
+
+            opacity_flags = self._shape_opacity_update_flags_host.numpy()
+            if int(opacity_flags[1]) != 0:
+                self._rebuild_shape_batches_for_opacity_groups()
+                return self.log_state(state)
+            if int(opacity_flags[0]) != 0:
+                self._sync_shape_opacities_from_model()
 
             # ---- Upload pinned host slices to GL per instancer ----
             host_np = self._packed_vbo_xforms_host.numpy()
