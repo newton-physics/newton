@@ -1327,6 +1327,7 @@ class RendererGL:
 
         self._shadow_shader = ShadowShader(gl)
         self._shape_shader = ShaderShape(gl)
+        self._shape_transparent_shader = ShaderShape(gl, enable_transparency=True)
         self._edge_shader = ShaderEdge(gl)
         self._frame_shader = FrameShader(gl)
         self._oit_resolve_shader = OITResolveShader(gl)
@@ -2103,16 +2104,8 @@ class RendererGL:
 
         check_gl_error()
 
-    def _render_scene(self, objects, use_weighted_oit: bool = False, scene_has_transparency: bool = False):
-        gl = RendererGL.gl
-
-        if self.draw_sky:
-            self._draw_sky()
-
-        if self.draw_wireframe:
-            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
-
-        self._shape_shader.update(
+    def _update_shape_shader(self, shader):
+        shader.update(
             view_matrix=self._view_matrix,
             projection_matrix=self._projection_matrix,
             view_pos=self.camera.pos,
@@ -2135,6 +2128,17 @@ class RendererGL:
             exposure=self.exposure,
         )
 
+    def _render_scene(self, objects, use_weighted_oit: bool = False, scene_has_transparency: bool = False):
+        gl = RendererGL.gl
+
+        if self.draw_sky:
+            self._draw_sky()
+
+        if self.draw_wireframe:
+            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
+
+        self._update_shape_shader(self._shape_shader)
+
         opaque_objects, transparent_objects = self._split_transparent_objects(objects, scene_has_transparency)
 
         with self._shape_shader:
@@ -2143,11 +2147,13 @@ class RendererGL:
             self._shape_shader.set_transparent_pass(False)
             self._draw_objects(opaque_objects)
 
-            if transparent_objects:
+        if transparent_objects:
+            self._update_shape_shader(self._shape_transparent_shader)
+            with self._shape_transparent_shader:
                 if use_weighted_oit:
-                    self._render_weighted_transparent_objects(transparent_objects)
+                    self._render_weighted_transparent_objects(transparent_objects, self._shape_transparent_shader)
                 else:
-                    self._render_sorted_transparent_objects(transparent_objects)
+                    self._render_sorted_transparent_objects(transparent_objects, self._shape_transparent_shader)
 
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
 
@@ -2187,7 +2193,7 @@ class RendererGL:
             return False
         return True
 
-    def _render_sorted_transparent_objects(self, transparent_objects):
+    def _render_sorted_transparent_objects(self, transparent_objects, shader):
         gl = RendererGL.gl
         camera_pos = np.asarray(self.camera.pos, dtype=np.float32)
         camera_front = np.asarray(self.camera.get_front(), dtype=np.float32)
@@ -2199,6 +2205,7 @@ class RendererGL:
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
         gl.glDepthMask(False)
+        shader.set_transparent_pass(False)
         for _name, obj in transparent_objects:
             if hasattr(obj, "render_sorted"):
                 obj.render_sorted(camera_pos, camera_front)
@@ -2207,7 +2214,7 @@ class RendererGL:
         gl.glDepthMask(True)
         gl.glDisable(gl.GL_BLEND)
 
-    def _render_weighted_transparent_objects(self, transparent_objects):
+    def _render_weighted_transparent_objects(self, transparent_objects, shader):
         gl = RendererGL.gl
 
         gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, self._frame_fbo)
@@ -2229,11 +2236,11 @@ class RendererGL:
         gl.glBlendFunci(0, gl.GL_ONE, gl.GL_ONE)
         gl.glBlendFunci(1, gl.GL_ZERO, gl.GL_ONE_MINUS_SRC_COLOR)
         gl.glDepthMask(False)
-        self._shape_shader.set_transparent_pass(True)
+        shader.set_transparent_pass(True)
         for _name, obj in transparent_objects:
             if hasattr(obj, "render"):
                 obj.render()
-        self._shape_shader.set_transparent_pass(False)
+        shader.set_transparent_pass(False)
         gl.glDepthMask(True)
         gl.glDisable(gl.GL_BLEND)
 

@@ -93,8 +93,12 @@ void main()
 
 shape_fragment_shader = """
 #version 330 core
+#ifdef ENABLE_TRANSPARENCY
 layout (location = 0) out vec4 FragColor;
 layout (location = 1) out vec4 Revealage;
+#else
+out vec4 FragColor;
+#endif
 
 in vec3 Normal;
 in vec3 FragPos;
@@ -103,7 +107,9 @@ in vec2 TexCoord;
 in vec3 ObjectColor; // used as albedo
 in vec4 FragPosLightSpace;
 in vec4 Material;
+#ifdef ENABLE_TRANSPARENCY
 in float Opacity;
+#endif
 
 uniform vec3 view_pos;
 uniform vec3 light_color;
@@ -126,7 +132,9 @@ uniform float specular_scale;
 uniform bool spotlight_enabled;
 uniform float shadow_extents;
 uniform float exposure;
+#ifdef ENABLE_TRANSPARENCY
 uniform bool transparent_pass;
+#endif
 
 const float PI = 3.14159265359;
 
@@ -390,6 +398,7 @@ void main()
     // gamma correction (sRGB)
     color = pow(color, vec3(1.0 / 2.2));
 
+#ifdef ENABLE_TRANSPARENCY
     if (transparent_pass)
     {
         float alpha = clamp(Opacity, 0.0, 1.0);
@@ -402,6 +411,9 @@ void main()
         FragColor = vec4(color, Opacity);
         Revealage = vec4(0.0);
     }
+#else
+    FragColor = vec4(color, 1.0);
+#endif
 }
 """
 
@@ -518,6 +530,10 @@ def arr_pointer(arr: np.ndarray):
     return arr.astype(np.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
 
+def _with_shader_define(source: str, define: str) -> str:
+    return source.replace("#version 330 core\n", f"#version 330 core\n#define {define}\n", 1)
+
+
 class ShaderGL:
     """Base class for OpenGL shader wrappers."""
 
@@ -550,14 +566,16 @@ class ShaderGL:
 class ShaderShape(ShaderGL):
     """Shader for rendering 3D shapes with lighting and shadows."""
 
-    def __init__(self, gl):
+    def __init__(self, gl, enable_transparency: bool = False):
         super().__init__()
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
-        self.shader_program = ShaderProgram(
-            Shader(shape_vertex_shader, "vertex"), Shader(shape_fragment_shader, "fragment")
-        )
+        self.enable_transparency = enable_transparency
+        fragment_shader = shape_fragment_shader
+        if enable_transparency:
+            fragment_shader = _with_shader_define(fragment_shader, "ENABLE_TRANSPARENCY")
+        self.shader_program = ShaderProgram(Shader(shape_vertex_shader, "vertex"), Shader(fragment_shader, "fragment"))
 
         # Get all uniform locations
         with self:
@@ -581,7 +599,9 @@ class ShaderShape(ShaderGL):
             self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
             self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
             self.loc_exposure = self._get_uniform_location("exposure")
-            self.loc_transparent_pass = self._get_uniform_location("transparent_pass")
+            self.loc_transparent_pass = None
+            if self.enable_transparency:
+                self.loc_transparent_pass = self._get_uniform_location("transparent_pass")
 
     def update(
         self,
@@ -624,7 +644,8 @@ class ShaderShape(ShaderGL):
             self._gl.glUniform1i(self.loc_spotlight_enabled, int(spotlight_enabled))
             self._gl.glUniform1f(self.loc_shadow_extents, shadow_extents)
             self._gl.glUniform1f(self.loc_exposure, exposure)
-            self._gl.glUniform1i(self.loc_transparent_pass, 0)
+            if self.loc_transparent_pass is not None:
+                self._gl.glUniform1i(self.loc_transparent_pass, 0)
 
             # Fog and rendering options
             self._gl.glUniform3f(self.loc_fog_color, *fog_color)
@@ -651,6 +672,8 @@ class ShaderShape(ShaderGL):
 
     def set_transparent_pass(self, enabled: bool):
         """Switch shader output between regular color and OIT accumulation."""
+        if self.loc_transparent_pass is None:
+            return
         with self:
             self._gl.glUniform1i(self.loc_transparent_pass, int(enabled))
 
