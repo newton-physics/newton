@@ -89,8 +89,7 @@ class SolverVBD(SolverBase):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
     .. experimental::
-        This solver is experimental: its public API and behavior may change
-        without prior notice.
+        SolverVBD's public API and behavior may change without prior notice.
 
     This unified solver supports:
         - Particle simulation (cloth, soft bodies) using the VBD algorithm
