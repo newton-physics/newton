@@ -704,6 +704,7 @@ class MeshInstancerGL:
         self._host_materials = None
         self._host_opacities = None
         self._has_transparency = False
+        self._opacity_buffer_opaque = True
 
         self.allocate(num_instances)
         self.active_instances = num_instances
@@ -961,16 +962,7 @@ class MeshInstancerGL:
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_materials.nbytes, host_materials.ctypes.data, gl.GL_STATIC_DRAW)
 
         if active_count > 0:
-            if opacities is None:
-                host_opacities = np.ones(active_count, dtype=np.float32)
-                self._has_transparency = False
-            else:
-                host_opacities = np.ascontiguousarray(opacities.numpy(), dtype=np.float32).reshape(-1)[:active_count]
-                self._has_transparency = bool(np.any(host_opacities < 0.999))
-            host_opacities = np.clip(host_opacities, 0.0, 1.0)
-            self._host_opacities[:active_count] = host_opacities
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_opacity_buffer)
-            gl.glBufferData(gl.GL_ARRAY_BUFFER, host_opacities.nbytes, host_opacities.ctypes.data, gl.GL_STATIC_DRAW)
+            self._update_opacity_buffer(active_count, opacities)
         else:
             self._has_transparency = False
 
@@ -1007,18 +999,29 @@ class MeshInstancerGL:
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_material_buffer)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_materials.nbytes, host_materials.ctypes.data, gl.GL_STATIC_DRAW)
         if count > 0:
-            if opacities is None:
-                host_opacities = np.ones(count, dtype=np.float32)
-                self._has_transparency = False
-            else:
-                host_opacities = np.ascontiguousarray(opacities.numpy(), dtype=np.float32).reshape(-1)[:count]
-                self._has_transparency = bool(np.any(host_opacities < 0.999))
-            host_opacities = np.clip(host_opacities, 0.0, 1.0)
-            self._host_opacities[:count] = host_opacities
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_opacity_buffer)
-            gl.glBufferData(gl.GL_ARRAY_BUFFER, host_opacities.nbytes, host_opacities.ctypes.data, gl.GL_STATIC_DRAW)
+            self._update_opacity_buffer(count, opacities)
         else:
             self._has_transparency = False
+
+    def _update_opacity_buffer(self, count: int, opacities: wp.array | None):
+        gl = RendererGL.gl
+
+        if opacities is None:
+            self._has_transparency = False
+            if self._opacity_buffer_opaque:
+                return
+            host_opacities = np.ones(count, dtype=np.float32)
+        else:
+            host_opacities = np.ascontiguousarray(opacities.numpy(), dtype=np.float32).reshape(-1)[:count]
+            host_opacities = np.clip(host_opacities, 0.0, 1.0)
+            self._has_transparency = bool(np.any(host_opacities < 0.999))
+            if not self._has_transparency and self._opacity_buffer_opaque:
+                return
+
+        self._host_opacities[:count] = host_opacities
+        self._opacity_buffer_opaque = not self._has_transparency
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_opacity_buffer)
+        gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, host_opacities.nbytes, host_opacities.ctypes.data)
 
     def has_transparency(self) -> bool:
         """Return True when any active instance needs transparent rendering."""
