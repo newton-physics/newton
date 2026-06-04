@@ -239,6 +239,23 @@ The group reads from `state_0` and writes to `state_1` on each step. After step,
 
 ---
 
+## Differentiability
+
+`ControlGroup.__init__` accepts a single `requires_grad: bool = False` flag. It is the **only** site where gradient support is configured; the value propagates into every controller's `finalize()` and `state()` call and from there into every internally-allocated buffer (PID's `integral` and `reset_state`, DiffIK's replicated `Model`, internal `State`, `_jacobian`, `_qd_target_local`, …).
+
+User-provided input arrays (`measurement`, `target_pos`, `kp`, …) carry their own `requires_grad` — the controllers don't own those allocations.
+
+Kernels mostly use the default `@wp.kernel` decorator, which supports Warp autograd. The module does not manage a `wp.Tape`; the caller (e.g. Isaac Lab) wraps the relevant block with `wp.Tape()` externally and calls `tape.backward(loss)` on its own. This mirrors `newton.actuators.Actuator.step`, which is also tape-agnostic.
+
+**Per-controller status:**
+
+- `ControllerPID`: fully differentiable. Gradients flow from `output` back through `measurement`, `setpoint`, `kp`, `ki`, `kd`, etc.
+- `ControllerDifferentialIK`: tape-safe, forward-only through the solve. The compute chain is split into per-element kernels (gather, build site Jacobian, build DLS matrix, q_dot back-projection, accumulate) plus a single tile-Cholesky solve kernel. Every kernel except the solve is autograd-able by default. The solve uses `wp.tile_cholesky` + `wp.tile_cholesky_solve` — the tile primitives' docstrings claim registered adjoints, but the backward path is non-functional in Warp 1.14.0 (verified directly: standalone test gives correct forward but zero gradients for both A and the rhs). The solve kernel is therefore marked `enable_backward=False`; gradients propagate from the loss back to `output_qd` and stop at the solve. Useful for RL pipelines that wrap a whole sim in `wp.Tape` without needing IK gradients; not yet usable for end-to-end diff-physics through the solve. Revisit when upstream `wp.tile_cholesky` backward is fixed.
+
+Users with mixed-grad needs (some controllers grad-tracked, others not) split into multiple `ControlGroup`s; there is no per-controller override.
+
+---
+
 ## Subclassing a Controller
 
 ```python
@@ -535,7 +552,6 @@ Users write `from newton.controllers import ControlGroup, ControllerPID, Control
 **Out of scope for v0.**
 
 - USD parsing.
-- Differentiability flag (`requires_grad`) — slot reserved in `finalize` signature, not exercised.
 - CUDA-graph capture testing.
 - `ModelBuilder.add_controller` analog.
 - Nullspace projection (joint centering, joint-limit avoidance) for `ControllerDifferentialIK` — compose a separate controller later if needed.

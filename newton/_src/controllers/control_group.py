@@ -28,6 +28,19 @@ class ControlGroup:
     Controllers run serially in registration order; their contributions
     accumulate via ``+=`` directly into their bound output arrays after a
     single upfront zero pass.
+
+    Args:
+        controllers: One or more :class:`Controller` instances. All must
+            share the same device and the same per-binding ``num_outputs``
+            (the outer length of every ``outputs()`` binding).
+        requires_grad: Single source of truth for gradient support across the
+            group. Propagated to each controller's :meth:`Controller.finalize`
+            and :meth:`Controller.state`. When ``True``, every internally-allocated
+            buffer is created with ``requires_grad=True`` so the controllers'
+            kernel launches are transparent to :class:`wp.Tape` — Isaac Lab
+            and other autograd consumers can differentiate through the
+            controllers end-to-end. Users with mixed-grad needs split into
+            multiple groups.
     """
 
     @dataclass
@@ -36,10 +49,11 @@ class ControlGroup:
 
         controller_states: list = field(default_factory=list)
 
-    def __init__(self, controllers: list[Controller]):
+    def __init__(self, controllers: list[Controller], requires_grad: bool = False):
         if not controllers:
             raise ValueError("ControlGroup requires at least one controller.")
         self._controllers = list(controllers)
+        self._requires_grad = requires_grad
 
         # Walk every output binding once: pick the device, enforce device
         # agreement, and enforce that all bindings share an outer length
@@ -71,7 +85,7 @@ class ControlGroup:
         self._num_outputs = num_outputs
 
         for c in self._controllers:
-            c.finalize(self._device, len(c.indices))
+            c.finalize(self._device, len(c.indices), requires_grad=self._requires_grad)
 
         self._output_bindings: list[tuple[wp.array, wp.array[wp.uint32]]] = []
         for c in self._controllers:
@@ -87,6 +101,11 @@ class ControlGroup:
         required length of the ``mask`` passed to :meth:`reset`."""
         return self._num_outputs
 
+    @property
+    def requires_grad(self) -> bool:
+        """Whether internal buffers were allocated with gradient support."""
+        return self._requires_grad
+
     def is_stateful(self) -> bool:
         return any(c.is_stateful() for c in self._controllers)
 
@@ -95,7 +114,11 @@ class ControlGroup:
 
     def state(self) -> ControlGroup.State:
         """Allocate composed state with one entry per controller."""
-        return ControlGroup.State(controller_states=[c.state(len(c.indices), self._device) for c in self._controllers])
+        return ControlGroup.State(
+            controller_states=[
+                c.state(len(c.indices), self._device, requires_grad=self._requires_grad) for c in self._controllers
+            ]
+        )
 
     def step(
         self,

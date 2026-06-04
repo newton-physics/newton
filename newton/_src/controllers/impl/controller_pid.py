@@ -126,8 +126,8 @@ class ControllerPID(Controller):
         self._integral_max = _normalize_port(integral_max, indices, name="integral_max")
         self._output = _normalize_port(output, indices, name="output")
 
-    def finalize(self, device: wp.Device, num_outputs: int) -> None:
-        self.reset_state = self.state(num_outputs, device)
+    def finalize(self, device: wp.Device, num_outputs: int, requires_grad: bool = False) -> None:
+        self.reset_state = self.state(num_outputs, device, requires_grad=requires_grad)
 
     def is_stateful(self) -> bool:
         return True
@@ -135,9 +135,9 @@ class ControllerPID(Controller):
     def is_graphable(self) -> bool:
         return True
 
-    def state(self, num_outputs: int, device: wp.Device) -> ControllerPID.State:
+    def state(self, num_outputs: int, device: wp.Device, requires_grad: bool = False) -> ControllerPID.State:
         return ControllerPID.State(
-            integral=wp.zeros(num_outputs, dtype=wp.float32, device=device),
+            integral=wp.zeros(num_outputs, dtype=wp.float32, device=device, requires_grad=requires_grad),
         )
 
     def outputs(self) -> list[tuple[wp.array, wp.array[wp.uint32]]]:

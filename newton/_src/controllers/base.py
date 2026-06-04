@@ -29,7 +29,7 @@ class Controller:
     reset_state: Controller.State | None = None
     """Per-controller reset target. Allocated by :meth:`finalize` to zeros; user-mutable."""
 
-    def finalize(self, device: wp.Device, num_outputs: int) -> None:
+    def finalize(self, device: wp.Device, num_outputs: int, requires_grad: bool = False) -> None:
         """Allocate device-side private buffers and :attr:`reset_state`.
 
         Called by :class:`ControlGroup` after construction.
@@ -37,15 +37,22 @@ class Controller:
         Args:
             device: Warp device to allocate on.
             num_outputs: Equal to ``len(self.indices)``.
+            requires_grad: Propagated from :class:`ControlGroup`. If True, all
+                internal buffers (including ``reset_state``) are allocated with
+                gradient support so the controller is transparent to
+                :class:`wp.Tape` — Isaac Lab and other autograd consumers can
+                differentiate through ``compute()`` end-to-end. Kernels are
+                autograd-able by default; this flag only controls allocations.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement finalize().")
 
-    def state(self, num_outputs: int, device: wp.Device) -> Controller.State | None:
+    def state(self, num_outputs: int, device: wp.Device, requires_grad: bool = False) -> Controller.State | None:
         """Allocate a fresh state, or return ``None`` if stateless.
 
         Args:
             num_outputs: Equal to ``len(self.indices)``.
             device: Warp device for allocation.
+            requires_grad: If True, allocate ``State`` fields with gradient support.
         """
         return None
 

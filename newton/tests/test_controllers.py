@@ -12,6 +12,14 @@ import newton
 from newton.controllers import ControlGroup, ControllerDifferentialIK, ControllerPID
 
 
+# Tape-aware scalar sum (wp.utils.array_sum calls a native C reducer, so it
+# isn't recorded by wp.Tape; we need a real Warp kernel for the grad tests).
+@wp.kernel
+def _sum_kernel(values: wp.array[float], out: wp.array[float]):
+    i = wp.tid()
+    wp.atomic_add(out, 0, values[i])
+
+
 class TestControllerPID(unittest.TestCase):
     def test_proportional_only(self):
         """kp * (setpoint - measurement) with no integral or derivative."""
@@ -173,6 +181,42 @@ class TestControllerPID(unittest.TestCase):
         self.assertAlmostEqual(float(after[0]), 0.7, places=5)
         self.assertAlmostEqual(float(after[1]), float(before[1]), places=5)
         self.assertAlmostEqual(float(after[2]), 0.9, places=5)
+
+    def test_gradient_flows_with_requires_grad(self):
+        """With ControlGroup(..., requires_grad=True), gradients from a loss on
+        the output array flow back to a requires_grad=True setpoint."""
+        device = wp.get_device()
+        identity = wp.array([0, 1, 2], dtype=wp.uint32, device=device)
+        output = wp.zeros(3, dtype=wp.float32, device=device, requires_grad=True)
+        # Setpoint carries the gradient we want to recover.
+        setpoint = wp.array([1.0, 2.0, -1.0], dtype=wp.float32, device=device, requires_grad=True)
+
+        pid = ControllerPID(
+            indices=wp.array([0, 1, 2], dtype=wp.uint32, device=device),
+            measurement=wp.zeros(3, dtype=wp.float32, device=device),
+            measurement_rate=wp.zeros(3, dtype=wp.float32, device=device),
+            setpoint=setpoint,
+            setpoint_rate=wp.zeros(3, dtype=wp.float32, device=device),
+            kp=(wp.array([2.0, 2.0, 2.0], dtype=wp.float32, device=device), identity),
+            ki=(wp.array([0.0, 0.0, 0.0], dtype=wp.float32, device=device), identity),
+            kd=(wp.array([0.0, 0.0, 0.0], dtype=wp.float32, device=device), identity),
+            integral_max=(wp.array([np.inf, np.inf, np.inf], dtype=wp.float32, device=device), identity),
+            output=output,
+        )
+        group = ControlGroup([pid], requires_grad=True)
+
+        s0 = group.state()
+        s1 = group.state()
+        loss = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
+        tape = wp.Tape()
+        with tape:
+            group.step(s0, s1, dt=0.01)
+            wp.launch(_sum_kernel, dim=len(output), inputs=[output, loss])
+        tape.backward(loss=loss)
+
+        # Pure proportional with kp = 2: output[i] = 2 * (setpoint[i] - 0).
+        # d(sum(output))/d(setpoint[i]) = 2 for every i.
+        np.testing.assert_allclose(setpoint.grad.numpy(), [2.0, 2.0, 2.0], atol=1e-5)
 
 
 class TestControllerDifferentialIK(unittest.TestCase):
@@ -424,6 +468,75 @@ class TestControllerDifferentialIK(unittest.TestCase):
 
         expected_qd = GAIN * ERR_Y / (2.0 + LAMBDA**2)
         self.assertAlmostEqual(float(output_qd.numpy()[0]), expected_qd, places=5)
+
+    def test_runs_inside_wp_tape_without_crashing(self):
+        """With ControlGroup(..., requires_grad=True), the DiffIK controller
+        can be wrapped in a wp.Tape and stepped without error.
+
+        The DLS solve kernel is marked enable_backward=False because Warp
+        1.14.0's tile_cholesky backward returns zero gradients (verified
+        with a standalone test — forward is correct but the registered
+        adjoint doesn't actually propagate). The forward pass still produces
+        the correct analytical q_dot (verified separately by
+        test_one_dof_matches_analytical_dls); this test only checks that
+        the chain is tape-safe (no NaN, no crash) and asserts the
+        documented zero-gradient-through-solve behaviour. When upstream
+        Warp fixes tile_cholesky backward, the assertion below will start
+        failing — at that point we can promote this test to assert the
+        analytical gradient GAIN / (2 + LAMBDA**2).
+        """
+        device = wp.get_device()
+        LAMBDA = 0.5
+        GAIN = 1.5
+
+        builder = newton.ModelBuilder()
+        link0 = builder.add_link()
+        j0 = builder.add_joint_revolute(
+            parent=-1,
+            child=link0,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j0], label="arm")
+        builder.add_site(link0, label="tool", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+
+        indices = wp.array([0], dtype=wp.uint32, device=device)
+        output_qd = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
+        output_q = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
+        target_pos = wp.array([wp.vec3(1.0, 0.1, 0.0)], dtype=wp.vec3, device=device, requires_grad=True)
+        diffik = ControllerDifferentialIK(
+            model_builder=builder,
+            indices=indices,
+            site="tool",
+            measurement=wp.zeros(1, dtype=wp.float32, device=device),
+            measurement_rate=wp.zeros(1, dtype=wp.float32, device=device),
+            target_pos=target_pos,
+            target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
+            damping=wp.array([LAMBDA], dtype=wp.float32, device=device),
+            gain=wp.array([GAIN], dtype=wp.float32, device=device),
+            output_qd=output_qd,
+            output_q=output_q,
+        )
+        group = ControlGroup([diffik], requires_grad=True)
+
+        s0 = group.state()
+        s1 = group.state()
+        loss = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
+        tape = wp.Tape()
+        with tape:
+            group.step(s0, s1, dt=0.01)
+            wp.launch(_sum_kernel, dim=len(output_qd), inputs=[output_qd, loss])
+        tape.backward(loss=loss)
+
+        # Forward matches the analytical DLS answer.
+        expected_qd = GAIN * 0.1 / (2.0 + LAMBDA**2)
+        self.assertAlmostEqual(float(output_qd.numpy()[0]), expected_qd, places=5)
+        # Solve kernel is enable_backward=False (Warp 1.14.0 tile_cholesky
+        # backward is non-functional), so target_pos.grad is blocked at the
+        # solve and remains zero. Documented current behaviour.
+        target_grad = target_pos.grad.numpy()
+        np.testing.assert_allclose(target_grad[0], [0.0, 0.0, 0.0], atol=1e-7)
 
 
 if __name__ == "__main__":
