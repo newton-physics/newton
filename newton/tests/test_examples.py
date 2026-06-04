@@ -117,16 +117,15 @@ def add_example_test(
         env_vars = os.environ.copy()
         if warp_cache_path is not None:
             env_vars["WARP_CACHE_PATH"] = os.path.dirname(warp_cache_path)
-        # Govern the subprocess's deprecation policy through PYTHONWARNINGS so a
-        # consumer's `python -m newton.tests` stays lenient. Drop any ambient value
-        # first so a stray policy in the caller's environment cannot turn a lenient
-        # run strict; for strict runs escalate all deprecations from interpreter
-        # startup. PYTHONWARNINGS (not -W) is required so newton.examples'
-        # _enable_example_deprecation_warnings() defers to this policy instead of
-        # installing its own lenient "default" filter for newton.* deprecations.
+        # Drop any ambient PYTHONWARNINGS so a stray policy in the caller's
+        # environment cannot turn a lenient run strict; govern the policy solely
+        # through the -W flag below.
         env_vars.pop("PYTHONWARNINGS", None)
-        if strict_warnings:
-            env_vars["PYTHONWARNINGS"] = "error::DeprecationWarning"
+
+        # Escalate deprecations from interpreter startup for strict runs.
+        # newton.examples defers to any explicit -W policy (via sys.warnoptions),
+        # so this governs instead of the helper's lenient "default" filter.
+        warning_args = ["-W", "error::DeprecationWarning"] if strict_warnings else []
 
         if newton.tests.unittest_utils.coverage_enabled:
             # Generate a random coverage data file name - file is deleted along with containing directory
@@ -135,13 +134,13 @@ def add_example_test(
             ) as coverage_file:
                 pass
 
-            command = [sys.executable, "-m", "coverage", "run", f"--data-file={coverage_file.name}"]
+            command = [sys.executable, *warning_args, "-m", "coverage", "run", f"--data-file={coverage_file.name}"]
 
             if newton.tests.unittest_utils.coverage_branch:
                 command.append("--branch")
 
         else:
-            command = [sys.executable]
+            command = [sys.executable, *warning_args]
 
         # Append Warp commands
         command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test", "--quiet"])
