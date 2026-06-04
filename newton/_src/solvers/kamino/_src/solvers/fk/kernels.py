@@ -694,7 +694,6 @@ def _eval_target_relative_transformations(
                 assert False, "Unexpected actuator dof type"  # noqa: B011
 
         # If X_B != X_F, absorb the offset in q_rel so downstream kernels can keep using ``q_F = q_B * q_rel``
-        X_F = joints_X_Fj[jt_id]
         any_diff = wp.bool(False)
         for r in range(3):
             for c in range(3):
