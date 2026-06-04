@@ -19,6 +19,7 @@
 - Add `ArticulationView.joint_labels`, `link_labels` (aliased as `body_labels`), and `shape_labels` exposing the full template-articulation labels alongside the existing leaf-only `*_names`, so callers can disambiguate selected entries whose leaf names collide.
 - Add `newton.actuators.SchemaNames` exposing the canonical USD schema token constants used by `parse_actuator_prim` for actuator USD parsing
 - Parse URDF `<material>` colors (inline `<color rgba>` and named material references) during import and apply them to `ModelBuilder.shape_color` for all shape types
+- Add `match_full_labels` to `ArticulationView` and the `SensorContact`, `SensorIMU`, and `SensorFrameTransform` sensors, enabling label patterns to match leaf (final `/`-delimited) names in addition to full labels (so a path pattern like `"*/left/fingertip"` can target one of several entries sharing a leaf). Matching is unchanged by default; a `DeprecationWarning` is emitted when a pattern would match differently under the upcoming default (`match_full_labels=True`), which will become the default in a future release.
 - Add robotics tutorial notebook covering ModelBuilder, solvers, CUDA graphs, IK, and pick-and-place
 - Add opt-in `collapse_massless_fixed_root` to URDF and MJCF importers to collapse massless fixed-root chains for maximal-coordinate solvers while preserving topology by default
 - Add USD parsing for `NewtonSiteAPI` to mark shapes as sites.

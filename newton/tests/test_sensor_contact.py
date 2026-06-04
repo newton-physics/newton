@@ -3,6 +3,7 @@
 
 import types
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -760,6 +761,28 @@ class TestSensorContactMuJoCo(unittest.TestCase):
 
         total_weight = (mass_a + mass_b + mass_c) * g
         self.assertAlmostEqual(base_force[0, 2], -total_weight, delta=total_weight * 0.01)
+
+
+class TestSensorContactLabelMatching(unittest.TestCase):
+    @staticmethod
+    def _model():
+        builder = newton.ModelBuilder()
+        a = builder.add_body(label="robot")  # flat label
+        builder.add_shape_box(a, hx=0.1, hy=0.1, hz=0.1)
+        b = builder.add_body(label="arm/robot")  # hierarchical, same leaf
+        builder.add_shape_box(b, hx=0.1, hy=0.1, hz=0.1)
+        return builder.finalize()
+
+    def test_match_full_labels_true_matches_leaf(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            sensor = SensorContact(self._model(), sensing_obj_bodies="robot", match_full_labels=True)
+        self.assertEqual(sensor.sensing_obj_idx, [0, 1])
+
+    def test_default_warns_and_keeps_full_label_only(self):
+        with self.assertWarns(DeprecationWarning):
+            sensor = SensorContact(self._model(), sensing_obj_bodies="robot")
+        self.assertEqual(sensor.sensing_obj_idx, [0])
 
 
 if __name__ == "__main__":

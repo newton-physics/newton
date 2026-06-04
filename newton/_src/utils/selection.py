@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import functools
+import warnings
 from fnmatch import fnmatch
 from types import NoneType
 from typing import TYPE_CHECKING, Any
@@ -394,7 +395,7 @@ def find_matching_ids(pattern: str, labels: list[str], world_ids, world_count: i
     return grouped_ids, global_ids
 
 
-def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> list[int]:
+def match_labels(labels: list[str], pattern: str | list[str] | list[int], match_leaf: bool = False) -> list[int]:
     """Find indices of elements in ``labels`` that match ``pattern``.
 
     See :ref:`label-matching` for the pattern syntax accepted across Newton APIs.
@@ -405,6 +406,8 @@ def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> lis
             A ``list[str]`` matches any pattern.
             A ``list[int]`` is returned as-is (indices used directly).
             Mixing ``str`` and ``int`` in the same list is not allowed.
+        match_leaf: If ``True``, also match a pattern against each label's leaf
+            (final ``/``-delimited component). Slash-bearing patterns stay precise.
 
     Returns:
         Unique list of matching indices, or ``pattern`` itself for ``list[int]``.
@@ -412,8 +415,12 @@ def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> lis
     Raises:
         TypeError: If list elements are not all ``str`` or all ``int``.
     """
+
+    def matches(label: str, pat: str) -> bool:
+        return fnmatch(label, pat) or (match_leaf and fnmatch(get_name_from_label(label), pat))
+
     if isinstance(pattern, str):
-        return [idx for idx, label in enumerate(labels) if fnmatch(label, pattern)]
+        return [idx for idx, label in enumerate(labels) if matches(label, pattern)]
 
     if not isinstance(pattern, list):
         raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {type(pattern)}")
@@ -432,10 +439,60 @@ def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> lis
         if not validation_failure:
             return pattern
     elif all(isinstance(item, str) for item in pattern):
-        return [idx for idx, label in enumerate(labels) if any(fnmatch(label, p) for p in pattern)]
+        return [idx for idx, label in enumerate(labels) if any(matches(label, p) for p in pattern)]
 
     types = {type(item).__name__ for item in pattern}
     raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {', '.join(sorted(types))}")
+
+
+# Hint appended to the DeprecationWarning emitted while leaf-or-label matching is opt-in.
+_MATCH_FULL_LABELS_HINT = (
+    "Pass match_full_labels=True to adopt the new default now, or match_full_labels=False to keep the current behavior."
+)
+
+
+def match_labels_with_transition(
+    labels: list[str], pattern: str | list[str] | list[int], match_full_labels: bool
+) -> tuple[list[int], bool]:
+    """Resolve ``pattern`` for callers that currently match full labels only.
+
+    Returns ``(indices, differs)``; ``differs`` is ``True`` only when ``match_full_labels``
+    is False and enabling leaf matching would change the result.
+    """
+    if match_full_labels:
+        return match_labels(labels, pattern, match_leaf=True), False
+    legacy = match_labels(labels, pattern)
+    new = match_labels(labels, pattern, match_leaf=True)
+    return legacy, set(legacy) != set(new)
+
+
+def warn_label_match_transition(context: str, match_full_labels: bool, differs: bool) -> None:
+    """Warn about the pending leaf-or-label default change, only when ``match_full_labels``
+    is False and enabling it would change the result."""
+    if not match_full_labels and differs:
+        warnings.warn(
+            f"{context} label matching will change in a future Newton release: the match_full_labels "
+            f"default will become True, so patterns will match leaf names in addition to full labels, "
+            f"changing the matched entities. " + _MATCH_FULL_LABELS_HINT,
+            DeprecationWarning,
+            stacklevel=3,
+        )
+
+
+def _match_view_indices(
+    full_labels: list[str],
+    leaf_labels: list[str],
+    pattern: str | list[str] | list[int],
+    count: int,
+    match_full_labels: bool,
+) -> tuple[list[int], bool]:
+    """Resolve an ``ArticulationView`` include/exclude pattern to in-range indices,
+    returning ``(indices, differs)`` for the leaf-or-label transition."""
+    if match_full_labels:
+        return [i for i in match_labels(full_labels, pattern, match_leaf=True) if 0 <= i < count], False
+    legacy = [i for i in match_labels(leaf_labels, pattern) if 0 <= i < count]
+    new = [i for i in match_labels(full_labels, pattern, match_leaf=True) if 0 <= i < count]
+    return legacy, set(legacy) != set(new)
 
 
 def all_equal(values):
@@ -498,6 +555,11 @@ class ArticulationView:
         exclude_joint_types (list[int] | None): List of joint types to exclude.
         include_loop_closing_joints (bool): If True, include converted loop-closing joints.
         verbose (bool | None): If True, prints selection summary.
+        match_full_labels (bool): If ``True``, ``include_*``/``exclude_*`` patterns match full
+            labels as well as leaf names (so ``"*/left/fingertip"`` can target one of several
+            entries sharing a leaf); ``False`` (default) matches leaf names only and warns when
+            the upcoming default of ``True`` would select differently. The default will become
+            ``True`` in a future release.
     """
 
     def __init__(
@@ -512,6 +574,7 @@ class ArticulationView:
         exclude_joint_types: list[int] | None = None,
         include_loop_closing_joints: bool = False,
         verbose: bool | None = None,
+        match_full_labels: bool = False,
     ):
         self.model = model
         self.device = model.device
@@ -771,6 +834,17 @@ class ArticulationView:
             inner_link_stride = arti_link_count
             inner_shape_stride = arti_shape_count
 
+        # Resolve include/exclude patterns. Matching currently uses leaf names; the
+        # upcoming default also matches full labels. Track whether enabling that would
+        # change the selection so we can warn while the new behavior is opt-in.
+        match_would_change = False
+
+        def resolve(full_labels, leaf_labels, pattern, count):
+            nonlocal match_would_change
+            indices, differs = _match_view_indices(full_labels, leaf_labels, pattern, count, match_full_labels)
+            match_would_change = match_would_change or differs
+            return indices
+
         # create joint inclusion set
         if include_joints is None and include_joint_types is None:
             joint_include_indices = set(range(arti_joint_count))
@@ -778,7 +852,7 @@ class ArticulationView:
             joint_include_indices = set()
             if include_joints is not None:
                 joint_include_indices.update(
-                    idx for idx in match_labels(arti_joint_names, include_joints) if 0 <= idx < arti_joint_count
+                    resolve(arti_joint_labels, arti_joint_names, include_joints, arti_joint_count)
                 )
             if include_joint_types is not None:
                 for idx in range(arti_joint_count):
@@ -788,9 +862,7 @@ class ArticulationView:
         # create joint exclusion set
         joint_exclude_indices = set()
         if exclude_joints is not None:
-            joint_exclude_indices.update(
-                idx for idx in match_labels(arti_joint_names, exclude_joints) if 0 <= idx < arti_joint_count
-            )
+            joint_exclude_indices.update(resolve(arti_joint_labels, arti_joint_names, exclude_joints, arti_joint_count))
         if exclude_joint_types is not None:
             for idx in range(arti_joint_count):
                 if arti_joint_types[idx] in exclude_joint_types:
@@ -800,15 +872,21 @@ class ArticulationView:
         if include_links is None:
             link_include_indices = set(range(arti_link_count))
         else:
-            link_include_indices = {
-                idx for idx in match_labels(arti_link_names, include_links) if 0 <= idx < arti_link_count
-            }
+            link_include_indices = set(resolve(arti_link_labels, arti_link_names, include_links, arti_link_count))
 
         # create link exclusion set
         link_exclude_indices = set()
         if exclude_links is not None:
-            link_exclude_indices.update(
-                idx for idx in match_labels(arti_link_names, exclude_links) if 0 <= idx < arti_link_count
+            link_exclude_indices.update(resolve(arti_link_labels, arti_link_names, exclude_links, arti_link_count))
+
+        if not match_full_labels and match_would_change:
+            warnings.warn(
+                "ArticulationView label matching will change in a future Newton release: the "
+                "match_full_labels default will become True, so include_*/exclude_* patterns will "
+                "match full template-articulation labels in addition to leaf names, changing this "
+                "selection. " + _MATCH_FULL_LABELS_HINT,
+                DeprecationWarning,
+                stacklevel=2,
             )
 
         # compute selected indices

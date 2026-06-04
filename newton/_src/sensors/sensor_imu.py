@@ -8,7 +8,7 @@ import warp as wp
 from ..geometry.flags import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
-from ..utils.selection import match_labels
+from ..utils.selection import match_labels_with_transition, warn_label_match_transition
 
 
 @wp.kernel
@@ -118,6 +118,7 @@ class SensorIMU:
         *,
         verbose: bool | None = None,
         request_state_attributes: bool = True,
+        match_full_labels: bool = False,
     ):
         """Initialize SensorIMU.
 
@@ -132,6 +133,10 @@ class SensorIMU:
                 ``wp.config.log_level`` is configured for debug logging.
             request_state_attributes: If True (default), transparently request the extended state attribute ``body_qdd`` from the model.
                 If False, ``model`` is not modified and the attribute must be requested elsewhere before calling ``model.state()``.
+            match_full_labels: If ``True``, ``sites`` patterns match leaf names as well as
+                full labels; ``False`` (default) matches full labels only and warns when the
+                upcoming default of ``True`` would match differently. The default will become
+                ``True`` in a future release.
         Raises:
             ValueError: If no labels match or invalid sites are passed.
         """
@@ -140,7 +145,8 @@ class SensorIMU:
         self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
 
         original_sites = sites
-        sites = match_labels(model.shape_label, sites)
+        sites, _match_differs = match_labels_with_transition(model.shape_label, sites, match_full_labels)
+        warn_label_match_transition("SensorIMU", match_full_labels, _match_differs)
         if not sites:
             if isinstance(original_sites, list) and len(original_sites) == 0:
                 raise ValueError("'sites' must not be empty")

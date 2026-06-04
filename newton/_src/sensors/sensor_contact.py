@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 from ..sim import Contacts, Model, State
-from ..utils.selection import match_labels
+from ..utils.selection import match_labels_with_transition, warn_label_match_transition
 
 # Object type constants used in the sensing-object transform kernel.
 _OBJ_TYPE_SHAPE = 1
@@ -323,6 +323,7 @@ class SensorContact:
         measure_total: bool = True,
         verbose: bool | None = None,
         request_contact_attributes: bool = True,
+        match_full_labels: bool = False,
     ):
         """Initialize the SensorContact.
 
@@ -346,6 +347,10 @@ class SensorContact:
                 ``wp.config.log_level`` is configured for debug logging.
             request_contact_attributes: If True (default), transparently request the extended contact attribute
                 ``force`` from the model.
+            match_full_labels: If ``True``, body/shape patterns match leaf names as well as
+                full labels; ``False`` (default) matches full labels only and warns when the
+                upcoming default of ``True`` would match differently. The default will become
+                ``True`` in a future release.
         """
         if (sensing_obj_bodies is None) == (sensing_obj_shapes is None):
             raise ValueError("Exactly one of `sensing_obj_bodies` and `sensing_obj_shapes` must be specified")
@@ -360,28 +365,38 @@ class SensorContact:
         if request_contact_attributes:
             model.request_contact_attributes("force")
 
+        match_would_change = False
+
+        def _resolve(labels, pattern):
+            nonlocal match_would_change
+            indices, differs = match_labels_with_transition(labels, pattern, match_full_labels)
+            match_would_change = match_would_change or differs
+            return indices
+
         if sensing_obj_bodies is not None:
-            s_bodies = match_labels(model.body_label, sensing_obj_bodies)
+            s_bodies = _resolve(model.body_label, sensing_obj_bodies)
             _check_index_bounds(s_bodies, len(model.body_label), "sensing_obj_bodies", "bodies")
             s_shapes = []
         else:
             s_bodies = []
-            s_shapes = match_labels(model.shape_label, sensing_obj_shapes)
+            s_shapes = _resolve(model.shape_label, sensing_obj_shapes)
             _check_index_bounds(s_shapes, len(model.shape_label), "sensing_obj_shapes", "shapes")
 
         using_counterparts = True
         if counterpart_bodies is not None:
-            c_bodies = match_labels(model.body_label, counterpart_bodies)
+            c_bodies = _resolve(model.body_label, counterpart_bodies)
             _check_index_bounds(c_bodies, len(model.body_label), "counterpart_bodies", "bodies")
             c_shapes = []
         elif counterpart_shapes is not None:
             c_bodies = []
-            c_shapes = match_labels(model.shape_label, counterpart_shapes)
+            c_shapes = _resolve(model.shape_label, counterpart_shapes)
             _check_index_bounds(c_shapes, len(model.shape_label), "counterpart_shapes", "shapes")
         else:
             c_shapes = []
             c_bodies = []
             using_counterparts = False
+
+        warn_label_match_transition("SensorContact", match_full_labels, match_would_change)
 
         world_count = model.world_count
 
