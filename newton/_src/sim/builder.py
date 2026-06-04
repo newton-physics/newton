@@ -461,6 +461,7 @@ class ModelBuilder:
             target_vel: float = 0.0,
             target_ke: float = 0.0,
             target_kd: float = 0.0,
+            damping: float = 0.0,
             armature: float = 0.0,
             effort_limit: float = 1e6,
             velocity_limit: float = 1e6,
@@ -487,6 +488,8 @@ class ModelBuilder:
             """The proportional gain of the target drive PD controller. Defaults to 0.0."""
             self.target_kd = target_kd
             """The derivative gain of the target drive PD controller. Defaults to 0.0."""
+            self.damping = damping
+            """Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] that is always active. Defaults to 0.0."""
             self.armature = armature
             """Artificial inertia added around the joint axis [kg·m² or kg]. Defaults to 0."""
             self.effort_limit = effort_limit
@@ -513,6 +516,7 @@ class ModelBuilder:
                 target_vel=0.0,
                 target_ke=0.0,
                 target_kd=0.0,
+                damping=0.0,
                 armature=0.0,
                 limit_ke=0.0,
                 limit_kd=0.0,
@@ -1102,6 +1106,8 @@ class ModelBuilder:
         """Joint target stiffness values accumulated for :attr:`Model.joint_target_ke`."""
         self.joint_target_kd: list[float] = []
         """Joint target damping values accumulated for :attr:`Model.joint_target_kd`."""
+        self.joint_damping: list[float] = []
+        """Passive velocity damping values accumulated for :attr:`Model.joint_damping`."""
         self.joint_limit_lower: list[float] = []
         """Lower joint limits accumulated for :attr:`Model.joint_limit_lower`."""
         self.joint_limit_upper: list[float] = []
@@ -1246,6 +1252,9 @@ class ModelBuilder:
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
         """Registered custom attributes to materialize during :meth:`finalize <ModelBuilder.finalize>`."""
+        self._custom_attribute_model_finalizers: dict[
+            str, Callable[[ModelBuilder, Model, ModelBuilder.CustomAttribute], None]
+        ] = {}
         # Registered custom frequencies (must be registered before adding attributes with that frequency)
         self.custom_frequencies: dict[str, ModelBuilder.CustomFrequency] = {}
         """Registered custom string frequencies keyed by ``namespace:name`` or bare name."""
@@ -1346,6 +1355,20 @@ class ModelBuilder:
             )
 
         self.custom_attributes[key] = attribute
+
+    def _add_custom_attribute_model_finalizer(
+        self,
+        key: str,
+        finalizer: Callable[[ModelBuilder, Model, ModelBuilder.CustomAttribute], None],
+    ) -> None:
+        """Register a callback that finalizes a model custom attribute itself."""
+        existing = self._custom_attribute_model_finalizers.get(key)
+        if existing is not None and existing is not finalizer:
+            raise ValueError(
+                f"Custom attribute finalizer '{key}' is already registered with a different callback "
+                f"({existing!r} != {finalizer!r})."
+            )
+        self._custom_attribute_model_finalizers[key] = finalizer
 
     def add_custom_frequency(self, frequency: CustomFrequency) -> None:
         """
@@ -2389,6 +2412,7 @@ class ModelBuilder:
         joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
         bodies_follow_joint_ordering: bool = True,
         collapse_fixed_joints: bool = False,
+        collapse_massless_fixed_root: bool = False,
         mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
@@ -2482,6 +2506,7 @@ class ModelBuilder:
             joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
             bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
+            collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
             force_position_velocity_actuation: If True and both position (stiffness) and velocity
                 (damping) gains are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
@@ -2509,6 +2534,7 @@ class ModelBuilder:
             joint_ordering=joint_ordering,
             bodies_follow_joint_ordering=bodies_follow_joint_ordering,
             collapse_fixed_joints=collapse_fixed_joints,
+            collapse_massless_fixed_root=collapse_massless_fixed_root,
             mesh_maxhullvert=mesh_maxhullvert,
             force_position_velocity_actuation=force_position_velocity_actuation,
             override_root_xform=override_root_xform,
@@ -2772,6 +2798,7 @@ class ModelBuilder:
         enable_self_collisions: bool = True,
         ignore_inertial_definitions: bool = False,
         collapse_fixed_joints: bool = False,
+        collapse_massless_fixed_root: bool = False,
         verbose: bool = False,
         skip_equality_constraints: bool = False,
         convert_mjc_equality_constraints: bool = True,
@@ -2878,6 +2905,7 @@ class ModelBuilder:
             enable_self_collisions: If True, self-collisions are enabled.
             ignore_inertial_definitions: If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
+            collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
             verbose: If True, print additional information about parsing the MJCF.
             skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
@@ -2921,6 +2949,7 @@ class ModelBuilder:
             enable_self_collisions=enable_self_collisions,
             ignore_inertial_definitions=ignore_inertial_definitions,
             collapse_fixed_joints=collapse_fixed_joints,
+            collapse_massless_fixed_root=collapse_massless_fixed_root,
             verbose=verbose,
             skip_equality_constraints=skip_equality_constraints,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
@@ -3386,6 +3415,7 @@ class ModelBuilder:
             "joint_limit_kd",
             "joint_target_ke",
             "joint_target_kd",
+            "joint_damping",
             "joint_target_mode",
             "joint_effort_limit",
             "joint_velocity_limit",
@@ -3611,6 +3641,10 @@ class ModelBuilder:
         for freq_key, builder_count in builder._custom_frequency_counts.items():
             offset = custom_frequency_offsets.get(freq_key, 0)
             self._custom_frequency_counts[freq_key] = offset + builder_count
+
+        # Carry over custom attribute finalizers from the source builder.
+        for key, finalizer in builder._custom_attribute_model_finalizers.items():
+            self._add_custom_attribute_model_finalizer(key, finalizer)
 
         # Merge actuator entries from the sub-builder with offset DOF indices
         for entry_key, sub_entry in builder.actuator_entries.items():
@@ -3989,6 +4023,7 @@ class ModelBuilder:
             self.joint_target_mode.append(mode)
             self.joint_target_ke.append(dim.target_ke)
             self.joint_target_kd.append(dim.target_kd)
+            self.joint_damping.append(dim.damping)
             self.joint_limit_ke.append(dim.limit_ke)
             self.joint_limit_kd.append(dim.limit_kd)
             self.joint_armature.append(dim.armature)
@@ -4097,6 +4132,7 @@ class ModelBuilder:
         target_vel: float | None = None,
         target_ke: float | None = None,
         target_kd: float | None = None,
+        damping: float | None = None,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
         limit_ke: float | None = None,
@@ -4126,6 +4162,7 @@ class ModelBuilder:
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
+            damping: Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
             limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
             limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
@@ -4157,6 +4194,7 @@ class ModelBuilder:
                 target_vel=target_vel if target_vel is not None else self.default_joint_cfg.target_vel,
                 target_ke=target_ke if target_ke is not None else self.default_joint_cfg.target_ke,
                 target_kd=target_kd if target_kd is not None else self.default_joint_cfg.target_kd,
+                damping=damping if damping is not None else self.default_joint_cfg.damping,
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
@@ -4190,6 +4228,7 @@ class ModelBuilder:
         target_vel: float | None = None,
         target_ke: float | None = None,
         target_kd: float | None = None,
+        damping: float | None = None,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
         limit_ke: float | None = None,
@@ -4218,6 +4257,7 @@ class ModelBuilder:
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
+            damping: Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
             limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
             limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
@@ -4249,6 +4289,7 @@ class ModelBuilder:
                 target_vel=target_vel if target_vel is not None else self.default_joint_cfg.target_vel,
                 target_ke=target_ke if target_ke is not None else self.default_joint_cfg.target_ke,
                 target_kd=target_kd if target_kd is not None else self.default_joint_cfg.target_kd,
+                damping=damping if damping is not None else self.default_joint_cfg.damping,
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
@@ -5020,13 +5061,19 @@ class ModelBuilder:
             plt.legend(loc="upper left", fontsize=6)
         plt.show()
 
-    def collapse_fixed_joints(self, verbose: bool = False, joints_to_keep: list[str] | None = None) -> dict[str, Any]:
+    def collapse_fixed_joints(
+        self,
+        verbose: bool = False,
+        joints_to_keep: Sequence[str | int] | None = None,
+    ) -> dict[str, Any]:
         """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.
 
         Args:
             verbose: If True, print additional information about the collapsed joints.
-            joints_to_keep: An optional list of joint labels to be excluded from the collapse process.
+            joints_to_keep: An optional sequence of joint labels or original joint indices to be excluded from
+                the collapse process.
         """
+        joints_to_keep = set(joints_to_keep or ())
 
         body_data = {}
         body_children = {-1: []}
@@ -5101,6 +5148,7 @@ class ModelBuilder:
                         "actuator_mode": self.joint_target_mode[j],
                         "target_ke": self.joint_target_ke[j],
                         "target_kd": self.joint_target_kd[j],
+                        "damping": self.joint_damping[j],
                         "limit_ke": self.joint_limit_ke[j],
                         "limit_kd": self.joint_limit_kd[j],
                         "limit_lower": self.joint_limit_lower[j],
@@ -5137,7 +5185,6 @@ class ModelBuilder:
             nonlocal retained_joints
             nonlocal retained_bodies
             nonlocal body_data
-            nonlocal joints_to_keep
 
             joint = joint_data[(parent_body, child_body)]
             # Don't merge fixed joints if the child body is referenced in an equality constraint
@@ -5145,9 +5192,7 @@ class ModelBuilder:
             should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
 
             # Don't merge fixed joints listed in joints_to_keep list
-            if joints_to_keep is None:
-                joints_to_keep = []
-            joint_in_keep_list = joint["label"] in joints_to_keep
+            joint_in_keep_list = joint["label"] in joints_to_keep or joint["original_id"] in joints_to_keep
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
                 # Skip merging this fixed joint because the body is referenced in an equality constraint
@@ -5445,6 +5490,7 @@ class ModelBuilder:
         self.joint_target_mode.clear()
         self.joint_target_ke.clear()
         self.joint_target_kd.clear()
+        self.joint_damping.clear()
         self.joint_limit_lower.clear()
         self.joint_limit_upper.clear()
         self.joint_limit_ke.clear()
@@ -5491,6 +5537,7 @@ class ModelBuilder:
                 self.joint_target_mode.append(axis["actuator_mode"])
                 self.joint_target_ke.append(axis["target_ke"])
                 self.joint_target_kd.append(axis["target_kd"])
+                self.joint_damping.append(axis["damping"])
                 self.joint_limit_lower.append(axis["limit_lower"])
                 self.joint_limit_upper.append(axis["limit_upper"])
                 self.joint_limit_ke.append(axis["limit_ke"])
@@ -9765,6 +9812,7 @@ class ModelBuilder:
                 ("joint_armature", self.joint_armature),
                 ("joint_target_ke", self.joint_target_ke),
                 ("joint_target_kd", self.joint_target_kd),
+                ("joint_damping", self.joint_damping),
                 ("joint_limit_lower", self.joint_limit_lower),
                 ("joint_limit_upper", self.joint_limit_upper),
                 ("joint_limit_ke", self.joint_limit_ke),
@@ -10200,13 +10248,30 @@ class ModelBuilder:
             m.shape_flags = wp.array(self.shape_flags, dtype=wp.int32)
             m.body_shapes = self.body_shapes
 
-            # build list of ids for geometry sources (meshes, sdfs)
+            # build list of ids for geometry sources (meshes, sdfs, heightfields)
             geo_sources = []
             finalized_geos = {}  # do not duplicate geometry
             gaussians = []
+            heightfield_meshes = []
             for geo in self.shape_source:
                 geo_hash = hash(geo)  # avoid repeated hash computations
-                if geo and not isinstance(geo, Heightfield):
+                if isinstance(geo, Heightfield):
+                    if geo_hash not in finalized_geos:
+                        # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
+                        # while Heightfield stores row-major data (row=Y, col=X).
+                        actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
+                        hf_geo = Mesh.create_heightfield(
+                            heightfield=actual_heights.T,
+                            extent_x=geo.hx * 2.0,
+                            extent_y=geo.hy * 2.0,
+                            ground_z=geo.min_z,
+                            compute_inertia=False,
+                        )
+                        finalized_geos[geo_hash] = hf_geo.finalize(device=device)
+                        # keep mesh alive for the model's lifetime
+                        heightfield_meshes.append(hf_geo.mesh)
+                    geo_sources.append(finalized_geos[geo_hash])
+                elif geo:
                     if geo_hash not in finalized_geos:
                         if isinstance(geo, Mesh):
                             finalized_geos[geo_hash] = geo.finalize(device=device)
@@ -10217,11 +10282,11 @@ class ModelBuilder:
                             finalized_geos[geo_hash] = geo.finalize()
                     geo_sources.append(finalized_geos[geo_hash])
                 else:
-                    # add null pointer
                     geo_sources.append(0)
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
+            m.heightfield_meshes = heightfield_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
             m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
@@ -10463,8 +10528,6 @@ class ModelBuilder:
                     "and wp.Texture3D, which are CUDA-only."
                 )
 
-            sdf_block_coords = []
-            sdf_index2blocks = []
             from ..geometry.sdf_texture import (  # noqa: PLC0415
                 QuantizationMode,
                 TextureSDFData,
@@ -10509,7 +10572,6 @@ class ModelBuilder:
                 is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
-                block_coords = []
                 cache_key = None
                 mesh_sdf = None
 
@@ -10547,12 +10609,6 @@ class ModelBuilder:
                             deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
                         cache_key = ("mesh_sdf", id(mesh_sdf))
-                        if mesh_sdf.texture_block_coords is not None:
-                            block_coords = list(mesh_sdf.texture_block_coords)
-                        elif mesh_sdf.block_coords is not None:
-                            block_coords = list(mesh_sdf.block_coords)
-                        else:
-                            block_coords = []
                 elif is_hydroelastic and has_shape_collision:
                     effective_max_resolution = sdf_max_resolution
                     if sdf_target_voxel_size is None and effective_max_resolution is None:
@@ -10576,7 +10632,6 @@ class ModelBuilder:
                         sdf_cache[cache_key] = sdf_idx
                         shape_sdf_index[i] = sdf_idx
 
-                        tex_block_coords = None
                         if mesh_sdf is not None:
                             tex_data = mesh_sdf.to_texture_kernel_data()
                             if tex_data is not None:
@@ -10584,8 +10639,6 @@ class ModelBuilder:
                                 compact_texture_sdf_coarse_textures.append(mesh_sdf._coarse_texture)
                                 compact_texture_sdf_subgrid_textures.append(mesh_sdf._subgrid_texture)
                                 compact_texture_sdf_subgrid_start_slots.append(tex_data.subgrid_start_slots)
-                                if mesh_sdf.texture_block_coords is not None:
-                                    tex_block_coords = mesh_sdf.texture_block_coords
                             else:
                                 compact_texture_sdf_data.append(create_empty_texture_sdf_data())
                                 compact_texture_sdf_coarse_textures.append(None)
@@ -10600,7 +10653,7 @@ class ModelBuilder:
                                     support_winding_number=True,
                                 )
                                 try:
-                                    tex_data, c_tex, s_tex, tex_bc = create_texture_sdf_from_mesh(
+                                    tex_data, c_tex, s_tex = create_texture_sdf_from_mesh(
                                         prim_wp_mesh,
                                         margin=sdf_gen_margin,
                                         narrow_band_range=tuple(sdf_narrow_band_range),
@@ -10619,38 +10672,27 @@ class ModelBuilder:
                                     tex_data = create_empty_texture_sdf_data()
                                     c_tex = None
                                     s_tex = None
-                                    tex_bc = None
                                 compact_texture_sdf_data.append(tex_data)
                                 compact_texture_sdf_coarse_textures.append(c_tex)
                                 compact_texture_sdf_subgrid_textures.append(s_tex)
                                 compact_texture_sdf_subgrid_start_slots.append(
                                     tex_data.subgrid_start_slots if c_tex is not None else None
                                 )
-                                tex_block_coords = tex_bc
                             else:
                                 compact_texture_sdf_data.append(create_empty_texture_sdf_data())
                                 compact_texture_sdf_coarse_textures.append(None)
                                 compact_texture_sdf_subgrid_textures.append(None)
                                 compact_texture_sdf_subgrid_start_slots.append(None)
 
-                        final_block_coords = list(tex_block_coords) if tex_block_coords is not None else block_coords
-                        block_start_idx = len(sdf_block_coords)
-                        sdf_block_coords.extend(final_block_coords)
-                        sdf_index2blocks.append([block_start_idx, len(sdf_block_coords)])
-
-            m.shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
-            m.sdf_block_coords = wp.array(sdf_block_coords, dtype=wp.vec3us)
-            m.sdf_index2blocks = (
-                wp.array(sdf_index2blocks, dtype=wp.vec2i) if sdf_index2blocks else wp.array([], dtype=wp.vec2i)
-            )
-            m.texture_sdf_data = (
+            m._shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
+            m._texture_sdf_data = (
                 wp.array(compact_texture_sdf_data, dtype=TextureSDFData, device=device)
                 if compact_texture_sdf_data
                 else wp.array([], dtype=TextureSDFData, device=device)
             )
-            m.texture_sdf_coarse_textures = compact_texture_sdf_coarse_textures
-            m.texture_sdf_subgrid_textures = compact_texture_sdf_subgrid_textures
-            m.texture_sdf_subgrid_start_slots = compact_texture_sdf_subgrid_start_slots
+            m._texture_sdf_coarse_textures = compact_texture_sdf_coarse_textures
+            m._texture_sdf_subgrid_textures = compact_texture_sdf_subgrid_textures
+            m._texture_sdf_subgrid_start_slots = compact_texture_sdf_subgrid_start_slots
 
             # ---------------------
             # heightfield collision data
@@ -10678,9 +10720,9 @@ class ModelBuilder:
                         hd.nrow = hf.nrow
                         hd.ncol = hf.ncol
                         # Bake the per-instance scale into the extents so narrow-phase
-                        # collision and raycast (which read from HeightfieldData) apply
-                        # scale consistently. ``abs`` on hx/hy because the raycast DDA
-                        # and parallel-slab checks assume non-negative planar extents;
+                        # collision (which reads from HeightfieldData) apply
+                        # scale consistently. ``abs`` on hx/hy because the
+                        # parallel-slab checks assume non-negative planar extents;
                         # z uses raw multiplication so ``sz < 0`` inverts the surface
                         # (``min_z > max_z`` already encodes an inverted heightfield).
                         sx, sy, sz = self.shape_scale[i]
@@ -10955,6 +10997,7 @@ class ModelBuilder:
             m.joint_target_mode = wp.array(self.joint_target_mode, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_damping = wp.array(self.joint_damping, dtype=wp.float32, requires_grad=requires_grad)
             import newton  # noqa: PLC0415
 
             if newton.use_coord_layout_targets:
@@ -11181,6 +11224,11 @@ class ModelBuilder:
 
             # Process custom attributes
             for _full_key, custom_attr in self.custom_attributes.items():
+                custom_finalizer = self._custom_attribute_model_finalizers.get(_full_key)
+                if custom_finalizer is not None:
+                    custom_finalizer(self, m, custom_attr)
+                    continue
+
                 freq_key = custom_attr.frequency
 
                 # determine count by frequency

@@ -534,7 +534,7 @@ class TestSelection(unittest.TestCase):
         # Get the attributes associated with "joint3"
         joint_dof_positions = joint_view.get_dof_positions(model).numpy().copy()
         joint_limit_lower = joint_view.get_attribute("joint_limit_lower", model).numpy().copy()
-        joint_target_pos = joint_view.get_attribute("joint_target_pos", model).numpy().copy()
+        joint_target_pos = joint_view.get_attribute("joint_target_q", model).numpy().copy()
 
         # Modify the attributes associated with "joint3"
         val = 1.0
@@ -810,15 +810,15 @@ class TestSelection(unittest.TestCase):
         joint_view.set_dof_positions(state_0, wp_joint_dof_positions, mask)
         joint_view.set_dof_positions(model, wp_joint_dof_positions, mask)
         joint_view.set_attribute("joint_limit_lower", model, wp_joint_limit_lowers, mask)
-        joint_view.set_attribute("joint_target_pos", control, wp_joint_target_pos, mask)
-        joint_view.set_attribute("joint_target_pos", model, wp_joint_target_pos, mask)
+        joint_view.set_attribute("joint_target_q", control, wp_joint_target_pos, mask)
+        joint_view.set_attribute("joint_target_q", model, wp_joint_target_pos, mask)
 
         # Get the updated values from model, state, control.
         measured_state_joint_dof_positions = state_0.joint_q.numpy()
         measured_model_joint_dof_positions = model.joint_q.numpy()
         measured_model_joint_limit_lower = model.joint_limit_lower.numpy()
-        measured_control_joint_target_pos = control.joint_target_pos.numpy()
-        measured_model_joint_target_pos = model.joint_target_pos.numpy()
+        measured_control_joint_target_pos = control.joint_target_q.numpy()
+        measured_model_joint_target_pos = model.joint_target_q.numpy()
 
         # Test that the modified values were correctly set in model, state and control
         for i in range(0, num_joints):

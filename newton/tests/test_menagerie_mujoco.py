@@ -289,8 +289,8 @@ class StepResponseControlStrategy(ControlStrategy):
             and getattr(newton_solver, "mjc_actuator_ctrl_source", None) is not None
             and getattr(newton_solver, "mjc_actuator_to_newton_idx", None) is not None
         ):
-            self._joint_target_pos = newton_control.joint_target_pos
-            self._joint_target_vel = newton_control.joint_target_vel
+            self._joint_target_pos = newton_control.joint_target_q
+            self._joint_target_vel = newton_control.joint_target_qd
             self._mjc_actuator_ctrl_source = newton_solver.mjc_actuator_ctrl_source
             self._mjc_actuator_to_newton_idx = newton_solver.mjc_actuator_to_newton_idx
             self._dofs_per_world = self._joint_target_pos.shape[0] // num_worlds

@@ -14,7 +14,7 @@ import warp as wp
 
 # Newton imports
 from ....core.types import override
-from ....sim import Contacts, State
+from ....sim import Contacts, ModelFlags, State
 from ...solver import SolverBase
 
 # Kamino imports
@@ -590,7 +590,7 @@ class SolverKaminoImpl(SolverBase):
         self._write_step_output(state_out=state_out)
 
     @override
-    def notify_model_changed(self, flags: int) -> None:
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
         pass  # TODO: Migrate implementation when we fully integrate with Newton
 
     @override

@@ -17,17 +17,26 @@
 - Add `contact_reduction_hashtable_size_factor` to `CollisionPipeline`, `NarrowPhase`, and `HydroelasticSDF.Config` for increasing contact reduction hashtable capacity when fill/failure warnings appear.
 - Add `rec_id` parameter to `ViewerRerun` for specifying the recording ID, enabling multiple processes to share a single Rerun recording
 - Add `ArticulationView.joint_template_labels`, `link_template_labels` (aliased as `body_template_labels`), and `shape_template_labels` exposing the raw template-articulation labels alongside the existing leaf-only `*_names`, so callers can disambiguate selected entries whose leaf names collide.
+- Add `newton.actuators.SchemaNames` exposing the canonical USD schema token constants used by `parse_actuator_prim` for actuator USD parsing
 - Parse URDF `<material>` colors (inline `<color rgba>` and named material references) during import and apply them to `ModelBuilder.shape_color` for all shape types
 - Add robotics tutorial notebook covering ModelBuilder, solvers, CUDA graphs, IK, and pick-and-place
-- Add `newton.utils.OnnxRuntime`, a graph-capturable ONNX inference engine backed solely by Warp kernels (no `onnxruntime` or `torch` runtime dependency); used by `ControllerNeuralMLP` and `ControllerNeuralLSTM` to load `.onnx` policies. To migrate a TorchScript policy, run `torch.onnx.export(model, dummy_input, "policy.onnx", opset_version=17)` once and point the controllers at the resulting `.onnx` file. The `onnx` package is now an optional extra (`pip install newton[onnx]`); install it explicitly to use the ONNX runtime.
+- Add opt-in `collapse_massless_fixed_root` to URDF and MJCF importers to collapse massless fixed-root chains for maximal-coordinate solvers while preserving topology by default
 - Add USD parsing for `NewtonSiteAPI` to mark shapes as sites.
+- Add `joint_damping` model attribute and `JointDofConfig.damping` for velocity-proportional damping that is always active
 - Add `ViewerRTX`, a real-time ray-traced viewer powered by NVIDIA OVRTX.
+- Add `SolverBase.reset()` method for in-place solver state resets with optional `world_mask` and `StateFlags`; default implementation is a no-op
+- Add `StateFlags` enum to control which state attributes are reset
+- Add `ModelFlags` as the canonical name for model-change notification flags
+- Add edge overlay toggle (`renderer.draw_edges`) for wireframe visualization on top of solid geometry
+- Add functional `newton.intersect_ray()` shape query helper for composing custom raycast sensors
 - Support negative (mirrored) scale on mesh, convex hull, and SDF shapes, so a single `Mesh` instance can be shared across shapes with different signed scales without re-baking
 - Add `newton.utils.ColorSpace`, `color_srgb_to_linear()`, `color_linear_to_srgb()`, and `SensorTiledCamera.RenderConfig.output_color_space` for color-space boundaries
 - Add USD parsing for `NewtonMassAPI`: shell mass model (`newton:massModel`), shell thickness (`newton:shellThickness`), and compact inertia tensor (`newton:inertia`)
+- Add USD parsing for contact response attributes (`ke`, `kd`, `kf`, `ka`) from `NewtonMaterialAPI` on bound materials
 
 ### Changed
 
+- `GeoType.HFIELD` shapes now use a `wp.Mesh` BVH for raycasting (built during `ModelBuilder.finalize()`), replacing the per-thread DDA grid traversal; the raycast kernel signature no longer accepts `shape_heightfield_index`, `heightfield_data`, or `heightfield_elevations` — those arrays are still present on `Model` for collision kernels
 - `ModelBuilder.finalize()` no longer writes the deferred mesh SDF back to `Mesh.sdf` on shared `Mesh` instances. The SDF data is retained on the finalized `Model` (`model.shape_sdf_index`, `model.texture_sdf_data`). Call `Mesh.build_sdf()` directly when you want the SDF stored on a `Mesh`.
 - `ModelBuilder.add_shape_convex_hull()` (and any path producing `GeoType.CONVEX_MESH`) now raises `ValueError` if `ShapeConfig.sdf_*` or `ShapeConfig.is_hydroelastic` are set, matching `add_shape_mesh()`. Build and attach the SDF on the underlying `Mesh` via `Mesh.build_sdf()` instead.
 - Treat `NewtonSDFCollisionAPI` and `NewtonMeshCollisionAPI` as independent collision representations in the USD importer. Co-applying both APIs on the same prim emits a warning and SDF configuration is used. `physics:approximation` (inherited from `PhysicsMeshCollisionAPI`) is ignored on SDF prims with a warning. `ModelBuilder.approximate_meshes()` raises `ValueError` for mesh-replacing methods (`convex_hull`, `coacd`, `vhacd`, `bounding_box`, `bounding_sphere`) when a target shape carries deferred SDF configuration or the `HYDROELASTIC` flag.
@@ -40,38 +49,49 @@
 - Make the `ViewerGL` left control panel movable (drag the title bar) and resizable (drag the bottom-right corner); a vertical scrollbar appears automatically when contents overflow and is operable with the mouse wheel or two-finger trackpad gestures. The initial dock-on-left position is unchanged.
 - Normalize negative scale components to `abs()` in `ModelBuilder.add_shape*` for symmetric primitives (sphere, box, capsule, cylinder, ellipsoid, plane, gaussian); these shapes are point-symmetric so sign flips produce identical geometry. If you relied on a negative scale to flip such a shape, apply the mirror through the shape's transform (`xform`) instead.
 - Reject negative scale components on `ModelBuilder.add_shape_cone()` and heightfield shapes (previously silently accepted, produced invalid geometry). To mirror a cone, apply the flip through the shape's `xform`; to mirror a heightfield, pre-mirror the source height data and pass a positive scale.
+- Change `SolverKamino.reset()` signature from `reset(state_out, ...)` to `reset(state, ...)` to match `SolverBase.reset()` and reset in place on `state`; remove beta `state_out=` and legacy positional reset-target compatibility, migrate `state_out=` calls to `state=`, and pass reset targets by keyword, such as `base_q=...`
 - Change `SensorTiledCamera` default packed `color` and `albedo` outputs to sRGB-encoded bytes so authored display colors render at the expected display brightness; pass `RenderConfig(output_color_space=ColorSpace.LINEAR)` to preserve the previous linear-byte behavior.
-- Bump `newton-usd-schemas` to `>=0.3.0`
+- Accept plain `int` flag bitmasks in solver reset and model-change notification APIs so users can define extension bits beyond `StateFlags` and `ModelFlags`.
+- Bump `newton-usd-schemas` to `>=0.3.1`
 
 ### Deprecated
 
 - Deprecate `Model.joint_target_pos` / `Control.joint_target_pos` and `Model.joint_target_vel` / `Control.joint_target_vel` in favor of `joint_target_q` / `joint_target_qd`. The legacy names emit a `DeprecationWarning` and raise `AttributeError` when `newton.use_coord_layout_targets = True`. Set that flag before building a model to switch `joint_target_q` to `joint_coord_count` shape (matching `joint_q`); the default `False` keeps the legacy `joint_dof_count` layout. `ModelBuilder.joint_target_pos` / `ModelBuilder.joint_target_vel` are removed — set per-axis targets via `JointDofConfig.target_pos` / `target_vel` or write directly to `ModelBuilder.joint_target_q` / `joint_target_qd`.
 - Deprecate loading `.pt` / `.pth` (TorchScript) checkpoints via `ControllerNeuralMLP`; the legacy TorchScript / dict-checkpoint path still works (with a `DeprecationWarning`) when PyTorch is installed but will be removed in a future release. `ControllerNeuralLSTM` requires re-exporting to ONNX with the metadata properties documented in its class docstring; pointing it at a `.pt` checkpoint now raises `NotImplementedError` with migration guidance. Convert the MLP checkpoint to ONNX once with `torch.onnx.export(model, dummy_input, "policy.onnx", opset_version=17)` and load the resulting `.onnx` file.
+- Deprecate `SolverNotifyFlags` in favor of `ModelFlags`; migrate calls such as `SolverNotifyFlags.MODEL_PROPERTIES` to `ModelFlags.MODEL_PROPERTIES`
 - Deprecate implicit positive Dahl defaults in `SolverVBD.register_custom_attributes()`. Pass `dahl_defaults_enabled=False` and explicitly author positive `model.vbd.dahl_eps_max` and `model.vbd.dahl_tau` values when Dahl cable friction is desired, instead of relying on registered default values.
+- Deprecate `Model.mujoco.dof_passive_damping` in favor of `Model.joint_damping`; MuJoCo `damping` import now populates `Model.joint_damping` and the old namespaced attribute remains a warning alias
+- Deprecate `newton:contact_ke`/`newton:contact_kd`/`newton:contact_kf`/`newton:contact_ka` custom attributes on shape prims; author `newton:contactStiffness`/`newton:contactDamping`/`newton:contactFrictionGain`/`newton:contactAdhesion` on the bound `NewtonMaterialAPI` material instead
+- Deprecate `mjc:solref` on material prims for contact stiffness/damping; author `newton:contactStiffness`/`newton:contactDamping` on the bound `NewtonMaterialAPI` material, or use per-shape `mjc:solref` (`MjcGeomAPI`) which is unchanged
 
 ### Removed
 
+- Remove `SensorRaycast` (deprecated in 1.2); use `SensorTiledCamera` with `SensorTiledCamera.utils.compute_pinhole_camera_rays()` and `create_depth_image_output()` instead
 - Remove `SensorContact.net_force` (deprecated in 1.1.0); use `SensorContact.total_force` and `SensorContact.force_matrix` instead
 - Remove `include_total` parameter from `SensorContact` (deprecated in 1.1.0); use `measure_total` instead
 - Remove `SensorContact.sensing_objs` (deprecated in 1.1.0); use `SensorContact.sensing_obj_idx` and `SensorContact.sensing_obj_type` instead
 - Remove `SensorContact.counterparts` and `SensorContact.reading_indices` (deprecated in 1.1.0); use `SensorContact.counterpart_indices` and `SensorContact.counterpart_type` instead
 - Remove `SensorContact.shape` (deprecated in 1.1.0); use `total_force.shape` / `force_matrix.shape` instead
 - Remove `SensorContact.ObjectType` enum (deprecated in 1.1.0); use the `sensing_obj_type` and `counterpart_type` attributes instead
+- Remove `raycast_kernel_no_hfield`; use `raycast_kernel` instead
 
 ### Fixed
 
 - Fix `eval_fk()` overwriting VBD-simulated `JointType.CABLE` body poses.
+- Fix hydroelastic SDF contact surfaces dropping the central region under deep interpenetration. The broadphase used to skip subgrids whose centers were deeper than the SDF narrow band, leaving a hole in the contact patch when overlap exceeded the narrow-band thickness. Broadphase now visits every subgrid in the SDF coarse grid (block coordinates are derived arithmetically from per-shape SDF coarse-texture dimensions); sampling at far-inside locations is correct because the coarse SDF is dense and accurate everywhere. On-disk SDF caches written by earlier versions are transparently re-cooked on first load (`_sdf_cache.CACHE_FORMAT_VERSION` bumped to `2`)
 - Fix `SolverXPBD` `body_parent_f` reporting to include `Control.joint_f` contributions and accumulate multiple inbound joint contributions, matching the `SolverMuJoCo` and `SolverFeatherstone` convention.
 - Fix MJCF `xyaxes` parsing to treat the second vector as Y and derive Z from X cross Y.
 - Fix `ViewerFile` playback dropping namespaced custom attributes (e.g. `model.mujoco.geom_solimp`) when restoring into a fresh `Model`.
 - Fix mesh-convex and heightfield-convex contacts missing when shapes are separated by margin but still within the contact envelope.
 - Fix `brick_stacking` example contact gaps to avoid oversized contact envelopes around the robot, table, and ground.
 - Fix `ModelBuilder.collapse_fixed_joints()` producing a NaN center of mass when collapsing joints between zero-mass bodies.
+- Fix mesh and convex-mesh contact sign classification for watertight meshes with nearby opposing surfaces or inconsistent triangle winding.
 - Fix `SolverMuJoCo` returning `State.joint_qd` in world frame for root `FREE` joints with non-identity `parent_xform`, violating the documented parent-frame contract and corrupting derived `body_qd`.
 - Fix `SolverVBD` custom attribute setup so `vbd:joint_is_hard` can be authored without implicitly enabling Dahl cable friction by calling `SolverVBD.register_custom_attributes(..., dahl_defaults_enabled=False)`.
 - Fix `example_softbody_gift` emitting spurious non-manifold edge warnings caused by mismatched 5-tet diagonals across adjacent cubes in the soft body mesh.
 - Fix `basic_conveyor` example emitting a spurious inertia validation warning at finalize.
 - Fix `SolverKamino` contact anchors being shifted off the geometry surface by `ShapeConfig.margin`, which biased friction.
+- Fix MJCF joint `damping` attribute being ignored by `SolverFeatherstone`
 - Fix `SolverMuJoCo` generated MuJoCo joint names for multi-axis D6 joints to avoid duplicate names
 - Fix USD import of revolute and D6-angular joint `limit_ke` / `limit_kd` from `mjc:solreflimit` being over-scaled by ~57x
 - Fix `ViewerGL` GUI rendering at half size on HiDPI / Retina displays by scaling the ImGui style, fonts, sidebar width, and `log_image` window/tile/spacing constants with pyglet's `window.scale` (with framebuffer-to-window ratio as a fallback). DPI changes are tracked at runtime via the pyglet `on_scale` event so the GUI follows the window across displays with different scaling
@@ -165,6 +185,9 @@
 - Deprecate `SensorRaycast` in favor of `SensorTiledCamera`; migrate to `SensorTiledCamera.utils.compute_pinhole_camera_rays()` and `create_depth_image_output()` for single-camera depth rendering — see the `SensorRaycast` class docstring for a complete migration example
 - Deprecate and ignore `rigid_enable_dahl_friction` in `SolverVBD`; Dahl friction is now auto-detected from model attributes (`model.vbd.dahl_eps_max` / `model.vbd.dahl_tau`)
 - Deprecate `newton-actuators` package dependency; all actuator functionality is now built into `newton.actuators`. The dependency is kept for backward compatibility and will be removed in a future release; migrate imports from `newton_actuators` to `newton.actuators`
+- Deprecate `SDF.texture_block_coords`; the attribute now always returns `None` and will be removed in Newton 1.5. The hydroelastic broadphase now derives block coordinates arithmetically from each SDF's coarse-texture dimensions, so callers no longer need to read them off the `SDF` object
+- Deprecate `Model.sdf_block_coords` and `Model.sdf_index2blocks`; both attributes are now lazily recomputed from each SDF's coarse-texture dimensions (matching the new broadphase semantics) and will be removed in Newton 1.5
+- Deprecate the public attribute names `Model.shape_sdf_index`, `Model.texture_sdf_data`, `Model.texture_sdf_coarse_textures`, `Model.texture_sdf_subgrid_textures`, `Model.texture_sdf_subgrid_start_slots` in favor of their underscore-prefixed private counterparts (`Model._shape_sdf_index`, etc.); the public aliases keep working for one release cycle and will be removed in Newton 1.5
 
 ### Fixed
 
@@ -218,6 +241,7 @@
 - Fix MJCF importer creating finite planes from MuJoCo visual half-sizes instead of infinite planes
 - Honor authored `mujoco.solreflimit_mode` even when a non-zero `mujoco.solreflimit` is also present, so the explicit mode (force-space or raw) is authoritative
 - Fix `SolverMuJoCo` CPU backend overwriting `mj_model.body_iquat` with Newton's eigendecomposition result on every `BODY_INERTIAL_PROPERTIES` notify; the compiled principal-axes basis is now preserved, fixing single-contact box equilibrium (incorrect normal force) and stiff WELD-loop instabilities (`Nan, Inf or huge value in QACC`) caused by basis ambiguity on repeated eigenvalues
+- Fix `SolverMuJoCo` CPU backend dynamics for asymmetric MJCF `diaginertia` models whose principal moments are reordered during Newton/MJWarp synchronization
 - Fix `SolverMuJoCo` honoring force-space `shape_material_ke` / `shape_material_kd` for contacts (`use_mujoco_contacts=False`); authored `mjc:solref` is preserved via new `mujoco.solref` / `mujoco.solref_mode` per-shape custom attributes. Force-space scaling is unsupported on `use_mujoco_contacts=True` and the MuJoCo CPU backend.
 - Fix USD custom-frequency parsing to respect `ModelBuilder.add_usd(root_path=...)`, avoiding rows from sibling subtrees
 - Fix USD import of joint limit stiffness/damping from `MjcJointAPI`: `SchemaResolverMjc` now reads the schema-correct `mjc:solreflimit` attribute instead of the generic `mjc:solref`, which was never authored on joints
