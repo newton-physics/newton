@@ -703,6 +703,7 @@ class MeshInstancerGL:
         self._host_colors = None
         self._host_materials = None
         self._host_opacities = None
+        self._has_transparency = False
 
         self.allocate(num_instances)
         self.active_instances = num_instances
@@ -962,12 +963,16 @@ class MeshInstancerGL:
         if active_count > 0:
             if opacities is None:
                 host_opacities = np.ones(active_count, dtype=np.float32)
+                self._has_transparency = False
             else:
                 host_opacities = np.ascontiguousarray(opacities.numpy(), dtype=np.float32).reshape(-1)[:active_count]
+                self._has_transparency = bool(np.any(host_opacities < 0.999))
             host_opacities = np.clip(host_opacities, 0.0, 1.0)
             self._host_opacities[:active_count] = host_opacities
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_opacity_buffer)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_opacities.nbytes, host_opacities.ctypes.data, gl.GL_STATIC_DRAW)
+        else:
+            self._has_transparency = False
 
     def update_from_pinned(self, host_transforms_np, count, colors=None, materials=None, opacities=None):
         """Upload pre-computed mat44 transforms from pinned host memory to GL.
@@ -1004,16 +1009,20 @@ class MeshInstancerGL:
         if count > 0:
             if opacities is None:
                 host_opacities = np.ones(count, dtype=np.float32)
+                self._has_transparency = False
             else:
                 host_opacities = np.ascontiguousarray(opacities.numpy(), dtype=np.float32).reshape(-1)[:count]
+                self._has_transparency = bool(np.any(host_opacities < 0.999))
             host_opacities = np.clip(host_opacities, 0.0, 1.0)
             self._host_opacities[:count] = host_opacities
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_opacity_buffer)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_opacities.nbytes, host_opacities.ctypes.data, gl.GL_STATIC_DRAW)
+        else:
+            self._has_transparency = False
 
     def has_transparency(self) -> bool:
         """Return True when any active instance needs transparent rendering."""
-        return self.active_instances > 0 and bool(np.any(self._host_opacities[: self.active_instances] < 0.999))
+        return not self.hidden and self.active_instances > 0 and self._has_transparency
 
     def _active_depths(self, camera_pos, camera_front):
         centers = self._host_transforms[: self.active_instances].reshape(self.active_instances, 16)[:, 12:15]
@@ -1384,6 +1393,7 @@ class RendererGL:
         # Store matrices for other methods
         self._view_matrix = self.camera.get_view_matrix()
         self._projection_matrix = self.camera.get_projection_matrix()
+        scene_has_transparency = self._scene_has_transparency(objects)
 
         # Lazy-load environment map after a valid GL context is active
         if self._env_path is not None and self._env_texture is None:
@@ -1400,12 +1410,12 @@ class RendererGL:
 
         if self.draw_shadows:
             # Note: lines are skipped during shadow pass since they don't cast shadows
-            self._render_shadow_map(objects)
+            self._render_shadow_map(objects, scene_has_transparency=scene_has_transparency)
 
         # reset viewport
         gl.glViewport(0, 0, self._screen_width, self._screen_height)
 
-        use_weighted_oit = self._can_use_weighted_transparency(objects)
+        use_weighted_oit = self._can_use_weighted_transparency(scene_has_transparency)
 
         # select target framebuffer (MSAA or regular) for scene rendering
         target_fbo = (
@@ -1424,7 +1434,11 @@ class RendererGL:
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
         gl.glBindVertexArray(0)
 
-        self._render_scene(objects, use_weighted_oit=use_weighted_oit)
+        self._render_scene(
+            objects,
+            use_weighted_oit=use_weighted_oit,
+            scene_has_transparency=scene_has_transparency,
+        )
 
         # Render lines after main scene but before MSAA resolve
         if lines:
@@ -2028,7 +2042,7 @@ class RendererGL:
 
         check_gl_error()
 
-    def _render_shadow_map(self, objects):
+    def _render_shadow_map(self, objects, scene_has_transparency: bool = False):
         gl = RendererGL.gl
         from pyglet.math import Mat4, Vec3
 
@@ -2049,9 +2063,14 @@ class RendererGL:
 
         # render from light's point of view (skip objects that don't cast shadows
         # and transparent objects for this prototype)
-        shadow_objects = {
-            k: v for k, v in objects.items() if getattr(v, "cast_shadow", True) and not self._object_has_transparency(v)
-        }
+        if scene_has_transparency:
+            shadow_objects = {
+                k: v
+                for k, v in objects.items()
+                if getattr(v, "cast_shadow", True) and not self._object_has_transparency(v)
+            }
+        else:
+            shadow_objects = {k: v for k, v in objects.items() if getattr(v, "cast_shadow", True)}
         with self._shadow_shader:
             self._draw_objects(shadow_objects)
 
@@ -2059,7 +2078,7 @@ class RendererGL:
 
         check_gl_error()
 
-    def _render_scene(self, objects, use_weighted_oit: bool = False):
+    def _render_scene(self, objects, use_weighted_oit: bool = False, scene_has_transparency: bool = False):
         gl = RendererGL.gl
 
         if self.draw_sky:
@@ -2091,7 +2110,7 @@ class RendererGL:
             exposure=self.exposure,
         )
 
-        opaque_objects, transparent_objects = self._split_transparent_objects(objects)
+        opaque_objects, transparent_objects = self._split_transparent_objects(objects, scene_has_transparency)
 
         with self._shape_shader:
             gl.glDisable(gl.GL_BLEND)
@@ -2131,15 +2150,17 @@ class RendererGL:
 
         check_gl_error()
 
-    def _can_use_weighted_transparency(self, objects) -> bool:
+    def _can_use_weighted_transparency(self, scene_has_transparency: bool) -> bool:
         gl = RendererGL.gl
+        if not scene_has_transparency:
+            return False
         if not self.enable_weighted_transparency:
             return False
         if self._oit_fbo is None or self._oit_resolve_shader is None:
             return False
         if not hasattr(gl, "glBlendFunci"):
             return False
-        return any(self._object_has_transparency(obj) for obj in objects.values())
+        return True
 
     def _render_sorted_transparent_objects(self, transparent_objects):
         gl = RendererGL.gl
@@ -2309,7 +2330,13 @@ class RendererGL:
         has_transparency = getattr(obj, "has_transparency", False)
         return bool(has_transparency() if callable(has_transparency) else has_transparency)
 
-    def _split_transparent_objects(self, objects):
+    def _scene_has_transparency(self, objects) -> bool:
+        return any(self._object_has_transparency(obj) for obj in objects.values())
+
+    def _split_transparent_objects(self, objects, scene_has_transparency: bool = True):
+        if not scene_has_transparency:
+            return objects, []
+
         opaque_objects = {}
         transparent_objects = []
         for name, obj in objects.items():
