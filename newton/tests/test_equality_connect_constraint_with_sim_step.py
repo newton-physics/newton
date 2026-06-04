@@ -9,9 +9,10 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import ModelFlags
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.solver_mujoco import HINGE_CONNECT_AXIS_OFFSET
-from newton.solvers import SolverMuJoCo, SolverNotifyFlags
+from newton.solvers import SolverMuJoCo
 
 
 class Sim:
@@ -523,7 +524,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                     sim.model.mujoco.equality_constraint_anchor.assign(
                         np.array(flat_changed_connect_anchor_leafbody1, dtype=np.float32)
                     )
-                    sim.solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
+                    sim.solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
 
                     # Verify that mjw_model.eq_data was updated with the new anchor.
                     for w in range(num_worlds):
@@ -605,12 +606,12 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                     # the connect constraint anchors are recomputed for the new
                     # reference pose.
                     # This test would FAIL without the fix that adds
-                    # SolverNotifyFlags.JOINT_DOF_PROPERTIES to the flags that
+                    # ModelFlags.JOINT_DOF_PROPERTIES to the flags that
                     # trigger recomputation of connect constraint anchors.
                     ##############
 
                     sim.model.mujoco.dof_ref.assign(np.array(flat_changed_dof_ref, dtype=np.float32))
-                    sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+                    sim.solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
 
                     # Verify that mjw_model.eq_data was updated with anchors computed
                     # from the new reference poses.
@@ -709,7 +710,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                     ##############
 
                     sim.model.mujoco.dof_ref.assign(np.array(flat_original_dof_ref, dtype=np.float32))
-                    sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+                    sim.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
 
                     for w in range(num_worlds):
                         original_ref_expected_leafbody2_anchor = self.compute_expected_leafbody2_anchor(
@@ -1181,7 +1182,7 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
                     flat_changed_dof_ref.append(0.0)  # loop joint DOF (unchanged)
 
                 sim.model.mujoco.dof_ref.assign(np.array(flat_changed_dof_ref, dtype=np.float32))
-                sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+                sim.solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
 
                 # Verify eq_data was updated with new anchors
                 for w in range(num_worlds):
@@ -1217,7 +1218,7 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
                     joint_X_p_np[loop_joint_idx][0] += 0.3 + 0.1 * w
                     joint_X_p_np[loop_joint_idx][1] += 0.2
                 sim.model.joint_X_p.assign(joint_X_p_np)
-                sim.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+                sim.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
 
                 # Re-read after modification
                 joint_X_p_np = sim.model.joint_X_p.numpy()

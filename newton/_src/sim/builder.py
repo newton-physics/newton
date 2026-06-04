@@ -461,6 +461,7 @@ class ModelBuilder:
             target_vel: float = 0.0,
             target_ke: float = 0.0,
             target_kd: float = 0.0,
+            damping: float = 0.0,
             armature: float = 0.0,
             effort_limit: float = 1e6,
             velocity_limit: float = 1e6,
@@ -487,6 +488,8 @@ class ModelBuilder:
             """The proportional gain of the target drive PD controller. Defaults to 0.0."""
             self.target_kd = target_kd
             """The derivative gain of the target drive PD controller. Defaults to 0.0."""
+            self.damping = damping
+            """Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] that is always active. Defaults to 0.0."""
             self.armature = armature
             """Artificial inertia added around the joint axis [kg·m² or kg]. Defaults to 0."""
             self.effort_limit = effort_limit
@@ -513,6 +516,7 @@ class ModelBuilder:
                 target_vel=0.0,
                 target_ke=0.0,
                 target_kd=0.0,
+                damping=0.0,
                 armature=0.0,
                 limit_ke=0.0,
                 limit_kd=0.0,
@@ -1102,6 +1106,8 @@ class ModelBuilder:
         """Joint target stiffness values accumulated for :attr:`Model.joint_target_ke`."""
         self.joint_target_kd: list[float] = []
         """Joint target damping values accumulated for :attr:`Model.joint_target_kd`."""
+        self.joint_damping: list[float] = []
+        """Passive velocity damping values accumulated for :attr:`Model.joint_damping`."""
         self.joint_limit_lower: list[float] = []
         """Lower joint limits accumulated for :attr:`Model.joint_limit_lower`."""
         self.joint_limit_upper: list[float] = []
@@ -1220,6 +1226,9 @@ class ModelBuilder:
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
         """Registered custom attributes to materialize during :meth:`finalize <ModelBuilder.finalize>`."""
+        self._custom_attribute_model_finalizers: dict[
+            str, Callable[[ModelBuilder, Model, ModelBuilder.CustomAttribute], None]
+        ] = {}
         # Registered custom frequencies (must be registered before adding attributes with that frequency)
         self.custom_frequencies: dict[str, ModelBuilder.CustomFrequency] = {}
         """Registered custom string frequencies keyed by ``namespace:name`` or bare name."""
@@ -1473,6 +1482,20 @@ class ModelBuilder:
             )
 
         self.custom_attributes[key] = attribute
+
+    def _add_custom_attribute_model_finalizer(
+        self,
+        key: str,
+        finalizer: Callable[[ModelBuilder, Model, ModelBuilder.CustomAttribute], None],
+    ) -> None:
+        """Register a callback that finalizes a model custom attribute itself."""
+        existing = self._custom_attribute_model_finalizers.get(key)
+        if existing is not None and existing is not finalizer:
+            raise ValueError(
+                f"Custom attribute finalizer '{key}' is already registered with a different callback "
+                f"({existing!r} != {finalizer!r})."
+            )
+        self._custom_attribute_model_finalizers[key] = finalizer
 
     def add_custom_frequency(self, frequency: CustomFrequency) -> None:
         """
@@ -3517,6 +3540,7 @@ class ModelBuilder:
             "joint_limit_kd",
             "joint_target_ke",
             "joint_target_kd",
+            "joint_damping",
             "joint_target_mode",
             "joint_effort_limit",
             "joint_velocity_limit",
@@ -3763,6 +3787,10 @@ class ModelBuilder:
         for freq_key, builder_count in builder._custom_frequency_counts.items():
             offset = custom_frequency_offsets.get(freq_key, 0)
             self._custom_frequency_counts[freq_key] = offset + builder_count
+
+        # Carry over custom attribute finalizers from the source builder.
+        for key, finalizer in builder._custom_attribute_model_finalizers.items():
+            self._add_custom_attribute_model_finalizer(key, finalizer)
 
         # Merge actuator entries from the sub-builder with offset DOF indices
         for entry_key, sub_entry in builder.actuator_entries.items():
@@ -4141,6 +4169,7 @@ class ModelBuilder:
             self.joint_target_mode.append(mode)
             self.joint_target_ke.append(dim.target_ke)
             self.joint_target_kd.append(dim.target_kd)
+            self.joint_damping.append(dim.damping)
             self.joint_limit_ke.append(dim.limit_ke)
             self.joint_limit_kd.append(dim.limit_kd)
             self.joint_armature.append(dim.armature)
@@ -4249,6 +4278,7 @@ class ModelBuilder:
         target_vel: float | None = None,
         target_ke: float | None = None,
         target_kd: float | None = None,
+        damping: float | None = None,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
         limit_ke: float | None = None,
@@ -4278,6 +4308,7 @@ class ModelBuilder:
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
+            damping: Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
             limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
             limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
@@ -4309,6 +4340,7 @@ class ModelBuilder:
                 target_vel=target_vel if target_vel is not None else self.default_joint_cfg.target_vel,
                 target_ke=target_ke if target_ke is not None else self.default_joint_cfg.target_ke,
                 target_kd=target_kd if target_kd is not None else self.default_joint_cfg.target_kd,
+                damping=damping if damping is not None else self.default_joint_cfg.damping,
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
@@ -4342,6 +4374,7 @@ class ModelBuilder:
         target_vel: float | None = None,
         target_ke: float | None = None,
         target_kd: float | None = None,
+        damping: float | None = None,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
         limit_ke: float | None = None,
@@ -4370,6 +4403,7 @@ class ModelBuilder:
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
+            damping: Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
             limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
             limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
@@ -4401,6 +4435,7 @@ class ModelBuilder:
                 target_vel=target_vel if target_vel is not None else self.default_joint_cfg.target_vel,
                 target_ke=target_ke if target_ke is not None else self.default_joint_cfg.target_ke,
                 target_kd=target_kd if target_kd is not None else self.default_joint_cfg.target_kd,
+                damping=damping if damping is not None else self.default_joint_cfg.damping,
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
@@ -5269,6 +5304,7 @@ class ModelBuilder:
                         "actuator_mode": self.joint_target_mode[j],
                         "target_ke": self.joint_target_ke[j],
                         "target_kd": self.joint_target_kd[j],
+                        "damping": self.joint_damping[j],
                         "limit_ke": self.joint_limit_ke[j],
                         "limit_kd": self.joint_limit_kd[j],
                         "limit_lower": self.joint_limit_lower[j],
@@ -5612,6 +5648,7 @@ class ModelBuilder:
         self.joint_target_mode.clear()
         self.joint_target_ke.clear()
         self.joint_target_kd.clear()
+        self.joint_damping.clear()
         self.joint_limit_lower.clear()
         self.joint_limit_upper.clear()
         self.joint_limit_ke.clear()
@@ -5658,6 +5695,7 @@ class ModelBuilder:
                 self.joint_target_mode.append(axis["actuator_mode"])
                 self.joint_target_ke.append(axis["target_ke"])
                 self.joint_target_kd.append(axis["target_kd"])
+                self.joint_damping.append(axis["damping"])
                 self.joint_limit_lower.append(axis["limit_lower"])
                 self.joint_limit_upper.append(axis["limit_upper"])
                 self.joint_limit_ke.append(axis["limit_ke"])
@@ -10006,6 +10044,7 @@ class ModelBuilder:
                 ("joint_armature", self.joint_armature),
                 ("joint_target_ke", self.joint_target_ke),
                 ("joint_target_kd", self.joint_target_kd),
+                ("joint_damping", self.joint_damping),
                 ("joint_limit_lower", self.joint_limit_lower),
                 ("joint_limit_upper", self.joint_limit_upper),
                 ("joint_limit_ke", self.joint_limit_ke),
@@ -11190,6 +11229,7 @@ class ModelBuilder:
             m.joint_target_mode = wp.array(self.joint_target_mode, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_damping = wp.array(self.joint_damping, dtype=wp.float32, requires_grad=requires_grad)
             import newton  # noqa: PLC0415
 
             if newton.use_coord_layout_targets:
@@ -11408,6 +11448,11 @@ class ModelBuilder:
 
             # Process custom attributes
             for _full_key, custom_attr in self.custom_attributes.items():
+                custom_finalizer = self._custom_attribute_model_finalizers.get(_full_key)
+                if custom_finalizer is not None:
+                    custom_finalizer(self, m, custom_attr)
+                    continue
+
                 freq_key = custom_attr.frequency
 
                 # determine count by frequency

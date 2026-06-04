@@ -3375,14 +3375,13 @@ class TestImportMjcfSolverParams(unittest.TestCase):
 
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "dof_passive_stiffness"))
-        self.assertTrue(hasattr(model.mujoco, "dof_passive_damping"))
 
         joint_names = model.joint_label
         joint_qd_start = model.joint_qd_start.numpy()
-        joint_stiffness = model.mujoco.dof_passive_stiffness.numpy()
-        joint_damping = model.mujoco.dof_passive_damping.numpy()
+        mujoco_joint_stiffness = model.mujoco.dof_passive_stiffness.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
+        joint_damping = model.joint_damping.numpy()
 
         prefix = "stiffness_damping_comprehensive_test/worldbody"
         expected_values = {
@@ -3395,10 +3394,83 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         for joint_name, expected in expected_values.items():
             joint_idx = joint_names.index(joint_name)
             dof_idx = joint_qd_start[joint_idx]
-            self.assertAlmostEqual(joint_stiffness[dof_idx], expected["stiffness"], places=4)
+            self.assertAlmostEqual(mujoco_joint_stiffness[dof_idx], expected["stiffness"], places=4)
             self.assertAlmostEqual(joint_damping[dof_idx], expected["damping"], places=4)
             self.assertAlmostEqual(joint_target_ke[dof_idx], expected["target_ke"], places=1)
             self.assertAlmostEqual(joint_target_kd[dof_idx], expected["target_kd"], places=1)
+
+    def test_joint_damping_deprecated_mujoco_alias(self):
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="joint_damping_alias_test">
+    <worldbody>
+        <body name="body" pos="0 0 1">
+            <joint name="hinge" type="hinge" axis="0 0 1" damping="0.75"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        self.assertAlmostEqual(float(model.joint_damping.numpy()[0]), 0.75, places=6)
+
+        with self.assertWarnsRegex(DeprecationWarning, "dof_passive_damping"):
+            deprecated_damping = model.mujoco.dof_passive_damping
+        self.assertIs(deprecated_damping, model.joint_damping)
+
+        updated_damping = np.array([1.25], dtype=np.float32)
+        with self.assertWarnsRegex(DeprecationWarning, "dof_passive_damping"):
+            model.mujoco.dof_passive_damping = updated_damping
+        self.assertAlmostEqual(float(model.joint_damping.numpy()[0]), 1.25, places=6)
+
+    def test_joint_damping_deprecated_mujoco_alias_rejects_canonical_conflict(self):
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        parent = builder.add_body()
+        child = builder.add_body()
+        builder.add_joint_revolute(
+            parent,
+            child,
+            damping=2.0,
+            custom_attributes={"mujoco:dof_passive_damping": 3.0},
+        )
+
+        with self.assertRaisesRegex(ValueError, "dof_passive_damping.*joint_damping"):
+            builder.finalize()
+
+    def test_joint_damping_deprecated_mujoco_alias_skips_copy_when_canonical_matches(self):
+        class JointDampingNoCopySentinel:
+            def __init__(self):
+                self.numpy_called = False
+                self.assign_called = False
+
+            def numpy(self):
+                self.numpy_called = True
+                raise AssertionError("joint_damping.numpy() should not be called for matching alias values")
+
+            def assign(self, _value):
+                self.assign_called = True
+                raise AssertionError("joint_damping.assign() should not be called for matching alias values")
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.joint_damping = [0.75, 0.0]
+        custom_attr = builder.custom_attributes["mujoco:dof_passive_damping"]
+        custom_attr.values = {0: np.float32(0.75), 1: np.float32(0.0)}
+
+        model = newton.Model()
+        sentinel = JointDampingNoCopySentinel()
+        model.joint_damping = sentinel
+
+        finalizer = builder._custom_attribute_model_finalizers["mujoco:dof_passive_damping"]
+        finalizer(builder, model, custom_attr)
+
+        self.assertFalse(sentinel.numpy_called)
+        self.assertFalse(sentinel.assign_called)
+        with self.assertWarnsRegex(DeprecationWarning, "dof_passive_damping"):
+            self.assertIs(model.mujoco.dof_passive_damping, sentinel)
 
     def test_jnt_actgravcomp_parsing(self):
         """Test parsing of actuatorgravcomp from MJCF"""
@@ -6808,7 +6880,7 @@ class TestMjcfIncludeCallback(unittest.TestCase):
         self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], 0.785, places=4)
         self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], 0.524, places=4)
         self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 10.0, places=4)
-        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 5.0, places=4)
+        self.assertAlmostEqual(model.joint_damping.numpy()[dof_idx], 5.0, places=4)
 
     def test_dof_angle_conversion_slide_joint(self):
         """Test DOF attributes for slide joints are not converted regardless of angle setting."""
@@ -6838,7 +6910,7 @@ class TestMjcfIncludeCallback(unittest.TestCase):
         self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], 0.5, places=4)
         self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], 0.1, places=4)
         self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 100.0, places=4)
-        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 10.0, places=4)
+        self.assertAlmostEqual(model.joint_damping.numpy()[dof_idx], 10.0, places=4)
 
     def test_dof_angle_conversion_degrees(self):
         """Test DOF attributes are converted from degrees when compiler.angle='degree' (default)."""
@@ -6871,7 +6943,7 @@ class TestMjcfIncludeCallback(unittest.TestCase):
         # stiffness/damping: MuJoCo stores these in Nm/rad and Nm*s/rad regardless of
         # compiler.angle (velocity is always rad/s internally), so values pass through unchanged.
         self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 10.0, places=4)
-        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 5.0, places=4)
+        self.assertAlmostEqual(model.joint_damping.numpy()[dof_idx], 5.0, places=4)
 
 
 class TestMjcfMultipleWorldbody(unittest.TestCase):
@@ -7255,7 +7327,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         np.testing.assert_allclose(m.solreffriction.numpy()[j_def], [0.05, 2.0], atol=1e-4)
         np.testing.assert_allclose(m.solimpfriction.numpy()[j_def], [0.7, 0.85, 0.02, 0.3, 1.5], atol=1e-4)
         self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_def]), 2.0, places=5)
-        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_def]), 3.0, places=5)
+        self.assertAlmostEqual(float(self.model.joint_damping.numpy()[j_def]), 3.0, places=5)
         self.assertAlmostEqual(float(m.dof_springref.numpy()[j_def]), 45.0 * self.DEG2RAD, places=4)
         self.assertAlmostEqual(float(m.dof_ref.numpy()[j_def]), 30.0 * self.DEG2RAD, places=4)
         self.assertEqual(bool(m.jnt_actgravcomp.numpy()[j_def]), True)
@@ -7263,7 +7335,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         j_cls = idx(f"{wb}/b_class/j_class")
         self.assertAlmostEqual(float(m.limit_margin.numpy()[j_cls]), 10.0, places=5)
         self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_cls]), 20.0, places=5)
-        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_cls]), 30.0, places=5)
+        self.assertAlmostEqual(float(self.model.joint_damping.numpy()[j_cls]), 30.0, places=5)
         self.assertAlmostEqual(float(m.dof_springref.numpy()[j_cls]), 90.0 * self.DEG2RAD, places=4)
         self.assertAlmostEqual(float(m.dof_ref.numpy()[j_cls]), 60.0 * self.DEG2RAD, places=4)
 
