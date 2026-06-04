@@ -41,16 +41,20 @@ def _gather_local_kernel(
 def _build_site_jacobian_kernel(
     # The full spatial Jacobian for the replicated model from ``eval_jacobian``,
     # shape (num_robots, max_links * 6, max_dofs). For each EE link, the 6 rows
-    # at j_row = end_effector_link * 6 are the COM-frame body twist
+    # at j_row = ee_link * 6 are the COM-frame body twist
     # (v_com_world, omega_world).
     jacobian: wp.array3d[float],
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     target_pos: wp.array[wp.vec3],
     target_quat: wp.array[wp.quat],
-    site_xform: wp.transform,
-    end_effector_link: int,
-    bodies_per_robot: int,
+    # Per-robot site-lookup arrays (precomputed at finalize() from per-variant
+    # data). Each variant in the template may have its own end-effector body
+    # and body-local site xform, and these arrays fan that out to every robot
+    # in the variant-interleaved batch.
+    ee_body_per_robot: wp.array[int],
+    ee_link_per_robot: wp.array[int],
+    site_xform_per_robot: wp.array[wp.transform],
     dofs_per_robot: int,
     # outputs:
     j_site: wp.array3d[float],  # (num_robots, 6, dofs_per_robot)
@@ -64,8 +68,9 @@ def _build_site_jacobian_kernel(
     to j_site / e_buffer.
     """
     r = wp.tid()
-    ee_body = r * bodies_per_robot + end_effector_link
-    j_row = end_effector_link * 6
+    ee_body = ee_body_per_robot[r]
+    j_row = ee_link_per_robot[r] * 6
+    site_xform = site_xform_per_robot[r]
 
     # --- Site pose in world ---
     t_body = body_q[ee_body]
@@ -262,8 +267,13 @@ class ControlLawDifferentialIK(ControlLaw):
             ``len(indices) % model_builder.joint_dof_count == 0``.
         site: Label of the site (added via :meth:`newton.ModelBuilder.add_site`)
             to drive. The controller drives the site's world-frame pose
-            toward the target. Add a site at identity xform if you want to
-            track an EE body's reference frame directly.
+            toward the target. For K-articulation templates, the template
+            must contain **exactly one** site with this label on each
+            articulation; the K occurrences may sit on different bodies and
+            carry different body-local xforms, so the K variants are free
+            to have legitimately different end-effector geometry. Add a
+            site at identity xform if you want to track an EE body's
+            reference frame directly.
         measurement: Per-DOF port. Source of joint positions ``q``.
         measurement_rate: Per-DOF port. Source of joint velocities ``q_dot``
             (used by ``eval_fk`` to populate ``body_qd``; the solve uses
@@ -323,18 +333,55 @@ class ControlLawDifferentialIK(ControlLaw):
         self._num_robots = K * self._replication_count
         self.indices = indices
 
-        # Look up the site by label. Sites are stored as shapes inside the
-        # builder; the label, the body it's attached to, and the body-frame
-        # xform all live on parallel lists.
-        try:
-            site_idx = model_builder.shape_label.index(site)
-        except ValueError as e:
+        # Per-variant site lookup. The user gives one ``site`` label that's
+        # expected to appear on every one of the K articulations in the
+        # template; each occurrence may sit on a different body and have a
+        # different body-local xform, so the K articulations can have
+        # legitimately different end-effector geometry. We pick out one
+        # shape per articulation and stash its (within-variant body index,
+        # body-local xform) pair. `finalize()` later fans these out into
+        # length-``num_robots`` Warp arrays keyed by robot index.
+        #
+        # We assume bodies are grouped by articulation in the template
+        # (variant 0's bodies first, then variant 1's, …) — the natural
+        # pattern when the user calls add_link / add_joint / add_articulation
+        # one variant at a time. The check below enforces this implicitly:
+        # if a variant's site lands on a body in another variant's block,
+        # we'll get duplicate variant assignments and raise.
+        body_count_in_template = len(model_builder.body_q)
+        if body_count_in_template % K != 0:
             raise ValueError(
-                f"ControlLawDifferentialIK: no shape/site with label '{site}' in model_builder; "
+                f"ControlLawDifferentialIK: template body_count={body_count_in_template} is not "
+                f"divisible by articulation_count={K}; the K articulations must share body count."
+            )
+        bodies_per_variant = body_count_in_template // K
+        all_site_idxs = [i for i, label in enumerate(model_builder.shape_label) if label == site]
+        if len(all_site_idxs) != K:
+            raise ValueError(
+                f"ControlLawDifferentialIK: expected exactly {K} shapes with label '{site}' "
+                f"(one per articulation), found {len(all_site_idxs)} in model_builder; "
                 f"available labels: {model_builder.shape_label}."
-            ) from e
-        self._end_effector_link = int(model_builder.shape_body[site_idx])
-        self._site_xform = model_builder.shape_transform[site_idx]
+            )
+        # Build per-variant data, keyed by variant index v in 0..K-1.
+        site_for_variant: dict[int, tuple[int, wp.transform]] = {}
+        for shape_idx in all_site_idxs:
+            body_global = int(model_builder.shape_body[shape_idx])
+            v = body_global // bodies_per_variant
+            within_variant = body_global % bodies_per_variant
+            if v in site_for_variant:
+                raise ValueError(
+                    f"ControlLawDifferentialIK: multiple shapes labeled '{site}' resolved to "
+                    f"variant {v} in the template. Each articulation must contribute exactly one "
+                    f"site with this label."
+                )
+            site_for_variant[v] = (within_variant, model_builder.shape_transform[shape_idx])
+        for v in range(K):
+            if v not in site_for_variant:
+                raise ValueError(f"ControlLawDifferentialIK: variant {v} has no shape labeled '{site}'.")
+        # Stash as lists ordered by variant index; finalize() turns these into
+        # length-num_robots Warp arrays.
+        self._ee_link_within_variant: list[int] = [site_for_variant[v][0] for v in range(K)]
+        self._site_xform_per_variant: list[wp.transform] = [site_for_variant[v][1] for v in range(K)]
 
         self._target_pos = _validate_per_group(target_pos, self._num_robots, wp.vec3, name="target_pos")
         self._target_quat = _validate_per_group(target_quat, self._num_robots, wp.quat, name="target_quat")
@@ -363,6 +410,19 @@ class ControlLawDifferentialIK(ControlLaw):
                 f"not divisible by num_robots={self._num_robots}."
             )
         self._bodies_per_robot = self._model.body_count // self._num_robots
+
+        # Fan the per-variant site data out to length-num_robots arrays so the
+        # kernel can index by robot. Variant-interleaved layout: robot r is
+        # variant r % K from replication r // K (matches builder.replicate).
+        K = len(self._ee_link_within_variant)
+        ee_link_per_robot = [self._ee_link_within_variant[r % K] for r in range(self._num_robots)]
+        ee_body_per_robot = [r * self._bodies_per_robot + ee_link_per_robot[r] for r in range(self._num_robots)]
+        site_xform_per_robot = [self._site_xform_per_variant[r % K] for r in range(self._num_robots)]
+        # These are build-time constants — no gradient flow through them — so
+        # requires_grad stays False regardless of the controller-level flag.
+        self._ee_body_per_robot = wp.array(ee_body_per_robot, dtype=int, device=device)
+        self._ee_link_per_robot = wp.array(ee_link_per_robot, dtype=int, device=device)
+        self._site_xform_per_robot = wp.array(site_xform_per_robot, dtype=wp.transform, device=device)
 
         self._jacobian = wp.zeros(
             (self._num_robots, self._model.max_joints_per_articulation * 6, self._model.max_dofs_per_articulation),
@@ -439,9 +499,9 @@ class ControlLawDifferentialIK(ControlLaw):
                 self._model.body_com,
                 self._target_pos,
                 self._target_quat,
-                self._site_xform,
-                self._end_effector_link,
-                self._bodies_per_robot,
+                self._ee_body_per_robot,
+                self._ee_link_per_robot,
+                self._site_xform_per_robot,
                 self._dofs_per_robot,
             ],
             outputs=[self._j_site, self._e_buffer],

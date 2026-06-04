@@ -794,6 +794,102 @@ class TestControlLawDifferentialIK(unittest.TestCase):
             atol=1e-5,
         )
 
+    def test_two_variants_with_different_site_offsets(self):
+        """Template has K=2 articulations with identical kinematics but
+        different body-local site xforms — both labeled ``"tool"``.
+
+        This exercises the per-variant site lookup directly: the controller
+        must find the site on each articulation and use that variant's own
+        body-local offset, not just the first match. Same kinematics on both
+        articulations isolates the site_xform difference as the only factor
+        driving different q_dots — so if the lookup ever regressed back to
+        "first match wins," both variants would compute the same q_dot and
+        this test would fail.
+
+        Variant 0: site at body-local (1, 0, 0) → site world (1, 0, 0).
+        Variant 1: site at body-local (2, 0, 0) → site world (2, 0, 0).
+
+        Analytical q_dot at q=0 with body COM at world origin
+        (J_COM_linear = 0; only the cross-product correction contributes):
+
+        Variant 0:
+            offset = (1, 0, 0); J_site_linear = cross((0,0,1), (1,0,0)) = (0, 1, 0).
+            J_site = [0, 1, 0, 0, 0, 1]^T.
+            q_dot = ERR_Y / (2 + λ²).
+
+        Variant 1:
+            offset = (2, 0, 0); J_site_linear = cross((0,0,1), (2,0,0)) = (0, 2, 0).
+            J_site = [0, 2, 0, 0, 0, 1]^T.
+            q_dot = 2 * ERR_Y / (5 + λ²).
+        """
+        device = wp.get_device()
+        LAMBDA = 0.5
+        GAIN = 1.0
+        ERR_Y = 0.1
+
+        builder = newton.ModelBuilder()
+
+        # Variant 0 — identical kinematics to variant 1, but a smaller site offset.
+        v0_link = builder.add_link()
+        v0_joint = builder.add_joint_revolute(
+            parent=-1,
+            child=v0_link,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([v0_joint], label="arm_v0")
+        builder.add_site(v0_link, label="tool", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+
+        # Variant 1 — same kinematics, but its "tool" site sits at twice the
+        # body-local offset. With identical body_q, the only thing differing
+        # between the two variants' DLS solves is the site xform looked up
+        # by the controller.
+        v1_link = builder.add_link()
+        v1_joint = builder.add_joint_revolute(
+            parent=-1,
+            child=v1_link,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([v1_joint], label="arm_v1")
+        builder.add_site(v1_link, label="tool", xform=wp.transform(p=wp.vec3(2.0, 0.0, 0.0), q=wp.quat_identity()))
+
+        # K=2, R=1 ⇒ num_robots=2. Targets matched to each variant's site at q=0.
+        indices = wp.array([0, 1], dtype=wp.uint32, device=device)
+        target_pos = wp.array(
+            [wp.vec3(1.0, ERR_Y, 0.0), wp.vec3(2.0, ERR_Y, 0.0)],
+            dtype=wp.vec3,
+            device=device,
+        )
+        output_qd = wp.zeros(2, dtype=wp.float32, device=device)
+        output_q = wp.zeros(2, dtype=wp.float32, device=device)
+        diffik = ControlLawDifferentialIK(
+            model_builder=builder,
+            indices=indices,
+            site="tool",
+            measurement=wp.zeros(2, dtype=wp.float32, device=device),
+            measurement_rate=wp.zeros(2, dtype=wp.float32, device=device),
+            target_pos=target_pos,
+            target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)] * 2, dtype=wp.quat, device=device),
+            damping=wp.array([LAMBDA, LAMBDA], dtype=wp.float32, device=device),
+            gain=wp.array([GAIN, GAIN], dtype=wp.float32, device=device),
+            output_qd=output_qd,
+            output_q=output_q,
+        )
+        controller = Controller([diffik])
+        s0, s1 = controller.state(), controller.state()
+        controller.step(s0, s1, dt=0.01)
+
+        expected_qd_v0 = GAIN * ERR_Y / (2.0 + LAMBDA**2)
+        expected_qd_v1 = GAIN * 2.0 * ERR_Y / (5.0 + LAMBDA**2)
+        np.testing.assert_allclose(
+            output_qd.numpy(),
+            [expected_qd_v0, expected_qd_v1],
+            atol=1e-5,
+        )
+
     def test_parallel_robots_subset_of_scene(self):
         """Combined: R parallel arms living inside a sim scene that also
         contains R pendulums the DiffIK doesn't know about.
