@@ -367,9 +367,6 @@ class TestImportMjcfBasic(unittest.TestCase):
         check that the latest compiler wins for ALL bodies regardless of which
         file authored them.
         """
-        import os  # noqa: PLC0415
-        import tempfile  # noqa: PLC0415
-
         mujoco = SolverMuJoCo.import_mujoco()[0]
 
         inner_xml = """<?xml version="1.0" encoding="utf-8"?>
