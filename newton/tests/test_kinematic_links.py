@@ -317,10 +317,6 @@ def test_kinematic_free_base_prescribed_motion(
         q_start = int(model.joint_q_start.numpy()[kinematic_joint])
         qd_start = int(model.joint_qd_start.numpy()[kinematic_joint])
 
-        # decompose desired world poses into joint_q via joint_X_p (joint_X_c is identity here)
-        root_X_p = wp.transform(*model.joint_X_p.numpy()[kinematic_joint])
-        inv_root_X_p = wp.transform_inverse(root_X_p)
-
         max_probe_speed = 0.0
         initial_probe_pos = state_0.body_q.numpy()[probe_body, :3].copy()
 
@@ -329,9 +325,10 @@ def test_kinematic_free_base_prescribed_motion(
 
             joint_q = state_0.joint_q.numpy()
             joint_qd = state_0.joint_qd.numpy()
-            desired_world = wp.transform(wp.vec3(x0 + vx * t, 0.0, 0.0), wp.quat_identity())
-            j_tf = inv_root_X_p * desired_world
-            joint_q[q_start : q_start + 7] = np.array(j_tf, dtype=np.float32)
+            # joint_q is the body's pose relative to joint_X_p (the rest pose set by add_body
+            # to (x0, 0, 0), with identity rotation). Prescribing a translation of (vx*t, 0, 0)
+            # therefore drives the body from world x = x0 to world x = x0 + vx*t.
+            joint_q[q_start : q_start + 7] = np.array([vx * t, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32)
             joint_qd[qd_start : qd_start + 6] = np.array([vx, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
             state_0.joint_q.assign(joint_q)
             state_0.joint_qd.assign(joint_qd)

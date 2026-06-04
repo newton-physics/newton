@@ -619,13 +619,13 @@ def convert_mj_coords_to_warp_kernel(
         return
 
     if type == JointType.FREE:
-        # MuJoCo qpos[0:7] holds the body's world pose; decompose into Newton joint_q
-        # (the relative transform between joint anchors) via
+        # MuJoCo qpos[0:7] holds the body's world pose; decompose into Newton
+        # joint_q (the relative transform between joint anchors) via
         #   joint_q_transform = inv(joint_X_p) * world_body_pose * joint_X_c.
         # joint_qd[0:6] follows the parent-frame contract from State.joint_qd:
-        # linear is child-COM velocity, angular is angular velocity, both expressed
-        # in the joint parent frame. MuJoCo only allows FREE joints at the worldbody
-        # root, so X_wpj == joint_X_p.
+        # linear is child-COM velocity, angular is angular velocity, both
+        # expressed in the joint parent frame. MuJoCo only allows FREE joints
+        # at the worldbody root, so X_wpj == joint_X_p.
         world_pos = wp.vec3(qpos[worldid, q_i + 0], qpos[worldid, q_i + 1], qpos[worldid, q_i + 2])
         world_rot = quat_wxyz_to_xyzw(
             wp.quat(

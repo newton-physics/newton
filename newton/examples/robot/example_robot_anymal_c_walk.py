@@ -53,6 +53,10 @@ with warnings.catch_warnings():
 
 
 def compute_obs(actions, state: State, joint_pos_initial, device, indices, gravity_vec, command):
+    # The URDF is imported with a rotated xform (pi/2 about z), so joint_X_p has a
+    # non-identity rotation; the root body's world pose and twist are therefore taken
+    # from body_q / body_qd rather than from joint_q[3:7] / joint_qd[:6] (which are
+    # expressed relative to the joint parent anchor).
     root_body_q = torch.tensor(state.body_q.numpy()[0], device=device, dtype=torch.float32).unsqueeze(0)
     root_body_qd = torch.tensor(state.body_qd.numpy()[0], device=device, dtype=torch.float32).unsqueeze(0)
     root_quat_w = root_body_q[:, 3:7]
