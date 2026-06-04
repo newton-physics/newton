@@ -807,10 +807,6 @@ class Model:
         self.attribute_frequency["body_inv_mass"] = Model.AttributeFrequency.BODY
         self.attribute_frequency["body_flags"] = Model.AttributeFrequency.BODY
         self.attribute_frequency["body_f"] = Model.AttributeFrequency.BODY
-        # Extended state attributes — these live on State (not Model) and are only
-        # allocated when explicitly requested via request_state_attributes().
-        self.attribute_frequency["body_qdd"] = Model.AttributeFrequency.BODY
-        self.attribute_frequency["body_parent_f"] = Model.AttributeFrequency.BODY
 
         # attributes per joint
         self.attribute_frequency["joint_type"] = Model.AttributeFrequency.JOINT
@@ -860,7 +856,11 @@ class Model:
         self.attribute_frequency["joint_effort_limit"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_friction"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_velocity_limit"] = Model.AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["mujoco:qfrc_actuator"] = Model.AttributeFrequency.JOINT_DOF
+
+        # Extended state attributes live on State and are allocated only when
+        # explicitly requested via request_state_attributes().
+        for full_name, template in State.EXTENDED_ATTRIBUTE_TEMPLATES.items():
+            self.attribute_frequency[full_name] = getattr(Model.AttributeFrequency, template.frequency)
 
         # attributes per shape
         self.attribute_frequency["shape_transform"] = Model.AttributeFrequency.SHAPE
@@ -1611,21 +1611,68 @@ class Model:
             s.joint_q = wp.clone(self.joint_q, requires_grad=requires_grad)
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
 
-        if "body_qdd" in requested:
-            s.body_qdd = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
-
-        if "body_parent_f" in requested:
-            s.body_parent_f = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
-
-        if "mujoco:qfrc_actuator" in requested:
-            if not hasattr(s, "mujoco"):
-                s.mujoco = Model.AttributeNamespace("mujoco")
-            s.mujoco.qfrc_actuator = wp.zeros_like(self.joint_qd, requires_grad=requires_grad)
+        self._add_requested_state_attributes(s, requested, requires_grad=requires_grad)
 
         # attach custom attributes with assignment==STATE
         self._add_custom_attributes(s, Model.AttributeAssignment.STATE, requires_grad=requires_grad)
 
         return s
+
+    def _add_requested_state_attributes(
+        self,
+        state: State,
+        requested: list[str],
+        requires_grad: bool = False,
+    ) -> None:
+        """Allocate optional built-in state attributes requested by name."""
+        for full_name in requested:
+            template = State.EXTENDED_ATTRIBUTE_TEMPLATES.get(full_name)
+            if template is None:
+                continue
+
+            frequency = getattr(Model.AttributeFrequency, template.frequency)
+            value = wp.zeros(
+                self._attribute_frequency_count(frequency),
+                dtype=template.dtype,
+                device=self.device,
+                requires_grad=requires_grad,
+            )
+            if ":" in full_name:
+                namespace_name, attr_name = full_name.split(":", 1)
+                namespace = getattr(state, namespace_name, None)
+                if namespace is None:
+                    namespace = Model.AttributeNamespace(namespace_name)
+                    setattr(state, namespace_name, namespace)
+                setattr(namespace, attr_name, value)
+            else:
+                setattr(state, full_name, value)
+
+    def _attribute_frequency_count(self, frequency: Model.AttributeFrequency | str) -> int:
+        if isinstance(frequency, str):
+            return int(self.custom_frequency_counts[frequency])
+
+        if frequency == Model.AttributeFrequency.ONCE:
+            return 1
+        count_attr = {
+            Model.AttributeFrequency.JOINT: "joint_count",
+            Model.AttributeFrequency.JOINT_DOF: "joint_dof_count",
+            Model.AttributeFrequency.JOINT_COORD: "joint_coord_count",
+            Model.AttributeFrequency.JOINT_CONSTRAINT: "joint_constraint_count",
+            Model.AttributeFrequency.BODY: "body_count",
+            Model.AttributeFrequency.SHAPE: "shape_count",
+            Model.AttributeFrequency.ARTICULATION: "articulation_count",
+            Model.AttributeFrequency.EQUALITY_CONSTRAINT: "equality_constraint_count",
+            Model.AttributeFrequency.PARTICLE: "particle_count",
+            Model.AttributeFrequency.EDGE: "edge_count",
+            Model.AttributeFrequency.TRIANGLE: "tri_count",
+            Model.AttributeFrequency.TETRAHEDRON: "tet_count",
+            Model.AttributeFrequency.SPRING: "spring_count",
+            Model.AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
+            Model.AttributeFrequency.WORLD: "world_count",
+        }.get(frequency)
+        if count_attr is None:
+            raise ValueError(f"Unsupported attribute frequency: {frequency!r}")
+        return int(getattr(self, count_attr))
 
     def control(self, requires_grad: bool | None = None, clone_variables: bool = True) -> Control:
         """

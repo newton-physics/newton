@@ -13,20 +13,17 @@ from typing import TYPE_CHECKING
 import numpy as np
 import warp as wp
 
-from ...sim import BodyFlags
-from ..flags import SolverNotifyFlags
+from ...sim import BodyFlags, ModelFlags
 from .interface import (
     CouplingEndpointKind,
-    CouplingHook,
     CouplingInputStateFlags,
+    CouplingInterface,
 )
 from .proxy_utils import (
-    subtract_proxy_forces_kernel,
-    subtract_proxy_particle_forces_kernel,
     sync_proxy_particles_kernel,
     sync_proxy_states_kernel,
 )
-from .solver_coupled import SolverCoupled, _coupling_method_or_fallback
+from .solver_coupled import SolverCoupled
 
 if TYPE_CHECKING:
     from ...sim import Contacts, Control, Model, State
@@ -100,6 +97,15 @@ class _ProxyMode(IntEnum):
 
 
 _PROXY_MODE_BY_NAME = {"lagged": _ProxyMode.LAGGED, "staggered": _ProxyMode.STAGGERED}
+
+
+def _uses_default_body_proxy_harvest(solver: CouplingInterface) -> bool:
+    """Return whether ``solver`` inherits the mixin's body momentum harvest."""
+    for cls in type(solver).mro():
+        method = cls.__dict__.get("coupling_harvest_proxy_wrenches")
+        if method is not None:
+            return method is CouplingInterface.coupling_harvest_proxy_wrenches
+    return False
 
 
 class SolverCoupledProxy(SolverCoupled):
@@ -251,13 +257,13 @@ class SolverCoupledProxy(SolverCoupled):
             self._validate_proxy_ids("Proxy destination body", proxy_local_ids, model.body_count)
             self._validate_unique_proxy_ids("source body", src_ids)
             self._validate_unique_proxy_ids("proxy body", proxy_local_ids)
+            self._validate_proxy_body_worlds(model, src_ids, proxy_local_ids)
             self._validate_proxy_destination_ids_not_owned(
                 "body",
                 proxy_local_ids,
                 proxy.destination,
                 entry_body_sets.get(proxy.destination),
             )
-            self._validate_proxy_body_worlds(model, src_ids, proxy_local_ids)
             proxy_global_ids = proxy_local_ids
 
             source_local_to_proxy_local = [-1] * model.body_count
@@ -640,7 +646,7 @@ class SolverCoupledProxy(SolverCoupled):
     def notify_model_changed(self, flags: int) -> None:
         """Refresh proxy inertia after source solvers consume model updates."""
         super().notify_model_changed(flags)
-        if int(flags) & int(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
+        if int(flags) & int(ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._apply_proxy_body_effective_masses()
 
     def _step_coupled(
@@ -739,32 +745,12 @@ class SolverCoupledProxy(SolverCoupled):
                 if is_staggered:
                     continue
 
-                rewind_method = _coupling_method_or_fallback(dst, CouplingHook.BODY_PROXY_REWIND_VELOCITY)
-                if rewind_method is not None:
-                    rewind_method(
-                        proxy.destination_local_to_proxy_global,
-                        dst.state_0,
-                        proxy.coupling_forces,
-                        dt,
-                    )
-                else:
-                    wp.launch(
-                        subtract_proxy_forces_kernel,
-                        dim=proxy.destination_local_to_proxy_global.shape[0],
-                        inputs=[
-                            dt,
-                            self.model.gravity,
-                            self.model.body_world,
-                            dst.state_0.body_q,
-                            dst.state_0.body_f,
-                            proxy.coupling_forces,
-                            proxy.destination_local_to_proxy_global,
-                            dst.view.body_inv_mass,
-                            dst.view.body_inv_inertia,
-                            dst.state_0.body_qd,
-                        ],
-                        device=self.model.device,
-                    )
+                dst.solver.coupling_rewind_proxy_body_velocity(
+                    proxy.destination_local_to_proxy_global,
+                    dst.state_0,
+                    proxy.coupling_forces,
+                    dt,
+                )
                 self._notify_input_state_update(dst, CouplingInputStateFlags.BODY_QD, dt=dt)
 
             for proxy in particle_proxies:
@@ -793,30 +779,12 @@ class SolverCoupledProxy(SolverCoupled):
                 if is_staggered:
                     continue
 
-                rewind_method = _coupling_method_or_fallback(dst, CouplingHook.PARTICLE_PROXY_REWIND_VELOCITY)
-                if rewind_method is not None:
-                    rewind_method(
-                        proxy.destination_local_to_proxy_global,
-                        dst.state_0,
-                        proxy.coupling_forces,
-                        dt,
-                    )
-                else:
-                    wp.launch(
-                        subtract_proxy_particle_forces_kernel,
-                        dim=proxy.destination_local_to_proxy_global.shape[0],
-                        inputs=[
-                            dt,
-                            self.model.gravity,
-                            self.model.particle_world,
-                            dst.state_0.particle_f,
-                            proxy.coupling_forces,
-                            proxy.destination_local_to_proxy_global,
-                            dst.view.particle_inv_mass,
-                            dst.state_0.particle_qd,
-                        ],
-                        device=self.model.device,
-                    )
+                dst.solver.coupling_rewind_proxy_particle_velocity(
+                    proxy.destination_local_to_proxy_global,
+                    dst.state_0,
+                    proxy.coupling_forces,
+                    dt,
+                )
                 self._notify_input_state_update(dst, CouplingInputStateFlags.PARTICLE_QD, dt=dt)
 
             dst_contacts = contacts
@@ -829,19 +797,16 @@ class SolverCoupledProxy(SolverCoupled):
                 )
                 filter_dst_contacts = False
 
-            use_body_momentum_harvest = body_proxies and not self._uses_custom_coupling_hook(
-                dst, CouplingHook.BODY_PROXY_HARVEST
-            )
+            use_body_momentum_harvest = body_proxies and _uses_default_body_proxy_harvest(dst.solver)
             restore_filtered_contacts = False
             dst_contacts_used = dst_contacts
             try:
                 if body_proxies:
-                    if self._uses_custom_coupling_hook(dst, CouplingHook.PROXY_CONTACT_PREPARE):
-                        dst_contacts = dst.solver.coupling_prepare_proxy_contacts(
-                            dst.state_0,
-                            dst_contacts,
-                            contacts_freshly_detected=contacts_freshly_detected,
-                        )
+                    dst_contacts = dst.solver.coupling_prepare_proxy_contacts(
+                        dst.state_0,
+                        dst_contacts,
+                        contacts_freshly_detected=contacts_freshly_detected,
+                    )
 
                     if (
                         use_body_momentum_harvest
@@ -887,61 +852,27 @@ class SolverCoupledProxy(SolverCoupled):
 
             for proxy in body_proxies:
                 proxy.coupling_forces.zero_()
-                if self._uses_custom_coupling_hook(dst, CouplingHook.BODY_PROXY_HARVEST):
-                    dst.solver.coupling_harvest_proxy_wrenches(
-                        proxy.destination_local_to_proxy_global,
-                        proxy.coupling_forces,
-                        state=dst.state_0,
-                        state_out=dst.state_1,
-                        contacts=dst_contacts_used,
-                        dt=dt,
-                    )
-                else:
-                    wp.launch(
-                        _harvest_proxy_momentum_forces_kernel,
-                        dim=proxy.destination_local_to_proxy_global.shape[0],
-                        inputs=[
-                            dt,
-                            proxy.destination_local_to_proxy_global,
-                            proxy.proxy_qd_before,
-                            dst.state_1.body_qd,
-                            dst.view.body_mass,
-                            dst.view.body_inertia,
-                            dst.state_1.body_q,
-                            self.model.gravity,
-                            self.model.body_world,
-                            proxy.coupling_forces,
-                        ],
-                        device=self.model.device,
-                    )
+                dst.solver.coupling_harvest_proxy_wrenches(
+                    proxy.destination_local_to_proxy_global,
+                    proxy.coupling_forces,
+                    body_qd_before=proxy.proxy_qd_before,
+                    state=dst.state_0,
+                    state_out=dst.state_1,
+                    contacts=dst_contacts_used,
+                    dt=dt,
+                )
 
             for proxy in particle_proxies:
                 proxy.coupling_forces.zero_()
-                if self._uses_custom_coupling_hook(dst, CouplingHook.PARTICLE_PROXY_HARVEST):
-                    dst.solver.coupling_harvest_proxy_particle_forces(
-                        proxy.destination_local_to_proxy_global,
-                        proxy.coupling_forces,
-                        state=dst.state_0,
-                        state_out=dst.state_1,
-                        contacts=dst_contacts_used,
-                        dt=dt,
-                    )
-                else:
-                    wp.launch(
-                        _harvest_proxy_particle_momentum_forces_kernel,
-                        dim=proxy.destination_local_to_proxy_global.shape[0],
-                        inputs=[
-                            dt,
-                            proxy.destination_local_to_proxy_global,
-                            proxy.proxy_qd_before,
-                            dst.state_1.particle_qd,
-                            dst.view.particle_mass,
-                            self.model.gravity,
-                            self.model.particle_world,
-                            proxy.coupling_forces,
-                        ],
-                        device=self.model.device,
-                    )
+                dst.solver.coupling_harvest_proxy_particle_forces(
+                    proxy.destination_local_to_proxy_global,
+                    proxy.coupling_forces,
+                    particle_qd_before=proxy.proxy_qd_before,
+                    state=dst.state_0,
+                    state_out=dst.state_1,
+                    contacts=dst_contacts_used,
+                    dt=dt,
+                )
 
 
 @wp.kernel(enable_backward=False)
@@ -1017,64 +948,3 @@ def _restore_filtered_proxy_rigid_contacts_kernel(
         rigid_contact_shape0[contact_id] = -s0 - 2
     if s1 < -1:
         rigid_contact_shape1[contact_id] = -s1 - 2
-
-
-@wp.kernel(enable_backward=False)
-def _harvest_proxy_momentum_forces_kernel(
-    dt: float,
-    body_local_to_proxy_global: wp.array[int],
-    qd_before: wp.array[wp.spatial_vector],
-    qd_after: wp.array[wp.spatial_vector],
-    body_mass: wp.array[float],
-    body_inertia: wp.array[wp.mat33],
-    body_q: wp.array[wp.transform],
-    gravity: wp.array[wp.vec3],
-    body_world: wp.array[wp.int32],
-    out_coupling_forces: wp.array[wp.spatial_vector],
-):
-    """Estimate proxy feedback force from destination velocity change."""
-    local_id = wp.tid()
-    global_id = body_local_to_proxy_global[local_id]
-    if global_id < 0:
-        return
-
-    dv = wp.spatial_top(qd_after[local_id]) - wp.spatial_top(qd_before[local_id])
-    dw = wp.spatial_bottom(qd_after[local_id]) - wp.spatial_bottom(qd_before[local_id])
-
-    m = body_mass[local_id]
-    I_body = body_inertia[local_id]
-    r = wp.transform_get_rotation(body_q[local_id])
-
-    world_idx = body_world[local_id]
-    g = gravity[wp.max(world_idx, 0)]
-
-    f = m * dv / dt - m * g
-    tau = wp.quat_rotate(r, I_body * wp.quat_rotate_inv(r, dw)) / dt
-
-    wp.atomic_add(out_coupling_forces, global_id, wp.spatial_vector(f, tau))
-
-
-@wp.kernel(enable_backward=False)
-def _harvest_proxy_particle_momentum_forces_kernel(
-    dt: float,
-    particle_local_to_proxy_global: wp.array[int],
-    qd_before: wp.array[wp.vec3],
-    qd_after: wp.array[wp.vec3],
-    particle_mass: wp.array[float],
-    gravity: wp.array[wp.vec3],
-    particle_world: wp.array[wp.int32],
-    out_coupling_forces: wp.array[wp.vec3],
-):
-    """Estimate proxy particle feedback force from destination velocity change."""
-    local_id = wp.tid()
-    global_id = particle_local_to_proxy_global[local_id]
-    if global_id < 0:
-        return
-
-    dv = qd_after[local_id] - qd_before[local_id]
-    m = particle_mass[local_id]
-
-    world_idx = particle_world[local_id]
-    g = gravity[wp.max(world_idx, 0)]
-
-    wp.atomic_add(out_coupling_forces, global_id, m * dv / dt - m * g)

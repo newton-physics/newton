@@ -105,21 +105,24 @@ Some solvers keep important state outside the public :class:`State` arrays or
 can report interface forces more accurately than a generic momentum fallback.
 Those solvers implement
 :class:`newton.solvers.experimental.coupled.CouplingInterface` hooks. The
-coupler detects hook methods by name. Missing hooks use generic fallbacks, while
-hooks listed in ``coupling_unsupported`` make the coupler raise
-:class:`NotImplementedError` instead of silently using an invalid path.
+hooks are ordinary methods with default mixin implementations. Solvers override
+only the methods that need solver-specific behavior. A solver that cannot
+support a hook raises :class:`NotImplementedError` from that hook instead of
+silently using an invalid path.
 
 The protocol currently covers these concepts:
 
-- ``NOTIFY_INPUT_STATE_UPDATE`` tells a solver that public state arrays were
-  changed by the coupler. VBD uses this to realign private previous-pose state
-  after proxy synchronization or ADMM iteration restarts. MPM uses it to keep
-  collider caches consistent.
-- ``BODY_PROXY_REWIND_VELOCITY`` and ``PARTICLE_PROXY_REWIND_VELOCITY`` let a
+- ``coupling_notify_input_state_update()`` tells a solver that public state
+  arrays were changed by the coupler. VBD uses this to realign private
+  previous-pose state after proxy synchronization or ADMM iteration restarts.
+  MPM uses it to keep collider caches consistent.
+- ``coupling_rewind_proxy_body_velocity()`` and
+  ``coupling_rewind_proxy_particle_velocity()`` let a
   destination solver prepare proxy velocities before a lagged proxy pass.
-- ``BODY_PROXY_HARVEST`` and ``PARTICLE_PROXY_HARVEST`` let a destination solver
+- ``coupling_harvest_proxy_wrenches()`` and
+  ``coupling_harvest_proxy_particle_forces()`` let a destination solver
   report feedback forces from solver-native contact or transfer data.
-- ``PROXY_CONTACT_PREPARE`` lets a destination solver filter or prepare
+- ``coupling_prepare_proxy_contacts()`` lets a destination solver filter or prepare
   proxy-local contacts before its step.
 - ``EFFECTIVE_MASS_DIAGONAL`` and ``EFFECTIVE_MASS_BLOCK`` let a solver provide
   endpoint effective mass instead of using raw model mass and inertia.

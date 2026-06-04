@@ -11,8 +11,8 @@ coupling via proxy bodies or proxy particles:
    to avoid discontinuities in penetration-free solvers.
 3. **Velocity rewind** -- remove previously applied coupling forces, external
    force inputs, and gravity from proxy velocities to prevent double-counting.
-4. **Harvest wrenches** -- extract forces from contact data and convert to
-   spatial wrenches on the driving solver's bodies.
+4. **Harvest wrenches** -- extract proxy feedback from destination solver
+   momentum changes or contact data.
 """
 
 from __future__ import annotations
@@ -221,8 +221,69 @@ def subtract_proxy_particle_forces_kernel(
 
 
 # ------------------------------------------------------------------
-# 4. Harvest proxy wrenches from contact forces
+# 4. Harvest proxy feedback
 # ------------------------------------------------------------------
+
+
+@wp.kernel(enable_backward=False)
+def harvest_proxy_momentum_forces_kernel(
+    dt: float,
+    body_local_to_proxy_global: wp.array[int],
+    qd_before: wp.array[wp.spatial_vector],
+    qd_after: wp.array[wp.spatial_vector],
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    body_q: wp.array[wp.transform],
+    gravity: wp.array[wp.vec3],
+    body_world: wp.array[wp.int32],
+    out_coupling_forces: wp.array[wp.spatial_vector],
+):
+    """Estimate proxy feedback force from destination velocity change."""
+    local_id = wp.tid()
+    global_id = body_local_to_proxy_global[local_id]
+    if global_id < 0:
+        return
+
+    dv = wp.spatial_top(qd_after[local_id]) - wp.spatial_top(qd_before[local_id])
+    dw = wp.spatial_bottom(qd_after[local_id]) - wp.spatial_bottom(qd_before[local_id])
+
+    m = body_mass[local_id]
+    I_body = body_inertia[local_id]
+    r = wp.transform_get_rotation(body_q[local_id])
+
+    world_idx = body_world[local_id]
+    g = gravity[wp.max(world_idx, 0)]
+
+    f = m * dv / dt - m * g
+    tau = wp.quat_rotate(r, I_body * wp.quat_rotate_inv(r, dw)) / dt
+
+    wp.atomic_add(out_coupling_forces, global_id, wp.spatial_vector(f, tau))
+
+
+@wp.kernel(enable_backward=False)
+def harvest_proxy_particle_momentum_forces_kernel(
+    dt: float,
+    particle_local_to_proxy_global: wp.array[int],
+    qd_before: wp.array[wp.vec3],
+    qd_after: wp.array[wp.vec3],
+    particle_mass: wp.array[float],
+    gravity: wp.array[wp.vec3],
+    particle_world: wp.array[wp.int32],
+    out_coupling_forces: wp.array[wp.vec3],
+):
+    """Estimate proxy particle feedback force from destination velocity change."""
+    local_id = wp.tid()
+    global_id = particle_local_to_proxy_global[local_id]
+    if global_id < 0:
+        return
+
+    dv = qd_after[local_id] - qd_before[local_id]
+    m = particle_mass[local_id]
+
+    world_idx = particle_world[local_id]
+    g = gravity[wp.max(world_idx, 0)]
+
+    wp.atomic_add(out_coupling_forces, global_id, m * dv / dt - m * g)
 
 
 @wp.kernel(enable_backward=False)

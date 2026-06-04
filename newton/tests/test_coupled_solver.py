@@ -15,7 +15,6 @@ from newton._src.solvers.coupled.admm_utils import (
     contact_rr_fill_from_rigid_contacts_kernel,
 )
 from newton._src.solvers.coupled.interface import (
-    CouplingHook,
     CouplingInputStateFlags,
     CouplingInterface,
 )
@@ -29,7 +28,6 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import forward_step_rigid_bodies
 from newton.solvers import (
     SolverBase,
     SolverMuJoCo,
-    SolverNotifyFlags,
     SolverSemiImplicit,
     SolverVBD,
     SolverXPBD,
@@ -348,12 +346,13 @@ class _ProxyParticleHookSolver(SolverBase, CouplingInterface):
         particle_local_to_proxy_global,
         out_particle_f,
         *,
+        particle_qd_before=None,
         state=None,
         state_out=None,
         contacts=None,
         dt=0.0,
     ):
-        del state, state_out, contacts, dt
+        del particle_qd_before, state, state_out, contacts, dt
         self.harvest_calls += 1
         wp.launch(
             _write_proxy_particle_force_kernel,
@@ -376,6 +375,7 @@ class _ParticleHarvestStateRecordingSolver(SolverBase, CouplingInterface):
     def __init__(self, model):
         super().__init__(model)
         self.harvest_particle_qd = None
+        self.harvest_particle_qd_before = None
         self.harvest_particle_qd_out = None
         self.harvest_contacts = None
         self.instances.append(self)
@@ -385,6 +385,7 @@ class _ParticleHarvestStateRecordingSolver(SolverBase, CouplingInterface):
         particle_local_to_proxy_global,
         out_particle_f,
         *,
+        particle_qd_before=None,
         state=None,
         state_out=None,
         contacts=None,
@@ -392,6 +393,7 @@ class _ParticleHarvestStateRecordingSolver(SolverBase, CouplingInterface):
     ):
         del particle_local_to_proxy_global, out_particle_f, dt
         self.harvest_particle_qd = state.particle_qd.numpy().copy()
+        self.harvest_particle_qd_before = particle_qd_before.numpy().copy()
         self.harvest_particle_qd_out = state_out.particle_qd.numpy().copy()
         self.harvest_contacts = contacts
 
@@ -410,6 +412,7 @@ class _BodyHarvestStateRecordingSolver(SolverBase, CouplingInterface):
     def __init__(self, model):
         super().__init__(model)
         self.harvest_body_qd = None
+        self.harvest_body_qd_before = None
         self.instances.append(self)
 
     def coupling_harvest_proxy_wrenches(
@@ -417,6 +420,7 @@ class _BodyHarvestStateRecordingSolver(SolverBase, CouplingInterface):
         body_local_to_proxy_global,
         out_body_f,
         *,
+        body_qd_before=None,
         state=None,
         state_out=None,
         contacts=None,
@@ -424,6 +428,7 @@ class _BodyHarvestStateRecordingSolver(SolverBase, CouplingInterface):
     ):
         del body_local_to_proxy_global, out_body_f, state_out, contacts, dt
         self.harvest_body_qd = state.body_qd.numpy().copy()
+        self.harvest_body_qd_before = body_qd_before.numpy().copy()
 
     def step(self, state_in, state_out, control, contacts, dt):
         del control, contacts, dt
@@ -448,9 +453,17 @@ class _ProxyBodyHookSolver(SolverBase, CouplingInterface):
         self.instances.append(self)
 
     def coupling_harvest_proxy_wrenches(
-        self, body_local_to_proxy_global, out_body_f, *, state=None, state_out=None, contacts=None, dt=0.0
+        self,
+        body_local_to_proxy_global,
+        out_body_f,
+        *,
+        body_qd_before=None,
+        state=None,
+        state_out=None,
+        contacts=None,
+        dt=0.0,
     ):
-        del state, state_out, contacts, dt
+        del body_qd_before, state, state_out, contacts, dt
         self.harvest_calls += 1
         wp.launch(
             _write_proxy_body_wrench_kernel,
@@ -522,9 +535,17 @@ class _ContactRecordingBodyHarvestSolver(_ContactRecordingCopySolver):
         self.harvest_contacts = []
 
     def coupling_harvest_proxy_wrenches(
-        self, body_local_to_proxy_global, out_body_f, *, state=None, state_out=None, contacts=None, dt=0.0
+        self,
+        body_local_to_proxy_global,
+        out_body_f,
+        *,
+        body_qd_before=None,
+        state=None,
+        state_out=None,
+        contacts=None,
+        dt=0.0,
     ):
-        del body_local_to_proxy_global, out_body_f, state, state_out, dt
+        del body_local_to_proxy_global, out_body_f, body_qd_before, state, state_out, dt
         self.harvest_contacts.append(contacts)
 
 
@@ -532,8 +553,8 @@ class _ProxyContactRecordingSolver(_StepCountingCopySolver):
     """Base stub that tracks would-be prepare-contact metadata.
 
     Subclasses opt into the proxy-contact-prepare hook by overriding
-    :meth:`coupling_prepare_proxy_contacts`; the base class deliberately does
-    not, so wrapper-level fallback behavior can be exercised.
+    :meth:`coupling_prepare_proxy_contacts`; the base class uses the mixin's
+    no-op default behavior.
     """
 
     def __init__(self, model):
@@ -557,7 +578,9 @@ class _CustomProxyContactRecordingSolver(_ProxyContactRecordingSolver):
 class _UnsupportedProxyContactRecordingSolver(_ProxyContactRecordingSolver):
     """Test solver that rejects proxy-contact preparation."""
 
-    coupling_unsupported = frozenset({CouplingHook.PROXY_CONTACT_PREPARE})
+    def coupling_prepare_proxy_contacts(self, state, contacts, *, contacts_freshly_detected=False):
+        del state, contacts, contacts_freshly_detected
+        raise NotImplementedError("proxy contact preparation is unsupported")
 
 
 class _FakeProxyCollisionPipeline:
@@ -970,7 +993,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         )
 
         self.model.body_inv_mass.assign(np.array([0.25, 0.125], dtype=np.float32))
-        coupled.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+        coupled.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
 
         view_a_inv_mass = coupled.view("A").body_inv_mass.numpy()
         view_b_inv_mass = coupled.view("B").body_inv_mass.numpy()
@@ -996,7 +1019,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.model.body_inertia.assign(parent_inertia)
         self.model.body_inv_inertia.assign(np.linalg.inv(parent_inertia))
 
-        coupled.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+        coupled.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
 
         scale = 1.0 + gamma
         view_a = coupled.view("A")
@@ -1841,6 +1864,7 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
         point_b = wp.zeros(capacity, dtype=wp.vec3, device=device)
         shape_a = wp.full(capacity, -1, dtype=int, device=device)
         shape_b = wp.full(capacity, -1, dtype=int, device=device)
+        contact_id = wp.full(capacity, -1, dtype=int, device=device)
         point_id = wp.full(capacity, -1, dtype=int, device=device)
         active = wp.zeros(capacity, dtype=int, device=device)
         normal = wp.zeros(capacity, dtype=wp.vec3, device=device)
@@ -1868,6 +1892,7 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
                 wp.array([0.01], dtype=float, device=device),
                 wp.array([0.02], dtype=float, device=device),
                 wp.array([23], dtype=int, device=device),
+                wp.array([-1], dtype=wp.int32, device=device),
                 wp.array([5, 7], dtype=int, device=device),
                 body_mask_a,
                 body_mask_b,
@@ -1880,15 +1905,11 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
                 wp.array([0.25, 1.0], dtype=float, device=device),
                 0.0,
                 1,
+                0,
                 capacity,
                 active_count,
                 active_count_max,
-                wp.full(capacity, -1, dtype=int, device=device),
-                wp.full(capacity, -1, dtype=int, device=device),
-                wp.full(capacity, -1, dtype=int, device=device),
-                wp.zeros(1, dtype=int, device=device),
                 wp.zeros(capacity, dtype=int, device=device),
-                wp.zeros(capacity, dtype=wp.vec3, device=device),
                 wp.zeros(capacity, dtype=wp.vec3, device=device),
             ],
             outputs=[
@@ -1896,6 +1917,7 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
                 point_a,
                 body_b,
                 point_b,
+                contact_id,
                 shape_a,
                 shape_b,
                 point_id,
@@ -1913,6 +1935,7 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
         self.assertEqual(int(active_count.numpy()[0]), 1)
         self.assertEqual(int(body_a.numpy()[0]), 0)
         self.assertEqual(int(body_b.numpy()[0]), 1)
+        self.assertEqual(int(contact_id.numpy()[0]), 0)
         self.assertEqual(int(point_id.numpy()[0]), 23)
         np.testing.assert_allclose(W.numpy()[0], np.sqrt(1.5), rtol=1.0e-6)
         np.testing.assert_allclose(friction.numpy()[0], 0.5, rtol=1.0e-6)
@@ -2111,7 +2134,7 @@ class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
         )
         dst_solver = _StepCountingCopySolver.instances["dst"]
         self.assertTrue(
-            any(flags & int(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES) for flags in dst_solver.model_notify_flags)
+            any(flags & int(newton.ModelFlags.BODY_INERTIAL_PROPERTIES) for flags in dst_solver.model_notify_flags)
         )
 
     def test_notify_model_changed_reapplies_proxy_body_effective_inertia(self):
@@ -2154,7 +2177,7 @@ class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
         model.body_inertia.assign(parent_inertia)
         model.body_inv_inertia.assign(np.linalg.inv(parent_inertia))
 
-        coupled.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+        coupled.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
 
         dst_view = coupled.view("dst")
         owned_local = self._entry_body_local(coupled, "dst", 1)
@@ -2593,7 +2616,7 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         dst_view = coupled.view("dst")
         np.testing.assert_allclose(dst_view.particle_mass.numpy()[0], 1.0)
         dst_solver = _StepCountingCopySolver.instances["dst"]
-        self.assertTrue(any(flags & int(SolverNotifyFlags.MODEL_PROPERTIES) for flags in dst_solver.model_notify_flags))
+        self.assertTrue(any(flags & int(newton.ModelFlags.MODEL_PROPERTIES) for flags in dst_solver.model_notify_flags))
 
     def test_proxy_mass_uses_source_effective_mass_hook(self):
         _CustomEffectiveMassParticleSolver.instances.clear()
@@ -2721,6 +2744,7 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
 
         dst_solver = _ParticleHarvestStateRecordingSolver.instances[-1]
         np.testing.assert_allclose(dst_solver.harvest_particle_qd[0], np.zeros(3), atol=1.0e-6)
+        np.testing.assert_allclose(dst_solver.harvest_particle_qd_before[0], np.zeros(3), atol=1.0e-6)
         np.testing.assert_allclose(dst_solver.harvest_particle_qd_out[0], np.array([0.0, 2.0, 0.0]), atol=1.0e-6)
         self.assertIsNone(dst_solver.harvest_contacts)
 
@@ -2998,6 +3022,7 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
 
         dst_solver = _BodyHarvestStateRecordingSolver.instances[-1]
         np.testing.assert_allclose(dst_solver.harvest_body_qd[0], np.zeros(6), atol=1.0e-6)
+        np.testing.assert_allclose(dst_solver.harvest_body_qd_before[0], np.zeros(6), atol=1.0e-6)
 
     def test_proxy_iterations_restore_subsolver_inputs(self):
         """Each proxy relaxation pass should restart from the top-level input state."""
