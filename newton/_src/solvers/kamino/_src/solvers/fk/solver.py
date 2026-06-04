@@ -32,8 +32,6 @@ from ...utils.world_equivalence import DiscreteSignature, compute_equivalence_cl
 from .kernels import (
     _add_regularizer_to_diagonal,
     _apply_line_search_step,
-    _copy_bool_mask_to_int32,
-    _copy_int32_mask_to_bool,
     _correct_actuator_coords,
     _eval_actuator_coords,
     _eval_body_velocities,
@@ -564,7 +562,7 @@ class ForwardKinematicsSolver:
             self.line_search_iteration = wp.array(dtype=wp.int32, shape=(self.num_worlds,))  # Iteration count
             self.line_search_loop_condition = wp.array(dtype=wp.int32, shape=(1,))  # Loop condition
             self.all_worlds_mask = wp.full(shape=(self.num_worlds,), value=True, dtype=wp.bool)
-            self.line_search_success = wp.array(dtype=wp.int32, shape=(self.num_worlds,))  # Convergence, per world
+            self.line_search_success = wp.array(dtype=wp.bool, shape=(self.num_worlds,))  # Convergence, per world
             self.line_search_mask = wp.array(
                 dtype=wp.bool, shape=(self.num_worlds,)
             )  # Flag to keep iterating per world
@@ -582,10 +580,7 @@ class ForwardKinematicsSolver:
             self.min_newton_iterations = wp.zeros(dtype=wp.int32, shape=(self.num_worlds,))  # Min iterations
             self.newton_iteration = wp.array(dtype=wp.int32, shape=(self.num_worlds,))  # Iteration count
             self.newton_loop_condition = wp.array(dtype=wp.int32, shape=(1,))  # Loop condition
-            self.newton_success = wp.array(dtype=wp.int32, shape=(self.num_worlds,))  # Convergence per world
-            self.newton_success_mask = wp.array(
-                dtype=wp.bool, shape=(self.num_worlds,)
-            )  # Boolean view of convergence for mask-only kernels
+            self.newton_success = wp.array(dtype=wp.bool, shape=(self.num_worlds,))  # Convergence per world
             self.newton_mask = wp.array(dtype=wp.bool, shape=(self.num_worlds,))  # Flag to keep iterating per world
             if self.config.use_regularization and self.config.use_incremental_solve:
                 # Flags to keep track of in what worlds Jacobians should be updated before/after controls
@@ -909,7 +904,7 @@ class ForwardKinematicsSolver:
     def _reset_state(
         self,
         bodies_q: wp.array[wp.transformf],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
     ):
         """
         Internal function resetting the bodies state to the reference state stored in the model.
@@ -939,7 +934,7 @@ class ForwardKinematicsSolver:
         self,
         bodies_q: wp.array[wp.transformf],
         base_q: wp.array[wp.transformf],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
     ):
         """
         Internal function resetting the bodies state to a rigid transformation of the reference state,
@@ -1057,7 +1052,7 @@ class ForwardKinematicsSolver:
     def _update_incremental_target_actuators_q(
         self,
         iteration: wp.array[wp.int32],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
     ):
         """
         Internal evaluator, updating the incremental target for actuator coordinates by interpolating
@@ -1105,7 +1100,7 @@ class ForwardKinematicsSolver:
         self,
         bodies_q: wp.array[wp.transformf],
         pos_control_transforms: wp.array[wp.transformf],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
         constraints: wp.array2d[wp.float32],
     ):
         """
@@ -1177,7 +1172,7 @@ class ForwardKinematicsSolver:
         self,
         bodies_q: wp.array[wp.transformf],
         pos_control_transforms: wp.array[wp.transformf],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
         constraints_jacobian: wp.array3d[wp.float32],
     ):
         """
@@ -1221,7 +1216,7 @@ class ForwardKinematicsSolver:
         self,
         bodies_q: wp.array[wp.transformf],
         pos_control_transforms: wp.array[wp.transformf],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
     ):
         """
         Internal evaluator for the sparse kinematic constraints Jacobian with respect to body poses, from body poses
@@ -1274,7 +1269,7 @@ class ForwardKinematicsSolver:
         self,
         bodies_q: wp.array[wp.transformf],
         pos_control_transforms: wp.array[wp.transformf],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
     ):
         """
         Convenience function updating the constraints Jacobian, given body poses and position-control
@@ -1288,7 +1283,7 @@ class ForwardKinematicsSolver:
 
     def _update_lhs(
         self,
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
     ):
         """
         Convenience function updating the system left-hand side (J^T * J + regularization, optionally),
@@ -1316,7 +1311,7 @@ class ForwardKinematicsSolver:
     def _update_gradient(
         self,
         bodies_q: wp.array[wp.transformf],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
     ):
         """
         Convenience function updating the objective gradient (J^T * constraints + regularization, optionally),
@@ -1362,7 +1357,7 @@ class ForwardKinematicsSolver:
         self,
         x: wp.array2d[wp.float32],
         y: wp.array2d[wp.float32],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
         alpha: wp.float32,
         beta: wp.float32,
     ):
@@ -1398,7 +1393,7 @@ class ForwardKinematicsSolver:
         self,
         x: wp.array2d[wp.float32],
         y: wp.array2d[wp.float32],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
     ):
         """
         Internal evaluator for y = lhs * x, using the assembled sparse Jacobian J,
@@ -1540,7 +1535,7 @@ class ForwardKinematicsSolver:
     def _update_cg_tolerance(
         self,
         residual_norm: wp.array[wp.float32],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
     ):
         """
         Internal function heuristically adapting the CG tolerance based on the current constraint/gradient residual
@@ -1670,7 +1665,7 @@ class ForwardKinematicsSolver:
         actuators_u: wp.array[wp.float32],
         bodies_q: wp.array[wp.transformf],
         bodies_u: wp.array[vec6f],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
     ):
         """
         Internal function solving for body velocities, so that constraint velocities are zero,
@@ -1848,7 +1843,7 @@ class ForwardKinematicsSolver:
         bodies_q: wp.array[wp.transformf],
         bodies_u: wp.array[vec6f],
         base_u: wp.array[vec6f] | None = None,
-        world_mask: wp.array[bool] | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
     ):
         """
         Graph-capturable function solving for body velocities as a post-processing to the FK solve.
@@ -1905,7 +1900,7 @@ class ForwardKinematicsSolver:
         actuators_u: wp.array[wp.float32] | None = None,
         base_u: wp.array[vec6f] | None = None,
         bodies_u: wp.array[vec6f] | None = None,
-        world_mask: wp.array[bool] | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
     ):
         """
         Graph-capturable function solving forward kinematics with Gauss-Newton.
@@ -1963,7 +1958,7 @@ class ForwardKinematicsSolver:
         if world_mask is not None:
             self.newton_mask.assign(world_mask)
         else:
-            self.newton_mask.fill_(True)
+            wp.copy(self.newton_mask, self.all_worlds_mask)
         self.min_newton_iterations.fill_(-1)  # To disregard min iterations in initial Newton check
 
         # Optionally reset state
@@ -1994,14 +1989,7 @@ class ForwardKinematicsSolver:
             self._update_gradient(bodies_q, self.newton_mask)
         self._eval_max_residual(self.constraints, self.grad, self.max_residual)
         self.newton_loop_condition.zero_()
-        # Seed with the initial world mask so skipped worlds never look like successful line-search candidates.
-        wp.launch(
-            _copy_bool_mask_to_int32,
-            dim=self.num_worlds,
-            inputs=[self.newton_mask],
-            outputs=[self.line_search_success],
-            device=self.device,
-        )
+        wp.copy(self.line_search_success, self.newton_mask)  # To disregard line search success in initial Newton check
         wp.launch(
             _newton_check,
             dim=(self.num_worlds,),
@@ -2030,15 +2018,8 @@ class ForwardKinematicsSolver:
 
         # Velocity solve, for worlds where FK ran and was successful
         if bodies_u is not None:
-            wp.launch(
-                _copy_int32_mask_to_bool,
-                dim=self.num_worlds,
-                inputs=[self.newton_success],
-                outputs=[self.newton_success_mask],
-                device=self.device,
-            )
             self._solve_for_body_velocities(
-                self.pos_control_transforms, base_u, actuators_u, bodies_q, bodies_u, self.newton_success_mask
+                self.pos_control_transforms, base_u, actuators_u, bodies_q, bodies_u, self.newton_success
             )
 
     def solve_fk(
@@ -2049,7 +2030,7 @@ class ForwardKinematicsSolver:
         actuators_u: wp.array[wp.float32] | None = None,
         base_u: wp.array[vec6f] | None = None,
         bodies_u: wp.array[vec6f] | None = None,
-        world_mask: wp.array[bool] | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         verbose: bool = False,
         return_status: bool = False,
         use_graph: bool = True,

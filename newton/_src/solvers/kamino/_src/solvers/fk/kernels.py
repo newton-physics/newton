@@ -32,8 +32,6 @@ from .types import FKJointDoFType
 __all__ = [
     "_add_regularizer_to_diagonal",
     "_apply_line_search_step",
-    "_copy_bool_mask_to_int32",
-    "_copy_int32_mask_to_bool",
     "_correct_actuator_coords",
     "_eval_actuator_coords",
     "_eval_body_velocities",
@@ -102,46 +100,12 @@ def read_quat_from_array(array: wp.array[wp.float32], offset: int, normalize: bo
 
 
 @wp.kernel
-def _copy_bool_mask_to_int32(
-    # Inputs
-    mask: wp.array[bool],
-    # Outputs
-    out: wp.array[wp.int32],
-):
-    """Copy a boolean mask into an integer mask buffer.
-
-    Args:
-        mask: Per-world boolean source mask.
-        out: Destination mask with 1 for active worlds and 0 for skipped worlds.
-    """
-    wid = wp.tid()
-    out[wid] = wp.int32(mask[wid])
-
-
-@wp.kernel
-def _copy_int32_mask_to_bool(
-    # Inputs
-    mask: wp.array[wp.int32],
-    # Outputs
-    out: wp.array[bool],
-):
-    """Copy an integer mask into a boolean mask buffer.
-
-    Args:
-        mask: Source mask with non-zero values for active worlds.
-        out: Destination boolean mask.
-    """
-    wid = wp.tid()
-    out[wid] = mask[wid] != 0
-
-
-@wp.kernel
 def _reset_state(
     # Inputs
     num_bodies: wp.array[wp.int32],
     first_body_id: wp.array[wp.int32],
     bodies_q_0_flat: wp.array[wp.float32],
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
     # Outputs
     bodies_q_flat: wp.array[wp.float32],
 ):
@@ -175,7 +139,7 @@ def _reset_state_base_q(
     num_bodies: wp.array[wp.int32],
     first_body_id: wp.array[wp.int32],
     bodies_q_0: wp.array[wp.transformf],
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
     # Outputs
     bodies_q: wp.array[wp.transformf],
 ):
@@ -494,7 +458,7 @@ def _eval_incremental_target_actuator_coords(
     actuators_q_next: wp.array[wp.float32],
     delta_q_max: wp.array[wp.float32],
     iteration: wp.array[wp.int32],
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
     # Outputs
     actuators_q_curr: wp.array[wp.float32],
 ):
@@ -611,11 +575,11 @@ def create_eval_min_num_iterations_kernel(TILE_SIZE: int):
 @wp.kernel
 def _initialize_jacobian_update_masks(
     # Inputs
-    newton_mask: wp.array[bool],
+    newton_mask: wp.array[wp.bool],
     min_iterations: wp.array[wp.int32],
     # Outputs
-    jacobian_early_update_mask: wp.array[bool],
-    jacobian_late_update_mask: wp.array[bool],
+    jacobian_early_update_mask: wp.array[wp.bool],
+    jacobian_late_update_mask: wp.array[wp.bool],
 ):
     """
     Kernel initializing the early/late Jacobian update masks for the first iteration, depending
@@ -726,7 +690,7 @@ def _eval_unit_quaternion_constraints(
     num_bodies: wp.array[wp.int32],
     first_body_id: wp.array[wp.int32],
     bodies_q: wp.array[wp.transformf],
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
     # Outputs
     constraints: wp.array2d[wp.float32],
 ):
@@ -777,7 +741,7 @@ def create_eval_joint_constraints_kernel(has_universal_joints: bool):
         bodies_q: wp.array[wp.transformf],
         pos_control_transforms: wp.array[wp.transformf],
         ct_full_to_red_map: wp.array[wp.int32],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
         # Outputs
         constraints: wp.array2d[wp.float32],
     ):
@@ -895,7 +859,7 @@ def _eval_unit_quaternion_constraints_jacobian(
     num_bodies: wp.array[wp.int32],
     first_body_id: wp.array[wp.int32],
     bodies_q: wp.array[wp.transformf],
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
     # Outputs
     constraints_jacobian: wp.array3d[wp.float32],
 ):
@@ -935,7 +899,7 @@ def _eval_unit_quaternion_constraints_sparse_jacobian(
     first_body_id: wp.array[wp.int32],
     bodies_q: wp.array[wp.transformf],
     rb_nzb_id: wp.array[wp.int32],
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
     # Outputs
     jacobian_nzb: wp.array[block_type],
 ):
@@ -992,7 +956,7 @@ def create_eval_joint_constraints_jacobian_kernel(has_universal_joints: bool):
         bodies_q: wp.array[wp.transformf],
         pos_control_transforms: wp.array[wp.transformf],
         ct_full_to_red_map: wp.array[wp.int32],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
         # Outputs
         constraints_jacobian: wp.array3d[wp.float32],
     ):
@@ -1158,7 +1122,7 @@ def create_eval_joint_constraints_sparse_jacobian_kernel(has_universal_joints: b
         pos_control_transforms: wp.array[wp.transformf],
         ct_nzb_id_base: wp.array[wp.int32],
         ct_nzb_id_follower: wp.array[wp.int32],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
         # Outputs
         jacobian_nzb: wp.array[block_type],
     ):
@@ -1370,7 +1334,7 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
         # Inputs
         constraints_jacobian: wp.array3d[wp.float32],
         tile_sparsity_pattern: wp.array3d[wp.int32],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
         # Outputs
         jacobian_T_jacobian: wp.array3d[wp.float32],
     ):
@@ -1424,7 +1388,7 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
         constraints_jacobian: wp.array3d[wp.float32],
         constraints: wp.array2d[wp.float32],
         tile_sparsity_pattern: wp.array3d[wp.int32],
-        world_mask: wp.array[bool],
+        world_mask: wp.array[wp.bool],
         # Outputs
         jacobian_T_constraints: wp.array2d[wp.float32],
     ):
@@ -1662,7 +1626,7 @@ def _add_regularizer_to_diagonal(
     # Inputs
     reg_weight: wp.float32,
     active_size: wp.array[wp.int32],
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
     # Outputs
     A: wp.array3d[wp.float32],
 ):
@@ -1689,7 +1653,7 @@ def _eval_regularizer_gradient(
     reg_weight: wp.float32,
     bodies_q_flat: wp.array[wp.float32],
     bodies_q_ref_flat: wp.array[wp.float32],
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
     # Outputs
     gradient: wp.array2d[wp.float32],
 ):
@@ -1725,7 +1689,7 @@ def _eval_linear_combination(
     beta: wp.float32,
     y: wp.array2d[wp.float32],
     num_rows: wp.array[wp.int32],
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
     # Outputs
     z: wp.array2d[wp.float32],
 ):
@@ -1755,7 +1719,7 @@ def _eval_stepped_state(
     bodies_q_0_flat: wp.array[wp.float32],
     alpha: wp.array[wp.float32],
     step: wp.array2d[wp.float32],
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
     # Outputs
     bodies_q_alpha_flat: wp.array[wp.float32],
 ):
@@ -1785,7 +1749,7 @@ def _apply_line_search_step(
     num_bodies: wp.array[wp.int32],
     first_body_id: wp.array[wp.int32],
     bodies_q_alpha: wp.array[wp.transformf],
-    line_search_success: wp.array[wp.int32],
+    line_search_success: wp.array[wp.bool],
     # Outputs
     bodies_q: wp.array[wp.transformf],
 ):
@@ -1803,7 +1767,7 @@ def _apply_line_search_step(
         bodies_q: Output state (rigid body poses)
     """
     wd_id, rb_id_loc = wp.tid()  # Thread indices (= world index, body index)
-    if wd_id < num_bodies.shape[0] and line_search_success[wd_id] != 0 and rb_id_loc < num_bodies[wd_id]:
+    if wd_id < num_bodies.shape[0] and line_search_success[wd_id] and rb_id_loc < num_bodies[wd_id]:
         rb_id_tot = first_body_id[wd_id] + rb_id_loc
         bodies_q[rb_id_tot] = bodies_q_alpha[rb_id_tot]
 
@@ -1818,8 +1782,8 @@ def _line_search_check(
     iteration: wp.array[wp.int32],
     max_iterations: wp.array[wp.int32],
     # Outputs
-    line_search_success: wp.array[wp.int32],
-    line_search_mask: wp.array[bool],
+    line_search_success: wp.array[wp.bool],
+    line_search_mask: wp.array[wp.bool],
     line_search_loop_condition: wp.array[wp.int32],
 ):
     """
@@ -1844,7 +1808,7 @@ def _line_search_check(
         success = (
             wp.isfinite(val_alpha[wd_id]) and val_alpha[wd_id] <= val_0[wd_id] + 1e-4 * alpha[wd_id] * grad_0[wd_id]
         )
-        line_search_success[wd_id] = wp.int32(success)
+        line_search_success[wd_id] = success
         continue_loop_world = iteration[wd_id] < max_iterations[0] and not success
         line_search_mask[wd_id] = continue_loop_world
         if continue_loop_world:
@@ -1860,13 +1824,13 @@ def _newton_check(
     iteration: wp.array[wp.int32],
     min_iterations: wp.array[wp.int32],
     max_iterations: wp.array[wp.int32],
-    line_search_success: wp.array[wp.int32],
+    line_search_success: wp.array[wp.bool],
     # Outputs
-    newton_success: wp.array[wp.int32],
-    newton_mask: wp.array[bool],
+    newton_success: wp.array[wp.bool],
+    newton_mask: wp.array[wp.bool],
     newton_loop_condition: wp.array[wp.int32],
-    jacobian_early_update_mask: wp.array[bool],
-    jacobian_late_update_mask: wp.array[bool],
+    jacobian_early_update_mask: wp.array[wp.bool],
+    jacobian_late_update_mask: wp.array[wp.bool],
 ):
     """
     A kernel checking the convergence (max residual vs tolerance) in each world, and updating the looping
@@ -1899,12 +1863,12 @@ def _newton_check(
         max_residual_wd = max_residual[wd_id]
         is_finite = wp.isfinite(max_residual_wd)
         success = is_finite and reached_min_it and max_residual_wd <= tolerance[0]
-        newton_success[wd_id] = wp.int32(success)
+        newton_success[wd_id] = success
         newton_continue_world = (
             iteration_next < max_iterations[0]
             and not success
             and is_finite  # Abort when encountering NaN / Inf values
-            and line_search_success[wd_id] != 0  # Abort in case of line search failure
+            and line_search_success[wd_id]  # Abort in case of line search failure
         )
         newton_mask[wd_id] = newton_continue_world
         if jacobian_early_update_mask.shape[0] > 0:
@@ -1924,7 +1888,7 @@ def _eval_target_constraint_velocities(
     actuated_dofs_offset: wp.array[wp.int32],
     ct_full_to_red_map: wp.array[wp.int32],
     actuators_u: wp.array[wp.float32],
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
     # Outputs
     target_cts_u: wp.array2d[wp.float32],
 ):
@@ -1994,7 +1958,7 @@ def _eval_body_velocities(
     first_body_id: wp.array[wp.int32],
     bodies_q: wp.array[wp.transformf],
     bodies_q_dot: wp.array2d[wp.float32],
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
     # Outputs
     bodies_u: wp.array[vec6f],
 ):
@@ -2040,7 +2004,7 @@ def _eval_body_velocities(
 def _update_cg_tolerance_kernel(
     # Input
     max_residual: wp.array[wp.float32],
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
     # Output
     atol: wp.array[wp.float32],
     rtol: wp.array[wp.float32],
