@@ -1143,6 +1143,9 @@ class Model:
         """Deprecated alias for :attr:`joint_target_q` (DOF-shape only).
         Raises :class:`AttributeError` when this Model was built under
         :attr:`use_coord_layout_targets` ``True``.
+
+        .. deprecated:: 1.3
+            Use :attr:`joint_target_q` instead.
         """
         import warnings  # noqa: PLC0415
 
@@ -1177,6 +1180,9 @@ class Model:
         """Deprecated alias for :attr:`joint_target_qd`. Raises
         :class:`AttributeError` when this Model was built under
         :attr:`use_coord_layout_targets` ``True``.
+
+        .. deprecated:: 1.3
+            Use :attr:`joint_target_qd` instead.
         """
         import warnings  # noqa: PLC0415
 

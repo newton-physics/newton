@@ -7392,11 +7392,14 @@ class SolverMuJoCo(SolverBase):
         # Validate authored RAW ``mujoco.solreflimit`` values once per notify.
         # MuJoCo's solref domain is ``(timeconst > 0, dampratio > 0)`` for the
         # standard interpretation or ``(< 0, < 0)`` for the direct
-        # stiffness/damping mode; mixed signs or zero components silently
-        # disable the limit or trigger divide-by-zero in MuJoCo's
+        # stiffness/damping mode; mixed signs or a single zero component
+        # silently disable the limit or trigger divide-by-zero in MuJoCo's
         # ``k_eff = 1/(τ²·ζ²)``. Surface the misconfiguration once via a
         # warning so users can correct the authored value; the kernel cannot
-        # warn from inside Warp.
+        # warn from inside Warp. The all-zero ``(0, 0)`` solref is the
+        # documented MuJoCo "inherit the model default" sentinel and is
+        # forwarded verbatim, so it is intentionally excluded here -- matching
+        # the MJCF importer, which preserves it without warning.
         if (
             joint_limit_solref_mode is not None
             and joint_limit_solref is not None
@@ -7408,7 +7411,10 @@ class SolverMuJoCo(SolverBase):
             if np.any(raw_mask):
                 tc = raw_np[raw_mask, 0]
                 dr = raw_np[raw_mask, 1]
-                invalid = (tc == 0.0) | (dr == 0.0) | (np.sign(tc) != np.sign(dr))
+                # ``(0, 0)`` is the MuJoCo inherit-default sentinel, not a
+                # misconfiguration; flag only a single zero or mixed signs.
+                both_zero = (tc == 0.0) & (dr == 0.0)
+                invalid = ((tc == 0.0) | (dr == 0.0) | (np.sign(tc) != np.sign(dr))) & ~both_zero
                 if np.any(invalid):
                     bad = np.flatnonzero(raw_mask)[invalid]
                     warnings.warn(

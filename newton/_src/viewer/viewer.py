@@ -1896,6 +1896,10 @@ class ViewerBase(ABC):
     def update_shape_colors(self, shape_colors: dict[int, wp.vec3 | tuple[float, float, float]]):
         """
         Set colors for a set of shapes at runtime.
+
+        .. deprecated:: 1.1
+            Write to :attr:`Model.shape_color` instead.
+
         Args:
             shape_colors: mapping from shape index -> color
         """

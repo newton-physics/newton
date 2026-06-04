@@ -22,6 +22,7 @@ import warp as wp
 from newton._src.core.types import MAXVAL
 from newton._src.math import quat_velocity
 from newton._src.sim import JointType
+from newton._src.sim.contacts import contact_surface_point, contact_surface_separation
 from newton._src.solvers.solver import integrate_rigid_body
 
 wp.set_module_options({"enable_backward": False})
@@ -647,12 +648,10 @@ def evaluate_rigid_contact_from_collision(
     x_com_a_now = wp.transform_point(X_wa, body_a_com_local)
     x_com_b_now = wp.transform_point(X_wb, body_b_com_local)
 
-    anchor_a_local = contact_point_a_local + contact_offset_a_local
-    anchor_b_local = contact_point_b_local + contact_offset_b_local
-    x_c_a_now = wp.transform_point(X_wa, anchor_a_local)
-    x_c_b_now = wp.transform_point(X_wb, anchor_b_local)
-    x_c_a_prev = wp.transform_point(X_wa_prev, anchor_a_local)
-    x_c_b_prev = wp.transform_point(X_wb_prev, anchor_b_local)
+    x_c_a_now = contact_surface_point(X_wa, contact_point_a_local, contact_offset_a_local)
+    x_c_b_now = contact_surface_point(X_wb, contact_point_b_local, contact_offset_b_local)
+    x_c_a_prev = contact_surface_point(X_wa_prev, contact_point_a_local, contact_offset_a_local)
+    x_c_b_prev = contact_surface_point(X_wb_prev, contact_point_b_local, contact_offset_b_local)
 
     n_outer = wp.outer(contact_normal, contact_normal)
 
@@ -2302,9 +2301,7 @@ def step_body_body_contact_C0_lambda(
         # the unprojected skeleton points (matches update_duals_body_body_contacts).
         cp0 = wp.transform_point(body_q[b0], p0) if b0 >= 0 else p0
         cp1 = wp.transform_point(body_q[b1], p1) if b1 >= 0 else p1
-        thickness = rigid_contact_margin0[i] + rigid_contact_margin1[i]
-        d = cp1 - cp0
-        C0_n = thickness - wp.dot(n, d)
+        C0_n = -contact_surface_separation(cp0, cp1, n, rigid_contact_margin0[i], rigid_contact_margin1[i])
         # Tangential: use surface anchors so spin about a body's symmetry axis
         # registers in the frozen tangential offset, matching tangential_disp
         # in update_duals_body_body_contacts.
@@ -2581,9 +2578,9 @@ def accumulate_body_body_contacts_per_body(
         # for the radial extent, so adding the offset here would double-count it.
         cp0_world = wp.transform_point(body_q[b0], cp0_local) if b0 >= 0 else cp0_local
         cp1_world = wp.transform_point(body_q[b1], cp1_local) if b1 >= 0 else cp1_local
-        thickness = rigid_contact_margin0[contact_idx] + rigid_contact_margin1[contact_idx]
-        d = cp1_world - cp0_world
-        C_n = thickness - wp.dot(contact_normal, d)
+        C_n = -contact_surface_separation(
+            cp0_world, cp1_world, contact_normal, rigid_contact_margin0[contact_idx], rigid_contact_margin1[contact_idx]
+        )
 
         lam_n = float(0.0)
         C_eff = C_n
@@ -2749,9 +2746,9 @@ def compute_rigid_contact_forces(
         wp.transform_point(body_q[b1], cp1_local + cp1_offset_local) if b1 >= 0 else cp1_local + cp1_offset_local
     )
 
-    thickness = rigid_contact_margin0[contact_idx] + rigid_contact_margin1[contact_idx]
-    d = cp1_world - cp0_world
-    C_n = thickness - wp.dot(contact_normal, d)
+    C_n = -contact_surface_separation(
+        cp0_world, cp1_world, contact_normal, rigid_contact_margin0[contact_idx], rigid_contact_margin1[contact_idx]
+    )
 
     lam_n = float(0.0)
     C_eff = C_n
@@ -3697,8 +3694,6 @@ def update_duals_body_body_contacts(
         a1_prev = anchor1_local
 
     n = rigid_contact_normal[idx]
-    d = p1_world - p0_world
-    thickness_total = rigid_contact_margin0[idx] + rigid_contact_margin1[idx]
 
     if hard_contacts == 1:
         k = contact_penalty_k[idx]
@@ -3706,7 +3701,9 @@ def update_duals_body_body_contacts(
         lam_vec = contact_lambda[idx]
         mu = contact_material_mu[idx]
 
-        C_n_raw = thickness_total - wp.dot(n, d)
+        C_n_raw = -contact_surface_separation(
+            p0_world, p1_world, n, rigid_contact_margin0[idx], rigid_contact_margin1[idx]
+        )
         C0_n = wp.dot(n, C0_vec)
         C_stab_n = C_n_raw - avbd_alpha * C0_n
 
@@ -3747,7 +3744,7 @@ def update_duals_body_body_contacts(
     else:
         contact_stick_flag[idx] = int(0)
 
-    C_n = wp.dot(n * thickness_total - d, n)
+    C_n = -contact_surface_separation(p0_world, p1_world, n, rigid_contact_margin0[idx], rigid_contact_margin1[idx])
     if C_n > 0.0:
         contact_penalty_k[idx] = wp.min(contact_material_ke[idx], contact_penalty_k[idx] + beta * C_n)
 
