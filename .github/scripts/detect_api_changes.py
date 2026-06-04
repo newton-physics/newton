@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 """Detect public API changes between two revisions using static AST analysis.
@@ -36,14 +36,21 @@ def _is_public_module(module_name: str) -> bool:
 
 
 def _is_excluded(module_name: str) -> bool:
-    return any(
-        module_name == prefix or module_name.startswith(f"{prefix}.")
-        for prefix in EXCLUDED_MODULE_PREFIXES
-    )
+    return any(module_name == prefix or module_name.startswith(f"{prefix}.") for prefix in EXCLUDED_MODULE_PREFIXES)
 
 
 def _is_public_name(name: str) -> bool:
     return not name.startswith("_")
+
+
+def _is_exported_name(name: str, dunder_all: list[str] | None) -> bool:
+    if dunder_all is not None:
+        return name in dunder_all
+    return _is_public_name(name)
+
+
+def _is_package_module(module_name: str | None) -> bool:
+    return module_name == PACKAGE_NAME or (module_name is not None and module_name.startswith(f"{PACKAGE_NAME}."))
 
 
 def _format_annotation(node: ast.AST | None) -> str:
@@ -53,6 +60,27 @@ def _format_annotation(node: ast.AST | None) -> str:
         return ast.unparse(node)
     except Exception:
         return "?"
+
+
+def _format_value(node: ast.AST | None) -> str | None:
+    if node is None:
+        return None
+    try:
+        return ast.unparse(node)
+    except Exception:
+        return "..."
+
+
+def _make_symbol(
+    kind: str,
+    signature: str | None = None,
+    *,
+    value: str | None = None,
+) -> dict:
+    symbol = {"kind": kind, "signature": signature}
+    if value is not None:
+        symbol["value"] = value
+    return symbol
 
 
 def _format_arguments(args: ast.arguments, *, owner_name: str | None = None) -> list[str]:
@@ -70,7 +98,7 @@ def _format_arguments(args: ast.arguments, *, owner_name: str | None = None) -> 
         rendered.append(f"*{_format_arg(args.vararg, owner_name=owner_name)}")
     elif args.kwonlyargs:
         rendered.append("*")
-    for kw_arg, kw_default in zip(args.kwonlyargs, args.kw_defaults):
+    for kw_arg, kw_default in zip(args.kwonlyargs, args.kw_defaults, strict=True):
         rendered.append(_format_arg(kw_arg, default=kw_default, owner_name=owner_name))
     if args.kwarg:
         rendered.append(f"**{_format_arg(args.kwarg, owner_name=owner_name)}")
@@ -95,7 +123,7 @@ def _format_arg(
     if type_str:
         result += f": {type_str}"
     if default is not None:
-        result += " = ..."
+        result += f" = {_format_value(default) or '...'}"
     return result
 
 
@@ -120,24 +148,45 @@ def _is_enum_class(node: ast.ClassDef) -> bool:
 
 def _extract_dunder_all(tree: ast.Module) -> list[str] | None:
     """Extract __all__ list if defined, else return None."""
+    found = False
+    values: list[str] = []
+
     for node in tree.body:
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "__all__":
-                    return _extract_string_literals(node.value)
-        if isinstance(node, ast.AnnAssign):
+                    extracted = _extract_string_literals(node.value)
+                    if extracted is None:
+                        return None
+                    found = True
+                    values = extracted
+                    break
+        elif isinstance(node, ast.AnnAssign):
             if isinstance(node.target, ast.Name) and node.target.id == "__all__":
-                return _extract_string_literals(node.value)
-    return None
+                extracted = _extract_string_literals(node.value)
+                if extracted is None:
+                    return None
+                found = True
+                values = extracted
+        elif isinstance(node, ast.AugAssign):
+            if isinstance(node.target, ast.Name) and node.target.id == "__all__":
+                extracted = _extract_string_literals(node.value)
+                if not found or not isinstance(node.op, ast.Add) or extracted is None:
+                    return None
+                values.extend(extracted)
+    return values if found else None
 
 
-def _extract_string_literals(node: ast.AST | None) -> list[str]:
+def _extract_string_literals(node: ast.AST | None) -> list[str] | None:
     if not isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-        return []
-    return [
-        item.value for item in node.elts
-        if isinstance(item, ast.Constant) and isinstance(item.value, str)
-    ]
+        return None
+
+    values: list[str] = []
+    for item in node.elts:
+        if not isinstance(item, ast.Constant) or not isinstance(item.value, str):
+            return None
+        values.append(item.value)
+    return values
 
 
 def extract_api_symbols(workspace_root: Path) -> dict[str, dict]:
@@ -175,8 +224,11 @@ def extract_api_symbols(workspace_root: Path) -> dict[str, dict]:
     # Propagate re-exports through __init__ packages so that e.g.
     # newton._src.actuators.__init__ which does `from .actuator import Actuator`
     # gets `Actuator` in its definitions table.
-    for pkg_module_name, pkg_tree in init_modules:
-        _propagate_init_reexports(pkg_module_name, pkg_tree, all_definitions)
+    changed = True
+    while changed:
+        changed = False
+        for pkg_module_name, pkg_tree in init_modules:
+            changed |= _propagate_init_reexports(pkg_module_name, pkg_tree, all_definitions)
 
     # Pass 2: build the public API from public modules only
     symbols: dict[str, dict] = {}
@@ -191,10 +243,9 @@ def extract_api_symbols(workspace_root: Path) -> dict[str, dict]:
             tree = ast.parse(source, filename=str(file_path.relative_to(workspace_root)))
         except (OSError, SyntaxError):
             continue
-        dunder_all = _extract_dunder_all(tree)
-        _extract_module_symbols(tree, module_name, symbols, dunder_all)
-
         is_package = file_path.name == "__init__.py"
+        dunder_all = _extract_dunder_all(tree)
+        _extract_module_symbols(tree, module_name, symbols, dunder_all, is_package)
         _resolve_reexports(tree, module_name, symbols, dunder_all, all_definitions, is_package)
 
     return symbols
@@ -207,23 +258,20 @@ def _collect_definitions(tree: ast.Module, module_name: str, defs: dict[str, dic
             kind = "enum" if _is_enum_class(node) else "class"
             bases = [_format_annotation(base) for base in node.bases]
             sig = f"class {node.name}({', '.join(bases)})" if bases else f"class {node.name}"
-            defs[node.name] = {"kind": kind, "signature": sig}
+            defs[node.name] = _make_symbol(kind, sig)
             for child in node.body:
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     if not _is_public_name(child.name) and child.name != "__init__":
                         continue
                     method_key = f"{node.name}.{child.name}"
-                    defs[method_key] = {
-                        "kind": "method",
-                        "signature": _format_callable_signature(child, owner_name=node.name),
-                    }
+                    defs[method_key] = _make_symbol(
+                        "method",
+                        _format_callable_signature(child, owner_name=node.name),
+                    )
                 elif isinstance(child, (ast.Assign, ast.AnnAssign)):
                     _collect_class_attr_defs(child, node.name, _is_enum_class(node), defs)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            defs[node.name] = {
-                "kind": "function",
-                "signature": _format_callable_signature(node),
-            }
+            defs[node.name] = _make_symbol("function", _format_callable_signature(node))
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
             _collect_module_assignment_defs(node, defs)
 
@@ -235,71 +283,139 @@ def _collect_class_attr_defs(
     defs: dict[str, dict],
 ) -> None:
     if isinstance(node, ast.Assign):
+        value = _format_value(node.value)
         for target in node.targets:
             if isinstance(target, ast.Name) and _is_public_name(target.id):
                 key = f"{class_name}.{target.id}"
                 if is_enum:
-                    defs[key] = {"kind": "enum_member", "signature": None}
+                    defs[key] = _make_symbol("enum_member", value=value)
                 elif target.id.isupper():
-                    defs[key] = {"kind": "constant", "signature": None}
+                    defs[key] = _make_symbol("constant", value=value)
                 else:
-                    defs[key] = {"kind": "attribute", "signature": None}
+                    defs[key] = _make_symbol("attribute", value=value)
     elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
         name = node.target.id
         if _is_public_name(name):
             key = f"{class_name}.{name}"
             annotation = _format_annotation(node.annotation)
+            value = _format_value(node.value)
             if is_enum:
-                defs[key] = {"kind": "enum_member", "signature": None}
+                defs[key] = _make_symbol("enum_member", value=value)
             elif name.isupper():
-                defs[key] = {"kind": "constant", "signature": f"{name}: {annotation}"}
+                defs[key] = _make_symbol("constant", f"{name}: {annotation}", value=value)
             else:
-                defs[key] = {"kind": "attribute", "signature": f"{name}: {annotation}"}
+                defs[key] = _make_symbol("attribute", f"{name}: {annotation}", value=value)
 
 
 def _collect_module_assignment_defs(node: ast.Assign | ast.AnnAssign, defs: dict[str, dict]) -> None:
     if isinstance(node, ast.Assign):
+        value = _format_value(node.value)
         for target in node.targets:
-            if isinstance(target, ast.Name) and _is_public_name(target.id) and target.id.isupper():
-                defs[target.id] = {"kind": "constant", "signature": None}
+            if isinstance(target, ast.Name) and target.id != "__all__" and _is_public_name(target.id):
+                kind = "constant" if target.id.isupper() else "variable"
+                defs[target.id] = _make_symbol(kind, value=value)
     elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
         name = node.target.id
-        if _is_public_name(name) and name.isupper():
+        if name != "__all__" and _is_public_name(name):
             annotation = _format_annotation(node.annotation)
-            defs[name] = {"kind": "constant", "signature": f"{name}: {annotation}"}
+            kind = "constant" if name.isupper() else "variable"
+            defs[name] = _make_symbol(kind, f"{name}: {annotation}", value=_format_value(node.value))
 
 
 def _propagate_init_reexports(
     pkg_module_name: str,
     pkg_tree: ast.Module,
     all_definitions: dict[str, dict[str, dict]],
-) -> None:
+) -> bool:
     """Propagate symbols re-exported via __init__.py into its definition table."""
     pkg_defs = all_definitions.setdefault(pkg_module_name, {})
+    dunder_all = _extract_dunder_all(pkg_tree)
+    changed = False
+
     for node in pkg_tree.body:
         if not isinstance(node, ast.ImportFrom):
             continue
         source_module = _resolve_import_source(node, pkg_module_name, is_package=True)
-        if source_module is None:
+        if not _is_package_module(source_module):
             continue
         source_defs = all_definitions.get(source_module, {})
         for alias in node.names:
             if alias.name == "*":
                 continue
             exported_name = alias.asname or alias.name
-            if exported_name in pkg_defs:
+            if not _is_exported_name(exported_name, dunder_all):
                 continue
             source_def = source_defs.get(alias.name)
             if source_def:
-                pkg_defs[exported_name] = dict(source_def)
+                if exported_name not in pkg_defs:
+                    pkg_defs[exported_name] = dict(source_def)
+                    changed = True
                 if source_def["kind"] in ("class", "enum"):
                     prefix = f"{alias.name}."
                     for key, defn in source_defs.items():
                         if key.startswith(prefix):
-                            member_name = key[len(prefix):]
+                            member_name = key[len(prefix) :]
                             new_key = f"{exported_name}.{member_name}"
                             if new_key not in pkg_defs:
                                 pkg_defs[new_key] = dict(defn)
+                                changed = True
+                elif source_def["kind"] == "module":
+                    changed |= _copy_module_child_definitions(alias.name, exported_name, source_defs, pkg_defs)
+            else:
+                module_name = _resolve_module_alias(source_module, alias.name, all_definitions)
+                if module_name is None:
+                    continue
+                if exported_name not in pkg_defs:
+                    pkg_defs[exported_name] = _make_symbol("module")
+                    changed = True
+                changed |= _copy_module_definitions(module_name, exported_name, all_definitions, pkg_defs)
+    return changed
+
+
+def _resolve_module_alias(
+    source_module: str | None,
+    alias_name: str,
+    all_definitions: dict[str, dict[str, dict]],
+) -> str | None:
+    if source_module is None:
+        return None
+    module_name = f"{source_module}.{alias_name}"
+    return module_name if module_name in all_definitions else None
+
+
+def _copy_module_definitions(
+    source_module: str,
+    target_name: str,
+    all_definitions: dict[str, dict[str, dict]],
+    target_defs: dict[str, dict],
+) -> bool:
+    source_defs = all_definitions.get(source_module, {})
+    changed = False
+    for key, defn in source_defs.items():
+        target_key = f"{target_name}.{key}"
+        if target_key not in target_defs:
+            target_defs[target_key] = dict(defn)
+            changed = True
+    return changed
+
+
+def _copy_module_child_definitions(
+    source_name: str,
+    target_name: str,
+    source_defs: dict[str, dict],
+    target_defs: dict[str, dict],
+) -> bool:
+    prefix = f"{source_name}."
+    changed = False
+    for key, defn in source_defs.items():
+        if not key.startswith(prefix):
+            continue
+        member_name = key[len(prefix) :]
+        target_key = f"{target_name}.{member_name}"
+        if target_key not in target_defs:
+            target_defs[target_key] = dict(defn)
+            changed = True
+    return changed
 
 
 def _resolve_reexports(
@@ -315,16 +431,14 @@ def _resolve_reexports(
         if not isinstance(node, ast.ImportFrom):
             continue
         source_module = _resolve_import_source(node, module_name, is_package=is_package)
-        if source_module is None:
+        if not _is_package_module(source_module):
             continue
         source_defs = all_definitions.get(source_module, {})
         for alias in node.names:
             if alias.name == "*":
                 continue
             exported_name = alias.asname or alias.name
-            if not _is_public_name(exported_name):
-                continue
-            if dunder_all is not None and exported_name not in dunder_all:
+            if not _is_exported_name(exported_name, dunder_all):
                 continue
             path = f"{module_name}.{exported_name}"
             # If we already have a full definition, skip
@@ -336,11 +450,16 @@ def _resolve_reexports(
                 symbols[path] = dict(source_def)
                 # Also pull in child definitions (methods/attributes of classes)
                 if source_def["kind"] in ("class", "enum"):
-                    _resolve_class_children(
-                        alias.name, module_name, exported_name, source_defs, symbols
-                    )
-            elif path not in symbols:
-                symbols[path] = {"kind": "reexport", "signature": None}
+                    _resolve_class_children(alias.name, module_name, exported_name, source_defs, symbols)
+                elif source_def["kind"] == "module":
+                    _resolve_module_children_from_defs(alias.name, module_name, exported_name, source_defs, symbols)
+            else:
+                module_alias = _resolve_module_alias(source_module, alias.name, all_definitions)
+                if module_alias is not None:
+                    symbols[path] = _make_symbol("module")
+                    _resolve_module_children(module_alias, module_name, exported_name, all_definitions, symbols)
+                elif path not in symbols:
+                    symbols[path] = _make_symbol("reexport")
 
 
 def _resolve_class_children(
@@ -355,15 +474,44 @@ def _resolve_class_children(
     for key, defn in source_defs.items():
         if not key.startswith(prefix):
             continue
-        member_name = key[len(prefix):]
+        member_name = key[len(prefix) :]
         target_path = f"{target_module}.{target_class_name}.{member_name}"
         if target_path not in symbols:
             symbols[target_path] = dict(defn)
 
 
-def _resolve_import_source(
-    node: ast.ImportFrom, current_module: str, *, is_package: bool = False
-) -> str | None:
+def _resolve_module_children(
+    source_module: str,
+    target_module: str,
+    target_name: str,
+    all_definitions: dict[str, dict[str, dict]],
+    symbols: dict[str, dict],
+) -> None:
+    source_defs = all_definitions.get(source_module, {})
+    for key, defn in source_defs.items():
+        target_path = f"{target_module}.{target_name}.{key}"
+        if target_path not in symbols:
+            symbols[target_path] = dict(defn)
+
+
+def _resolve_module_children_from_defs(
+    source_name: str,
+    target_module: str,
+    target_name: str,
+    source_defs: dict[str, dict],
+    symbols: dict[str, dict],
+) -> None:
+    prefix = f"{source_name}."
+    for key, defn in source_defs.items():
+        if not key.startswith(prefix):
+            continue
+        member_name = key[len(prefix) :]
+        target_path = f"{target_module}.{target_name}.{member_name}"
+        if target_path not in symbols:
+            symbols[target_path] = dict(defn)
+
+
+def _resolve_import_source(node: ast.ImportFrom, current_module: str, *, is_package: bool = False) -> str | None:
     """Resolve a relative or absolute import to a full module name."""
     if node.level == 0:
         return node.module
@@ -387,29 +535,27 @@ def _extract_module_symbols(
     module_name: str,
     symbols: dict[str, dict],
     dunder_all: list[str] | None,
+    is_package: bool = False,
 ) -> None:
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
-            if not _is_public_name(node.name):
-                continue
-            if dunder_all is not None and node.name not in dunder_all:
+            if not _is_exported_name(node.name, dunder_all):
                 continue
             _extract_class_symbols(node, module_name, symbols)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if not _is_public_name(node.name):
-                continue
-            if dunder_all is not None and node.name not in dunder_all:
+            if not _is_exported_name(node.name, dunder_all):
                 continue
             path = f"{module_name}.{node.name}"
-            symbols[path] = {
-                "kind": "function",
-                "signature": _format_callable_signature(node),
-            }
+            symbols[path] = _make_symbol("function", _format_callable_signature(node))
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
             _extract_assignment_symbols(node, module_name, symbols, dunder_all)
         elif isinstance(node, ast.ImportFrom):
             _extract_reexport_symbols(
-                node, module_name, symbols, dunder_all,
+                node,
+                module_name,
+                symbols,
+                dunder_all,
+                is_package,
             )
 
 
@@ -423,20 +569,20 @@ def _extract_class_symbols(
     kind = "enum" if is_enum else "class"
 
     bases = [_format_annotation(base) for base in node.bases]
-    symbols[class_path] = {
-        "kind": kind,
-        "signature": f"class {node.name}({', '.join(bases)})" if bases else f"class {node.name}",
-    }
+    symbols[class_path] = _make_symbol(
+        kind,
+        f"class {node.name}({', '.join(bases)})" if bases else f"class {node.name}",
+    )
 
     for child in node.body:
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if not _is_public_name(child.name) and child.name != "__init__":
                 continue
             method_path = f"{class_path}.{child.name}"
-            symbols[method_path] = {
-                "kind": "method",
-                "signature": _format_callable_signature(child, owner_name=node.name),
-            }
+            symbols[method_path] = _make_symbol(
+                "method",
+                _format_callable_signature(child, owner_name=node.name),
+            )
         elif isinstance(child, (ast.Assign, ast.AnnAssign)):
             _extract_class_attribute_symbols(child, class_path, is_enum, symbols)
 
@@ -448,26 +594,28 @@ def _extract_class_attribute_symbols(
     symbols: dict[str, dict],
 ) -> None:
     if isinstance(node, ast.Assign):
+        value = _format_value(node.value)
         for target in node.targets:
             if isinstance(target, ast.Name) and _is_public_name(target.id):
                 attr_path = f"{class_path}.{target.id}"
                 if is_enum:
-                    symbols[attr_path] = {"kind": "enum_member", "signature": None}
+                    symbols[attr_path] = _make_symbol("enum_member", value=value)
                 elif target.id.isupper():
-                    symbols[attr_path] = {"kind": "constant", "signature": None}
+                    symbols[attr_path] = _make_symbol("constant", value=value)
                 else:
-                    symbols[attr_path] = {"kind": "attribute", "signature": None}
+                    symbols[attr_path] = _make_symbol("attribute", value=value)
     elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
         name = node.target.id
         if _is_public_name(name):
             annotation = _format_annotation(node.annotation)
             attr_path = f"{class_path}.{name}"
+            value = _format_value(node.value)
             if is_enum:
-                symbols[attr_path] = {"kind": "enum_member", "signature": None}
+                symbols[attr_path] = _make_symbol("enum_member", value=value)
             elif name.isupper():
-                symbols[attr_path] = {"kind": "constant", "signature": f"{name}: {annotation}"}
+                symbols[attr_path] = _make_symbol("constant", f"{name}: {annotation}", value=value)
             else:
-                symbols[attr_path] = {"kind": "attribute", "signature": f"{name}: {annotation}"}
+                symbols[attr_path] = _make_symbol("attribute", f"{name}: {annotation}", value=value)
 
 
 def _extract_assignment_symbols(
@@ -477,26 +625,34 @@ def _extract_assignment_symbols(
     dunder_all: list[str] | None,
 ) -> None:
     if isinstance(node, ast.Assign):
+        value = _format_value(node.value)
         for target in node.targets:
             if not isinstance(target, ast.Name):
                 continue
             name = target.id
-            if name == "__all__" or not _is_public_name(name) or not name.isupper():
+            if name == "__all__":
+                continue
+            if dunder_all is None and (not _is_public_name(name) or not name.isupper()):
                 continue
             if dunder_all is not None and name not in dunder_all:
                 continue
-            symbols[f"{module_name}.{name}"] = {"kind": "constant", "signature": None}
+            kind = "constant" if name.isupper() else "variable"
+            symbols[f"{module_name}.{name}"] = _make_symbol(kind, value=value)
     elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
         name = node.target.id
-        if name == "__all__" or not _is_public_name(name) or not name.isupper():
+        if name == "__all__":
+            return
+        if dunder_all is None and (not _is_public_name(name) or not name.isupper()):
             return
         if dunder_all is not None and name not in dunder_all:
             return
         annotation = _format_annotation(node.annotation)
-        symbols[f"{module_name}.{name}"] = {
-            "kind": "constant",
-            "signature": f"{name}: {annotation}",
-        }
+        kind = "constant" if name.isupper() else "variable"
+        symbols[f"{module_name}.{name}"] = _make_symbol(
+            kind,
+            f"{name}: {annotation}",
+            value=_format_value(node.value),
+        )
 
 
 def _extract_reexport_symbols(
@@ -504,19 +660,21 @@ def _extract_reexport_symbols(
     module_name: str,
     symbols: dict[str, dict],
     dunder_all: list[str] | None,
+    is_package: bool,
 ) -> None:
     """Record re-exported names as public symbols of this module."""
     if node.names and node.names[0].name == "*":
         return
+    source_module = _resolve_import_source(node, module_name, is_package=is_package)
+    if not _is_package_module(source_module):
+        return
     for alias in node.names:
         exported_name = alias.asname or alias.name
-        if not _is_public_name(exported_name):
-            continue
-        if dunder_all is not None and exported_name not in dunder_all:
+        if not _is_exported_name(exported_name, dunder_all):
             continue
         path = f"{module_name}.{exported_name}"
         if path not in symbols:
-            symbols[path] = {"kind": "reexport", "signature": None}
+            symbols[path] = _make_symbol("reexport")
 
 
 def compare_symbols(
@@ -543,11 +701,21 @@ def compare_symbols(
             if base["kind"] != head["kind"]:
                 diffs.append({"field": "kind", "before": base["kind"], "after": head["kind"]})
             if base.get("signature") != head.get("signature"):
-                diffs.append({
-                    "field": "signature",
-                    "before": base.get("signature"),
-                    "after": head.get("signature"),
-                })
+                diffs.append(
+                    {
+                        "field": "signature",
+                        "before": base.get("signature"),
+                        "after": head.get("signature"),
+                    }
+                )
+            if base.get("value") != head.get("value"):
+                diffs.append(
+                    {
+                        "field": "value",
+                        "before": base.get("value"),
+                        "after": head.get("value"),
+                    }
+                )
             if diffs:
                 changed.append({"path": path, "kind": head["kind"], "changes": diffs})
 
@@ -586,7 +754,7 @@ def format_comment(diff: dict) -> str:
         lines.append("### Added")
         lines.append("")
         for item in diff["added"]:
-            sig = item.get("signature") or item["path"].rsplit(".", 1)[-1]
+            sig = _format_reported_symbol(item)
             lines.append(f"- `{item['path']}` ({item['kind']}): `{sig}`")
         lines.append("")
 
@@ -594,7 +762,7 @@ def format_comment(diff: dict) -> str:
         lines.append("### Removed")
         lines.append("")
         for item in diff["removed"]:
-            sig = item.get("signature") or item["path"].rsplit(".", 1)[-1]
+            sig = _format_reported_symbol(item)
             lines.append(f"- `{item['path']}` ({item['kind']}): `{sig}`")
         lines.append("")
 
@@ -610,12 +778,20 @@ def format_comment(diff: dict) -> str:
                     if change["after"]:
                         lines.append(f"  - after: `{change['after']}`")
                 else:
-                    lines.append(
-                        f"  - {change['field']}: `{change['before']}` -> `{change['after']}`"
-                    )
+                    lines.append(f"  - {change['field']}: `{change['before']}` -> `{change['after']}`")
         lines.append("")
 
     return "\n".join(lines)
+
+
+def _format_reported_symbol(item: dict) -> str:
+    signature = item.get("signature")
+    value = item.get("value")
+    if value is None:
+        return signature or item["path"].rsplit(".", 1)[-1]
+    if signature:
+        return f"{signature} = {value}"
+    return f"{item['path'].rsplit('.', 1)[-1]} = {value}"
 
 
 def main() -> int:
