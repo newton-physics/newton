@@ -65,7 +65,7 @@ class TestInertiaValidation(unittest.TestCase):
         bound_inertia = 1.0
         inertia = wp.mat33([[0.1, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 0.5]])
 
-        with self.assertWarns(UserWarning):
+        with self.assertWarnsRegex(UserWarning, r"Minimum eigenvalue .* is below bound"):
             corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(
                 mass, inertia, bound_inertia=bound_inertia
             )
