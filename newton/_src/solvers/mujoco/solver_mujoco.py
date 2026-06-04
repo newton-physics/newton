@@ -4637,8 +4637,9 @@ class SolverMuJoCo(SolverBase):
                 return int(joint_solref_limit_mode[dof_idx]) == SOLREF_MODE_RAW
             return bool(np.any(joint_solref_limit[dof_idx] != 0.0))
 
-        # Per-row equality arrays materialize only when constraints exist; when there are none,
-        # these read back as None (handled below) like every other absent custom attribute.
+        # Read the per-row equality arrays through the None-safe helper. finalize() materializes
+        # these as shape-stable empty arrays even with no constraints, but the None-safe path keeps
+        # this robust for models assembled without the standard custom-attribute pipeline.
         eq_constraint_type = get_custom_attribute("equality_constraint_type")
         eq_constraint_body1 = get_custom_attribute("equality_constraint_body1")
         eq_constraint_body2 = get_custom_attribute("equality_constraint_body2")
@@ -6834,8 +6835,8 @@ class SolverMuJoCo(SolverBase):
 
         q_rel = wp.zeros(neq, dtype=wp.quat, device=model.device)
         t_rel = wp.zeros(neq, dtype=wp.vec3, device=model.device)
-        # No equality constraints means the per-row arrays were never materialized; skip the
-        # launch rather than dereferencing absent ``model.mujoco.equality_constraint_*`` arrays.
+        # Nothing to launch with no equality constraints; the per-row arrays are present but
+        # empty (finalize keeps them shape-stable), so skip the zero-width launch.
         if neq == 0:
             return q_rel, t_rel
 
@@ -7688,7 +7689,8 @@ class SolverMuJoCo(SolverBase):
         body_world = model.body_world.numpy()
         joint_world = model.joint_world.numpy()
         shape_world = model.shape_world.numpy()
-        # The per-row equality array is absent when there are no equality constraints.
+        # finalize() materializes this as an empty array at zero rows; guard on the count anyway
+        # so models assembled without the standard pipeline still work.
         eq_constraint_world = (
             model.mujoco.equality_constraint_world.numpy()
             if model.mujoco.equality_constraint_count > 0

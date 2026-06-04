@@ -297,6 +297,43 @@ class TestEqualityConstraints(unittest.TestCase):
         np.testing.assert_allclose(solref[1], default_solref)
         np.testing.assert_allclose(solref[2], [7.0, 7.0])
 
+    def test_zero_constraint_model_exposes_shape_stable_equality_arrays(self):
+        """A constraint-free finalized model still exposes the equality namespace arrays.
+
+        The deprecation message points callers at ``model.mujoco.equality_constraint_*``, so those
+        fields must stay shape-stable (empty arrays) even with no constraints rather than being
+        absent. The deprecated top-level ``model.equality_constraint_*`` accessor must forward to
+        the same empty array, not ``None``.
+        """
+        model = newton.ModelBuilder().finalize()
+
+        self.assertEqual(model.mujoco.equality_constraint_count, 0)
+
+        # Each per-row field must be present and read back as an empty (zero-row) array rather
+        # than being absent. Vector-typed fields additionally keep their per-row width.
+        fields = [
+            ("equality_constraint_type", ()),
+            ("equality_constraint_body1", ()),
+            ("equality_constraint_anchor", (3,)),
+            ("equality_constraint_polycoef", ()),
+            ("equality_constraint_enabled", ()),
+            ("equality_constraint_world", ()),
+            ("eq_solref", (2,)),
+            ("eq_solimp", (5,)),
+        ]
+        for name, row_shape in fields:
+            self.assertTrue(hasattr(model.mujoco, name), f"model.mujoco.{name} should exist at zero rows")
+            arr = getattr(model.mujoco, name).numpy()
+            self.assertEqual(arr.shape[0], 0, f"model.mujoco.{name} should be empty at zero rows")
+            self.assertEqual(arr.shape[1:], row_shape, f"model.mujoco.{name} per-row shape should be stable")
+
+        # The deprecated top-level accessor forwards to the same empty array, not None.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            forwarded = model.equality_constraint_type
+        self.assertIsNotNone(forwarded)
+        self.assertEqual(forwarded.numpy().shape, (0,))
+
     def test_deprecated_builder_equality_lists_are_read_only(self):
         """Deprecated ``ModelBuilder.equality_constraint_*`` snapshots reject mutation.
 

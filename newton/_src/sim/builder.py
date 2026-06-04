@@ -11326,7 +11326,8 @@ class ModelBuilder:
             # ---------------------
             # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)
             # can live on it. The per-row ``equality_constraint_*`` arrays are materialized by the
-            # standard custom-attribute pipeline below, and only when constraints exist.
+            # standard custom-attribute pipeline below, which is exempted from the zero-count skip
+            # for this frequency so the arrays stay shape-stable (empty) even with no constraints.
             if not hasattr(m, "mujoco"):
                 m.mujoco = Model.AttributeNamespace("mujoco")
 
@@ -11535,8 +11536,15 @@ class ModelBuilder:
                 else:
                     continue
 
-                # Skip empty custom frequency attributes
-                if count == 0:
+                # Skip empty custom frequency attributes. The ``mujoco:equality_constraint``
+                # frequency is exempt: its arrays back a deprecated public surface
+                # (``model.equality_constraint_*`` and the ``model.mujoco.*`` migration target)
+                # whose historical contract is a shape-stable empty array at zero rows, not an
+                # absent attribute. Materializing them even at count 0 (``build_array`` handles
+                # empty arrays for every dtype) keeps the documented migration target usable and
+                # is driven by the registered attributes, so no field list needs to be kept in
+                # sync. Remove this exemption when the deprecation window closes.
+                if count == 0 and freq_key != "mujoco:equality_constraint":
                     continue
 
                 result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
