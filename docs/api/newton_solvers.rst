@@ -120,6 +120,10 @@ Supported Features
 | :sup:`2` ``basic`` means Newton includes several examples that use these solvers in diffsim workflows,
   see :ref:`Differentiability` for further details.
 
+.. experimental::
+    :class:`~newton.solvers.SolverKamino` is in `Beta`: its public API and behavior
+    may change without prior notice, and it is not recommended for production use yet.
+
 .. _Joint feature support:
 
 Joint Feature Support
