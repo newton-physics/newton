@@ -39,7 +39,9 @@ Before running the examples below, install Newton with the examples extra:
 pip install "newton[examples]"
 ```
 
-If you installed from source with uv, substitute `uv run` for `python` in the commands below.
+If you run the examples from a source checkout with uv, use
+`uv run --extra examples -m newton.examples <example_name>` instead of the
+`python -m newton.examples <example_name>` commands below.
 
 <table>
   <tr>
