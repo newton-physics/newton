@@ -69,10 +69,10 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(view.get_dof_velocities(state).shape, (1, 1, 0))
         self.assertEqual(view.get_dof_forces(control).shape, (1, 1, 0))
 
-    def test_template_labels_preserve_full_paths(self):
+    def test_labels_preserve_full_paths(self):
         """Two-finger gripper whose distal bodies, finger joints, and tip
         shapes each share a colliding leaf name. ``*_names`` attributes
-        collapse to the leaf; ``*_template_labels`` attributes expose the
+        collapse to the leaf; ``*_labels`` attributes expose the
         full slash-delimited labels from the template articulation so
         callers can still distinguish entries and recover selection order.
         """
@@ -99,19 +99,19 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(view.link_names, ["fingertip", "fingertip"])
         self.assertEqual(view.shape_names, ["tip_collision", "tip_collision"])
 
-        # ...and disambiguated on the *_template_labels attributes.
+        # ...and disambiguated on the *_labels attributes.
         self.assertEqual(
-            view.link_template_labels,
+            view.link_labels,
             ["palm/left/fingertip", "palm/right/fingertip"],
         )
         self.assertEqual(
-            view.shape_template_labels,
+            view.shape_labels,
             ["palm/left/tip_collision", "palm/right/tip_collision"],
         )
-        self.assertIn("palm/left/fingertip_joint", view.joint_template_labels)
-        self.assertIn("palm/right/fingertip_joint", view.joint_template_labels)
-        self.assertEqual(len(view.joint_template_labels), view.joint_count)
-        self.assertEqual(view.body_template_labels, view.link_template_labels)
+        self.assertIn("palm/left/fingertip_joint", view.joint_labels)
+        self.assertIn("palm/right/fingertip_joint", view.joint_labels)
+        self.assertEqual(len(view.joint_labels), view.joint_count)
+        self.assertEqual(view.body_labels, view.link_labels)
 
     def test_duplicate_joint_child_is_one_link(self):
         """BODY-frequency link axis uses unique physical bodies, not joint slots."""
