@@ -538,6 +538,241 @@ class TestControlLawDifferentialIK(unittest.TestCase):
         target_grad = target_pos.grad.numpy()
         np.testing.assert_allclose(target_grad[0], [0.0, 0.0, 0.0], atol=1e-7)
 
+    def test_parallel_robots(self):
+        """R=4 identical arms, each with a different target_pos.y. Verify the
+        DLS solution is correctly applied per-robot.
+
+        Same 1-DOF arm template as test_one_dof_matches_analytical_dls; the
+        DiffIK is asked to internally replicate it 4 times via indices of
+        length 4. With distinct target_pos.y per robot, the analytical per-robot
+        q_dot is GAIN * target_pos[r].y / (2 + LAMBDA**2). This catches
+        replication / indexing bugs that wouldn't show up at R=1.
+        """
+        device = wp.get_device()
+        LAMBDA = 0.5
+        GAIN = 1.0
+        R = 4
+
+        builder = newton.ModelBuilder()
+        link0 = builder.add_link()
+        j0 = builder.add_joint_revolute(
+            parent=-1,
+            child=link0,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j0], label="arm")
+        builder.add_site(link0, label="tool", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+
+        # One DOF per robot, R robots, so len(indices) = R = R * dofs_per_robot.
+        indices = wp.array(np.arange(R, dtype=np.uint32), device=device)
+
+        # Distinct y-offset target per robot so each robot's analytical q_dot is unique.
+        target_ys = [0.10, 0.20, 0.05, -0.15]
+        target_pos = wp.array([wp.vec3(1.0, y, 0.0) for y in target_ys], dtype=wp.vec3, device=device)
+
+        output_qd = wp.zeros(R, dtype=wp.float32, device=device)
+        output_q = wp.zeros(R, dtype=wp.float32, device=device)
+        diffik = ControlLawDifferentialIK(
+            model_builder=builder,
+            indices=indices,
+            site="tool",
+            measurement=wp.zeros(R, dtype=wp.float32, device=device),
+            measurement_rate=wp.zeros(R, dtype=wp.float32, device=device),
+            target_pos=target_pos,
+            target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)] * R, dtype=wp.quat, device=device),
+            damping=wp.array([LAMBDA] * R, dtype=wp.float32, device=device),
+            gain=wp.array([GAIN] * R, dtype=wp.float32, device=device),
+            output_qd=output_qd,
+            output_q=output_q,
+        )
+        controller = Controller([diffik])
+
+        s0, s1 = controller.state(), controller.state()
+        controller.step(s0, s1, dt=0.01)
+
+        expected_qd = np.array([GAIN * y / (2.0 + LAMBDA**2) for y in target_ys], dtype=np.float32)
+        np.testing.assert_allclose(output_qd.numpy(), expected_qd, atol=1e-5)
+
+    def test_robot_is_subset_of_scene(self):
+        """The DiffIK's model is a strict subset of the full simulation scene.
+
+        The "sim" contains an arm AND a separate pendulum articulation that
+        the DiffIK does not know about. The DiffIK is constructed from an
+        arm-only ModelBuilder, with `indices` selecting only the arm's DOF
+        from the sim-sized flat joint_q / output buffers. After step(),
+        the arm slot of output_qd carries the analytical q_dot and the
+        pendulum slot is untouched (still 0).
+        """
+        device = wp.get_device()
+        LAMBDA = 0.5
+        GAIN = 1.5
+        ERR_Y = 0.1
+
+        # --- "Sim" scene: arm + an unrelated pendulum. Not finalized; just
+        # used here to demonstrate the pattern and to figure out the right
+        # buffer sizes / DOF indices for the DiffIK to talk to.
+        sim_builder = newton.ModelBuilder()
+        # Arm (joint 0 → DOF 0).
+        sim_arm_link = sim_builder.add_link()
+        sim_arm_joint = sim_builder.add_joint_revolute(
+            parent=-1,
+            child=sim_arm_link,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        sim_builder.add_articulation([sim_arm_joint], label="arm")
+        # Pendulum off to the side (joint 1 → DOF 1). Different axis + offset
+        # so it's clearly a separate body.
+        sim_pendulum_link = sim_builder.add_link()
+        sim_pendulum_joint = sim_builder.add_joint_revolute(
+            parent=-1,
+            child=sim_pendulum_link,
+            axis=wp.vec3(0.0, 1.0, 0.0),
+            parent_xform=wp.transform(p=wp.vec3(5.0, 0.0, 0.0)),
+            child_xform=wp.transform_identity(),
+        )
+        sim_builder.add_articulation([sim_pendulum_joint], label="pendulum")
+        sim_n_dofs = sim_builder.joint_dof_count
+        self.assertEqual(sim_n_dofs, 2)
+
+        # --- Arm-only template that the DiffIK actually operates on. Disjoint
+        # from sim_builder; the DiffIK builds its own internal Model from this.
+        arm_builder = newton.ModelBuilder()
+        arm_link = arm_builder.add_link()
+        arm_joint = arm_builder.add_joint_revolute(
+            parent=-1,
+            child=arm_link,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        arm_builder.add_articulation([arm_joint], label="arm")
+        arm_builder.add_site(arm_link, label="tool", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+
+        # Sim-sized buffers; the DiffIK picks only the arm's DOF (index 0).
+        arm_indices = wp.array([0], dtype=wp.uint32, device=device)
+        measurement = wp.zeros(sim_n_dofs, dtype=wp.float32, device=device)
+        measurement_rate = wp.zeros(sim_n_dofs, dtype=wp.float32, device=device)
+        output_qd = wp.zeros(sim_n_dofs, dtype=wp.float32, device=device)
+        output_q = wp.zeros(sim_n_dofs, dtype=wp.float32, device=device)
+
+        diffik = ControlLawDifferentialIK(
+            model_builder=arm_builder,
+            indices=arm_indices,
+            site="tool",
+            measurement=measurement,
+            measurement_rate=measurement_rate,
+            target_pos=wp.array([wp.vec3(1.0, ERR_Y, 0.0)], dtype=wp.vec3, device=device),
+            target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
+            damping=wp.array([LAMBDA], dtype=wp.float32, device=device),
+            gain=wp.array([GAIN], dtype=wp.float32, device=device),
+            output_qd=output_qd,
+            output_q=output_q,
+        )
+        controller = Controller([diffik])
+
+        s0, s1 = controller.state(), controller.state()
+        dt = 0.01
+        controller.step(s0, s1, dt=dt)
+
+        # Arm DOF (index 0): analytical answer. Pendulum DOF (index 1): untouched.
+        expected_qd_arm = GAIN * ERR_Y / (2.0 + LAMBDA**2)
+        np.testing.assert_allclose(output_qd.numpy(), [expected_qd_arm, 0.0], atol=1e-5)
+        # output_q = q_current + q_dot * dt; q_current was zeros.
+        np.testing.assert_allclose(output_q.numpy(), [expected_qd_arm * dt, 0.0], atol=1e-5)
+
+    def test_parallel_robots_subset_of_scene(self):
+        """Combined: R parallel arms living inside a sim scene that also
+        contains R pendulums the DiffIK doesn't know about.
+
+        Sim DOF layout (all arms added before all pendulums):
+            indices 0..R-1  → arm DOFs (DiffIK-controlled)
+            indices R..2R-1 → pendulum DOFs (untouched)
+
+        Exercises both replication (R copies of the arm template) and the
+        "subset of scene" pattern (DiffIK only writes the first R of 2R DOFs).
+        """
+        device = wp.get_device()
+        LAMBDA = 0.5
+        GAIN = 1.0
+        R = 4
+
+        # --- Sim scene: R arms followed by R pendulums.
+        sim_builder = newton.ModelBuilder()
+        for _ in range(R):
+            link = sim_builder.add_link()
+            joint = sim_builder.add_joint_revolute(
+                parent=-1,
+                child=link,
+                axis=wp.vec3(0.0, 0.0, 1.0),
+                parent_xform=wp.transform_identity(),
+                child_xform=wp.transform_identity(),
+            )
+            sim_builder.add_articulation([joint], label="arm")
+        for _ in range(R):
+            link = sim_builder.add_link()
+            joint = sim_builder.add_joint_revolute(
+                parent=-1,
+                child=link,
+                axis=wp.vec3(0.0, 1.0, 0.0),
+                parent_xform=wp.transform(p=wp.vec3(5.0, 0.0, 0.0)),
+                child_xform=wp.transform_identity(),
+            )
+            sim_builder.add_articulation([joint], label="pendulum")
+        sim_n_dofs = sim_builder.joint_dof_count
+        self.assertEqual(sim_n_dofs, 2 * R)
+
+        # --- Arm-only template (K=1). The DiffIK replicates internally to R.
+        arm_builder = newton.ModelBuilder()
+        arm_link = arm_builder.add_link()
+        arm_joint = arm_builder.add_joint_revolute(
+            parent=-1,
+            child=arm_link,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        arm_builder.add_articulation([arm_joint], label="arm")
+        arm_builder.add_site(arm_link, label="tool", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+
+        # Indices pick only the arm DOFs (first R of 2R total).
+        arm_indices = wp.array(np.arange(R, dtype=np.uint32), device=device)
+        target_ys = [0.10, 0.20, 0.05, -0.15]
+        target_pos = wp.array([wp.vec3(1.0, y, 0.0) for y in target_ys], dtype=wp.vec3, device=device)
+
+        measurement = wp.zeros(sim_n_dofs, dtype=wp.float32, device=device)
+        measurement_rate = wp.zeros(sim_n_dofs, dtype=wp.float32, device=device)
+        output_qd = wp.zeros(sim_n_dofs, dtype=wp.float32, device=device)
+        output_q = wp.zeros(sim_n_dofs, dtype=wp.float32, device=device)
+
+        diffik = ControlLawDifferentialIK(
+            model_builder=arm_builder,
+            indices=arm_indices,
+            site="tool",
+            measurement=measurement,
+            measurement_rate=measurement_rate,
+            target_pos=target_pos,
+            target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)] * R, dtype=wp.quat, device=device),
+            damping=wp.array([LAMBDA] * R, dtype=wp.float32, device=device),
+            gain=wp.array([GAIN] * R, dtype=wp.float32, device=device),
+            output_qd=output_qd,
+            output_q=output_q,
+        )
+        controller = Controller([diffik])
+
+        s0, s1 = controller.state(), controller.state()
+        controller.step(s0, s1, dt=0.01)
+
+        expected_arm_qd = np.array([GAIN * y / (2.0 + LAMBDA**2) for y in target_ys], dtype=np.float32)
+        out = output_qd.numpy()
+        # Arm slots match the analytical answer.
+        np.testing.assert_allclose(out[:R], expected_arm_qd, atol=1e-5)
+        # Pendulum slots untouched.
+        np.testing.assert_allclose(out[R:], np.zeros(R, dtype=np.float32), atol=1e-7)
+
 
 if __name__ == "__main__":
     unittest.main()

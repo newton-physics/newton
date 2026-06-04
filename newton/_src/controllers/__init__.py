@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .base import ControlLaw
-from .control_group import Controller
+from .controller import Controller
 from .impl import ControlLawDifferentialIK, ControlLawPID
 
 __all__ = [
