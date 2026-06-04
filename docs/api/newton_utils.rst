@@ -16,7 +16,6 @@ newton.utils
    ColorSpace
    EventTracer
    MeshAdjacency
-   OnnxRuntime
 
 .. rubric:: Functions
 

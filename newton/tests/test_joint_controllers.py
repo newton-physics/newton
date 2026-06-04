@@ -62,8 +62,8 @@ def test_revolute_controller(
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     control = model.control()
-    control.joint_target_pos = wp.array([pos_target_val], dtype=wp.float32, device=device)
-    control.joint_target_vel = wp.array([vel_target_val], dtype=wp.float32, device=device)
+    control.joint_target_q = wp.array([pos_target_val], dtype=wp.float32, device=device)
+    control.joint_target_qd = wp.array([vel_target_val], dtype=wp.float32, device=device)
 
     sim_dt = 1.0 / 60.0
     sim_time = 0.0
@@ -469,8 +469,8 @@ def test_effort_limit_clamping(
     state_0.joint_qd.assign([initial_qd])
 
     control = model.control()
-    control.joint_target_pos = wp.array([0.0], dtype=wp.float32, device=device)
-    control.joint_target_vel = wp.array([0.0], dtype=wp.float32, device=device)
+    control.joint_target_q = wp.array([0.0], dtype=wp.float32, device=device)
+    control.joint_target_qd = wp.array([0.0], dtype=wp.float32, device=device)
 
     dt = 0.01
 
@@ -562,8 +562,8 @@ def test_qfrc_actuator(
     state_0.joint_qd.assign([initial_qd])
 
     control = model.control()
-    control.joint_target_pos = wp.array([0.0], dtype=wp.float32, device=device)
-    control.joint_target_vel = wp.array([0.0], dtype=wp.float32, device=device)
+    control.joint_target_q = wp.array([0.0], dtype=wp.float32, device=device)
+    control.joint_target_qd = wp.array([0.0], dtype=wp.float32, device=device)
 
     dt = 0.01
 

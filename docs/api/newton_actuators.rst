@@ -34,6 +34,7 @@ construction.
    ControllerPD
    ControllerPID
    Delay
+   SchemaNames
 
 .. rubric:: Functions
 

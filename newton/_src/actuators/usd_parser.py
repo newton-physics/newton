@@ -138,38 +138,30 @@ def _get_relationship_targets(prim, name: str) -> list[str]:
     return [str(t) for t in rel.GetTargets()]
 
 
+class SchemaNames:
+    """Canonical USD tokens from ``newton-usd-schemas``"""
+
+    ACTUATOR = "NewtonActuator"
+
+    PD_CONTROL = "NewtonPDControlAPI"
+    PID_CONTROL = "NewtonPIDControlAPI"
+    NEURAL_CONTROL = "NewtonNeuralControlAPI"
+
+    MAX_EFFORT_CLAMPING = "NewtonMaxEffortClampingAPI"
+    DC_MOTOR_CLAMPING = "NewtonDCMotorClampingAPI"
+    POSITION_BASED_CLAMPING = "NewtonPositionBasedClampingAPI"
+
+    DELAY = "NewtonActuatorDelayAPI"
+
+
 _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
-    # ── Controllers ────────────────────────────────────────────────────
-    "NewtonPDControlAPI": _SchemaEntry(
-        component_class=ControllerPD,
-        kind=ComponentKind.CONTROLLER,
-    ),
-    "NewtonPIDControlAPI": _SchemaEntry(
-        component_class=ControllerPID,
-        kind=ComponentKind.CONTROLLER,
-    ),
-    "NewtonNeuralControlAPI": _SchemaEntry(
-        component_class=_resolve_neural_control,
-        kind=ComponentKind.CONTROLLER,
-    ),
-    # ── Clamping ───────────────────────────────────────────────────────
-    "NewtonMaxEffortClampingAPI": _SchemaEntry(
-        component_class=ClampingMaxEffort,
-        kind=ComponentKind.CLAMPING,
-    ),
-    "NewtonDCMotorClampingAPI": _SchemaEntry(
-        component_class=ClampingDCMotor,
-        kind=ComponentKind.CLAMPING,
-    ),
-    "NewtonPositionBasedClampingAPI": _SchemaEntry(
-        component_class=ClampingPositionBased,
-        kind=ComponentKind.CLAMPING,
-    ),
-    # ── Delay ──────────────────────────────────────────────────────────
-    "NewtonActuatorDelayAPI": _SchemaEntry(
-        component_class=Delay,
-        kind=ComponentKind.DELAY,
-    ),
+    SchemaNames.PD_CONTROL: _SchemaEntry(ControllerPD, ComponentKind.CONTROLLER),
+    SchemaNames.PID_CONTROL: _SchemaEntry(ControllerPID, ComponentKind.CONTROLLER),
+    SchemaNames.NEURAL_CONTROL: _SchemaEntry(_resolve_neural_control, ComponentKind.CONTROLLER),
+    SchemaNames.MAX_EFFORT_CLAMPING: _SchemaEntry(ClampingMaxEffort, ComponentKind.CLAMPING),
+    SchemaNames.DC_MOTOR_CLAMPING: _SchemaEntry(ClampingDCMotor, ComponentKind.CLAMPING),
+    SchemaNames.POSITION_BASED_CLAMPING: _SchemaEntry(ClampingPositionBased, ComponentKind.CLAMPING),
+    SchemaNames.DELAY: _SchemaEntry(Delay, ComponentKind.DELAY),
 }
 
 
@@ -219,7 +211,7 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
             - has no controller schema, or
             - has a ``NewtonNeuralControlAPI`` with an unsupported model.
     """
-    if prim.GetTypeName() != "NewtonActuator":
+    if prim.GetTypeName() != SchemaNames.ACTUATOR:
         return None
 
     target_paths = _get_relationship_targets(prim, "newton:targets")

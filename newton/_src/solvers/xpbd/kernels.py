@@ -13,6 +13,7 @@ from ...math import (
     velocity_at_point,
 )
 from ...sim import BodyFlags, JointType
+from ...sim.contacts import contact_surface_point, contact_surface_separation
 
 
 @wp.kernel
@@ -2181,9 +2182,8 @@ def solve_body_contact_positions(
     bx_a = wp.transform_point(X_wb_a, contact_point0[tid])
     bx_b = wp.transform_point(X_wb_b, contact_point1[tid])
 
-    thickness = contact_thickness0[tid] + contact_thickness1[tid]
     n = contact_normal[tid]
-    d = wp.dot(n, bx_b - bx_a) - thickness
+    d = contact_surface_separation(bx_a, bx_b, n, contact_thickness0[tid], contact_thickness1[tid])
 
     if d >= 0.0:
         return
@@ -2264,8 +2264,8 @@ def solve_body_contact_positions(
     if mu > 0.0:
         # add on displacement from surface offsets, this ensures we include any rotational effects due to thickness from feature
         # need to use the current rotation to account for friction due to angular effects (e.g.: slipping contact)
-        bx_a += wp.transform_vector(X_wb_a, offset_a)
-        bx_b += wp.transform_vector(X_wb_b, offset_b)
+        bx_a = contact_surface_point(X_wb_a, contact_point0[tid], offset_a)
+        bx_b = contact_surface_point(X_wb_b, contact_point1[tid], offset_b)
 
         # update delta
         delta = bx_b - bx_a
@@ -2630,12 +2630,11 @@ def apply_rigid_restitution(
         com_b = body_com[body_b]
 
     # compute body position in world space
-    bx_a = wp.transform_point(X_wb_a_prev, contact_point0[tid] + contact_offset0[tid])
-    bx_b = wp.transform_point(X_wb_b_prev, contact_point1[tid] + contact_offset1[tid])
+    bx_a = contact_surface_point(X_wb_a_prev, contact_point0[tid], contact_offset0[tid])
+    bx_b = contact_surface_point(X_wb_b_prev, contact_point1[tid], contact_offset1[tid])
 
-    thickness = contact_thickness0[tid] + contact_thickness1[tid]
     n = contact_normal[tid]
-    d = wp.dot(n, bx_b - bx_a) - thickness
+    d = contact_surface_separation(bx_a, bx_b, n, contact_thickness0[tid], contact_thickness1[tid])
     if d >= 0.0:
         return
 

@@ -498,6 +498,10 @@ handles this inline (:github:`newton/_src/utils/import_mjcf.py`); USD
 goes through :class:`~newton.usd.SchemaResolverMjc`
 (:github:`newton/_src/usd/schemas.py`).
 
+MuJoCo joint ``damping`` maps to :attr:`~newton.Model.joint_damping`.
+The old ``model.mujoco.dof_passive_damping`` custom attribute remains
+a deprecated alias and emits a ``DeprecationWarning`` when accessed.
+
 
 Unsupported MuJoCo features
 ---------------------------
@@ -628,7 +632,7 @@ by joint type:
 If you edit :attr:`~newton.Model.joint_X_p` or :attr:`~newton.Model.joint_X_c`
 for a fixed-root articulation after constructing the solver, call
 :meth:`~newton.solvers.SolverBase.notify_model_changed` with the
-:attr:`~newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES` flag to
+:attr:`~newton.ModelFlags.JOINT_PROPERTIES` flag to
 synchronize the updated fixed-root poses into MuJoCo.
 
 

@@ -56,6 +56,7 @@ from ._src.geometry import (  # noqa: E402
     ParticleFlags,
     ShapeFlags,
     TetMesh,
+    intersect_ray,
 )
 
 __all__ += [
@@ -67,6 +68,7 @@ __all__ += [
     "ParticleFlags",
     "ShapeFlags",
     "TetMesh",
+    "intersect_ray",
 ]
 
 # ==================================================================================
@@ -82,7 +84,9 @@ from ._src.sim import (  # noqa: E402
     JointType,
     Model,
     ModelBuilder,
+    ModelFlags,
     State,
+    StateFlags,
     eval_fk,
     eval_ik,
     eval_jacobian,
@@ -99,7 +103,9 @@ __all__ += [
     "JointType",
     "Model",
     "ModelBuilder",
+    "ModelFlags",
     "State",
+    "StateFlags",
     "eval_fk",
     "eval_ik",
     "eval_jacobian",
