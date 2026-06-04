@@ -857,13 +857,18 @@ def intersect_ray(
 ):
     """Intersect rays with model shapes.
 
+    The model shape BVH must be built once with
+    :meth:`~newton.Model.bvh_build_shapes` before calling this function. If the
+    queried state changes shape transforms, refit the BVH with
+    :meth:`~newton.Model.bvh_refit_shapes` before raycasting again.
+
     Each ray is cast against the shapes of its own world (given by
     ``ray_worlds``) and against the shapes of the global world (index ``-1``),
     which are accessible from every world. A ray whose world is ``-1`` is cast
     against the global world only.
 
-    ``out_dist``, ``out_shape_id`` and ``out_normal`` are optional outputs. If not
-    provided, the corresponding output is written to the array.
+    ``out_dist``, ``out_shape_id`` and ``out_normal`` are optional outputs.
+    Pass ``None`` to skip writing a channel.
 
     Args:
         model: Model containing the shapes to query.
@@ -879,7 +884,11 @@ def intersect_ray(
     """
 
     if model.bvh_shapes is None:
-        raise RuntimeError("BVH raycasting requires a shape BVH to be built first using model.bvh_build_shapes(state).")
+        raise RuntimeError(
+            "BVH raycasting requires a shape BVH built for the queried state. "
+            "Call model.bvh_build_shapes(state) before first use and "
+            "model.bvh_refit_shapes(state) after state changes."
+        )
 
     write_dist = out_dist is not None
     write_shape_id = out_shape_id is not None
@@ -963,6 +972,8 @@ def intersect_ray(
             ray_origins,
             ray_directions,
             ray_worlds,
+        ],
+        outputs=[
             out_dist,
             out_shape_id,
             out_normal,
