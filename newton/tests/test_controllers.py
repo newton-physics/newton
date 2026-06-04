@@ -684,6 +684,116 @@ class TestControlLawDifferentialIK(unittest.TestCase):
         # output_q = q_current + q_dot * dt; q_current was zeros.
         np.testing.assert_allclose(output_q.numpy(), [expected_qd_arm * dt, 0.0], atol=1e-5)
 
+    def test_two_variants_in_template(self):
+        """Template has K=2 articulations with different kinematics
+        (effective link lengths). Verifies that the DLS solve produces the
+        correct per-variant q_dot from differing body Jacobians, even though
+        the K=2 articulations share the same body-local site offset.
+
+        Variant 0 ("short"): joint at origin, identity child_xform. Body frame
+                             at world (0, 0, 0). Site at body-local (1, 0, 0).
+                             Site world at q=0: (1, 0, 0).
+        Variant 1 ("long"):  joint at origin, child_xform translates the body
+                             frame by +1 in x (via child_xform p=(-1, 0, 0)
+                             — see Newton's joint anchor convention). Body
+                             frame at world (1, 0, 0). Same body-local site
+                             (1, 0, 0). Site world at q=0: (2, 0, 0).
+                             Effectively twice the reach.
+
+        Both articulations share the site label "tool", but the DiffIK's
+        shape_label lookup returns the FIRST match (variant 0's site). The
+        stored site_xform is therefore (1, 0, 0) in body-local frame — which
+        happens to equal variant 1's site offset too, so the lookup result
+        applies cleanly to both. The per-variant world-frame difference
+        comes from each body's own body_q computed by eval_fk inside the
+        controller.
+
+        Analytical q_dot at q=0 with pos_err = (0, ERR_Y, 0), target_quat=identity:
+
+        Variant 0 (existing 1-DOF analytical case):
+            J_site = [0, 1, 0, 0, 0, 1]^T
+            q_dot = ERR_Y / (2 + λ²)
+
+        Variant 1 (derived):
+            Body COM in world = (1, 0, 0). v_com = omega × r_com = (0, 1, 0).
+            J_COM_linear = (0, 1, 0); J_COM_angular = (0, 0, 1).
+            offset = site_world - com_world = (2,0,0) - (1,0,0) = (1, 0, 0).
+            J_site_linear = J_COM_linear + cross(omega, offset)
+                          = (0, 1, 0) + (0, 1, 0)
+                          = (0, 2, 0).
+            J_site = [0, 2, 0, 0, 0, 1]^T.
+            q_dot = J^T e / (J^T J + λ²)
+                  = (0*0 + 2*ERR_Y + 0 + 0 + 0 + 1*0) / (0+4+0+0+0+1 + λ²)
+                  = 2 * ERR_Y / (5 + λ²).
+        """
+        device = wp.get_device()
+        LAMBDA = 0.5
+        GAIN = 1.0
+        ERR_Y = 0.1
+
+        builder = newton.ModelBuilder()
+
+        # Variant 0: "short" — body frame at world origin at q=0.
+        short_link = builder.add_link()
+        short_joint = builder.add_joint_revolute(
+            parent=-1,
+            child=short_link,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([short_joint], label="short_arm")
+        builder.add_site(short_link, label="tool", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+
+        # Variant 1: "long" — body frame at world (1, 0, 0) at q=0 via
+        # child_xform=(-1, 0, 0). Same body-local site offset (1, 0, 0) means
+        # the site lands at world (2, 0, 0) — effectively twice the reach.
+        long_link = builder.add_link()
+        long_joint = builder.add_joint_revolute(
+            parent=-1,
+            child=long_link,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform(p=wp.vec3(-1.0, 0.0, 0.0)),
+        )
+        builder.add_articulation([long_joint], label="long_arm")
+        builder.add_site(long_link, label="tool", xform=wp.transform(p=wp.vec3(1.0, 0.0, 0.0), q=wp.quat_identity()))
+
+        # K=2 articulations, R=1 (no replication) → num_robots=2; dofs_per_robot=1.
+        # Robot 0 corresponds to variant 0 (short); robot 1 to variant 1 (long).
+        indices = wp.array([0, 1], dtype=wp.uint32, device=device)
+        target_pos = wp.array(
+            [wp.vec3(1.0, ERR_Y, 0.0), wp.vec3(2.0, ERR_Y, 0.0)],
+            dtype=wp.vec3,
+            device=device,
+        )
+        output_qd = wp.zeros(2, dtype=wp.float32, device=device)
+        output_q = wp.zeros(2, dtype=wp.float32, device=device)
+        diffik = ControlLawDifferentialIK(
+            model_builder=builder,
+            indices=indices,
+            site="tool",
+            measurement=wp.zeros(2, dtype=wp.float32, device=device),
+            measurement_rate=wp.zeros(2, dtype=wp.float32, device=device),
+            target_pos=target_pos,
+            target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)] * 2, dtype=wp.quat, device=device),
+            damping=wp.array([LAMBDA, LAMBDA], dtype=wp.float32, device=device),
+            gain=wp.array([GAIN, GAIN], dtype=wp.float32, device=device),
+            output_qd=output_qd,
+            output_q=output_q,
+        )
+        controller = Controller([diffik])
+        s0, s1 = controller.state(), controller.state()
+        controller.step(s0, s1, dt=0.01)
+
+        expected_qd_short = GAIN * ERR_Y / (2.0 + LAMBDA**2)
+        expected_qd_long = GAIN * 2.0 * ERR_Y / (5.0 + LAMBDA**2)
+        np.testing.assert_allclose(
+            output_qd.numpy(),
+            [expected_qd_short, expected_qd_long],
+            atol=1e-5,
+        )
+
     def test_parallel_robots_subset_of_scene(self):
         """Combined: R parallel arms living inside a sim scene that also
         contains R pendulums the DiffIK doesn't know about.
