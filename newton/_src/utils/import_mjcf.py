@@ -327,7 +327,7 @@ def parse_mjcf(
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
 
     use_degrees = True  # angles are in degrees by default
-    euler_seq = [0, 1, 2]  # XYZ by default
+    eulerseq = "xyz"  # default sequence (lowercase = body-frame axes per MuJoCo's actual behavior)
 
     # load joint defaults
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
@@ -374,11 +374,14 @@ def parse_mjcf(
         compiler_attribs.update(c.attrib)
     if compiler_attribs:
         use_degrees = compiler_attribs.get("angle", "degree").lower() == "degree"
-        euler_seq = ["xyz".index(c) for c in compiler_attribs.get("eulerseq", "xyz").lower()]
+        # Per-character case carries the intrinsic/extrinsic axis convention
+        # (lowercase = body-frame axis, uppercase = world-frame axis); keep it.
+        eulerseq = compiler_attribs.get("eulerseq", "xyz")
         mesh_dir = compiler_attribs.get("meshdir", ".")
         texture_dir = compiler_attribs.get("texturedir", mesh_dir)
         fitaabb = compiler_attribs.get("fitaabb", "false").lower() == "true"
     else:
+        eulerseq = "xyz"
         mesh_dir = "."
         texture_dir = "."
         fitaabb = False
@@ -578,20 +581,17 @@ def parse_mjcf(
 
         return wp.types.vector(length, wp.float32)(out)
 
-    def quat_from_euler_mjcf(e: wp.vec3, i: int, j: int, k: int) -> wp.quat:
-        """Convert MJCF euler to intrinsic-rotation quaternion (matches MuJoCo).
+    def quat_from_euler_mjcf(e: wp.vec3, seq: str) -> wp.quat:
+        """Convert MJCF euler to quaternion respecting per-character ``eulerseq`` case.
 
-        Composes ``q_axis[i](e[0]) * q_axis[j](e[1]) * q_axis[k](e[2])``.
+        For each character, lowercase composes around the body-frame axis
+        (right-multiply) and uppercase composes around the world-frame axis
+        (left-multiply). The default ``"xyz"`` yields ``qx*qy*qz``; ``"XYZ"``
+        yields ``qz*qy*qx``; mixed cases yield the corresponding hybrid.
         """
         half = np.asarray([float(e[0]), float(e[1]), float(e[2])]) * 0.5
         c = np.cos(half)
         s = np.sin(half)
-
-        def axis_quat(axis_idx: int, idx: int) -> np.ndarray:
-            q = np.zeros(4)
-            q[0] = c[idx]
-            q[1 + axis_idx] = s[idx]
-            return q
 
         def qmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
             aw, ax, ay, az = a
@@ -605,7 +605,14 @@ def parse_mjcf(
                 ]
             )
 
-        result = qmul(qmul(axis_quat(i, 0), axis_quat(j, 1)), axis_quat(k, 2))
+        result = np.array([1.0, 0.0, 0.0, 0.0])  # identity (w, x, y, z)
+        for n, ch in enumerate(seq):
+            axis_idx = "xyz".index(ch.lower())
+            q = np.zeros(4)
+            q[0] = c[n]
+            q[1 + axis_idx] = s[n]
+            result = qmul(result, q) if ch.islower() else qmul(q, result)
+
         return wp.quat(float(result[1]), float(result[2]), float(result[3]), float(result[0]))
 
     def parse_orientation(attrib) -> wp.quat:
@@ -617,7 +624,7 @@ def parse_mjcf(
             if use_degrees:
                 euler *= np.pi / 180
             # Keep MuJoCo-compatible semantics for non-XYZ sequences.
-            return quat_from_euler_mjcf(wp.vec3(euler), *euler_seq)
+            return quat_from_euler_mjcf(wp.vec3(euler), eulerseq)
         if "axisangle" in attrib:
             axisangle = np.array(attrib["axisangle"].split(), dtype=float)
             angle = axisangle[3]

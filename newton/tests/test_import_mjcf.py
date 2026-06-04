@@ -312,38 +312,52 @@ class TestImportMjcfBasic(unittest.TestCase):
         self.assertTrue(same or negated, "Site quaternion mismatch (accounting for q/-q equivalence)")
 
     def test_body_euler_matches_mujoco(self):
-        """Body ``euler`` quaternion must match MuJoCo at default ``eulerseq=xyz``.
-
-        Uses three non-zero components so the intrinsic-vs-extrinsic
-        difference shows up above float32 noise.
+        """Sweep every 3-character ``eulerseq`` from ``{x,y,z,X,Y,Z}`` (216
+        combinations, including Tait-Bryan, proper-Euler, and degenerate
+        repeated-axis sequences) and assert Newton's body quaternion matches
+        MuJoCo's for a fixed non-trivial ``euler``. Skips sequences MuJoCo
+        itself rejects; flags any sequence Newton accepts that MuJoCo doesn't.
         """
-        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+        from itertools import product  # noqa: PLC0415
+
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        euler = "0.3 1.2 -0.7"
+        chars = "xyzXYZ"
+        compared = 0
+        for triple in product(chars, repeat=3):
+            seq = "".join(triple)
+            mjcf = f"""<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test">
-    <compiler angle="radian"/>
+    <compiler angle="radian" eulerseq="{seq}"/>
     <worldbody>
-        <body name="test_body" euler="0.3 1.2 -0.7">
+        <body name="test_body" euler="{euler}">
             <geom type="box" size="0.1 0.1 0.1"/>
         </body>
     </worldbody>
 </mujoco>"""
+            try:
+                native_m = mujoco.MjModel.from_xml_string(mjcf)
+            except Exception:
+                # MuJoCo rejected this eulerseq; Newton must too.
+                with self.assertRaises(Exception, msg=f"Newton accepts eulerseq={seq!r} that MuJoCo rejects"):
+                    newton.ModelBuilder().add_mjcf(mjcf)
+                continue
 
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content)
-        model = builder.finalize()
-        body_idx = model.body_label.index("test/worldbody/test_body")
-        newton_xyzw = np.array(model.body_q.numpy()[body_idx, 3:], dtype=np.float64)
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            model = builder.finalize()
+            body_idx = model.body_label.index("test/worldbody/test_body")
+            newton_xyzw = np.array(model.body_q.numpy()[body_idx, 3:], dtype=np.float64)
 
-        native_wxyz = np.array(
-            SolverMuJoCo.import_mujoco()[0].MjModel.from_xml_string(mjcf_content).body_quat[1], dtype=np.float64
-        )
-        native_xyzw = np.array([native_wxyz[1], native_wxyz[2], native_wxyz[3], native_wxyz[0]], dtype=np.float64)
+            native_wxyz = np.array(native_m.body_quat[1], dtype=np.float64)
+            native_xyzw = np.array([native_wxyz[1], native_wxyz[2], native_wxyz[3], native_wxyz[0]], dtype=np.float64)
+            same = np.allclose(newton_xyzw, native_xyzw, rtol=1e-6, atol=1e-6)
+            negated = np.allclose(newton_xyzw, -native_xyzw, rtol=1e-6, atol=1e-6)
+            self.assertTrue(same or negated, f"eulerseq={seq!r}: newton={newton_xyzw} native={native_xyzw}")
+            compared += 1
 
-        same = np.allclose(newton_xyzw, native_xyzw, rtol=1e-6, atol=1e-6)
-        negated = np.allclose(newton_xyzw, -native_xyzw, rtol=1e-6, atol=1e-6)
-        self.assertTrue(
-            same or negated,
-            f"Body quaternion mismatch (accounting for q/-q equivalence): newton={newton_xyzw} native={native_xyzw}",
-        )
+        # Sanity: at least the default-style sequences must have run.
+        self.assertGreater(compared, 0, "no eulerseq combinations actually compared")
 
     def test_compiler_merge_across_includes(self):
         """``<compiler>`` attributes merge globally across ``<include>``-expanded
