@@ -166,6 +166,7 @@ class ViewerBase(ABC):
         self._slot_to_shape_wp: wp.array | None = None
         self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
         self._shape_transparent_mask: np.ndarray | None = None
+        self._shape_batches_have_transparency: bool = False
 
         # Isomesh cache for SDF collision visualization
         self._isomesh_cache: dict[int, newton.Mesh | None] = {}
@@ -1417,6 +1418,8 @@ class ViewerBase(ABC):
             """Color (vec3f) per instance."""
             self.opacities = []
             """Opacity (float) per instance."""
+            self.transparent: bool = False
+            """Whether this render batch belongs to the transparent pass."""
             self.materials = []
             self.worlds = []  # World index for each shape
 
@@ -1783,6 +1786,7 @@ class ViewerBase(ABC):
                 shape_name = f"/model/shapes/shape_{len(self._shape_instances)}"
                 batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
                 batch.geo_type = geo_type
+                batch.transparent = transparent
                 self._shape_instances[shape_hash] = batch
             else:
                 batch = self._shape_instances[shape_hash]
@@ -1868,6 +1872,7 @@ class ViewerBase(ABC):
             wp.array(slot_to_shape, dtype=wp.int32, device=self.device) if total_instances else None
         )
         self._shape_transparent_mask = shape_transparent_mask
+        self._shape_batches_have_transparency = bool(np.any(shape_transparent_mask))
 
         # Build shape -> batch reference mapping for change signalling
         shape_to_batch: list[ViewerBase.ShapeInstances | None] = [None] * shape_count

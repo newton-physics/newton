@@ -125,6 +125,7 @@ def _compute_shape_vbo_xforms(
     shape_opacity: wp.array[wp.float32],
     packed_shape_opacity: wp.array[wp.float32],
     opacity_update_flags: wp.array[wp.int32],
+    opacity_check_enabled: int,
     out_world_xforms: wp.array[wp.transformf],
     out_vbo_xforms: wp.array[wp.mat44],
 ):
@@ -162,13 +163,14 @@ def _compute_shape_vbo_xforms(
     else:
         s = wp.vec3(1.0, 1.0, 1.0)
 
-    opacity = wp.clamp(shape_opacity[tid], 0.0, 1.0)
-    previous_opacity = wp.clamp(packed_shape_opacity[out_idx], 0.0, 1.0)
-    opacity_delta = opacity - previous_opacity
-    if opacity_delta < -1.0e-6 or opacity_delta > 1.0e-6:
-        wp.atomic_max(opacity_update_flags, 0, 1)
-        if (opacity < 0.999) != (previous_opacity < 0.999):
-            wp.atomic_max(opacity_update_flags, 1, 1)
+    if opacity_check_enabled != 0:
+        opacity = wp.clamp(shape_opacity[tid], 0.0, 1.0)
+        previous_opacity = wp.clamp(packed_shape_opacity[out_idx], 0.0, 1.0)
+        opacity_delta = opacity - previous_opacity
+        if opacity_delta < -1.0e-6 or opacity_delta > 1.0e-6:
+            wp.atomic_max(opacity_update_flags, 0, 1)
+            if (opacity < 0.999) != (previous_opacity < 0.999):
+                wp.atomic_max(opacity_update_flags, 1, 1)
 
     out_vbo_xforms[out_idx] = wp.mat44(
         R[0, 0] * s[0],
@@ -1545,10 +1547,11 @@ class ViewerGL(ViewerBase):
         )
 
         if self.model_changed:
-            if self._shape_opacity_groups_changed():
-                self._rebuild_shape_batches_for_opacity_groups()
-                return self.log_state(state)
-            self._sync_shape_opacities_from_model()
+            if self._shape_batches_have_transparency:
+                if self._shape_opacity_groups_changed():
+                    self._rebuild_shape_batches_for_opacity_groups()
+                    return self.log_state(state)
+                self._sync_shape_opacities_from_model()
         elif not use_packed_cuda:
             if self._shape_opacity_groups_changed():
                 self._rebuild_shape_batches_for_opacity_groups()
@@ -1556,7 +1559,9 @@ class ViewerGL(ViewerBase):
             self._sync_shape_opacities_from_model()
 
         if use_packed_cuda:
-            self._shape_opacity_update_flags.zero_()
+            opacity_check_enabled = 0 if self.model_changed and not self._shape_batches_have_transparency else 1
+            if opacity_check_enabled:
+                self._shape_opacity_update_flags.zero_()
 
             # ---- Single kernel over all model shapes, scatter-write to grouped output ----
             wp.launch(
@@ -1574,21 +1579,24 @@ class ViewerGL(ViewerBase):
                     self.model.shape_opacity,
                     self.model_shape_opacity,
                     self._shape_opacity_update_flags,
+                    opacity_check_enabled,
                 ],
                 outputs=[self._packed_world_xforms, self._packed_vbo_xforms],
                 device=self.device,
                 record_tape=False,
             )
             wp.copy(self._packed_vbo_xforms_host, self._packed_vbo_xforms)
-            wp.copy(self._shape_opacity_update_flags_host, self._shape_opacity_update_flags)
+            if opacity_check_enabled:
+                wp.copy(self._shape_opacity_update_flags_host, self._shape_opacity_update_flags)
             wp.synchronize()  # copy is async (pinned destination), must sync before CPU read
 
-            opacity_flags = self._shape_opacity_update_flags_host.numpy()
-            if int(opacity_flags[1]) != 0:
-                self._rebuild_shape_batches_for_opacity_groups()
-                return self.log_state(state)
-            if int(opacity_flags[0]) != 0:
-                self._sync_shape_opacities_from_model()
+            if opacity_check_enabled:
+                opacity_flags = self._shape_opacity_update_flags_host.numpy()
+                if int(opacity_flags[1]) != 0:
+                    self._rebuild_shape_batches_for_opacity_groups()
+                    return self.log_state(state)
+                if int(opacity_flags[0]) != 0:
+                    self._sync_shape_opacities_from_model()
 
             # ---- Upload pinned host slices to GL per instancer ----
             host_np = self._packed_vbo_xforms_host.numpy()
@@ -1596,7 +1604,11 @@ class ViewerGL(ViewerBase):
             for key, shapes, offset, count in self._packed_groups:
                 visible = self._should_show_shape(shapes.flags, shapes.static)
                 colors = shapes.colors if self.model_changed or shapes.colors_changed else None
-                opacities = shapes.opacities if self.model_changed or shapes.opacities_changed else None
+                opacities = (
+                    shapes.opacities
+                    if shapes.transparent and (self.model_changed or shapes.opacities_changed)
+                    else None
+                )
                 materials = shapes.materials if self.model_changed else None
 
                 if key in self._capsule_keys:
