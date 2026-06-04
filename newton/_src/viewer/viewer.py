@@ -191,7 +191,7 @@ class ViewerBase(ABC):
             model: The Newton model to visualize.
             max_worlds: Maximum number of worlds to render (None = all).
 
-                .. deprecated::
+                .. deprecated:: 1.1
                     Use :meth:`set_visible_worlds` instead.
         """
         if self.model is not None:

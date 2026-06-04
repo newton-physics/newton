@@ -1836,7 +1836,7 @@ class ModelBuilder:
         values are supported within the same group; the buffer is
         sized to ``max(delay_step_values)``.
 
-        .. deprecated::
+        .. deprecated:: 1.2
             The legacy ``newton_actuators`` signature is still accepted::
 
                 add_actuator(ActuatorPD, input_indices=[dof], kp=50.0)
