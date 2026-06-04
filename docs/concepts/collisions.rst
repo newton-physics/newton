@@ -876,6 +876,8 @@ Two approaches available:
         margin=0.005,                         # Extra AABB padding [m] (0.05)
         shape_margin=0.001,                   # Shrink SDF surface inward [m] (0.0)
         scale=(1.0, 1.0, 1.0),                # Bake non-unit scale into the SDF (None)
+        edge_lower_angle_threshold_rad=math.radians(0.1),  # Drop near-coplanar edges below this angle (0.1 deg)
+        edge_box_absorption=False,            # Drop edges fully covered by another edge's oriented box
     )
 
 ``max_resolution`` sets the voxel count along the longest AABB axis (must be divisible by 8);
@@ -886,6 +888,43 @@ memory and build time). Set the SDF ``margin`` to at least the sum of the shape'
 full contact detection range. Pass ``scale`` when the shape will be added with non-unit scale
 to bake it into the SDF grid. ``shape_margin`` is mainly useful for hydroelastic collision
 where a compliant-layer offset is desired.
+
+**Edge simplification.** ``mesh.build_sdf(...)`` also runs a dihedral-angle pre-filter over
+the mesh's manifold edges and caches the surviving subset on the mesh; the SDF-mesh contact
+pipeline picks up that cached set in preference to the unfiltered :attr:`~Mesh.edges`,
+which materially reduces edge-vs-shape work for typical CAD or scanned meshes. The default
+threshold (``edge_lower_angle_threshold_rad=math.radians(0.1)``) drops only edges that are
+geometrically coplanar to within 0.1 degrees, so it is safe for most meshes; raise it to
+prune more aggressively, set it to ``0`` to keep every manifold edge, or pass a negative
+value (e.g. ``-1.0``) to opt out of the simplification pass entirely. Set
+``edge_box_absorption=True`` to additionally drop manifold edges that are fully covered by
+another nearby edge's oriented box — useful for densely tessellated curved surfaces.
+``edge_box_half_normal``/``edge_box_half_normal_rel`` and
+``edge_box_half_lateral``/``edge_box_half_lateral_rel`` tune the box extents (absolute
+metres or fractions of the mesh AABB diagonal); see :meth:`~Mesh.build_sdf` for full
+parameter docs.
+
+**On-disk SDF cache.** Pass ``cache_dir`` to persist the cooked SDF and skip the cook on
+subsequent runs:
+
+.. code-block:: python
+
+    mesh.build_sdf(max_resolution=64, cache_dir="./sdf_cache")
+
+Entries are content-addressed by mesh data and build parameters; changing any of them
+produces a fresh entry automatically. ``shape_margin`` is applied at sample time and is
+not part of the cache key. The on-disk format is internal and may change between Newton
+versions — caches are invalidated and re-cooked transparently.
+
+.. note::
+   **Watertight meshes are preferred.** An SDF works best on a closed
+   surface, so meshes whose every edge is shared by exactly two triangles give the most
+   reliable inside/outside classification. Newton detects this automatically via
+   :attr:`~Mesh.is_watertight` and switches to a faster parity-based construction path
+   when it applies. Non-watertight meshes fall back to the slower winding-number path;
+   SDFs on terrain meshes work too, but mind the resolution (terrains have large
+   extents so surface features are easy to under-resolve) and expect noticeably
+   longer construction times.
 
 **Mesh simplification for collision**
 
@@ -1253,6 +1292,19 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
      - Contact normal, pointing from shape 0 toward shape 1 (world frame).
    * - ``rigid_contact_margin0``, ``rigid_contact_margin1``
      - Per-shape thickness: effective radius + margin (scalar).
+   * - ``rigid_contact_match_index``
+     - Per-contact frame-to-frame match result (int32). ``>= 0``: matched old
+       index, ``-1``: new, ``-2``: broken.  Only allocated when
+       ``contact_matching`` is not ``"disabled"``.
+       See :ref:`Contact Matching`.
+   * - ``rigid_contact_new_indices``, ``rigid_contact_new_count``
+     - Compact index list of new contacts in the current sorted buffer (where
+       ``match_index < 0``). Only allocated when ``contact_report=True``.
+       See :ref:`Contact Reports`.
+   * - ``rigid_contact_broken_indices``, ``rigid_contact_broken_count``
+     - Compact index list of contacts from the previous frame that no current
+       contact matched. Only allocated when ``contact_report=True``.
+       See :ref:`Contact Reports`.
 
 **Soft contacts (particle-shape):**
 
@@ -1331,10 +1383,11 @@ additional set of **differentiable** rigid-contact arrays that participate in
 distance and world-space contact points with respect to body poses
 (``state.body_q``).
 
-.. note::
-   Rigid-contact differentiability is **experimental**.  Accuracy and fitness for
-   real-world optimization or learning workflows should be validated case by case
-   before relying on these gradients.
+.. experimental::
+
+   Rigid-contact differentiability may change without prior notice. Accuracy
+   and fitness for real-world optimization or learning workflows should be
+   validated case by case before relying on these gradients.
 
 Making the full narrow-phase pipeline differentiable end-to-end would be
 prohibitively expensive and numerically fragile — iterative GJK/MPR solvers,
@@ -1619,20 +1672,72 @@ Example:
 USD Integration
 ---------------
 
-Custom collision properties can be authored in USD:
+Newton provides several USD schema APIs for authoring collision and contact
+properties directly in USD layers.
+
+**NewtonCollisionAPI**
+
+Applied to collision shapes to configure per-shape contact detection. The
+``newton:contactMargin`` and ``newton:contactGap`` attributes map to
+:attr:`~ModelBuilder.ShapeConfig.margin` and :attr:`~ModelBuilder.ShapeConfig.gap`
+respectively.
 
 .. code-block:: usda
 
-    def Xform "Box" (
-        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+    def Cube "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI"]
+    ) {
+        float newton:contactMargin = 0.001
+        float newton:contactGap = 0.02
+    }
+
+**NewtonMaterialAPI**
+
+Extends ``PhysicsMaterialAPI`` with torsional/rolling friction
+(``newton:torsionalFriction``, ``newton:rollingFriction``) and contact response
+attributes. The contact response attributes map to :class:`~ModelBuilder.ShapeConfig`
+fields as follows: ``newton:contactStiffness`` → ``ke``,
+``newton:contactDamping`` → ``kd``, ``newton:contactFrictionGain`` → ``kf``,
+``newton:contactAdhesion`` → ``ka``. A value of ``-inf`` means "use the engine's
+default" (see :ref:`Contact Material Properties`).
+
+.. code-block:: usda
+
+    def Material "RubberMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI", "NewtonMaterialAPI"]
+    ) {
+        float physics:staticFriction = 1.0
+        float physics:dynamicFriction = 0.8
+        float newton:torsionalFriction = 0.1
+        float newton:rollingFriction = 0.01
+        float newton:contactStiffness = 5000.0
+        float newton:contactDamping = 200.0
+        float newton:contactFrictionGain = 800.0
+        float newton:contactAdhesion = 0.0
+    }
+
+    def Cube "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    ) {
+        rel material:binding:physics = </RubberMaterial>
+    }
+
+**NewtonMeshCollisionAPI**
+
+Applied on top of ``PhysicsMeshCollisionAPI`` to control mesh approximation.
+Currently exposes ``newton:maxHullVertices`` for convex hull generation.
+
+**Custom Properties**
+
+Additional per-shape attributes that Newton reads:
+
+.. code-block:: usda
+
+    def Cube "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
     ) {
         custom int newton:collision_group = 1
-        custom int newton:world = 0
-        custom float newton:contact_ke = 100000.0
-        custom float newton:contact_kd = 1000.0
-        custom float newton:contact_kf = 1000.0
-        custom float newton:contact_ka = 0.0
-        custom float newton:margin = 0.00001
+        custom bool newton:is_sensor = false
     }
 
 See :doc:`custom_attributes` and :doc:`usd_parsing` for details.
@@ -1668,6 +1773,139 @@ fully CUDA-graph-capturable.
 .. note::
 
    Hydroelastic contacts are not yet covered by deterministic ordering.
+
+.. _Contact Matching:
+
+Contact Matching
+----------------
+
+Contact matching tracks contacts across frames, identifying which contacts
+persist, which are new, and which have broken.  The ``contact_matching``
+argument on :class:`~CollisionPipeline` selects one of three modes:
+
+- ``"disabled"`` (default) — no matching, no extra buffers.
+- ``"latest"`` — match current contacts against the previous
+  frame and populate :attr:`Contacts.rigid_contact_match_index`, but keep the
+  current frame's freshly generated contact geometry in the returned
+  :class:`Contacts` buffer.
+- ``"sticky"`` — match like ``"latest"``, then overwrite
+  each matched contact's body-frame contact points (``point0``/``point1``),
+  offsets (``offset0``/``offset1``), and world-frame ``normal`` with the
+  saved previous-frame values.  The remaining contact fields
+  (``shape0``/``shape1``, ``margin0``/``margin1``) are either key-derived
+  or per-shape constants and so are already identical for a matched
+  contact — no extra state is kept for them.  Unmatched contacts pass
+  through with their fresh narrow-phase geometry.  Useful for stacking
+  scenarios where small frame-to-frame geometric jitter on persistent
+  contacts degrades stability.
+
+  .. experimental::
+
+     The way sticky contacts are updated across frames may change without prior
+     notice.
+
+Any non-disabled mode implies ``deterministic=True``.
+
+.. testsetup:: contact-matching
+
+    import warp as wp
+    import newton
+
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    body = builder.add_body(xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()))
+    builder.add_shape_sphere(body, radius=0.5)
+    model = builder.finalize()
+    state = model.state()
+
+.. testcode:: contact-matching
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        contact_matching="latest",
+        contact_matching_pos_threshold=0.005,      # metres (default 0.0005)
+        contact_matching_normal_dot_threshold=0.9,  # cos(~25°)
+    )
+    contacts = pipeline.contacts()
+
+    pipeline.collide(state, contacts)
+
+    # Per-contact match index (int32):
+    #   >= 0 : index of the matched contact in the previous frame
+    #     -1 : new contact (no match found)
+    #     -2 : key matched but position/normal thresholds exceeded (broken)
+    match_idx = contacts.rigid_contact_match_index.numpy()
+
+Each frame, the matcher binary-searches the current contacts against the
+previous frame's sorted keys, then verifies candidates against a world-space
+distance threshold and a normal dot-product threshold.  The sort key encodes
+``(shape_a, shape_b, sub_key)`` so only contacts between the same shape pair
+are compared.
+
+The distance metric is the world-space **contact midpoint**
+``0.5 * (world(point0) + world(point1))`` — symmetric in shape 0 and shape 1
+— which means swapping the two shapes of a pair does not change whether a
+contact matches.  It also means pure changes in penetration depth register
+as motion on both sides of the contact, not just one.
+
+**Thresholds**
+
+- ``contact_matching_pos_threshold`` — maximum world-space distance [m]
+  between the previous and current contact midpoints for a match.  Contacts
+  that moved more than this between frames are considered broken.  Defaults
+  to ``0.0005`` m.
+- ``contact_matching_normal_dot_threshold`` — minimum dot product between old
+  and new contact normals.  Below this the contact is reported as broken even
+  if the key and position match.
+
+**Sticky mode**
+
+Replay of the matched previous-frame geometry happens after the deterministic
+sort, so ``match_index`` already addresses the final sorted layout.  Unmatched
+rows (``MATCH_NOT_FOUND`` / ``MATCH_BROKEN``) are left untouched, so new and
+threshold-broken contacts keep their fresh narrow-phase geometry.  Because
+matching requires both a position delta below the threshold and a normal dot
+product above the threshold, the saved values are guaranteed to be a close
+approximation of the current geometry and are safe to reuse.  The extra
+per-contact buffers (four ``vec3`` columns for the body-frame points and
+offsets) are only allocated when the mode is ``"sticky"``; ``"latest"`` and
+``"disabled"`` pay zero additional memory and launch no additional kernels.
+
+.. _Contact Reports:
+
+Contact Reports
+^^^^^^^^^^^^^^^
+
+Pass ``contact_report=True`` to also collect compact index lists of new and
+broken contacts each frame.  ``contact_report=True`` requires a non-disabled
+matching mode:
+
+.. testcode:: contact-matching
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        contact_matching="latest",
+        contact_report=True,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+
+    n_new = contacts.rigid_contact_new_count.numpy()[0]
+    new_indices = contacts.rigid_contact_new_indices.numpy()[:n_new]
+
+    n_broken = contacts.rigid_contact_broken_count.numpy()[0]
+    broken_indices = contacts.rigid_contact_broken_indices.numpy()[:n_broken]
+
+``rigid_contact_new_indices`` holds indices into the current frame's sorted
+contact buffer for every contact with ``match_index < 0``.  This includes both
+genuinely new contacts (``MATCH_NOT_FOUND``, ``match_index == -1``) and
+threshold-broken contacts whose sort key matched a previous-frame contact but
+whose position or normal exceeded the configured thresholds
+(``MATCH_BROKEN``, ``match_index == -2``).  Inspect
+``contacts.rigid_contact_match_index`` to distinguish the two cases.
+
+``rigid_contact_broken_indices`` holds indices into the *previous* frame's
+sorted buffer for contacts that no current contact matched.
 
 .. _Performance:
 
@@ -1787,7 +2025,7 @@ You can replace or compose these stages independently.
 **Broad phase classes**
 
 All broad phase classes expose a ``launch`` method that writes candidate pairs
-(``wp.array(dtype=wp.vec2i)``) and a pair count:
+(``wp.array[wp.vec2i]``) and a pair count:
 
 .. list-table::
    :header-rows: 1

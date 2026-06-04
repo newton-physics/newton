@@ -18,6 +18,7 @@ from ..core.model import ModelKamino
 from ..core.types import (
     float32,
     int32,
+    to_warp_int32_array,
     uint32,
     uint64,
     vec1f,
@@ -132,7 +133,7 @@ class LimitsKaminoData:
 
     dof: wp.array | None = None
     """
-    The DoF indices along which limits are active w.r.t the world.\n
+    The DoF indices along which limits are active w.r.t the model.\n
     Shape of ``(model_max_limits_host,)`` and type :class:`int32`.
     """
 
@@ -297,9 +298,9 @@ def make_read_joint_coords_map_and_limits(dof_type: JointDoFType):
         # Inputs:
         dofs_offset: int32,  # Index offset of the joint DoFs
         coords_offset: int32,  # Index offset of the joint coordinates
-        model_joint_q_j_min: wp.array(dtype=float32),
-        model_joint_q_j_max: wp.array(dtype=float32),
-        state_joints_q_j: wp.array(dtype=float32),
+        model_joint_q_j_min: wp.array[float32],
+        model_joint_q_j_max: wp.array[float32],
+        state_joints_q_j: wp.array[float32],
     ) -> tuple[int32, vec6f, vec6f, vec6f]:
         # Statically define the joint DoF counts
         d_j = wp.static(num_dofs)
@@ -337,9 +338,9 @@ def read_joint_coords_map_and_limits(
     dof_type: int32,
     dofs_offset: int32,
     coords_offset: int32,
-    model_joint_q_j_min: wp.array(dtype=float32),
-    model_joint_q_j_max: wp.array(dtype=float32),
-    state_joints_q_j: wp.array(dtype=float32),
+    model_joint_q_j_min: wp.array[float32],
+    model_joint_q_j_max: wp.array[float32],
+    state_joints_q_j: wp.array[float32],
 ) -> tuple[int32, vec6f, vec6f, vec6f]:
     if dof_type == JointDoFType.REVOLUTE:
         d_j, q_j_min, q_j_max, q_j_map = wp.static(make_read_joint_coords_map_and_limits(JointDoFType.REVOLUTE))(
@@ -437,16 +438,16 @@ def detect_active_dof_limit(
     qmin: float32,
     qmax: float32,
     # Outputs:
-    limits_model_num: wp.array(dtype=int32),
-    limits_world_num: wp.array(dtype=int32),
-    limits_wid: wp.array(dtype=int32),
-    limits_lid: wp.array(dtype=int32),
-    limits_jid: wp.array(dtype=int32),
-    limits_bids: wp.array(dtype=vec2i),
-    limits_dof: wp.array(dtype=int32),
-    limits_side: wp.array(dtype=float32),
-    limits_r_q: wp.array(dtype=float32),
-    limits_key: wp.array(dtype=uint64),
+    limits_model_num: wp.array[int32],
+    limits_world_num: wp.array[int32],
+    limits_wid: wp.array[int32],
+    limits_lid: wp.array[int32],
+    limits_jid: wp.array[int32],
+    limits_bids: wp.array[vec2i],
+    limits_dof: wp.array[int32],
+    limits_side: wp.array[float32],
+    limits_r_q: wp.array[float32],
+    limits_key: wp.array[uint64],
 ):
     # Retrieve the state of the joint
     r_min = q - qmin
@@ -475,30 +476,28 @@ def detect_active_dof_limit(
 
 @wp.kernel
 def _detect_active_joint_configuration_limits(
-    model_info_joint_dofs_offset: wp.array(dtype=int32),
-    model_info_joint_coords_offset: wp.array(dtype=int32),
-    model_joint_wid: wp.array(dtype=int32),
-    model_joint_dof_type: wp.array(dtype=int32),
-    model_joint_dofs_offset: wp.array(dtype=int32),
-    model_joint_coords_offset: wp.array(dtype=int32),
-    model_joint_bid_B: wp.array(dtype=int32),
-    model_joint_bid_F: wp.array(dtype=int32),
-    model_joint_q_j_min: wp.array(dtype=float32),
-    model_joint_q_j_max: wp.array(dtype=float32),
-    state_joints_q_j: wp.array(dtype=float32),
-    limits_model_max: wp.array(dtype=int32),
-    limits_world_max: wp.array(dtype=int32),
+    model_joint_wid: wp.array[int32],
+    model_joint_dof_type: wp.array[int32],
+    model_joint_dofs_offset: wp.array[int32],
+    model_joint_coords_offset: wp.array[int32],
+    model_joint_bid_B: wp.array[int32],
+    model_joint_bid_F: wp.array[int32],
+    model_joint_q_j_min: wp.array[float32],
+    model_joint_q_j_max: wp.array[float32],
+    state_joints_q_j: wp.array[float32],
+    limits_model_max: wp.array[int32],
+    limits_world_max: wp.array[int32],
     # Outputs:
-    limits_model_num: wp.array(dtype=int32),
-    limits_world_num: wp.array(dtype=int32),
-    limits_wid: wp.array(dtype=int32),
-    limits_lid: wp.array(dtype=int32),
-    limits_jid: wp.array(dtype=int32),
-    limits_bids: wp.array(dtype=vec2i),
-    limits_dof: wp.array(dtype=int32),
-    limits_side: wp.array(dtype=float32),
-    limits_r_q: wp.array(dtype=float32),
-    limits_key: wp.array(dtype=uint64),
+    limits_model_num: wp.array[int32],
+    limits_world_num: wp.array[int32],
+    limits_wid: wp.array[int32],
+    limits_lid: wp.array[int32],
+    limits_jid: wp.array[int32],
+    limits_bids: wp.array[vec2i],
+    limits_dof: wp.array[int32],
+    limits_side: wp.array[float32],
+    limits_r_q: wp.array[float32],
+    limits_key: wp.array[uint64],
 ):
     # Retrieve the joint index for the current thread
     # This will be the index w.r.r the model
@@ -523,13 +522,9 @@ def _detect_active_joint_configuration_limits(
     if dof_type_j == JointDoFType.FIXED or world_max_limits == 0 or model_max_limits == 0:
         return
 
-    # Extract the index offset of the world's joint DoFs w.r.t the model
-    world_dofs_offset = model_info_joint_dofs_offset[wid]
-    world_coords_offset = model_info_joint_coords_offset[wid]
-
-    # Compute total index offset of the joint's DoFs w.r.t the model
-    dofs_offset_total = dofs_offset_j + world_dofs_offset
-    coords_offset_total = coords_offset_j + world_coords_offset
+    # Use global offsets directly
+    dofs_offset_total = dofs_offset_j
+    coords_offset_total = coords_offset_j
 
     # Read the joint DoF count, limits and coordinates mapped to DoF space
     # NOTE: We need to map to DoF space to compare against the limits when
@@ -585,17 +580,16 @@ class LimitsKamino:
     def __init__(
         self,
         model: ModelKamino | None = None,
-        device: wp.DeviceLike = None,
     ):
         # The device on which to allocate the limits data
-        self._device = device
+        self._device: wp.DeviceLike = None
 
         # Declare the joint-limits data container and initialize it to empty
         self._data: LimitsKaminoData = LimitsKaminoData()
 
         # Perform memory allocation if max_limits is specified
         if model is not None:
-            self.finalize(model=model, device=device)
+            self.finalize(model=model)
 
     ###
     # Properties
@@ -689,7 +683,7 @@ class LimitsKamino:
     @property
     def jid(self) -> wp.array:
         """
-        Returns the element index of the corresponding joint w.r.t the world.\n
+        Returns the element index of the corresponding joint w.r.t the model.\n
         Shape of ``(model_max_limits_host,)`` and type :class:`int32`.
         """
         self._assert_has_data()
@@ -707,7 +701,7 @@ class LimitsKamino:
     @property
     def dof(self) -> wp.array:
         """
-        Returns the DoF indices along which limits are active w.r.t the world.\n
+        Returns the DoF indices along which limits are active w.r.t the model.\n
         Shape of ``(model_max_limits_host,)`` and type :class:`int32`.
         """
         self._assert_has_data()
@@ -763,7 +757,7 @@ class LimitsKamino:
     # Operations
     ###
 
-    def finalize(self, model: ModelKamino, device: wp.DeviceLike = None):
+    def finalize(self, model: ModelKamino):
         # Ensure the model is valid
         if model is None:
             raise ValueError("LimitsKamino: model must be specified for allocation (got None)")
@@ -793,18 +787,17 @@ class LimitsKamino:
             msg.debug("LimitsKamino: Skipping joint-limit data allocations since total requested capacity was `0`.")
             return
 
-        # Override the device if specified
-        if device is not None:
-            self._device = device
+        # Use the model's device
+        self._device = model.device
 
         # Allocate the limits data on the specified device
         with wp.ScopedDevice(self._device):
             self._data = LimitsKaminoData(
                 model_max_limits_host=model_max_limits,
                 world_max_limits_host=world_max_limits,
-                model_max_limits=wp.array([model_max_limits], dtype=int32),
+                model_max_limits=to_warp_int32_array([model_max_limits]),
                 model_active_limits=wp.zeros(shape=1, dtype=int32),
-                world_max_limits=wp.array(world_max_limits, dtype=int32),
+                world_max_limits=to_warp_int32_array(world_max_limits),
                 world_active_limits=wp.zeros(shape=len(world_max_limits), dtype=int32),
                 wid=wp.zeros(shape=model_max_limits, dtype=int32),
                 lid=wp.zeros(shape=model_max_limits, dtype=int32),
@@ -871,8 +864,6 @@ class LimitsKamino:
             dim=model.size.sum_of_num_joints,
             inputs=[
                 # Inputs:
-                model.info.joint_dofs_offset,
-                model.info.joint_coords_offset,
                 model.joints.wid,
                 model.joints.dof_type,
                 model.joints.dofs_offset,
@@ -896,6 +887,7 @@ class LimitsKamino:
                 self._data.r_q,
                 self._data.key,
             ],
+            device=self._device,
         )
 
     ###

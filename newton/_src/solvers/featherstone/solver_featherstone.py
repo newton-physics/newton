@@ -24,6 +24,7 @@ from ..semi_implicit.kernels_particle import (
 from ..solver import SolverBase
 from .kernels import (
     accumulate_free_distance_joint_f_to_body_force,
+    compute_body_parent_f,
     compute_com_transforms,
     compute_spatial_inertia,
     convert_body_force_com_to_origin,
@@ -86,12 +87,34 @@ class SolverFeatherstone(SolverBase):
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and :attr:`~newton.Control.joint_f`
           are supported.
+        - Position/velocity target tracking (:attr:`~newton.Control.joint_target_q`/
+          :attr:`~newton.Control.joint_target_qd`) is applied only to PRISMATIC, REVOLUTE,
+          and D6 joints. For BALL, FREE, and DISTANCE joints the target arrays are read
+          but no drive force is applied.
         - :attr:`~newton.Model.joint_friction`, :attr:`~newton.Model.joint_effort_limit`,
           :attr:`~newton.Model.joint_velocity_limit`, :attr:`~newton.Model.joint_enabled`,
           and :attr:`~newton.Model.joint_target_mode` are not supported.
         - Equality and mimic constraints are not supported.
 
         See :ref:`Joint feature support` for the full comparison across solvers.
+
+    Extended state attributes:
+        :attr:`~newton.State.body_parent_f` is populated when requested via
+        :meth:`~newton.ModelBuilder.request_state_attributes`. The reported
+        wrench is the per-body net spatial force from the RNEA backward pass
+        translated to the body's COM (linear ``[N]`` first, torque ``[N·m]``
+        in world frame at the COM), matching the wrench-transmitted-through-
+        the-inbound-joint convention used by :class:`~newton.solvers.SolverMuJoCo`'s
+        ``cfrc_int``. In equilibrium this reaction counters all forces acting
+        on the body's subtree (gravity, contacts, ``State.body_f``, and the
+        net effect of :attr:`~newton.Control.joint_f`) by Newton's third law.
+
+        Free-floating roots (bodies whose only inbound joint is FREE) are
+        not special-cased: the same RNEA sum is written, which for such
+        bodies is the residual force balance from the recursion (e.g.
+        contacts vs. gravity in equilibrium, or the gyroscopic
+        ``v x* (I*v)`` term during tumbling) rather than a true joint
+        reaction. Treat it as a diagnostic in that case.
 
     Example
     -------
@@ -180,11 +203,12 @@ class SolverFeatherstone(SolverBase):
                     device=model.device,
                 )
                 articulation_start = model.articulation_start.numpy()
+                articulation_end = model.articulation_end.numpy()
                 articulation_indices = []
                 refresh_joint_starts = []
                 for articulation in range(model.articulation_count):
                     joint_start = articulation_start[articulation]
-                    joint_end = articulation_start[articulation + 1]
+                    joint_end = articulation_end[articulation]
                     descendant_joint_offsets = np.flatnonzero(descendant_free_distance_mask[joint_start:joint_end])
                     if descendant_joint_offsets.size == 0:
                         continue
@@ -246,12 +270,13 @@ class SolverFeatherstone(SolverBase):
             articulation_coord_start = []
 
             articulation_start = model.articulation_start.numpy()
+            articulation_end = model.articulation_end.numpy()
             joint_q_start = model.joint_q_start.numpy()
             joint_qd_start = model.joint_qd_start.numpy()
 
             for i in range(model.articulation_count):
                 first_joint = articulation_start[i]
-                last_joint = articulation_start[i + 1]
+                last_joint = articulation_end[i]
 
                 first_coord = joint_q_start[first_joint]
 
@@ -411,6 +436,7 @@ class SolverFeatherstone(SolverBase):
                     dim=model.articulation_count,
                     inputs=[
                         model.articulation_start,
+                        model.articulation_end,
                         model.joint_type,
                         model.joint_parent,
                         model.joint_child,
@@ -528,6 +554,7 @@ class SolverFeatherstone(SolverBase):
                     dim=model.articulation_count,
                     inputs=[
                         model.articulation_start,
+                        model.articulation_end,
                         model.joint_type,
                         model.joint_parent,
                         model.joint_child,
@@ -593,6 +620,14 @@ class SolverFeatherstone(SolverBase):
                         device=model.device,
                     )
 
+                # ``body_parent_f`` is populated below from the RNEA
+                # backward-pass spatial forces. Zero it unconditionally so
+                # bodies that are not the child of any joint (or models
+                # without articulations) report a deterministic zero rather
+                # than stale buffer contents.
+                if state_out.body_parent_f is not None:
+                    state_out.body_parent_f.zero_()
+
                 if model.articulation_count:
                     # evaluate joint torques
                     state_aug.body_ft_s.zero_()
@@ -601,14 +636,16 @@ class SolverFeatherstone(SolverBase):
                         dim=model.articulation_count,
                         inputs=[
                             model.articulation_start,
+                            model.articulation_end,
                             model.joint_type,
                             model.joint_parent,
                             model.joint_child,
                             model.joint_q_start,
                             model.joint_qd_start,
+                            model.joint_target_q_start,
                             model.joint_dof_dim,
-                            control.joint_target_pos,
-                            control.joint_target_vel,
+                            control.joint_target_q,
+                            control.joint_target_qd,
                             state_in.joint_q,
                             state_aug.joint_qd_internal_in,
                             state_aug.joint_f_internal,
@@ -618,6 +655,7 @@ class SolverFeatherstone(SolverBase):
                             model.joint_limit_upper,
                             model.joint_limit_ke,
                             model.joint_limit_kd,
+                            model.joint_damping,
                             state_aug.joint_S_s,
                             state_aug.body_f_s,
                             body_f,
@@ -628,6 +666,24 @@ class SolverFeatherstone(SolverBase):
                         ],
                         device=model.device,
                     )
+
+                    # Optionally populate ``state_out.body_parent_f`` (incoming
+                    # joint wrench per body in world frame at COM) from the
+                    # RNEA backward-pass spatial forces. Only runs when the
+                    # extended state attribute has been requested.
+                    if state_out.body_parent_f is not None:
+                        wp.launch(
+                            compute_body_parent_f,
+                            dim=model.body_count,
+                            inputs=[
+                                state_aug.body_q_com,
+                                state_aug.body_f_s,
+                                state_aug.body_ft_s,
+                                body_f,
+                            ],
+                            outputs=[state_out.body_parent_f],
+                            device=model.device,
+                        )
 
                     # print("joint_tau:")
                     # print(state_aug.joint_tau.numpy())
@@ -643,6 +699,7 @@ class SolverFeatherstone(SolverBase):
                             dim=model.articulation_count,
                             inputs=[
                                 model.articulation_start,
+                                model.articulation_end,
                                 self.articulation_J_start,
                                 model.joint_ancestor,
                                 model.joint_qd_start,
@@ -658,6 +715,7 @@ class SolverFeatherstone(SolverBase):
                             dim=model.articulation_count,
                             inputs=[
                                 model.articulation_start,
+                                model.articulation_end,
                                 self.articulation_M_start,
                                 state_aug.body_I_s,
                             ],

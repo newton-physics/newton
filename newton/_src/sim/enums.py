@@ -53,7 +53,7 @@ class JointType(IntEnum):
     """6-DoF joint: Generic joint with up to 3 translational and 3 rotational degrees of freedom."""
 
     CABLE = 7
-    """Cable joint: one linear (stretch) and one angular (isotropic bend/twist) DoF."""
+    """Cable joint: two DOF slots for linear stretch and angular bend/twist."""
 
     def dof_count(self, num_axes: int) -> tuple[int, int]:
         """
@@ -135,7 +135,7 @@ class JointTargetMode(IntEnum):
     """
     Enumeration of actuator modes for joint degrees of freedom.
 
-    This enum manages UsdPhysics compliance by specifying whether joint_target_pos/vel
+    This enum manages UsdPhysics compliance by specifying whether joint_target_q/qd
     inputs are active for a given DOF. It determines which actuators are installed when
     using solvers that require explicit actuator definitions (e.g., MuJoCo solver).
 
@@ -149,13 +149,13 @@ class JointTargetMode(IntEnum):
     """No actuators are installed for this DOF. The joint is passive/unactuated."""
 
     POSITION = 1
-    """Only a position actuator is installed for this DOF. Tracks joint_target_pos."""
+    """Only a position actuator is installed for this DOF. Tracks joint_target_q."""
 
     VELOCITY = 2
-    """Only a velocity actuator is installed for this DOF. Tracks joint_target_vel."""
+    """Only a velocity actuator is installed for this DOF. Tracks joint_target_qd."""
 
     POSITION_VELOCITY = 3
-    """Both position and velocity actuators are installed. Tracks both joint_target_pos and joint_target_vel."""
+    """Both position and velocity actuators are installed. Tracks both joint_target_q and joint_target_qd."""
 
     EFFORT = 4
     """A drive is applied but no gains are configured. No MuJoCo actuator is created for this DOF.

@@ -34,6 +34,7 @@ and MuJoCo physics solvers when importing USD files. Tests cover:
 
 import math
 import unittest
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -415,10 +416,11 @@ class TestSchemaResolver(unittest.TestCase):
         """
         Test MuJoCo solref parameter conversion to stiffness and damping values.
 
-        Uses ant_mixed.usda to test MuJoCo's solref (solver reference) parameter conversion
-        to Newton's stiffness/damping representation. Compares results between Newton-priority
-        and MuJoCo-priority imports, validating that MuJoCo's solref values produce 2x the
-        stiffness/damping compared to PhysX/Newton when using specific solref parameters.
+        Uses ant_mixed.usda to test that schema resolver priority correctly selects between
+        PhysX-authored ``physxLimit:angular:stiffness`` (per-degree by UsdPhysics convention)
+        and MuJoCo-derived ``mjc:solreflimit`` (per-radian by mjModel convention). Each path's
+        stored ``joint_limit_ke`` / ``joint_limit_kd`` must end up in Newton's per-radian
+        internal units regardless of authored unit.
         """
 
         test_dir = Path(__file__).parent
@@ -442,13 +444,37 @@ class TestSchemaResolver(unittest.TestCase):
             schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton(), SchemaResolverPhysx()],
             verbose=False,
         )
-        # With mjc priority and solref chosen as (0.5, 0.05):
-        # Stiffness: k = 1/(timeconst^2 * dampratio^2) = 1/0.000625 = 1600.0 (800x physx/newton value of 2.0)
-        # Damping: b = 2/timeconst = 2/0.5 = 4.0
+
+        # PhysX authors `physxLimit:angular:stiffness = 2.0` per-degree; importer converts
+        # to per-radian: 2.0 / (pi/180).
+        # MJC `mjc:solreflimit = (0.5, 0.05)` -> per-radian k = 1/(0.5^2 * 0.05^2) = 1600,
+        # b = 2/0.5 = 4.0. The MJC angular schema entries pre-multiply by pi/180 to cancel
+        # the importer's later /= DegreesToRadian, so the per-radian value reaches Newton.
+        deg_to_rad = math.pi / 180.0
+        expected_physx_ke = 2.0 / deg_to_rad
+        expected_physx_kd = 0.1 / deg_to_rad
+        expected_mjc_ke = 1600.0
+        expected_mjc_kd = 4.0
+
         self.assertEqual(len(builder_newton.joint_limit_ke), len(builder_mjc.joint_limit_ke))
         self.assertEqual(len(builder_newton.joint_limit_kd), len(builder_mjc.joint_limit_kd))
+        # Skip entries with zero stiffness/damping (free-joint DOFs have no limits authored).
+        ke_count = 0
         for physx_ke, mjc_ke in zip(builder_newton.joint_limit_ke, builder_mjc.joint_limit_ke, strict=False):
-            self.assertAlmostEqual(mjc_ke / 800.0, physx_ke, places=5)
+            if physx_ke == 0.0 and mjc_ke == 0.0:
+                continue
+            ke_count += 1
+            self.assertAlmostEqual(physx_ke, expected_physx_ke, places=3)
+            self.assertAlmostEqual(mjc_ke, expected_mjc_ke, places=3)
+        kd_count = 0
+        for physx_kd, mjc_kd in zip(builder_newton.joint_limit_kd, builder_mjc.joint_limit_kd, strict=False):
+            if physx_kd == 0.0 and mjc_kd == 0.0:
+                continue
+            kd_count += 1
+            self.assertAlmostEqual(physx_kd, expected_physx_kd, places=3)
+            self.assertAlmostEqual(mjc_kd, expected_mjc_kd, places=3)
+        self.assertGreater(ke_count, 0, "Expected at least one revolute joint with authored limit_ke")
+        self.assertGreater(kd_count, 0, "Expected at least one revolute joint with authored limit_kd")
 
     def test_newton_custom_attributes(self):
         """
@@ -1606,6 +1632,215 @@ class TestSchemaResolver(unittest.TestCase):
         torsional = resolver.get_value(material, PrimType.MATERIAL, "mu_torsional")
         self.assertAlmostEqual(rolling, 0.1)
         self.assertAlmostEqual(torsional, 0.2)
+
+    def test_mass_model(self):
+        """Test mass_model resolution: newton:massModel and mjc:shellinertia."""
+        stage = Usd.Stage.CreateInMemory()
+        xform = UsdGeom.Xform.Define(stage, "/xform").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(xform)
+        collider = UsdGeom.Sphere.Define(stage, "/xform/collider").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider)
+
+        # No authored value → default "solid"
+        resolver = SchemaResolverManager([SchemaResolverNewton()])
+        mass_model = resolver.get_value(collider, PrimType.SHAPE, "mass_model")
+        self.assertEqual(mass_model, "solid")
+
+        # newton:massModel authored
+        collider.CreateAttribute("newton:massModel", Sdf.ValueTypeNames.Token).Set("shell")
+        mass_model = resolver.get_value(collider, PrimType.SHAPE, "mass_model")
+        self.assertEqual(mass_model, "shell")
+
+        # mjc:shellinertia = True → "shell"
+        resolver = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
+        collider2 = UsdGeom.Sphere.Define(stage, "/xform/collider2").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider2)
+        collider2.CreateAttribute("mjc:shellinertia", Sdf.ValueTypeNames.Bool).Set(True)
+        mass_model = resolver.get_value(collider2, PrimType.SHAPE, "mass_model")
+        self.assertEqual(mass_model, "shell")
+
+        # mjc:shellinertia = False → "solid"
+        collider2.GetAttribute("mjc:shellinertia").Set(False)
+        mass_model = resolver.get_value(collider2, PrimType.SHAPE, "mass_model")
+        self.assertEqual(mass_model, "solid")
+
+        # Newton priority over MuJoCo: newton:massModel wins
+        resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverMjc()])
+        collider.GetAttribute("newton:massModel").Set("solid")
+        collider.CreateAttribute("mjc:shellinertia", Sdf.ValueTypeNames.Bool).Set(True)
+        mass_model = resolver.get_value(collider, PrimType.SHAPE, "mass_model")
+        self.assertEqual(mass_model, "solid")
+
+        # Full import: mjc:shellinertia produces correct is_solid on shape
+        UsdPhysics.MassAPI.Apply(xform).CreateMassAttr().Set(10.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        collider.GetAttribute("mjc:shellinertia").Set(True)
+        collider.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Float).Set(0.05)
+        # Remove newton:massModel so MjcResolver takes effect
+        collider.GetAttribute("newton:massModel").Clear()
+
+        builder = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()])
+
+        shell_idx = builder.shape_label.index("/xform/collider")
+        self.assertFalse(builder.shape_is_solid[shell_idx])
+
+    def test_contact_response_attrs(self):
+        """Test ke/kd/kf/ka resolution on materials via PrimType.MATERIAL."""
+
+        stage = Usd.Stage.CreateInMemory()
+        material = UsdShade.Material.Define(stage, "/material").GetPrim()
+        material.ApplyAPI("NewtonMaterialAPI")
+
+        # Newton-only: unset attrs return None (no mapping default)
+        resolver = SchemaResolverManager([SchemaResolverNewton()])
+        for key in ("ke", "kd", "kf", "ka"):
+            self.assertIsNone(resolver.get_value(material, PrimType.MATERIAL, key))
+
+        # Authored -inf is returned as-is (not None), so callers can distinguish
+        # "use engine default" from "unset"
+        material.GetAttribute("newton:contactStiffness").Set(float("-inf"))
+        self.assertEqual(resolver.get_value(material, PrimType.MATERIAL, "ke"), float("-inf"))
+        material.GetAttribute("newton:contactStiffness").Clear()
+
+        # Author Newton material values
+        material.GetAttribute("newton:contactStiffness").Set(5000.0)
+        material.GetAttribute("newton:contactDamping").Set(200.0)
+        material.GetAttribute("newton:contactFrictionGain").Set(800.0)
+        material.GetAttribute("newton:contactAdhesion").Set(0.01)
+
+        self.assertAlmostEqual(resolver.get_value(material, PrimType.MATERIAL, "ke"), 5000.0)
+        self.assertAlmostEqual(resolver.get_value(material, PrimType.MATERIAL, "kd"), 200.0)
+        self.assertAlmostEqual(resolver.get_value(material, PrimType.MATERIAL, "kf"), 800.0)
+        self.assertAlmostEqual(resolver.get_value(material, PrimType.MATERIAL, "ka"), 0.01)
+
+        # PhysX compliantContact -> ke/kd at MATERIAL
+        material.CreateAttribute("physxMaterial:compliantContactStiffness", Sdf.ValueTypeNames.Float).Set(9000.0)
+        material.CreateAttribute("physxMaterial:compliantContactDamping", Sdf.ValueTypeNames.Float).Set(300.0)
+
+        resolver_physx_first = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
+        self.assertAlmostEqual(resolver_physx_first.get_value(material, PrimType.MATERIAL, "ke"), 9000.0)
+        self.assertAlmostEqual(resolver_physx_first.get_value(material, PrimType.MATERIAL, "kd"), 300.0)
+
+        # Newton first -> Newton values win
+        resolver_newton_first = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
+        self.assertAlmostEqual(resolver_newton_first.get_value(material, PrimType.MATERIAL, "ke"), 5000.0)
+        self.assertAlmostEqual(resolver_newton_first.get_value(material, PrimType.MATERIAL, "kd"), 200.0)
+
+        # MuJoCo material solref -> ke/kd at MATERIAL (legacy, emits deprecation warning)
+        material.CreateAttribute("mjc:solref", Sdf.ValueTypeNames.DoubleArray).Set([0.01, 0.5])
+
+        resolver_mjc_first = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            mjc_ke = resolver_mjc_first.get_value(material, PrimType.MATERIAL, "ke")
+            mjc_kd = resolver_mjc_first.get_value(material, PrimType.MATERIAL, "kd")
+            dep_msgs = [str(x.message) for x in w if issubclass(x.category, DeprecationWarning)]
+
+        self.assertAlmostEqual(mjc_ke, 1.0 / (0.01**2 * 0.5**2))
+        self.assertAlmostEqual(mjc_kd, 2.0 / 0.01)
+        self.assertEqual(len(dep_msgs), 2)
+        self.assertIn("mjc:solref", dep_msgs[0])
+        self.assertIn("newton:contactStiffness", dep_msgs[0])
+        self.assertIn("mjc:solref", dep_msgs[1])
+        self.assertIn("newton:contactDamping", dep_msgs[1])
+
+        # Newton first -> Newton values still win over MuJoCo
+        resolver_newton_first_mjc = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverMjc()])
+        self.assertAlmostEqual(resolver_newton_first_mjc.get_value(material, PrimType.MATERIAL, "ke"), 5000.0)
+        self.assertAlmostEqual(resolver_newton_first_mjc.get_value(material, PrimType.MATERIAL, "kd"), 200.0)
+
+        # PhysX and MuJoCo do not have kf/ka, so Newton values should be used regardless of order
+        resolver_physx_first = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
+        self.assertAlmostEqual(resolver_physx_first.get_value(material, PrimType.MATERIAL, "kf"), 800.0)
+        self.assertAlmostEqual(resolver_physx_first.get_value(material, PrimType.MATERIAL, "ka"), 0.01)
+
+        resolver_mjc_first_kf = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
+        self.assertAlmostEqual(resolver_mjc_first_kf.get_value(material, PrimType.MATERIAL, "kf"), 800.0)
+        self.assertAlmostEqual(resolver_mjc_first_kf.get_value(material, PrimType.MATERIAL, "ka"), 0.01)
+
+    def test_contact_response_legacy_shape(self):
+        """Test that legacy newton:contact_ke/kd/kf/ka on shape prims resolve with deprecation warning."""
+
+        stage = Usd.Stage.CreateInMemory()
+        collider = UsdGeom.Cube.Define(stage, "/collider").GetPrim()
+        collider.CreateAttribute("newton:contact_ke", Sdf.ValueTypeNames.Float).Set(9999.0)
+        collider.CreateAttribute("newton:contact_kd", Sdf.ValueTypeNames.Float).Set(777.0)
+        collider.CreateAttribute("newton:contact_kf", Sdf.ValueTypeNames.Float).Set(500.0)
+        collider.CreateAttribute("newton:contact_ka", Sdf.ValueTypeNames.Float).Set(0.05)
+
+        resolver = SchemaResolverManager([SchemaResolverNewton()])
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            ke = resolver.get_value(collider, PrimType.SHAPE, "ke")
+            kd = resolver.get_value(collider, PrimType.SHAPE, "kd")
+            kf = resolver.get_value(collider, PrimType.SHAPE, "kf")
+            ka = resolver.get_value(collider, PrimType.SHAPE, "ka")
+            deprecation_msgs = [str(x.message) for x in w if issubclass(x.category, DeprecationWarning)]
+
+        self.assertAlmostEqual(ke, 9999.0)
+        self.assertAlmostEqual(kd, 777.0)
+        self.assertAlmostEqual(kf, 500.0)
+        self.assertAlmostEqual(ka, 0.05)
+        self.assertEqual(len(deprecation_msgs), 4)
+        self.assertIn("newton:contact_ke", deprecation_msgs[0])
+        self.assertIn("newton:contactStiffness", deprecation_msgs[0])
+        self.assertIn("newton:contact_kd", deprecation_msgs[1])
+        self.assertIn("newton:contactDamping", deprecation_msgs[1])
+        self.assertIn("newton:contact_kf", deprecation_msgs[2])
+        self.assertIn("newton:contactFrictionGain", deprecation_msgs[2])
+        self.assertIn("newton:contact_ka", deprecation_msgs[3])
+        self.assertIn("newton:contactAdhesion", deprecation_msgs[3])
+
+    def test_contact_response_shape_no_legacy(self):
+        """Without legacy attrs, Newton SHAPE resolver returns None for ke/kd/kf/ka."""
+
+        stage = Usd.Stage.CreateInMemory()
+        collider = UsdGeom.Cube.Define(stage, "/collider").GetPrim()
+
+        resolver = SchemaResolverManager([SchemaResolverNewton()])
+        self.assertIsNone(resolver.get_value(collider, PrimType.SHAPE, "ke"))
+        self.assertIsNone(resolver.get_value(collider, PrimType.SHAPE, "kd"))
+        self.assertIsNone(resolver.get_value(collider, PrimType.SHAPE, "kf"))
+        self.assertIsNone(resolver.get_value(collider, PrimType.SHAPE, "ka"))
+
+    def test_contact_response_cross_resolver_shape(self):
+        """Test MuJoCo per-geom solref ke/kd at SHAPE with exact values and priority."""
+
+        stage = Usd.Stage.CreateInMemory()
+        collider = UsdGeom.Cube.Define(stage, "/collider").GetPrim()
+        collider.CreateAttribute("mjc:solref", Sdf.ValueTypeNames.DoubleArray).Set([0.01, 0.5])
+
+        # MuJoCo-only
+        resolver_mjc = SchemaResolverManager([SchemaResolverMjc()])
+        ke = resolver_mjc.get_value(collider, PrimType.SHAPE, "ke")
+        kd = resolver_mjc.get_value(collider, PrimType.SHAPE, "kd")
+        self.assertAlmostEqual(ke, 1.0 / (0.01**2 * 0.5**2))
+        self.assertAlmostEqual(kd, 2.0 / 0.01)
+
+        # MuJoCo first, Newton second (no legacy on collider) -> MuJoCo values
+        resolver_mjc_newton = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
+        self.assertAlmostEqual(resolver_mjc_newton.get_value(collider, PrimType.SHAPE, "ke"), ke)
+        self.assertAlmostEqual(resolver_mjc_newton.get_value(collider, PrimType.SHAPE, "kd"), kd)
+
+        # Add legacy attrs on collider + MuJoCo solref
+        collider.CreateAttribute("newton:contact_ke", Sdf.ValueTypeNames.Float).Set(1111.0)
+
+        # MuJoCo first -> MuJoCo wins
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            self.assertAlmostEqual(resolver_mjc_newton.get_value(collider, PrimType.SHAPE, "ke"), ke)
+
+        # Newton first -> legacy wins (with warning)
+        resolver_newton_mjc = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverMjc()])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            legacy_ke = resolver_newton_mjc.get_value(collider, PrimType.SHAPE, "ke")
+            self.assertAlmostEqual(legacy_ke, 1111.0)
+            deprecation_msgs = [str(x.message) for x in w if issubclass(x.category, DeprecationWarning)]
+            self.assertEqual(len(deprecation_msgs), 1)
 
 
 if __name__ == "__main__":

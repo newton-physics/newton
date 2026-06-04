@@ -88,6 +88,10 @@ BETA_THRESHOLD = 0.0001  # 0.1mm
 
 VALUES_PER_KEY = NUM_SPATIAL_DIRECTIONS + 1
 
+# Open-addressed linear probing gets expensive at high load and failed inserts
+# scan the whole table.
+HASHTABLE_WARN_LOAD_PERCENT = 80
+
 # Vector type for tracking exported contact IDs (used in export kernels)
 exported_ids_vec_type = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
 
@@ -590,21 +594,34 @@ def _clear_active_kernel(
     agg_moment_unreduced: wp.array[wp.float32],
     agg_moment_reduced: wp.array[wp.float32],
     agg_moment2_reduced: wp.array[wp.float32],
+    # Counter arrays to zero (merged from _zero_count_and_contacts_kernel)
+    contact_count: wp.array[wp.int32],
+    ht_insert_failures: wp.array[wp.int32],
     ht_capacity: int,
     values_per_key: int,
     num_threads: int,
 ):
-    """Kernel to clear active hashtable entries (keys, values, and hydroelastic aggregates).
+    """Clear active hashtable entries, values, hydroelastic aggregates, and counters.
 
     Uses grid-stride loop for efficient thread utilization.
     Each thread handles one value slot, with key and aggregate clearing done once per entry.
+    Thread 0 also zeros contact_count and ht_insert_failures (no other thread in this
+    kernel reads them, so there is no race). The active-slots count stored at
+    ``ht_active_slots[ht_capacity]`` must NOT be reset here: every thread reads it
+    at the top of the kernel and we have no cross-block barrier, so a follow-up
+    kernel launch (``_zero_active_count_kernel``) is used to zero it safely.
 
     Memory layout for values is slot-major (SoA):
     [slot0_entry0, slot0_entry1, ..., slot0_entryN, slot1_entry0, ...]
     """
     tid = wp.tid()
 
-    # Read count from GPU - stored at active_slots[capacity]
+    if tid == 0:
+        contact_count[0] = 0
+        ht_insert_failures[0] = 0
+
+    # Read count from GPU - stored at active_slots[capacity].
+    # All threads read this before it is modified by the follow-up zeroing kernel.
     count = ht_active_slots[ht_capacity]
 
     # Total work items: count entries * values_per_key slots per entry
@@ -641,16 +658,18 @@ def _clear_active_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def _zero_count_and_contacts_kernel(
+def _zero_active_count_kernel(
     ht_active_slots: wp.array[wp.int32],
-    contact_count: wp.array[wp.int32],
-    ht_insert_failures: wp.array[wp.int32],
     ht_capacity: int,
 ):
-    """Zero the active slots count and contact count."""
+    """Zero the active-slots count after ``_clear_active_kernel`` has finished.
+
+    Launched as a separate kernel to obtain a grid-wide ordering guarantee:
+    every thread of ``_clear_active_kernel`` has retired before this kernel
+    starts, so we cannot race with any in-flight reads of
+    ``ht_active_slots[ht_capacity]``.
+    """
     ht_active_slots[ht_capacity] = 0
-    contact_count[0] = 0
-    ht_insert_failures[0] = 0
 
 
 class GlobalContactReducer:
@@ -708,6 +727,7 @@ class GlobalContactReducer:
         store_hydroelastic_data: bool = False,
         store_moment_data: bool = False,
         deterministic: bool = False,
+        hashtable_size_factor: float = 0.25,
     ):
         """Initialize the global contact reducer.
 
@@ -720,7 +740,13 @@ class GlobalContactReducer:
             deterministic: If True, use deterministic fingerprint-based tiebreaking
                 in contact reduction and replace the pre-prune probe with a
                 deterministic variant.
+            hashtable_size_factor: Multiplier applied to ``capacity`` when sizing
+                the reduction hashtable. Must be positive.
         """
+        hashtable_size_factor = float(hashtable_size_factor)
+        if not hashtable_size_factor > 0.0:
+            raise ValueError(f"hashtable_size_factor must be > 0.0, got {hashtable_size_factor}")
+
         max_det_contacts = 1 << int(CONTACT_ID_BITS)
         if deterministic and capacity > max_det_contacts:
             raise ValueError(
@@ -733,6 +759,7 @@ class GlobalContactReducer:
         self.device = device
         self.store_hydroelastic_data = store_hydroelastic_data
         self.deterministic = deterministic
+        self.hashtable_size_factor = hashtable_size_factor
 
         self.values_per_key = NUM_SPATIAL_DIRECTIONS + 1
 
@@ -758,13 +785,10 @@ class GlobalContactReducer:
         # Count failed hashtable inserts (e.g., table full)
         self.ht_insert_failures = wp.zeros(1, dtype=wp.int32, device=device)
 
-        # Hashtable sizing: estimate unique (shape_pair, bin) keys needed
-        # - NUM_NORMAL_BINS + ceil(NUM_VOXEL_DEPTH_SLOTS / values_per_key) bins per pair
-        # - Dense hydroelastic contacts: many contacts share the same bin
-        # - Assume ~8 contacts per unique key on average (conservative for dense contacts)
-        # - Provides 2x load factor headroom within the /4 estimate
-        # - If table fills, contacts gracefully skip reduction (still in buffer)
-        hashtable_size = max(capacity // 4, 1024)  # minimum 1024 for small scenes
+        # Hashtable sizing: keep the historical default at capacity / 4 for
+        # memory compatibility, while exposing a factor for dense batched scenes.
+        # A full open-addressed table can turn failed inserts into whole-table probes.
+        hashtable_size = max(int(capacity * hashtable_size_factor), 1024)
         self.hashtable = HashTable(hashtable_size, device=device)
 
         # Values array for hashtable - managed here, not by HashTable
@@ -813,13 +837,23 @@ class GlobalContactReducer:
     def clear_active(self):
         """Clear only the active entries (efficient for sparse usage).
 
-        Uses a combined kernel that clears both hashtable keys, values, and aggregate force,
-        followed by a small kernel to zero the counters.
+        Uses two kernel launches (mirroring ``HashTable.clear_active``):
+
+        1. ``_clear_active_kernel`` clears hashtable keys, values, hydroelastic
+           aggregates, and per-step counters (``contact_count``,
+           ``ht_insert_failures``).
+        2. ``_zero_active_count_kernel`` zeroes ``ht_active_slots[ht_capacity]``.
+
+        The second kernel is needed because every thread of the first kernel
+        reads ``ht_active_slots[ht_capacity]`` to size its grid-stride loop,
+        and CUDA provides no intra-launch grid-wide barrier. Zeroing that slot
+        from inside the first kernel would race with threads in
+        later-scheduled blocks (or even later-issued warps/lanes under
+        independent thread scheduling), causing some entries to be skipped.
         """
         # Use fixed thread count for efficient GPU utilization
         num_threads = min(1024, self.hashtable.capacity)
 
-        # Single kernel clears keys, values, and hydroelastic aggregates for active entries
         wp.launch(
             _clear_active_kernel,
             dim=num_threads,
@@ -836,23 +870,21 @@ class GlobalContactReducer:
                 self.agg_moment_unreduced,
                 self.agg_moment_reduced,
                 self.agg_moment2_reduced,
+                self.contact_count,
+                self.ht_insert_failures,
                 self.hashtable.capacity,
                 self.values_per_key,
                 num_threads,
             ],
             device=self.device,
         )
-
-        # Zero the counts in a separate kernel
+        # Zero the active-slots count in a separate kernel so the write is
+        # ordered (by the CUDA kernel-launch boundary) after every read in
+        # `_clear_active_kernel`.
         wp.launch(
-            _zero_count_and_contacts_kernel,
+            _zero_active_count_kernel,
             dim=1,
-            inputs=[
-                self.hashtable.active_slots,
-                self.contact_count,
-                self.ht_insert_failures,
-                self.hashtable.capacity,
-            ],
+            inputs=[self.hashtable.active_slots, self.hashtable.capacity],
             device=self.device,
         )
 

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
 import os
 import tempfile
 import unittest
@@ -63,6 +64,84 @@ f 1 5 6
 f 1 6 2
 """
 
+TEXTURED_DAE = """<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit name="meter" meter="1"/><up_axis>Z_UP</up_axis></asset>
+  <library_effects>
+    <effect id="mat-effect">
+      <profile_COMMON>
+        <newparam sid="tex-surface"><surface type="2D"><init_from>tex-image</init_from></surface></newparam>
+        <newparam sid="tex-sampler"><sampler2D><source>tex-surface</source></sampler2D></newparam>
+        <technique sid="common">
+          <lambert><diffuse><texture texture="tex-sampler" texcoord="UVMap"/></diffuse></lambert>
+        </technique>
+      </profile_COMMON>
+    </effect>
+  </library_effects>
+  <library_images>
+    <image id="tex-image" name="tex-image"><init_from>texture.png</init_from></image>
+  </library_images>
+  <library_materials>
+    <material id="mat" name="mat"><instance_effect url="#mat-effect"/></material>
+  </library_materials>
+  <library_geometries>
+    <geometry id="tri-mesh" name="tri">
+      <mesh>
+        <source id="tri-positions">
+          <float_array id="tri-positions-array" count="9">0 0 0 1 0 0 0 1 0</float_array>
+          <technique_common>
+            <accessor source="#tri-positions-array" count="3" stride="3">
+              <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <source id="tri-normals">
+          <float_array id="tri-normals-array" count="9">0 0 1 0 0 1 0 0 1</float_array>
+          <technique_common>
+            <accessor source="#tri-normals-array" count="3" stride="3">
+              <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <source id="tri-map">
+          <float_array id="tri-map-array" count="6">0 0 1 0 0 1</float_array>
+          <technique_common>
+            <accessor source="#tri-map-array" count="3" stride="2">
+              <param name="S" type="float"/><param name="T" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <vertices id="tri-vertices"><input semantic="POSITION" source="#tri-positions"/></vertices>
+        <triangles material="mat" count="1">
+          <input semantic="VERTEX" source="#tri-vertices" offset="0"/>
+          <input semantic="NORMAL" source="#tri-normals" offset="1"/>
+          <input semantic="TEXCOORD" source="#tri-map" offset="2" set="0"/>
+          <p>0 0 0 1 1 1 2 2 2</p>
+        </triangles>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_visual_scenes>
+    <visual_scene id="Scene">
+      <node id="tri">
+        <instance_geometry url="#tri-mesh">
+          <bind_material>
+            <technique_common>
+              <instance_material symbol="mat" target="#mat">
+                <bind_vertex_input semantic="UVMap" input_semantic="TEXCOORD" input_set="0"/>
+              </instance_material>
+            </technique_common>
+          </bind_material>
+        </instance_geometry>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>
+"""
+
+TEXTURE_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+
 INERTIAL_URDF = """
 <robot name="inertial_test">
     <link name="base_link">
@@ -124,6 +203,72 @@ JOINT_URDF = """
     <axis xyz="0 0 1"/>
     <limit lower="-1.23" upper="3.45" effort="6.78"/>
 </joint>
+</robot>
+"""
+
+MASSLESS_FIXED_ROOT_URDF = """
+<robot name="massless_fixed_root">
+    <link name="base_link"/>
+    <link name="chassis">
+        <inertial>
+            <mass value="2.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0"
+                     iyy="0.1" iyz="0.0"
+                     izz="0.1"/>
+        </inertial>
+        <collision>
+            <geometry>
+                <box size="1.0 1.0 1.0"/>
+            </geometry>
+        </collision>
+    </link>
+    <joint name="base_to_chassis" type="fixed">
+        <parent link="base_link"/>
+        <child link="chassis"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+</robot>
+"""
+
+MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF = """
+<robot name="massless_fixed_root_internal_fixed">
+    <link name="base_link"/>
+    <link name="chassis">
+        <inertial>
+            <mass value="2.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0"
+                     iyy="0.1" iyz="0.0"
+                     izz="0.1"/>
+        </inertial>
+        <collision>
+            <geometry>
+                <box size="1.0 1.0 1.0"/>
+            </geometry>
+        </collision>
+    </link>
+    <link name="sensor">
+        <inertial>
+            <mass value="0.1"/>
+            <inertia ixx="0.01" ixy="0.0" ixz="0.0"
+                     iyy="0.01" iyz="0.0"
+                     izz="0.01"/>
+        </inertial>
+        <collision>
+            <geometry>
+                <sphere radius="0.1"/>
+            </geometry>
+        </collision>
+    </link>
+    <joint name="base_to_chassis" type="fixed">
+        <parent link="base_link"/>
+        <child link="chassis"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+    <joint name="chassis_to_sensor" type="fixed">
+        <parent link="chassis"/>
+        <child link="sensor"/>
+        <origin xyz="0 0 0.6" rpy="0 0 0"/>
+    </joint>
 </robot>
 """
 
@@ -275,6 +420,66 @@ class TestImportUrdfBasic(unittest.TestCase):
                 assert builder.shape_source[0].vertices.shape[0] == 8
                 assert builder.shape_source[0].indices.shape[0] == 3 * 12
 
+    def test_dae_visual_texture_urdf(self):
+        """Verify URDF visual meshes preserve Collada texture bindings."""
+        urdf = """
+<robot name="dae_texture_test">
+    <link name="base_link">
+        <visual>
+            <geometry><mesh filename="triangle.dae"/></geometry>
+        </visual>
+    </link>
+</robot>
+"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            (temp_path / "robot.urdf").write_text(urdf)
+            (temp_path / "triangle.dae").write_text(TEXTURED_DAE)
+            (temp_path / "texture.png").write_bytes(base64.b64decode(TEXTURE_PNG_BASE64))
+
+            builder = newton.ModelBuilder()
+            builder.add_urdf(str(temp_path / "robot.urdf"))
+
+            self.assertEqual(builder.shape_count, 1)
+            self.assertEqual(builder.shape_type[0], GeoType.MESH)
+            mesh = builder.shape_source[0]
+            self.assertIsNotNone(mesh.uvs)
+            self.assertIsNotNone(mesh.texture)
+            self.assertEqual(tuple(builder.shape_color[0]), (1.0, 1.0, 1.0))
+            texture = newton.utils.load_texture(mesh.texture)
+            self.assertIsNotNone(texture)
+            np.testing.assert_array_equal(texture[0, 0, :3], np.array([255, 0, 0], dtype=np.uint8))
+
+    def test_dae_visual_texture_uri_preserved(self):
+        """Verify URI-style Collada textures are not path-joined against the mesh directory."""
+        urdf = """
+<robot name="dae_texture_uri_test">
+    <link name="base_link">
+        <visual>
+            <geometry><mesh filename="triangle_uri.dae"/></geometry>
+        </visual>
+    </link>
+</robot>
+"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            texture_path = temp_path / "texture.png"
+            texture_uri = texture_path.resolve().as_uri()
+            dae_with_uri = TEXTURED_DAE.replace("texture.png", texture_uri)
+
+            (temp_path / "robot.urdf").write_text(urdf)
+            (temp_path / "triangle_uri.dae").write_text(dae_with_uri)
+            texture_path.write_bytes(base64.b64decode(TEXTURE_PNG_BASE64))
+
+            builder = newton.ModelBuilder()
+            builder.add_urdf(str(temp_path / "robot.urdf"))
+
+            self.assertEqual(builder.shape_count, 1)
+            self.assertEqual(builder.shape_type[0], GeoType.MESH)
+            mesh = builder.shape_source[0]
+            self.assertIsNotNone(mesh.texture)
+            self.assertEqual(mesh.texture, texture_uri)
+
     def test_inertial_params_urdf(self):
         builder = newton.ModelBuilder()
         parse_urdf(INERTIAL_URDF, builder, ignore_inertial_definitions=False)
@@ -372,6 +577,100 @@ class TestImportUrdfBasic(unittest.TestCase):
         assert_np_equal(builder.joint_limit_upper[-1], np.array([3.45]))
         assert_np_equal(builder.joint_axis[-1], np.array([0.0, 0.0, 1.0]))
         assert_np_equal(builder.joint_effort_limit[-1], np.array([6.78]))
+
+    def test_floating_massless_fixed_root_default_preserves_topology(self):
+        builder = newton.ModelBuilder()
+        builder.add_urdf(MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF, floating=True, up_axis="Z")
+
+        self.assertEqual(builder.joint_count, 3)
+        self.assertIn("massless_fixed_root_internal_fixed/floating_base", builder.joint_label)
+        self.assertIn("massless_fixed_root_internal_fixed/base_to_chassis", builder.joint_label)
+        self.assertIn("massless_fixed_root_internal_fixed/chassis_to_sensor", builder.joint_label)
+
+        root_joint = builder.joint_label.index("massless_fixed_root_internal_fixed/floating_base")
+        root_body = builder.joint_child[root_joint]
+        self.assertEqual(builder.joint_type[root_joint], newton.JointType.FREE)
+        self.assertEqual(builder.body_mass[root_body], 0.0)
+
+    def test_floating_massless_fixed_root_urdf_opt_in_is_dynamic(self):
+        dt = 1.0 / 60.0
+        step_count = 5
+        expected_drop = 0.5 * 9.81 * (step_count * dt) ** 2
+        min_drop = 0.5 * expected_drop
+
+        for urdf in [MASSLESS_FIXED_ROOT_URDF, MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF]:
+            with self.subTest(urdf=urdf.splitlines()[1].strip()):
+                builder = newton.ModelBuilder()
+                builder.add_urdf(urdf, floating=True, up_axis="Z", collapse_massless_fixed_root=True)
+
+                self.assertEqual(builder.joint_type[0], newton.JointType.FREE)
+                self.assertGreater(builder.body_mass[0], 0.0)
+
+                model = builder.finalize()
+                state_0 = model.state()
+                state_1 = model.state()
+                control = model.control()
+                contacts = model.contacts()
+                newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+                root_body = int(model.joint_child.numpy()[0])
+                start_z = float(state_0.body_q.numpy()[root_body][2])
+
+                solver = newton.solvers.SolverXPBD(model, iterations=2)
+                for _ in range(step_count):
+                    state_0.clear_forces()
+                    solver.step(state_0, state_1, control, contacts, dt)
+                    state_0, state_1 = state_1, state_0
+
+                end_z = float(state_0.body_q.numpy()[root_body][2])
+                self.assertGreaterEqual(start_z - end_z, min_drop)
+
+    def test_floating_massless_fixed_root_opt_in_preserves_existing_fixed_joints(self):
+        builder = newton.ModelBuilder()
+        root = builder.add_link(mass=1.0, label="pre_root")
+        child = builder.add_link(mass=1.0, label="pre_child")
+        root_joint = builder.add_joint_fixed(parent=-1, child=root, label="pre_world_fixed")
+        child_joint = builder.add_joint_fixed(parent=root, child=child, label="pre_child_fixed")
+        builder.add_articulation([root_joint, child_joint], label="pre_articulation")
+
+        builder.add_urdf(MASSLESS_FIXED_ROOT_URDF, floating=True, up_axis="Z", collapse_massless_fixed_root=True)
+
+        self.assertEqual(builder.joint_count, 3)
+        self.assertIn("pre_world_fixed", builder.joint_label)
+        self.assertIn("pre_child_fixed", builder.joint_label)
+        self.assertIn("massless_fixed_root/floating_base", builder.joint_label)
+        self.assertNotIn("massless_fixed_root/base_to_chassis", builder.joint_label)
+
+        self.assertEqual(builder.joint_type[builder.joint_label.index("pre_world_fixed")], newton.JointType.FIXED)
+        self.assertEqual(builder.joint_type[builder.joint_label.index("pre_child_fixed")], newton.JointType.FIXED)
+        self.assertEqual(
+            builder.joint_type[builder.joint_label.index("massless_fixed_root/floating_base")],
+            newton.JointType.FREE,
+        )
+
+    def test_floating_massless_fixed_root_opt_in_preserves_imported_internal_fixed_joints(self):
+        builder = newton.ModelBuilder()
+        builder.add_urdf(
+            MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF,
+            floating=True,
+            up_axis="Z",
+            collapse_massless_fixed_root=True,
+        )
+
+        self.assertEqual(builder.joint_count, 2)
+        self.assertIn("massless_fixed_root_internal_fixed/floating_base", builder.joint_label)
+        self.assertNotIn("massless_fixed_root_internal_fixed/base_to_chassis", builder.joint_label)
+        self.assertIn("massless_fixed_root_internal_fixed/chassis_to_sensor", builder.joint_label)
+
+        self.assertGreater(builder.body_mass[0], 0.0)
+        self.assertEqual(
+            builder.joint_type[builder.joint_label.index("massless_fixed_root_internal_fixed/floating_base")],
+            newton.JointType.FREE,
+        )
+        self.assertEqual(
+            builder.joint_type[builder.joint_label.index("massless_fixed_root_internal_fixed/chassis_to_sensor")],
+            newton.JointType.FIXED,
+        )
 
     def test_cartpole_urdf(self):
         builder = newton.ModelBuilder()
@@ -1162,6 +1461,56 @@ class TestImportUrdfComposition(unittest.TestCase):
         self.assertIn("gripper/gripper_base", builder.body_label)
         self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)  # Single articulation
 
+    def test_repeated_collapse_fixed_joints_preserves_articulation_order(self):
+        """Test repeated URDF imports with fixed-joint collapse preserve articulation order."""
+        joint_count = 12
+        links = ['    <link name="base"/>', '    <link name="mount"/>']
+        links.extend(f'    <link name="link_{i}"/>' for i in range(joint_count))
+
+        joints = [
+            """    <joint name="fixed_mount" type="fixed">
+        <parent link="base"/>
+        <child link="mount"/>
+    </joint>"""
+        ]
+        parent = "mount"
+        for i in range(joint_count):
+            child = f"link_{i}"
+            joints.append(
+                f"""    <joint name="joint_{i}" type="revolute">
+        <parent link="{parent}"/>
+        <child link="{child}"/>
+        <axis xyz="0 0 1"/>
+        <limit lower="-1" upper="1" effort="1" velocity="1"/>
+    </joint>"""
+            )
+            parent = child
+
+        robot_urdf = '<robot name="collapse_order">\n' + "\n".join(links + joints) + "\n</robot>\n"
+
+        builder = newton.ModelBuilder()
+        for i in range(3):
+            parse_urdf(
+                robot_urdf,
+                builder,
+                floating=True,
+                collapse_fixed_joints=True,
+                up_axis="Z",
+                xform=wp.transform(wp.vec3(float(i), 0.0, 0.0), wp.quat_identity()),
+            )
+
+        self.assertEqual(builder.articulation_start, [0, 13, 26])
+        self.assertEqual(builder.articulation_label, ["collapse_order", "collapse_order", "collapse_order"])
+        self.assertEqual(builder.articulation_world, [-1, -1, -1])
+        self.assertEqual(builder.joint_articulation, [0] * 13 + [1] * 13 + [2] * 13)
+        model = builder.finalize()
+        self.assertEqual(model.articulation_count, 3)
+        self.assertEqual(model.joint_count, 39)
+        assert_np_equal(model.articulation_start.numpy(), np.array([0, 13, 26, 39], dtype=np.int32))
+        self.assertEqual(model.articulation_label, ["collapse_order", "collapse_order", "collapse_order"])
+        assert_np_equal(model.articulation_world.numpy(), np.array([-1, -1, -1], dtype=np.int32))
+        assert_np_equal(model.joint_articulation.numpy(), np.array([0] * 13 + [1] * 13 + [2] * 13, dtype=np.int32))
+
     def test_floating_true_with_parent_body_raises_error(self):
         """Test that floating=True with parent_body raises an error."""
         robot_urdf = """<?xml version="1.0"?>
@@ -1832,6 +2181,104 @@ class TestUrdfJointFriction(unittest.TestCase):
         friction_values = model.joint_friction.numpy()
         for val in friction_values:
             self.assertAlmostEqual(float(val), 0.0, places=5)
+
+    def test_named_material_color_on_primitive(self):
+        """Robot-level named materials should resolve to colors on primitive shapes."""
+        urdf = """
+<robot name="named_mat_test">
+    <material name="red"><color rgba="1.0 0.0 0.0 1.0"/></material>
+    <link name="base_link">
+        <visual>
+            <geometry><sphere radius="0.5"/></geometry>
+            <material name="red"/>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(tuple(builder.shape_color[0]), (1.0, 0.0, 0.0))
+
+    def test_inline_material_color_on_primitive(self):
+        """Inline material color should apply to primitive shapes."""
+        urdf = """
+<robot name="inline_mat_test">
+    <link name="base_link">
+        <visual>
+            <geometry><box size="1 1 1"/></geometry>
+            <material name="green"><color rgba="0.0 1.0 0.0 1.0"/></material>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(tuple(builder.shape_color[0]), (0.0, 1.0, 0.0))
+
+    def test_named_material_color_multiple_primitives(self):
+        """Named materials should resolve for all primitive shape types."""
+        urdf = """
+<robot name="multi_prim_test">
+    <material name="blue"><color rgba="0.0 0.0 1.0 1.0"/></material>
+    <link name="base_link">
+        <visual>
+            <geometry><box size="1 1 1"/></geometry>
+            <material name="blue"/>
+        </visual>
+        <visual>
+            <geometry><cylinder radius="0.5" length="1.0"/></geometry>
+            <material name="blue"/>
+        </visual>
+        <visual>
+            <geometry><sphere radius="0.5"/></geometry>
+            <material name="blue"/>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder)
+        self.assertEqual(builder.shape_count, 3)
+        for i in range(3):
+            self.assertEqual(tuple(builder.shape_color[i]), (0.0, 0.0, 1.0), f"shape {i}")
+
+    def test_inline_overrides_named_material(self):
+        """Inline color on a named material should override the robot-level definition."""
+        urdf = """
+<robot name="override_test">
+    <material name="red"><color rgba="1.0 0.0 0.0 1.0"/></material>
+    <link name="base_link">
+        <visual>
+            <geometry><sphere radius="0.5"/></geometry>
+            <material name="red"><color rgba="0.0 1.0 0.0 1.0"/></material>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(tuple(builder.shape_color[0]), (0.0, 1.0, 0.0))
+
+    def test_named_material_color_on_mesh(self):
+        """Robot-level named materials should resolve to colors on mesh shapes."""
+        urdf = """
+<robot name="mesh_named_mat_test">
+    <material name="red"><color rgba="1.0 0.0 0.0 1.0"/></material>
+    <link name="base_link">
+        <visual>
+            <geometry><mesh filename="cube.obj"/></geometry>
+            <material name="red"/>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder, {"cube.obj": MESH_OBJ})
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(tuple(builder.shape_color[0]), (1.0, 0.0, 0.0))
 
 
 if __name__ == "__main__":

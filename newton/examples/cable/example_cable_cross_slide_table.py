@@ -945,12 +945,14 @@ class Example:
             self.model,
             iterations=sim_iterations,
             rigid_body_contact_buffer_size=256,
+            rigid_contact_hard=True,
+            rigid_contact_history=True,
         )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        pipeline = newton.CollisionPipeline(self.model, broad_phase="explicit")
+        pipeline = newton.CollisionPipeline(self.model, broad_phase="explicit", contact_matching="latest")
         self.contacts = self.model.contacts(collision_pipeline=pipeline)
 
         # Device arrays used by kernels during simulation and CUDA graph replay.

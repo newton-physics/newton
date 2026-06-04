@@ -61,6 +61,24 @@ def compute_inertia_sphere(density: float, radius: float) -> tuple[float, wp.vec
     return (m, wp.vec3(), I)
 
 
+def compute_inertia_sphere_from_mass(mass: float, radius: float) -> wp.mat33:
+    """Helper to compute 3x3 inertia matrix of a solid box with given mass and half-extents.
+
+    Args:
+        mass: The box mass [kg]
+        hx: The box half-extent along the x-axis [m]
+        hy: The box half-extent along the y-axis [m]
+        hz: The box half-extent along the z-axis [m]
+
+    Returns:
+
+        A 3x3 inertia matrix with inertia specified around the center of mass
+    """
+    Ia = 0.4 * mass * radius * radius
+    I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ia, 0.0], [0.0, 0.0, Ia]])
+    return I
+
+
 def compute_inertia_capsule(density: float, radius: float, half_height: float) -> tuple[float, wp.vec3, wp.mat33]:
     """Helper to compute mass and inertia of a solid capsule extending along the z-axis
 
@@ -581,7 +599,14 @@ def compute_inertia_shape(
             scale = wp.vec3(scale)
             sx, sy, sz = scale
 
-            mass_ratio = sx * sy * sz * density
+            # Mass scales with absolute volume — mirrored geometry (det(scale) < 0)
+            # has the same volume as the original, so use |sx*sy*sz| here. The
+            # signed scale is still applied below to mirror the COM and to flip
+            # the appropriate inertia products. Without abs(), negative-scale
+            # mesh/convex-hull shapes would receive negative mass, which
+            # ``verify_and_correct_inertia`` then clamps to zero, making the
+            # body effectively static.
+            mass_ratio = abs(sx * sy * sz) * density
             m_new = m * mass_ratio
 
             c_new = wp.cw_mul(c, scale)
@@ -589,6 +614,9 @@ def compute_inertia_shape(
             Ixx = I[0, 0] * (sy**2 + sz**2) / 2 * mass_ratio
             Iyy = I[1, 1] * (sx**2 + sz**2) / 2 * mass_ratio
             Izz = I[2, 2] * (sx**2 + sy**2) / 2 * mass_ratio
+            # Products of inertia pick up the sign of the corresponding scale
+            # pair, which is the correct mirror behavior under a single-axis
+            # sign flip.
             Ixy = I[0, 1] * sx * sy * mass_ratio
             Ixz = I[0, 2] * sx * sz * mass_ratio
             Iyz = I[1, 2] * sy * sz * mass_ratio

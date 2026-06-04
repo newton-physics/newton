@@ -20,6 +20,8 @@
 #
 ###########################################################################
 
+import warnings
+
 import numpy as np
 import warp as wp
 
@@ -89,7 +91,7 @@ class Example:
                 self.graph = capture.graph
             except Exception as exc:
                 self.graph = None
-                wp.utils.warn(f"CUDA graph capture failed: {exc}")
+                warnings.warn(f"CUDA graph capture failed: {exc}", stacklevel=2)
         else:
             self.graph = None
 
@@ -221,6 +223,4 @@ if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

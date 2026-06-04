@@ -513,7 +513,6 @@ class TestVoxelHashGrid(unittest.TestCase):
                 grid.counts,
             ],
         )
-        wp.synchronize()
 
         self.assertEqual(grid.get_num_voxels(), 1)
 
@@ -606,7 +605,6 @@ class TestVoxelHashGrid(unittest.TestCase):
                 grid.counts,
             ],
         )
-        wp.synchronize()
 
         # All points should fall in the same voxel (voxel_size=1.0, all coords in [0,1))
         self.assertEqual(grid.get_num_voxels(), 1)
@@ -703,7 +701,6 @@ class TestVoxelHashGrid(unittest.TestCase):
                 grid.counts,
             ],
         )
-        wp.synchronize()
 
         # Should have 3 separate voxels
         self.assertEqual(grid.get_num_voxels(), 3)
@@ -746,7 +743,6 @@ class TestVoxelHashGrid(unittest.TestCase):
                 grid.counts,
             ],
         )
-        wp.synchronize()
 
         self.assertEqual(grid.get_num_voxels(), 1)
 
@@ -832,7 +828,6 @@ class TestVoxelHashGrid(unittest.TestCase):
                 grid.counts,
             ],
         )
-        wp.synchronize()
 
         # Should have 3 separate voxels
         self.assertEqual(grid.get_num_voxels(), 3)
@@ -935,7 +930,6 @@ class TestVoxelHashGrid(unittest.TestCase):
                 grid.counts,
             ],
         )
-        wp.synchronize()
 
         # Points at 0.0 and 0.099 should be in one voxel, 0.1 in another
         # So we expect 2 voxels

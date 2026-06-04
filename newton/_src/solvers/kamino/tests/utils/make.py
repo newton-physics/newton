@@ -67,11 +67,10 @@ def make_generalized_mass_matrices(model: ModelKamino, data: DataKamino) -> list
 
     # Iterate over each world in the model and construct the generalized mass matrix
     num_worlds = model.info.num_worlds
-    num_bodies = model.info.num_bodies.numpy().tolist()
     bodies_offset = model.info.bodies_offset.numpy().tolist()
     for w in range(num_worlds):
-        nb = num_bodies[w]
         bio = bodies_offset[w]
+        nb = bodies_offset[w + 1] - bio
         M = np.zeros((6 * nb, 6 * nb), dtype=np.float32)
         for i in range(nb):
             start = 6 * i
@@ -93,11 +92,10 @@ def make_inverse_generalized_mass_matrices(model: ModelKamino, data: DataKamino)
 
     # Iterate over each world in the model and construct the inverse generalized mass matrix
     num_worlds = model.info.num_worlds
-    num_bodies = model.info.num_bodies.numpy().tolist()
     bodies_offset = model.info.bodies_offset.numpy().tolist()
     for w in range(num_worlds):
-        nb = num_bodies[w]
         bio = bodies_offset[w]
+        nb = bodies_offset[w + 1] - bio
         invM = np.zeros((6 * nb, 6 * nb), dtype=np.float32)
         for i in range(nb):
             start = 6 * i
@@ -214,13 +212,13 @@ def make_test_problem(
     # Construct and allocate the limits container
     limits = None
     if with_limits:
-        limits = LimitsKamino(model=model, device=device)
+        limits = LimitsKamino(model=model)
 
     # Create the collision detector
     contacts = None
     if with_contacts:
         config = CollisionDetector.Config(max_contacts_per_world=max_world_contacts, pipeline="primitive")
-        detector = CollisionDetector(model=model, config=config, device=device)
+        detector = CollisionDetector(model=model, config=config)
         contacts = detector.contacts
 
     # Create the constraints info
@@ -229,7 +227,6 @@ def make_test_problem(
         data=data,
         limits=limits,
         contacts=contacts,
-        device=device,
     )
     if verbose:
         print("")  # Add a newline for better readability
@@ -308,13 +305,13 @@ J_DOMEGA_J = vec3f(0.0)
 
 @wp.kernel
 def _set_fourbar_body_states(
-    model_joint_bid_B: wp.array(dtype=int32),
-    model_joint_bid_F: wp.array(dtype=int32),
-    model_joint_B_r_Bj: wp.array(dtype=vec3f),
-    model_joint_F_r_Fj: wp.array(dtype=vec3f),
-    model_joint_X_j: wp.array(dtype=mat33f),
-    state_body_q_i: wp.array(dtype=transformf),
-    state_body_u_i: wp.array(dtype=vec6f),
+    model_joint_bid_B: wp.array[int32],
+    model_joint_bid_F: wp.array[int32],
+    model_joint_B_r_Bj: wp.array[vec3f],
+    model_joint_F_r_Fj: wp.array[vec3f],
+    model_joint_X_j: wp.array[mat33f],
+    state_body_q_i: wp.array[transformf],
+    state_body_u_i: wp.array[vec6f],
 ):
     """
     Set the state of the bodies to a certain values in order to check computations of joint states.
@@ -392,6 +389,7 @@ def set_fourbar_body_states(model: ModelKamino, data: DataKamino):
             data.bodies.q_i,
             data.bodies.u_i,
         ],
+        device=model.device,
     )
 
 

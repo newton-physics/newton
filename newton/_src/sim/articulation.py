@@ -220,6 +220,9 @@ def eval_single_articulation_fk(
 
         # compute transform across the joint
         type = joint_type[i]
+        if type == JointType.CABLE:
+            # CABLE joints are skipped by generic forward kinematics.
+            continue
 
         X_pj = joint_X_p[i]
         X_cj = joint_X_c[i]
@@ -377,6 +380,7 @@ def eval_single_articulation_fk(
 @wp.kernel
 def eval_articulation_fk(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     articulation_count: int,  # total number of articulations
     articulation_mask: wp.array[
         bool
@@ -421,7 +425,7 @@ def eval_articulation_fk(
             return
 
     joint_start = articulation_start[articulation_id]
-    joint_end = articulation_start[articulation_id + 1]
+    joint_end = articulation_end[articulation_id]
 
     eval_single_articulation_fk(
         joint_start,
@@ -462,6 +466,12 @@ def eval_fk(
     The written :attr:`State.body_qd` values use Newton's public body-twist
     convention ``(v_com_world, omega_world)``.
 
+    .. note::
+
+        :attr:`~newton.JointType.CABLE` body transforms are not changed by
+        :func:`newton.eval_fk`; they are advanced directly by
+        :class:`newton.solvers.SolverVBD`.
+
     Args:
         model: The model to evaluate.
         joint_q: Generalized joint position coordinates, shape [joint_coord_count], float
@@ -489,6 +499,7 @@ def eval_fk(
         dim=num_articulations,
         inputs=[
             model.articulation_start,
+            model.articulation_end,
             model.articulation_count,
             mask,
             indices,
@@ -583,6 +594,7 @@ def reconstruct_angular_q_qd(q_pc: wp.quat, w_err: wp.vec3, X_wp: wp.transform, 
 @wp.kernel
 def eval_articulation_ik(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     articulation_count: int,  # total number of articulations
     articulation_mask: wp.array[bool],  # can be None, mask to filter articulations
     articulation_indices: wp.array[int],  # can be None, articulation indices to process
@@ -622,7 +634,7 @@ def eval_articulation_ik(
 
     # Get joint range for this articulation
     joint_start = articulation_start[articulation_id]
-    joint_end = articulation_start[articulation_id + 1]
+    joint_end = articulation_end[articulation_id]
 
     # Check if this thread has a valid joint to process
     joint_idx = joint_start + joint_offset
@@ -850,6 +862,7 @@ def eval_ik(
         dim=(num_articulations, model.max_joints_per_articulation),
         inputs=[
             model.articulation_start,
+            model.articulation_end,
             model.articulation_count,
             mask,
             indices,
@@ -958,6 +971,7 @@ def jcalc_motion_subspace(
 @wp.kernel
 def eval_articulation_jacobian(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     articulation_count: int,
     articulation_mask: wp.array[bool],
     joint_type: wp.array[int],
@@ -989,7 +1003,7 @@ def eval_articulation_jacobian(
             return
 
     joint_start = articulation_start[art_idx]
-    joint_end = articulation_start[art_idx + 1]
+    joint_end = articulation_end[art_idx]
     joint_count = joint_end - joint_start
 
     articulation_dof_start = joint_qd_start[joint_start]
@@ -1105,6 +1119,7 @@ def eval_jacobian(
         dim=model.articulation_count,
         inputs=[
             model.articulation_start,
+            model.articulation_end,
             model.articulation_count,
             mask,
             model.joint_type,
@@ -1195,6 +1210,7 @@ def compute_body_spatial_inertia(
 @wp.kernel
 def eval_articulation_mass_matrix(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     articulation_count: int,
     articulation_mask: wp.array[bool],
     joint_child: wp.array[int],
@@ -1219,7 +1235,7 @@ def eval_articulation_mass_matrix(
             return
 
     joint_start = articulation_start[art_idx]
-    joint_end = articulation_start[art_idx + 1]
+    joint_end = articulation_end[art_idx]
     joint_count = joint_end - joint_start
 
     articulation_dof_start = joint_qd_start[joint_start]
@@ -1337,6 +1353,7 @@ def eval_mass_matrix(
         dim=model.articulation_count,
         inputs=[
             model.articulation_start,
+            model.articulation_end,
             model.articulation_count,
             mask,
             model.joint_child,

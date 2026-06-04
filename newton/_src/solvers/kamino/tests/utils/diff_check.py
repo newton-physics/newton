@@ -13,7 +13,7 @@ from collections.abc import Callable
 import numpy as np
 import warp as wp
 
-from ..._src.models import get_testing_usd_assets_path
+from ......tests import get_kamino_testing_asset
 from ..._src.utils.io.usd import USDImporter
 
 ###
@@ -58,54 +58,51 @@ def run_test_single_joint_examples(
         whether all tests succeeded
     """
 
-    # Resolve path of data folder
-    data_dir = os.path.join(get_testing_usd_assets_path(), "joints")
-
     # List file paths of examples
     file_paths = []
     if unary_joints and passive_joints:
         file_paths.extend(
             [
-                os.path.join(data_dir, "test_joint_cartesian_passive_unary.usda"),
-                os.path.join(data_dir, "test_joint_cylindrical_passive_unary.usda"),
-                os.path.join(data_dir, "test_joint_fixed_unary.usda"),
-                os.path.join(data_dir, "test_joint_prismatic_passive_unary.usda"),
-                os.path.join(data_dir, "test_joint_revolute_passive_unary.usda"),
-                os.path.join(data_dir, "test_joint_spherical_unary.usda"),
-                os.path.join(data_dir, "test_joint_universal_passive_unary.usda"),
+                get_kamino_testing_asset("joints/test_joint_cartesian_passive_unary.usda"),
+                get_kamino_testing_asset("joints/test_joint_cylindrical_passive_unary.usda"),
+                get_kamino_testing_asset("joints/test_joint_fixed_unary.usda"),
+                get_kamino_testing_asset("joints/test_joint_prismatic_passive_unary.usda"),
+                get_kamino_testing_asset("joints/test_joint_revolute_passive_unary.usda"),
+                get_kamino_testing_asset("joints/test_joint_spherical_unary.usda"),
+                get_kamino_testing_asset("joints/test_joint_universal_passive_unary.usda"),
             ]
         )
     if binary_joints and passive_joints:
         file_paths.extend(
             [
-                os.path.join(data_dir, "test_joint_cartesian_passive.usda"),
-                os.path.join(data_dir, "test_joint_cylindrical_passive.usda"),
-                os.path.join(data_dir, "test_joint_fixed.usda"),
-                os.path.join(data_dir, "test_joint_prismatic_passive.usda"),
-                os.path.join(data_dir, "test_joint_revolute_passive.usda"),
-                os.path.join(data_dir, "test_joint_spherical.usda"),
-                os.path.join(data_dir, "test_joint_universal_passive.usda"),
+                get_kamino_testing_asset("joints/test_joint_cartesian_passive.usda"),
+                get_kamino_testing_asset("joints/test_joint_cylindrical_passive.usda"),
+                get_kamino_testing_asset("joints/test_joint_fixed.usda"),
+                get_kamino_testing_asset("joints/test_joint_prismatic_passive.usda"),
+                get_kamino_testing_asset("joints/test_joint_revolute_passive.usda"),
+                get_kamino_testing_asset("joints/test_joint_spherical.usda"),
+                get_kamino_testing_asset("joints/test_joint_universal_passive.usda"),
             ]
         )
     if unary_joints and actuators:
         file_paths.extend(
             [
-                os.path.join(data_dir, "test_joint_cartesian_actuated_unary.usda"),
-                os.path.join(data_dir, "test_joint_cylindrical_actuated_unary.usda"),
-                os.path.join(data_dir, "test_joint_prismatic_actuated_unary.usda"),
-                os.path.join(data_dir, "test_joint_revolute_actuated_unary.usda"),
-                os.path.join(data_dir, "test_joint_universal_actuated_unary.usda"),
+                get_kamino_testing_asset("joints/test_joint_cartesian_actuated_unary.usda"),
+                get_kamino_testing_asset("joints/test_joint_cylindrical_actuated_unary.usda"),
+                get_kamino_testing_asset("joints/test_joint_prismatic_actuated_unary.usda"),
+                get_kamino_testing_asset("joints/test_joint_revolute_actuated_unary.usda"),
+                get_kamino_testing_asset("joints/test_joint_universal_actuated_unary.usda"),
                 # Note: missing actuated spherical and free
             ]
         )
     if binary_joints and actuators:
         file_paths.extend(
             [
-                os.path.join(data_dir, "test_joint_cartesian_actuated.usda"),
-                os.path.join(data_dir, "test_joint_cylindrical_actuated.usda"),
-                os.path.join(data_dir, "test_joint_prismatic_actuated.usda"),
-                os.path.join(data_dir, "test_joint_revolute_actuated.usda"),
-                os.path.join(data_dir, "test_joint_universal_actuated.usda"),
+                get_kamino_testing_asset("joints/test_joint_cartesian_actuated.usda"),
+                get_kamino_testing_asset("joints/test_joint_cylindrical_actuated.usda"),
+                get_kamino_testing_asset("joints/test_joint_prismatic_actuated.usda"),
+                get_kamino_testing_asset("joints/test_joint_revolute_actuated.usda"),
+                get_kamino_testing_asset("joints/test_joint_universal_actuated.usda"),
                 # Note: missing actuated spherical and free
             ]
         )
@@ -131,7 +128,7 @@ def run_test_single_joint_examples(
     return success
 
 
-def central_finite_differences(fun: Callable, eval_point: float | np.ndarray(dtype=float), epsilon: float = 1e-5):
+def central_finite_differences(fun: Callable, eval_point: float | np.ndarray[float], epsilon: float = 1e-5):
     """
     Evaluates central finite differences of the given function at the given point
     Supports scalar/vector-valued functions, of scalar/vector-valued variables
@@ -183,8 +180,8 @@ def central_finite_differences(fun: Callable, eval_point: float | np.ndarray(dty
 
 def diff_check(
     fun: Callable,
-    derivative: float | np.ndarray(dtype=float),
-    eval_point: float | np.ndarray(dtype=float),
+    derivative: float | np.ndarray[float],
+    eval_point: float | np.ndarray[float],
     epsilon: float = 1e-5,
     tolerance_rel: float = 1e-6,
     tolerance_abs: float = 1e-6,

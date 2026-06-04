@@ -823,7 +823,6 @@ def test_centered_pre_pruning_reduces_buffer_usage(test, device):
         )
 
     wp.launch(store_extreme_contacts_kernel, dim=4, inputs=[reducer_data], device=device)
-    wp.synchronize()
     count_after_extremes = get_contact_count(reducer)
     test.assertEqual(count_after_extremes, 4)
 

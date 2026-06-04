@@ -214,5 +214,20 @@ class TestHeightfieldLocalAABB(unittest.TestCase):
         np.testing.assert_allclose(hi, [4.0, 1.5, 12.0], atol=1e-5)
 
 
+class TestPlaneBoundingSphere(unittest.TestCase):
+    """Verify plane bounding-sphere radius uses half-diagonal for finite planes."""
+
+    def test_finite_plane_radius(self):
+        """Finite plane radius should be half the diagonal of the full extents."""
+        radius = compute_shape_radius(GeoType.PLANE, (4.0, 6.0, 0.0), None)
+        expected = np.linalg.norm([4.0, 6.0, 0.0]) * 0.5
+        self.assertAlmostEqual(radius, expected, places=5)
+
+    def test_infinite_plane_radius(self):
+        """Infinite plane (zero extents) should return large sentinel radius."""
+        radius = compute_shape_radius(GeoType.PLANE, (0.0, 0.0, 0.0), None)
+        self.assertEqual(radius, 1.0e6)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)

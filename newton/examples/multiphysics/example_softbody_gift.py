@@ -79,23 +79,30 @@ def cloth_loop_around_box(
     )
 
 
+# 2x2x1 grid of unit cubes, each split into 5 tets. Adjacent cubes use
+# mirrored decompositions (checkerboard) so shared-face diagonals match
+# and the surface mesh stays manifold.
 PYRAMID_TET_INDICES = np.array(
     [
+        # cube (0,0,0): variant A
         [0, 1, 3, 9],
         [1, 4, 3, 13],
         [1, 3, 9, 13],
         [3, 9, 13, 12],
         [1, 9, 10, 13],
-        [1, 2, 4, 10],
-        [2, 5, 4, 14],
-        [2, 4, 10, 14],
-        [4, 10, 14, 13],
-        [2, 10, 11, 14],
-        [3, 4, 6, 12],
-        [4, 7, 6, 16],
-        [4, 6, 12, 16],
-        [6, 12, 16, 15],
-        [4, 12, 13, 16],
+        # cube (1,0,0): variant B
+        [1, 11, 5, 13],
+        [2, 5, 1, 11],
+        [4, 1, 5, 13],
+        [10, 11, 1, 13],
+        [14, 5, 11, 13],
+        # cube (0,1,0): variant B
+        [3, 13, 7, 15],
+        [4, 7, 3, 13],
+        [6, 3, 7, 15],
+        [12, 13, 3, 15],
+        [16, 7, 13, 15],
+        # cube (1,1,0): variant A
         [4, 5, 7, 13],
         [5, 8, 7, 17],
         [5, 7, 13, 17],
@@ -205,7 +212,7 @@ class Example:
         self.model = builder.finalize()
 
         # Contact parameters
-        self.model.soft_contact_ke = 1.0e5
+        self.model.soft_contact_ke = 5.0e4
         self.model.soft_contact_kd = 1e-5
         self.model.soft_contact_mu = 1.0
 
@@ -298,5 +305,4 @@ class Example:
 if __name__ == "__main__":
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
-    example = Example(viewer, args)
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

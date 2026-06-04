@@ -20,13 +20,13 @@ Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Goo
 - **OS:** Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
 - **GPU:** NVIDIA GPU (Maxwell or newer), driver 545 or newer (CUDA 12). No local CUDA Toolkit installation required. macOS runs on CPU.
 
-For detailed system requirements and tested configurations, see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html).
+For detailed system requirements, see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html). For tested configurations and Newton's versioning and deprecation policies, see the [compatibility guide](https://newton-physics.github.io/newton/latest/guide/compatibility.html).
 
 ## Quickstart
 
 ```bash
 pip install "newton[examples]"
-python -m newton.examples basic_pendulum
+python -m newton.examples
 ```
 
 To install from source with [uv](https://docs.astral.sh/uv/), see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html).
@@ -187,7 +187,11 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_anymal_c_walk.jpg" alt="Anymal C Walk">
       </a>
     </td>
-    <td></td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_policy.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_policy.jpg" alt="Policy">
+      </a>
+    </td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -196,13 +200,11 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     <td align="center" width="33%">
       <code>python -m newton.examples robot_anymal_c_walk</code>
     </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples robot_policy</code>
+    </td>
   </tr>
   <tr>
-    <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_policy.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_policy.jpg" alt="Policy">
-      </a>
-    </td>
     <td align="center" width="33%">
       <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_ur10.py">
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_ur10.jpg" alt="UR10">
@@ -213,36 +215,21 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_panda_hydro.jpg" alt="Panda Hydro">
       </a>
     </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_allegro_hand.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_allegro_hand.jpg" alt="Allegro Hand">
+      </a>
+    </td>
   </tr>
   <tr>
-    <td align="center" width="33%">
-      <code>python -m newton.examples robot_policy</code>
-    </td>
     <td align="center" width="33%">
       <code>python -m newton.examples robot_ur10</code>
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples robot_panda_hydro</code>
     </td>
-  </tr>
-  <tr>
-    <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_allegro_hand.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_allegro_hand.jpg" alt="Allegro Hand">
-      </a>
-    </td>
-    <td align="center" width="33%">
-    </td>
-    <td align="center" width="33%">
-    </td>
-  </tr>
-  <tr>
     <td align="center" width="33%">
       <code>python -m newton.examples robot_allegro_hand</code>
-    </td>
-    <td align="center" width="33%">
-    </td>
-    <td align="center" width="33%">
     </td>
   </tr>
   <tr>
@@ -283,6 +270,9 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_cross_slide_table.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_cross_slide_table.jpg" alt="Cable Cross Slide Table">
+      </a>
     </td>
     <td align="center" width="33%">
     </td>
@@ -292,6 +282,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       <code>python -m newton.examples cable_pile</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples cable_cross_slide_table</code>
     </td>
     <td align="center" width="33%">
     </td>
@@ -669,6 +660,9 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_rigid_soft_contact.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_rigid_soft_contact.jpg" alt="Rigid Soft Contact">
+      </a>
     </td>
   </tr>
   <tr>
@@ -679,6 +673,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       <code>python -m newton.examples softbody_dropping_to_cloth</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples rigid_soft_contact</code>
     </td>
   </tr>
   <tr>
@@ -763,6 +758,61 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     <td align="center" width="33%">
     </td>
   </tr>
+  <tr>
+    <td colspan="3"><h3>Kamino Examples</h3></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/kamino/example_kamino_basic_dr_testmech.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_kamino_basic_dr_testmech.jpg" alt="Kamino DR Testmech">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/kamino/example_kamino_basic_fourbar.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_kamino_basic_fourbar.jpg" alt="Kamino Fourbar">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/kamino/example_kamino_basic_heterogeneous.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_kamino_basic_heterogeneous.jpg" alt="Kamino Heterogeneous">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples kamino_basic_dr_testmech</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples kamino_basic_fourbar</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples kamino_basic_heterogeneous</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/kamino/example_kamino_robot_anymal_d.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_kamino_robot_anymal_d.jpg" alt="Kamino Anymal D">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/kamino/example_kamino_robot_dr_legs.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_kamino_robot_dr_legs.jpg" alt="Kamino DR Legs">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples kamino_robot_anymal_d</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples kamino_robot_dr_legs</code>
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
 </table>
 
 ### Example Options
@@ -782,7 +832,7 @@ Some examples may add additional arguments (see their respective source files fo
 
 ```bash
 # List available examples
-python -m newton.examples
+python -m newton.examples --list
 
 # Run with the USD viewer and save to my_output.usd
 python -m newton.examples basic_viewer --viewer usd --output-path my_output.usd

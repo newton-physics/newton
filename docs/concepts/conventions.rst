@@ -116,7 +116,7 @@ in the world frame.
 .. code-block:: python
 
   @wp.kernel
-  def get_body_twist(body_qd: wp.array(dtype=wp.spatial_vector)):
+  def get_body_twist(body_qd: wp.array[wp.spatial_vector]):
     body_id = wp.tid()
     # body_qd is a 6D wp.spatial_vector in world frame
     twist = body_qd[body_id]
@@ -411,6 +411,42 @@ apply the appropriate rotation transforms:
    # Gravity vector will automatically align with the chosen up axis:
    # - Y-up: gravity = (0, -9.81, 0)
    # - Z-up: gravity = (0, 0, -9.81)
+
+Color Space Handling
+--------------------
+
+Newton treats authored surface colors as display/sRGB RGB values by default.
+Public color inputs such as :attr:`newton.Model.shape_color`,
+:attr:`newton.Mesh.color`, and the ``color`` arguments on
+:class:`newton.ModelBuilder` shape helpers should be passed as the values you
+want to see on screen, with components in ``[0, 1]``.
+
+Rendering backends convert authored display colors to linear light for shading.
+In other words, do not pre-linearize shape or mesh colors before assigning them
+to Newton. When you need linear-light math explicitly, convert at the boundary
+with :func:`newton.utils.color_srgb_to_linear` and
+:func:`newton.utils.color_linear_to_srgb`.
+
+.. code-block:: python
+
+   import newton
+
+   display_color = (0.125, 0.125, 0.15)
+
+   builder = newton.ModelBuilder()
+   builder.add_ground_plane(color=display_color)
+
+   linear_color = newton.utils.color_srgb_to_linear(display_color)
+
+Base-color textures stored on Newton models follow the same convention and are
+kept display/sRGB-encoded.
+
+Packed color and albedo outputs from :class:`newton.sensors.SensorTiledCamera`
+use display/sRGB encoding by default. Set
+``SensorTiledCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)``
+when linear RGB bytes are required for downstream processing. Clear colors are
+specified as display/sRGB packed RGBA values and are converted to linear when
+linear output is requested.
 
 Collision Primitive Conventions
 -------------------------------

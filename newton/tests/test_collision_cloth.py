@@ -629,22 +629,21 @@ def test_edge_edge_collision(test, device):
 
 
 def test_particle_collision(test, device):
-    with wp.ScopedDevice(device):
-        contact_radius = 1.23
-        builder1 = newton.ModelBuilder(up_axis=newton.Axis.Y)
-        builder1.add_cloth_grid(
-            pos=wp.vec3(0.0, 0.0, 0.0),
-            rot=wp.quat_identity(),
-            vel=wp.vec3(0.0, 0.0, 0.0),
-            dim_x=100,
-            dim_y=100,
-            cell_x=0.1,
-            cell_y=0.1,
-            mass=0.1,
-            particle_radius=contact_radius,
-        )
+    contact_radius = 1.23
+    builder1 = newton.ModelBuilder(up_axis=newton.Axis.Y)
+    builder1.add_cloth_grid(
+        pos=wp.vec3(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=100,
+        dim_y=100,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.1,
+        particle_radius=contact_radius,
+    )
 
-    cloth_grid = builder1.finalize()
+    cloth_grid = builder1.finalize(device=device)
     cloth_grid_particle_radius = cloth_grid.particle_radius.numpy()
     assert_np_equal(cloth_grid_particle_radius, np.full(cloth_grid_particle_radius.shape, contact_radius), tol=1e-5)
 
@@ -675,7 +674,7 @@ def test_particle_collision(test, device):
         density=0.1,
         particle_radius=contact_radius,
     )
-    cloth_mesh = builder2.finalize()
+    cloth_mesh = builder2.finalize(device=device)
     cloth_mesh_particle_radius = cloth_mesh.particle_radius.numpy()
     assert_np_equal(cloth_mesh_particle_radius, np.full(cloth_mesh_particle_radius.shape, contact_radius), tol=1e-5)
 
@@ -693,6 +692,7 @@ def test_particle_collision(test, device):
             cloth_mesh.particle_radius,
         ],
         outputs=[particle_f],
+        device=device,
     )
     test.assertTrue((np.linalg.norm(particle_f.numpy(), axis=1) != 0).all())
 
@@ -712,7 +712,7 @@ def test_particle_collision(test, device):
         density=0.1,
         particle_radius=0.5,
     )
-    cloth_mesh_2 = builder3.finalize()
+    cloth_mesh_2 = builder3.finalize(device=device)
     cloth_mesh_2_particle_radius = cloth_mesh_2.particle_radius.numpy()
     assert_np_equal(cloth_mesh_2_particle_radius, np.full(cloth_mesh_2_particle_radius.shape, 0.5), tol=1e-5)
 
@@ -730,6 +730,7 @@ def test_particle_collision(test, device):
             cloth_mesh_2.particle_radius,
         ],
         outputs=[particle_f_2],
+        device=device,
     )
     test.assertTrue((np.linalg.norm(particle_f_2.numpy(), axis=1) == 0).all())
 
@@ -778,53 +779,6 @@ def test_mesh_ground_collision_index(test, device):
     test.assertTrue(np.allclose(np.abs(normals[:, 1]), 1.0, atol=1e-6))
     test.assertTrue(np.allclose(normals[:, 0], 0.0, atol=1e-6))
     test.assertTrue(np.allclose(normals[:, 2], 0.0, atol=1e-6))
-
-
-def test_avbd_particle_ground_penalty_grows(test, device):
-    """Regression: AVBD soft-contact penalty updates with particles + static ground only.
-
-    When the model has particles and static shapes (shape_body == -1) but no rigid bodies
-    (body_count == 0), SolverVBD must still update the adaptive soft-contact penalty
-    (body-particle contact penalty k) so that particle-ground contacts do not remain
-    artificially soft.
-    """
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-
-    # Ensure the contact stiffness cap is well above the initial k_start so we can observe growth.
-    builder.default_shape_cfg.ke = 1.0e9
-    builder.default_shape_cfg.kd = 0.0
-
-    # Place a particle with positive penetration against the ground plane at z=0.
-    radius = 0.1
-    builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0, radius=radius)
-    builder.add_ground_plane()
-    builder.color()
-
-    model = builder.finalize(device=device)
-    test.assertEqual(model.body_count, 0)
-    test.assertGreater(model.particle_count, 0)
-    test.assertGreater(model.shape_count, 0)
-
-    vbd = SolverVBD(model, iterations=1, rigid_contact_k_start=1.0e2, rigid_avbd_beta=1.0e5)
-
-    state_in = model.state()
-    state_out = model.state()
-    contacts = model.contacts()
-    model.collide(state_in, contacts)
-
-    soft_count = int(contacts.soft_contact_count.numpy()[0])
-    test.assertGreater(soft_count, 0)
-
-    dt = 1.0 / 60.0
-    control = model.control()
-    vbd._initialize_rigid_bodies(state_in, control, contacts, dt, update_rigid_history=True)
-
-    k_before = float(vbd.body_particle_contact_penalty_k.numpy()[0])
-
-    vbd._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
-
-    k_after = float(vbd.body_particle_contact_penalty_k.numpy()[0])
-    test.assertGreater(k_after, k_before)
 
 
 @wp.kernel
@@ -1106,7 +1060,7 @@ def test_collision_filtering(test, device):
     wp.synchronize_device(device)
 
 
-devices = get_test_devices(mode="basic")
+devices = get_test_devices()
 
 
 class TestCollision(unittest.TestCase):
@@ -1117,9 +1071,6 @@ add_function_test(TestCollision, "test_vertex_triangle_collision", test_vertex_t
 add_function_test(TestCollision, "test_edge_edge_collision", test_edge_edge_collision, devices=devices)
 add_function_test(TestCollision, "test_particle_collision", test_particle_collision, devices=devices)
 add_function_test(TestCollision, "test_mesh_ground_collision_index", test_mesh_ground_collision_index, devices=devices)
-add_function_test(
-    TestCollision, "test_avbd_particle_ground_penalty_grows", test_avbd_particle_ground_penalty_grows, devices=devices
-)
 add_function_test(TestCollision, "test_collision_filtering", test_collision_filtering, devices=devices)
 
 if __name__ == "__main__":

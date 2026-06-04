@@ -55,7 +55,12 @@ from .contact_reduction_hydroelastic import (
     export_hydroelastic_contact_to_buffer,
 )
 from .hashtable import hashtable_find_or_insert
-from .sdf_mc import get_mc_tables, get_triangle_fraction
+from .sdf_mc import (
+    MC_DEGENERATE_N_SQ_EPS,
+    MC_EDGE_VAL_DIFF_EPS,
+    get_mc_tables,
+    get_triangle_fraction,
+)
 from .sdf_texture import TextureSDFData, texture_sample_sdf, texture_sample_sdf_at_voxel
 from .utils import scan_with_total
 
@@ -107,6 +112,8 @@ def mc_calc_face_texture(
     x_id: wp.int32,
     y_id: wp.int32,
     z_id: wp.int32,
+    edge_clamp_min: wp.float32,
+    edge_clamp_max: wp.float32,
 ) -> tuple[float, wp.vec3, wp.vec3, float, wp.mat33f]:
     """Extract a triangle face from a marching cubes voxel using texture SDF.
 
@@ -116,6 +123,11 @@ def mc_calc_face_texture(
     just enough to classify touching-surface vertices as penetrating.  The
     resulting phantom force is negligible (< 0.1 % of typical contact forces)
     but prevents zero-area contacts at exactly-touching surfaces.
+
+    ``edge_clamp_min`` / ``edge_clamp_max`` clamp the edge-interpolation
+    parameter ``t`` to ``[edge_clamp_min, edge_clamp_max]``.  Pass
+    ``(0.0, 1.0)`` to disable.  See
+    :attr:`HydroelasticSDF.Config.mc_edge_clamp_min`.
     """
     thickness = sdf_a.voxel_radius * 1.0e-4
 
@@ -132,10 +144,15 @@ def mc_calc_face_texture(
         p_0 = wp.vec3f(corner_offsets_table[v_idx_from])
         p_1 = wp.vec3f(corner_offsets_table[v_idx_to])
         val_diff = wp.float32(val_1 - val_0)
-        if wp.abs(val_diff) < 1e-8:
+        if wp.abs(val_diff) < wp.static(MC_EDGE_VAL_DIFF_EPS):
             t = float(0.5)
         else:
-            t = (0.0 - val_0) / val_diff
+            # Clamp t away from cube corners to prevent vertex collapse when
+            # corner values are near zero (e.g. at SDF ridge boundaries where
+            # both shapes share the same nearest face).  Without the clamp,
+            # t close to 0 or 1 places multiple vertices at the same corner,
+            # producing degenerate (zero-area) triangles.
+            t = wp.clamp((0.0 - val_0) / val_diff, edge_clamp_min, edge_clamp_max)
         p = p_0 + t * (p_1 - p_0)
         vol_idx = p + int_to_vec3f(x_id, y_id, z_id)
         local_pos = sdf_a.sdf_box_lower + wp.cw_mul(vol_idx, sdf_a.voxel_size)
@@ -149,8 +166,15 @@ def mc_calc_face_texture(
             num_inside += 1
 
     n = wp.cross(face_verts[1] - face_verts[0], face_verts[2] - face_verts[0])
-    normal = wp.normalize(n)
-    area = wp.length(n) / 2.0
+    n_sq = wp.dot(n, n)
+    if n_sq < wp.static(MC_DEGENERATE_N_SQ_EPS):
+        # Degenerate triangle — return zero area with a valid (non-NaN) normal.
+        area = 0.0
+        normal = wp.vec3(0.0, 0.0, 1.0)
+    else:
+        n_len = wp.sqrt(n_sq)
+        normal = n / n_len
+        area = n_len / 2.0
     center = (face_verts[0] + face_verts[1] + face_verts[2]) / 3.0
     pen_depth = (vert_depths[0] + vert_depths[1] + vert_depths[2]) / 3.0
     area *= get_triangle_fraction(vert_depths, num_inside)
@@ -159,6 +183,11 @@ def mc_calc_face_texture(
 
 class HydroelasticSDF:
     """Hydroelastic contact generation with SDF-based collision detection.
+
+    .. experimental::
+
+        ``HydroelasticSDF`` and the underlying SDF storage on
+        :class:`~newton.Model` may change without notice.
 
     This class implements hydroelastic contact modeling between shapes represented
     by Signed Distance Fields (SDFs). It uses an octree-based broadphase to identify
@@ -178,8 +207,6 @@ class HydroelasticSDF:
         num_shape_pairs: Maximum number of hydroelastic shape pairs to process.
         total_num_tiles: Total number of SDF blocks across all hydroelastic shapes.
         max_num_blocks_per_shape: Maximum block count for any single shape.
-        shape_sdf_block_coords: Block coordinates for each shape's SDF representation.
-        shape_sdf_shape2blocks: Mapping from shape index to (start, end) block range.
         shape_material_kh: Hydroelastic stiffness coefficient for each shape.
         n_shapes: Total number of shapes in the simulation.
         config: Configuration options controlling buffer sizes, contact reduction,
@@ -235,6 +262,9 @@ class HydroelasticSDF:
         The reduce kernel selects winners from whatever fits in the buffer, so a smaller
         buffer trades off coverage for memory savings.
         Range: (0, 1]. Only applied when ``reduce_contacts`` is enabled; ignored otherwise."""
+        contact_reduction_hashtable_size_factor: float = 0.25
+        """Multiplier applied to the hydroelastic contact reduction hashtable size.
+        Increase this if reduction hashtable fill/failure warnings appear. Must be positive."""
         grid_size: int = 256 * 8 * 128
         """Grid size for contact handling. Can be tuned for performance."""
         output_contact_surface: bool = False
@@ -252,6 +282,28 @@ class HydroelasticSDF:
         Only active when reduce_contacts is True."""
         margin_contact_area: float = 1e-2
         """Contact area used for non-penetrating contacts at the margin."""
+        mc_edge_clamp_min: float = 0.02
+        """Lower bound for the marching-cubes edge interpolation parameter
+        (``t`` clamped to ``[mc_edge_clamp_min, 1 - mc_edge_clamp_min]``).
+
+        Range: ``[0.0, 0.5]``.  The default of ``0.02`` prevents vertex
+        collapse at SDF ridge boundaries, where multiple triangle vertices
+        would otherwise land on the same cube corner.  Set to ``0.0`` for
+        the most faithful contact-surface dynamics — recommended for
+        threading-style scenarios like ``nut_bolt_hydro`` where the surface
+        bias measurably damps the contact response."""
+
+        def __post_init__(self):
+            # NaN fails both bounds (NaN comparisons return False) and lands here too.
+            if not (0.0 <= float(self.mc_edge_clamp_min) <= 0.5):
+                raise ValueError(
+                    f"HydroelasticSDF.Config.mc_edge_clamp_min must be in [0.0, 0.5], got {self.mc_edge_clamp_min}"
+                )
+            if not float(self.contact_reduction_hashtable_size_factor) > 0.0:
+                raise ValueError(
+                    "HydroelasticSDF.Config.contact_reduction_hashtable_size_factor "
+                    f"must be > 0.0, got {self.contact_reduction_hashtable_size_factor}"
+                )
 
     @dataclass
     class ContactSurfaceData:
@@ -278,8 +330,6 @@ class HydroelasticSDF:
         num_shape_pairs: int,
         total_num_tiles: int,
         max_num_blocks_per_shape: int,
-        shape_sdf_block_coords: wp.array[wp.vec3us],
-        shape_sdf_shape2blocks: wp.array[wp.vec2i],
         shape_material_kh: wp.array[wp.float32],
         n_shapes: int,
         config: HydroelasticSDF.Config | None = None,
@@ -294,9 +344,6 @@ class HydroelasticSDF:
             device = wp.get_device()
         self.device = device
 
-        # keep local references for model arrays
-        self.shape_sdf_block_coords = shape_sdf_block_coords
-        self.shape_sdf_shape2blocks = shape_sdf_shape2blocks
         self.shape_material_kh = shape_material_kh
 
         self.n_shapes = n_shapes
@@ -349,7 +396,6 @@ class HydroelasticSDF:
             # Broadphase buffers
             self.block_start_prefix = wp.zeros((self.max_num_shape_pairs,), dtype=wp.int32)
             self.num_blocks_per_pair = wp.zeros((self.max_num_shape_pairs,), dtype=wp.int32)
-            self.block_broad_idx = wp.empty((self.max_num_blocks_broad,), dtype=wp.int32)
             self.block_broad_collide_coords = self.iso_buffer_coords[0]
             self.block_broad_collide_shape_pair = self.iso_buffer_shape_pairs[0]
 
@@ -384,6 +430,7 @@ class HydroelasticSDF:
             self.generate_contacts_kernel = get_generate_contacts_kernel(
                 output_vertices=self.config.output_contact_surface,
                 pre_prune=self.config.reduce_contacts and self.config.pre_prune_contacts,
+                mc_edge_clamp_min=self.config.mc_edge_clamp_min,
             )
 
             if self.config.reduce_contacts:
@@ -394,6 +441,7 @@ class HydroelasticSDF:
                     anchor_contact=self.config.anchor_contact,
                     moment_matching=self.config.moment_matching,
                     margin_contact_area=self.config.margin_contact_area,
+                    hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
                 )
                 self.contact_reduction = HydroelasticContactReduction(
                     capacity=self.max_num_face_contacts,
@@ -408,7 +456,10 @@ class HydroelasticSDF:
                     capacity=self.max_num_face_contacts,
                     device=device,
                     writer_func=writer_func,
-                    config=HydroelasticReductionConfig(margin_contact_area=self.config.margin_contact_area),
+                    config=HydroelasticReductionConfig(
+                        margin_contact_area=self.config.margin_contact_area,
+                        hashtable_size_factor=self.config.contact_reduction_hashtable_size_factor,
+                    ),
                 )
                 self.decode_contacts_kernel = get_decode_contacts_kernel(
                     self.config.margin_contact_area,
@@ -449,10 +500,10 @@ class HydroelasticSDF:
         if num_hydroelastic_pairs == 0:
             return None
 
-        shape_sdf_index = model.shape_sdf_index.numpy()
-        sdf_index2blocks = model.sdf_index2blocks.numpy()
-        texture_sdf_data = model.texture_sdf_data.numpy()
+        shape_sdf_index = model._shape_sdf_index.numpy()
+        texture_sdf_data = model._texture_sdf_data.numpy()
         shape_scale = model.shape_scale.numpy()
+        coarse_textures = model._texture_sdf_coarse_textures
 
         # Get indices of shapes that can collide and are hydroelastic
         hydroelastic_indices = [
@@ -462,9 +513,14 @@ class HydroelasticSDF:
         ]
 
         for idx in hydroelastic_indices:
-            sdf_idx = shape_sdf_index[idx]
+            sdf_idx = int(shape_sdf_index[idx])
             if sdf_idx < 0:
                 raise ValueError(f"Hydroelastic shape {idx} requires SDF data but has no attached/generated SDF.")
+            if sdf_idx >= len(coarse_textures) or coarse_textures[sdf_idx] is None:
+                raise ValueError(
+                    f"Hydroelastic shape {idx} requires texture SDF data but its attached/generated SDF has none. "
+                    "Build the SDF with mesh.build_sdf() before using hydroelastic contacts."
+                )
             if not texture_sdf_data[sdf_idx]["scale_baked"]:
                 sx, sy, sz = shape_scale[idx]
                 if not (np.isclose(sx, 1.0) and np.isclose(sy, 1.0) and np.isclose(sz, 1.0)):
@@ -473,17 +529,23 @@ class HydroelasticSDF:
                         "Build a scale-baked SDF for hydroelastic use."
                     )
 
-        # Count total tiles and max blocks per shape for hydroelastic shapes
+        # Count total subgrids and max-per-shape for hydroelastic shapes.
+        # Every shape contributes (cw-1) * (ch-1) * (cd-1) blocks to the
+        # broadphase — the broadphase visits every subgrid because the
+        # contact iso-surface can sit anywhere inside the SDF box.
         total_num_tiles = 0
         max_num_blocks_per_shape = 0
-        shape_sdf_shape2blocks = np.zeros((model.shape_count, 2), dtype=np.int32)
-        for shape_idx in range(model.shape_count):
-            sdf_idx = shape_sdf_index[shape_idx]
-            if sdf_idx >= 0:
-                shape_sdf_shape2blocks[shape_idx] = sdf_index2blocks[sdf_idx]
         for idx in hydroelastic_indices:
-            start_block, end_block = shape_sdf_shape2blocks[idx]
-            num_blocks = end_block - start_block
+            sdf_idx = int(shape_sdf_index[idx])
+            if sdf_idx < 0:
+                raise ValueError(f"Hydroelastic shape {idx} requires SDF data but has no attached/generated SDF.")
+            if sdf_idx >= len(coarse_textures) or coarse_textures[sdf_idx] is None:
+                raise ValueError(
+                    f"Hydroelastic shape {idx} requires texture SDF data but its attached/generated SDF has none. "
+                    "Build the SDF with mesh.build_sdf() before using hydroelastic contacts."
+                )
+            tex = coarse_textures[sdf_idx]
+            num_blocks = (tex.width - 1) * (tex.height - 1) * (tex.depth - 1)
             total_num_tiles += num_blocks
             max_num_blocks_per_shape = max(max_num_blocks_per_shape, num_blocks)
 
@@ -491,8 +553,6 @@ class HydroelasticSDF:
             num_shape_pairs=num_hydroelastic_pairs,
             total_num_tiles=total_num_tiles,
             max_num_blocks_per_shape=max_num_blocks_per_shape,
-            shape_sdf_block_coords=model.sdf_block_coords,
-            shape_sdf_shape2blocks=wp.array(shape_sdf_shape2blocks, dtype=wp.vec2i, device=model.device),
             shape_material_kh=model.shape_material_kh,
             n_shapes=model.shape_count,
             config=config,
@@ -617,7 +677,7 @@ class HydroelasticSDF:
                 warnings.warn(
                     "Hydroelastic reduction dropped contacts due to hashtable insert "
                     f"failures ({hashtable_failures}). Increase rigid_contact_max "
-                    "and/or HydroelasticSDF.Config.buffer_fraction.",
+                    "and/or HydroelasticSDF.Config.contact_reduction_hashtable_size_factor.",
                     RuntimeWarning,
                     stacklevel=2,
                 )
@@ -640,7 +700,6 @@ class HydroelasticSDF:
                 shape_sdf_data,
                 shape_pairs_sdf_sdf,
                 shape_pairs_sdf_sdf_count,
-                self.shape_sdf_shape2blocks,
             ],
             outputs=[
                 self.num_blocks_per_pair,
@@ -666,28 +725,10 @@ class HydroelasticSDF:
                 shape_pairs_sdf_sdf,
                 shape_pairs_sdf_sdf_count,
                 shape_sdf_data,
-                self.shape_sdf_shape2blocks,
                 self.max_num_blocks_broad,
             ],
             outputs=[
                 self.block_broad_collide_shape_pair,
-                self.block_broad_idx,
-            ],
-            device=self.device,
-            record_tape=False,
-        )
-
-        wp.launch(
-            kernel=broadphase_get_block_coords,
-            dim=[self.grid_size],
-            inputs=[
-                self.grid_size,
-                self.block_broad_collide_count,
-                self.block_broad_idx,
-                self.shape_sdf_block_coords,
-                self.max_num_blocks_broad,
-            ],
-            outputs=[
                 self.block_broad_collide_coords,
             ],
             device=self.device,
@@ -875,13 +916,28 @@ class HydroelasticSDF:
         )
 
 
+@wp.func
+def shape_subgrid_dims(sdf: TextureSDFData) -> wp.vec3i:
+    """Number of subgrids per axis for an SDF shape.
+
+    The coarse texture stores SDF samples at every subgrid corner, so each
+    axis has ``num_subgrids + 1`` corner texels.  The hydroelastic broadphase
+    visits every subgrid (no narrow-band filter), so this is also the number
+    of broadphase blocks per shape.
+    """
+    return wp.vec3i(
+        sdf.coarse_texture.width - 1,
+        sdf.coarse_texture.height - 1,
+        sdf.coarse_texture.depth - 1,
+    )
+
+
 @wp.kernel(enable_backward=False)
 def broadphase_collision_pairs_count(
     shape_transform: wp.array[wp.transform],
     shape_sdf_data: wp.array[TextureSDFData],
     shape_pairs_sdf_sdf: wp.array[wp.vec2i],
     shape_pairs_sdf_sdf_count: wp.array[wp.int32],
-    shape2blocks: wp.array[wp.vec2i],
     # outputs
     thread_num_blocks: wp.array[wp.int32],
 ):
@@ -900,8 +956,6 @@ def broadphase_collision_pairs_count(
     center_offset_a = 0.5 * (sdf_a.sdf_box_lower + sdf_a.sdf_box_upper)
     center_offset_b = 0.5 * (sdf_b.sdf_box_lower + sdf_b.sdf_box_upper)
 
-    does_collide = wp.bool(False)
-
     world_transform_a = shape_transform[shape_a]
     world_transform_b = shape_transform[shape_b]
 
@@ -911,15 +965,13 @@ def broadphase_collision_pairs_count(
 
     does_collide = sat_box_intersection(centered_transform_a, half_extents_a, centered_transform_b, half_extents_b)
 
-    # Sort shapes so shape with smaller voxel size is shape_b (must match scatter kernel)
-    voxel_radius_a = shape_sdf_data[shape_a].voxel_radius
-    voxel_radius_b = shape_sdf_data[shape_b].voxel_radius
-    if voxel_radius_b > voxel_radius_a:
-        shape_b, shape_a = shape_a, shape_b
+    # Count only needs the smaller-voxel dims, so overwrite the local sdf_b
+    # without swapping shape indices.
+    if sdf_b.voxel_radius > sdf_a.voxel_radius:
+        sdf_b = sdf_a
 
-    shape_b_idx = shape2blocks[shape_b]
-    block_start, block_end = shape_b_idx[0], shape_b_idx[1]
-    num_blocks = block_end - block_start
+    dims_b = shape_subgrid_dims(sdf_b)
+    num_blocks = dims_b[0] * dims_b[1] * dims_b[2]
 
     if does_collide:
         thread_num_blocks[tid] = num_blocks
@@ -935,11 +987,10 @@ def broadphase_collision_pairs_scatter(
     shape_pairs_sdf_sdf: wp.array[wp.vec2i],
     shape_pairs_sdf_sdf_count: wp.array[wp.int32],
     shape_sdf_data: wp.array[TextureSDFData],
-    shape2blocks: wp.array[wp.vec2i],
     max_num_blocks_broad: int,
     # outputs
     block_broad_collide_shape_pair: wp.array[wp.vec2i],
-    block_broad_idx: wp.array[wp.int32],
+    block_broad_collide_coords: wp.array[wp.vec3us],
 ):
     offset = wp.tid()
     total_blocks = wp.min(block_broad_collide_count[0], max_num_blocks_broad)
@@ -964,34 +1015,31 @@ def broadphase_collision_pairs_scatter(
         shape_b = pair[1]
 
         # Sort shapes so the one with smaller voxel size is shape_b
-        voxel_radius_a = shape_sdf_data[shape_a].voxel_radius
-        voxel_radius_b = shape_sdf_data[shape_b].voxel_radius
-        if voxel_radius_b > voxel_radius_a:
-            shape_b, shape_a = shape_a, shape_b
+        sdf_a = shape_sdf_data[shape_a]
+        sdf_b = shape_sdf_data[shape_b]
+        if sdf_b.voxel_radius > sdf_a.voxel_radius:
+            shape_a, shape_b = shape_b, shape_a
+            sdf_a, sdf_b = sdf_b, sdf_a
 
-        shape_b_idx = shape2blocks[shape_b]
-        shape_b_block_start = shape_b_idx[0]
         block_in_pair = block_tid - block_start_prefix[pair_idx]
 
+        # Decode the (bx, by, bz) subgrid index from the linear block_in_pair.
+        # Layout matches the host-side row-major layout: bz outer, by middle,
+        # bx inner, matching build_sparse_sdf_from_mesh().
+        dims_b = shape_subgrid_dims(sdf_b)
+        plane = dims_b[0] * dims_b[1]
+        bz = block_in_pair // plane
+        rem = block_in_pair - bz * plane
+        by = rem // dims_b[0]
+        bx = rem - by * dims_b[0]
+        sgs = wp.int32(sdf_b.subgrid_size)
+
         block_broad_collide_shape_pair[block_tid] = wp.vec2i(shape_a, shape_b)
-        block_broad_idx[block_tid] = shape_b_block_start + block_in_pair
-
-
-@wp.kernel(enable_backward=False)
-def broadphase_get_block_coords(
-    grid_size: int,
-    block_count: wp.array[wp.int32],
-    block_broad_idx: wp.array[wp.int32],
-    block_coords: wp.array[wp.vec3us],
-    max_num_blocks_broad: int,
-    # outputs
-    block_broad_collide_coords: wp.array[wp.vec3us],
-):
-    offset = wp.tid()
-    num_blocks = wp.min(block_count[0], max_num_blocks_broad)
-    for tid in range(offset, num_blocks, grid_size):
-        block_idx = block_broad_idx[tid]
-        block_broad_collide_coords[tid] = block_coords[block_idx]
+        block_broad_collide_coords[block_tid] = wp.vec3us(
+            wp.uint16(bx * sgs),
+            wp.uint16(by * sgs),
+            wp.uint16(bz * sgs),
+        )
 
 
 @wp.func
@@ -1365,6 +1413,7 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
 def get_generate_contacts_kernel(
     output_vertices: bool,
     pre_prune: bool = False,
+    mc_edge_clamp_min: float = 0.02,
 ):
     """Create kernel for hydroelastic contact generation.
 
@@ -1387,10 +1436,16 @@ def get_generate_contacts_kernel(
     Args:
         output_vertices: Whether to output contact surface vertices for visualization.
         pre_prune: Whether to perform local-first face compaction.
+        mc_edge_clamp_min: Lower bound for the marching-cubes edge
+            interpolation parameter; see
+            :attr:`HydroelasticSDF.Config.mc_edge_clamp_min`.
 
     Returns:
         generate_contacts_kernel: Warp kernel for contact generation.
     """
+
+    edge_clamp_min = float(mc_edge_clamp_min)
+    edge_clamp_max = float(1.0 - mc_edge_clamp_min)
 
     @wp.kernel(enable_backward=False)
     def generate_contacts_kernel(
@@ -1519,7 +1574,11 @@ def get_generate_contacts_kernel(
                     x_id,
                     y_id,
                     z_id,
+                    wp.static(edge_clamp_min),
+                    wp.static(edge_clamp_max),
                 )
+                if area <= 0.0:
+                    continue
                 # Accumulate stats per normal bin
                 if pen_depth < 0.0:
                     bin_id = get_slot(normal)
@@ -1740,7 +1799,7 @@ def verify_collision_step(
     if ht_insert_failures[0] > 0:
         wp.printf(
             "  [hydroelastic] reduction hashtable full: %d insert failures. "
-            "Increase rigid_contact_max and/or buffer_fraction.\n",
+            "Increase contact_reduction_hashtable_size_factor or rigid_contact_max.\n",
             ht_insert_failures[0],
         )
         has_overflow = True

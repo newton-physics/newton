@@ -19,8 +19,10 @@ Moreover, world-based grouping can also facilitate partitioning of thread grids 
 Such operations facilitate support for simulating multiple, and potentially heterogeneous, worlds defined within a :class:`~newton.Model` instance.
 Lastly, world-based grouping also enables selectively operating on only the entities that belong to a specific world, i.e. masking, as well as partitioning of the :class:`~newton.Model` and :class:`~newton.State` data.
 
-.. note::
-   Support for fully heterogeneous simulations is still under active development and quite experimental.
+.. experimental::
+
+   Support for fully heterogeneous simulations is still under active development
+   and may change without prior notice.
    At present time, although the :class:`~newton.ModelBuilder` and :class:`~newton.Model` objects support instantiating worlds with different disparate entities, not all solvers are able to simulate them.
    Moreover, the selection API still operates under the assumption of model homogeneity, but this is expected to also support heterogeneous simulations in the near future.
 
@@ -238,6 +240,33 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
    world_count: 4
    body_count: 8
 
+.. important::
+   Call :meth:`~newton.ModelBuilder.approximate_meshes` on the sub-builder
+   **before** passing it to :meth:`~newton.ModelBuilder.replicate`.
+   Replication copies mesh references across worlds, so approximating first
+   produces a single simplified copy shared by all worlds; approximating
+   afterwards allocates one copy per replicated shape.
+
+.. testcode::
+
+   import newton
+
+   arm = newton.ModelBuilder()
+   link = arm.add_link(mass=1.0)
+   mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, compute_inertia=False)
+   arm.add_shape_mesh(body=link, mesh=mesh)
+   arm.approximate_meshes(method="convex_hull")
+
+   scene = newton.ModelBuilder()
+   scene.replicate(arm, world_count=4)
+
+   replicated_model = scene.finalize()
+   print("world_count:", replicated_model.world_count)
+
+.. testoutput::
+
+   world_count: 4
+
 
 .. _Per-world gravity:
 
@@ -293,8 +322,8 @@ For example:
 
    @wp.kernel
    def world_body_2d_kernel(
-       body_world_start: wp.array(dtype=wp.int32),
-       body_qd: wp.array(dtype=wp.spatial_vectorf),
+       body_world_start: wp.array[wp.int32],
+       body_qd: wp.array[wp.spatial_vectorf],
    ):
        world_id, body_world_id = wp.tid()
        world_start = body_world_start[world_id]

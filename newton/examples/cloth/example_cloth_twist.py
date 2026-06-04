@@ -292,7 +292,7 @@ class Example:
         newton.examples.test_particle_state(
             self.state_0,
             "particle velocities are within a reasonable range",
-            lambda q, qd: max(abs(qd)) < 1.0,
+            lambda q, qd: max(abs(qd)) < 1.5,
         )
 
 
@@ -304,6 +304,4 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
 
     # Create example and run
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

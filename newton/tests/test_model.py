@@ -89,6 +89,60 @@ class TestModelBuilderDeprecations(unittest.TestCase):
             atol=1e-6,
         )
 
+    def test_joint_target_pos_vel_aliases_warn(self):
+        """Legacy ``joint_target_pos`` / ``joint_target_vel`` warn under the
+        default flag and raise under ``use_coord_layout_targets=True``;
+        ``joint_target_q`` / ``joint_target_qd`` are always silent. The Model
+        snapshot freezes the flag at construction, so each branch builds its
+        own model under the corresponding flag value."""
+
+        def _build_revolute_model():
+            builder = ModelBuilder()
+            base = builder.add_link(mass=1.0)
+            j = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z)
+            builder.add_articulation([j])
+            return builder.finalize()
+
+        prev_flag = newton.use_coord_layout_targets
+        try:
+            newton.use_coord_layout_targets = False
+            model = _build_revolute_model()
+            control = newton.Control()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                _ = control.joint_target_pos
+                _ = control.joint_target_vel
+                _ = model.joint_target_pos
+                _ = model.joint_target_vel
+            deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+            self.assertEqual(len(deprecations), 4)
+            self.assertTrue(any("Control.joint_target_pos" in str(w.message) for w in deprecations))
+            self.assertTrue(any("Control.joint_target_vel" in str(w.message) for w in deprecations))
+            self.assertTrue(any("Model.joint_target_pos" in str(w.message) for w in deprecations))
+            self.assertTrue(any("Model.joint_target_vel" in str(w.message) for w in deprecations))
+
+            newton.use_coord_layout_targets = True
+            model = _build_revolute_model()
+            control = newton.Control()
+            with self.assertRaises(AttributeError):
+                _ = control.joint_target_pos
+            with self.assertRaises(AttributeError):
+                _ = control.joint_target_vel
+            with self.assertRaises(AttributeError):
+                _ = model.joint_target_pos
+            with self.assertRaises(AttributeError):
+                _ = model.joint_target_vel
+        finally:
+            newton.use_coord_layout_targets = prev_flag
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _ = control.joint_target_q
+            _ = control.joint_target_qd
+            _ = model.joint_target_q
+            _ = model.joint_target_qd
+        self.assertFalse(any(issubclass(w.category, DeprecationWarning) for w in caught))
+
 
 class TestModelMesh(unittest.TestCase):
     def test_add_triangles(self):
@@ -493,6 +547,108 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
         self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
 
+    def test_collision_filter_fixed_to_world(self):
+        """Bodies fixed to world via add_joint_fixed(parent=-1) should auto-filter
+        their shapes against world-static shapes regardless of construction order
+        (issue #2201)."""
+
+        def joint_first():
+            b = ModelBuilder()
+            body = b.add_link()
+            b.add_joint_fixed(parent=-1, child=body)
+            mesh_shape = b.add_shape_sphere(body=body, radius=0.5)
+            ground_shape = b.add_ground_plane()
+            return b, mesh_shape, ground_shape
+
+        def world_shape_first():
+            b = ModelBuilder()
+            ground_shape = b.add_ground_plane()
+            body = b.add_link()
+            b.add_joint_fixed(parent=-1, child=body)
+            mesh_shape = b.add_shape_sphere(body=body, radius=0.5)
+            return b, mesh_shape, ground_shape
+
+        def body_shape_first():
+            b = ModelBuilder()
+            body = b.add_link()
+            mesh_shape = b.add_shape_sphere(body=body, radius=0.5)
+            b.add_joint_fixed(parent=-1, child=body)
+            ground_shape = b.add_ground_plane()
+            return b, mesh_shape, ground_shape
+
+        for case_name, build in (
+            ("joint before shapes", joint_first),
+            ("world shape before joint", world_shape_first),
+            ("body shape before joint", body_shape_first),
+        ):
+            with self.subTest(case=case_name):
+                builder, mesh_shape, ground_shape = build()
+                pair = (min(mesh_shape, ground_shape), max(mesh_shape, ground_shape))
+                self.assertEqual(builder.shape_collision_filter_pairs.count(pair), 1)
+
+    def test_collision_filter_floating_base_not_filtered(self):
+        """Floating-base bodies (FREE joint to world) must NOT be filtered against
+        world shapes — they need to be able to land on the ground."""
+
+        builder = ModelBuilder()
+        body = builder.add_link()
+        builder.add_joint_free(parent=-1, child=body)
+        base_shape = builder.add_shape_sphere(body=body, radius=0.5)
+        ground_shape = builder.add_ground_plane()
+        pair = (min(base_shape, ground_shape), max(base_shape, ground_shape))
+        self.assertNotIn(pair, builder.shape_collision_filter_pairs)
+
+    def test_collision_filter_revolute_to_world_default(self):
+        """A revolute (non-fixed) joint to world does NOT auto-filter child shapes
+        against world shapes — the child needs to be able to collide with world
+        geometry (e.g. a pendulum hitting the ground)."""
+
+        builder = ModelBuilder()
+        body = builder.add_link()
+        builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
+        body_shape = builder.add_shape_sphere(body=body, radius=0.5)
+        ground_shape = builder.add_ground_plane()
+        pair = (min(body_shape, ground_shape), max(body_shape, ground_shape))
+        self.assertNotIn(pair, builder.shape_collision_filter_pairs)
+
+    def test_collision_filter_revolute_to_world_explicit(self):
+        """Explicit collision_filter_parent=True is honored even for a non-fixed
+        joint to world (overrides the smart default) when shapes exist at
+        joint-creation time."""
+
+        builder = ModelBuilder()
+        body = builder.add_link()
+        body_shape = builder.add_shape_sphere(body=body, radius=0.5)
+        ground_shape = builder.add_ground_plane()
+        builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z, collision_filter_parent=True)
+        pair = (min(body_shape, ground_shape), max(body_shape, ground_shape))
+        self.assertEqual(builder.shape_collision_filter_pairs.count(pair), 1)
+
+    def test_collision_filter_free_with_real_parent_default_filtered(self):
+        """A free joint between two real bodies auto-filters parent/child shape pairs by
+        default, matching the legacy behavior for joints between real bodies."""
+
+        builder = ModelBuilder()
+        parent = builder.add_link()
+        child = builder.add_link()
+        parent_shape = builder.add_shape_sphere(body=parent, radius=0.5)
+        child_shape = builder.add_shape_sphere(body=child, radius=0.5)
+        builder.add_joint_free(parent=parent, child=child)
+        pair = (min(parent_shape, child_shape), max(parent_shape, child_shape))
+        self.assertEqual(builder.shape_collision_filter_pairs.count(pair), 1)
+
+    def test_collision_filter_fixed_to_world_opt_out(self):
+        """collision_filter_parent=False on the joint suppresses the auto-filter
+        when shapes already exist on both sides at joint-creation time."""
+
+        builder = ModelBuilder()
+        body = builder.add_link()
+        mesh_shape = builder.add_shape_sphere(body=body, radius=0.5)
+        ground_shape = builder.add_ground_plane()
+        builder.add_joint_fixed(parent=-1, child=body, collision_filter_parent=False)
+        pair = (min(mesh_shape, ground_shape), max(mesh_shape, ground_shape))
+        self.assertNotIn(pair, builder.shape_collision_filter_pairs)
+
     def test_validate_structure_invalid_shape_body(self):
         """Test that _validate_structure catches invalid shape_body references."""
         builder = ModelBuilder()
@@ -513,6 +669,137 @@ class TestModelMesh(unittest.TestCase):
 
 
 class TestModelJoints(unittest.TestCase):
+    def test_joint_target_q_qd_shape_with_free_and_ball_joints(self):
+        """``joint_target_q`` follows ``joint_q`` (coord) under
+        ``use_coord_layout_targets``; ``joint_target_qd`` always follows
+        ``joint_qd`` (DOF). Free and ball joints are where the two layouts
+        diverge. Multi-articulation builder also exercises the per-env start
+        arrays."""
+        for use_coord in (False, True):
+            prev = newton.use_coord_layout_targets
+            newton.use_coord_layout_targets = use_coord
+            try:
+                builder = ModelBuilder()
+                # env 0: free + revolute (7 coords / 6 DOFs from free)
+                b0 = builder.add_link(mass=1.0)
+                j0_free = builder.add_joint_free(child=b0)
+                b1 = builder.add_link(mass=1.0)
+                j0_rev = builder.add_joint_revolute(parent=b0, child=b1, axis=newton.Axis.Z)
+                builder.add_articulation([j0_free, j0_rev])
+                # env 1: ball + revolute (4 coords / 3 DOFs from ball)
+                b2 = builder.add_link(mass=1.0)
+                j1_ball = builder.add_joint_ball(parent=-1, child=b2)
+                b3 = builder.add_link(mass=1.0)
+                j1_rev = builder.add_joint_revolute(parent=b2, child=b3, axis=newton.Axis.Z)
+                builder.add_articulation([j1_ball, j1_rev])
+                model = builder.finalize()
+
+                self.assertEqual(model.joint_dof_count, 7 + 4)
+                self.assertEqual(model.joint_coord_count, 8 + 5)
+
+                target_q_size = model.joint_coord_count if use_coord else model.joint_dof_count
+                self.assertEqual(model.joint_target_q.shape[0], target_q_size)
+                self.assertEqual(model.joint_target_qd.shape[0], model.joint_dof_count)
+
+                control = model.control()
+                self.assertEqual(control.joint_target_q.shape[0], target_q_size)
+                self.assertEqual(control.joint_target_qd.shape[0], model.joint_dof_count)
+
+                expected_start = model.joint_q_start.numpy() if use_coord else model.joint_qd_start.numpy()
+                np.testing.assert_array_equal(model.joint_target_q_start.numpy(), expected_start)
+
+                if use_coord:
+                    target_q = model.joint_target_q.numpy()
+                    q_starts = model.joint_q_start.numpy()
+                    # env 0 free joint: w-component at offset 6 (3 lin + 3 quat-xyz)
+                    self.assertAlmostEqual(float(target_q[int(q_starts[0]) + 6]), 1.0)
+                    # env 1 ball joint: w-component at offset 3 (3 quat-xyz)
+                    self.assertAlmostEqual(float(target_q[int(q_starts[2]) + 3]), 1.0)
+            finally:
+                newton.use_coord_layout_targets = prev
+
+    def test_ball_free_per_axis_target_pos_preserved(self):
+        """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
+        into ``joint_target_q`` under both flag values.
+
+        - Flag=False (legacy DOF): the 3 angular scalars are projected verbatim
+          into the DOF slice (matching the pre-coord-layout behavior).
+        - Flag=True (coord): the 3 angular scalars are interpreted as extrinsic
+          ZYX Euler angles and converted to a unit quaternion via
+          :meth:`ModelBuilder._quat_from_euler_zyx`, matching kamino's
+          DOF→coord conversion.
+        """
+        ang_targets = (0.1, 0.2, -0.3)
+
+        def _make_axes():
+            return [
+                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_pos=ang_targets[0]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_pos=ang_targets[1]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_pos=ang_targets[2]),
+            ]
+
+        lin_targets = (1.5, -2.5, 3.5)
+
+        def _make_linear_axes():
+            return [
+                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_pos=lin_targets[0]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_pos=lin_targets[1]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_pos=lin_targets[2]),
+            ]
+
+        expected_quat = ModelBuilder._quat_from_axis_targets(*ang_targets)
+
+        for use_coord in (False, True):
+            prev = newton.use_coord_layout_targets
+            newton.use_coord_layout_targets = use_coord
+            try:
+                builder = ModelBuilder()
+                # BALL via low-level add_joint with per-axis targets
+                b_ball = builder.add_link(mass=1.0)
+                j_ball = builder.add_joint(
+                    newton.JointType.BALL,
+                    parent=-1,
+                    child=b_ball,
+                    angular_axes=_make_axes(),
+                )
+                # FREE via low-level add_joint with per-axis linear+angular targets
+                b_free = builder.add_link(mass=1.0)
+                j_free = builder.add_joint(
+                    newton.JointType.FREE,
+                    parent=-1,
+                    child=b_free,
+                    linear_axes=_make_linear_axes(),
+                    angular_axes=_make_axes(),
+                )
+                builder.add_articulation([j_ball])
+                builder.add_articulation([j_free])
+                model = builder.finalize()
+
+                target_q = model.joint_target_q.numpy()
+
+                if use_coord:
+                    # BALL coord slice = (qx, qy, qz, qw) — full unit quaternion
+                    q_starts = model.joint_q_start.numpy()
+                    b = int(q_starts[j_ball])
+                    np.testing.assert_allclose(target_q[b : b + 4], expected_quat, rtol=0, atol=1e-6)
+                    # FREE coord slice = (px, py, pz, qx, qy, qz, qw)
+                    f = int(q_starts[j_free])
+                    np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
+                    np.testing.assert_allclose(target_q[f + 3 : f + 7], expected_quat, rtol=0, atol=1e-6)
+                    # Verify unit norm (would only hold post-conversion)
+                    self.assertAlmostEqual(float(np.linalg.norm(target_q[b : b + 4])), 1.0, places=5)
+                    self.assertAlmostEqual(float(np.linalg.norm(target_q[f + 3 : f + 7])), 1.0, places=5)
+                else:
+                    # DOF projection: BALL → 3 raw angular floats; FREE → 3 lin + 3 raw ang
+                    qd_starts = model.joint_qd_start.numpy()
+                    b = int(qd_starts[j_ball])
+                    np.testing.assert_allclose(target_q[b : b + 3], ang_targets, rtol=0, atol=1e-6)
+                    f = int(qd_starts[j_free])
+                    np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
+                    np.testing.assert_allclose(target_q[f + 3 : f + 6], ang_targets, rtol=0, atol=1e-6)
+            finally:
+                newton.use_coord_layout_targets = prev
+
     def test_collapse_fixed_joints(self):
         shape_cfg = ModelBuilder.ShapeConfig(density=1.0)
 
@@ -569,11 +856,48 @@ class TestModelJoints(unittest.TestCase):
         builder.add_articulation(all_joints)
         assert builder.articulation_count == 3  # Three articulations total
 
-        builder.collapse_fixed_joints()
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="articulation_name",
+                dtype=str,
+                frequency=newton.Model.AttributeFrequency.ARTICULATION,
+                default="",
+                values={0: "fixed", 1: "revolute", 2: "free"},
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="articulation_ref",
+                dtype=wp.int32,
+                frequency=newton.Model.AttributeFrequency.ONCE,
+                references="articulation",
+                default=-1,
+                values={0: [1, (2, -1)]},
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="articulation_ref_wp",
+                dtype=wp.int32,
+                frequency=newton.Model.AttributeFrequency.ONCE,
+                references="articulation",
+                default=wp.int32(-1),
+                values={0: [wp.int32(1), (wp.int32(2), wp.int32(-1))]},
+            )
+        )
+
+        collapse_results = builder.collapse_fixed_joints()
 
         assert builder.joint_count == 2
         assert builder.articulation_count == 2
+        assert collapse_results["articulation_remap"] == {1: 0, 2: 1}
         assert builder.articulation_start == [0, 1]
+        assert builder.articulation_label == ["articulation_1", "articulation_2"]
+        assert builder.articulation_world == [-1, -1]
+        assert builder.joint_articulation == [0, 1]
+        assert builder.custom_attributes["articulation_name"].values == {0: "revolute", 1: "free"}
+        assert builder.custom_attributes["articulation_ref"].values == {0: [0, (1, -1)]}
+        assert builder.custom_attributes["articulation_ref_wp"].values == {0: [0, (1, -1)]}
         assert builder.joint_type == [newton.JointType.REVOLUTE, newton.JointType.FREE]
         assert builder.shape_count == 11
         assert builder.shape_body == [-1, -1, -1, -1, -1, -1, 0, 1, 1, 1, 1]
@@ -609,6 +933,29 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.body_count, 1)
         self.assertAlmostEqual(builder.body_mass[0], 3.0)
         self.assertTrue(builder.body_lock_inertia[0])
+
+    def test_collapse_fixed_joints_massless_chain(self):
+        """Collapsing a chain of massless bodies into a positive-mass body must yield a finite center of mass."""
+        for use_articulation in (True, False):
+            with self.subTest(use_articulation=use_articulation):
+                builder = ModelBuilder()
+                root = builder.add_link(mass=0.0, label="massless_root")
+                dummy = builder.add_link(mass=0.0, label="massless_dummy")
+                mass_body = builder.add_link(mass=2.0, com=wp.vec3(1.0, 0.0, 0.0), label="mass_body")
+
+                joints = [
+                    builder.add_joint_free(parent=-1, child=root, label="floating_base"),
+                    builder.add_joint_fixed(parent=root, child=dummy, label="root_to_dummy"),
+                    builder.add_joint_fixed(parent=dummy, child=mass_body, label="dummy_to_mass_body"),
+                ]
+
+                if use_articulation:
+                    builder.add_articulation(joints)
+                builder.collapse_fixed_joints()
+
+                self.assertEqual(builder.body_count, 1)
+                self.assertAlmostEqual(builder.body_mass[0], 2.0)
+                assert_np_equal(np.array(builder.body_com[0]), np.array([1.0, 0.0, 0.0]))
 
     def test_collapse_fixed_joints_with_groups(self):
         """Test that collapse_fixed_joints correctly preserves world groups."""

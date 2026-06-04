@@ -100,13 +100,19 @@ def compute_neo_hookean_energy_and_force(
 
     F = Ds * Dm_inv
 
-    # Guard against division by zero in lambda (Lamé's first parameter)
-    lmbd_safe = wp.sign(lmbd) * wp.max(wp.abs(lmbd), 1e-6)
-    a = 1.0 + mu / lmbd_safe
+    # Convert Lamé parameters to stable Neo-Hookean parameters per Smith et al.
+    # 2018, §3.4 (eq. 13): the symbols (mu, lambda) appearing in the NH energy
+    # are not directly the Lamé parameters; matching the small-strain limit
+    # gives mu_NH = mu_Lamé, lambda_NH = lambda_Lamé + mu_Lamé.
+    mu_nh = mu
+    lmbd_nh = lmbd + mu
+    # Guard against division by zero in lambda_NH
+    lmbd_safe = wp.sign(lmbd_nh) * wp.max(wp.abs(lmbd_nh), 1e-6)
+    a = 1.0 + mu_nh / lmbd_safe
 
     det_F = wp.determinant(F)
 
-    E = rest_volume * 0.5 * (mu * (wp.trace(F * wp.transpose(F)) - 3.0) + lmbd * (det_F - a) * (det_F - a))
+    E = rest_volume * 0.5 * (mu_nh * (wp.trace(F * wp.transpose(F)) - 3.0) + lmbd_nh * (det_F - a) * (det_F - a))
     tet_energy[tet_id] = E
 
     F1_1 = F[0, 0]
@@ -144,8 +150,8 @@ def compute_neo_hookean_energy_and_force(
     )
 
     k = det_F - a
-    dPhi_D_dF = dPhi_D_dF * mu
-    dPhi_H_dF = ddetF_dF * lmbd * k
+    dPhi_D_dF = dPhi_D_dF * mu_nh
+    dPhi_H_dF = ddetF_dF * lmbd_nh * k
 
     dE_dF = (dPhi_D_dF + dPhi_H_dF) * rest_volume
 
@@ -231,7 +237,7 @@ PYRAMID_PARTICLES = [
 ]
 
 
-def _build_model_with_soft_mesh(vertices: list[tuple[float, float, float]], tets: np.ndarray):
+def _build_model_with_soft_mesh(vertices: list[tuple[float, float, float]], tets: np.ndarray, device):
     """Use add_soft_mesh (full builder path) to create a soft-body model."""
     builder = ModelBuilder()
     builder.add_soft_mesh(
@@ -247,7 +253,7 @@ def _build_model_with_soft_mesh(vertices: list[tuple[float, float, float]], tets
         k_damp=0.0,
     )
     builder.color()
-    return builder.finalize(device="cpu")
+    return builder.finalize(device=device)
 
 
 def _expected_tet_adjacency(particle_count: int, tet_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -323,7 +329,7 @@ def test_tet_adjacency_single_tet(test, device):
         (0.0, 1.0, 0.0),
         (0.0, 0.0, 1.0),
     ]
-    model = _build_model_with_soft_mesh(particles, tet_indices)
+    model = _build_model_with_soft_mesh(particles, tet_indices, device)
 
     solver = SolverVBD(model)
 
@@ -336,7 +342,7 @@ def test_tet_adjacency_single_tet(test, device):
 
 
 def test_tet_adjacency_complex_pyramid(test, device):
-    model = _build_model_with_soft_mesh(PYRAMID_PARTICLES, PYRAMID_TET_INDICES)
+    model = _build_model_with_soft_mesh(PYRAMID_PARTICLES, PYRAMID_TET_INDICES, device)
 
     solver = SolverVBD(model)
 
@@ -413,10 +419,10 @@ def test_tet_energy(test, device):
         )
         dt = 0.001666
 
-        model = builder.finalize(requires_grad=True)
-        tet_energy = wp.zeros(1, dtype=float, requires_grad=True)
-        particle_forces = wp.zeros(12, dtype=float, requires_grad=True)
-        particle_hessian = wp.zeros(4, dtype=wp.mat33, requires_grad=False)
+        model = builder.finalize(device=device, requires_grad=True)
+        tet_energy = wp.zeros(1, dtype=float, device=device, requires_grad=True)
+        particle_forces = wp.zeros(12, dtype=float, device=device, requires_grad=True)
+        particle_hessian = wp.zeros(4, dtype=wp.mat33, device=device, requires_grad=False)
 
         state = model.state(requires_grad=True)
         state.particle_q.assign(state.particle_q.numpy() + rng.standard_normal((4, 3)))
@@ -461,6 +467,7 @@ def test_tet_energy(test, device):
             x[i] = 1.0
             return wp.array(
                 x,
+                device=device,
             )
 
         for v_counter in range(4):
@@ -498,12 +505,22 @@ def test_tet_energy(test, device):
         test.assertTrue(force_comparison.all())
 
         for i in range(4):
+            # The analytical Hessian drops the s * d^2 J / dF^2 term (zero per-vertex
+            # contribution by the Levi-Civita / m x m = 0 identity). The autodiff
+            # path computes it explicitly and only cancels at fp32 precision, so the
+            # residual scales with the magnitude of the analytical Hessian itself.
+            ref = max(np.max(np.abs(particle_hessian_analytical[i])), 1.0)
             test.assertTrue(
-                np.isclose(particle_hessian_auto_diff[i], particle_hessian_analytical[i], rtol=1.0e-2, atol=0.1).all()
+                np.isclose(
+                    particle_hessian_auto_diff[i],
+                    particle_hessian_analytical[i],
+                    rtol=1.0e-2,
+                    atol=1.0e-3 * ref,
+                ).all()
             )
 
 
-devices = get_test_devices(mode="basic")
+devices = get_test_devices()
 add_function_test(TestSoftBody, "test_tet_adjacency_single_tet", test_tet_adjacency_single_tet, devices=devices)
 add_function_test(
     TestSoftBody, "test_tet_adjacency_complex_pyramid", test_tet_adjacency_complex_pyramid, devices=devices

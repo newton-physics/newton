@@ -28,6 +28,7 @@ from newton.tests.unittest_utils import find_nonfinite_members
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         # setup simulation parameters first
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
@@ -133,7 +134,7 @@ class Example:
             self.reset()
 
         hinge_angle = min(self.sim_time / 3, 1.6)
-        self.control.joint_target_pos[self.hinge_joint_q_start : self.hinge_joint_q_start + 1].fill_(hinge_angle)
+        self.control.joint_target_q[self.hinge_joint_q_start : self.hinge_joint_q_start + 1].fill_(hinge_angle)
 
         with wp.ScopedTimer("step", active=False):
             if self.graph:
@@ -216,6 +217,4 @@ if __name__ == "__main__":
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args)
-
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

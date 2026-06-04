@@ -1986,6 +1986,37 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertEqual(arr[0], 42)
         self.assertEqual(arr[1], 42)
 
+    def test_custom_attribute_model_finalizer_rejects_conflicting_registration(self):
+        builder = ModelBuilder()
+
+        def finalizer_a(_builder, _model, _custom_attr):
+            pass
+
+        def finalizer_b(_builder, _model, _custom_attr):
+            pass
+
+        builder._add_custom_attribute_model_finalizer("test:value", finalizer_a)
+        builder._add_custom_attribute_model_finalizer("test:value", finalizer_a)
+
+        with self.assertRaisesRegex(ValueError, "test:value"):
+            builder._add_custom_attribute_model_finalizer("test:value", finalizer_b)
+
+    def test_add_builder_rejects_conflicting_custom_attribute_model_finalizers(self):
+        main = ModelBuilder()
+        sub = ModelBuilder()
+
+        def finalizer_a(_builder, _model, _custom_attr):
+            pass
+
+        def finalizer_b(_builder, _model, _custom_attr):
+            pass
+
+        main._add_custom_attribute_model_finalizer("test:value", finalizer_a)
+        sub._add_custom_attribute_model_finalizer("test:value", finalizer_b)
+
+        with self.assertRaisesRegex(ValueError, "test:value"):
+            main.add_builder(sub)
+
     def test_transform_value_list_and_sentinel_shape_refs(self):
         """Test that transform_value handles lists with negative sentinel values correctly."""
         main = ModelBuilder()

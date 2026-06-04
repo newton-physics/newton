@@ -1,0 +1,133 @@
+#usda 1.0
+(
+    defaultPrim = "test_revolute"
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "test_revolute"
+{
+    def Scope "RigidBodies"
+    {
+        def Xform "rb_a" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+            customData = {
+                string uuid = "b4d408eb-56ca-4782-9e07-c16c0f16fbb6"
+            }
+        )
+        {
+            point3f physics:centerOfMass = (0, 0, 0)
+            float3 physics:diagonalInertia = (0.000014542198, 0.00013094745, 0.00013156794)
+            float physics:mass = 0.22844681
+            quatf physics:principalAxes = (-0.04533328, 0.9041627, 0.36538947, 0.2166223)
+            float3 xformOp:rotateXYZ = (0, 0, 0)
+            double3 xformOp:translate = (-0.05800822004233804, 0.0043306602500409845, 0.00151059130695634)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+
+            def Scope "Geometry"
+            {
+                def Scope "Primary"
+                {
+                    def "mesh_0" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                        customData = {
+                            string layer = "Primary"
+                            string uuid = "ca0ac397-3402-4f71-b30f-cb7241f4fb07"
+                        }
+                        prepend references = @Geometry/surfaces.usd@</Surfaces/mesh_ca0ac397_3402_4f71_b30f_cb7241f4fb07>
+                    )
+                    {
+                        float3 xformOp:rotateXYZ = (0, 0, 0)
+                        double3 xformOp:translate = (0, 0, 0)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+                    }
+                }
+            }
+        }
+
+        def Xform "rb_b" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+            customData = {
+                string uuid = "c204effd-1eb0-4c9f-b3c6-a4e645af4adc"
+            }
+        )
+        {
+            point3f physics:centerOfMass = (0, 0, 0)
+            float3 physics:diagonalInertia = (0.000014542198, 0.00013094745, 0.00013156794)
+            float physics:mass = 0.22844681
+            quatf physics:principalAxes = (-0.12230929, 0.9621333, -0.17204167, 0.17245765)
+            float3 xformOp:rotateXYZ = (0, 0, 0)
+            double3 xformOp:translate = (0.008414180761358133, 0.017056101408748508, 0.02504320698601153)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+
+            def Scope "Geometry"
+            {
+                def Scope "Primary"
+                {
+                    def "mesh_0" (
+                        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                        customData = {
+                            string layer = "Primary"
+                            string uuid = "38794a76-c096-4da4-abe3-75eac0addae8"
+                        }
+                        prepend references = @Geometry/surfaces.usd@</Surfaces/mesh_38794a76_c096_4da4_abe3_75eac0addae8>
+                    )
+                    {
+                        float3 xformOp:rotateXYZ = (0, 0, 0)
+                        double3 xformOp:translate = (0, 0, 0)
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+                    }
+                }
+            }
+        }
+    }
+
+    def Scope "FlexibleBodies"
+    {
+    }
+
+    def Scope "Joints"
+    {
+        def PhysicsFixedJoint "rb_a" (
+            customData = {
+                string uuid = "2a4301e3-e696-407c-8632-9d227b515d5a"
+            }
+        )
+        {
+            rel physics:body1 = </test_revolute/RigidBodies/rb_a>
+            point3f physics:localPos0 = (-0.05800822, 0.00433066, 0.0015105914)
+            point3f physics:localPos1 = (0, 0, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+        }
+
+        def PhysicsRevoluteJoint "revolute_1" (
+            customData = {
+                string uuid = "b5d9f717-6d27-490e-bb4a-415b4a63077b"
+            }
+        )
+        {
+            uniform token physics:axis = "X"
+            rel physics:body0 = </test_revolute/RigidBodies/rb_a>
+            rel physics:body1 = </test_revolute/RigidBodies/rb_b>
+            point3f physics:localPos0 = (0.028101623, 0.027762767, 0.014616199)
+            point3f physics:localPos1 = (-0.03832078, 0.015037325, -0.008916416)
+            quatf physics:localRot0 = (-0.5109887, -0.28312114, 0.7767406, -0.2353869)
+            quatf physics:localRot1 = (-0.5109887, -0.28312114, 0.7767406, -0.2353869)
+        }
+    }
+
+    def Scope "Materials"
+    {
+    }
+
+    def Scope "Collisions"
+    {
+        def PhysicsCollisionGroup "DefaultGroup"
+        {
+            prepend rel collection:colliders:includes = </test_revolute>
+        }
+    }
+}
+

@@ -55,7 +55,7 @@ available examples:
 
 .. code-block:: console
 
-    uv run -m newton.examples
+    uv run -m newton.examples --list
 
 See the :ref:`extra-dependencies` section of the installation guide for a
 description of all available extras.
@@ -140,6 +140,19 @@ in a serial manner with ``--serial-fallback``.
 
 Pass ``--help`` to either run method below to see all available flags.
 
+.. note::
+
+    If a test run aborts with ``concurrent.futures.process.BrokenProcessPool``,
+    a worker process crashed (out-of-memory, segfault, or similar). The runner
+    parallelizes across ``min(cpu_count, 8)`` workers by default; on
+    memory-constrained machines this can saturate RAM and kill a worker.
+    Retry with fewer workers via ``--jobs`` (or ``--serial-fallback`` for a
+    single process):
+
+    .. code-block:: console
+
+        python -m newton.tests --jobs 4
+
 .. tab-set::
     :sync-group: env
 
@@ -161,10 +174,10 @@ Pass ``--help`` to either run method below to see all available flags.
             # run tests
             python -m newton.tests
             
-Most tests run when the ``dev`` extras are installed. The tests using PyTorch
-to run inference on an RL policy are skipped if the ``torch`` dependency is
-not installed. In order to run these tests, include the ``torch-cu12`` or
-``torch-cu13`` extras matching your NVIDIA driver's CUDA support:
+Most tests run with the ``dev`` extras installed. A few tests cover the
+deprecated TorchScript checkpoint path and are skipped without the ``torch``
+dependency; to run them, add the ``torch-cu12`` or ``torch-cu13`` extra matching
+your NVIDIA driver's CUDA support:
 
 .. tab-set::
     :sync-group: env
@@ -400,8 +413,9 @@ The built documentation will be available in ``docs/_build/html``.
 .. note::
 
     The documentation build requires `pandoc <https://pandoc.org/>`_ for converting Jupyter notebooks.
-    While ``pypandoc_binary`` is included in the ``[docs]`` dependencies, some systems may require
-    pandoc to be installed separately:
+    The ``[docs]`` dependencies include ``pypandoc_binary``, and ``docs/conf.py`` will
+    automatically use that bundled executable when it is available. If your environment
+    still cannot locate pandoc, install it separately:
 
     - **Ubuntu/Debian:** ``sudo apt-get install pandoc``
     - **macOS:** ``brew install pandoc``
@@ -515,7 +529,7 @@ API documentation
 -----------------
 
 Newton's API reference is auto-generated from the ``__all__`` lists of its public modules.
-The script ``docs/generate_api.py`` produces reStructuredText files under ``docs/api/`` (git-ignored)
+The script ``docs/generate_api.py`` produces reStructuredText files under ``docs/api/``
 that Sphinx processes via ``autosummary`` to create individual pages for every public symbol.
 
 Whenever you add, remove, or rename a public symbol in one of the public modules
@@ -547,6 +561,54 @@ After running the script, rebuild the documentation to verify the result (see
     Only symbols listed in a module's ``__all__`` (or, as a fallback, its public
     attributes) are included. If a new class or function in ``newton/_src/`` should
     be visible to users, re-export it through the appropriate public module first.
+
+.. _experimental-features:
+
+Experimental features
+^^^^^^^^^^^^^^^^^^^^^
+
+Mark user-facing experimental API with the ``.. experimental::`` directive in
+the public docstring or concept page where users encounter it. The directive is
+the user-facing compatibility marker; do not add a separate policy page or
+inline prose block for the same status.
+
+With no body, the directive renders Newton's standard notice:
+
+.. experimental::
+
+.. code-block:: rst
+
+    .. experimental::
+
+Use this form for an entire module, class, method, or function when the full
+feature is experimental.
+
+For experimental behavior inside an otherwise stable API, add custom content that
+names the exact scope:
+
+.. code-block:: rst
+
+    Args:
+        contact_matching: Frame-to-frame contact matching mode.
+
+            .. experimental::
+
+                The ``"sticky"`` mode may change without prior notice.
+
+When adding or changing experimental public API:
+
+- keep the marker in the public docs or docstring, not just in comments;
+- keep status tables and summaries concise; use plain text such as
+  ``experimental`` instead of linking every status label to the marker;
+- describe any relevant limitations in the concept docs;
+- run ``uv run python docs/generate_api.py`` when public API symbols change.
+
+Use a domain-local experimental namespace only for a cohesive new subsystem
+that can reasonably live behind an opt-in import path, for example
+``newton.solvers.experimental.<feature>``. Do not move existing public classes
+such as solver backends into an experimental namespace just to communicate
+implementation maturity. Mark the specific class, behavior, option, or concept
+instead.
 
 Testing documentation code snippets
 -----------------------------------
@@ -658,7 +720,7 @@ New examples must also be registered in the examples ``README.md`` with a
         .. code-block:: console
 
             # list all available examples
-            uv run -m newton.examples
+            uv run -m newton.examples --list
 
             # run an example by short name
             uv run -m newton.examples basic_pendulum
@@ -672,7 +734,7 @@ New examples must also be registered in the examples ``README.md`` with a
         .. code-block:: console
 
             # list all available examples
-            python -m newton.examples
+            python -m newton.examples --list
 
             # run an example by short name
             python -m newton.examples basic_pendulum

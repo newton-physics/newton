@@ -4,19 +4,24 @@
 from __future__ import annotations
 
 import collections
+import copy
 import datetime
 import inspect
 import itertools
+import logging
+import math
 import os
 import posixpath
 import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urljoin
 
 if TYPE_CHECKING:
     from pxr import Usd
+
+    from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
 else:
@@ -29,12 +34,19 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
-from ..sim.enums import JointTargetMode
+from ..sim.enums import EqType, JointTargetMode
 from ..sim.model import Model
+from ..solvers.mujoco.utils import (
+    mjc_add_equality_loop_joint,
+    mjc_add_equality_mimic,
+    mjc_polycoef_has_higher_order,
+)
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
 from .import_utils import should_show_collider
+
+logger = logging.getLogger("newton")
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -85,9 +97,10 @@ def parse_usd(
     mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
     force_position_velocity_actuation: bool = False,
+    convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
 ) -> dict[str, Any]:
-    """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
+    """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
 
     The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -181,7 +194,7 @@ def parse_usd(
         joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
         bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
         skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
-        load_sites: If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
+        load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         hide_collision_shapes: If True, collision shapes on bodies that already
             have visual-only geometry are hidden unconditionally, regardless of
@@ -193,6 +206,9 @@ def parse_usd(
             ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
             colliders on bodies with visual-only geometry. Default is False.
         parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+        convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
+            joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
+            equality constraints are stored in the legacy equality constraint arrays.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
         schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -202,8 +218,9 @@ def parse_usd(
             inspection, experimentation, or custom pipelines that read these values via
             ``result["schema_attrs"]`` returned from ``parse_usd()``.
 
-            .. note::
-                Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
+            .. experimental::
+
+                The ``schema_resolvers`` argument may change without prior notice.
         force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
             are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
             If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
@@ -277,6 +294,10 @@ def parse_usd(
         rollingFriction: float = builder.default_shape_cfg.mu_rolling
         restitution: float = builder.default_shape_cfg.restitution
         density: float = builder.default_shape_cfg.density
+        ke: float | None = None
+        kd: float | None = None
+        kf: float | None = None
+        ka: float | None = None
 
     # load joint defaults
     default_joint_friction = builder.default_joint_cfg.friction
@@ -349,10 +370,14 @@ def parse_usd(
     path_shape_scale: dict[str, wp.vec3] = {}
     # mapping from prim path to joint index in ModelBuilder
     path_joint_map: dict[str, int] = {}
+    # DOF offset within a merged D6 joint for each original prim path (only populated for merged joints)
+    merged_dof_offset: dict[str, int] = {}
     # cache for resolved material properties (keyed by prim path)
     material_props_cache: dict[str, dict[str, Any]] = {}
     # cache for mesh data loaded from USD prims
     mesh_cache: dict[tuple[str, bool, bool], Mesh] = {}
+    # cache for TetMesh data loaded from USD prims
+    tetmesh_cache: dict[str, TetMesh] = {}
 
     physics_scene_prim = None
     physics_dt = None
@@ -402,6 +427,89 @@ def parse_usd(
         mesh_cache[key] = mesh
         return mesh
 
+    def _has_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
+        return bool(prim and prim.IsValid() and usd.has_applied_api_schema(prim, schema_name))
+
+    def _get_rigid_body_ancestor_path(prim: Usd.Prim) -> str | None:
+        current = prim
+        while current and current.IsValid():
+            current_path = str(current.GetPath())
+            if current_path in path_body_map:
+                return current_path
+            current = current.GetParent()
+        return None
+
+    def _get_target_body_and_local_pos(target_path: str) -> tuple[int, wp.vec3] | None:
+        if target_path in ("", "/"):
+            return (-1, wp.vec3())
+
+        target_prim = stage.GetPrimAtPath(target_path)
+        if not target_prim or not target_prim.IsValid():
+            return None
+
+        body_path = _get_rigid_body_ancestor_path(target_prim)
+        if body_path is None:
+            return None
+
+        body_idx = path_body_map.get(body_path, -1)
+        if body_idx < 0:
+            return None
+
+        if target_path == body_path:
+            return (body_idx, wp.vec3())
+
+        body_prim = stage.GetPrimAtPath(body_path)
+        body_world = usd.get_transform(body_prim, local=False, xform_cache=xform_cache)
+        target_world = usd.get_transform(target_prim, local=False, xform_cache=xform_cache)
+        local_tf = wp.transform_inverse(body_world) * target_world
+        return (body_idx, local_tf.p)
+
+    def _get_first_target(prim: Usd.Prim, rel_name: str) -> str:
+        """Return the first target path of *rel_name* on *prim*, or ``""`` for world."""
+        rel = prim.GetRelationship(rel_name)
+        targets = rel.GetTargets() if rel else []
+        return str(targets[0]) if targets else ""
+
+    def _resolve_equality_bodies(
+        joint_prim: Usd.Prim,
+        joint_path: str,
+        schema_name: str,
+    ) -> tuple[tuple[int, wp.vec3] | None, tuple[int, wp.vec3] | None]:
+        """Resolve body0 and body1 for a Connect/Weld equality joint prim.
+
+        Returns ``(body0_info, body1_info)`` where each is
+        ``(body_index, local_position)`` or ``None`` on failure.
+        An empty target list is interpreted as the world body (index -1).
+        """
+        target0 = _get_first_target(joint_prim, "physics:body0")
+        target1 = _get_first_target(joint_prim, "physics:body1")
+
+        if target0 == "" and target1 == "":
+            warnings.warn(
+                f"{schema_name} on '{joint_path}' has no physics:body0 or physics:body1 targets; skipping.",
+                stacklevel=3,
+            )
+            return None, None
+
+        # Empty target means world body (index -1).
+        body0_info = _get_target_body_and_local_pos(target0) if target0 else (-1, wp.vec3())
+        body1_info = _get_target_body_and_local_pos(target1) if target1 else (-1, wp.vec3())
+
+        if body0_info is None or body1_info is None:
+            failed_targets = []
+            if body0_info is None:
+                failed_targets.append(f"physics:body0='{target0}'")
+            if body1_info is None:
+                failed_targets.append(f"physics:body1='{target1}'")
+            warnings.warn(
+                f"{schema_name} on '{joint_path}' references unresolved body target(s) "
+                f"{', '.join(failed_targets)}; skipping.",
+                stacklevel=3,
+            )
+            return None, None
+
+        return body0_info, body1_info
+
     def _get_mesh_with_visual_material(prim: Usd.Prim, *, path_name: str) -> Mesh:
         """Load a renderable mesh without changing physics mass properties."""
         material_props = _get_material_props_cached(prim)
@@ -427,13 +535,10 @@ def parse_usd(
             mesh.has_inertia = physics_mesh.has_inertia
         else:
             mesh = physics_mesh.copy(recompute_inertia=False)
-        if texture:
+        if texture is not None:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
-            warnings.warn(
-                f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
-                stacklevel=2,
-            )
+            logger.info("Mesh %s: dropping texture because UVs could not be recovered.", path_name)
             mesh.texture = None
         if material_props.get("color") is not None and mesh.texture is None:
             mesh.color = material_props["color"]
@@ -445,9 +550,215 @@ def parse_usd(
             mesh.metallic = material_props["metallic"]
         return mesh
 
+    def _get_face_material_subsets(prim: Usd.Prim) -> list[Usd.Prim]:
+        """Return face-based material subsets authored directly under a mesh prim."""
+        subsets = []
+        for child in prim.GetChildren():
+            try:
+                is_subset = child.IsA(UsdGeom.Subset)
+            except Exception:
+                is_subset = False
+            if not is_subset:
+                continue
+
+            subset = UsdGeom.Subset(child)
+            element_type = subset.GetElementTypeAttr().Get()
+            if element_type != UsdGeom.Tokens.face:
+                continue
+            family_name = subset.GetFamilyNameAttr().Get()
+            if family_name and family_name != "materialBind":
+                continue
+            indices = subset.GetIndicesAttr().Get()
+            if not indices:
+                continue
+            subsets.append(child)
+        return subsets
+
+    def _get_subset_uvs(prim: Usd.Prim, used_vertices: np.ndarray, expected_count: int) -> np.ndarray | None:
+        """Return UVs for a material subset when a matching primvar is authored."""
+        max_used_vertex = int(np.max(used_vertices, initial=-1))
+        full_mesh_uvs = None
+        for primvar in UsdGeom.PrimvarsAPI(prim).GetPrimvars():
+            name = primvar.GetBaseName()
+            if not name.startswith("st"):
+                continue
+            values = primvar.Get()
+            if values is None:
+                continue
+            uvs = np.asarray(values, dtype=np.float32)
+            if primvar.IsIndexed():
+                indices = primvar.GetIndices()
+                if indices is None:
+                    continue
+                indices = np.asarray(indices, dtype=np.int32)
+                if len(indices) == expected_count:
+                    uvs = uvs[indices]
+                    if len(uvs) == expected_count:
+                        return uvs
+                    continue
+                if len(indices) > max_used_vertex:
+                    uvs = uvs[indices]
+                else:
+                    continue
+            if len(uvs) == expected_count:
+                return uvs
+            if full_mesh_uvs is None and len(uvs) > max_used_vertex:
+                full_mesh_uvs = uvs[used_vertices]
+        return full_mesh_uvs
+
+    def _make_visual_submesh(
+        mesh: Mesh,
+        triangle_indices: np.ndarray,
+        material_props: dict[str, Any],
+        *,
+        prim: Usd.Prim,
+        path_name: str,
+    ) -> Mesh | None:
+        """Create a render-only mesh slice for the selected triangle rows."""
+        if len(triangle_indices) == 0:
+            return None
+
+        triangles = mesh.indices.reshape(-1, 3)[triangle_indices]
+        used_vertices = np.unique(triangles)
+        vertex_remap = np.full(len(mesh.vertices), -1, dtype=np.int32)
+        vertex_remap[used_vertices] = np.arange(len(used_vertices), dtype=np.int32)
+
+        normals = None
+        if mesh.normals is not None and len(mesh.normals) == len(mesh.vertices):
+            normals = mesh.normals[used_vertices]
+
+        uvs = None
+        if mesh.uvs is not None and len(mesh.uvs) == len(mesh.vertices):
+            uvs = mesh.uvs[used_vertices]
+        elif material_props.get("texture") is not None:
+            uvs = _get_subset_uvs(prim, used_vertices, len(used_vertices))
+
+        submesh = Mesh(
+            mesh.vertices[used_vertices],
+            vertex_remap[triangles].reshape(-1),
+            normals=normals,
+            uvs=uvs,
+            compute_inertia=False,
+            is_solid=mesh.is_solid,
+            maxhullvert=mesh.maxhullvert,
+        )
+
+        texture = material_props.get("texture")
+        if texture:
+            submesh.texture = texture
+        if submesh.texture is not None and submesh.uvs is None:
+            logger.info("Mesh material subset %s: dropping texture because UVs could not be recovered.", path_name)
+            submesh.texture = None
+
+        color = material_props.get("color")
+        if color is not None:
+            submesh.color = color
+        elif submesh.texture is not None:
+            submesh.color = (1.0, 1.0, 1.0)
+        if material_props.get("opacity") is not None:
+            submesh.opacity = material_props["opacity"]
+        if material_props.get("roughness") is not None:
+            submesh.roughness = material_props["roughness"]
+        if material_props.get("metallic") is not None:
+            submesh.metallic = material_props["metallic"]
+        return submesh
+
+    def _get_visual_material_subset_meshes(prim: Usd.Prim) -> list[tuple[str, Mesh]]:
+        """Load one render mesh per USD material subset when subsets are authored."""
+        subsets = _get_face_material_subsets(prim)
+        if not subsets:
+            return []
+
+        mesh_schema = UsdGeom.Mesh(prim)
+        face_counts = mesh_schema.GetFaceVertexCountsAttr().Get()
+        if face_counts is None:
+            return []
+        face_counts = np.asarray(face_counts, dtype=np.int32)
+        if len(face_counts) == 0 or np.any(face_counts < 3):
+            return []
+
+        subset_props = [(str(subset.GetPath()), usd.resolve_material_properties_for_prim(subset)) for subset in subsets]
+        mesh = _get_mesh_cached(prim)
+        triangle_face_indices = np.repeat(np.arange(len(face_counts), dtype=np.int32), face_counts - 2)
+        covered_faces = np.zeros(len(face_counts), dtype=bool)
+
+        submeshes = []
+        for subset_path, material_props in subset_props:
+            # `resolve_material_properties_for_prim` does not fall back from a subset to its parent mesh
+            # (see `newton/_src/usd/utils.py` resolve_material_properties_for_prim). If a subset binds no
+            # visible material, let the uncovered-faces fallback below apply the parent mesh material
+            # instead of producing a materialless submesh and hiding the parent material on those faces.
+            if not any(value is not None for value in material_props.values()):
+                continue
+            subset = UsdGeom.Subset(stage.GetPrimAtPath(subset_path))
+            subset_indices = np.asarray(subset.GetIndicesAttr().Get(), dtype=np.int32)
+            valid = (subset_indices >= 0) & (subset_indices < len(face_counts))
+            if not np.all(valid):
+                logger.info(
+                    "Mesh material subset %s: face indices outside the mesh face range; "
+                    "out-of-range indices will be ignored.",
+                    subset_path,
+                )
+                subset_indices = subset_indices[valid]
+            if len(subset_indices) == 0:
+                continue
+
+            face_mask = np.zeros(len(face_counts), dtype=bool)
+            face_mask[subset_indices] = True
+            triangle_indices = np.nonzero(face_mask[triangle_face_indices])[0]
+            submesh = _make_visual_submesh(mesh, triangle_indices, material_props, prim=prim, path_name=subset_path)
+            if submesh is None:
+                continue
+            covered_faces[subset_indices] = True
+            submeshes.append((subset_path, submesh))
+
+        if not submeshes:
+            return []
+
+        uncovered_faces = np.nonzero(~covered_faces)[0]
+        if len(uncovered_faces) > 0:
+            face_mask = np.zeros(len(face_counts), dtype=bool)
+            face_mask[uncovered_faces] = True
+            triangle_indices = np.nonzero(face_mask[triangle_face_indices])[0]
+            fallback_mesh = _make_visual_submesh(
+                mesh,
+                triangle_indices,
+                _get_material_props_cached(prim),
+                prim=prim,
+                path_name=str(prim.GetPath()),
+            )
+            if fallback_mesh is not None:
+                submeshes.insert(0, (str(prim.GetPath()), fallback_mesh))
+
+        return submeshes
+
+    def _get_tetmesh_cached(prim: Usd.Prim) -> TetMesh:
+        """Load and cache TetMesh data to avoid repeated USD extraction."""
+        prim_path = str(prim.GetPath())
+        if prim_path not in tetmesh_cache:
+            tetmesh_cache[prim_path] = usd.get_tetmesh(prim)
+        return tetmesh_cache[prim_path]
+
+    def _is_uniform_scale(scale: wp.vec3) -> bool:
+        """Return whether a decomposed scale vector is effectively uniform."""
+        scale_np = np.array(scale, dtype=np.float32)
+        return bool(np.allclose(scale_np, scale_np[0], rtol=1e-6, atol=1e-6))
+
     def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:
         # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
         return any(material_props.get(key) is not None for key in ("texture", "opacity", "roughness", "metallic"))
+
+    def _is_effectively_visible(prim: Usd.Prim) -> bool:
+        """Return whether ``prim`` is effectively visible in USD.
+
+        A prim is effectively visible only when it is a :class:`UsdGeom.Imageable`
+        whose inherited visibility is not ``invisible``. Non-imageable prims are
+        not renderable in USD, so they are treated as not effectively visible.
+        """
+        imageable = UsdGeom.Imageable(prim)
+        if not imageable:
+            return False
+        return imageable.ComputeVisibility() != UsdGeom.Tokens.invisible
 
     bodies_with_visual_shapes: set[int] = set()
     warned_deprecated_body_armature_paths: set[str] = set()
@@ -517,7 +828,7 @@ def parse_usd(
 
         shape_id = -1
 
-        is_site = usd.has_applied_api_schema(prim, "MjcSiteAPI")
+        is_site = usd.has_applied_api_schema(prim, "NewtonSiteAPI") or usd.has_applied_api_schema(prim, "MjcSiteAPI")
 
         # Skip based on granular loading flags
         if is_site and not load_sites:
@@ -525,10 +836,11 @@ def parse_usd(
         if not is_site and not load_visual_shapes:
             return
 
+        visual_shape_cfg_for_prim = copy.copy(visual_shape_cfg)
+        visual_shape_cfg_for_prim.is_visible = is_site or _is_effectively_visible(prim)
         material_props = _get_material_props_cached(prim)
+        shape_color = material_props.get("color")
         shape_visual_kwargs = {}
-        if material_props.get("color") is not None and material_props.get("texture") is None:
-            shape_visual_kwargs["color"] = material_props["color"]
         if material_props.get("opacity") is not None:
             shape_visual_kwargs["opacity"] = material_props["opacity"]
 
@@ -542,7 +854,8 @@ def parse_usd(
                     hx=side_lengths[0] / 2,
                     hy=side_lengths[1] / 2,
                     hz=side_lengths[2] / 2,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     as_site=is_site,
                     label=path_name,
                     **shape_visual_kwargs,
@@ -555,7 +868,8 @@ def parse_usd(
                     parent_body_id,
                     xform,
                     radius,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     as_site=is_site,
                     label=path_name,
                     **shape_visual_kwargs,
@@ -572,7 +886,8 @@ def parse_usd(
                     xform=plane_xform,
                     width=width,
                     length=length,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     label=path_name,
                     **shape_visual_kwargs,
                 )
@@ -587,7 +902,8 @@ def parse_usd(
                     xform,
                     radius,
                     half_height,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     as_site=is_site,
                     label=path_name,
                     **shape_visual_kwargs,
@@ -603,7 +919,8 @@ def parse_usd(
                     xform,
                     radius,
                     half_height,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     as_site=is_site,
                     label=path_name,
                     **shape_visual_kwargs,
@@ -619,22 +936,46 @@ def parse_usd(
                     xform,
                     radius,
                     half_height,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     as_site=is_site,
                     label=path_name,
                     **shape_visual_kwargs,
                 )
             elif type_name == "mesh":
-                mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
-                shape_id = builder.add_shape_mesh(
-                    parent_body_id,
-                    xform,
-                    scale=scale,
-                    mesh=mesh,
-                    cfg=visual_shape_cfg,
-                    label=path_name,
-                    **shape_visual_kwargs,
-                )
+                subset_meshes = _get_visual_material_subset_meshes(prim)
+                if subset_meshes:
+                    for subset_path, subset_mesh in subset_meshes:
+                        subset_shape_id = builder.add_shape_mesh(
+                            parent_body_id,
+                            xform,
+                            scale=scale,
+                            mesh=subset_mesh,
+                            cfg=visual_shape_cfg_for_prim,
+                            color=None,
+                            label=subset_path,
+                        )
+                        path_shape_map[subset_path] = subset_shape_id
+                        path_shape_scale[subset_path] = scale
+                        if shape_id < 0:
+                            shape_id = subset_shape_id
+                        if verbose:
+                            print(
+                                f"Added visual shape {subset_path} ({type_name} material subset) "
+                                f"with id {subset_shape_id}."
+                            )
+                else:
+                    mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
+                    shape_id = builder.add_shape_mesh(
+                        parent_body_id,
+                        xform,
+                        scale=scale,
+                        mesh=mesh,
+                        cfg=visual_shape_cfg_for_prim,
+                        color=shape_color,
+                        label=path_name,
+                        **shape_visual_kwargs,
+                    )
             elif type_name == "particlefield3dgaussiansplat":
                 gaussian = usd.get_gaussian(prim)
                 shape_id = builder.add_shape_gaussian(
@@ -642,17 +983,22 @@ def parse_usd(
                     gaussian=gaussian,
                     xform=xform,
                     scale=scale,
-                    cfg=visual_shape_cfg,
+                    cfg=visual_shape_cfg_for_prim,
+                    color=shape_color,
                     label=path_name,
                     **shape_visual_kwargs,
                 )
-            elif len(type_name) > 0 and type_name != "xform" and verbose:
+            elif (
+                len(type_name) > 0
+                and type_name not in {"geomsubset", "material", "scope", "shader", "xform", "tetmesh"}
+                and verbose
+            ):
                 print(f"Warning: Unsupported geometry type {type_name} at {path_name} while loading visual shapes.")
 
             if shape_id >= 0:
                 path_shape_map[path_name] = shape_id
                 path_shape_scale[path_name] = scale
-                if not is_site:
+                if not is_site and visual_shape_cfg_for_prim.is_visible:
                     bodies_with_visual_shapes.add(parent_body_id)
                 if verbose:
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
@@ -1191,6 +1537,322 @@ def parse_usd(
 
         return joint_index
 
+    def parse_merged_joints(
+        joint_paths: list[str],
+        incoming_xform: wp.transform | None = None,
+    ) -> int | None:
+        """Combine multiple single-DOF joints between the same two bodies into one D6 joint.
+
+        This handles USD files where multi-DOF MuJoCo joints are represented as
+        separate PhysicsRevoluteJoint / PhysicsPrismaticJoint prims connecting the
+        same parent and child bodies.  The individual joints are merged into a
+        single :func:`~newton.ModelBuilder.add_joint_d6` call, following the same
+        pattern used by the MJCF importer.
+
+        Args:
+            joint_paths: Prim paths of the joints to merge (all must share the
+                same body pair).
+            incoming_xform: Optional world-space transform applied to the parent
+                frame of the first joint.
+
+        Returns:
+            The builder joint index of the newly created D6 joint, or ``None`` if
+            all joints in the group are disabled.
+        """
+        linear_axes: list[ModelBuilder.JointDofConfig] = []
+        angular_axes: list[ModelBuilder.JointDofConfig] = []
+        # Track prim paths and initial state separately for linear/angular DOFs
+        # because add_joint_d6 orders linear DOFs first, then angular
+        linear_prim_paths: list[str] = []
+        angular_prim_paths: list[str] = []
+        linear_initial_pos: list[float | None] = []
+        linear_initial_vel: list[float | None] = []
+        angular_initial_pos: list[float | None] = []
+        angular_initial_vel: list[float | None] = []
+        enabled_count = 0
+
+        # Find the first enabled joint to use as representative for transforms and metadata
+        first_desc = None
+        first_prim = None
+        for jp in joint_paths:
+            jd = joint_descriptions[jp]
+            if not jd.jointEnabled and only_load_enabled_joints:
+                continue
+            first_desc = jd
+            first_prim = stage.GetPrimAtPath(jd.primPath)
+            break
+        if first_desc is None:
+            return None  # all joints disabled
+
+        parent_id, child_id, parent_tf, child_tf = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
+            first_desc, path_body_map, get_transforms=True
+        )
+        if incoming_xform is not None:
+            parent_tf = incoming_xform * parent_tf
+
+        # Warn if any sibling joint has a different anchor position.
+        # Different local rotations are expected (they encode different DOF axis directions)
+        # and are handled by remapping axes into the representative frame.
+        for jp in joint_paths:
+            jd = joint_descriptions[jp]
+            if jd is first_desc:
+                continue
+            _, _, other_parent_tf, other_child_tf = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
+                jd, path_body_map, get_transforms=True
+            )
+            parent_pos_match = np.allclose(parent_tf.p, other_parent_tf.p, atol=1e-6)
+            child_pos_match = np.allclose(child_tf.p, other_child_tf.p, atol=1e-6)
+            if not (parent_pos_match and child_pos_match):
+                warnings.warn(
+                    f"Merged joint {jp} has different anchor positions than representative "
+                    f"{first_desc.primPath}; using representative positions for the D6 joint.",
+                    stacklevel=2,
+                )
+                break
+
+        # Split custom attributes into joint-level (one value per joint) and
+        # per-DOF (one value per DOF).  Joint-level attrs come from the
+        # representative prim; per-DOF attrs are collected from each sibling.
+        joint_freq_attrs = [a for a in builder_custom_attr_joint if a.frequency == AttributeFrequency.JOINT]
+        dof_freq_attrs = [
+            a
+            for a in builder_custom_attr_joint
+            if a.frequency in (AttributeFrequency.JOINT_DOF, AttributeFrequency.JOINT_COORD)
+        ]
+        joint_custom_attrs = usd.get_custom_attribute_values(first_prim, joint_freq_attrs, context={"builder": builder})
+        # Per-DOF custom attributes accumulated separately for linear / angular
+        # so we can reorder to D6 DOF order (linear first, then angular).
+        linear_dof_custom: list[dict[str, Any]] = []
+        angular_dof_custom: list[dict[str, Any]] = []
+
+        # Cache the representative parent-side rotation for axis remapping
+        rep_parent_rot = np.array(parent_tf.q, dtype=float)
+
+        for jp in joint_paths:
+            jd = joint_descriptions[jp]
+            if not jd.jointEnabled and only_load_enabled_joints:
+                continue
+            jp_prim = stage.GetPrimAtPath(jd.primPath)
+            if collect_schema_attrs:
+                R.collect_prim_attrs(jp_prim)
+
+            key = jd.type
+            if key not in (UsdPhysics.ObjectType.RevoluteJoint, UsdPhysics.ObjectType.PrismaticJoint):
+                raise ValueError(
+                    f"Cannot merge joint {jp} of type {key} into a D6 joint. "
+                    "Only RevoluteJoint and PrismaticJoint are supported for merging."
+                )
+
+            is_revolute = key == UsdPhysics.ObjectType.RevoluteJoint
+            if is_revolute:
+                limit_gains_scaling = DegreesToRadian
+            else:
+                limit_gains_scaling = 1.0
+
+            j_armature = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
+            )
+            j_friction = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
+            )
+            j_velocity_limit = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
+            )
+
+            limit_ke = R.get_value(
+                jp_prim,
+                prim_type=PrimType.JOINT,
+                key="limit_angular_ke" if is_revolute else "limit_linear_ke",
+                default=default_joint_limit_ke * limit_gains_scaling,
+                verbose=verbose,
+            )
+            limit_kd = R.get_value(
+                jp_prim,
+                prim_type=PrimType.JOINT,
+                key="limit_angular_kd" if is_revolute else "limit_linear_kd",
+                default=default_joint_limit_kd * limit_gains_scaling,
+                verbose=verbose,
+            )
+
+            limit_lower = jd.limit.lower
+            limit_upper = jd.limit.upper
+
+            # Build drive params
+            target_pos = 0.0
+            target_vel = 0.0
+            target_ke = 0.0
+            target_kd = 0.0
+            effort_limit = np.inf
+            actuator_mode = JointTargetMode.NONE
+            if jd.drive.enabled:
+                target_vel = jd.drive.targetVelocity
+                target_pos = jd.drive.targetPosition
+                target_ke = jd.drive.stiffness
+                target_kd = jd.drive.damping
+                effort_limit = jd.drive.forceLimit
+                actuator_mode = JointTargetMode.from_gains(
+                    target_ke, target_kd, force_position_velocity_actuation, has_drive=True
+                )
+
+            # Read initial joint state
+            initial_position = None
+            initial_velocity = None
+            if is_revolute:
+                initial_position = R.get_value(
+                    jp_prim, PrimType.JOINT, "angular_position", default=None, verbose=verbose
+                )
+                initial_velocity = R.get_value(
+                    jp_prim, PrimType.JOINT, "angular_velocity", default=None, verbose=verbose
+                )
+            else:
+                initial_position = R.get_value(
+                    jp_prim, PrimType.JOINT, "linear_position", default=None, verbose=verbose
+                )
+                initial_velocity = R.get_value(
+                    jp_prim, PrimType.JOINT, "linear_velocity", default=None, verbose=verbose
+                )
+
+            # Unit conversion for revolute joints
+            if is_revolute:
+                limit_lower *= DegreesToRadian
+                limit_upper *= DegreesToRadian
+                limit_ke /= DegreesToRadian
+                limit_kd /= DegreesToRadian
+                if jd.drive.enabled:
+                    target_pos *= DegreesToRadian
+                    target_vel *= DegreesToRadian
+                    target_kd /= DegreesToRadian / joint_drive_gains_scaling
+                    target_ke /= DegreesToRadian / joint_drive_gains_scaling
+                if j_velocity_limit is not None:
+                    j_velocity_limit *= DegreesToRadian
+                if initial_position is not None:
+                    initial_position *= DegreesToRadian
+
+            # Compute the DOF axis in the representative joint's frame.
+            # Each USD joint may have a different localRot that orients its fixed axis
+            # (X, Y, or Z) to the physical DOF direction.  We remap into the rep frame.
+            _, _, jp_parent_tf, _ = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
+                jd, path_body_map, get_transforms=True
+            )
+            jp_parent_rot = np.array(jp_parent_tf.q, dtype=float)
+            # q and -q represent the same rotation
+            if abs(np.dot(rep_parent_rot, jp_parent_rot)) > 1.0 - 1e-6:
+                # Same rotation — use the original axis directly
+                dof_axis = usd_axis_to_axis[jd.axis]
+            else:
+                # Different rotation — transform axis into rep frame
+                rep_q_inv = wp.quat_inverse(wp.quat(*rep_parent_rot.tolist()))
+                jp_q = wp.quat(*jp_parent_rot.tolist())
+                relative_q = wp.mul(rep_q_inv, jp_q)
+                # Axis enum value: 0=X, 1=Y, 2=Z → unit vector
+                axis_idx = int(usd_axis_to_axis[jd.axis])
+                axis_unit = [0.0, 0.0, 0.0]
+                axis_unit[axis_idx] = 1.0
+                rotated = wp.quat_rotate(relative_q, wp.vec3(axis_unit[0], axis_unit[1], axis_unit[2]))
+                dof_axis = (float(rotated[0]), float(rotated[1]), float(rotated[2]))
+
+            ax = ModelBuilder.JointDofConfig(
+                axis=dof_axis,
+                limit_lower=limit_lower,
+                limit_upper=limit_upper,
+                limit_ke=limit_ke,
+                limit_kd=limit_kd,
+                target_pos=target_pos,
+                target_vel=target_vel,
+                target_ke=target_ke,
+                target_kd=target_kd,
+                armature=j_armature,
+                friction=j_friction,
+                effort_limit=effort_limit,
+                velocity_limit=j_velocity_limit if j_velocity_limit is not None else default_joint_velocity_limit,
+                actuator_mode=actuator_mode,
+            )
+
+            # Collect per-DOF custom attributes from this sibling prim
+            sibling_dof_attrs = usd.get_custom_attribute_values(jp_prim, dof_freq_attrs, context={"builder": builder})
+
+            if is_revolute:
+                angular_axes.append(ax)
+                angular_prim_paths.append(jp)
+                angular_initial_pos.append(initial_position)
+                angular_initial_vel.append(initial_velocity)
+                angular_dof_custom.append(sibling_dof_attrs)
+            else:
+                linear_axes.append(ax)
+                linear_prim_paths.append(jp)
+                linear_initial_pos.append(initial_position)
+                linear_initial_vel.append(initial_velocity)
+                linear_dof_custom.append(sibling_dof_attrs)
+
+            enabled_count += 1
+
+        if enabled_count == 0:
+            return None
+
+        # D6 DOF order: linear first, then angular
+        dof_prim_paths = linear_prim_paths + angular_prim_paths
+        dof_initial_pos = linear_initial_pos + angular_initial_pos
+        dof_initial_vel = linear_initial_vel + angular_initial_vel
+        ordered_dof_custom = linear_dof_custom + angular_dof_custom
+
+        # Merge per-DOF custom attributes into DOF-indexed dicts for add_joint_d6.
+        # Each entry in ordered_dof_custom is a dict of {attr_key: value} from one sibling prim.
+        # We assemble {attr_key: {dof_index: value}} so _process_joint_custom_attributes
+        # assigns each DOF its own value instead of broadcasting from the representative.
+        for dof_idx, dof_attrs in enumerate(ordered_dof_custom):
+            for attr_key, value in dof_attrs.items():
+                if attr_key not in joint_custom_attrs:
+                    joint_custom_attrs[attr_key] = {}
+                existing = joint_custom_attrs[attr_key]
+                if not isinstance(existing, dict):
+                    # First per-DOF value for an attr that was already set as a scalar
+                    # from the representative — convert to a dict to allow per-DOF override.
+                    joint_custom_attrs[attr_key] = {dof_idx: value}
+                else:
+                    existing[dof_idx] = value
+
+        # Use the representative (first enabled) joint path as the D6 joint label
+        label = str(first_desc.primPath)
+
+        # Register original prim paths as DOF labels so MjcActuator targets resolve correctly
+        if "mujoco:joint_dof_label" in builder.custom_attributes:
+            joint_custom_attrs["mujoco:joint_dof_label"] = dof_prim_paths
+
+        joint_index = builder.add_joint_d6(
+            parent=parent_id,
+            child=child_id,
+            linear_axes=linear_axes if linear_axes else None,
+            angular_axes=angular_axes if angular_axes else None,
+            parent_xform=parent_tf,
+            child_xform=child_tf,
+            label=label,
+            enabled=first_desc.jointEnabled,
+            custom_attributes=joint_custom_attrs,
+        )
+
+        # Register all original joint prim paths in path_joint_map and track per-path DOF offsets
+        for jp in joint_paths:
+            path_joint_map[jp] = joint_index
+        for dof_idx, dof_path in enumerate(dof_prim_paths):
+            merged_dof_offset[dof_path] = dof_idx
+
+        # Apply initial positions/velocities
+        q_start = builder.joint_q_start[joint_index]
+        qd_start = builder.joint_qd_start[joint_index]
+        for dof_idx, (pos, vel) in enumerate(zip(dof_initial_pos, dof_initial_vel, strict=True)):
+            if pos is not None:
+                builder.joint_q[q_start + dof_idx] = pos
+            if vel is not None:
+                builder.joint_qd[qd_start + dof_idx] = vel
+
+        if verbose:
+            print(
+                f"Merged {len(joint_paths)} joints into D6 joint {joint_index}: "
+                f"{len(linear_axes)} linear + {len(angular_axes)} angular DOFs"
+            )
+
+        return joint_index
+
     # Looking for and parsing the attributes on PhysicsScene prims
     scene_attributes = {}
     physics_scene_prim = None
@@ -1271,6 +1933,9 @@ def parse_usd(
     builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.JOINT, AttributeFrequency.JOINT_DOF, AttributeFrequency.JOINT_COORD]
     )
+    builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
+        [AttributeFrequency.EQUALITY_CONSTRAINT]
+    )
     builder_custom_attr_articulation: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.ARTICULATION]
     )
@@ -1339,6 +2004,13 @@ def parse_usd(
         if warn_invalid_desc(sdf_path, desc):
             continue
         prim = stage.GetPrimAtPath(sdf_path)
+
+        def _resolve_contact_attr(key, _prim=prim):
+            val = R.get_value(_prim, prim_type=PrimType.MATERIAL, key=key, verbose=verbose)
+            if val is None:
+                return None
+            return float(val)
+
         material_specs[str(sdf_path)] = PhysicsMaterial(
             staticFriction=desc.staticFriction,
             dynamicFriction=desc.dynamicFriction,
@@ -1360,6 +2032,10 @@ def parse_usd(
             # Treat non-positive/unauthored material density as "use importer default".
             # Authored collider/body MassAPI mass+inertia is handled later.
             density=desc.density if desc.density > 0.0 else default_shape_density,
+            ke=_resolve_contact_attr("ke"),
+            kd=_resolve_contact_attr("kd"),
+            kf=_resolve_contact_attr("kf"),
+            ka=_resolve_contact_attr("ka"),
         )
 
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
@@ -1409,6 +2085,16 @@ def parse_usd(
             paths, joint_specs = value
             for path, joint_spec in zip(paths, joint_specs, strict=False):
                 joint_descriptions[str(path)] = joint_spec
+
+    mjc_equality_connect_paths: set[str] = set()
+    mjc_equality_weld_paths: set[str] = set()
+    for joint_path in joint_descriptions:
+        joint_prim = stage.GetPrimAtPath(joint_path)
+        if _has_api_schema(joint_prim, "MjcEqualityConnectAPI"):
+            mjc_equality_connect_paths.add(joint_path)
+        if _has_api_schema(joint_prim, "MjcEqualityWeldAPI"):
+            mjc_equality_weld_paths.add(joint_path)
+    mjc_equality_connect_or_weld_paths = mjc_equality_connect_paths | mjc_equality_weld_paths
 
     # Track which joints have been processed during articulation parsing.
     # This allows us to parse orphan joints (joints not included in any articulation)
@@ -1535,9 +2221,18 @@ def parse_usd(
             joint_edges: list[tuple[int, int]] = []
             # keys of joints that are excluded from the articulation (loop joints)
             joint_excluded: set[str] = set()
+            # Groups of joints that share the same body pair (multi-DOF joints from MuJoCo USD).
+            # Maps the representative joint path (first encountered) to all joint paths in the group.
+            merged_joint_groups: dict[str, list[str]] = {}
+            # Track which body pair maps to which representative joint path
+            body_pair_to_representative: dict[tuple[int, int], str] = {}
             for p in desc.articulatedJoints:
                 joint_path = str(p)
                 joint_desc = joint_descriptions[joint_path]
+                if joint_path in mjc_equality_connect_or_weld_paths:
+                    if verbose:
+                        print(f"Skipping equality connect/weld joint '{joint_path}' from articulation joint graph")
+                    continue
                 # it may be possible that a joint is filtered out in the middle of
                 # a chain of joints, which results in a disconnected graph
                 # we should raise an error in this case
@@ -1551,8 +2246,17 @@ def parse_usd(
                 if joint_desc.excludeFromArticulation:
                     joint_excluded.add(joint_path)
                 else:
-                    joint_edges.append((parent_id, child_id))
-                    joint_names.append(joint_path)
+                    body_pair = (parent_id, child_id)
+                    if body_pair in body_pair_to_representative:
+                        # Another joint between the same bodies — merge into existing group
+                        rep = body_pair_to_representative[body_pair]
+                        merged_joint_groups[rep].append(joint_path)
+                    else:
+                        # First joint for this body pair
+                        body_pair_to_representative[body_pair] = joint_path
+                        merged_joint_groups[joint_path] = [joint_path]
+                        joint_edges.append(body_pair)
+                        joint_names.append(joint_path)
 
             articulation_joint_indices = []
 
@@ -1708,6 +2412,11 @@ def parse_usd(
                                 parent_xform=parent_xform,
                             )
                             articulation_joint_indices.append(base_joint_id)
+                            group = merged_joint_groups.get(joint_names[i])
+                            if group is not None:
+                                processed_joints.update(group)
+                            else:
+                                processed_joints.add(joint_names[i])
                             continue  # Skip parsing the USD's root joint
                         # When body0 maps to world the physics API may resolve
                         # localPose0 into world space (baking the non-body prim's
@@ -1775,17 +2484,30 @@ def parse_usd(
                             else wp.transform_identity()
                         )
                         root_incoming_xform = incoming_world_xform * root_frame_xform * world_body_xform
-                        joint = parse_joint(
-                            joint_descriptions[joint_names[i]],
-                            incoming_xform=root_incoming_xform,
-                        )
+                        group = merged_joint_groups.get(joint_names[i])
+                        if group is not None and len(group) > 1:
+                            joint = parse_merged_joints(group, incoming_xform=root_incoming_xform)
+                        else:
+                            joint = parse_joint(
+                                joint_descriptions[joint_names[i]],
+                                incoming_xform=root_incoming_xform,
+                            )
                     else:
-                        joint = parse_joint(
-                            joint_descriptions[joint_names[i]],
-                        )
+                        group = merged_joint_groups.get(joint_names[i])
+                        if group is not None and len(group) > 1:
+                            joint = parse_merged_joints(group)
+                        else:
+                            joint = parse_joint(
+                                joint_descriptions[joint_names[i]],
+                            )
                     if joint is not None:
                         articulation_joint_indices.append(joint)
                         processed_joints.add(joint_names[i])
+                        # Mark all paths in the group as processed
+                        group = merged_joint_groups.get(joint_names[i])
+                        if group is not None:
+                            for gp in group:
+                                processed_joints.add(gp)
 
                 # insert loop joints
                 for joint_path in joint_excluded:
@@ -1833,6 +2555,7 @@ def parse_usd(
             and not any(re.match(p, joint_path) for p in ignore_paths)
             and str(joint_desc.body0) not in ignored_body_paths
             and str(joint_desc.body1) not in ignored_body_paths
+            and joint_path not in mjc_equality_connect_or_weld_paths
         )
         for joint_path, joint_desc in joint_descriptions.items()
     )
@@ -1857,6 +2580,10 @@ def parse_usd(
         # Skip joints that were already processed as part of an articulation
         if joint_path in processed_joints:
             continue
+        if joint_path in mjc_equality_connect_or_weld_paths:
+            if verbose:
+                print(f"Skipping equality connect/weld joint '{joint_path}' from orphan joint parsing")
+            continue
         # Skip disabled joints if only_load_enabled_joints is True
         if only_load_enabled_joints and not joint_desc.jointEnabled:
             continue
@@ -1876,7 +2603,32 @@ def parse_usd(
         if is_body_to_world and free_joints_auto_inserted and not is_fixed_joint:
             continue
         try:
-            joint_index = parse_joint(joint_desc, incoming_xform=incoming_world_xform)
+            # Body-to-world joints (the world side may be body0 or body1) have no
+            # world-side prim to inherit a frame from, and authoring tools often
+            # write the world-side localPose relative to a USD ancestor Xform
+            # instead of in world coords. Recover the missing world-side frame from
+            # the child body's world pose and the joint local poses so the joint
+            # chain FK reproduces the imported child world pose:
+            #   world_body = child_world * child_tf * inv(parent_tf)
+            # The world-side localPose cancels, so the joint anchors at the
+            # USD-authored child body pose however that pose was authored.
+            orphan_incoming_xform = incoming_world_xform
+            if is_body_to_world:
+                _, _, parent_tf_o, child_tf_o = resolve_joint_parent_child(  # pyright: ignore[reportAssignmentType]
+                    joint_desc, path_body_map, get_transforms=True
+                )
+                child_path_o = body1_path if body0_path in ("", "/") else body0_path
+                child_prim_o = stage.GetPrimAtPath(child_path_o) if child_path_o else None
+                if (
+                    parent_tf_o is not None
+                    and child_tf_o is not None
+                    and child_prim_o is not None
+                    and child_prim_o.IsValid()
+                ):
+                    child_world_xform_o = usd.get_transform(child_prim_o, local=False, xform_cache=xform_cache)
+                    world_body_xform_o = child_world_xform_o * child_tf_o * wp.transform_inverse(parent_tf_o)
+                    orphan_incoming_xform = incoming_world_xform * world_body_xform_o
+            joint_index = parse_joint(joint_desc, incoming_xform=orphan_incoming_xform)
             # Handle body-to-world FIXED joints separately to ensure proper welding.
             # Creates an articulation for the body-to-world FIXED joint (consistent with MuJoCo approach)
             if joint_index is not None and is_body_to_world and is_fixed_joint:
@@ -2019,6 +2771,8 @@ def parse_usd(
         shape_scale: wp.vec3,
         shape_src: Mesh | None,
         shape_axis=None,
+        is_solid: bool = True,
+        thickness: float = 0.0,
     ):
         """Build unit-density collider mass information from geometric shape parameters.
 
@@ -2027,7 +2781,7 @@ def parse_usd(
         properties are not available.
         """
         shape_mass, shape_com, shape_inertia = compute_inertia_shape(
-            shape_geo_type, shape_scale, shape_src, density=1.0
+            shape_geo_type, shape_scale, shape_src, density=1.0, is_solid=is_solid, thickness=thickness
         )
         if shape_mass <= 0.0:
             warnings.warn(
@@ -2105,7 +2859,6 @@ def parse_usd(
                     shape_density = material.density
                 else:
                     shape_density = default_shape_density
-                prim_and_scene = (prim, physics_scene_prim)
                 local_xform = wp.transform(shape_spec.localPos, usd.value_to_warp(shape_spec.localRot))
                 if body_id == -1:
                     shape_xform = incoming_world_xform * local_xform
@@ -2136,6 +2889,7 @@ def parse_usd(
                     gap_val = builder.default_shape_cfg.gap
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
+                material_props = _get_material_props_cached(prim)
                 collider_has_visual_material = (
                     key == UsdPhysics.ObjectType.MeshShape and _has_visual_material_properties(material_props)
                 )
@@ -2150,23 +2904,212 @@ def parse_usd(
                 collider_is_visible = (
                     show_collider_by_policy or collider_has_visual_material
                 ) and not hide_collider_for_body
+                collider_is_visible = collider_is_visible and _is_effectively_visible(prim)
 
-                shape_ke = R.get_value(
-                    prim,
-                    prim_type=PrimType.SHAPE,
-                    key="ke",
-                    verbose=verbose,
+                # Contact response precedence:
+                #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
+                _default = builder.default_shape_cfg
+                mjc_has_priority = False
+                for _r in R.resolvers:
+                    if _r.name == "mjc":
+                        mjc_has_priority = True
+                        break
+                    if _r.name == "newton":
+                        break
+                has_solref = mjc_has_priority and usd.get_attribute(prim, "mjc:solref") is not None
+                shape_contact = {}
+                for _ck in ("ke", "kd", "kf", "ka"):
+                    per_shape_val = R.get_value(prim, prim_type=PrimType.SHAPE, key=_ck, verbose=verbose)
+                    has_shape = per_shape_val is not None and math.isfinite(float(per_shape_val))
+                    mat_val = getattr(material, _ck)
+                    has_mat = mat_val is not None and math.isfinite(mat_val)
+
+                    if has_solref and _ck in ("ke", "kd") and has_shape:
+                        shape_contact[_ck] = float(per_shape_val)
+                    elif has_mat:
+                        shape_contact[_ck] = mat_val
+                    elif has_shape:
+                        shape_contact[_ck] = float(per_shape_val)
+                    else:
+                        shape_contact[_ck] = getattr(_default, _ck)
+                shape_ke = shape_contact["ke"]
+                shape_kd = shape_contact["kd"]
+                shape_kf = shape_contact["kf"]
+                shape_ka = shape_contact["ka"]
+
+                shape_color = material_props.get("color")
+
+                # SDF parameters. Applying NewtonSDFCollisionAPI is the canonical
+                # signal that SDF generation is configured for this shape.
+                has_sdf_api = prim.HasAPI("NewtonSDFCollisionAPI")
+                # NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are independent
+                # collision representations and should not be co-applied. SDF wins
+                # when both are present.
+                if has_sdf_api and prim.HasAPI("NewtonMeshCollisionAPI"):
+                    warnings.warn(
+                        f"{prim.GetPath()}: NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are "
+                        f"independent collision representations and should not be co-applied; "
+                        f"SDF configuration will be used.",
+                        stacklevel=2,
+                    )
+
+                # Resolve target_voxel_size first because it overrides
+                # sdf_max_resolution and the two are mutually exclusive in
+                # ShapeConfig.validate().
+                sdf_target_voxel_size = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_target_voxel_size", verbose=verbose
                 )
-                if shape_ke is None:
-                    shape_ke = builder.default_shape_cfg.ke
-                shape_kd = R.get_value(
-                    prim,
-                    prim_type=PrimType.SHAPE,
-                    key="kd",
-                    verbose=verbose,
+                if sdf_target_voxel_size == float("-inf"):
+                    sdf_target_voxel_size = None
+                elif sdf_target_voxel_size is not None and sdf_target_voxel_size <= 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfTargetVoxelSize={sdf_target_voxel_size!r} is invalid "
+                        f"(must be > 0); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_target_voxel_size = None
+                if sdf_target_voxel_size is None:
+                    sdf_target_voxel_size = builder.default_shape_cfg.sdf_target_voxel_size
+
+                sdf_max_resolution = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_max_resolution", verbose=verbose
                 )
-                if shape_kd is None:
-                    shape_kd = builder.default_shape_cfg.kd
+                if sdf_max_resolution == float("-inf"):
+                    sdf_max_resolution = None
+                elif sdf_max_resolution is not None and sdf_max_resolution <= 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} is invalid "
+                        f"(must be > 0); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_max_resolution = None
+                elif sdf_max_resolution is not None and sdf_max_resolution % 8 != 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} must be "
+                        f"divisible by 8 (SDF volumes are allocated in 8x8x8 tiles); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_max_resolution = None
+                if sdf_target_voxel_size is not None and sdf_max_resolution is not None:
+                    warnings.warn(
+                        f"{prim.GetPath()}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution "
+                        f"are set; sdfTargetVoxelSize takes precedence.",
+                        stacklevel=2,
+                    )
+                    sdf_max_resolution = None
+                if sdf_max_resolution is None:
+                    # When the API is applied but neither attribute is authored,
+                    # fall back to the schema default (64). When target voxel
+                    # size already drives the resolution, leave max_resolution
+                    # unset so the two don't conflict in ShapeConfig.validate().
+                    if has_sdf_api and sdf_target_voxel_size is None:
+                        sdf_max_resolution = 64
+                    else:
+                        sdf_max_resolution = builder.default_shape_cfg.sdf_max_resolution
+
+                sdf_narrow_band_inner = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_inner", verbose=verbose
+                )
+                if sdf_narrow_band_inner == float("-inf"):
+                    sdf_narrow_band_inner = None
+                sdf_narrow_band_outer = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer", verbose=verbose
+                )
+                if sdf_narrow_band_outer == float("-inf"):
+                    sdf_narrow_band_outer = None
+                default_nb = builder.default_shape_cfg.sdf_narrow_band_range
+                sdf_narrow_band_range = (
+                    sdf_narrow_band_inner if sdf_narrow_band_inner is not None else default_nb[0],
+                    sdf_narrow_band_outer if sdf_narrow_band_outer is not None else default_nb[1],
+                )
+
+                sdf_texture_format = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="sdf_texture_format", verbose=verbose
+                )
+                _valid_sdf_tex_fmts = ("float32", "uint16", "uint8")
+                if sdf_texture_format is not None and sdf_texture_format not in _valid_sdf_tex_fmts:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfTextureFormat={sdf_texture_format!r} is invalid "
+                        f"(expected one of {list(_valid_sdf_tex_fmts)}); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_texture_format = None
+                if sdf_texture_format is None:
+                    sdf_texture_format = builder.default_shape_cfg.sdf_texture_format
+
+                sdf_padding = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_padding", verbose=verbose)
+                if sdf_padding == float("-inf"):
+                    sdf_padding = None
+                elif sdf_padding is not None and sdf_padding < 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:sdfPadding={sdf_padding!r} is invalid "
+                        f"(must be >= 0); falling back to default.",
+                        stacklevel=2,
+                    )
+                    sdf_padding = None
+
+                hydroelastic_enabled = R.get_value(
+                    prim, prim_type=PrimType.SHAPE, key="hydroelastic_enabled", verbose=verbose
+                )
+                kh = R.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
+                if kh == float("-inf"):
+                    kh = None
+                elif kh is not None and kh <= 0:
+                    warnings.warn(
+                        f"{prim.GetPath()}: newton:hydroelasticStiffness={kh!r} is invalid "
+                        f"(must be > 0); falling back to default.",
+                        stacklevel=2,
+                    )
+                    kh = None
+                if hydroelastic_enabled is True:
+                    is_hydroelastic = True
+                elif hydroelastic_enabled is False:
+                    is_hydroelastic = False
+                elif has_sdf_api:
+                    # API applied but hydroelasticEnabled unauthored -> schema default False, not builder default.
+                    is_hydroelastic = False
+                else:
+                    is_hydroelastic = builder.default_shape_cfg.is_hydroelastic
+                if kh is None:
+                    kh = builder.default_shape_cfg.kh
+
+                # Hydroelastic meshes need an SDF source. For primitives, a texture
+                # SDF is generated from a synthesized watertight mesh at finalize(),
+                # but meshes require either an attached mesh.sdf or a
+                # resolution/voxel_size so one can be built deferred. Warn and
+                # disable hydroelastic on this shape rather than aborting the whole
+                # import — typically reached when newton:hydroelasticEnabled=true
+                # is authored without applying NewtonSDFCollisionAPI.
+                if (
+                    is_hydroelastic
+                    and key == UsdPhysics.ObjectType.MeshShape
+                    and sdf_max_resolution is None
+                    and sdf_target_voxel_size is None
+                ):
+                    warnings.warn(
+                        f"{prim.GetPath()}: hydroelastic mesh requires newton:sdfMaxResolution "
+                        f"or newton:sdfTargetVoxelSize so an SDF can be generated; "
+                        f"disabling hydroelastic for this shape.",
+                        stacklevel=2,
+                    )
+                    is_hydroelastic = False
+                # Mass model and shell thickness (resolved across Newton / MuJoCo schemas)
+                mass_model = R.get_value(prim, PrimType.SHAPE, "mass_model", default="solid")
+                shape_is_solid = mass_model != "shell"
+                shell_thickness_val = R.get_value(prim, PrimType.SHAPE, "shell_thickness")
+                # When shell thickness is authored, pass it as margin so compute_inertia_shape
+                # uses the correct thickness. The real collision margin is restored after add_shape.
+                if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)):
+                    if float(shell_thickness_val) >= 0.0:
+                        inertia_margin = float(shell_thickness_val)
+                    else:
+                        warnings.warn(
+                            f"Shape {path}: negative shell thickness {shell_thickness_val}; falling back to margin.",
+                            stacklevel=2,
+                        )
+                        inertia_margin = margin_val
+                else:
+                    inertia_margin = margin_val
 
                 shape_params = {
                     "body": body_id,
@@ -2174,13 +3117,9 @@ def parse_usd(
                     "cfg": ModelBuilder.ShapeConfig(
                         ke=shape_ke,
                         kd=shape_kd,
-                        kf=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_kf", builder.default_shape_cfg.kf
-                        ),
-                        ka=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_ka", builder.default_shape_cfg.ka
-                        ),
-                        margin=margin_val,
+                        kf=shape_kf,
+                        ka=shape_ka,
+                        margin=inertia_margin,
                         gap=gap_val,
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
@@ -2189,9 +3128,18 @@ def parse_usd(
                         density=shape_density,
                         collision_group=collision_group,
                         is_visible=collider_is_visible,
+                        sdf_max_resolution=sdf_max_resolution,
+                        sdf_narrow_band_range=sdf_narrow_band_range,
+                        sdf_target_voxel_size=sdf_target_voxel_size,
+                        sdf_texture_format=sdf_texture_format,
+                        sdf_padding=sdf_padding,
+                        is_hydroelastic=is_hydroelastic,
+                        kh=kh,
+                        is_solid=shape_is_solid,
                     ),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,
+                    "color": shape_color,
                 }
                 if collider_is_visible:
                     if material_props.get("color") is not None and material_props.get("texture") is None:
@@ -2269,24 +3217,54 @@ def parse_usd(
                         default=mesh_maxhullvert,
                         verbose=verbose,
                     )
+                    # add_shape_mesh() rejects SDF cfg fields on meshes; strip them and
+                    # write the SDF intent to the builder lists, deferring the build to finalize().
+                    mesh_shape_params = dict(shape_params)
+                    mesh_shape_params["cfg"] = replace(
+                        shape_params["cfg"],
+                        sdf_max_resolution=None,
+                        sdf_target_voxel_size=None,
+                        sdf_narrow_band_range=(-0.1, 0.1),
+                        sdf_texture_format="uint16",
+                        sdf_padding=None,
+                        is_hydroelastic=False,
+                    )
                     shape_id = builder.add_shape_mesh(
                         scale=wp.vec3(*shape_spec.meshScale),
                         mesh=mesh,
-                        **shape_params,
+                        **mesh_shape_params,
                     )
+                    builder.shape_sdf_max_resolution[shape_id] = sdf_max_resolution
+                    builder.shape_sdf_target_voxel_size[shape_id] = sdf_target_voxel_size
+                    builder.shape_sdf_narrow_band_range[shape_id] = sdf_narrow_band_range
+                    builder.shape_sdf_texture_format[shape_id] = sdf_texture_format
+                    builder.shape_sdf_padding[shape_id] = sdf_padding
+                    # kh is a material param; persist regardless of hydro state.
+                    builder.shape_material_kh[shape_id] = kh
+                    if is_hydroelastic:
+                        builder.shape_flags[shape_id] |= ShapeFlags.HYDROELASTIC
                     if not skip_mesh_approximation:
                         approximation = usd.get_attribute(prim, "physics:approximation", None)
                         if approximation is not None:
-                            remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
-                            if remeshing_method is None:
-                                if verbose:
-                                    print(
-                                        f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
-                                    )
+                            if has_sdf_api and approximation.lower() != "none":
+                                # physics:approximation belongs to PhysicsMeshCollisionAPI;
+                                # it has no meaning on a NewtonSDFCollisionAPI prim.
+                                warnings.warn(
+                                    f"{prim.GetPath()}: physics:approximation={approximation!r} is "
+                                    f"ignored on a shape with NewtonSDFCollisionAPI applied.",
+                                    stacklevel=2,
+                                )
                             else:
-                                if remeshing_method not in remeshing_queue:
-                                    remeshing_queue[remeshing_method] = []
-                                remeshing_queue[remeshing_method].append(shape_id)
+                                remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
+                                if remeshing_method is None:
+                                    if verbose:
+                                        print(
+                                            f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
+                                        )
+                                else:
+                                    if remeshing_method not in remeshing_queue:
+                                        remeshing_queue[remeshing_method] = []
+                                    remeshing_queue[remeshing_method].append(shape_id)
 
                 elif key == UsdPhysics.ObjectType.PlaneShape:
                     # Warp uses +Z convention for planes
@@ -2304,6 +3282,12 @@ def parse_usd(
 
                 path_shape_map[path] = shape_id
                 path_shape_scale[path] = scale
+
+                # Restore the real collision margin when shell thickness was substituted.
+                # TODO: Consider adding a dedicated shell_thickness field to ShapeConfig
+                # so inertia thickness and collision margin don't share the same slot.
+                if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)) and shape_id >= 0:
+                    builder.shape_margin[shape_id] = margin_val
 
                 if body_path in bodies_requiring_mass_properties_fallback:
                     # Prepare collider mass information for ComputeMassProperties fallback path.
@@ -2353,6 +3337,8 @@ def parse_usd(
                                 shape_scale,
                                 shape_src,
                                 shape_axis,
+                                is_solid=shape_is_solid,
+                                thickness=inertia_margin,
                             )
                         if mass_info is not None:
                             rigid_body_mass_info_map[path] = mass_info
@@ -2390,6 +3376,58 @@ def parse_usd(
                     for shape2 in builder.body_shapes[body2]:
                         builder.add_shape_collision_filter_pair(shape1, shape2)
 
+    root_prim = stage.GetPrimAtPath(root_path)
+    if root_prim and root_prim.IsValid():
+        for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
+            if not prim.IsA(UsdGeom.TetMesh):
+                continue
+
+            path = str(prim.GetPath())
+            if path.startswith("/Prototypes/"):
+                continue
+            if any(re.match(pattern, path) for pattern in ignore_paths):
+                continue
+
+            if collect_schema_attrs:
+                R.collect_prim_attrs(prim)
+
+            tetmesh = _get_tetmesh_cached(prim)
+            tetmesh_for_builder = tetmesh
+            if tetmesh.custom_attributes:
+                filtered_custom_attributes = {
+                    k: v for k, v in tetmesh.custom_attributes.items() if k in builder.custom_attributes
+                }
+                if len(filtered_custom_attributes) != len(tetmesh.custom_attributes):
+                    # Preserve the cached TetMesh while keeping add_usd's
+                    # current behavior of dropping unregistered import attrs.
+                    tetmesh_for_builder = copy.copy(tetmesh)
+                    tetmesh_for_builder.custom_attributes = filtered_custom_attributes
+
+            soft_mesh_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
+            soft_mesh_pos, soft_mesh_rot, soft_mesh_scale = wp.transform_decompose(soft_mesh_mat)
+
+            add_soft_mesh_kwargs = {
+                "pos": soft_mesh_pos,
+                "rot": soft_mesh_rot,
+                "scale": 1.0,
+                "vel": wp.vec3(0.0, 0.0, 0.0),
+                "mesh": tetmesh_for_builder,
+                "label": path,
+            }
+            if _is_uniform_scale(soft_mesh_scale):
+                add_soft_mesh_kwargs["scale"] = float(np.array(soft_mesh_scale, dtype=np.float32)[0])
+            else:
+                add_soft_mesh_kwargs["vertices"] = tetmesh_for_builder.vertices * np.array(
+                    soft_mesh_scale, dtype=np.float32
+                )
+
+            builder.add_soft_mesh(**add_soft_mesh_kwargs)
+
+            if verbose:
+                print(
+                    f"Added soft mesh {path} with {tetmesh.vertex_count} vertices and {tetmesh.tet_count} tetrahedra."
+                )
+
     # Load Gaussian splat prims that weren't already captured as children of rigid bodies.
     if load_visual_shapes:
         prims = iter(Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()))
@@ -2412,16 +3450,20 @@ def parse_usd(
 
             body_id = -1
 
-            prim_world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
+            prim_world_mat = _get_prim_world_mat(gaussian_prim, None, incoming_world_xform)
 
             g_pos, g_rot, g_scale = wp.transform_decompose(prim_world_mat)
             gaussian = usd.get_gaussian(gaussian_prim)
+            splat_cfg = copy.copy(visual_shape_cfg)
+            splat_cfg.is_visible = _is_effectively_visible(gaussian_prim)
+            splat_material_props = _get_material_props_cached(gaussian_prim)
             shape_id = builder.add_shape_gaussian(
                 body_id,
                 gaussian=gaussian,
                 xform=wp.transform(g_pos, g_rot),
                 scale=g_scale,
-                cfg=visual_shape_cfg,
+                cfg=splat_cfg,
+                color=splat_material_props.get("color"),
                 label=gaussian_path,
             )
             path_shape_map[gaussian_path] = shape_id
@@ -2472,6 +3514,43 @@ def parse_usd(
             has_authored_inertia = mass_api.GetDiagonalInertiaAttr().HasAuthoredValue()
             has_authored_com = mass_api.GetCenterOfMassAttr().HasAuthoredValue()
 
+            # newton:inertia (compact 6-element tensor) overrides physics:diagonalInertia + physics:principalAxes.
+            inertia_tensor_val = (
+                usd.get_attribute(prim, "newton:inertia") if usd.has_applied_api_schema(prim, "NewtonMassAPI") else None
+            )
+            has_inertia_tensor = inertia_tensor_val is not None
+            if has_inertia_tensor:
+                if len(inertia_tensor_val) != 6:
+                    warnings.warn(
+                        f"Body {body_path}: newton:inertia has {len(inertia_tensor_val)} elements, expected 6. Ignoring.",
+                        stacklevel=2,
+                    )
+                    has_inertia_tensor = False
+                elif not all(math.isfinite(v) for v in inertia_tensor_val):
+                    warnings.warn(
+                        f"Body {body_path}: newton:inertia contains non-finite values. Ignoring.",
+                        stacklevel=2,
+                    )
+                    has_inertia_tensor = False
+                elif any(v < 0.0 for v in inertia_tensor_val[:3]):
+                    warnings.warn(
+                        f"Body {body_path}: newton:inertia has negative diagonal elements. Ignoring.",
+                        stacklevel=2,
+                    )
+                    has_inertia_tensor = False
+                else:
+                    ixx, iyy, izz, ixy, ixz, iyz = inertia_tensor_val
+                    inertia_np = np.array([[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]], dtype=np.float64)
+                    if np.any(np.linalg.eigvalsh(inertia_np) < 0.0):
+                        warnings.warn(
+                            f"Body {body_path}: newton:inertia is not positive semidefinite. Ignoring.",
+                            stacklevel=2,
+                        )
+                        has_inertia_tensor = False
+                    else:
+                        has_authored_inertia = True
+                        inertia_tensor = wp.mat33(ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz)
+
             # Compute baseline mass properties via mass computer when at least one property needs resolving.
             if not (has_authored_mass and has_authored_inertia and has_authored_com):
                 rigid_body_api = UsdPhysics.RigidBodyAPI(prim)
@@ -2501,11 +3580,13 @@ def parse_usd(
                     cmp_i_diag = Gf.Vec3f(0.0, 0.0, 0.0)
                     cmp_principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
 
-            # Inertia: authored diagonal + principal axes take precedence over mass computer.
+            # Inertia: newton:inertia > physics:diagonalInertia + physics:principalAxes > mass computer.
             # When mass is authored but inertia is not, keep accumulated inertia
             # (scaled to match authored mass below) instead of using mass computer
             # inertia, which may already reflect the authored mass.
-            if has_authored_inertia:
+            if has_inertia_tensor:
+                i_diag_np = None  # skip diagonal path; full matrix set below
+            elif has_authored_inertia:
                 i_diag_np = np.array(mass_api.GetDiagonalInertiaAttr().Get(), dtype=np.float32)
                 if np.any(i_diag_np < 0.0):
                     warnings.warn(
@@ -2527,7 +3608,14 @@ def parse_usd(
                 # Mass authored, inertia not: keep accumulated inertia and scale
                 # to match authored mass in the mass block below.
                 i_diag_np = None
-            if i_diag_np is not None and np.linalg.norm(i_diag_np) > 0.0:
+            if has_inertia_tensor:
+                builder.body_inertia[body_id] = inertia_tensor
+                det = np.linalg.det(np.array(inertia_tensor).reshape(3, 3))
+                if det > 0.0:
+                    builder.body_inv_inertia[body_id] = wp.inverse(inertia_tensor)
+                else:
+                    builder.body_inv_inertia[body_id] = wp.mat33(0.0)
+            elif i_diag_np is not None and np.linalg.norm(i_diag_np) > 0.0:
                 i_rot = usd.value_to_warp(principal_axes)
                 rot = np.array(wp.quat_to_matrix(i_rot), dtype=np.float32).reshape(3, 3)
                 inertia = rot @ np.diag(i_diag_np) @ rot.T
@@ -2579,7 +3667,7 @@ def parse_usd(
                     _, _, I_default = compute_inertia_sphere(density, radius)
 
                     # Apply parallel axis theorem if center of mass is offset
-                    com = builder.body_com[body_id]
+                    com = np.array(builder.body_com[body_id], dtype=np.float32)
                     if np.linalg.norm(com) > 1e-6:
                         # I = I_cm + m * d² where d is distance from COM to body origin
                         d_squared = np.sum(com**2)
@@ -2628,17 +3716,240 @@ def parse_usd(
         else:
             builder._add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
 
+    # Parse MjcEquality constraints *before* collapsing fixed joints so that the
+    # builder's collapse logic can remap body/joint indices and adjust anchors/relposes
+    # for any bodies that get merged.
+    def _parse_mjc_equality_constraints():
+        local_builder_custom_attr_eq = builder_custom_attr_eq
+        if (
+            convert_mjc_equality_constraints
+            and "mujoco:equality_constraint_target_kind" not in builder.custom_attributes
+        ):
+            from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
+
+            SolverMuJoCo.register_custom_attributes(builder)
+            local_builder_custom_attr_eq = builder.get_custom_attributes_by_frequency(
+                [AttributeFrequency.EQUALITY_CONSTRAINT]
+            )
+
+        def add_converted_loop_joint(
+            eq_type: EqType,
+            body1: int,
+            body2: int,
+            anchor: wp.vec3,
+            relpose: wp.transform | None,
+            torquescale: float,
+            joint_path: str,
+            enabled: bool,
+            custom_attrs: dict[str, Any],
+        ) -> None:
+            try:
+                _, joint_idx = mjc_add_equality_loop_joint(
+                    builder,
+                    eq_type,
+                    body1,
+                    body2,
+                    anchor,
+                    relpose,
+                    torquescale,
+                    joint_path,
+                    enabled,
+                    custom_attrs,
+                )
+            except ValueError:
+                warnings.warn(
+                    f"MuJoCo equality '{joint_path}' has no valid body reference; skipping.",
+                    stacklevel=2,
+                )
+                return
+
+            path_joint_map[joint_path] = joint_idx
+
+        for joint_path, joint_desc in joint_descriptions.items():
+            joint_prim = stage.GetPrimAtPath(joint_path)
+            if not joint_prim or not joint_prim.IsValid():
+                continue
+            if any(re.match(p, joint_path) for p in ignore_paths):
+                continue
+
+            is_connect = joint_path in mjc_equality_connect_paths
+            is_weld = joint_path in mjc_equality_weld_paths
+            is_eq_joint = _has_api_schema(joint_prim, "MjcEqualityJointAPI")
+            if not (is_connect or is_weld or is_eq_joint):
+                continue
+
+            if only_load_enabled_joints and not joint_desc.jointEnabled:
+                continue
+
+            if collect_schema_attrs and (is_connect or is_weld):
+                R.collect_prim_attrs(joint_prim)
+
+            eq_custom_attrs = usd.get_custom_attribute_values(
+                joint_prim, local_builder_custom_attr_eq, context={"builder": builder}
+            )
+            enabled = bool(joint_desc.jointEnabled)
+
+            if is_connect or is_weld:
+                schema_name = "MjcEqualityConnectAPI" if is_connect else "MjcEqualityWeldAPI"
+                body0_info, body1_info = _resolve_equality_bodies(joint_prim, joint_path, schema_name)
+                if body0_info is None or body1_info is None:
+                    continue
+
+                body0_idx, site0_local_pos = body0_info
+                body1_idx, site1_local_pos = body1_info
+                target0 = _get_first_target(joint_prim, "physics:body0")
+                target1 = _get_first_target(joint_prim, "physics:body1")
+
+                if is_connect:
+                    # Use the authored localPose0 when target0 is a known body or the world
+                    # (empty target means world); fall back to the site-derived local position
+                    # only when target0 is a site prim that is not itself a body.
+                    anchor = (
+                        wp.vec3(*joint_desc.localPose0Position)
+                        if (target0 in ("", "/") or target0 in path_body_map)
+                        else site0_local_pos
+                    )
+                    if convert_mjc_equality_constraints:
+                        add_converted_loop_joint(
+                            EqType.CONNECT,
+                            body0_idx,
+                            body1_idx,
+                            anchor,
+                            None,
+                            0.0,
+                            joint_path,
+                            enabled,
+                            eq_custom_attrs,
+                        )
+                    else:
+                        builder.add_equality_constraint_connect(
+                            body1=body0_idx,
+                            body2=body1_idx,
+                            anchor=anchor,
+                            label=joint_path,
+                            enabled=enabled,
+                            custom_attributes=eq_custom_attrs,
+                        )
+                else:
+                    local_rot0 = usd.value_to_warp(joint_desc.localPose0Orientation)
+                    local_rot1 = usd.value_to_warp(joint_desc.localPose1Orientation)
+                    local_pos0 = wp.vec3(*joint_desc.localPose0Position)
+                    local_pos1 = wp.vec3(*joint_desc.localPose1Position)
+                    # MuJoCo weld anchors are authored on the body1 side. Direct
+                    # body/world targets use localPose1; site targets use the site position.
+                    anchor = (
+                        wp.vec3(*joint_desc.localPose1Position)
+                        if (target1 in ("", "/") or target1 in path_body_map)
+                        else site1_local_pos
+                    )
+                    relpose_rot = local_rot0 * wp.quat_inverse(local_rot1)
+                    relpose_pos = local_pos0 - wp.quat_rotate(relpose_rot, local_pos1)
+                    torquescale_attr = joint_prim.GetAttribute("mjc:torqueScale")
+                    torquescale = (
+                        float(torquescale_attr.Get()) if torquescale_attr and torquescale_attr.HasValue() else 1.0
+                    )
+                    relpose = wp.transform(relpose_pos, relpose_rot)
+                    if convert_mjc_equality_constraints:
+                        add_converted_loop_joint(
+                            EqType.WELD,
+                            body0_idx,
+                            body1_idx,
+                            anchor,
+                            relpose,
+                            torquescale,
+                            joint_path,
+                            enabled,
+                            eq_custom_attrs,
+                        )
+                    else:
+                        builder.add_equality_constraint_weld(
+                            body1=body0_idx,
+                            body2=body1_idx,
+                            anchor=anchor,
+                            relpose=relpose,
+                            torquescale=torquescale,
+                            label=joint_path,
+                            enabled=enabled,
+                            custom_attributes=eq_custom_attrs,
+                        )
+                continue
+
+            if is_eq_joint:
+                joint1_idx = path_joint_map.get(joint_path)
+                if joint1_idx is None:
+                    warnings.warn(
+                        f"MjcEqualityJointAPI on '{joint_path}' was not found in path_joint_map; skipping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                target_rel = joint_prim.GetRelationship("mjc:target")
+                targets = target_rel.GetTargets() if target_rel else []
+                if not targets:
+                    warnings.warn(
+                        f"MjcEqualityJointAPI on '{joint_path}' has no mjc:target relationship; skipping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                target_path = str(targets[0])
+                joint2_idx = path_joint_map.get(target_path)
+                if joint2_idx is None:
+                    warnings.warn(
+                        f"MjcEqualityJointAPI on '{joint_path}' references '{target_path}' which was not found in path_joint_map; skipping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                polycoef = []
+                for attr_name, default in (
+                    ("mjc:coef0", 0.0),
+                    ("mjc:coef1", 1.0),
+                    ("mjc:coef2", 0.0),
+                    ("mjc:coef3", 0.0),
+                    ("mjc:coef4", 0.0),
+                ):
+                    attr = joint_prim.GetAttribute(attr_name)
+                    polycoef.append(float(attr.Get()) if attr and attr.HasValue() else default)
+
+                if convert_mjc_equality_constraints:
+                    if mjc_polycoef_has_higher_order(polycoef):
+                        warnings.warn(
+                            f"Warning: Joint equality '{joint_path}' uses higher-order polycoef terms. "
+                            "They are preserved for SolverMuJoCo, but generic Newton mimic constraints use "
+                            "only coef0/coef1.",
+                            stacklevel=2,
+                        )
+                    mjc_add_equality_mimic(
+                        builder,
+                        joint1_idx,
+                        joint2_idx,
+                        polycoef,
+                        joint_path,
+                        enabled,
+                        eq_custom_attrs,
+                    )
+                else:
+                    builder.add_equality_constraint_joint(
+                        joint1=joint1_idx,
+                        joint2=joint2_idx,
+                        polycoef=polycoef,
+                        label=joint_path,
+                        enabled=enabled,
+                        custom_attributes=eq_custom_attrs,
+                    )
+
+    _parse_mjc_equality_constraints()
+
     # collapsing fixed joints to reduce the number of simulated bodies connected by fixed joints.
     collapse_results = None
     path_body_relative_transform = {}
+    builder_joint_labels_before_collapse = list(builder.joint_label)
     if scene_attributes.get("newton:collapse_fixed_joints", collapse_fixed_joints):
         collapse_results = builder.collapse_fixed_joints()
         body_merged_parent = collapse_results["body_merged_parent"]
         body_merged_transform = collapse_results["body_merged_transform"]
         body_remap = collapse_results["body_remap"]
-        # remap body ids in articulation bodies
-        for art_id, bodies in articulation_bodies.items():
-            articulation_bodies[art_id] = [body_remap[b] for b in bodies if b in body_remap]
 
         for path, body_id in path_body_map.items():
             if body_id in body_remap:
@@ -2654,7 +3965,21 @@ def parse_usd(
             path_body_map[path] = new_id
 
         # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
-        path_joint_map = {label: idx for idx, label in enumerate(builder.joint_label)}
+        # First rebuild the canonical label→index map, then re-add merged joint aliases.
+        new_label_to_idx = {label: idx for idx, label in enumerate(builder.joint_label)}
+        old_path_joint_map = path_joint_map
+        path_joint_map = dict(new_label_to_idx)
+        for path, old_idx in old_path_joint_map.items():
+            if path in path_joint_map:
+                continue  # already mapped via joint_label
+            # Find the new index for this merged alias via the representative label
+            old_label = (
+                builder_joint_labels_before_collapse[old_idx]
+                if old_idx < len(builder_joint_labels_before_collapse)
+                else None
+            )
+            if old_label is not None and old_label in new_label_to_idx:
+                path_joint_map[path] = new_label_to_idx[old_label]
 
     # Mimic constraints from PhysxMimicJointAPI (run after collapse so joint indices are final).
     # PhysxMimicJointAPI is an instance-applied schema (e.g. PhysxMimicJointAPI:rotZ)
@@ -2669,6 +3994,9 @@ def parse_usd(
 
         # Skip if NewtonMimicAPI is present — it takes precedence over PhysxMimicJointAPI.
         if usd.has_applied_api_schema(joint_prim, "NewtonMimicAPI"):
+            continue
+        # Skip if MjcEqualityJointAPI is present — it creates equality constraints, not mimic.
+        if _has_api_schema(joint_prim, "MjcEqualityJointAPI"):
             continue
 
         schemas_listop = joint_prim.GetMetadata("apiSchemas")
@@ -2738,6 +4066,8 @@ def parse_usd(
         joint_prim = stage.GetPrimAtPath(joint_path)
         if not joint_prim.IsValid() or not joint_prim.HasAPI("NewtonMimicAPI"):
             continue
+        if _has_api_schema(joint_prim, "MjcEqualityJointAPI"):
+            continue
         mimic_enabled = usd.get_attribute(joint_prim, "newton:mimicEnabled", default=True)
         if not mimic_enabled:
             continue
@@ -2774,35 +4104,65 @@ def parse_usd(
         )
 
     # Parse Newton actuator prims from the USD stage.
-    try:
-        from newton_actuators import parse_actuator_prim  # noqa: PLC0415
-    except ImportError:
-        parse_actuator_prim = None
+    from ..actuators.delay import Delay  # noqa: PLC0415
+    from ..actuators.usd_parser import parse_actuator_prim  # noqa: PLC0415
 
     actuator_count = 0
-    if parse_actuator_prim is not None:
-        path_to_dof = {
-            path: builder.joint_qd_start[idx]
-            for path, idx in path_joint_map.items()
-            if idx < len(builder.joint_qd_start)
-        }
-        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
-            parsed = parse_actuator_prim(prim)
-            if parsed is None:
-                continue
-            dof_indices = [path_to_dof[p] for p in parsed.target_paths if p in path_to_dof]
-            if dof_indices:
-                builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
-                actuator_count += 1
-    else:
-        # TODO: Replace this string-based type name check with a proper schema query
-        # once the Newton actuator USD schema is merged
-        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
-            if prim.GetTypeName() == "Actuator":
-                raise ImportError(
-                    f"USD stage contains actuator prims (e.g. {prim.GetPath()}) but newton-actuators is not installed. "
-                    "Install with: pip install newton[sim]"
-                )
+    path_to_dof = {
+        path: builder.joint_qd_start[idx] + merged_dof_offset.get(path, 0)
+        for path, idx in path_joint_map.items()
+        if idx < len(builder.joint_qd_start)
+    }
+    path_to_coord = {
+        path: builder.joint_q_start[idx] + merged_dof_offset.get(path, 0)
+        for path, idx in path_joint_map.items()
+        if idx < len(builder.joint_q_start)
+    }
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+        prim_path = str(prim.GetPath())
+        if any(re.match(pattern, prim_path) for pattern in ignore_paths):
+            continue
+        parsed = parse_actuator_prim(prim)
+        if parsed is None:
+            continue
+        target_path = parsed.target_path
+        if target_path not in path_to_dof:
+            raise ValueError(
+                f"Actuator prim {prim.GetPath()} targets '{target_path}' which does not resolve to a known joint DOF"
+            )
+        joint_idx = path_joint_map[target_path]
+        dof_start = builder.joint_qd_start[joint_idx]
+        next_start = (
+            builder.joint_qd_start[joint_idx + 1]
+            if joint_idx + 1 < len(builder.joint_qd_start)
+            else builder.joint_dof_count
+        )
+        if next_start - dof_start != 1:
+            raise ValueError(
+                f"Actuator prim {prim.GetPath()} targets '{target_path}' which has "
+                f"{next_start - dof_start} DOF(s); only 1-DOF joints (Revolute/Prismatic) are supported"
+            )
+        dof_index = path_to_dof[target_path]
+        coord_index = path_to_coord.get(target_path)
+        pos_index = coord_index if coord_index is not None and coord_index != dof_index else None
+
+        delay_val = None
+        clamping_specs = []
+        for comp_class, comp_kwargs in parsed.component_specs:
+            if comp_class is Delay:
+                delay_val = comp_kwargs.get("delay_steps")
+            else:
+                clamping_specs.append((comp_class, comp_kwargs))
+
+        builder.add_actuator(
+            parsed.controller_class,
+            index=dof_index,
+            clamping=clamping_specs if clamping_specs else None,
+            delay_steps=delay_val,
+            pos_index=pos_index,
+            **parsed.controller_kwargs,
+        )
+        actuator_count += 1
     if verbose and actuator_count > 0:
         print(f"Added {actuator_count} actuator(s) from USD")
 
@@ -2828,7 +4188,7 @@ def parse_usd(
     }
 
     # Process custom frequencies with USD prim filters
-    # Collect frequencies with filters and their attributes, then traverse stage once
+    # Collect frequencies with filters and their attributes, then traverse the imported subtree once
     frequencies_with_filters = []
     for freq_key, freq_obj in builder.custom_frequencies.items():
         if freq_obj.usd_prim_filter is None:
@@ -2838,10 +4198,10 @@ def parse_usd(
             continue
         frequencies_with_filters.append((freq_key, freq_obj, freq_attrs))
 
-    # Traverse stage once and check all filters for each prim
+    # Traverse the requested root subtree once and check all filters for each prim
     # Use TraverseInstanceProxies to include prims under instanceable prims
     if frequencies_with_filters:
-        for prim in stage.Traverse(Usd.TraverseInstanceProxies()):
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()):
             for freq_key, freq_obj, freq_attrs in frequencies_with_filters:
                 # Build per-frequency callback context and pass the same object to
                 # usd_prim_filter and usd_entry_expander.
@@ -2889,6 +4249,135 @@ def parse_usd(
                 builder.add_custom_values(**values_dict)
                 if verbose:
                     print(f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()}")
+
+    # USD MjcActuator does not preserve the original MJCF authoring tag:
+    # MuJoCo's compiler expands <position>/<velocity> shortcuts into raw
+    # gain/bias/dyntype fields before USD export, so a <position kp=K> and a
+    # hand-written <general> with the same gains produce bit-identical prims.
+    # We can't recover the author's intent, so we fix a contract:
+    #
+    #   USD MjcActuator rows targeting a joint DOF with the position/velocity
+    #   shape and default dyntype/gaintype/gear are imported as JOINT_TARGET
+    #   and driven by Control.joint_target_q / joint_target_qd (or the legacy
+    #   joint_target_pos / joint_target_vel aliases under the DOF layout).
+    #
+    # Rows that author non-default dyntype (filter, integrator, ...), gaintype,
+    # gear, or carry an unresolved dampratio placeholder (positive biasprm[2])
+    # stay CTRL_DIRECT, because JOINT_TARGET would silently drop those features
+    # when _init_actuators rebuilds the MuJoCo actuators. Tendon/site/body
+    # targets and synthesized per-axis spherical DOF labels also stay
+    # CTRL_DIRECT (they don't appear in path_to_dof).
+    #
+    # Note: per-axis prim paths from joints that were merged into a D6 (the
+    # cycle-detection fix from #2557) ARE in path_to_dof and map to single
+    # DOFs of the merged joint, so they convert just like single-DOF
+    # revolutes -- mirroring how the MJCF importer uses mjcf_joint_name_to_dof
+    # to target specific DOFs in combined joints (see import_mjcf.py).
+    if "mujoco:actuator_target_label" in builder.custom_attributes:
+        mjc_actuator_count = builder._custom_frequency_counts.get("mujoco:actuator", 0)
+    else:
+        mjc_actuator_count = 0
+
+    if mjc_actuator_count > 0:
+        # Lazy imports: only needed when MuJoCo custom attributes are registered
+        # (i.e. SolverMuJoCo is in use), and avoids a top-level mujoco dependency
+        # for USD parsing in non-MuJoCo configurations.
+        import mujoco
+
+        from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
+
+        biastype_affine = int(mujoco.mjtBias.mjBIAS_AFFINE)
+        dyntype_none = int(mujoco.mjtDyn.mjDYN_NONE)
+        gaintype_fixed = int(mujoco.mjtGain.mjGAIN_FIXED)
+        ctrl_source_joint_target = int(SolverMuJoCo.CtrlSource.JOINT_TARGET)
+
+        def _row(key: str, row: int) -> Any:
+            """Row value from a custom-frequency attribute, falling back to its default."""
+            attr = builder.custom_attributes[key]
+            value = attr.values[row] if row < len(attr.values) else None
+            return attr.default if value is None else value
+
+        autolimits = bool(_row("mujoco:autolimits", 0))
+        converted = 0
+
+        for row in range(mjc_actuator_count):
+            target_path = _row("mujoco:actuator_target_label", row)
+            dof = path_to_dof.get(target_path) if target_path else None
+            if dof is None:
+                continue
+
+            # Convert only when JOINT_TARGET would not silently drop semantically
+            # important authored features. _init_actuators rebuilds JOINT_TARGET
+            # actuators with default dyntype/gaintype/biastype/gear, so non-default
+            # values for those force the actuator to stay CTRL_DIRECT.
+            #
+            # Authored ctrlrange/forcerange are not gating: ctrlrange has no
+            # equivalent under Control.joint_target_q/qd (matching MJCF's
+            # behavior), and forcerange is propagated below into joint_effort_limit.
+            if (
+                int(_row("mujoco:actuator_biastype", row)) != biastype_affine
+                or int(_row("mujoco:actuator_dyntype", row)) != dyntype_none
+                or int(_row("mujoco:actuator_gaintype", row)) != gaintype_fixed
+            ):
+                continue
+            gear = list(_row("mujoco:actuator_gear", row))
+            if not (np.isclose(gear[0], 1.0) and all(np.isclose(g, 0.0) for g in gear[1:])):
+                continue
+
+            gainprm = list(_row("mujoco:actuator_gainprm", row))
+            biasprm = list(_row("mujoco:actuator_biasprm", row))
+            kp = gainprm[0]
+            if kp <= 0.0:
+                continue
+
+            # MuJoCo "position" shortcut: gainprm=[kp,0,...], biasprm=[0,-kp,(-kv|0),0,...].
+            # A positive biasprm[2] is a dampratio placeholder that MuJoCo's compiler
+            # resolves via mj_setConst; leaving such rows CTRL_DIRECT preserves that path.
+            # MuJoCo "velocity" shortcut: gainprm=[kv,0,...], biasprm=[0,0,-kv,0,...].
+            is_position = np.isclose(biasprm[0], 0.0) and np.isclose(biasprm[1], -kp) and biasprm[2] <= 0.0
+            is_velocity = np.isclose(biasprm[0], 0.0) and np.isclose(biasprm[1], 0.0) and np.isclose(biasprm[2], -kp)
+            if not (is_position or is_velocity):
+                continue
+
+            current_mode = builder.joint_target_mode[dof]
+            if is_position:
+                builder.joint_target_ke[dof] = kp
+                if current_mode == int(JointTargetMode.VELOCITY):
+                    builder.joint_target_mode[dof] = int(JointTargetMode.POSITION_VELOCITY)
+                elif current_mode == int(JointTargetMode.NONE):
+                    builder.joint_target_mode[dof] = int(JointTargetMode.POSITION)
+                    builder.joint_target_kd[dof] = -biasprm[2]  # 0 or kv from biasprm=[0,-kp,-kv,...]
+            else:  # velocity
+                builder.joint_target_kd[dof] = kp
+                if current_mode == int(JointTargetMode.POSITION):
+                    builder.joint_target_mode[dof] = int(JointTargetMode.POSITION_VELOCITY)
+                elif current_mode == int(JointTargetMode.NONE):
+                    builder.joint_target_mode[dof] = int(JointTargetMode.VELOCITY)
+
+            # Override the row's CTRL_DIRECT default and write the DOF target index
+            # so _init_actuators routes through MuJoCo's joint_target_mode actuators.
+            builder.custom_attributes["mujoco:ctrl_source"].values[row] = ctrl_source_joint_target
+            builder.custom_attributes["mujoco:actuator_trnid"].values[row] = wp.vec2i(dof, 0)
+
+            # Tighten the joint effort limit when the actuator authored a forceRange.
+            if bool(_row("mujoco:actuator_has_forcerange", row)):
+                limited = int(_row("mujoco:actuator_forcelimited", row))
+                if limited == 1 or (limited == 2 and autolimits):
+                    force_range = list(_row("mujoco:actuator_forcerange", row))
+                    limit = max(abs(force_range[0]), abs(force_range[1]))
+                    current = builder.joint_effort_limit[dof]
+                    if not np.isfinite(current) or limit < current:
+                        if np.isfinite(current) and verbose:
+                            print(
+                                f"MuJoCo USD actuator {row} narrows joint DOF {dof} "
+                                f"effort limit from {current} to {limit}"
+                            )
+                        builder.joint_effort_limit[dof] = limit
+
+            converted += 1
+
+        if verbose and converted > 0:
+            print(f"Mapped {converted} MuJoCo USD actuator(s) to joint targets")
     return result
 
 

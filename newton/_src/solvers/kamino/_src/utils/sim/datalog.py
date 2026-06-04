@@ -100,7 +100,7 @@ class SimulationLogger:
             )
         else:
             dof_offset = 0
-            for joint in self._builder.joints:
+            for joint in self._builder.all_joints:
                 if joint.is_actuated:
                     for dof in range(joint.num_dofs):
                         self._actuated_dofs.append(dof_offset + dof)
@@ -290,7 +290,16 @@ class SimulationLogger:
         self.plt.rcParams["axes.axisbelow"] = True
         self.plt.grid(True, which="major", linestyle="--", linewidth=0.5)
         self.plt.grid(True, which="minor", linestyle=":", linewidth=0.25)
-        self.plt.hist(self.log_padmm_iters[: self._frames], bins=50)
+        num_iters_data = self.log_padmm_iters[: self._frames]
+        self.plt.hist(
+            num_iters_data,
+            bins=max(1, np.max(num_iters_data) - np.min(num_iters_data) + 1),  # Ensure there is one bar per integer
+            range=(
+                np.min(num_iters_data) - 0.5,
+                np.max(num_iters_data) + 0.5,
+            ),  # Center histogram bar at integer values
+        )
+        self.plt.gca().xaxis.get_major_locator().set_params(integer=True)
         self.plt.yscale("log")  # Make Y-axis logarithmic
         self.plt.title("Histogram of PADMM Solver Iterations")
         self.plt.xlabel("Iterations")

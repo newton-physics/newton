@@ -75,7 +75,7 @@ class TestKinematicsConstraints(unittest.TestCase):
         data = model.data(device=self.default_device)
 
         # Create a  limits container
-        limits = LimitsKamino(model=model, device=self.default_device)
+        limits = LimitsKamino(model=model)
         if self.verbose:
             print("")
             print("limits.model_max_limits_host: ", limits.model_max_limits_host)
@@ -99,7 +99,6 @@ class TestKinematicsConstraints(unittest.TestCase):
             data=data,
             limits=limits,
             contacts=contacts,
-            device=self.default_device,
         )
         if self.verbose:
             print(f"model.size:\n{model.size}\n\n")
@@ -132,7 +131,7 @@ class TestKinematicsConstraints(unittest.TestCase):
         data = model.data(device=self.default_device)
 
         # Create a  limits container
-        limits = LimitsKamino(model=model, device=self.default_device)
+        limits = LimitsKamino(model=model)
         if self.verbose:
             print("")
             print("limits.model_max_limits_host: ", limits.model_max_limits_host)
@@ -156,7 +155,6 @@ class TestKinematicsConstraints(unittest.TestCase):
             data=data,
             limits=limits,
             contacts=contacts,
-            device=self.default_device,
         )
         if self.verbose:
             print_model_constraint_info(model)
@@ -227,7 +225,7 @@ class TestKinematicsConstraints(unittest.TestCase):
         data = model.data(device=self.default_device)
 
         # Create a  limits container
-        limits = LimitsKamino(model=model, device=self.default_device)
+        limits = LimitsKamino(model=model)
         if self.verbose:
             print("")
             print("limits.model_max_limits_host: ", limits.model_max_limits_host)
@@ -251,7 +249,6 @@ class TestKinematicsConstraints(unittest.TestCase):
             data=data,
             limits=limits,
             contacts=contacts,
-            device=self.default_device,
         )
         if self.verbose:
             print_model_constraint_info(model)

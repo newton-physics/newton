@@ -26,10 +26,13 @@ import newton.utils
 from newton.math import quat_between_vectors_robust
 from newton.solvers import SolverVBD
 
+CONTACT_KE = 1.0e5
+CONTACT_KD = 0.0
+
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
-    mu=0.1,
-    ke=1.0e6,
-    kd=1.0e3,
+    mu=0.0,
+    ke=CONTACT_KE,
+    kd=CONTACT_KD,
     gap=0.002,
     density=1.0e6,
     mu_torsional=0.0,
@@ -46,8 +49,6 @@ CABLE_KINEMATIC_COUNT = 4  # first N rod bodies are inside the plug and follow i
 SOCKET_OPACITY = 0.35
 
 # Contact parameters for cable and ground plane (tuned for VBD).
-CABLE_KE = 1.0e8
-CABLE_KD = 1.0e-3
 CABLE_MU = 2.0
 
 # Latch revolute-joint tuning.
@@ -220,7 +221,7 @@ def _load_cable_centerline(stage) -> tuple[wp.vec3, ...]:
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args=None):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -239,6 +240,7 @@ class Example:
         latch_mesh, lc = _load_mesh(stage, "/World/Latch")
 
         builder = newton.ModelBuilder(gravity=-9.81)
+        SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
         builder.rigid_gap = 0.005
 
         builder.add_ground_plane()
@@ -291,6 +293,7 @@ class Example:
             angular_axes=None,
             parent_xform=wp.transform(plug_pos, wp.quat_identity()),
             child_xform=wp.transform_identity(),
+            custom_attributes={"vbd:joint_is_hard": 0},
         )
 
         # Revolute joint: plug -> latch (hinge along -X axis)
@@ -306,12 +309,14 @@ class Example:
             limit_upper=LATCH_LIMIT_UPPER,
             limit_kd=LATCH_LIMIT_KD,
             collision_filter_parent=True,
+            custom_attributes={"vbd:joint_is_hard": 0},
         )
 
         builder.add_articulation([d6_joint, rev_joint])
 
         cable_points = _load_cable_centerline(stage)
         cable_quats = newton.utils.create_parallel_transport_cable_quaternions(cable_points)
+        bend_stiffness = 1.0e1
 
         rod_bodies, _ = builder.add_rod(
             positions=cable_points,
@@ -319,14 +324,12 @@ class Example:
             radius=CABLE_RADIUS,
             cfg=dataclasses.replace(
                 builder.default_shape_cfg,
-                ke=CABLE_KE,
-                kd=CABLE_KD,
+                ke=CONTACT_KE,
+                kd=CONTACT_KD,
                 mu=CABLE_MU,
             ),
-            bend_stiffness=1.0e-1,
+            bend_stiffness=bend_stiffness,
             bend_damping=1.0e-1,
-            stretch_stiffness=1.0e9,
-            stretch_damping=1.0e-1,
             label="cable",
         )
 
@@ -386,8 +389,7 @@ class Example:
         self.solver = SolverVBD(
             self.model,
             iterations=12,
-            friction_epsilon=0.1,
-            rigid_contact_k_start=1.0e5,
+            rigid_contact_hard=False,
             rigid_body_contact_buffer_size=256,
         )
 
@@ -516,5 +518,4 @@ class Example:
 
 if __name__ == "__main__":
     viewer, args = newton.examples.init()
-    example = Example(viewer)
-    newton.examples.run(example, args)
+    newton.examples.run(Example(viewer, args), args)

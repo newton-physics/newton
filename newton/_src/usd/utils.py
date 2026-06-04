@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import warnings
 from collections.abc import Iterable, Sequence
@@ -14,6 +15,10 @@ import warp as wp
 from ..core.types import Axis, AxisType
 from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
+from ..utils.color import color_linear_to_srgb
+from ..utils.texture import linear_texture_to_srgb, load_texture
+
+logger = logging.getLogger("newton")
 
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
@@ -95,6 +100,34 @@ def has_attribute(prim: Usd.Prim, name: str) -> bool:
     return attr and attr.HasAuthoredValue()
 
 
+def _get_raw_api_schemas(prim: Usd.Prim) -> list[str]:
+    """Return API schema tokens from raw ``apiSchemas`` list-op metadata."""
+    listop = prim.GetMetadata("apiSchemas")
+    if listop is None:
+        return []
+    return (
+        list(getattr(listop, "prependedItems", []))
+        + list(getattr(listop, "appendedItems", []))
+        + list(getattr(listop, "explicitItems", []))
+    )
+
+
+def get_applied_api_schemas(prim: Usd.Prim) -> list[str]:
+    """Return the API schema tokens applied to *prim*.
+
+    Falls back to raw ``apiSchemas`` list-op metadata when the schema plugin
+    is not loaded and :meth:`pxr.Usd.Prim.GetAppliedSchemas` returns nothing.
+
+    Args:
+        prim: Prim to query.
+
+    Returns:
+        Applied API schema tokens (e.g. ``["NewtonPDControlAPI"]``).
+    """
+    schemas = list(prim.GetAppliedSchemas())
+    return schemas if schemas else _get_raw_api_schemas(prim)
+
+
 def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
     """
     Check if a USD prim has an applied API schema, even if the schema is not
@@ -113,19 +146,7 @@ def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
     Returns:
         True if the schema is applied to the prim, False otherwise.
     """
-    if prim.HasAPI(schema_name):
-        return True
-
-    schemas_listop = prim.GetMetadata("apiSchemas")
-    if schemas_listop:
-        all_schemas = (
-            list(schemas_listop.prependedItems)
-            + list(schemas_listop.appendedItems)
-            + list(schemas_listop.explicitItems)
-        )
-        return schema_name in all_schemas
-
-    return False
+    return prim.HasAPI(schema_name) or schema_name in _get_raw_api_schemas(prim)
 
 
 @overload
@@ -291,7 +312,54 @@ def get_scale(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.XformCach
     """
     mat = get_transform_matrix(prim, local=local, xform_cache=xform_cache)
     _pos, _rot, scale = wp.transform_decompose(mat)
+    scale = np.array(scale, dtype=np.float32)
+
+    authored_scale = _get_authored_scale(prim, local=local)
+    if authored_scale is not None:
+        sign = np.sign(authored_scale)
+        sign[sign == 0.0] = 1.0
+        scale = np.abs(scale) * sign
+
     return wp.vec3(*scale)
+
+
+def _get_authored_scale(prim: Usd.Prim, local: bool = True) -> np.ndarray | None:
+    """Return the product of authored scale ops, preserving negative signs."""
+    if UsdGeom is None:
+        return None
+
+    prims = [prim]
+    if not local:
+        prims = []
+        current = prim
+        while current and current.IsValid() and not current.IsPseudoRoot():
+            prims.append(current)
+            current = current.GetParent()
+        prims.reverse()
+
+    scale = np.ones(3, dtype=np.float32)
+    found = False
+    for p in prims:
+        xformable = UsdGeom.Xformable(p)
+        if not xformable:
+            continue
+        if not local and xformable.GetResetXformStack():
+            scale = np.ones(3, dtype=np.float32)
+            found = False
+        for op in xformable.GetOrderedXformOps():
+            if op.GetOpType() != UsdGeom.XformOp.TypeScale:
+                continue
+            value = op.Get()
+            if value is None:
+                continue
+            op_scale = np.array(value, dtype=np.float32)
+            if op.IsInverseOp():
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    op_scale = np.divide(1.0, op_scale, out=np.ones_like(op_scale), where=op_scale != 0.0)
+            scale *= op_scale
+            found = True
+
+    return scale if found else None
 
 
 def get_gprim_axis(prim: Usd.Prim, name: str = "axis", default: AxisType = "Z") -> Axis:
@@ -1082,10 +1150,11 @@ def get_mesh(
         # were converted to per-vertex. Avoid a second split here.
         if uvs_interpolation == UsdGeom.Tokens.faceVarying and not did_split_vertices:
             if len(uvs) != len(indices):
-                warnings.warn(
-                    f"UV primvar length ({len(uvs)}) does not match indices length ({len(indices)}) for mesh {prim.GetPath()}; "
-                    "dropping UVs.",
-                    stacklevel=2,
+                logger.info(
+                    "Mesh %s: UV primvar length (%d) does not match indices length (%d); dropping UVs.",
+                    prim.GetPath(),
+                    len(uvs),
+                    len(indices),
                 )
                 uvs = None
             else:
@@ -1423,7 +1492,87 @@ def _resolve_asset_path(
     return asset_path
 
 
-def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> str | None:
+def _get_attribute_color_space(attr: Usd.Attribute | None) -> str:
+    """Return directly authored or inherited USD color-space metadata."""
+    color_space = None
+    if attr is not None:
+        try:
+            color_space = attr.GetColorSpace()
+        except Exception:
+            color_space = None
+        if not color_space and Usd is not None:
+            try:
+                color_space = Usd.ColorSpaceAPI.ComputeColorSpaceName(attr, None)
+            except Exception:
+                color_space = None
+    return str(color_space or "")
+
+
+def _get_texture_source_color_space(shader: UsdShade.Shader | None, file_attr: Usd.Attribute | None = None) -> str:
+    source_color_space = None
+    if shader is not None:
+        inp = shader.GetInput("sourceColorSpace")
+        if inp:
+            try:
+                source_color_space = inp.Get()
+            except Exception:
+                source_color_space = None
+            if source_color_space is None:
+                try:
+                    attrs = UsdShade.Utils.GetValueProducingAttributes(inp)
+                except Exception:
+                    attrs = ()
+                if attrs:
+                    try:
+                        source_color_space = attrs[0].Get()
+                    except Exception:
+                        source_color_space = None
+
+    if isinstance(source_color_space, str) and source_color_space.strip().lower() == "auto":
+        source_color_space = None
+
+    if source_color_space is None and file_attr is not None:
+        source_color_space = _get_attribute_color_space(file_attr)
+
+    return str(source_color_space or "")
+
+
+def _texture_source_is_linear(color_space: str) -> bool:
+    token = color_space.strip().lower()
+    return token in ("identity", "raw", "data", "linear", "lin_rec709_scene") or token.startswith("lin_")
+
+
+def _color_to_display_space(
+    color: tuple[float, float, float],
+    attr: Usd.Attribute | None,
+) -> tuple[float, float, float]:
+    """Normalize a USD scalar color to Newton's display/sRGB model color space."""
+    color_space = _get_attribute_color_space(attr)
+    if not color_space or _texture_source_is_linear(color_space):
+        return color_linear_to_srgb(color)
+    return color
+
+
+def _resolve_color_texture_asset(
+    asset: Any,
+    prim: Usd.Prim,
+    asset_attr: Usd.Attribute | None,
+    shader: UsdShade.Shader | None = None,
+) -> str | np.ndarray | None:
+    texture = _resolve_asset_path(asset, prim, asset_attr)
+    if not texture:
+        return None
+
+    if not _texture_source_is_linear(_get_texture_source_color_space(shader, asset_attr)):
+        return texture
+
+    pixels = load_texture(texture)
+    if pixels is None:
+        return texture
+    return linear_texture_to_srgb(pixels)
+
+
+def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> str | np.ndarray | None:
     """Search a shader network for a connected texture asset.
 
     Args:
@@ -1431,7 +1580,8 @@ def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> s
         prim: The prim providing stage context for asset resolution.
 
     Returns:
-        Resolved texture asset path, or ``None`` if not found.
+        Resolved texture asset path, converted display texture array, or
+        ``None`` if not found.
     """
     if shader is None:
         return None
@@ -1442,7 +1592,10 @@ def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> s
             attrs = UsdShade.Utils.GetValueProducingAttributes(file_input)
             if attrs:
                 asset = attrs[0].Get()
-                return _resolve_asset_path(asset, prim, attrs[0])
+                return _resolve_color_texture_asset(asset, prim, attrs[0], shader)
+            asset = file_input.Get()
+            if asset:
+                return _resolve_color_texture_asset(asset, prim, file_input.GetAttr(), shader)
         return None
     if shader_id == "UsdPreviewSurface":
         for input_name in ("diffuseColor", "baseColor"):
@@ -1452,20 +1605,23 @@ def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> s
                 if source:
                     source_shader = UsdShade.Shader(source[0].GetPrim())
                     texture = _find_texture_in_shader(source_shader, prim)
-                    if texture:
+                    if texture is not None:
                         return texture
     return None
 
 
-def _get_input_value(shader: UsdShade.Shader | None, names: tuple[str, ...]) -> Any | None:
-    """Fetch the effective input value from a shader, following connections."""
+def _get_input_value_and_attr(
+    shader: UsdShade.Shader | None,
+    names: tuple[str, ...],
+) -> tuple[Any | None, Usd.Attribute | None]:
+    """Fetch the effective input value and producing attribute from a shader."""
     if shader is None:
-        return None
+        return None, None
     try:
         if not shader.GetPrim().IsValid():
-            return None
+            return None, None
     except Exception:
-        return None
+        return None, None
 
     for name in names:
         inp = shader.GetInput(name)
@@ -1478,8 +1634,13 @@ def _get_input_value(shader: UsdShade.Shader | None, names: tuple[str, ...]) -> 
         if attrs:
             value = attrs[0].Get()
             if value is not None:
-                return value
-    return None
+                return value, attrs[0]
+    return None, None
+
+
+def _get_input_value(shader: UsdShade.Shader | None, names: tuple[str, ...]) -> Any | None:
+    """Fetch the effective input value from a shader, following connections."""
+    return _get_input_value_and_attr(shader, names)[0]
 
 
 def _empty_material_properties() -> dict[str, Any]:
@@ -1530,7 +1691,9 @@ def _extract_display_primvar_properties(prim: Usd.Prim) -> dict[str, Any]:
     display_color = primvars_api.GetPrimvar("displayColor")
     if display_color:
         color_value = display_color.Get()
-        properties["color"] = _coerce_color(color_value)
+        color = _coerce_color(color_value)
+        if color is not None:
+            properties["color"] = _color_to_display_space(color, display_color.GetAttr())
         properties["opacity"] = _coerce_opacity(color_value)
 
     display_opacity = primvars_api.GetPrimvar("displayOpacity")
@@ -1571,7 +1734,7 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
             source_shader = UsdShade.Shader(source[0].GetPrim())
             properties["texture"] = _find_texture_in_shader(source_shader, prim)
             if properties["texture"] is None:
-                color_value = _get_input_value(
+                color_value, color_attr = _get_input_value_and_attr(
                     source_shader,
                     (
                         "diffuseColor",
@@ -1582,13 +1745,18 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
                         "displayColor",
                     ),
                 )
-                properties["color"] = _coerce_color(color_value)
+                coerced_color = _coerce_color(color_value)
+                if coerced_color is not None:
+                    properties["color"] = _color_to_display_space(coerced_color, color_attr)
                 if properties["opacity"] is None:
                     properties["opacity"] = _coerce_opacity(color_value)
         else:
             color_value = color_input.Get()
-            properties["color"] = _coerce_color(color_value)
-            properties["opacity"] = _coerce_opacity(color_value)
+            coerced_color = _coerce_color(color_value)
+            if coerced_color is not None:
+                properties["color"] = _color_to_display_space(coerced_color, color_input.GetAttr())
+            if properties["opacity"] is None:
+                properties["opacity"] = _coerce_opacity(color_value)
 
     opacity_input = shader.GetInput("opacity") or shader.GetInput("alpha")
     if opacity_input:
@@ -1671,7 +1839,7 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
         return properties
 
     if properties["color"] is None:
-        color_value = _get_input_value(
+        color_value, color_attr = _get_input_value_and_attr(
             shader,
             (
                 "diffuse_color_constant",
@@ -1682,7 +1850,9 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
                 "displayColor",
             ),
         )
-        properties["color"] = _coerce_color(color_value)
+        color = _coerce_color(color_value)
+        if color is not None:
+            properties["color"] = _color_to_display_space(color, color_attr)
         if properties["opacity"] is None:
             properties["opacity"] = _coerce_opacity(color_value)
     if properties["opacity"] is None:
@@ -1705,13 +1875,13 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
                 source = inp.GetConnectedSource()
                 source_shader = UsdShade.Shader(source[0].GetPrim())
                 texture = _find_texture_in_shader(source_shader, prim)
-                if texture:
+                if texture is not None:
                     properties["texture"] = texture
                     break
             elif "file" in name or "texture" in name:
                 asset = inp.Get()
                 if asset:
-                    properties["texture"] = _resolve_asset_path(asset, prim, inp.GetAttr())
+                    properties["texture"] = _resolve_color_texture_asset(asset, prim, inp.GetAttr())
                     break
 
     return properties
@@ -1740,8 +1910,8 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
             continue
 
         if properties["texture"] is None and ("texture" in name_lower or "file" in name_lower):
-            texture = _resolve_asset_path(value, prim, inp.GetAttr())
-            if texture:
+            texture = _resolve_color_texture_asset(value, prim, inp.GetAttr())
+            if texture is not None:
                 properties["texture"] = texture
                 continue
 
@@ -1754,7 +1924,7 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
         ):
             color = _coerce_color(value)
             if color is not None:
-                properties["color"] = color
+                properties["color"] = _color_to_display_space(color, inp.GetAttr())
                 if properties["opacity"] is None:
                     properties["opacity"] = _coerce_opacity(value)
                 continue
@@ -1850,17 +2020,18 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
             return material_props
         return None
 
-    # Always call _extract_shader_properties even if shader_id is None (e.g., for MDL shaders like OmniPBR)
-    # because _extract_shader_properties has fallback logic for common input names
+    # Always call _extract_shader_properties even if shader_id is None because
+    # it has fallback logic for common shader input names.
     properties = _extract_shader_properties(source_shader, target_prim)
     material_props = _extract_material_input_properties(material, target_prim)
     for key in ("texture", "color", "opacity", "metallic", "roughness"):
         if properties.get(key) is None and material_props.get(key) is not None:
             properties[key] = material_props[key]
     display_props = _extract_display_primvar_properties(target_prim)
-    for key in ("color", "opacity"):
-        if properties.get(key) is None and display_props.get(key) is not None:
-            properties[key] = display_props[key]
+    if properties["color"] is None and properties["texture"] is None and display_props.get("color") is not None:
+        properties["color"] = display_props["color"]
+    if properties["opacity"] is None and display_props.get("opacity") is not None:
+        properties["opacity"] = display_props["opacity"]
 
     return properties
 
