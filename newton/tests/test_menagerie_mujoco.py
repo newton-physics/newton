@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import os
 import unittest
+import warnings
 from abc import abstractmethod
 from collections import defaultdict
 from pathlib import Path
@@ -1669,7 +1670,13 @@ class TestMenagerieBase(unittest.TestCase):
         if self.solver_integrator is not None:
             solver_kwargs["integrator"] = self.solver_integrator
 
-        cls._newton_solver = SolverMuJoCo(cls._newton_model, **solver_kwargs)
+        # Some real MJCFs (e.g. Apollo, Go2) author geom margins that the
+        # native-CCD path zeroes (#2106); the field comparison below already
+        # mirrors that zeroing, so tolerate the per-geom advisory rather than
+        # failing under strict warnings. Other warnings still surface.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=r"Geom .* zeroed for NATIVECCD")
+            cls._newton_solver = SolverMuJoCo(cls._newton_model, **solver_kwargs)
 
         cls._mj_model, cls._mj_data_native, cls._native_mjw_model, cls._native_mjw_data = (
             self._create_native_mujoco_warp()

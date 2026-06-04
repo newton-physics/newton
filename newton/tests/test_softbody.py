@@ -251,6 +251,9 @@ def _build_model_with_soft_mesh(vertices: list[tuple[float, float, float]], tets
         k_mu=1.0,
         k_lambda=1.0,
         k_damp=0.0,
+        # These tests verify tet adjacency/coloring only; skip the surface
+        # bending edges, whose non-manifold-boundary warning is unrelated noise.
+        add_surface_mesh_edges=False,
     )
     builder.color()
     return builder.finalize(device=device)
@@ -368,6 +371,9 @@ def test_tet_graph_coloring_is_valid(test, device):
         k_mu=1.0,
         k_lambda=1.0,
         k_damp=0.0,
+        # Tet coloring only; skip surface bending edges (their non-manifold-
+        # boundary warning is unrelated noise).
+        add_surface_mesh_edges=False,
     )
     builder.color()
 
