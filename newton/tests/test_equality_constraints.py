@@ -257,6 +257,45 @@ class TestEqualityConstraints(unittest.TestCase):
                 f"World {world_idx} joint constraint joint2 index incorrect",
             )
 
+    def test_add_builder_preserves_sparse_attribute_alignment(self):
+        """Sparse equality attributes keep row alignment when merging builders.
+
+        A builder that leaves an optional attribute (e.g. ``mujoco:eq_solref``) at its default
+        stores no explicit value, yet still contributes a row to the equality-constraint count.
+        ``add_builder`` must pad the merged value list to that row count before appending a later
+        builder's explicit value, otherwise the later value collapses onto an earlier row.
+        """
+
+        def make_builder(solref):
+            b = newton.ModelBuilder()
+            body1 = b.add_body()
+            body2 = b.add_body()
+            custom = {"mujoco:eq_solref": wp.vec2(*solref)} if solref is not None else None
+            _add_equality_constraint(
+                b, constraint_type=newton.EqType.WELD, body1=body1, body2=body2, custom_attributes=custom
+            )
+            return b
+
+        default_solref = [0.02, 1.0]
+
+        # Builder A leaves solref at its default (sparse), builder B sets a custom value.
+        main = newton.ModelBuilder()
+        main.add_builder(make_builder(None))
+        main.add_builder(make_builder((9.0, 9.0)))
+        solref = main.finalize().mujoco.eq_solref.numpy()
+        np.testing.assert_allclose(solref[0], default_solref)
+        np.testing.assert_allclose(solref[1], [9.0, 9.0])
+
+        # Two sparse rows followed by a custom one must shift the custom value to row 2.
+        main = newton.ModelBuilder()
+        main.add_builder(make_builder(None))
+        main.add_builder(make_builder(None))
+        main.add_builder(make_builder((7.0, 7.0)))
+        solref = main.finalize().mujoco.eq_solref.numpy()
+        np.testing.assert_allclose(solref[0], default_solref)
+        np.testing.assert_allclose(solref[1], default_solref)
+        np.testing.assert_allclose(solref[2], [7.0, 7.0])
+
     def test_default_equality_constraint_torquescale_is_numeric(self):
         builder = newton.ModelBuilder()
 

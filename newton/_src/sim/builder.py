@@ -3719,7 +3719,11 @@ class ModelBuilder:
                 if isinstance(freq_key, str):
                     # String frequency: copy list, applying reference offsets and the polymorphic
                     # equality-target remap (transform_enum_value falls back to transform_value).
-                    mapped_values = [transform_enum_value(idx, value) for idx, value in enumerate(attr.values)]
+                    # Left-pad to index_offset so rows contributed by earlier builders that stored
+                    # no explicit value (sparse ``values``) keep their slots; ``None`` resolves to
+                    # the attribute default at finalize.
+                    mapped_values = [None] * index_offset
+                    mapped_values.extend(transform_enum_value(idx, value) for idx, value in enumerate(attr.values))
                 else:
                     # Enum frequency: remap dict indices with offset
                     mapped_values = {
@@ -3751,7 +3755,12 @@ class ModelBuilder:
 
             if isinstance(freq_key, str):
                 # String frequency: extend list with transformed values (reference offsets +
-                # the polymorphic equality-target remap via transform_enum_value).
+                # the polymorphic equality-target remap via transform_enum_value). Pad to
+                # index_offset first so rows from earlier builders that stored no explicit value
+                # (sparse ``values``) keep their slots; ``None`` resolves to the attribute default
+                # at finalize.
+                if len(merged.values) < index_offset:
+                    merged.values.extend([None] * (index_offset - len(merged.values)))
                 new_values = [transform_enum_value(idx, value) for idx, value in enumerate(attr.values)]
                 merged.values.extend(new_values)
             else:
