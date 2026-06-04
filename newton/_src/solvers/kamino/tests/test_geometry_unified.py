@@ -112,7 +112,7 @@ def test_unified_pipeline(
     model: ModelKamino = builder.finalize(device)
     data: DataKamino = model.data()
     state: StateKamino = model.state()
-    contacts = ContactsKamino(model=model, device=device)
+    contacts = ContactsKamino(capacity=[400 for i in range(builder.num_worlds)], device=device)
 
     # Run the narrow-phase test over each broad-phase backend
     if broadphase_modes is None:
