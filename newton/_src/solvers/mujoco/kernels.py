@@ -1430,28 +1430,32 @@ def apply_mjc_control_kernel(
                 if world_target_q < joint_target_q.shape[0]:
                     mj_ctrl[world, actuator] = joint_target_q[world_target_q]
             else:
-                # Ball-joint position target → axis-angle in MuJoCo's child rest frame.
+                # Ball-joint position target
                 # Coord layout stores a 4-float quat (needs log-map); DOF layout stores
-                # the 3 axis-angle components directly at the qd_start base.
+                # extrinsic ZYX Euler target angles directly at the qd_start base.
+                last_elem = world_target_q + wp.where(use_coord_layout_targets, 3, 2)  # check size
+                assert last_elem < joint_target_q.shape[0]
+                if not last_elem < joint_target_q.shape[0]:
+                    return
+
                 if use_coord_layout_targets:
-                    if world_target_q + 3 < joint_target_q.shape[0]:
-                        aa_newton = _target_quat_to_axis_angle(
-                            joint_target_q[world_target_q + 0],
-                            joint_target_q[world_target_q + 1],
-                            joint_target_q[world_target_q + 2],
-                            joint_target_q[world_target_q + 3],
-                        )
-                        aa_mj = wp.quat_rotate(mjc_actuator_q_cj[actuator], aa_newton)
-                        mj_ctrl[world, actuator] = aa_mj[axis_idx]
+                    q_n = wp.quat(
+                        joint_target_q[world_target_q + 0],
+                        joint_target_q[world_target_q + 1],
+                        joint_target_q[world_target_q + 2],
+                        joint_target_q[world_target_q + 3],
+                    )
                 else:
-                    if world_target_q + 2 < joint_target_q.shape[0]:
-                        aa_newton = wp.vec3(
-                            joint_target_q[world_target_q + 0],
-                            joint_target_q[world_target_q + 1],
-                            joint_target_q[world_target_q + 2],
-                        )
-                        aa_mj = wp.quat_rotate(mjc_actuator_q_cj[actuator], aa_newton)
-                        mj_ctrl[world, actuator] = aa_mj[axis_idx]
+                    angles = wp.vec3(
+                        joint_target_q[world_target_q + 0],
+                        joint_target_q[world_target_q + 1],
+                        joint_target_q[world_target_q + 2],
+                    )
+                    q_n = wp.quat_from_euler(angles, 2, 1, 0)
+
+                aa_newton = _target_quat_to_axis_angle(q_n[0], q_n[1], q_n[2], q_n[3])
+                aa_mj = wp.quat_rotate(mjc_actuator_q_cj[actuator], aa_newton)
+                mj_ctrl[world, actuator] = aa_mj[axis_idx]
         elif idx == -1:
             return
         else:
