@@ -70,7 +70,7 @@ import warp as wp
 from ..core.data import DataKamino
 from ..core.model import ModelKamino
 from ..core.size import SizeKamino
-from ..core.types import FloatType, float32, int32, mat33f, vec3f, vec6f
+from ..core.types import FloatType, float32, int32, mat33f, to_warp_int32_array, vec3f, vec6f
 from ..geometry.contacts import ContactsKamino
 from ..kinematics.constraints import get_max_constraints_per_world
 from ..kinematics.jacobians import ColMajorSparseConstraintJacobians, DenseSystemJacobians, SparseSystemJacobians
@@ -916,7 +916,7 @@ class DelassusOperator:
                 maxdim=model.info.max_total_cts,
                 dim=data.info.num_total_cts,
                 vio=model.info.total_cts_offset,
-                mio=wp.array(mat_offsets[: self._num_worlds], dtype=int32, device=self._device),
+                mio=to_warp_int32_array(mat_offsets[: self._num_worlds], device=self._device),
                 dtype=float32,
                 device=self._device,
             )

@@ -1816,9 +1816,9 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
     contacts = model.contacts()
 
     # Set drive target position.
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -1943,9 +1943,9 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     control = model.control()
     contacts = model.contacts()
 
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -2216,9 +2216,9 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
     contacts = model.contacts()
 
     # Set drive target position.
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_displacement
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -2343,9 +2343,9 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     control = model.control()
     contacts = model.contacts()
 
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_displacement
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -2929,10 +2929,10 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     contacts = model.contacts()
 
     # Set drive target positions.
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[lin_dof_idx] = target_displacement
     tp[ang_dof_idx] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -3084,10 +3084,10 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
     control = model.control()
     contacts = model.contacts()
 
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[qd_s] = target_displacement
     tp[qd_s + 1] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -3252,7 +3252,10 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
 
     fps = 60.0
     frame_dt = 1.0 / fps
-    sim_substeps = 2
+    # AVBD friction tracking under the surface-anchor moment arm needs either
+    # dt ≲ 4 ms (substeps ≥ 4) or rigid_avbd_contact_alpha ≲ 0.5; both stay
+    # well inside the 1 cm tolerance below.
+    sim_substeps = 4
     sim_dt = frame_dt / sim_substeps
 
     # Record initial pose

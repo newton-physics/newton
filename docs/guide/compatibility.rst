@@ -117,9 +117,9 @@ states:
 Here, **feature** includes functionality, public API, defaults, support
 targets, and simulation behavior that user code or simulations may rely on.
 
-* **Experimental**: A feature still under active development.  May
-  change without notice, including in micro releases.  Experimental
-  features are available for early adopters who can tolerate breakage.
+* **Experimental**: A feature still under active development and available
+  for early adopters who can tolerate breakage. API, behavior, defaults, and
+  supported use cases may change without prior notice.
 * **Stable**: The default state for most features.  Changes follow the
   :ref:`deprecation-policy`.
 * **Deprecated**: A feature scheduled for removal in a future release.
@@ -133,10 +133,10 @@ targets, and simulation behavior that user code or simulations may rely on.
 Deprecation Policy
 ------------------
 
-A deprecated feature is maintained for **two full minor release cycles**
-after deprecation (e.g. deprecated in 1.2.0 → removed in 1.4.0).
-Deprecations, removals, and other breaking changes only happen in minor
-releases, never in micro releases.
+A deprecated feature is maintained for **at least one full minor release
+cycle** after deprecation (e.g. deprecated in 1.2.0 → removed in 1.3.0 or
+later).  Deprecations, removals, and other breaking changes only happen in
+minor releases, never in micro releases.
 
 Example timeline
 ^^^^^^^^^^^^^^^^
@@ -148,9 +148,8 @@ Assuming a feature is deprecated in release ``1.2.0``:
   ``CHANGELOG.md``.
 * ``1.2.x`` (micro releases): deprecated feature remains fully
   functional.
-* ``1.3.0``: deprecated feature remains fully functional.  The release
-  notes flag the upcoming removal.
-* ``1.4.0``: feature is removed.  Using it raises an error.
+* ``1.3.0`` or later: feature is eligible for removal.  Using it then
+  raises an error.
 
 How deprecations and breaking changes are communicated
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -173,7 +172,8 @@ What to do when you see a DeprecationWarning
    release in which the deprecation was first announced and to read any
    migration guidance.
 #. Follow the warning and changelog migration guidance.  The deprecated
-   feature remains functional for two minor releases (see the example above).
+   feature remains functional for at least one minor release (see the
+   example above).
 #. If migration is blocked by a gap in the replacement, open a
    `GitHub issue <https://github.com/newton-physics/newton/issues>`__.
 
