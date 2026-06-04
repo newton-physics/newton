@@ -1,16 +1,17 @@
 name: Public API Change Detection
 permissions:
   contents: read
-  pull-requests: write
+  issues: write
+  pull-requests: read
 
 on:
-  pull_request:
+  pull_request_target:
     branches:
       - main
       - "release-*"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref }}
+  group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -28,23 +29,27 @@ jobs:
       - name: Checkout PR head
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
           path: head
+          persist-credentials: false
 
       - name: Checkout base branch
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: base
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
-          python-version-file: "head/.python-version"
+          python-version-file: "base/.python-version"
 
       - name: Detect API changes
         id: detect
         run: |
-          output=$(python head/.github/scripts/detect_api_changes.py base head)
+          output=$(python base/.github/scripts/detect_api_changes.py base head)
           has_changes=$(echo "$output" | python -c "import sys, json; print(json.load(sys.stdin)['diff']['has_changes'])")
           echo "has_changes=$has_changes" >> "$GITHUB_OUTPUT"
 
