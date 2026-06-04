@@ -3,24 +3,23 @@
 
 """Composable control blocks for Newton.
 
-A :class:`Controller` is a single control law (PID, differential IK, gravity
-comp, …); a :class:`ControlGroup` composes one or more of them and
-orchestrates the per-step zero / compute sequence. Controllers typically run
-*before* actuators in a simulation step: a controller produces a desired
-joint position, velocity, or force; downstream actuators turn that target
-into effort.
+A :class:`ControlLaw` is a single control law (PID, differential IK, gravity
+comp, …); a :class:`Controller` composes one or more of them and orchestrates
+the per-step zero / compute sequence. Controllers typically run *before*
+actuators in a simulation step: a controller produces a desired joint
+position, velocity, or force; downstream actuators turn that target into effort.
 """
 
 from ._src.controllers import (
-    ControlGroup,
+    ControlLaw,
+    ControlLawDifferentialIK,
+    ControlLawPID,
     Controller,
-    ControllerDifferentialIK,
-    ControllerPID,
 )
 
 __all__ = [
-    "ControlGroup",
+    "ControlLaw",
+    "ControlLawDifferentialIK",
+    "ControlLawPID",
     "Controller",
-    "ControllerDifferentialIK",
-    "ControllerPID",
 ]

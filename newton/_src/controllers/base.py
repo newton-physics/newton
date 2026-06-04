@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import warp as wp
 
 
-class Controller:
+class ControlLaw:
     """Abstract base for a single control law.
 
     Subclasses implement :meth:`compute` (and optionally :meth:`reset`),
@@ -26,18 +26,18 @@ class Controller:
     indices: wp.array[wp.uint32]
     """Global DOF indices this controller writes to (set by subclasses in ``__init__``)."""
 
-    reset_state: Controller.State | None = None
+    reset_state: ControlLaw.State | None = None
     """Per-controller reset target. Allocated by :meth:`finalize` to zeros; user-mutable."""
 
     def finalize(self, device: wp.Device, num_outputs: int, requires_grad: bool = False) -> None:
         """Allocate device-side private buffers and :attr:`reset_state`.
 
-        Called by :class:`ControlGroup` after construction.
+        Called by :class:`Controller` after construction.
 
         Args:
             device: Warp device to allocate on.
             num_outputs: Equal to ``len(self.indices)``.
-            requires_grad: Propagated from :class:`ControlGroup`. If True, all
+            requires_grad: Propagated from :class:`Controller`. If True, all
                 internal buffers (including ``reset_state``) are allocated with
                 gradient support so the controller is transparent to
                 :class:`wp.Tape` — Isaac Lab and other autograd consumers can
@@ -46,7 +46,7 @@ class Controller:
         """
         raise NotImplementedError(f"{type(self).__name__} must implement finalize().")
 
-    def state(self, num_outputs: int, device: wp.Device, requires_grad: bool = False) -> Controller.State | None:
+    def state(self, num_outputs: int, device: wp.Device, requires_grad: bool = False) -> ControlLaw.State | None:
         """Allocate a fresh state, or return ``None`` if stateless.
 
         Args:
@@ -65,8 +65,8 @@ class Controller:
     def outputs(self) -> list[tuple[wp.array, wp.array[wp.uint32]]]:
         """Return ``(output_array, output_port_indices)`` bindings.
 
-        :class:`ControlGroup` collects these from every controller and zeros
-        the listed slots at the start of each :meth:`ControlGroup.step` call.
+        :class:`Controller` collects these from every controller and zeros
+        the listed slots at the start of each :meth:`Controller.step` call.
         Most controllers return a single binding; multi-output controllers
         return more than one.
         """
@@ -74,13 +74,13 @@ class Controller:
 
     def compute(
         self,
-        state: Controller.State | None,
-        next_state: Controller.State | None,
+        state: ControlLaw.State | None,
+        next_state: ControlLaw.State | None,
         dt: float,
     ) -> None:
         """Read bound inputs, write ``+=`` into bound outputs, write ``next_state``.
 
-        Called by :meth:`ControlGroup.step`. The device is fixed at
+        Called by :meth:`Controller.step`. The device is fixed at
         :meth:`finalize` time, so this method does not take one.
 
         Args:
@@ -90,7 +90,7 @@ class Controller:
         """
         raise NotImplementedError(f"{type(self).__name__} must implement compute().")
 
-    def reset(self, state: Controller.State, mask: wp.array[wp.bool]) -> None:
+    def reset(self, state: ControlLaw.State, mask: wp.array[wp.bool]) -> None:
         """Update ``state`` from :attr:`reset_state` where ``mask`` is True.
 
         ``mask`` is a bool array of length equal to this controller's
@@ -98,7 +98,7 @@ class Controller:
         returned by :meth:`outputs`). ``mask[i] = True`` means "reset slot
         ``i``." Slot ``i`` corresponds to whichever portion of the state
         the controller associates with output slot ``i`` — for a simple
-        per-DOF controller like :class:`ControllerPID`, that's a single
+        per-DOF controller like :class:`ControlLawPID`, that's a single
         state element; for a controller with multi-component-per-output
         state, it may be a wider chunk.
 

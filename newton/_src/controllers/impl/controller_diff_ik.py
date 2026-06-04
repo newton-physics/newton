@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""ControllerDifferentialIK — one-step damped-least-squares differential IK.
+"""ControlLawDifferentialIK — one-step damped-least-squares differential IK.
 
 Stateless. For each robot in the batch, computes a joint-velocity command
 that drives a user-defined site pose (position + orientation) toward a
@@ -14,7 +14,7 @@ element-wise mutation, which would break Warp's adjoint. All other math
 (building the site-frame Jacobian, forming A = J J^T + λ²I, back-projecting
 q_dot from y) lives in per-element kernels that are autograd-friendly by
 construction. The whole controller is end-to-end differentiable when
-constructed inside a ``ControlGroup(..., requires_grad=True)``.
+constructed inside a ``Controller(..., requires_grad=True)``.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import warp as wp
 
 from ...sim.articulation import eval_fk, eval_jacobian
 from ...sim.builder import ModelBuilder
-from ..base import Controller
+from ..base import ControlLaw
 from ..utils import _normalize_port, _validate_per_group
 
 
@@ -141,7 +141,7 @@ def _build_dls_matrix_kernel(
 # upstream gap is fixed we mark this kernel ``enable_backward=False``, which
 # blocks gradient propagation at the solve. Every other kernel in the chain
 # (gather, build_site_jacobian, build_dls_matrix, qd_from_y, accumulate)
-# remains autograd-able by default, so a ControlGroup(..., requires_grad=True)
+# remains autograd-able by default, so a Controller(..., requires_grad=True)
 # still runs cleanly under wp.Tape — just with zero gradient through the IK.
 @wp.kernel(enable_backward=False)
 def _cholesky_solve_kernel(
@@ -199,7 +199,7 @@ def _accumulate_outputs_kernel(
     output_q[output_q_indices[flat]] = output_q[output_q_indices[flat]] + (joint_q_local[flat] + qd * dt)
 
 
-class ControllerDifferentialIK(Controller):
+class ControlLawDifferentialIK(ControlLaw):
     """One-step damped-least-squares differential IK for a single
     end-effector per robot.
 
@@ -214,7 +214,7 @@ class ControllerDifferentialIK(Controller):
     ``cross(omega, offset)``.
 
     **Tape-safe, forward-only through the solve.** The controller runs
-    cleanly inside a ``ControlGroup(..., requires_grad=True)`` wrapped in
+    cleanly inside a ``Controller(..., requires_grad=True)`` wrapped in
     ``wp.Tape``, and every kernel in the chain except the DLS solve itself
     is autograd-able by default. The inner DLS uses Warp's tiled Cholesky
     (`wp.tile_cholesky`, `wp.tile_cholesky_solve`); those primitives'
@@ -301,22 +301,22 @@ class ControllerDifferentialIK(Controller):
     ):
         if not isinstance(model_builder, ModelBuilder):
             raise TypeError(
-                f"ControllerDifferentialIK: model_builder must be a newton.ModelBuilder, "
+                f"ControlLawDifferentialIK: model_builder must be a newton.ModelBuilder, "
                 f"got {type(model_builder).__name__}."
             )
         K = model_builder.articulation_count
         if K < 1:
-            raise ValueError("ControllerDifferentialIK: model_builder has no articulations.")
+            raise ValueError("ControlLawDifferentialIK: model_builder has no articulations.")
         if model_builder.joint_dof_count % K != 0:
             raise ValueError(
-                f"ControllerDifferentialIK: model_builder.joint_dof_count={model_builder.joint_dof_count} "
+                f"ControlLawDifferentialIK: model_builder.joint_dof_count={model_builder.joint_dof_count} "
                 f"is not divisible by articulation_count={K}; the K articulations must share DOF count."
             )
         self._template = model_builder
         self._dofs_per_robot = model_builder.joint_dof_count // K
         if len(indices) % model_builder.joint_dof_count != 0:
             raise ValueError(
-                f"ControllerDifferentialIK: len(indices)={len(indices)} is not a multiple of "
+                f"ControlLawDifferentialIK: len(indices)={len(indices)} is not a multiple of "
                 f"model_builder.joint_dof_count={model_builder.joint_dof_count}."
             )
         self._replication_count = len(indices) // model_builder.joint_dof_count
@@ -330,7 +330,7 @@ class ControllerDifferentialIK(Controller):
             site_idx = model_builder.shape_label.index(site)
         except ValueError as e:
             raise ValueError(
-                f"ControllerDifferentialIK: no shape/site with label '{site}' in model_builder; "
+                f"ControlLawDifferentialIK: no shape/site with label '{site}' in model_builder; "
                 f"available labels: {model_builder.shape_label}."
             ) from e
         self._end_effector_link = int(model_builder.shape_body[site_idx])
@@ -359,7 +359,7 @@ class ControllerDifferentialIK(Controller):
 
         if self._model.body_count % self._num_robots != 0:
             raise ValueError(
-                f"ControllerDifferentialIK: replicated model body_count={self._model.body_count} is "
+                f"ControlLawDifferentialIK: replicated model body_count={self._model.body_count} is "
                 f"not divisible by num_robots={self._num_robots}."
             )
         self._bodies_per_robot = self._model.body_count // self._num_robots
@@ -415,8 +415,8 @@ class ControllerDifferentialIK(Controller):
 
     def compute(
         self,
-        state: Controller.State | None,
-        next_state: Controller.State | None,
+        state: ControlLaw.State | None,
+        next_state: ControlLaw.State | None,
         dt: float,
     ) -> None:
         n = len(self.indices)

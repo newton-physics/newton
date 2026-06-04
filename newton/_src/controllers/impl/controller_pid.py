@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""ControllerPID — stateful PID controller with anti-windup."""
+"""ControlLawPID — stateful PID controller with anti-windup."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import warp as wp
 
-from ..base import Controller
+from ..base import ControlLaw
 from ..utils import _normalize_port
 
 
@@ -61,7 +61,7 @@ def _pid_masked_reset_kernel(
         integral[i] = target_integral[i]
 
 
-class ControllerPID(Controller):
+class ControlLawPID(ControlLaw):
     """Stateful PID controller with symmetric anti-windup clamping.
 
     Independent per-DOF: ``output[i]`` depends only on the ``i``-th entries of
@@ -95,7 +95,7 @@ class ControllerPID(Controller):
     """
 
     @dataclass
-    class State(Controller.State):
+    class State(ControlLaw.State):
         integral: wp.array[float] | None = None
         """Accumulated integral term, shape ``[N]``."""
 
@@ -114,7 +114,7 @@ class ControllerPID(Controller):
         output,
     ):
         if not isinstance(indices, wp.array):
-            raise TypeError(f"ControllerPID: indices must be wp.array[wp.uint32], got {type(indices).__name__}.")
+            raise TypeError(f"ControlLawPID: indices must be wp.array[wp.uint32], got {type(indices).__name__}.")
         self.indices = indices
         self._measurement = _normalize_port(measurement, indices, name="measurement")
         self._measurement_rate = _normalize_port(measurement_rate, indices, name="measurement_rate")
@@ -135,8 +135,8 @@ class ControllerPID(Controller):
     def is_graphable(self) -> bool:
         return True
 
-    def state(self, num_outputs: int, device: wp.Device, requires_grad: bool = False) -> ControllerPID.State:
-        return ControllerPID.State(
+    def state(self, num_outputs: int, device: wp.Device, requires_grad: bool = False) -> ControlLawPID.State:
+        return ControlLawPID.State(
             integral=wp.zeros(num_outputs, dtype=wp.float32, device=device, requires_grad=requires_grad),
         )
 
@@ -145,8 +145,8 @@ class ControllerPID(Controller):
 
     def compute(
         self,
-        state: ControllerPID.State,
-        next_state: ControllerPID.State,
+        state: ControlLawPID.State,
+        next_state: ControlLawPID.State,
         dt: float,
     ) -> None:
         meas, meas_idx = self._measurement
@@ -187,7 +187,7 @@ class ControllerPID(Controller):
 
     def reset(
         self,
-        state: ControllerPID.State,
+        state: ControlLawPID.State,
         mask: wp.array[wp.bool],
     ) -> None:
         wp.launch(

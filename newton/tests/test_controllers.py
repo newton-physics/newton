@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for newton.controllers — framework and ControllerPID."""
+"""Tests for newton.controllers — framework and ControlLawPID."""
 
 import unittest
 
@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.controllers import ControlGroup, ControllerDifferentialIK, ControllerPID
+from newton.controllers import ControlLawDifferentialIK, ControlLawPID, Controller
 
 
 # Tape-aware scalar sum (wp.utils.array_sum calls a native C reducer, so it
@@ -20,7 +20,7 @@ def _sum_kernel(values: wp.array[float], out: wp.array[float]):
     wp.atomic_add(out, 0, values[i])
 
 
-class TestControllerPID(unittest.TestCase):
+class TestControlLawPID(unittest.TestCase):
     def test_proportional_only(self):
         """kp * (setpoint - measurement) with no integral or derivative."""
         device = wp.get_device()
@@ -28,7 +28,7 @@ class TestControllerPID(unittest.TestCase):
         identity = wp.array([0, 1, 2], dtype=wp.uint32, device=device)
         output = wp.zeros(3, dtype=wp.float32, device=device)
 
-        pid = ControllerPID(
+        pid = ControlLawPID(
             indices=indices,
             measurement=wp.zeros(3, dtype=wp.float32, device=device),
             measurement_rate=wp.zeros(3, dtype=wp.float32, device=device),
@@ -40,7 +40,7 @@ class TestControllerPID(unittest.TestCase):
             integral_max=(wp.array([np.inf, np.inf, np.inf], dtype=wp.float32, device=device), identity),
             output=output,
         )
-        group = ControlGroup([pid])
+        group = Controller([pid])
 
         s0 = group.state()
         s1 = group.state()
@@ -55,7 +55,7 @@ class TestControllerPID(unittest.TestCase):
         identity = wp.array([0], dtype=wp.uint32, device=device)
         output = wp.zeros(1, dtype=wp.float32, device=device)
 
-        pid = ControllerPID(
+        pid = ControlLawPID(
             indices=indices,
             measurement=wp.zeros(1, dtype=wp.float32, device=device),
             measurement_rate=wp.zeros(1, dtype=wp.float32, device=device),
@@ -67,7 +67,7 @@ class TestControllerPID(unittest.TestCase):
             integral_max=(wp.array([np.inf], dtype=wp.float32, device=device), identity),
             output=output,
         )
-        group = ControlGroup([pid])
+        group = Controller([pid])
 
         s0 = group.state()
         s1 = group.state()
@@ -91,7 +91,7 @@ class TestControllerPID(unittest.TestCase):
         identity = wp.array([0], dtype=wp.uint32, device=device)
         output = wp.zeros(1, dtype=wp.float32, device=device)
 
-        pid = ControllerPID(
+        pid = ControlLawPID(
             indices=indices,
             measurement=wp.zeros(1, dtype=wp.float32, device=device),
             measurement_rate=wp.zeros(1, dtype=wp.float32, device=device),
@@ -103,7 +103,7 @@ class TestControllerPID(unittest.TestCase):
             integral_max=(wp.array([0.3], dtype=wp.float32, device=device), identity),
             output=output,
         )
-        group = ControlGroup([pid])
+        group = Controller([pid])
 
         s0 = group.state()
         s1 = group.state()
@@ -113,7 +113,7 @@ class TestControllerPID(unittest.TestCase):
             s0, s1 = s1, s0
 
         self.assertAlmostEqual(float(output.numpy()[0]), 0.3, places=5)
-        self.assertAlmostEqual(float(s0.controller_states[0].integral.numpy()[0]), 0.3, places=5)
+        self.assertAlmostEqual(float(s0.control_law_states[0].integral.numpy()[0]), 0.3, places=5)
 
     def test_reset_zeros_integral(self):
         """Default reset_state is zero; group.reset clears the integral."""
@@ -121,7 +121,7 @@ class TestControllerPID(unittest.TestCase):
         indices = wp.array([0, 1], dtype=wp.uint32, device=device)
         identity = wp.array([0, 1], dtype=wp.uint32, device=device)
 
-        pid = ControllerPID(
+        pid = ControlLawPID(
             indices=indices,
             measurement=wp.zeros(2, dtype=wp.float32, device=device),
             measurement_rate=wp.zeros(2, dtype=wp.float32, device=device),
@@ -133,17 +133,17 @@ class TestControllerPID(unittest.TestCase):
             integral_max=(wp.array([np.inf, np.inf], dtype=wp.float32, device=device), identity),
             output=wp.zeros(2, dtype=wp.float32, device=device),
         )
-        group = ControlGroup([pid])
+        group = Controller([pid])
 
         s0 = group.state()
         s1 = group.state()
         for _ in range(5):
             group.step(s0, s1, dt=0.1)
             s0, s1 = s1, s0
-        self.assertTrue(np.all(s0.controller_states[0].integral.numpy() > 0.0))
+        self.assertTrue(np.all(s0.control_law_states[0].integral.numpy() > 0.0))
 
         group.reset(s0, mask=wp.array([True, True], dtype=wp.bool, device=device))
-        np.testing.assert_allclose(s0.controller_states[0].integral.numpy(), [0.0, 0.0], atol=1e-7)
+        np.testing.assert_allclose(s0.control_law_states[0].integral.numpy(), [0.0, 0.0], atol=1e-7)
 
     def test_reset_to_nonzero_target(self):
         """Mutating reset_state changes what reset writes; mask selects entries."""
@@ -151,7 +151,7 @@ class TestControllerPID(unittest.TestCase):
         indices = wp.array([0, 1, 2], dtype=wp.uint32, device=device)
         identity = wp.array([0, 1, 2], dtype=wp.uint32, device=device)
 
-        pid = ControllerPID(
+        pid = ControlLawPID(
             indices=indices,
             measurement=wp.zeros(3, dtype=wp.float32, device=device),
             measurement_rate=wp.zeros(3, dtype=wp.float32, device=device),
@@ -163,7 +163,7 @@ class TestControllerPID(unittest.TestCase):
             integral_max=(wp.array([np.inf, np.inf, np.inf], dtype=wp.float32, device=device), identity),
             output=wp.zeros(3, dtype=wp.float32, device=device),
         )
-        group = ControlGroup([pid])
+        group = Controller([pid])
 
         s0 = group.state()
         s1 = group.state()
@@ -174,16 +174,16 @@ class TestControllerPID(unittest.TestCase):
         pid.reset_state.integral.assign(wp.array([0.7, 0.8, 0.9], dtype=wp.float32, device=device))
 
         # Reset only slots 0 and 2 — slot 1 keeps its accumulated value.
-        before = s0.controller_states[0].integral.numpy().copy()
+        before = s0.control_law_states[0].integral.numpy().copy()
         group.reset(s0, mask=wp.array([True, False, True], dtype=wp.bool, device=device))
-        after = s0.controller_states[0].integral.numpy()
+        after = s0.control_law_states[0].integral.numpy()
 
         self.assertAlmostEqual(float(after[0]), 0.7, places=5)
         self.assertAlmostEqual(float(after[1]), float(before[1]), places=5)
         self.assertAlmostEqual(float(after[2]), 0.9, places=5)
 
     def test_gradient_flows_with_requires_grad(self):
-        """With ControlGroup(..., requires_grad=True), gradients from a loss on
+        """With Controller(..., requires_grad=True), gradients from a loss on
         the output array flow back to a requires_grad=True setpoint."""
         device = wp.get_device()
         identity = wp.array([0, 1, 2], dtype=wp.uint32, device=device)
@@ -191,7 +191,7 @@ class TestControllerPID(unittest.TestCase):
         # Setpoint carries the gradient we want to recover.
         setpoint = wp.array([1.0, 2.0, -1.0], dtype=wp.float32, device=device, requires_grad=True)
 
-        pid = ControllerPID(
+        pid = ControlLawPID(
             indices=wp.array([0, 1, 2], dtype=wp.uint32, device=device),
             measurement=wp.zeros(3, dtype=wp.float32, device=device),
             measurement_rate=wp.zeros(3, dtype=wp.float32, device=device),
@@ -203,7 +203,7 @@ class TestControllerPID(unittest.TestCase):
             integral_max=(wp.array([np.inf, np.inf, np.inf], dtype=wp.float32, device=device), identity),
             output=output,
         )
-        group = ControlGroup([pid], requires_grad=True)
+        group = Controller([pid], requires_grad=True)
 
         s0 = group.state()
         s1 = group.state()
@@ -219,7 +219,7 @@ class TestControllerPID(unittest.TestCase):
         np.testing.assert_allclose(setpoint.grad.numpy(), [2.0, 2.0, 2.0], atol=1e-5)
 
 
-class TestControllerDifferentialIK(unittest.TestCase):
+class TestControlLawDifferentialIK(unittest.TestCase):
     def test_target_equals_current_gives_zero_velocity(self):
         """With target == current site pose, the DLS solve produces q_dot ≈ 0."""
         device = wp.get_device()
@@ -252,7 +252,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
         indices = wp.array([0, 1], dtype=wp.uint32, device=device)
         output_qd = wp.zeros(2, dtype=wp.float32, device=device)
         output_q = wp.zeros(2, dtype=wp.float32, device=device)
-        diffik = ControllerDifferentialIK(
+        diffik = ControlLawDifferentialIK(
             model_builder=builder,
             indices=indices,
             site="tip",
@@ -265,7 +265,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
             output_qd=output_qd,
             output_q=output_q,
         )
-        group = ControlGroup([diffik])
+        group = Controller([diffik])
 
         s0 = group.state()
         s1 = group.state()
@@ -302,7 +302,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
         indices = wp.array([0, 1], dtype=wp.uint32, device=device)
         output_qd = wp.zeros(2, dtype=wp.float32, device=device)
         output_q = wp.zeros(2, dtype=wp.float32, device=device)
-        diffik = ControllerDifferentialIK(
+        diffik = ControlLawDifferentialIK(
             model_builder=builder,
             indices=indices,
             site="tip",
@@ -316,7 +316,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
             output_qd=output_qd,
             output_q=output_q,
         )
-        group = ControlGroup([diffik])
+        group = Controller([diffik])
 
         s0 = group.state()
         s1 = group.state()
@@ -355,7 +355,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
         joint_q = wp.array([0.2, -0.3], dtype=wp.float32, device=device)
         output_qd = wp.zeros(2, dtype=wp.float32, device=device)
         output_q = wp.zeros(2, dtype=wp.float32, device=device)
-        diffik = ControllerDifferentialIK(
+        diffik = ControlLawDifferentialIK(
             model_builder=builder,
             indices=indices,
             site="tip",
@@ -368,7 +368,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
             output_qd=output_qd,
             output_q=output_q,
         )
-        group = ControlGroup([diffik])
+        group = Controller([diffik])
 
         s0 = group.state()
         s1 = group.state()
@@ -447,7 +447,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
         indices = wp.array([0], dtype=wp.uint32, device=device)
         output_qd = wp.zeros(1, dtype=wp.float32, device=device)
         output_q = wp.zeros(1, dtype=wp.float32, device=device)
-        diffik = ControllerDifferentialIK(
+        diffik = ControlLawDifferentialIK(
             model_builder=builder,
             indices=indices,
             site="tool",
@@ -460,7 +460,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
             output_qd=output_qd,
             output_q=output_q,
         )
-        group = ControlGroup([diffik])
+        group = Controller([diffik])
 
         s0 = group.state()
         s1 = group.state()
@@ -470,7 +470,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
         self.assertAlmostEqual(float(output_qd.numpy()[0]), expected_qd, places=5)
 
     def test_runs_inside_wp_tape_without_crashing(self):
-        """With ControlGroup(..., requires_grad=True), the DiffIK controller
+        """With Controller(..., requires_grad=True), the DiffIK controller
         can be wrapped in a wp.Tape and stepped without error.
 
         The DLS solve kernel is marked enable_backward=False because Warp
@@ -505,7 +505,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
         output_qd = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
         output_q = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
         target_pos = wp.array([wp.vec3(1.0, 0.1, 0.0)], dtype=wp.vec3, device=device, requires_grad=True)
-        diffik = ControllerDifferentialIK(
+        diffik = ControlLawDifferentialIK(
             model_builder=builder,
             indices=indices,
             site="tool",
@@ -518,7 +518,7 @@ class TestControllerDifferentialIK(unittest.TestCase):
             output_qd=output_qd,
             output_q=output_q,
         )
-        group = ControlGroup([diffik], requires_grad=True)
+        group = Controller([diffik], requires_grad=True)
 
         s0 = group.state()
         s1 = group.state()

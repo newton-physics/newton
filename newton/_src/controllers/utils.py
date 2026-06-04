@@ -12,7 +12,7 @@ import warp as wp
 
 def _normalize_port(
     port,
-    controller_indices: wp.array[wp.uint32],
+    control_law_indices: wp.array[wp.uint32],
     *,
     name: str,
 ) -> tuple[wp.array, wp.array[wp.uint32]]:
@@ -20,9 +20,9 @@ def _normalize_port(
 
     Args:
         port: Either a bare :class:`wp.array` (in which case ``port_indices``
-            defaults to ``controller_indices``) or a ``(array, port_indices)``
+            defaults to ``control_law_indices``) or a ``(array, port_indices)``
             tuple.
-        controller_indices: Controller-level lookup, used as the default
+        control_law_indices: ControlLaw-level lookup, used as the default
             when ``port`` is bare.
         name: Port name used in error messages.
 
@@ -37,14 +37,14 @@ def _normalize_port(
             raise TypeError(f"Port '{name}': first tuple element must be wp.array, got {type(array).__name__}.")
         if not isinstance(port_indices, wp.array):
             raise TypeError(f"Port '{name}': second tuple element must be wp.array, got {type(port_indices).__name__}.")
-        if port_indices.shape != controller_indices.shape:
+        if port_indices.shape != control_law_indices.shape:
             raise ValueError(
                 f"Port '{name}': port_indices shape {port_indices.shape} must match "
-                f"controller indices shape {controller_indices.shape}."
+                f"ControlLaw indices shape {control_law_indices.shape}."
             )
     elif isinstance(port, wp.array):
         array = port
-        port_indices = controller_indices
+        port_indices = control_law_indices
     else:
         raise TypeError(f"Port '{name}': expected wp.array or (wp.array, wp.array) tuple, got {type(port).__name__}.")
     return array, port_indices
