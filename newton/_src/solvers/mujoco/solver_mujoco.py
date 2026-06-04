@@ -28,6 +28,7 @@ from ...sim import (
     ModelBuilder,
     ModelFlags,
     State,
+    StateFlags,
 )
 from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
 from ...sim.graph_coloring import color_graph, plot_graph
@@ -64,6 +65,8 @@ from .kernels import (
     eval_articulation_fk,
     recompute_jnt_eq_anchor1_kernel,
     repeat_array_kernel,
+    reset_joint_state_kernel,
+    reset_world_buffers_kernel,
     sync_qpos0_kernel,
     update_axis_properties_kernel,
     update_body_inertia_kernel,
@@ -3527,6 +3530,118 @@ class SolverMuJoCo(SolverBase):
 
             self._update_newton_state(self.model, state_out, self.mjw_data, state_prev=state_in)
         self._step += 1
+
+    @override
+    def reset(
+        self,
+        state: State,
+        world_mask: wp.array | None = None,
+        flags: StateFlags | int | None = None,
+    ) -> None:
+        """Reset joint state to model defaults and clear MuJoCo's internal buffers.
+
+        MuJoCo carries solver state (acceleration warm-start, actuator
+        activations) and applied-force inputs across :meth:`step` calls. After a
+        divergence (e.g. NaNs), these buffers can poison the next step even once
+        the joint state has been reset, because :meth:`step` warm-starts from
+        them. This method therefore always zeros, per world, ``qacc_warmstart``,
+        ``qfrc_applied``, ``xfrc_applied``, ``act`` and ``ctrl``. (``qacc`` is
+        left alone: the solver overwrites it from ``qacc_warmstart`` at the start
+        of every step.)
+
+        In addition, the requested entries of the Newton :class:`~newton.State`
+        are reset to the model defaults (``model.joint_q`` / ``model.joint_qd``)
+        for the selected worlds, controlled by *flags*:
+
+        * :attr:`~newton.StateFlags.JOINT_Q` resets ``state.joint_q``.
+        * :attr:`~newton.StateFlags.JOINT_QD` resets ``state.joint_qd``.
+
+        Because MuJoCo is a reduced-coordinate solver, ``state.body_q`` /
+        ``state.body_qd`` are derived from the joint coordinates by forward
+        kinematics on the next :meth:`step`; the corresponding
+        :attr:`~newton.StateFlags.BODY_Q` / :attr:`~newton.StateFlags.BODY_QD`
+        (and particle) flags are not actionable here and are ignored.
+
+        ``qpos`` / ``qvel`` are normally synced from the reset ``state`` at the
+        start of the next :meth:`step`. When ``update_data_interval != 1`` that
+        per-step sync is disabled or sparse, so the reset joint coordinates are
+        pushed into ``qpos`` / ``qvel`` immediately instead (for all worlds;
+        unmasked worlds round-trip through their current joint coordinates).
+
+        Args:
+            state: The simulation state to reset (modified in place).
+            world_mask: Optional boolean mask of shape ``(world_count,)``
+                selecting which worlds to reset. If ``None``, all worlds are
+                reset.
+            flags: Optional :class:`~newton.StateFlags` bitmask controlling which
+                joint-state quantities are reset. If ``None``, all are reset.
+                The internal MuJoCo buffers are always cleared regardless.
+        """
+        world_count = self.model.world_count
+        if world_mask is not None and world_mask.shape[0] != world_count:
+            raise ValueError(
+                f"world_mask has length {world_mask.shape[0]}, expected {world_count} (one entry per world)."
+            )
+
+        # Reset joint coordinates/velocities to model defaults for the selected
+        # worlds. body_q/body_qd are FK outputs and intentionally not touched.
+        flags_value = int(StateFlags.ALL if flags is None else flags)
+        reset_q = bool(flags_value & StateFlags.JOINT_Q) and state.joint_q is not None
+        reset_qd = bool(flags_value & StateFlags.JOINT_QD) and state.joint_qd is not None
+        if reset_q or reset_qd:
+            coords_per_world = self.model.joint_coord_count // world_count
+            dofs_per_world = self.model.joint_dof_count // world_count
+            joint_dim = max(coords_per_world if reset_q else 0, dofs_per_world if reset_qd else 0)
+            if joint_dim > 0:
+                wp.launch(
+                    reset_joint_state_kernel,
+                    dim=(world_count, joint_dim),
+                    inputs=[
+                        world_mask,
+                        coords_per_world,
+                        dofs_per_world,
+                        self.model.joint_q,
+                        self.model.joint_qd,
+                        state.joint_q if reset_q else None,
+                        state.joint_qd if reset_qd else None,
+                    ],
+                    device=self.model.device,
+                )
+                # At the default update_data_interval (1), step() syncs
+                # state -> qpos/qvel every step, so the reset propagates on its
+                # own. Otherwise push it now so it is not lost before the next
+                # sync. _update_mjc_data syncs all worlds; unmasked worlds simply
+                # round-trip through their current joint coordinates.
+                if self.update_data_interval != 1:
+                    data = self.mj_data if self.use_mujoco_cpu else self.mjw_data
+                    if data is not None:
+                        self._update_mjc_data(data, self.model, state)
+
+        # Clear the internal buffers that persist between steps.
+        if self.use_mujoco_cpu:
+            d = self.mj_data
+            if d is None:
+                return
+            # Single MjData instance: clear the whole buffers (no per-world mask).
+            d.qacc_warmstart[:] = 0.0
+            d.qfrc_applied[:] = 0.0
+            d.ctrl[:] = 0.0
+            d.act[:] = 0.0
+            d.xfrc_applied[:] = 0.0
+            return
+
+        d = self.mjw_data
+        if d is None:
+            return
+
+        buffers = (d.qacc_warmstart, d.qfrc_applied, d.ctrl, d.act, d.xfrc_applied)
+        buffer_dim = max(buffer.shape[1] for buffer in buffers)
+        wp.launch(
+            reset_world_buffers_kernel,
+            dim=(d.nworld, buffer_dim),
+            inputs=[world_mask, *buffers],
+            device=self.model.device,
+        )
 
     def _enable_rne_postconstraint(self, state_out: State):
         """Request computation of RNE forces if required for state fields."""

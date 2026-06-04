@@ -2973,3 +2973,62 @@ def update_pair_properties_kernel(
 
     if pair_friction_in:
         pair_friction_out[world, mjc_pair] = pair_friction_in[newton_pair]
+
+
+@wp.kernel(enable_backward=False)
+def reset_world_buffers_kernel(
+    world_mask: wp.array[wp.bool],
+    qacc_warmstart: wp.array2d[wp.float32],
+    qfrc_applied: wp.array2d[wp.float32],
+    ctrl: wp.array2d[wp.float32],
+    act: wp.array2d[wp.float32],
+    xfrc_applied: wp.array2d[wp.spatial_vector],
+):
+    """Zero the persistent MuJoCo buffers for the worlds selected by ``world_mask``.
+
+    A ``None`` ``world_mask`` resets every world. Launched over
+    ``(world, max_dim)`` where ``max_dim`` covers the widest buffer; each buffer
+    is guarded by its own column count. ``qacc_warmstart`` and ``qfrc_applied``
+    share the DOF dimension. ``qacc`` is intentionally omitted: the solver
+    overwrites it from ``qacc_warmstart`` at the start of every step.
+    """
+    worldid, i = wp.tid()
+    if world_mask and not world_mask[worldid]:
+        return
+    if i < qacc_warmstart.shape[1]:
+        qacc_warmstart[worldid, i] = 0.0
+        qfrc_applied[worldid, i] = 0.0
+    if i < ctrl.shape[1]:
+        ctrl[worldid, i] = 0.0
+    if i < act.shape[1]:
+        act[worldid, i] = 0.0
+    if i < xfrc_applied.shape[1]:
+        xfrc_applied[worldid, i] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+@wp.kernel(enable_backward=False)
+def reset_joint_state_kernel(
+    world_mask: wp.array[wp.bool],
+    coords_per_world: int,
+    dofs_per_world: int,
+    default_joint_q: wp.array[wp.float32],
+    default_joint_qd: wp.array[wp.float32],
+    joint_q: wp.array[wp.float32],
+    joint_qd: wp.array[wp.float32],
+):
+    """Reset per-world joint coordinates/velocities to the model defaults.
+
+    A ``None`` ``world_mask`` resets every world. ``joint_q`` and/or
+    ``joint_qd`` may be ``None`` to leave that quantity untouched. Worlds are
+    assumed to hold contiguous, equal-sized coordinate/DOF blocks (the same
+    layout the MuJoCo state-conversion kernels rely on).
+    """
+    worldid, i = wp.tid()
+    if world_mask and not world_mask[worldid]:
+        return
+    if joint_q and i < coords_per_world:
+        qi = worldid * coords_per_world + i
+        joint_q[qi] = default_joint_q[qi]
+    if joint_qd and i < dofs_per_world:
+        di = worldid * dofs_per_world + i
+        joint_qd[di] = default_joint_qd[di]
