@@ -338,8 +338,10 @@ class TestImportMjcfBasic(unittest.TestCase):
             try:
                 native_m = mujoco.MjModel.from_xml_string(mjcf)
             except Exception:
-                # MuJoCo rejected this eulerseq; Newton must too.
-                with self.assertRaises(Exception, msg=f"Newton accepts eulerseq={seq!r} that MuJoCo rejects"):
+                # MuJoCo rejected this eulerseq; Newton must too. Either side
+                # may raise an MJCF-parsing-specific exception type we don't
+                # want to enumerate, so the assertion is intentionally broad.
+                with self.assertRaises(Exception, msg=f"Newton accepts eulerseq={seq!r} that MuJoCo rejects"):  # noqa: B017
                     newton.ModelBuilder().add_mjcf(mjcf)
                 continue
 
