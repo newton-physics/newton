@@ -131,9 +131,9 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(list(model.body_label), ["root", "tip"])
         self.assertEqual(view.link_count, 2)
         self.assertEqual(view.link_names, ["root", "tip"])
-        self.assertEqual(view.link_template_labels, ["root", "tip"])
+        self.assertEqual(view.link_labels, ["root", "tip"])
         self.assertEqual(view.shape_count, 1)
-        self.assertEqual(view.shape_template_labels, ["tip_shape"])
+        self.assertEqual(view.shape_labels, ["tip_shape"])
 
         body_layout = view.frequency_layouts[newton.Model.AttributeFrequency.BODY]
         self.assertEqual(body_layout.value_count, len(model.body_label))
