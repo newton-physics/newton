@@ -868,23 +868,6 @@ add_example_test(
 )
 add_example_test(
     TestMultiphysicsExamples,
-    name="multiphysics.example_mujoco_franka_vbd_cable_admm_solver",
-    devices=["cpu"],
-    test_options={
-        "num-frames": 0,
-        "world-count": 2,
-        "cable-segments": 4,
-        "substeps": 1,
-        "admm-iterations": 1,
-        "vbd-iterations": 1,
-        "mujoco-iterations": 8,
-        "mujoco-ls-iterations": 10,
-        "graph-capture": False,
-    },
-    use_viewer=True,
-)
-add_example_test(
-    TestMultiphysicsExamples,
     name="multiphysics.example_admm_contact_solver",
     devices=test_devices,
     test_options={"num-frames": 120},

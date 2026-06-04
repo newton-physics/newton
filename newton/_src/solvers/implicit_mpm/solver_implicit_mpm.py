@@ -1188,13 +1188,14 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         body_local_to_proxy_global: wp.array[int],
         out_body_f: wp.array[wp.spatial_vector],
         *,
+        body_qd_before: wp.array[wp.spatial_vector] | None = None,
         state: newton.State | None = None,
         state_out: newton.State | None = None,
         contacts: newton.Contacts | None = None,
         dt: float = 0.0,
     ) -> None:
         """Convert MPM collider grid impulses to proxy-body wrenches."""
-        del state_out, contacts
+        del body_qd_before, state_out, contacts
         if dt <= 0.0:
             raise ValueError("MPM proxy wrench harvesting requires a positive dt")
 
@@ -1263,6 +1264,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         particle_local_to_proxy_global: wp.array[int],
         out_particle_f: wp.array[wp.vec3],
         *,
+        particle_qd_before: wp.array[wp.vec3] | None = None,
         state: newton.State | None = None,
         state_out: newton.State | None = None,
         contacts: newton.Contacts | None = None,
@@ -1275,8 +1277,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if particle_local_to_proxy_global.shape[0] == 0:
             return
 
-        qd_before = None
-        if state is not None and state_out is not None:
+        qd_before = particle_qd_before
+        if qd_before is None and state is not None and state_out is not None:
             qd_before = getattr(self, "_proxy_particle_qd_before", None) if state is state_out else state.particle_qd
 
         if qd_before is not None and state_out is not None:

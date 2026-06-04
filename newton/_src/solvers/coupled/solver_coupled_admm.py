@@ -13,8 +13,7 @@ import numpy as np
 import warp as wp
 
 from ...geometry.flags import ShapeFlags
-from ...sim import JointType
-from ..flags import SolverNotifyFlags
+from ...sim import JointType, ModelFlags
 from .admm_contact_stream import (
     AdmmContactStream,
     AdmmContactType,
@@ -71,7 +70,6 @@ from .admm_utils import (
 )
 from .interface import (
     CouplingEndpointKind,
-    CouplingHook,
     CouplingInputStateFlags,
 )
 from .model_view import ModelView
@@ -819,7 +817,7 @@ class SolverCoupledADMM(SolverCoupled):
 
     def _refresh_model_view_overrides(self, flags: int) -> None:
         super()._refresh_model_view_overrides(flags)
-        if int(flags) & int(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
+        if int(flags) & int(ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._apply_admm_joint_proxy_effective_masses()
 
     def _sum_active_count(self, attr: str) -> int:
@@ -916,7 +914,7 @@ class SolverCoupledADMM(SolverCoupled):
 
         if coupling.gamma > 0.0:
             for entry in self._entries.values():
-                entry.solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+                entry.solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
 
         self._entry_body_sets = {
             name: {int(i) for i in entry.body_indices.numpy()} for name, entry in self._entries.items()
@@ -1039,9 +1037,7 @@ class SolverCoupledADMM(SolverCoupled):
         if (entry_name, int(endpoint_kind)) not in self._admm_effective_mass_unsupported:
             return
         solver = self._entries[entry_name].solver
-        raise NotImplementedError(
-            f"{solver.__class__.__name__} does not support coupling hook {CouplingHook.EFFECTIVE_MASS_DIAGONAL.name}"
-        )
+        raise NotImplementedError(f"{solver.__class__.__name__} does not support coupling_eval_effective_mass()")
 
     @staticmethod
     def _interface_weight(m_a: float, m_b: float) -> float:

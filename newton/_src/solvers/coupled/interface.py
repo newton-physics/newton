@@ -4,21 +4,16 @@
 """Interface contract for multi-solver coupling.
 
 Solvers that participate in coupled simulations inherit
-:class:`CouplingInterface` and override the hook methods they want to provide a
-custom implementation for. Hooks that are fundamentally incompatible with the
-solver can be declared in :attr:`CouplingInterface.coupling_unsupported`.
-
-The coupled wrapper detects custom hook implementations by name lookup on the
-solver instance: if the solver defines the hook method, the wrapper calls it;
-otherwise it uses a generic fallback derived from the shared model/state.
+:class:`CouplingInterface` and override hook methods only when they need
+solver-specific behavior. The mixin methods provide generic defaults derived
+from the solver's model and the hook arguments.
 
 Hook method contract
 --------------------
 
-Hooks are optional instance methods. A solver should define only the methods
-for which it needs custom behavior; missing methods use wrapper fallbacks.
-Instance attributes set to ``None`` are also treated as missing, which lets a
-solver disable a hook when construction-time state is unavailable.
+Hooks are instance methods with default implementations. A solver that cannot
+support a hook should override that method and raise
+:class:`NotImplementedError`.
 
 Endpoint arrays use structure-of-arrays indexing. ``endpoint_kind`` contains
 ``CouplingInterface.EndpointKind`` values, ``endpoint_index`` contains local body
@@ -53,12 +48,26 @@ Supported hook signatures are:
 
 
     def coupling_harvest_proxy_wrenches(
-        body_local_to_proxy_global, out_body_f, *, state=None, state_out=None, contacts=None, dt=0.0
+        body_local_to_proxy_global,
+        out_body_f,
+        *,
+        body_qd_before=None,
+        state=None,
+        state_out=None,
+        contacts=None,
+        dt=0.0,
     ) -> None: ...
 
 
     def coupling_harvest_proxy_particle_forces(
-        particle_local_to_proxy_global, out_particle_f, *, state=None, state_out=None, contacts=None, dt=0.0
+        particle_local_to_proxy_global,
+        out_particle_f,
+        *,
+        particle_qd_before=None,
+        state=None,
+        state_out=None,
+        contacts=None,
+        dt=0.0,
     ) -> None: ...
 
 
@@ -67,8 +76,21 @@ Supported hook signatures are:
 
 from __future__ import annotations
 
-from enum import Enum, IntEnum, IntFlag, auto
-from typing import ClassVar
+from enum import IntEnum, IntFlag
+from typing import TYPE_CHECKING
+
+import numpy as np
+import warp as wp
+
+from .proxy_utils import (
+    harvest_proxy_momentum_forces_kernel,
+    harvest_proxy_particle_momentum_forces_kernel,
+    subtract_proxy_forces_kernel,
+    subtract_proxy_particle_forces_kernel,
+)
+
+if TYPE_CHECKING:
+    from ...sim import Contacts, State
 
 __all__ = ["CouplingInterface"]
 
@@ -78,30 +100,14 @@ class CouplingInterface:
 
     Inheriting buys into the coupling contract:
 
-    - Hook overrides are detected by method name lookup. Override the hook
-      method on the solver class to provide a custom implementation; the
-      coupled wrapper will call it. If the method is not defined, the wrapper
-      falls back to its own generic logic derived from the shared model/state.
-    - List a ``CouplingInterface.Hook`` value in
-      :attr:`coupling_unsupported` to declare that no fallback can produce a
-      meaningful result for this solver. The wrapper raises
-      :class:`NotImplementedError` rather than silently using a fallback.
+    - Override hook methods on the solver class to provide custom behavior.
+      Otherwise, the mixin's generic defaults are used.
+    - Override a hook and raise :class:`NotImplementedError` when no generic
+      default can produce a meaningful result for the solver.
 
-    The nested ``Hook``, ``InputStateFlags``, and ``EndpointKind`` enums keep
-    the public coupling namespace compact.
+    The nested ``InputStateFlags`` and ``EndpointKind`` enums keep the public
+    coupling namespace compact.
     """
-
-    class Hook(Enum):
-        """Coupling dispatch points exposed by coupled solvers."""
-
-        BODY_PROXY_REWIND_VELOCITY = auto()
-        PARTICLE_PROXY_REWIND_VELOCITY = auto()
-        BODY_PROXY_HARVEST = auto()
-        PARTICLE_PROXY_HARVEST = auto()
-        EFFECTIVE_MASS_DIAGONAL = auto()
-        EFFECTIVE_MASS_BLOCK = auto()
-        NOTIFY_INPUT_STATE_UPDATE = auto()
-        PROXY_CONTACT_PREPARE = auto()
 
     class EndpointKind(IntEnum):
         """Kinds of model endpoints addressed by coupling hooks."""
@@ -128,21 +134,243 @@ class CouplingInterface:
         FORCE = BODY_F | PARTICLE_F | JOINT_F
         ALL = BODY | PARTICLE | JOINT | FORCE
 
-    coupling_unsupported: ClassVar[frozenset[Hook]] = frozenset()
+    def coupling_eval_effective_mass(
+        self,
+        endpoint_kind: wp.array[int],
+        endpoint_index: wp.array[int],
+        endpoint_local_pos: wp.array[wp.vec3],
+        out: wp.array[float],
+    ) -> None:
+        """Evaluate scalar effective masses for coupling endpoints.
+
+        Args:
+            endpoint_kind: Endpoint kinds.
+            endpoint_index: Endpoint-local body or particle ids.
+            endpoint_local_pos: Body-frame endpoint positions [m].
+            out: Output effective masses [kg].
+        """
+        del endpoint_local_pos
+        if out.shape[0] == 0:
+            return
+
+        model = self.model
+        body_inv_mass = model.body_inv_mass.numpy() if getattr(model, "body_inv_mass", None) is not None else []
+        particle_inv_mass = (
+            model.particle_inv_mass.numpy() if getattr(model, "particle_inv_mass", None) is not None else []
+        )
+
+        values: list[float] = []
+        for raw_kind, raw_index in zip(endpoint_kind.numpy(), endpoint_index.numpy(), strict=True):
+            kind = int(raw_kind)
+            index = int(raw_index)
+            if kind == int(CouplingInterface.EndpointKind.BODY):
+                inv_mass = float(body_inv_mass[index]) if 0 <= index < len(body_inv_mass) else 0.0
+            elif kind == int(CouplingInterface.EndpointKind.PARTICLE):
+                inv_mass = float(particle_inv_mass[index]) if 0 <= index < len(particle_inv_mass) else 0.0
+            else:
+                raise ValueError(f"Unknown coupling endpoint kind {kind}")
+            values.append(0.0 if inv_mass == 0.0 else 1.0 / inv_mass)
+
+        wp.copy(out, wp.array(values, dtype=float, device=model.device))
+
+    def coupling_eval_effective_mass_block(
+        self,
+        endpoint_kind: wp.array[int],
+        endpoint_index: wp.array[int],
+        endpoint_local_pos: wp.array[wp.vec3],
+        out_mass: wp.array[float],
+        out_inertia: wp.array[wp.mat33] | None = None,
+    ) -> None:
+        """Evaluate effective mass and inertia blocks for coupling endpoints.
+
+        Args:
+            endpoint_kind: Endpoint kinds.
+            endpoint_index: Endpoint-local body or particle ids.
+            endpoint_local_pos: Body-frame endpoint positions [m].
+            out_mass: Output effective masses [kg].
+            out_inertia: Optional output body inertia tensors [kg m^2].
+        """
+        self.coupling_eval_effective_mass(endpoint_kind, endpoint_index, endpoint_local_pos, out_mass)
+        if out_inertia is None or out_inertia.shape[0] == 0:
+            return
+
+        model = self.model
+        masses = out_mass.numpy()
+        body_mass = model.body_mass.numpy() if getattr(model, "body_mass", None) is not None else []
+        body_inertia = model.body_inertia.numpy() if getattr(model, "body_inertia", None) is not None else []
+
+        inertias: list[wp.mat33] = []
+        for raw_kind, raw_index, mass in zip(endpoint_kind.numpy(), endpoint_index.numpy(), masses, strict=True):
+            kind = int(raw_kind)
+            index = int(raw_index)
+            if kind != int(CouplingInterface.EndpointKind.BODY) or index < 0 or index >= len(body_inertia):
+                inertias.append(wp.mat33(0.0))
+                continue
+
+            inertia = np.asarray(body_inertia[index], dtype=np.float32)
+            base_mass = float(body_mass[index]) if index < len(body_mass) else 0.0
+            if base_mass > 0.0:
+                inertia = inertia * (float(mass) / base_mass)
+            inertias.append(wp.mat33(inertia))
+
+        wp.copy(out_inertia, wp.array(inertias, dtype=wp.mat33, device=model.device))
+
+    def coupling_notify_input_state_update(
+        self,
+        state: State,
+        flags: InputStateFlags | int,
+        *,
+        restart: bool = False,
+        dt: float = 0.0,
+    ) -> None:
+        """React to coupler-produced input state updates."""
+        del state, flags, restart, dt
+
+    def coupling_rewind_proxy_body_velocity(
+        self,
+        body_local_to_proxy_global: wp.array[int],
+        state: State,
+        coupling_forces: wp.array[wp.spatial_vector],
+        dt: float,
+    ) -> None:
+        """Remove lagged proxy feedback, public forces, and gravity from body velocities."""
+        if body_local_to_proxy_global.shape[0] == 0 or state.body_qd is None:
+            return
+
+        model = self.model
+        wp.launch(
+            subtract_proxy_forces_kernel,
+            dim=body_local_to_proxy_global.shape[0],
+            inputs=[
+                float(dt),
+                model.gravity,
+                model.body_world,
+                state.body_q,
+                state.body_f,
+                coupling_forces,
+                body_local_to_proxy_global,
+                model.body_inv_mass,
+                model.body_inv_inertia,
+                state.body_qd,
+            ],
+            device=model.device,
+        )
+
+    def coupling_rewind_proxy_particle_velocity(
+        self,
+        particle_local_to_proxy_global: wp.array[int],
+        state: State,
+        coupling_forces: wp.array[wp.vec3],
+        dt: float,
+    ) -> None:
+        """Remove lagged proxy feedback, public forces, and gravity from particle velocities."""
+        if particle_local_to_proxy_global.shape[0] == 0 or state.particle_qd is None:
+            return
+
+        model = self.model
+        wp.launch(
+            subtract_proxy_particle_forces_kernel,
+            dim=particle_local_to_proxy_global.shape[0],
+            inputs=[
+                float(dt),
+                model.gravity,
+                model.particle_world,
+                state.particle_f,
+                coupling_forces,
+                particle_local_to_proxy_global,
+                model.particle_inv_mass,
+                state.particle_qd,
+            ],
+            device=model.device,
+        )
+
+    def coupling_harvest_proxy_wrenches(
+        self,
+        body_local_to_proxy_global: wp.array[int],
+        out_body_f: wp.array[wp.spatial_vector],
+        *,
+        body_qd_before: wp.array[wp.spatial_vector] | None = None,
+        state: State | None = None,
+        state_out: State | None = None,
+        contacts: Contacts | None = None,
+        dt: float = 0.0,
+    ) -> None:
+        """Estimate proxy-body feedback from destination momentum change."""
+        del state, contacts
+        if body_local_to_proxy_global.shape[0] == 0:
+            return
+        if body_qd_before is None or state_out is None or state_out.body_qd is None:
+            raise ValueError("Default body proxy harvest requires body_qd_before and state_out.body_qd")
+        if dt <= 0.0:
+            raise ValueError("Default body proxy harvest requires dt > 0")
+
+        model = self.model
+        wp.launch(
+            harvest_proxy_momentum_forces_kernel,
+            dim=body_local_to_proxy_global.shape[0],
+            inputs=[
+                float(dt),
+                body_local_to_proxy_global,
+                body_qd_before,
+                state_out.body_qd,
+                model.body_mass,
+                model.body_inertia,
+                state_out.body_q,
+                model.gravity,
+                model.body_world,
+                out_body_f,
+            ],
+            device=model.device,
+        )
+
+    def coupling_harvest_proxy_particle_forces(
+        self,
+        particle_local_to_proxy_global: wp.array[int],
+        out_particle_f: wp.array[wp.vec3],
+        *,
+        particle_qd_before: wp.array[wp.vec3] | None = None,
+        state: State | None = None,
+        state_out: State | None = None,
+        contacts: Contacts | None = None,
+        dt: float = 0.0,
+    ) -> None:
+        """Estimate proxy-particle feedback from destination momentum change."""
+        del state, contacts
+        if particle_local_to_proxy_global.shape[0] == 0:
+            return
+        if particle_qd_before is None or state_out is None or state_out.particle_qd is None:
+            raise ValueError("Default particle proxy harvest requires particle_qd_before and state_out.particle_qd")
+        if dt <= 0.0:
+            raise ValueError("Default particle proxy harvest requires dt > 0")
+
+        model = self.model
+        wp.launch(
+            harvest_proxy_particle_momentum_forces_kernel,
+            dim=particle_local_to_proxy_global.shape[0],
+            inputs=[
+                float(dt),
+                particle_local_to_proxy_global,
+                particle_qd_before,
+                state_out.particle_qd,
+                model.particle_mass,
+                model.gravity,
+                model.particle_world,
+                out_particle_f,
+            ],
+            device=model.device,
+        )
+
+    def coupling_prepare_proxy_contacts(
+        self,
+        state: State,
+        contacts: Contacts | None,
+        *,
+        contacts_freshly_detected: bool = False,
+    ) -> Contacts | None:
+        """Prepare contacts for a proxy destination solve."""
+        del state, contacts_freshly_detected
+        return contacts
 
 
-CouplingHook = CouplingInterface.Hook
 CouplingEndpointKind = CouplingInterface.EndpointKind
 CouplingInputStateFlags = CouplingInterface.InputStateFlags
-
-
-COUPLING_HOOK_METHOD: dict[CouplingHook, str] = {
-    CouplingHook.BODY_PROXY_REWIND_VELOCITY: "coupling_rewind_proxy_body_velocity",
-    CouplingHook.PARTICLE_PROXY_REWIND_VELOCITY: "coupling_rewind_proxy_particle_velocity",
-    CouplingHook.BODY_PROXY_HARVEST: "coupling_harvest_proxy_wrenches",
-    CouplingHook.PARTICLE_PROXY_HARVEST: "coupling_harvest_proxy_particle_forces",
-    CouplingHook.EFFECTIVE_MASS_DIAGONAL: "coupling_eval_effective_mass",
-    CouplingHook.EFFECTIVE_MASS_BLOCK: "coupling_eval_effective_mass_block",
-    CouplingHook.NOTIFY_INPUT_STATE_UPDATE: "coupling_notify_input_state_update",
-    CouplingHook.PROXY_CONTACT_PREPARE: "coupling_prepare_proxy_contacts",
-}

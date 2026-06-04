@@ -141,12 +141,13 @@ class _KktResponseSolver(SolverBase, CouplingInterface):
         particle_local_to_proxy_global,
         out_particle_f,
         *,
+        particle_qd_before=None,
         state=None,
         state_out=None,
         contacts=None,
         dt=0.0,
     ):
-        del state, state_out, contacts, dt
+        del particle_qd_before, state, state_out, contacts, dt
         wp.launch(
             _scatter_proxy_particle_forces,
             dim=particle_local_to_proxy_global.shape[0],

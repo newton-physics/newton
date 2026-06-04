@@ -453,14 +453,6 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         self._coupling_has_rigid_avbd_state = not self.integrate_with_external_rigid_solver and model.body_count > 0
 
-        # Conditional coupling hooks: the notify and body-proxy harvest hooks
-        # only have meaningful implementations when VBD owns rigid-body AVBD
-        # state. Hide them on this instance otherwise so the coupled wrapper
-        # falls back to its generic logic.
-        if not self._coupling_has_rigid_avbd_state:
-            self.coupling_notify_input_state_update = None
-            self.coupling_harvest_proxy_wrenches = None
-
     def _init_particle_system(
         self,
         model: Model,
@@ -899,15 +891,24 @@ class SolverVBD(SolverBase, CouplingInterface):
         body_local_to_proxy_global: wp.array[int],
         out_body_f: wp.array[wp.spatial_vector],
         *,
-        state=None,
-        state_out=None,
-        contacts=None,
+        body_qd_before: wp.array[wp.spatial_vector] | None = None,
+        state: State | None = None,
+        state_out: State | None = None,
+        contacts: Contacts | None = None,
         dt: float = 0.0,
     ) -> None:
         """Harvest contact-only proxy-body wrenches."""
         del state
         if not self._coupling_has_rigid_avbd_state:
-            raise NotImplementedError("VBD proxy contact harvest requires rigid-body AVBD state")
+            super().coupling_harvest_proxy_wrenches(
+                body_local_to_proxy_global,
+                out_body_f,
+                body_qd_before=body_qd_before,
+                state_out=state_out,
+                contacts=contacts,
+                dt=dt,
+            )
+            return
 
         if contacts is None or state_out is None:
             return
@@ -976,12 +977,14 @@ class SolverVBD(SolverBase, CouplingInterface):
         particle_local_to_proxy_global: wp.array[int],
         out_particle_f: wp.array[wp.vec3],
         *,
-        state=None,
-        state_out=None,
-        contacts=None,
+        particle_qd_before: wp.array[wp.vec3] | None = None,
+        state: State | None = None,
+        state_out: State | None = None,
+        contacts: Contacts | None = None,
         dt: float = 0.0,
     ) -> None:
         """Harvest contact-only proxy-particle forces."""
+        del particle_qd_before
         if self.model.particle_count == 0 or particle_local_to_proxy_global.shape[0] == 0 or state is None:
             return
 

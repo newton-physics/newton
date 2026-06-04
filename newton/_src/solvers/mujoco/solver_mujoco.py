@@ -411,13 +411,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             solver.render_mujoco_viewer()
     """
 
-    coupling_unsupported = frozenset(
-        {
-            CouplingInterface.Hook.BODY_PROXY_HARVEST,
-            CouplingInterface.Hook.PARTICLE_PROXY_HARVEST,
-        }
-    )
-
     class CtrlSource(IntEnum):
         """Control source for MuJoCo actuators.
 
@@ -3471,13 +3464,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
 
-        # Coupling effective-mass hooks rely on MuJoCo Warp-side data. Hide
-        # them on instances that run the CPU path or lack the Warp model so
-        # the coupled wrapper falls back to its generic mass/inertia path.
-        if self.use_mujoco_cpu or self.mjw_model is None or self.mjc_body_to_newton is None:
-            self.coupling_eval_effective_mass = None
-            self.coupling_eval_effective_mass_block = None
-
     @event_scope
     def _mujoco_warp_step(self):
         self._mujoco_warp.step(self.mjw_model, self.mjw_data)
@@ -3662,7 +3648,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             or self.model.body_mass is None
             or self.model.particle_mass is None
         ):
-            out.zero_()
+            super().coupling_eval_effective_mass(endpoint_kind, endpoint_index, endpoint_local_pos, out)
             return
 
         wp.launch(
@@ -3706,8 +3692,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             or self.model.body_inertia is None
             or self.model.particle_mass is None
         ):
-            out_mass.zero_()
-            out_inertia.zero_()
+            super().coupling_eval_effective_mass_block(
+                endpoint_kind,
+                endpoint_index,
+                endpoint_local_pos,
+                out_mass,
+                out_inertia,
+            )
             return
 
         wp.launch(
@@ -3729,6 +3720,38 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             outputs=[out_mass, out_inertia],
             device=self.model.device,
         )
+
+    @override
+    def coupling_harvest_proxy_wrenches(
+        self,
+        body_local_to_proxy_global: wp.array[int],
+        out_body_f: wp.array[wp.spatial_vector],
+        *,
+        body_qd_before: wp.array[wp.spatial_vector] | None = None,
+        state: State | None = None,
+        state_out: State | None = None,
+        contacts: Contacts | None = None,
+        dt: float = 0.0,
+    ) -> None:
+        """Reject proxy-body feedback harvesting."""
+        del body_local_to_proxy_global, out_body_f, body_qd_before, state, state_out, contacts, dt
+        raise NotImplementedError("MuJoCo does not support proxy body harvest")
+
+    @override
+    def coupling_harvest_proxy_particle_forces(
+        self,
+        particle_local_to_proxy_global: wp.array[int],
+        out_particle_f: wp.array[wp.vec3],
+        *,
+        particle_qd_before: wp.array[wp.vec3] | None = None,
+        state: State | None = None,
+        state_out: State | None = None,
+        contacts: Contacts | None = None,
+        dt: float = 0.0,
+    ) -> None:
+        """Reject proxy-particle feedback harvesting."""
+        del particle_local_to_proxy_global, out_particle_f, particle_qd_before, state, state_out, contacts, dt
+        raise NotImplementedError("MuJoCo does not support proxy particle harvest")
 
     def _convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
         # Ensure the inverse shape mapping exists (lazy creation)
