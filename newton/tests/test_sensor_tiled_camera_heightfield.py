@@ -50,15 +50,16 @@ class TestSensorTiledCameraHeightfield(unittest.TestCase):
         )
         sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         sensor.update(state, cam, rays, depth_image=depth)
-        wp.synchronize()
 
-        d = depth.numpy()[0, 0]
+        d = depth.numpy()[0, 0]  # .numpy() syncs the device-to-host copy
         hit = int(np.count_nonzero(d > 0.0))
-        # The terrain fills the frame. (A small fraction of rays can miss along
-        # triangle edges — the usual non-watertight mesh_query_ray artifact — so
-        # assert "most" rather than "all".)
-        self.assertGreater(
-            hit, res * res // 2, msg=f"heightfield should fill most of the view; only {hit}/{res * res} pixels hit"
+        # The terrain covers the whole frame, but ~10-15% of rays miss along
+        # triangle edges (non-watertight mesh_query_ray); measured stable across
+        # resolution and camera offset, so require "most" pixels rather than all.
+        self.assertGreaterEqual(
+            hit,
+            int(res * res * 0.8),
+            msg=f"heightfield should fill most of the view; only {hit}/{res * res} pixels hit",
         )
         # Every ray that hits sees the flat surface at z=1 from z=5: depth ~4,
         # up to ~4.25 toward the frame edges (ray-angle cosine).
