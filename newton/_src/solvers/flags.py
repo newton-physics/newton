@@ -34,7 +34,7 @@ def _warn_solver_notify_flags_deprecated() -> None:
 class SolverNotifyFlags(IntEnum, metaclass=_DeprecatedSolverNotifyFlagsMeta):
     """Deprecated alias for :class:`~newton.ModelFlags`.
 
-    .. deprecated::
+    .. deprecated:: 1.3
         Use :class:`~newton.ModelFlags` instead.
     """
 

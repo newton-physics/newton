@@ -582,8 +582,7 @@ class SolverKamino(SolverBase):
         else:
             _detector = self._collision_detector_kamino
 
-        # Convert Newton body-frame poses to Kamino CoM-frame poses using
-        # Kamino's corrected body-com offsets (can differ from Newton model data).
+        # Convert Newton body-frame poses to Kamino CoM-frame poses
         self._kamino.convert_body_origin_to_com(
             body_com=self._model_kamino.bodies.i_r_com_i,
             body_q=state_in_kamino.q_i,
@@ -600,8 +599,7 @@ class SolverKamino(SolverBase):
             dt=dt,
         )
 
-        # Convert back from Kamino CoM-frame to Newton body-frame poses using
-        # the same corrected body-com offsets as the forward conversion.
+        # Convert back from Kamino CoM-frame to Newton body-frame poses
         self._kamino.convert_body_com_to_origin(
             body_com=self._model_kamino.bodies.i_r_com_i,
             body_q_com=state_in_kamino.q_i,
@@ -765,7 +763,6 @@ class SolverKamino(SolverBase):
         - springs
         - triangles, edges, tetrahedra
         - muscles
-        - equality constraints
         - distance, cable, or gimbal joints
 
         Args:
@@ -788,8 +785,6 @@ class SolverKamino(SolverBase):
             unsupported_features.append(f"tetrahedral elements (found {model.tet_count})")
         if model.muscle_count > 0:
             unsupported_features.append(f"muscles (found {model.muscle_count})")
-        if model.equality_constraint_count > 0:
-            unsupported_features.append(f"equality constraints (found {model.equality_constraint_count})")
 
         # Check for unsupported joint types
         if model.joint_count > 0:

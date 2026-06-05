@@ -14,6 +14,7 @@
 - Parse `NewtonSDFCollisionAPI` attributes from USD in `ModelBuilder.add_usd()`, including the `newton:hydroelasticEnabled` toggle, absolute narrow band / margin, texture format, hydroelastic stiffness (`newton:hydroelasticStiffness`), and applied-API schema defaults. Hydroelastic configuration is folded into `NewtonSDFCollisionAPI` and opted into via `newton:hydroelasticEnabled` (default `false`). SDF generation is opt-in by applying the API; for primitive shapes the SDF is only built when hydroelastic is also enabled.
 - Add `ModelBuilder.ShapeConfig.sdf_padding` and `ModelBuilder.shape_sdf_padding` for setting the per-shape SDF AABB padding [m] used when building primitive texture SDFs and deferred mesh SDFs
 - Add an optional `kernel_block_dim` argument to `SensorTiledCamera.update()` for tuning the Warp ray-tracer's `render_megakernel` launch shape.
+- Add `model.mujoco.equality_constraint_objtype`, `_target_kind`, and `_target` fields, recording the object kind a MuJoCo equality references and whether it was projected onto a native loop joint or mimic constraint for solver portability
 - Add `contact_reduction_hashtable_size_factor` to `CollisionPipeline`, `NarrowPhase`, and `HydroelasticSDF.Config` for increasing contact reduction hashtable capacity when fill/failure warnings appear.
 - Add `rec_id` parameter to `ViewerRerun` for specifying the recording ID, enabling multiple processes to share a single Rerun recording
 - Add `ArticulationView.joint_labels`, `link_labels` (aliased as `body_labels`), and `shape_labels` exposing the full template-articulation labels alongside the existing leaf-only `*_names`, so callers can disambiguate selected entries whose leaf names collide.
@@ -25,6 +26,7 @@
 - Add `joint_damping` model attribute and `JointDofConfig.damping` for velocity-proportional damping that is always active
 - Add `ViewerRTX`, a real-time ray-traced viewer powered by NVIDIA OVRTX.
 - Add `SolverBase.reset()` method for in-place solver state resets with optional `world_mask` and `StateFlags`; default implementation is a no-op
+- Implement `SolverMuJoCo.reset()` to reset selected worlds: it resets `State.joint_q` / `State.joint_qd` to the model defaults (gated by `StateFlags`) and clears the per-world MuJoCo buffers that persist between steps (`qacc_warmstart`, `qfrc_applied`, `xfrc_applied`, `act`, `ctrl`), so a world recovers cleanly on the next step after a divergence (e.g. NaNs); accepts an optional `world_mask`
 - Add `StateFlags` enum to control which state attributes are reset
 - Add `ModelFlags` as the canonical name for model-change notification flags
 - Add edge overlay toggle (`renderer.draw_edges`) for wireframe visualization on top of solid geometry
@@ -43,6 +45,8 @@
 - The USD importer warns and degrades on invalid or under-specified SDF configuration instead of aborting the whole import. A hydroelastic `Mesh` prim without an SDF source (no `newton:sdfMaxResolution` / `newton:sdfTargetVoxelSize`) imports as a plain mesh collider with hydroelastic disabled. An `sdfMaxResolution` not divisible by 8, an unknown `sdfTextureFormat`, and both `sdfMaxResolution` and `sdfTargetVoxelSize` authored on the same prim each warn with the prim path and fall back to defaults (`sdfTargetVoxelSize` takes precedence over `sdfMaxResolution`). The Python API path (`ShapeConfig.validate()`) still raises.
 - Remove the `cbor2` `<6` dependency ceiling after updating recorder deserialization to accept mapping-like decoded containers
 - Mark `SolverVBD` as experimental
+- Mark the actuator API as experimental in its docstring
+- Mark the `"sticky"` contact-matching mode as experimental in its docstring
 - Switch the SDF-mesh narrow phase to hardware-filtered SDF texture sampling with centred-difference gradients. Hydroelastic SDF sampling is unchanged. Resulting contact distances and normals shift well below typical `contact_threshold` and `shape_margin` settings, so no user action is required; pass a negative `edge_lower_angle_threshold_rad` (e.g. `-1.0`) to `Mesh.build_sdf()` to disable the new edge-simplification pass and reproduce the pre-optimisation behaviour with the full edge set
 - Convert MuJoCo equality constraints to Newton loop joints and mimic constraints by default for MJCF/USD imports while preserving MuJoCo metadata for `SolverMuJoCo` round-trips; pass `convert_mjc_equality_constraints=False` to keep legacy equality-constraint arrays.
 - Require Warp 1.14 and configure Warp logging through `warp.config.log_level`; use Newton's `--quiet` flag or `--warp-config log_level=...` instead of legacy `verbose` or `quiet` config keys
@@ -57,13 +61,13 @@
 
 ### Deprecated
 
-- Deprecate `Model.joint_target_pos` / `Control.joint_target_pos` and `Model.joint_target_vel` / `Control.joint_target_vel` in favor of `joint_target_q` / `joint_target_qd`. The legacy names emit a `DeprecationWarning` and raise `AttributeError` when `newton.use_coord_layout_targets = True`. Set that flag before building a model to switch `joint_target_q` to `joint_coord_count` shape (matching `joint_q`); the default `False` keeps the legacy `joint_dof_count` layout. `ModelBuilder.joint_target_pos` / `ModelBuilder.joint_target_vel` are removed — set per-axis targets via `JointDofConfig.target_pos` / `target_vel` or write directly to `ModelBuilder.joint_target_q` / `joint_target_qd`.
-- Deprecate loading `.pt` / `.pth` (TorchScript) checkpoints via `ControllerNeuralMLP`; the legacy TorchScript / dict-checkpoint path still works (with a `DeprecationWarning`) when PyTorch is installed but will be removed in a future release. `ControllerNeuralLSTM` requires re-exporting to ONNX with the metadata properties documented in its class docstring; pointing it at a `.pt` checkpoint now raises `NotImplementedError` with migration guidance. Convert the MLP checkpoint to ONNX once with `torch.onnx.export(model, dummy_input, "policy.onnx", opset_version=17)` and load the resulting `.onnx` file.
+- Deprecate `Model.joint_target_pos` / `Control.joint_target_pos` and `Model.joint_target_vel` / `Control.joint_target_vel` in favor of `joint_target_q` / `joint_target_qd`. The legacy names emit a `DeprecationWarning` and raise `AttributeError` when `newton.use_coord_layout_targets = True`. Set that flag before building a model to switch `joint_target_q` to `joint_coord_count` shape (matching `joint_q`); the default `False` keeps the legacy `joint_dof_count` layout. `ModelBuilder.joint_target_pos` / `ModelBuilder.joint_target_vel` are now read-only deprecated aliases (the writable attributes are removed) — set per-axis targets via `JointDofConfig.target_pos` / `target_vel` or write directly to `ModelBuilder.joint_target_q` / `joint_target_qd`.
 - Deprecate `SolverNotifyFlags` in favor of `ModelFlags`; migrate calls such as `SolverNotifyFlags.MODEL_PROPERTIES` to `ModelFlags.MODEL_PROPERTIES`
 - Deprecate implicit positive Dahl defaults in `SolverVBD.register_custom_attributes()`. Pass `dahl_defaults_enabled=False` and explicitly author positive `model.vbd.dahl_eps_max` and `model.vbd.dahl_tau` values when Dahl cable friction is desired, instead of relying on registered default values.
 - Deprecate `Model.mujoco.dof_passive_damping` in favor of `Model.joint_damping`; MuJoCo `damping` import now populates `Model.joint_damping` and the old namespaced attribute remains a warning alias
 - Deprecate `newton:contact_ke`/`newton:contact_kd`/`newton:contact_kf`/`newton:contact_ka` custom attributes on shape prims; author `newton:contactStiffness`/`newton:contactDamping`/`newton:contactFrictionGain`/`newton:contactAdhesion` on the bound `NewtonMaterialAPI` material instead
 - Deprecate `mjc:solref` on material prims for contact stiffness/damping; author `newton:contactStiffness`/`newton:contactDamping` on the bound `NewtonMaterialAPI` material, or use per-shape `mjc:solref` (`MjcGeomAPI`) which is unchanged
+- Deprecate the implicit `Actuator` default that resolves `control_target_pos_attr` / `control_target_vel_attr` to legacy `joint_target_pos` / `joint_target_vel` when `newton.use_coord_layout_targets` is `False`; the default will switch to `joint_target_q` / `joint_target_qd` in a future release. Pass `control_target_pos_attr="joint_target_q"` (and the velocity counterpart) explicitly to adopt the new behavior now
 
 ### Removed
 
@@ -75,6 +79,7 @@
 - Remove `SensorContact.shape` (deprecated in 1.1.0); use `total_force.shape` / `force_matrix.shape` instead
 - Remove `SensorContact.ObjectType` enum (deprecated in 1.1.0); use the `sensing_obj_type` and `counterpart_type` attributes instead
 - Remove `raycast_kernel_no_hfield`; use `raycast_kernel` instead
+- Remove the deprecated `newton.examples.compute_world_offsets` helper; use `ModelBuilder.replicate()` instead
 
 ### Fixed
 
@@ -91,6 +96,7 @@
 - Fix `SolverVBD` custom attribute setup so `vbd:joint_is_hard` can be authored without implicitly enabling Dahl cable friction by calling `SolverVBD.register_custom_attributes(..., dahl_defaults_enabled=False)`.
 - Fix `example_softbody_gift` emitting spurious non-manifold edge warnings caused by mismatched 5-tet diagonals across adjacent cubes in the soft body mesh.
 - Fix `basic_conveyor` example emitting a spurious inertia validation warning at finalize.
+- Fix `SolverKamino` contact anchors being shifted off the geometry surface by `ShapeConfig.margin`, which biased friction.
 - Fix MJCF joint `damping` attribute being ignored by `SolverFeatherstone`
 - Fix `SolverMuJoCo` generated MuJoCo joint names for multi-axis D6 joints to avoid duplicate names
 - Fix USD import of revolute and D6-angular joint `limit_ke` / `limit_kd` from `mjc:solreflimit` being over-scaled by ~57x
@@ -182,6 +188,7 @@
 
 ### Deprecated
 
+- Deprecate the top-level `Model.equality_constraint_*` arrays and `Model.equality_constraint_count`, the `ModelBuilder.equality_constraint_*` accumulators, `ModelBuilder.add_equality_constraint{,_connect,_weld,_joint}()`, and the `Model.AttributeFrequency.EQUALITY_CONSTRAINT` enum, in favor of the namespaced `model.mujoco.equality_constraint_*` fields (custom attributes on the `"mujoco:equality_constraint"` frequency). Migrate reads and writes to `model.mujoco.equality_constraint_*`, and construct rows via `ModelBuilder.add_custom_values(**{"mujoco:equality_constraint_*": ...})`. The deprecated names forward to the namespace during the deprecation window and will be removed in a future release.
 - Deprecate `SensorRaycast` in favor of `SensorTiledCamera`; migrate to `SensorTiledCamera.utils.compute_pinhole_camera_rays()` and `create_depth_image_output()` for single-camera depth rendering — see the `SensorRaycast` class docstring for a complete migration example
 - Deprecate and ignore `rigid_enable_dahl_friction` in `SolverVBD`; Dahl friction is now auto-detected from model attributes (`model.vbd.dahl_eps_max` / `model.vbd.dahl_tau`)
 - Deprecate `newton-actuators` package dependency; all actuator functionality is now built into `newton.actuators`. The dependency is kept for backward compatibility and will be removed in a future release; migrate imports from `newton_actuators` to `newton.actuators`
