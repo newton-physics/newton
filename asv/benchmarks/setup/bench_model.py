@@ -61,6 +61,7 @@ class KpiInitializeSolver:
     timeout = 3600
 
     def setup(self, robot, world_count):
+        wp.init()
         builder = Example.create_model_builder(robot, world_count, randomize=True, seed=123)
 
         # finalize model
@@ -86,6 +87,7 @@ class KpiInitializeViewerGL:
     min_run_count = 1
 
     def setup(self, robot, world_count):
+        wp.init()
         builder = Example.create_model_builder(robot, world_count, randomize=True, seed=123)
 
         # finalize model
@@ -156,6 +158,7 @@ class FastInitializeSolver:
     min_run_count = 1
 
     def setup(self, robot, world_count):
+        wp.init()
         builder = Example.create_model_builder(robot, world_count, randomize=True, seed=123)
 
         # finalize model
@@ -181,6 +184,7 @@ class FastInitializeViewerGL:
     min_run_count = 1
 
     def setup(self, robot, world_count):
+        wp.init()
         builder = Example.create_model_builder(robot, world_count, randomize=True, seed=123)
 
         # finalize model
