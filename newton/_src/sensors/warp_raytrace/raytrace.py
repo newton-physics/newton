@@ -147,6 +147,8 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                     hit_color = wp.vec3f(0.0)
 
                     shape_type = shape_types[si]
+                    # Heightfields are triangulated meshes; RenderContext remaps
+                    # HFIELD -> MESH, so this branch renders them too.
                     if shape_type == GeoType.MESH:
                         hit_distance, hit_normal, hit_u, hit_v, hit_face_id = _ray_intersect_mesh_smooth(
                             shape_transforms[si],
@@ -155,18 +157,6 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                             ray_dir_world,
                             shape_source_ptr[si],
                             shape_mesh_data_ids[si],
-                            mesh_data,
-                            wp.static(config.enable_backface_culling),
-                            closest_hit.distance,
-                        )
-                    elif shape_type == GeoType.HFIELD:
-                        hit_distance, hit_normal, hit_u, hit_v, hit_face_id = _ray_intersect_mesh_smooth(
-                            shape_transforms[si],
-                            shape_sizes[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_source_ptr[si],
-                            wp.int32(-1),
                             mesh_data,
                             wp.static(config.enable_backface_culling),
                             closest_hit.distance,
@@ -447,17 +437,9 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
                     hit_dist = -1.0
 
                     shape_type = shape_types[si]
+                    # Heightfields are triangulated meshes; RenderContext remaps
+                    # HFIELD -> MESH, so this branch renders them too.
                     if shape_type == GeoType.MESH:
-                        hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si],
-                            shape_source_ptr[si],
-                            wp.static(config.enable_backface_culling),
-                            closest_hit.distance,
-                        )
-                    elif shape_type == GeoType.HFIELD:
                         hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh(
                             shape_transforms[si],
                             ray_origin_world,
@@ -698,17 +680,9 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
                     hit_dist = wp.float32(-1)
 
                     shape_type = shape_types[si]
+                    # Heightfields are triangulated meshes; RenderContext remaps
+                    # HFIELD -> MESH, so this branch renders them too.
                     if shape_type == GeoType.MESH:
-                        hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si],
-                            shape_source_ptr[si],
-                            False,
-                            max_dist,
-                        )
-                    elif shape_type == GeoType.HFIELD:
                         hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh(
                             shape_transforms[si],
                             ray_origin_world,

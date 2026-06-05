@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
-from ...geometry import Gaussian, Mesh
+from ...geometry import Gaussian, GeoType, Mesh
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
 from .render import create_kernel
@@ -68,6 +68,7 @@ class RenderContext:
         self.shape_source_ptr: wp.array[wp.uint64] | None = None
         self.shape_texture_ids: wp.array[wp.int32] | None = None
         self.shape_mesh_data_ids: wp.array[wp.int32] | None = None
+        self.shape_render_type: wp.array[wp.int32] | None = None
 
         self.mesh_data: wp.array[MeshData] | None = None
         self.texture_data: wp.array[TextureData] | None = None
@@ -105,6 +106,21 @@ class RenderContext:
         self.shape_count_total = model.shape_count
         self.shape_world_index = model.shape_world
         self.shape_source_ptr = model.shape_source_ptr
+
+        # Heightfields are triangulated meshes (their wp.Mesh lives in
+        # shape_source_ptr), so the renderer treats them as meshes: it reuses
+        # the MESH ray-intersection path, which keeps heightfield handling out
+        # of the render kernels entirely (no extra shape-type branch, so no
+        # register/occupancy cost). The remapped type array is what the render
+        # kernel dispatches on; model.shape_type (HFIELD) is left untouched for
+        # collision and BVH bounds.
+        self.shape_render_type = model.shape_type
+        if model.shape_type is not None:
+            shape_type_np = model.shape_type.numpy()
+            if np.any(shape_type_np == int(GeoType.HFIELD)):
+                shape_type_np = shape_type_np.copy()
+                shape_type_np[shape_type_np == int(GeoType.HFIELD)] = int(GeoType.MESH)
+                self.shape_render_type = wp.array(shape_type_np, dtype=wp.int32, device=model.shape_type.device)
 
         if model.particle_q is not None and model.particle_q.shape[0]:
             self.__has_particles = True
@@ -301,7 +317,7 @@ class RenderContext:
                     model.bvh_shapes_group_roots,
                     # Shapes
                     model.bvh_shape_enabled,
-                    model.shape_type,
+                    self.shape_render_type,  # HFIELD remapped to MESH; renderer treats heightfields as meshes
                     model.shape_scale,
                     self.shape_colors,
                     model.bvh_shape_world_transforms,
