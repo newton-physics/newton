@@ -46,6 +46,7 @@ from .constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
+from .equality import MJC_OBJ_BODY, MjcEqualityTargetKind, _register_equality_constraint_attributes
 from .kernels import (
     _snapshot_nacon_count,
     apply_mjc_body_f_kernel,
@@ -89,7 +90,6 @@ from .kernels import (
     update_solver_options_kernel,
     update_tendon_properties_kernel,
 )
-from .utils import MJC_OBJ_BODY, MjcEqualityTargetKind
 
 if TYPE_CHECKING:
     from mujoco import MjData, MjModel
@@ -653,6 +653,8 @@ class SolverMuJoCo(SolverBase):
 
         # Note: only attributes with usd_attribute_name defined are parsed from USD at the moment.
 
+        _register_equality_constraint_attributes(builder)
+
         def parse_solreflimit_mode_usd(_value: Any, context: dict[str, Any]) -> int | None:
             prim = context.get("prim")
             if prim is None:
@@ -945,66 +947,6 @@ class SolverMuJoCo(SolverBase):
             )
         )
         # endregion body and joint attributes
-
-        # region equality attributes
-        # Equality rows use these fields to preserve MuJoCo solver parameters.
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="eq_solref",
-                frequency=AttributeFrequency.EQUALITY_CONSTRAINT,
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.vec2,
-                default=wp.vec2(0.02, 1.0),
-                namespace="mujoco",
-                usd_attribute_name="mjc:solref",
-                mjcf_attribute_name="solref",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="eq_solimp",
-                frequency=AttributeFrequency.EQUALITY_CONSTRAINT,
-                assignment=AttributeAssignment.MODEL,
-                dtype=vec5,
-                default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
-                namespace="mujoco",
-                usd_attribute_name="mjc:solimp",
-                mjcf_attribute_name="solimp",
-            )
-        )
-        # Converted MuJoCo equalities keep one authoritative equality row and point to
-        # the Newton joint/mimic object they were projected to.
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="equality_constraint_target_kind",
-                frequency=AttributeFrequency.EQUALITY_CONSTRAINT,
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.int32,
-                default=int(MjcEqualityTargetKind.NONE),
-                namespace="mujoco",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="equality_constraint_target",
-                frequency=AttributeFrequency.EQUALITY_CONSTRAINT,
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.int32,
-                default=-1,
-                namespace="mujoco",
-            )
-        )
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="equality_constraint_objtype",
-                frequency=AttributeFrequency.EQUALITY_CONSTRAINT,
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.int32,
-                default=-1,
-                namespace="mujoco",
-            )
-        )
-        # endregion equality attributes
 
         # region solver options
         # Solver options (frequency WORLD for per-world values)
@@ -4695,17 +4637,20 @@ class SolverMuJoCo(SolverBase):
                 return int(joint_solref_limit_mode[dof_idx]) == SOLREF_MODE_RAW
             return bool(np.any(joint_solref_limit[dof_idx] != 0.0))
 
-        eq_constraint_type = model.equality_constraint_type.numpy()
-        eq_constraint_body1 = model.equality_constraint_body1.numpy()
-        eq_constraint_body2 = model.equality_constraint_body2.numpy()
-        eq_constraint_anchor = model.equality_constraint_anchor.numpy()
-        eq_constraint_torquescale = model.equality_constraint_torquescale.numpy()
-        eq_constraint_relpose = model.equality_constraint_relpose.numpy()
-        eq_constraint_joint1 = model.equality_constraint_joint1.numpy()
-        eq_constraint_joint2 = model.equality_constraint_joint2.numpy()
-        eq_constraint_polycoef = model.equality_constraint_polycoef.numpy()
-        eq_constraint_enabled = model.equality_constraint_enabled.numpy()
-        eq_constraint_world = model.equality_constraint_world.numpy()
+        # Read the per-row equality arrays through the None-safe helper. finalize() materializes
+        # these as shape-stable empty arrays even with no constraints, but the None-safe path keeps
+        # this robust for models assembled without the standard custom-attribute pipeline.
+        eq_constraint_type = get_custom_attribute("equality_constraint_type")
+        eq_constraint_body1 = get_custom_attribute("equality_constraint_body1")
+        eq_constraint_body2 = get_custom_attribute("equality_constraint_body2")
+        eq_constraint_anchor = get_custom_attribute("equality_constraint_anchor")
+        eq_constraint_torquescale = get_custom_attribute("equality_constraint_torquescale")
+        eq_constraint_relpose = get_custom_attribute("equality_constraint_relpose")
+        eq_constraint_joint1 = get_custom_attribute("equality_constraint_joint1")
+        eq_constraint_joint2 = get_custom_attribute("equality_constraint_joint2")
+        eq_constraint_polycoef = get_custom_attribute("equality_constraint_polycoef")
+        eq_constraint_enabled = get_custom_attribute("equality_constraint_enabled")
+        eq_constraint_world = get_custom_attribute("equality_constraint_world")
         eq_constraint_solref = get_custom_attribute("eq_solref")
         eq_constraint_solimp = get_custom_attribute("eq_solimp")
         eq_constraint_target_kind = get_custom_attribute("equality_constraint_target_kind")
@@ -4789,9 +4734,12 @@ class SolverMuJoCo(SolverBase):
             selected_shapes = np.where((shape_world == first_world) | (shape_world < 0))[0].astype(np.int32)
             selected_bodies = np.where((body_world == first_world) | (body_world < 0))[0].astype(np.int32)
             selected_joints = np.where((joint_world == first_world) | (joint_world < 0))[0].astype(np.int32)
-            selected_constraints = np.where((eq_constraint_world == first_world) | (eq_constraint_world < 0))[0].astype(
-                np.int32
-            )
+            if eq_constraint_world is None:
+                selected_constraints = np.empty(0, dtype=np.int32)
+            else:
+                selected_constraints = np.where((eq_constraint_world == first_world) | (eq_constraint_world < 0))[
+                    0
+                ].astype(np.int32)
             selected_mimic_constraints = np.where((mimic_world == first_world) | (mimic_world < 0))[0].astype(np.int32)
         else:
             # if we are not separating environments to worlds, we use all shapes, bodies, joints
@@ -4801,7 +4749,7 @@ class SolverMuJoCo(SolverBase):
             selected_shapes = np.arange(model.shape_count, dtype=np.int32)
             selected_bodies = np.arange(model.body_count, dtype=np.int32)
             selected_joints = np.arange(model.joint_count, dtype=np.int32)
-            selected_constraints = np.arange(model.equality_constraint_count, dtype=np.int32)
+            selected_constraints = np.arange(model.mujoco.equality_constraint_count, dtype=np.int32)
             selected_mimic_constraints = np.arange(model.constraint_mimic_count, dtype=np.int32)
 
         # get the shapes for the first environment
@@ -6160,7 +6108,7 @@ class SolverMuJoCo(SolverBase):
             # Create mjc_eq_to_newton_eq: MuJoCo[world, eq] -> Newton equality constraint
             # selected_constraints[idx] is the Newton template constraint index
             neq = self.mj_model.neq
-            eq_constraints_per_world = model.equality_constraint_count // model.world_count
+            eq_constraints_per_world = model.mujoco.equality_constraint_count // model.world_count
             mjc_eq_to_newton_eq_np = np.full((nworld, neq), -1, dtype=np.int32)
             mjc_eq_to_newton_jnt_np = np.full((nworld, neq), -1, dtype=np.int32)
             for mjc_eq, newton_eq in mjc_eq_to_newton_eq_dict.items():
@@ -6883,18 +6831,22 @@ class SolverMuJoCo(SolverBase):
             ``wp.array[wp.vec3]`` [m], each of
             shape ``[equality_constraint_count]``.
         """
-        neq = model.equality_constraint_count
+        neq = model.mujoco.equality_constraint_count
 
         q_rel = wp.zeros(neq, dtype=wp.quat, device=model.device)
         t_rel = wp.zeros(neq, dtype=wp.vec3, device=model.device)
+        # Nothing to launch with no equality constraints; the per-row arrays are present but
+        # empty (finalize keeps them shape-stable), so skip the zero-width launch.
+        if neq == 0:
+            return q_rel, t_rel
 
         wp.launch(
             update_connect_constraint_rel_body_poses_at_qref_kernel,
             dim=neq,
             inputs=[
-                model.equality_constraint_type,
-                model.equality_constraint_body1,
-                model.equality_constraint_body2,
+                model.mujoco.equality_constraint_type,
+                model.mujoco.equality_constraint_body1,
+                model.mujoco.equality_constraint_body2,
                 ref_body_q,
             ],
             outputs=[
@@ -6945,8 +6897,8 @@ class SolverMuJoCo(SolverBase):
             dim=(world_count, mjw_model.neq),
             inputs=[
                 mjc_eq_to_newton_eq,
-                model.equality_constraint_type,
-                model.equality_constraint_anchor,
+                model.mujoco.equality_constraint_type,
+                model.mujoco.equality_constraint_anchor,
                 connect_anchor2_q,
                 connect_anchor2_t,
             ],
@@ -7005,7 +6957,7 @@ class SolverMuJoCo(SolverBase):
             update_anchor_rel_xform_at_ref_pose: Recompute ``(q_rel, t_rel)``
                 from ``dof_ref`` / joint properties.
             update_anchors: Recompute anchors from
-                ``equality_constraint_anchor``.
+                ``model.mujoco.equality_constraint_anchor``.
         """
         if update_anchor_rel_xform_at_ref_pose:
             ref_q = SolverMuJoCo._copy_dof_ref_to_qref(self.model)
@@ -7277,11 +7229,14 @@ class SolverMuJoCo(SolverBase):
         # Validate authored RAW ``mujoco.solreflimit`` values once per notify.
         # MuJoCo's solref domain is ``(timeconst > 0, dampratio > 0)`` for the
         # standard interpretation or ``(< 0, < 0)`` for the direct
-        # stiffness/damping mode; mixed signs or zero components silently
-        # disable the limit or trigger divide-by-zero in MuJoCo's
+        # stiffness/damping mode; mixed signs or a single zero component
+        # silently disable the limit or trigger divide-by-zero in MuJoCo's
         # ``k_eff = 1/(τ²·ζ²)``. Surface the misconfiguration once via a
         # warning so users can correct the authored value; the kernel cannot
-        # warn from inside Warp.
+        # warn from inside Warp. The all-zero ``(0, 0)`` solref is the
+        # documented MuJoCo "inherit the model default" sentinel and is
+        # forwarded verbatim, so it is intentionally excluded here -- matching
+        # the MJCF importer, which preserves it without warning.
         if (
             joint_limit_solref_mode is not None
             and joint_limit_solref is not None
@@ -7293,7 +7248,10 @@ class SolverMuJoCo(SolverBase):
             if np.any(raw_mask):
                 tc = raw_np[raw_mask, 0]
                 dr = raw_np[raw_mask, 1]
-                invalid = (tc == 0.0) | (dr == 0.0) | (np.sign(tc) != np.sign(dr))
+                # ``(0, 0)`` is the MuJoCo inherit-default sentinel, not a
+                # misconfiguration; flag only a single zero or mixed signs.
+                both_zero = (tc == 0.0) & (dr == 0.0)
+                invalid = ((tc == 0.0) | (dr == 0.0) | (np.sign(tc) != np.sign(dr))) & ~both_zero
                 if np.any(invalid):
                     bad = np.flatnonzero(raw_mask)[invalid]
                     warnings.warn(
@@ -7477,9 +7435,9 @@ class SolverMuJoCo(SolverBase):
         Updates:
 
         - eq_solref/eq_solimp from MuJoCo custom attributes (if set)
-        - eq_data from Newton's equality_constraint_anchor, equality_constraint_relpose,
+        - eq_data from model.mujoco equality_constraint_anchor, equality_constraint_relpose,
           equality_constraint_polycoef, equality_constraint_torquescale
-        - eq_active from Newton's equality_constraint_enabled
+        - eq_active from model.mujoco equality_constraint_enabled
 
         .. note::
 
@@ -7487,7 +7445,7 @@ class SolverMuJoCo(SolverBase):
             that were projected to loop joints or mimic constraints during import.
             Generic loop closures synthesized directly from loop joints are updated
             by the joint-connect path."""
-        if self.model.equality_constraint_count == 0:
+        if self.model.mujoco.equality_constraint_count == 0:
             return
 
         neq = self.mj_model.neq
@@ -7517,18 +7475,18 @@ class SolverMuJoCo(SolverBase):
                 device=self.model.device,
             )
 
-        # Update eq_data and eq_active from Newton equality constraint properties
+        # Update eq_data and eq_active from namespaced Newton equality constraint properties
         wp.launch(
             update_eq_data_and_active_kernel,
             dim=(world_count, neq),
             inputs=[
                 self.mjc_eq_to_newton_eq,
-                self.model.equality_constraint_type,
-                self.model.equality_constraint_anchor,
-                self.model.equality_constraint_relpose,
-                self.model.equality_constraint_polycoef,
-                self.model.equality_constraint_torquescale,
-                self.model.equality_constraint_enabled,
+                self.model.mujoco.equality_constraint_type,
+                self.model.mujoco.equality_constraint_anchor,
+                self.model.mujoco.equality_constraint_relpose,
+                self.model.mujoco.equality_constraint_polycoef,
+                self.model.mujoco.equality_constraint_torquescale,
+                self.model.mujoco.equality_constraint_enabled,
             ],
             outputs=[
                 self.mjw_model.eq_data,
@@ -7737,7 +7695,13 @@ class SolverMuJoCo(SolverBase):
         body_world = model.body_world.numpy()
         joint_world = model.joint_world.numpy()
         shape_world = model.shape_world.numpy()
-        eq_constraint_world = model.equality_constraint_world.numpy()
+        # finalize() materializes this as an empty array at zero rows; guard on the count anyway
+        # so models assembled without the standard pipeline still work.
+        eq_constraint_world = (
+            model.mujoco.equality_constraint_world.numpy()
+            if model.mujoco.equality_constraint_count > 0
+            else np.empty(0, dtype=np.int32)
+        )
 
         # --- Check global world restrictions (always, regardless of world_count) ---
         # No bodies in global world
@@ -7837,9 +7801,9 @@ class SolverMuJoCo(SolverBase):
                     f"but other worlds have types {types[1:].tolist()}."
                 )
 
-        constraints_per_world = model.equality_constraint_count // world_count if world_count > 0 else 0
+        constraints_per_world = (model.mujoco.equality_constraint_count // world_count) if world_count > 0 else 0
         if constraints_per_world > 0:
-            eq_constraint_type = model.equality_constraint_type.numpy()
+            eq_constraint_type = model.mujoco.equality_constraint_type.numpy()
             constraint_types_2d = eq_constraint_type.reshape(world_count, constraints_per_world)
             # Vectorized mismatch check
             mismatches = constraint_types_2d != constraint_types_2d[0]
