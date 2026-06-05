@@ -5868,6 +5868,15 @@ class ModelBuilder:
                     f"Got collision_group={cfg.collision_group}"
                 )
 
+        resolved_opacity = opacity
+        if resolved_opacity is None and src is not None:
+            resolved_opacity = getattr(src, "opacity", None)
+        if resolved_opacity is None:
+            resolved_opacity = 1.0
+        resolved_opacity = float(resolved_opacity)
+        if not np.isfinite(resolved_opacity) or not 0.0 <= resolved_opacity <= 1.0:
+            raise ValueError(f"Shape opacity must be a finite value in [0, 1], got {resolved_opacity!r}.")
+
         self.shape_body.append(body)
         shape = self.shape_count
         if cfg.has_shape_collision:
@@ -5890,18 +5899,12 @@ class ModelBuilder:
         if resolved_color is None:
             resolved_color = ModelBuilder._shape_palette_color(shape)
 
-        resolved_opacity = opacity
-        if resolved_opacity is None and src is not None:
-            resolved_opacity = getattr(src, "opacity", None)
-        if resolved_opacity is None:
-            resolved_opacity = 1.0
-
         self.shape_flags.append(shape_flags)
         self.shape_type.append(type)
         self.shape_scale.append((float(scale[0]), float(scale[1]), float(scale[2])))
         self.shape_source.append(src)
         self.shape_color.append(resolved_color)
-        self.shape_opacity.append(float(resolved_opacity))
+        self.shape_opacity.append(resolved_opacity)
         self.shape_margin.append(cfg.margin)
         self.shape_is_solid.append(cfg.is_solid)
         self.shape_material_ke.append(cfg.ke)

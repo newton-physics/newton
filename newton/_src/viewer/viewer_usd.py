@@ -428,7 +428,7 @@ class ViewerUSD(ViewerBase):
         if colors is not None:
             colors = colors.numpy()
         if opacities is not None:
-            opacities = np.clip(opacities.numpy().astype(np.float32), 0.0, 1.0)
+            opacities = self._promote_opacities_to_array(opacities, len(xforms))
 
         for i in range(len(xforms)):
             instance_path = self._get_path(name) + f"/instance_{i}"
@@ -800,6 +800,10 @@ class ViewerUSD(ViewerBase):
         opacities_np = np.asarray(opacities, dtype=np.float32).reshape(-1)
         if len(opacities_np) == 1 and num_items > 1:
             opacities_np = np.tile(float(opacities_np[0]), num_items)
+        if len(opacities_np) != num_items:
+            raise ValueError(
+                f"Opacity arrays must contain one value or exactly {num_items} values, got {len(opacities_np)}."
+            )
         return np.clip(opacities_np, 0.0, 1.0)
 
     @staticmethod

@@ -146,6 +146,23 @@ class TestViewerUSD(unittest.TestCase):
                 atol=1e-6,
             )
 
+    def test_log_instances_rejects_mismatched_opacity_count(self):
+        viewer = self._make_viewer()
+
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        xforms = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform)
+        scales = wp.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]], dtype=wp.vec3)
+        opacities = wp.array([0.25, 0.5, 0.75], dtype=wp.float32)
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh("/opacity_mesh", points, indices)
+        with self.assertRaisesRegex(ValueError, "Opacity arrays"):
+            viewer.log_instances("/opacity_instances", "/opacity_mesh", xforms, scales, None, None, opacities=opacities)
+
     def test_log_mesh_authors_display_opacity(self):
         viewer = self._make_viewer()
 

@@ -158,6 +158,16 @@ class TestShapeColors(unittest.TestCase):
 
         np.testing.assert_allclose(model.shape_opacity.numpy()[shape], 0.8, atol=1e-6, rtol=1e-6)
 
+    def test_shape_opacity_rejects_invalid_values(self):
+        """Verify shape opacity is finite and in the display opacity range."""
+        for invalid_opacity in (-0.1, 1.1, float("nan"), float("inf")):
+            with self.subTest(opacity=invalid_opacity):
+                builder = newton.ModelBuilder()
+                body = builder.add_body(mass=1.0)
+                with self.assertRaisesRegex(ValueError, "Shape opacity"):
+                    builder.add_shape_box(body=body, hx=0.1, hy=0.2, hz=0.3, opacity=invalid_opacity)
+                self.assertEqual(builder.shape_count, 0)
+
     def test_cloth_opacity_defaults_to_opaque(self):
         """Verify cloth triangles default to fully opaque display opacity."""
         builder = newton.ModelBuilder()
