@@ -2300,7 +2300,10 @@ class ViewerBase(ABC):
                 # Slice to transfer only the last element instead of the full array.
                 active_count = int(offsets[-1:].numpy()[0]) + int(mask[-1:].numpy()[0])
                 if active_count == 0:
-                    self.log_points(name="/model/particles", points=None, hidden=True)
+                    # Pass an empty array (not None) so log_points hides the existing prim;
+                    # None is a no-op in some backends and would leave stale geometry visible.
+                    empty_points = wp.empty(0, dtype=wp.vec3, device=self.device)
+                    self.log_points(name="/model/particles", points=empty_points, hidden=True)
                     return
                 if active_count < n:
                     points_out = wp.empty(active_count, dtype=wp.vec3, device=self.device)
