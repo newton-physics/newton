@@ -1393,7 +1393,8 @@ def apply_mjc_control_kernel(
     mjc_actuator_to_newton_idx: wp.array[wp.int32],
     mjc_actuator_to_newton_target_q_idx: wp.array[wp.int32],
     mjc_actuator_to_target_q_axis_idx: wp.array[wp.int32],
-    mjc_actuator_q_cj: wp.array[wp.quat],
+    mjc_actuator_to_newton_ball_jnt: wp.array[wp.int32],
+    joint_X_c: wp.array[wp.transform],
     joint_target_q: wp.array[wp.float32],
     joint_target_qd: wp.array[wp.float32],
     joint_q: wp.array[wp.float32],
@@ -1402,6 +1403,7 @@ def apply_mjc_control_kernel(
     coords_per_world: wp.int32,
     dofs_per_world: wp.int32,
     ctrls_per_world: wp.int32,
+    joints_per_world: wp.int32,
     use_coord_layout_targets: bool,
     # outputs
     mj_ctrl: wp.array2d[wp.float32],
@@ -1415,7 +1417,8 @@ def apply_mjc_control_kernel(
     - Negative value (<=-2): velocity actuator, newton_axis = -(value + 2)
 
     For ball-joint actuators, ``axis_idx >= 0`` selects the angular component to feed MuJoCo.
-    Position targets are rotated statically by ``q_cj``. Velocity targets read the current
+    Position targets are rotated by the per-world child anchor ``q_cj`` (``joint_X_c`` indexed by
+    ``mjc_actuator_to_newton_ball_jnt`` and the current world). Velocity targets read the current
     quaternion start from ``mjc_actuator_to_newton_target_q_idx`` and rotate by ``q_cj * r^{-1}``
     (mirroring the qpos / qvel bridges in :func:`convert_mj_coords_to_warp_kernel` BALL). The
     velocity case reuses the existing target-q lookup slot.
@@ -1461,7 +1464,12 @@ def apply_mjc_control_kernel(
                     q_n = wp.quat_from_euler(angles, 2, 1, 0)
 
                 aa_newton = _target_quat_to_axis_angle(q_n[0], q_n[1], q_n[2], q_n[3])
-                aa_mj = wp.quat_rotate(mjc_actuator_q_cj[actuator], aa_newton)
+                jnt = mjc_actuator_to_newton_ball_jnt[actuator]
+                assert jnt >= 0
+                template_jnt = jnt % joints_per_world
+                joint_id = world * joints_per_world + template_jnt
+                q_cj = joint_X_c[joint_id].q
+                aa_mj = wp.quat_rotate(q_cj, aa_newton)
                 mj_ctrl[world, actuator] = aa_mj[axis_idx]
         elif idx == -1:
             return
@@ -1491,7 +1499,11 @@ def apply_mjc_control_kernel(
                     joint_q[q_base + 2],
                     joint_q[q_base + 3],
                 )
-                q_cj = mjc_actuator_q_cj[actuator]
+                jnt = mjc_actuator_to_newton_ball_jnt[actuator]
+                assert jnt >= 0
+                template_jnt = jnt % joints_per_world
+                joint_id = world * joints_per_world + template_jnt
+                q_cj = joint_X_c[joint_id].q
                 w_mj = wp.quat_rotate(q_cj * wp.quat_inverse(r), w_newton)
                 mj_ctrl[world, actuator] = w_mj[axis_idx]
     else:  # CTRL_SOURCE_CTRL_DIRECT
@@ -2931,7 +2943,6 @@ def convert_qfrc_actuator_from_mj_kernel(
     joint_child: wp.array[wp.int32],
     joint_X_c: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
-    body_flags: wp.array[wp.int32],
     mj_q_start: wp.array[wp.int32],
     mj_qd_start: wp.array[wp.int32],
     # output
@@ -2945,8 +2956,7 @@ def convert_qfrc_actuator_from_mj_kernel(
     MuJoCo side of Newton. For ball joints, the torque is rotated from
     MuJoCo's current child body frame into Newton's parent anchor frame;
     see :func:`apply_mjc_qfrc_kernel` for the inverse map. Other joints
-    are copied directly. KINEMATIC children produce no Newton-side actuator
-    torque (symmetric with :func:`apply_mjc_qfrc_kernel`).
+    are copied directly.
     """
     worldid, jntid = wp.tid()
 
@@ -2961,12 +2971,6 @@ def convert_qfrc_actuator_from_mj_kernel(
     wqd_i = joint_qd_start[joint_id]
 
     jtype = joint_type[joint_id]
-
-    if (body_flags[joint_child[joint_id]] & BodyFlags.KINEMATIC) != 0:
-        axis_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
-        for i in range(axis_count):
-            qfrc_actuator[wqd_i + i] = 0.0
-        return
 
     if jtype == JointType.FREE:
         # MuJoCo qfrc_actuator for free joint:
