@@ -3,7 +3,7 @@ import newton
 
 from contextlib import nullcontext
 
-from newton.controllers import ControllerPID, ControlGroup
+from newton.controllers import ControlLawPID, Controller
 
 # BUILD UP THE ARM MODEL.
 with nullcontext():
@@ -100,7 +100,7 @@ def simulate():
         arm_model.collide(state_0, contacts)
 
         # step the controllers:
-        group.step(
+        controller.step(
             current_state=controller_state_0,
             next_state=controller_state_1,
             dt=sim_dt
@@ -135,7 +135,7 @@ if __name__ == "__main__":
     control.joint_target_q = wp.array([0., wp.pi/2, wp.pi/2], dtype=wp.float32, device=control.joint_target_q.device)
 
     # create an external PD controller to use:
-    controller = ControllerPID(
+    control_law = ControlLawPID(
         indices = wp.array(arm_model.joint_target_q_start[j1:-1], dtype=wp.uint32),
         measurement=state_0.joint_q,
         measurement_rate=state_0.joint_qd,
@@ -148,9 +148,9 @@ if __name__ == "__main__":
         output=control.joint_f,
     )
 
-    group = ControlGroup([controller])
-    controller_state_0 = group.state()
-    controller_state_1 = group.state()
+    controller = Controller([control_law])
+    controller_state_0 = controller.state()
+    controller_state_1 = controller.state()
 
     ## Setting up the solver:
     solver = newton.solvers.SolverMuJoCo(

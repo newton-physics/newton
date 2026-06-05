@@ -3,7 +3,7 @@ import newton
 
 from contextlib import nullcontext
 
-from newton.controllers import ControllerDifferentialIK, ControlGroup
+from newton.controllers import ControlLawDifferentialIK, Controller
 
 # BUILD UP THE ARM MODEL.
 with nullcontext():
@@ -99,8 +99,8 @@ def simulate():
         state_0.clear_forces()
         arm_model.collide(state_0, contacts)
 
-        # step the controllers:
-        group.step(
+        # step the controller:
+        controller.step(
             current_state=controller_state_0,
             next_state=controller_state_1,
             dt=sim_dt
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     gain = wp.array([300.], dtype=wp.float32)
 
     # create an external differential IK to control the robot to the desired pose.
-    controller = ControllerDifferentialIK(
+    control_law = ControlLawDifferentialIK(
         model_builder=arm_model_builder,
         # TODO: IS THERE A MORE ERGONOMIC WAY TO GRAB THESE INDICES?
         indices=wp.array(arm_model.joint_target_q_start[j1:-1], dtype=wp.uint32),
@@ -156,9 +156,9 @@ if __name__ == "__main__":
         output_qd=control.joint_target_qd,
     )
 
-    group = ControlGroup([controller])
-    controller_state_0 = group.state()
-    controller_state_1 = group.state()
+    controller = Controller([control_law])
+    controller_state_0 = controller.state()
+    controller_state_1 = controller.state()
 
     ## Setting up the solver:
     solver = newton.solvers.SolverMuJoCo(
