@@ -935,18 +935,23 @@ class MeshInstancerGL:
         gl = RendererGL.gl
         active_count = self.active_instances
 
+        needs_transform_cache = active_count > 0 and (self._has_transparency or opacities is not None)
+
         if ENABLE_CUDA_INTEROP and self.device.is_cuda:
             vbo_transforms = self._instance_transform_cuda_buffer.map(dtype=wp.mat44, shape=(self.num_instances,))
             wp.copy(vbo_transforms, xforms)
             self._instance_transform_cuda_buffer.unmap()
+            if needs_transform_cache:
+                host_transforms = np.ascontiguousarray(xforms.numpy()[:active_count], dtype=np.float32)
+                self._host_transforms[:active_count] = host_transforms.reshape(active_count, 4, 4)
         else:
             host_transforms = xforms.numpy()
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_transforms.nbytes, host_transforms.ctypes.data, gl.GL_DYNAMIC_DRAW)
-
-        if active_count > 0 and xforms is not None:
-            host_transforms = np.ascontiguousarray(xforms.numpy()[:active_count], dtype=np.float32)
-            self._host_transforms[:active_count] = host_transforms.reshape(active_count, 4, 4)
+            if needs_transform_cache:
+                self._host_transforms[:active_count] = np.ascontiguousarray(
+                    host_transforms[:active_count], dtype=np.float32
+                ).reshape(active_count, 4, 4)
 
         # update other properties through CPU for now
         if colors is not None:
@@ -983,11 +988,16 @@ class MeshInstancerGL:
             raise ValueError(f"Active instance count ({count}) exceeds allocated capacity ({self.num_instances}).")
         self.active_instances = count
         if count > 0:
-            host_transforms = np.ascontiguousarray(host_transforms_np[:count], dtype=np.float32)
-            self._host_transforms[:count] = host_transforms.reshape(count, 4, 4)
+            needs_transform_cache = self._has_transparency or opacities is not None
+            if needs_transform_cache:
+                host_transforms = np.ascontiguousarray(host_transforms_np[:count], dtype=np.float32)
+                self._host_transforms[:count] = host_transforms.reshape(count, 4, 4)
+                transform_ptr = host_transforms.ctypes.data
+            else:
+                transform_ptr = host_transforms_np.ctypes.data
             nbytes = count * self.transform_byte_size
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
-            gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, nbytes, host_transforms.ctypes.data)
+            gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, nbytes, transform_ptr)
         if colors is not None:
             host_colors = np.ascontiguousarray(colors.numpy(), dtype=np.float32)
             if count > 0:
@@ -1009,11 +1019,7 @@ class MeshInstancerGL:
         gl = RendererGL.gl
 
         if opacities is None:
-            self._has_transparency = False
-            self._set_opacity_attribute_enabled(False)
-            if self._opacity_buffer_opaque:
-                return
-            host_opacities = np.ones(count, dtype=np.float32)
+            return
         else:
             host_opacities = np.ascontiguousarray(opacities.numpy(), dtype=np.float32).reshape(-1)[:count]
             host_opacities = np.clip(host_opacities, 0.0, 1.0)
@@ -1105,9 +1111,6 @@ class MeshInstancerGL:
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.mesh.texture_id)
         else:
             gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
-
-        if not self._opacity_attribute_enabled:
-            gl.glVertexAttrib1f(9, 1.0)
 
         gl.glBindVertexArray(self.vao)
         gl.glDrawElementsInstanced(
@@ -2144,6 +2147,7 @@ class RendererGL:
         with self._shape_shader:
             gl.glDisable(gl.GL_BLEND)
             gl.glDepthMask(True)
+            gl.glVertexAttrib1f(9, 1.0)
             self._shape_shader.set_transparent_pass(False)
             self._draw_objects(opaque_objects)
 

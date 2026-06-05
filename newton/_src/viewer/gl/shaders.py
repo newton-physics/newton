@@ -49,8 +49,9 @@ layout (location = 7) in vec3 aObjectColor;
 // material properties
 layout (location = 8) in vec4 aMaterial;
 
-// display opacity
+#ifdef ENABLE_TRANSPARENCY
 layout (location = 9) in float aOpacity;
+#endif
 
 uniform mat4 view;
 uniform mat4 projection;
@@ -63,7 +64,9 @@ out vec2 TexCoord;
 out vec3 ObjectColor;
 out vec4 FragPosLightSpace;
 out vec4 Material;
+#ifdef ENABLE_TRANSPARENCY
 out float Opacity;
+#endif
 
 void main()
 {
@@ -87,7 +90,9 @@ void main()
     ObjectColor = aObjectColor;
     FragPosLightSpace = light_space_matrix * worldPos;
     Material = aMaterial;
+#ifdef ENABLE_TRANSPARENCY
     Opacity = clamp(aOpacity, 0.0, 1.0);
+#endif
 }
 """
 
@@ -572,10 +577,12 @@ class ShaderShape(ShaderGL):
 
         self._gl = gl
         self.enable_transparency = enable_transparency
+        vertex_shader = shape_vertex_shader
         fragment_shader = shape_fragment_shader
         if enable_transparency:
+            vertex_shader = _with_shader_define(vertex_shader, "ENABLE_TRANSPARENCY")
             fragment_shader = _with_shader_define(fragment_shader, "ENABLE_TRANSPARENCY")
-        self.shader_program = ShaderProgram(Shader(shape_vertex_shader, "vertex"), Shader(fragment_shader, "fragment"))
+        self.shader_program = ShaderProgram(Shader(vertex_shader, "vertex"), Shader(fragment_shader, "fragment"))
 
         # Get all uniform locations
         with self:
