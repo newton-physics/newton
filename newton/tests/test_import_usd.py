@@ -6236,24 +6236,24 @@ def Xform "Articulation" (
         result = builder.add_usd(stage, convert_mjc_equality_constraints=False)
         model = builder.finalize()
 
-        self.assertEqual(model.equality_constraint_count, 2)
-        eq_by_label = {label: i for i, label in enumerate(model.equality_constraint_label)}
+        self.assertEqual(model.mujoco.equality_constraint_count, 2)
+        eq_by_label = {label: i for i, label in enumerate(model.mujoco.equality_constraint_label)}
         joint1_eq = eq_by_label["/World/Articulation/Joint1"]
         joint2_eq = eq_by_label["/World/Articulation/Joint2"]
         joint1_idx = result["path_joint_map"]["/World/Articulation/Joint1"]
         joint2_idx = result["path_joint_map"]["/World/Articulation/Joint2"]
-        self.assertEqual(model.equality_constraint_joint1.numpy()[joint1_eq], joint1_idx)
-        self.assertEqual(model.equality_constraint_joint2.numpy()[joint1_eq], joint2_idx)
-        self.assertEqual(model.equality_constraint_joint1.numpy()[joint2_eq], joint2_idx)
-        self.assertEqual(model.equality_constraint_joint2.numpy()[joint2_eq], joint1_idx)
+        self.assertEqual(model.mujoco.equality_constraint_joint1.numpy()[joint1_eq], joint1_idx)
+        self.assertEqual(model.mujoco.equality_constraint_joint2.numpy()[joint1_eq], joint2_idx)
+        self.assertEqual(model.mujoco.equality_constraint_joint1.numpy()[joint2_eq], joint2_idx)
+        self.assertEqual(model.mujoco.equality_constraint_joint2.numpy()[joint2_eq], joint1_idx)
         np.testing.assert_allclose(
-            model.equality_constraint_polycoef.numpy()[joint1_eq],
+            model.mujoco.equality_constraint_polycoef.numpy()[joint1_eq],
             np.array([0.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float32),
             rtol=1e-6,
             atol=1e-6,
         )
         np.testing.assert_allclose(
-            model.equality_constraint_polycoef.numpy()[joint2_eq],
+            model.mujoco.equality_constraint_polycoef.numpy()[joint2_eq],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
             rtol=1e-6,
             atol=1e-6,
@@ -6341,19 +6341,19 @@ def Xform "Articulation" (
         self.assertEqual(model.joint_count, 2)
         self.assertEqual(model.joint_dof_count, 12)
         self.assertEqual(model.joint_coord_count, 14)
-        self.assertEqual(model.equality_constraint_count, 2)
-        eq_by_label = {label: i for i, label in enumerate(model.equality_constraint_label)}
+        self.assertEqual(model.mujoco.equality_constraint_count, 2)
+        eq_by_label = {label: i for i, label in enumerate(model.mujoco.equality_constraint_label)}
         site_eq = eq_by_label["/World/EqualityConnect"]
         world_eq = eq_by_label["/World/EqualityConnectBodyToWorld"]
         body0_idx = result["path_body_map"]["/World/Body0"]
         body1_idx = result["path_body_map"]["/World/Body1"]
-        self.assertEqual(model.equality_constraint_body1.numpy()[site_eq], body0_idx)
-        self.assertEqual(model.equality_constraint_body2.numpy()[site_eq], body1_idx)
-        np.testing.assert_allclose(model.equality_constraint_anchor.numpy()[site_eq], np.array([0.1, 0.0, 0.0]))
-        self.assertEqual(model.equality_constraint_body1.numpy()[world_eq], body0_idx)
-        self.assertEqual(model.equality_constraint_body2.numpy()[world_eq], -1)
+        self.assertEqual(model.mujoco.equality_constraint_body1.numpy()[site_eq], body0_idx)
+        self.assertEqual(model.mujoco.equality_constraint_body2.numpy()[site_eq], body1_idx)
+        np.testing.assert_allclose(model.mujoco.equality_constraint_anchor.numpy()[site_eq], np.array([0.1, 0.0, 0.0]))
+        self.assertEqual(model.mujoco.equality_constraint_body1.numpy()[world_eq], body0_idx)
+        self.assertEqual(model.mujoco.equality_constraint_body2.numpy()[world_eq], -1)
         np.testing.assert_allclose(
-            model.equality_constraint_anchor.numpy()[world_eq],
+            model.mujoco.equality_constraint_anchor.numpy()[world_eq],
             np.array([0.25, -0.1, 0.3], dtype=np.float32),
             rtol=1e-6,
             atol=1e-6,
@@ -6400,15 +6400,15 @@ def Xform "Articulation" (
         builder.add_usd(stage, convert_mjc_equality_constraints=False)
         model = builder.finalize()
 
-        self.assertEqual(model.equality_constraint_count, 0)
+        self.assertEqual(model.mujoco.equality_constraint_count, 0)
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage, only_load_enabled_joints=False, convert_mjc_equality_constraints=False)
         model = builder.finalize()
 
-        self.assertEqual(model.equality_constraint_count, 1)
-        self.assertFalse(bool(model.equality_constraint_enabled.numpy()[0]))
+        self.assertEqual(model.mujoco.equality_constraint_count, 1)
+        self.assertFalse(bool(model.mujoco.equality_constraint_enabled.numpy()[0]))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_weld_parsing(self):
@@ -6469,26 +6469,26 @@ def Xform "Articulation" (
         self.assertEqual(model.joint_count, 2)
         self.assertEqual(model.joint_dof_count, 12)
         self.assertEqual(model.joint_coord_count, 14)
-        self.assertEqual(model.equality_constraint_count, 1)
-        weld_eq = model.equality_constraint_label.index("/World/EqualityWeld")
+        self.assertEqual(model.mujoco.equality_constraint_count, 1)
+        weld_eq = model.mujoco.equality_constraint_label.index("/World/EqualityWeld")
         body0_idx = result["path_body_map"]["/World/Body0"]
         body1_idx = result["path_body_map"]["/World/Body1"]
-        self.assertEqual(model.equality_constraint_body1.numpy()[weld_eq], body0_idx)
-        self.assertEqual(model.equality_constraint_body2.numpy()[weld_eq], body1_idx)
+        self.assertEqual(model.mujoco.equality_constraint_body1.numpy()[weld_eq], body0_idx)
+        self.assertEqual(model.mujoco.equality_constraint_body2.numpy()[weld_eq], body1_idx)
         np.testing.assert_allclose(
-            model.equality_constraint_anchor.numpy()[weld_eq],
+            model.mujoco.equality_constraint_anchor.numpy()[weld_eq],
             np.array([0.2, -0.1, 0.3], dtype=np.float32),
             rtol=1e-6,
             atol=1e-6,
         )
         np.testing.assert_allclose(
-            model.equality_constraint_relpose.numpy()[weld_eq],
+            model.mujoco.equality_constraint_relpose.numpy()[weld_eq],
             np.array([0.45, -0.5, 0.0, 0.0, 0.0, sqrt_half, sqrt_half], dtype=np.float32),
             rtol=1e-6,
             atol=1e-6,
         )
         np.testing.assert_allclose(
-            model.equality_constraint_torquescale.numpy()[weld_eq], np.array(2.5), rtol=1e-6, atol=1e-6
+            model.mujoco.equality_constraint_torquescale.numpy()[weld_eq], np.array(2.5), rtol=1e-6, atol=1e-6
         )
         np.testing.assert_allclose(model.mujoco.eq_solref.numpy()[weld_eq], np.array([0.02, 1.0], dtype=np.float32))
         np.testing.assert_allclose(
@@ -6606,9 +6606,9 @@ def Xform "Articulation" (
         converted_model = converted_builder.finalize()
         converted_solver = SolverMuJoCo(converted_model)
 
-        self.assertEqual(converted_model.equality_constraint_count, 3)
+        self.assertEqual(converted_model.mujoco.equality_constraint_count, 3)
         self.assertEqual(converted_model.constraint_mimic_count, 1)
-        eq_types = converted_model.equality_constraint_type.numpy()
+        eq_types = converted_model.mujoco.equality_constraint_type.numpy()
         target_kinds = converted_model.mujoco.equality_constraint_target_kind.numpy()
         self.assertEqual(eq_types.tolist().count(int(newton.EqType.CONNECT)), 1)
         self.assertEqual(eq_types.tolist().count(int(newton.EqType.WELD)), 1)
@@ -6618,7 +6618,7 @@ def Xform "Articulation" (
         joint_eq = int(np.flatnonzero(eq_types == int(newton.EqType.JOINT))[0])
         self.assertEqual(target_kinds[joint_eq], int(MjcEqualityTargetKind.MIMIC))
         np.testing.assert_allclose(
-            converted_model.equality_constraint_polycoef.numpy()[joint_eq],
+            converted_model.mujoco.equality_constraint_polycoef.numpy()[joint_eq],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
         )
 

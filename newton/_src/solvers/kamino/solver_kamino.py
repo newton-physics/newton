@@ -763,7 +763,6 @@ class SolverKamino(SolverBase):
         - springs
         - triangles, edges, tetrahedra
         - muscles
-        - equality constraints
         - distance, cable, or gimbal joints
 
         Args:
@@ -786,8 +785,6 @@ class SolverKamino(SolverBase):
             unsupported_features.append(f"tetrahedral elements (found {model.tet_count})")
         if model.muscle_count > 0:
             unsupported_features.append(f"muscles (found {model.muscle_count})")
-        if model.equality_constraint_count > 0:
-            unsupported_features.append(f"equality constraints (found {model.equality_constraint_count})")
 
         # Check for unsupported joint types
         if model.joint_count > 0:

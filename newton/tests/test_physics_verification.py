@@ -31,6 +31,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -825,7 +826,13 @@ def test_fourbar_linkage(test, device, solver_fn, use_loop_joint=False):
         )
         builder.joint_articulation[j_loop] = -1
     else:
-        builder.add_equality_constraint_connect(body1=-1, body2=rocker_body, anchor=wp.vec3(d_link, 0.0, 0.0))
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.CONNECT,
+            body1=-1,
+            body2=rocker_body,
+            anchor=wp.vec3(d_link, 0.0, 0.0),
+        )
     model = builder.finalize(device=device)
 
     solver = solver_fn(model)
