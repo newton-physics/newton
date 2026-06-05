@@ -327,7 +327,7 @@ def parse_mjcf(
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
 
     use_degrees = True  # angles are in degrees by default
-    eulerseq = "xyz"  # default sequence (lowercase = body-frame axes per MuJoCo's actual behavior)
+    eulerseq = "xyz"  # default sequence (lowercase = intrinsic axes, per MuJoCo)
 
     # load joint defaults
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
@@ -375,7 +375,8 @@ def parse_mjcf(
     if compiler_attribs:
         use_degrees = compiler_attribs.get("angle", "degree").lower() == "degree"
         # Per-character case carries the intrinsic/extrinsic axis convention
-        # (lowercase = body-frame axis, uppercase = world-frame axis); keep it.
+        # (lowercase = intrinsic / rotates with the frame, uppercase =
+        # extrinsic / fixed in the parent frame); keep it.
         eulerseq = compiler_attribs.get("eulerseq", "xyz")
         mesh_dir = compiler_attribs.get("meshdir", ".")
         texture_dir = compiler_attribs.get("texturedir", mesh_dir)
@@ -584,10 +585,11 @@ def parse_mjcf(
     def quat_from_euler_mjcf(e: wp.vec3, seq: str) -> wp.quat:
         """Convert MJCF euler to quaternion respecting per-character ``eulerseq`` case.
 
-        For each character, lowercase composes around the body-frame axis
-        (right-multiply) and uppercase composes around the world-frame axis
-        (left-multiply). The default ``"xyz"`` yields ``qx*qy*qz``; ``"XYZ"``
-        yields ``qz*qy*qx``; mixed cases yield the corresponding hybrid.
+        For each character, lowercase is intrinsic (the axis rotates with the
+        frame; right-multiply) and uppercase is extrinsic (the axis stays fixed
+        in the parent frame; left-multiply). The default ``"xyz"`` yields
+        ``qx*qy*qz``; ``"XYZ"`` yields ``qz*qy*qx``; mixed cases yield the
+        corresponding hybrid.
         """
         half = np.asarray([float(e[0]), float(e[1]), float(e[2])]) * 0.5
         c = np.cos(half)
