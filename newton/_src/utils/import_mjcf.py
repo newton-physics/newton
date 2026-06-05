@@ -784,7 +784,7 @@ def parse_mjcf(
                     )
                     shape_kwargs["color"] = material_color
                 if len(rgba_values) >= 4:
-                    shape_kwargs["opacity"] = float(rgba_values[3])
+                    shape_kwargs["opacity"] = float(np.clip(rgba_values[3], 0.0, 1.0))
 
             texture = None
             texture_name = material_info.get("texture")
