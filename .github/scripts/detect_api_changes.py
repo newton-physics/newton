@@ -268,6 +268,8 @@ def _collect_definitions(tree: ast.Module, module_name: str, defs: dict[str, dic
                         "method",
                         _format_callable_signature(child, owner_name=node.name),
                     )
+                    if child.name == "__init__":
+                        _collect_init_attribute_defs(child, node.name, defs)
                 elif isinstance(child, (ast.Assign, ast.AnnAssign)):
                     _collect_class_attr_defs(child, node.name, _is_enum_class(node), defs)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -305,6 +307,75 @@ def _collect_class_attr_defs(
                 defs[key] = _make_symbol("constant", f"{name}: {annotation}", value=value)
             else:
                 defs[key] = _make_symbol("attribute", f"{name}: {annotation}", value=value)
+
+
+def _collect_init_attribute_defs(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    class_name: str,
+    defs: dict[str, dict],
+) -> None:
+    for name, symbol in _extract_init_attribute_defs(node).items():
+        defs.setdefault(f"{class_name}.{name}", symbol)
+
+
+class _InitAttributeVisitor(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.defs: dict[str, dict] = {}
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        for target in node.targets:
+            for name, value in _iter_self_attribute_assignments(target, node.value):
+                if _is_public_name(name):
+                    self.defs[name] = _make_symbol("attribute", value=_format_value(value))
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        name = _self_attribute_name(node.target)
+        if name is None or not _is_public_name(name):
+            return
+        annotation = _format_annotation(node.annotation)
+        self.defs[name] = _make_symbol("attribute", f"{name}: {annotation}", value=_format_value(node.value))
+
+
+def _extract_init_attribute_defs(node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, dict]:
+    visitor = _InitAttributeVisitor()
+    for statement in node.body:
+        visitor.visit(statement)
+    return visitor.defs
+
+
+def _iter_self_attribute_assignments(target: ast.AST, value: ast.AST) -> list[tuple[str, ast.AST]]:
+    name = _self_attribute_name(target)
+    if name is not None:
+        return [(name, value)]
+    if not isinstance(target, (ast.Tuple, ast.List)):
+        return []
+
+    value_elts: list[ast.AST | None]
+    if isinstance(value, (ast.Tuple, ast.List)) and len(value.elts) == len(target.elts):
+        value_elts = list(value.elts)
+    else:
+        value_elts = [value] * len(target.elts)
+
+    assignments: list[tuple[str, ast.AST]] = []
+    for target_elt, value_elt in zip(target.elts, value_elts, strict=True):
+        if value_elt is not None:
+            assignments.extend(_iter_self_attribute_assignments(target_elt, value_elt))
+    return assignments
+
+
+def _self_attribute_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self":
+        return node.attr
+    return None
 
 
 def _collect_module_assignment_defs(node: ast.Assign | ast.AnnAssign, defs: dict[str, dict]) -> None:
@@ -583,8 +654,19 @@ def _extract_class_symbols(
                 "method",
                 _format_callable_signature(child, owner_name=node.name),
             )
+            if child.name == "__init__":
+                _extract_init_attribute_symbols(child, class_path, symbols)
         elif isinstance(child, (ast.Assign, ast.AnnAssign)):
             _extract_class_attribute_symbols(child, class_path, is_enum, symbols)
+
+
+def _extract_init_attribute_symbols(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    class_path: str,
+    symbols: dict[str, dict],
+) -> None:
+    for name, symbol in _extract_init_attribute_defs(node).items():
+        symbols.setdefault(f"{class_path}.{name}", symbol)
 
 
 def _extract_class_attribute_symbols(
