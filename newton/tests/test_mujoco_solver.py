@@ -23,6 +23,7 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
+from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
@@ -3134,7 +3135,9 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         template_builder.add_articulation([j2])
 
         # Add a connect constraint between the two bodies
-        template_builder.add_equality_constraint_connect(
+        _add_equality_constraint(
+            template_builder,
+            constraint_type=newton.EqType.CONNECT,
             body1=b1,
             body2=b2,
             anchor=wp.vec3(0.1, 0.0, 0.0),
@@ -3151,11 +3154,11 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         # Verify we have the custom attribute
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "eq_solref"))
-        self.assertEqual(model.equality_constraint_count, world_count)  # 1 constraint per world
+        self.assertEqual(model.mujoco.equality_constraint_count, world_count)  # 1 constraint per world
 
         # --- Step 1: Set initial values and verify conversion ---
 
-        total_eq = model.equality_constraint_count
+        total_eq = model.mujoco.equality_constraint_count
         initial_values = np.zeros((total_eq, 2), dtype=np.float32)
 
         for i in range(total_eq):
@@ -3244,7 +3247,9 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         template_builder.add_articulation([j2])
 
         # Add a connect constraint between the two bodies
-        template_builder.add_equality_constraint_connect(
+        _add_equality_constraint(
+            template_builder,
+            constraint_type=newton.EqType.CONNECT,
             body1=b1,
             body2=b2,
             anchor=wp.vec3(0.1, 0.0, 0.0),
@@ -3261,11 +3266,11 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         # Verify we have the custom attribute
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "eq_solimp"))
-        self.assertEqual(model.equality_constraint_count, world_count)  # 1 constraint per world
+        self.assertEqual(model.mujoco.equality_constraint_count, world_count)  # 1 constraint per world
 
         # --- Step 1: Set initial values and verify conversion ---
 
-        total_eq = model.equality_constraint_count
+        total_eq = model.mujoco.equality_constraint_count
         initial_values = np.zeros((total_eq, 5), dtype=np.float32)
 
         for i in range(total_eq):
@@ -3355,7 +3360,9 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         builder.add_articulation([j2])
 
         # Add a connect constraint between the two bodies
-        builder.add_equality_constraint_connect(
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.CONNECT,
             body1=b1,
             body2=b2,
             anchor=wp.vec3(0.1, 0.0, 0.0),
@@ -3431,7 +3438,9 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         template_builder.add_articulation([j5])
 
         # Add a CONNECT constraint
-        template_builder.add_equality_constraint_connect(
+        _add_equality_constraint(
+            template_builder,
+            constraint_type=newton.EqType.CONNECT,
             body1=b1,
             body2=b2,
             anchor=wp.vec3(0.1, 0.2, 0.3),
@@ -3439,7 +3448,9 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
 
         # Add a WELD constraint with specific relpose values
         weld_relpose = wp.transform(wp.vec3(0.01, 0.02, 0.03), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.1))
-        template_builder.add_equality_constraint_weld(
+        _add_equality_constraint(
+            template_builder,
+            constraint_type=newton.EqType.WELD,
             body1=b2,
             body2=b3,
             anchor=wp.vec3(0.5, 0.6, 0.7),
@@ -3449,7 +3460,9 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
 
         # Add a JOINT constraint with specific polycoef values
         joint_polycoef = [0.1, 0.2, 0.3, 0.4, 0.5]
-        template_builder.add_equality_constraint_joint(
+        _add_equality_constraint(
+            template_builder,
+            constraint_type=newton.EqType.JOINT,
             joint1=j4,
             joint2=j5,
             polycoef=joint_polycoef,
@@ -3469,11 +3482,11 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         mjw_eq_data = solver.mjw_model.eq_data.numpy()
         neq = mjc_eq_to_newton_eq.shape[1]
 
-        eq_constraint_anchor = model.equality_constraint_anchor.numpy()
-        eq_constraint_relpose = model.equality_constraint_relpose.numpy()
-        eq_constraint_polycoef = model.equality_constraint_polycoef.numpy()
-        eq_constraint_torquescale = model.equality_constraint_torquescale.numpy()
-        eq_constraint_type = model.equality_constraint_type.numpy()
+        eq_constraint_anchor = model.mujoco.equality_constraint_anchor.numpy()
+        eq_constraint_relpose = model.mujoco.equality_constraint_relpose.numpy()
+        eq_constraint_polycoef = model.mujoco.equality_constraint_polycoef.numpy()
+        eq_constraint_torquescale = model.mujoco.equality_constraint_torquescale.numpy()
+        eq_constraint_type = model.mujoco.equality_constraint_type.numpy()
 
         for w in range(world_count):
             for mjc_eq in range(neq):
@@ -3556,37 +3569,37 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
             ],
             dtype=np.float32,
         )
-        model.equality_constraint_anchor.assign(new_anchors[: model.equality_constraint_count])
+        model.mujoco.equality_constraint_anchor.assign(new_anchors[: model.mujoco.equality_constraint_count])
 
         # Update torquescale for WELD constraints
         new_torquescale = np.array([0.0, 0.9, 0.0, 0.0, 0.8, 0.0], dtype=np.float32)
-        model.equality_constraint_torquescale.assign(new_torquescale[: model.equality_constraint_count])
+        model.mujoco.equality_constraint_torquescale.assign(new_torquescale[: model.mujoco.equality_constraint_count])
 
         # Update relpose for WELD constraints
-        new_relpose = np.zeros((model.equality_constraint_count, 7), dtype=np.float32)
+        new_relpose = np.zeros((model.mujoco.equality_constraint_count, 7), dtype=np.float32)
         # Set new relpose for WELD constraint (index 1 in template, indices 1 and 4 after replication)
         new_trans = [0.11, 0.22, 0.33]
         new_quat_xyzw = [0.0, 0.0, 0.38268343, 0.92387953]  # 45 degrees around Z
         new_relpose[1] = new_trans + new_quat_xyzw
         new_relpose[4] = new_trans + new_quat_xyzw
-        model.equality_constraint_relpose.assign(new_relpose)
+        model.mujoco.equality_constraint_relpose.assign(new_relpose)
 
         # Update polycoef for JOINT constraints
-        new_polycoef = np.zeros((model.equality_constraint_count, 5), dtype=np.float32)
+        new_polycoef = np.zeros((model.mujoco.equality_constraint_count, 5), dtype=np.float32)
         # Set new polycoef for JOINT constraint (index 2 in template, indices 2 and 5 after replication)
         new_polycoef[2] = [1.1, 1.2, 1.3, 1.4, 1.5]
         new_polycoef[5] = [1.1, 1.2, 1.3, 1.4, 1.5]
-        model.equality_constraint_polycoef.assign(new_polycoef)
+        model.mujoco.equality_constraint_polycoef.assign(new_polycoef)
 
         # Notify solver
         solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
 
         # Verify updates
         mjw_eq_data_updated = solver.mjw_model.eq_data.numpy()
-        eq_constraint_anchor_updated = model.equality_constraint_anchor.numpy()
-        eq_constraint_relpose_updated = model.equality_constraint_relpose.numpy()
-        eq_constraint_polycoef_updated = model.equality_constraint_polycoef.numpy()
-        eq_constraint_torquescale_updated = model.equality_constraint_torquescale.numpy()
+        eq_constraint_anchor_updated = model.mujoco.equality_constraint_anchor.numpy()
+        eq_constraint_relpose_updated = model.mujoco.equality_constraint_relpose.numpy()
+        eq_constraint_polycoef_updated = model.mujoco.equality_constraint_polycoef.numpy()
+        eq_constraint_torquescale_updated = model.mujoco.equality_constraint_torquescale.numpy()
 
         for w in range(world_count):
             for mjc_eq in range(neq):
@@ -3677,7 +3690,9 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         template_builder.add_articulation([j2])
 
         # Add a connect constraint between the two bodies (enabled by default)
-        template_builder.add_equality_constraint_connect(
+        _add_equality_constraint(
+            template_builder,
+            constraint_type=newton.EqType.CONNECT,
             body1=b1,
             body2=b2,
             anchor=wp.vec3(0.1, 0.0, 0.0),
@@ -3691,7 +3706,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
-        self.assertEqual(model.equality_constraint_count, world_count)  # 1 constraint per world
+        self.assertEqual(model.mujoco.equality_constraint_count, world_count)  # 1 constraint per world
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
@@ -3700,7 +3715,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         mjw_eq_active = solver.mjw_data.eq_active.numpy()
         neq = mjc_eq_to_newton_eq.shape[1]
 
-        eq_enabled = model.equality_constraint_enabled.numpy()
+        eq_enabled = model.mujoco.equality_constraint_enabled.numpy()
 
         for w in range(world_count):
             for mjc_eq in range(neq):
@@ -3719,7 +3734,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         # --- Step 2: Disable some constraints and verify ---
         # Disable constraint in world 0, keep world 1 enabled
         new_enabled = np.array([False, True], dtype=bool)
-        model.equality_constraint_enabled.assign(new_enabled)
+        model.mujoco.equality_constraint_enabled.assign(new_enabled)
 
         # Notify solver
         solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
@@ -3743,7 +3758,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
 
         # --- Step 3: Re-enable all constraints ---
         new_enabled = np.array([True, True], dtype=bool)
-        model.equality_constraint_enabled.assign(new_enabled)
+        model.mujoco.equality_constraint_enabled.assign(new_enabled)
 
         solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
 
@@ -3784,7 +3799,9 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         template_builder.add_articulation([j2])
 
         # Add a CONNECT constraint between the two bodies
-        template_builder.add_equality_constraint_connect(
+        _add_equality_constraint(
+            template_builder,
+            constraint_type=newton.EqType.CONNECT,
             body1=b1,
             body2=b2,
             anchor=wp.vec3(0.1, 0.2, 0.3),
@@ -5161,7 +5178,7 @@ class TestMuJoCoValidation(unittest.TestCase):
         robot1.add_articulation([j1, j2])
         robot1.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
         robot1.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
-        robot1.add_equality_constraint_weld(body1=b1, body2=b2)  # 1 constraint
+        _add_equality_constraint(robot1, constraint_type=newton.EqType.WELD, body1=b1, body2=b2)  # 1 constraint
 
         robot2 = newton.ModelBuilder()
         b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
@@ -5192,7 +5209,7 @@ class TestMuJoCoValidation(unittest.TestCase):
         robot1.add_articulation([j1, j2])
         robot1.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
         robot1.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
-        robot1.add_equality_constraint_weld(body1=b1, body2=b2)  # WELD type
+        _add_equality_constraint(robot1, constraint_type=newton.EqType.WELD, body1=b1, body2=b2)  # WELD type
 
         robot2 = newton.ModelBuilder()
         b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
@@ -5202,7 +5219,9 @@ class TestMuJoCoValidation(unittest.TestCase):
         robot2.add_articulation([j1, j2])
         robot2.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
         robot2.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
-        robot2.add_equality_constraint_connect(body1=b1, body2=b2)  # CONNECT type (different)
+        _add_equality_constraint(
+            robot2, constraint_type=newton.EqType.CONNECT, body1=b1, body2=b2
+        )  # CONNECT type (different)
 
         main = newton.ModelBuilder()
         main.add_world(robot1)
@@ -5231,7 +5250,7 @@ class TestMuJoCoValidation(unittest.TestCase):
 
         # Add a global equality constraint outside any world context
         # We need body indices in the main builder - use the first two bodies from world 0
-        main.add_equality_constraint_weld(body1=0, body2=1)
+        _add_equality_constraint(main, constraint_type=newton.EqType.WELD, body1=0, body2=1)
 
         model = main.finalize()
 
@@ -7013,7 +7032,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         j2 = builder.add_joint_revolute(b1, b2)
         builder.add_articulation([j0, j1, j2])
         # add one equality constraint before the loop joint
-        builder.add_equality_constraint_connect(body1=b0, body2=b1, anchor=wp.vec3(0.0, 0.0, 1.0))
+        _add_equality_constraint(
+            builder, constraint_type=newton.EqType.CONNECT, body1=b0, body2=b1, anchor=wp.vec3(0.0, 0.0, 1.0)
+        )
         # add a loop joint
         builder.add_joint_fixed(
             b0,
@@ -7023,7 +7044,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.45), wp.quat_identity()),
         )
         # add one equality constraint after the loop joint
-        builder.add_equality_constraint_connect(body1=b0, body2=b2, anchor=wp.vec3(0.0, 0.0, 1.0))
+        _add_equality_constraint(
+            builder, constraint_type=newton.EqType.CONNECT, body1=b0, body2=b2, anchor=wp.vec3(0.0, 0.0, 1.0)
+        )
         world_count = 4
         world_builder = newton.ModelBuilder()
         # force the ModelBuilder to correct zero mass/inertia values
@@ -7033,7 +7056,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         model = world_builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=True)
         self.assertEqual(model.joint_count, 4 * world_count)
-        self.assertEqual(model.equality_constraint_count, 2 * world_count)
+        self.assertEqual(model.mujoco.equality_constraint_count, 2 * world_count)
         self.assertEqual(solver.mj_model.nv, 3)
         # 2 explicit connect constraints + 1 weld from fixed loop joint
         self.assertEqual(solver.mj_model.neq, 3)
@@ -7091,7 +7114,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         sj1 = source.add_joint_revolute(s0, s1)
         source.add_articulation([sj0, sj1])
         sm = source.add_constraint_mimic(joint0=sj1, joint1=sj0)
-        source.add_equality_constraint_connect(
+        _add_equality_constraint(
+            source,
+            constraint_type=newton.EqType.CONNECT,
             body1=s0,
             body2=s1,
             anchor=wp.vec3(0.0),
@@ -7101,7 +7126,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 "mujoco:equality_constraint_objtype": MJC_OBJ_BODY,
             },
         )
-        source.add_equality_constraint_joint(
+        _add_equality_constraint(
+            source,
+            constraint_type=newton.EqType.JOINT,
             joint1=sj1,
             joint2=sj0,
             custom_attributes={
@@ -7135,7 +7162,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         root_joint = builder.add_joint_revolute(-1, root)
         fixed_joint = builder.add_joint_fixed(root, child)
         builder.add_articulation([root_joint, fixed_joint])
-        builder.add_equality_constraint_weld(
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.WELD,
             body1=root,
             body2=child,
             custom_attributes={
@@ -7192,7 +7221,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 child=mid,
                 enabled=bool(connect_enabled[world]),
             )
-            builder.add_equality_constraint_connect(
+            _add_equality_constraint(
+                builder,
+                constraint_type=newton.EqType.CONNECT,
                 body1=root,
                 body2=mid,
                 anchor=wp.vec3(*connect_anchor[world]),
@@ -7210,7 +7241,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 child=tip,
                 enabled=bool(weld_enabled[world]),
             )
-            builder.add_equality_constraint_weld(
+            _add_equality_constraint(
+                builder,
+                constraint_type=newton.EqType.WELD,
                 body1=mid,
                 body2=tip,
                 anchor=wp.vec3(*weld_anchor[world]),
@@ -7252,12 +7285,12 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 0], connect_enabled)
         np.testing.assert_array_equal(solver.mjw_data.eq_active.numpy()[:, 1], weld_enabled)
 
-        eq_enabled = model.equality_constraint_enabled.numpy()
+        eq_enabled = model.mujoco.equality_constraint_enabled.numpy()
         eq_enabled[0] = False
         eq_enabled[1] = True
         eq_enabled[2] = True
         eq_enabled[3] = False
-        model.equality_constraint_enabled.assign(eq_enabled)
+        model.mujoco.equality_constraint_enabled.assign(eq_enabled)
         solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
 
         np.testing.assert_allclose(solver.mjw_model.eq_data.numpy(), eq_data, rtol=1e-5)
@@ -8124,7 +8157,9 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
                 coef1=20.0 + world,
                 enabled=world == 0,
             )
-            builder.add_equality_constraint_joint(
+            _add_equality_constraint(
+                builder,
+                constraint_type=newton.EqType.JOINT,
                 joint1=j2,
                 joint2=j1,
                 polycoef=polycoef[world].tolist(),
@@ -8154,7 +8189,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         model.constraint_mimic_coef0.assign(np.array([100.0, 200.0], dtype=np.float32))
         model.constraint_mimic_coef1.assign(np.array([300.0, 400.0], dtype=np.float32))
         model.constraint_mimic_enabled.assign(np.array([False, True], dtype=bool))
-        model.equality_constraint_enabled.assign(np.array([False, True], dtype=bool))
+        model.mujoco.equality_constraint_enabled.assign(np.array([False, True], dtype=bool))
         solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
 
         np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :5], polycoef, rtol=1e-5)
@@ -8181,7 +8216,9 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             coef1=20.0,
             enabled=True,
         )
-        builder.add_equality_constraint_joint(
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.JOINT,
             joint1=j2,
             joint2=j1,
             polycoef=[0.25, 1.5, -0.2, 0.05, 0.01],
@@ -8205,8 +8242,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         model.constraint_mimic_coef0.assign(np.array([100.0], dtype=np.float32))
         model.constraint_mimic_coef1.assign(np.array([300.0], dtype=np.float32))
         model.constraint_mimic_enabled.assign(np.array([False], dtype=bool))
-        model.equality_constraint_polycoef.assign(updated_polycoef)
-        model.equality_constraint_enabled.assign(np.array([False], dtype=bool))
+        model.mujoco.equality_constraint_polycoef.assign(updated_polycoef)
+        model.mujoco.equality_constraint_enabled.assign(np.array([False], dtype=bool))
         model.mujoco.eq_solref.assign(wp.array(updated_solref, dtype=wp.vec2, device=model.device))
         model.mujoco.eq_solimp.assign(wp.array(updated_solimp, dtype=vec5, device=model.device))
         solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
@@ -8242,7 +8279,13 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_articulation([j1, j2])
 
         # Add a regular JOINT equality constraint
-        builder.add_equality_constraint_joint(joint1=j1, joint2=j2, polycoef=[0.0, 1.0, 0.0, 0.0, 0.0])
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.JOINT,
+            joint1=j1,
+            joint2=j2,
+            polycoef=[0.0, 1.0, 0.0, 0.0, 0.0],
+        )
         # Add a mimic constraint
         builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
 
@@ -9840,7 +9883,7 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
         model = builder.finalize()
         solver = SolverMuJoCo(model)
 
-        measured_torquescale = model.equality_constraint_torquescale.numpy()[0]
+        measured_torquescale = model.mujoco.equality_constraint_torquescale.numpy()[0]
         expected_torquescale = 1.0
         self.assertAlmostEqual(
             expected_torquescale,
@@ -9849,7 +9892,7 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
             msg=f"expected_torquescale is {expected_torquescale}, measured_torquescale is {measured_torquescale}",
         )
 
-        measured_body2 = model.equality_constraint_body2.numpy()[0]
+        measured_body2 = model.mujoco.equality_constraint_body2.numpy()[0]
         expected_body2 = -1
         self.assertEqual(
             expected_body2,
@@ -9857,7 +9900,7 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
             msg=f"expected_body2 is {expected_body2}, measured_body2 is {measured_body2}",
         )
 
-        measured_anchor = model.equality_constraint_anchor.numpy()[0]
+        measured_anchor = model.mujoco.equality_constraint_anchor.numpy()[0]
         expected_anchor = [0, 0, 0]
         for i in range(0, 3):
             self.assertEqual(
@@ -9866,7 +9909,7 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
                 msg=f"expected_anchor[{i}] is {expected_anchor[i]}, measured_anchor[{i}] is {measured_anchor[i]}",
             )
 
-        measured_relpose = model.equality_constraint_relpose.numpy()[0]
+        measured_relpose = model.mujoco.equality_constraint_relpose.numpy()[0]
         expected_relpose = [0, 1, 0, 0, 0, 0, 0]
         for i in range(0, 7):
             self.assertEqual(
@@ -9912,7 +9955,9 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
 
         # 90 degree rotation around Z axis
         rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2.0)
-        builder.add_equality_constraint_weld(
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.WELD,
             body1=b1,
             body2=b2,
             relpose=wp.transform(wp.vec3(0.1, 0.0, 0.0), rot),
@@ -9981,7 +10026,7 @@ class TestEqualityJointObjType(unittest.TestCase):
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([j1])
         builder.add_articulation([j2])
-        builder.add_equality_constraint_joint(j1, j2)
+        _add_equality_constraint(builder, constraint_type=newton.EqType.JOINT, joint1=j1, joint2=j2)
         model = builder.finalize()
 
         solver = SolverMuJoCo(model)

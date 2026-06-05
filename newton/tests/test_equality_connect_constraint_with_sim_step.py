@@ -10,6 +10,7 @@ import warp as wp
 
 import newton
 from newton import ModelFlags
+from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.solver_mujoco import HINGE_CONNECT_AXIS_OFFSET
 from newton.solvers import SolverMuJoCo
 
@@ -191,7 +192,9 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
             all_joints = [root_joint, ball_joint, joint0, connect_joints[0], connect_joints[1]]
             builder.add_articulation(joints=all_joints)
 
-            builder.add_equality_constraint_connect(
+            _add_equality_constraint(
+                builder,
+                constraint_type=newton.EqType.CONNECT,
                 body1=connect_body_indices[0],
                 body2=connect_body_indices[1],
                 anchor=connect_anchor_leafbody1[w],
@@ -518,7 +521,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
                     # to the new anchor.
                     ##############
 
-                    sim.model.equality_constraint_anchor.assign(
+                    sim.model.mujoco.equality_constraint_anchor.assign(
                         np.array(flat_changed_connect_anchor_leafbody1, dtype=np.float32)
                     )
                     sim.solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)

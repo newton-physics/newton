@@ -36,6 +36,7 @@ from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute
 from ..sim.builder import ModelBuilder
 from ..sim.enums import EqType, JointTargetMode
 from ..sim.model import Model
+from ..solvers.mujoco.equality import _add_equality_constraint
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
     mjc_add_equality_mimic,
@@ -208,7 +209,8 @@ def parse_usd(
         parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
             joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
-            equality constraints are stored in the legacy equality constraint arrays.
+            equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
+            and finalize under ``model.mujoco.equality_constraint_*``.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
         schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -1919,7 +1921,7 @@ def parse_usd(
         [AttributeFrequency.JOINT, AttributeFrequency.JOINT_DOF, AttributeFrequency.JOINT_COORD]
     )
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [AttributeFrequency.EQUALITY_CONSTRAINT]
+        ["mujoco:equality_constraint"]
     )
     builder_custom_attr_articulation: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.ARTICULATION]
@@ -3700,16 +3702,14 @@ def parse_usd(
     # for any bodies that get merged.
     def _parse_mjc_equality_constraints():
         local_builder_custom_attr_eq = builder_custom_attr_eq
-        if (
-            convert_mjc_equality_constraints
-            and "mujoco:equality_constraint_target_kind" not in builder.custom_attributes
-        ):
+        # The equality custom attributes are declared by ModelBuilder.__init__; register the
+        # remaining MuJoCo custom attributes needed to parse and convert the model.
+        # register_custom_attributes is idempotent, so re-registering the equality fields is a no-op.
+        if convert_mjc_equality_constraints:
             from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
             SolverMuJoCo.register_custom_attributes(builder)
-            local_builder_custom_attr_eq = builder.get_custom_attributes_by_frequency(
-                [AttributeFrequency.EQUALITY_CONSTRAINT]
-            )
+            local_builder_custom_attr_eq = builder.get_custom_attributes_by_frequency(["mujoco:equality_constraint"])
 
         def add_converted_loop_joint(
             eq_type: EqType,
@@ -3801,7 +3801,9 @@ def parse_usd(
                             eq_custom_attrs,
                         )
                     else:
-                        builder.add_equality_constraint_connect(
+                        _add_equality_constraint(
+                            builder,
+                            constraint_type=EqType.CONNECT,
                             body1=body0_idx,
                             body2=body1_idx,
                             anchor=anchor,
@@ -3841,7 +3843,9 @@ def parse_usd(
                             eq_custom_attrs,
                         )
                     else:
-                        builder.add_equality_constraint_weld(
+                        _add_equality_constraint(
+                            builder,
+                            constraint_type=EqType.WELD,
                             body1=body0_idx,
                             body2=body1_idx,
                             anchor=anchor,
@@ -3909,7 +3913,9 @@ def parse_usd(
                         eq_custom_attrs,
                     )
                 else:
-                    builder.add_equality_constraint_joint(
+                    _add_equality_constraint(
+                        builder,
+                        constraint_type=EqType.JOINT,
                         joint1=joint1_idx,
                         joint2=joint2_idx,
                         polycoef=polycoef,

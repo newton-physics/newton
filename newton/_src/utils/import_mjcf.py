@@ -28,6 +28,7 @@ from ..solvers.mujoco.constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
+from ..solvers.mujoco.equality import _add_equality_constraint
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
     mjc_add_equality_mimic,
@@ -296,7 +297,8 @@ def parse_mjcf(
         skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
         convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
             joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
-            equality constraints are stored in the legacy equality constraint arrays.
+            equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
+            and finalize under ``model.mujoco.equality_constraint_*``.
         convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
         ctrl_direct: If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
@@ -330,7 +332,7 @@ def parse_mjcf(
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
 
     use_degrees = True  # angles are in degrees by default
-    euler_seq = [0, 1, 2]  # XYZ by default
+    eulerseq = "xyz"  # default sequence (lowercase = intrinsic axes, per MuJoCo)
 
     # load joint defaults
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
@@ -344,7 +346,10 @@ def parse_mjcf(
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
 
-    if convert_mjc_equality_constraints and "mujoco:equality_constraint_target_kind" not in builder.custom_attributes:
+    # The equality custom attributes are declared by ModelBuilder.__init__; register the remaining
+    # MuJoCo custom attributes (geom/actuator/solver options) needed to parse and convert the model.
+    # register_custom_attributes is idempotent, so re-registering the equality fields is a no-op.
+    if convert_mjc_equality_constraints:
         SolverMuJoCo.register_custom_attributes(builder)
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
@@ -365,21 +370,28 @@ def parse_mjcf(
     solref_mode_key = "mujoco:solref_mode"
     has_solref_mode = solref_mode_key in builder.custom_attributes
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [AttributeFrequency.EQUALITY_CONSTRAINT]
+        ["mujoco:equality_constraint"]
     )
     # MuJoCo actuator custom attributes (from "mujoco:actuator" frequency)
     builder_custom_attr_actuator: list[ModelBuilder.CustomAttribute] = [
         attr for attr in builder.custom_attributes.values() if attr.frequency == "mujoco:actuator"
     ]
 
-    compiler = root.find("compiler")
-    if compiler is not None:
-        use_degrees = compiler.attrib.get("angle", "degree").lower() == "degree"
-        euler_seq = ["xyz".index(c) for c in compiler.attrib.get("eulerseq", "xyz").lower()]
-        mesh_dir = compiler.attrib.get("meshdir", ".")
-        texture_dir = compiler.attrib.get("texturedir", mesh_dir)
-        fitaabb = compiler.attrib.get("fitaabb", "false").lower() == "true"
+    # Merge all <compiler> elements (document order, later wins) — matches MuJoCo.
+    compiler_attribs: dict[str, str] = {}
+    for c in root.iter("compiler"):
+        compiler_attribs.update(c.attrib)
+    if compiler_attribs:
+        use_degrees = compiler_attribs.get("angle", "degree").lower() == "degree"
+        # Per-character case carries the intrinsic/extrinsic axis convention
+        # (lowercase = intrinsic / rotates with the frame, uppercase =
+        # extrinsic / fixed in the parent frame); keep it.
+        eulerseq = compiler_attribs.get("eulerseq", "xyz")
+        mesh_dir = compiler_attribs.get("meshdir", ".")
+        texture_dir = compiler_attribs.get("texturedir", mesh_dir)
+        fitaabb = compiler_attribs.get("fitaabb", "false").lower() == "true"
     else:
+        eulerseq = "xyz"
         mesh_dir = "."
         texture_dir = "."
         fitaabb = False
@@ -393,7 +405,7 @@ def parse_mjcf(
             [AttributeFrequency.ONCE, AttributeFrequency.WORLD]
         )
         if builder_custom_attr_option:
-            option_elems = [compiler, *root.findall("option")]
+            option_elems = [*root.findall("compiler"), *root.findall("option")]
             for elem in option_elems:
                 if elem is not None:
                     parsed = parse_custom_attributes(elem.attrib, builder_custom_attr_option, "mjcf")
@@ -579,23 +591,40 @@ def parse_mjcf(
 
         return wp.types.vector(length, wp.float32)(out)
 
-    def quat_from_euler_mjcf(e: wp.vec3, i: int, j: int, k: int) -> wp.quat:
-        """Convert Euler angles using MuJoCo's axis-sequence convention."""
-        half_e = e * 0.5
+    def quat_from_euler_mjcf(e: wp.vec3, seq: str) -> wp.quat:
+        """Convert MJCF euler to quaternion respecting per-character ``eulerseq`` case.
 
-        cr = wp.cos(half_e[i])
-        sr = wp.sin(half_e[i])
-        cp = wp.cos(half_e[j])
-        sp = wp.sin(half_e[j])
-        cy = wp.cos(half_e[k])
-        sy = wp.sin(half_e[k])
+        For each character, lowercase is intrinsic (the axis rotates with the
+        frame; right-multiply) and uppercase is extrinsic (the axis stays fixed
+        in the parent frame; left-multiply). The default ``"xyz"`` yields
+        ``qx*qy*qz``; ``"XYZ"`` yields ``qz*qy*qx``; mixed cases yield the
+        corresponding hybrid.
+        """
+        half = np.asarray([float(e[0]), float(e[1]), float(e[2])]) * 0.5
+        c = np.cos(half)
+        s = np.sin(half)
 
-        return wp.quat(
-            (cy * sr * cp - sy * cr * sp),
-            (cy * cr * sp + sy * sr * cp),
-            (sy * cr * cp - cy * sr * sp),
-            (cy * cr * cp + sy * sr * sp),
-        )
+        def qmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+            aw, ax, ay, az = a
+            bw, bx, by, bz = b
+            return np.array(
+                [
+                    aw * bw - ax * bx - ay * by - az * bz,
+                    aw * bx + ax * bw + ay * bz - az * by,
+                    aw * by - ax * bz + ay * bw + az * bx,
+                    aw * bz + ax * by - ay * bx + az * bw,
+                ]
+            )
+
+        result = np.array([1.0, 0.0, 0.0, 0.0])  # identity (w, x, y, z)
+        for n, ch in enumerate(seq):
+            axis_idx = "xyz".index(ch.lower())
+            q = np.zeros(4)
+            q[0] = c[n]
+            q[1 + axis_idx] = s[n]
+            result = qmul(result, q) if ch.islower() else qmul(q, result)
+
+        return wp.quat(float(result[1]), float(result[2]), float(result[3]), float(result[0]))
 
     def parse_orientation(attrib) -> wp.quat:
         if "quat" in attrib:
@@ -606,7 +635,7 @@ def parse_mjcf(
             if use_degrees:
                 euler *= np.pi / 180
             # Keep MuJoCo-compatible semantics for non-XYZ sequences.
-            return quat_from_euler_mjcf(wp.vec3(euler), *euler_seq)
+            return quat_from_euler_mjcf(wp.vec3(euler), eulerseq)
         if "axisangle" in attrib:
             axisangle = np.array(attrib["axisangle"].split(), dtype=float)
             angle = axisangle[3]
@@ -2095,7 +2124,9 @@ def parse_mjcf(
                         custom_attrs,
                     )
                 else:
-                    builder.add_equality_constraint_connect(
+                    _add_equality_constraint(
+                        builder,
+                        constraint_type=EqType.CONNECT,
                         body1=body1_idx,
                         body2=body2_idx,
                         anchor=anchor_vec,
@@ -2130,7 +2161,9 @@ def parse_mjcf(
                             custom_attrs,
                         )
                     else:
-                        builder.add_equality_constraint_connect(
+                        _add_equality_constraint(
+                            builder,
+                            constraint_type=EqType.CONNECT,
                             body1=body1_idx,
                             body2=body2_idx,
                             anchor=anchor_vec,
@@ -2184,7 +2217,9 @@ def parse_mjcf(
                         custom_attrs,
                     )
                 else:
-                    builder.add_equality_constraint_weld(
+                    _add_equality_constraint(
+                        builder,
+                        constraint_type=EqType.WELD,
                         body1=body1_idx,
                         body2=body2_idx,
                         anchor=anchor_vec,
@@ -2224,7 +2259,9 @@ def parse_mjcf(
                             custom_attrs,
                         )
                     else:
-                        builder.add_equality_constraint_weld(
+                        _add_equality_constraint(
+                            builder,
+                            constraint_type=EqType.WELD,
                             body1=body1_idx,
                             body2=body2_idx,
                             anchor=anchor_vec,
@@ -2275,7 +2312,9 @@ def parse_mjcf(
                         custom_attrs,
                     )
                 else:
-                    builder.add_equality_constraint_joint(
+                    _add_equality_constraint(
+                        builder,
+                        constraint_type=EqType.JOINT,
                         joint1=joint1_idx,
                         joint2=joint2_idx,
                         polycoef=polycoef_values,
@@ -2343,14 +2382,15 @@ def parse_mjcf(
             )
 
         # -----------------
-        # add static geoms
+        # add static geoms — partition by class so `parse_visuals=False` /
+        # `parse_visuals_as_colliders=True` apply uniformly to worldbody
+        # geoms too (not just geoms inside bodies).
 
-        parse_shapes(
+        _process_body_geoms(
+            geoms=world.findall("geom"),
             defaults=world_defaults,
             body_name="world",
             link=-1,
-            geoms=world.findall("geom"),
-            density=default_shape_density,
             incoming_xform=xform,
             label_prefix=root_label_path,
         )

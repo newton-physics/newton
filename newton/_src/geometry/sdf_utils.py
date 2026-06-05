@@ -223,11 +223,11 @@ class SDF:
         release cycle so existing callers do not break.
 
         .. deprecated:: 1.3
-            This attribute will be removed in Newton 1.5.
+            This attribute will be removed in a future release.
         """
         warnings.warn(
             "SDF.texture_block_coords is deprecated and always returns None; "
-            "it will be removed in Newton 1.5. The hydroelastic broadphase "
+            "it will be removed in a future release. The hydroelastic broadphase "
             "now derives block coordinates arithmetically from each SDF's "
             "coarse-texture dimensions and no longer needs this attribute.",
             DeprecationWarning,
