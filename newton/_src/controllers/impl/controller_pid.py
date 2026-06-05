@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import warp as wp
 
-from ..base import ControlLaw
+from ..control_law import ControlLaw
 from ..utils import _normalize_port
 
 

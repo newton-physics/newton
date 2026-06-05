@@ -23,7 +23,7 @@ import warp as wp
 
 from ...sim.articulation import eval_fk, eval_jacobian
 from ...sim.builder import ModelBuilder
-from ..base import ControlLaw
+from ..control_law import ControlLaw
 from ..utils import _normalize_port, _validate_per_group
 
 

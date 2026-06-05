@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 import warp as wp
 
-from .base import ControlLaw
+from .control_law import ControlLaw
 
 
 @wp.kernel
