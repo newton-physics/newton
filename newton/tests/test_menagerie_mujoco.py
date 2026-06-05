@@ -1670,12 +1670,12 @@ class TestMenagerieBase(unittest.TestCase):
         if self.solver_integrator is not None:
             solver_kwargs["integrator"] = self.solver_integrator
 
-        # Some real MJCFs (e.g. Apollo, Go2) author geom margins that the
-        # native-CCD path zeroes (#2106); the field comparison below already
-        # mirrors that zeroing, so tolerate the per-geom advisory rather than
-        # failing under strict warnings. Other warnings still surface.
+        # Some real MJCFs (e.g. Apollo, Go2) author geom or contact-pair
+        # margins that the native-CCD path zeroes (#2106); the field comparison
+        # below already mirrors that zeroing, so tolerate the advisory rather
+        # than failing under strict warnings. Other warnings still surface.
         with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=r"Geom .* zeroed for NATIVECCD")
+            warnings.filterwarnings("ignore", message=r"(Geom|Pair).* zeroed for NATIVECCD")
             cls._newton_solver = SolverMuJoCo(cls._newton_model, **solver_kwargs)
 
         cls._mj_model, cls._mj_data_native, cls._native_mjw_model, cls._native_mjw_data = (
