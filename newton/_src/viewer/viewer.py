@@ -191,7 +191,7 @@ class ViewerBase(ABC):
             model: The Newton model to visualize.
             max_worlds: Maximum number of worlds to render (None = all).
 
-                .. deprecated::
+                .. deprecated:: 1.1
                     Use :meth:`set_visible_worlds` instead.
         """
         if self.model is not None:
@@ -1896,6 +1896,10 @@ class ViewerBase(ABC):
     def update_shape_colors(self, shape_colors: dict[int, wp.vec3 | tuple[float, float, float]]):
         """
         Set colors for a set of shapes at runtime.
+
+        .. deprecated:: 1.1
+            Write to :attr:`Model.shape_color` instead.
+
         Args:
             shape_colors: mapping from shape index -> color
         """
