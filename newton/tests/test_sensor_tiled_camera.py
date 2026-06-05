@@ -132,7 +132,6 @@ class TestSensorTiledCamera(unittest.TestCase):
             device="cpu",
         )
         state = model.state()
-        model.bvh_build_shapes(state)
 
         for output_color_space in (newton.utils.ColorSpace.SRGB, newton.utils.ColorSpace.LINEAR):
             sensor = SensorTiledCamera(
@@ -174,8 +173,6 @@ class TestSensorTiledCamera(unittest.TestCase):
         depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
 
         state = model.state()
-        model.bvh_build_shapes(state)
-        model.bvh_build_particles(state)
         tiled_camera_sensor.update(
             state, camera_transforms, camera_rays, color_image=color_image, depth_image=depth_image
         )
@@ -206,8 +203,6 @@ class TestSensorTiledCamera(unittest.TestCase):
         camera_rays = tiled_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))
 
         state = model.state()
-        model.bvh_build_shapes(state)
-        model.bvh_build_particles(state)
 
         color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
         depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
@@ -269,18 +264,18 @@ class TestSensorTiledCamera(unittest.TestCase):
         particle_model.bvh_build_particles(particle_state, bvh_constructor="median")
         self.assertIsNotNone(particle_model.bvh_particles)
 
-    def test_model_bvh_refit_requires_build(self) -> None:
+    def test_model_bvhs_are_built_by_finalize_and_refit(self) -> None:
         model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
         state = model.state()
 
-        with self.assertRaisesRegex(RuntimeError, "bvh_build_shapes"):
-            model.bvh_refit_shapes(state)
+        self.assertIsNotNone(model.bvh_shapes)
+        model.bvh_refit_shapes(state)
 
         particle_model = self._build_single_particle_scene()
         particle_state = particle_model.state()
 
-        with self.assertRaisesRegex(RuntimeError, "bvh_build_particles"):
-            particle_model.bvh_refit_particles(particle_state)
+        self.assertIsNotNone(particle_model.bvh_particles)
+        particle_model.bvh_refit_particles(particle_state)
 
 
 if __name__ == "__main__":

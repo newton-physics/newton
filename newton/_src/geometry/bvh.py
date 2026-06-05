@@ -157,6 +157,10 @@ def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
         return True
     if shape_type == GeoType.MESH:
         return True
+    if shape_type == GeoType.CONVEX_MESH:
+        return True
+    if shape_type == GeoType.HFIELD:
+        return True
     if shape_type == GeoType.GAUSSIAN:
         return True
     return False
@@ -206,7 +210,11 @@ def compute_shape_local_bounds(
     min_point = wp.vec3(MAXVAL)
     max_point = wp.vec3(-MAXVAL)
 
-    if in_shape_type[tid] == GeoType.MESH:
+    if (
+        in_shape_type[tid] == GeoType.MESH
+        or in_shape_type[tid] == GeoType.CONVEX_MESH
+        or in_shape_type[tid] == GeoType.HFIELD
+    ):
         mesh = wp.mesh_get(in_shape_ptr[tid])
         for i in range(mesh.points.shape[0]):
             min_point = wp.min(min_point, mesh.points[i])
@@ -289,7 +297,12 @@ def compute_shape_bvh_bounds(
         lower, upper = compute_ellipsoid_bounds(transform, size)
     elif geom_type == GeoType.BOX:
         lower, upper = compute_box_bounds(transform, size)
-    elif geom_type == GeoType.MESH or geom_type == GeoType.GAUSSIAN:
+    elif (
+        geom_type == GeoType.MESH
+        or geom_type == GeoType.CONVEX_MESH
+        or geom_type == GeoType.HFIELD
+        or geom_type == GeoType.GAUSSIAN
+    ):
         min_bounds = shape_bounds[shape_index, 0]
         max_bounds = shape_bounds[shape_index, 1]
         lower, upper = compute_shape_bounds(transform, size, min_bounds, max_bounds)

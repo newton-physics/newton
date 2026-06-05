@@ -60,12 +60,10 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             rays = sensor.utils.compute_pinhole_camera_rays(width, height, fov)
             color = sensor.utils.create_color_image_output(width, height)
 
-            # After setup, build BVHs once for the initial state.
+            # BVHs are built for the initial state by ModelBuilder.finalize().
             state = model.state()
-            model.bvh_build_shapes(state)
-            model.bvh_build_particles(state)
 
-            # Before each later frame that changes geometry, refit BVHs.
+            # Before each frame that changes geometry, refit BVHs.
             model.bvh_refit_shapes(state)
             model.bvh_refit_particles(state)
             sensor.update(state, camera_transforms, rays, color_image=color)
@@ -181,10 +179,9 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
         :meth:`update` calls this automatically when *state* is not None.
 
-        Shape and particle BVHs on :attr:`model` must be built once via
-        :meth:`~newton.Model.bvh_build_shapes` and
-        :meth:`~newton.Model.bvh_build_particles` before first use. Before
-        later frames that change geometry, refit them via
+        Shape and particle BVHs on :attr:`model` are built for the initial
+        state by :meth:`~newton.ModelBuilder.finalize`. Before later frames
+        that change geometry, refit them via
         :meth:`~newton.Model.bvh_refit_shapes` and
         :meth:`~newton.Model.bvh_refit_particles` prior to calling
         :meth:`update`.
@@ -216,10 +213,9 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         ``[world_id, camera_id, y, x]`` corresponds to the ray in ``camera_rays[camera_id, y, x]``. Each output
         channel is optional -- pass None to skip that channel's rendering entirely.
 
-        Shape and particle BVHs on :attr:`model` must be built once for the
-        initial state via :meth:`~newton.Model.bvh_build_shapes` and
-        :meth:`~newton.Model.bvh_build_particles` before first use. Before
-        later frames that change geometry, refit them for *state* via
+        Shape and particle BVHs on :attr:`model` are built for the initial
+        state by :meth:`~newton.ModelBuilder.finalize`. Before later frames
+        that change geometry, refit them for *state* via
         :meth:`~newton.Model.bvh_refit_shapes` and
         :meth:`~newton.Model.bvh_refit_particles` before calling this method.
 
@@ -242,12 +238,10 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
                 albedo clear values are specified as display/sRGB RGBA and
                 converted to linear when linear output is requested. See
                 :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
-            refit_bvh: Refit the BVH before rendering. This is deprecated, use
-                :meth:`~newton.Model.bvh_build_shapes`,
-                :meth:`~newton.Model.bvh_refit_shapes`,
-                :meth:`~newton.Model.bvh_build_particles`, and
-                :meth:`~newton.Model.bvh_refit_particles` explicitly
-                before calling this method instead.
+            refit_bvh: Refit the BVH before rendering. This is deprecated;
+                call :meth:`~newton.Model.bvh_refit_shapes` and
+                :meth:`~newton.Model.bvh_refit_particles` explicitly after
+                state changes instead.
             hdr_color_image: Output for linear HDR color. None to skip.
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
                 for the render megakernel.
@@ -260,8 +254,8 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         if state is None or refit_bvh is not None:
             warnings.warn(
                 "Passing state=None or refit_bvh to SensorTiledCamera.update() is deprecated. "
-                "Call SensorTiledCamera.sync_transforms(state) and manage BVHs explicitly with "
-                "model.bvh_build_*() / model.bvh_refit_*() before update().",
+                "Call SensorTiledCamera.sync_transforms(state) and refit model BVHs explicitly with "
+                "model.bvh_refit_*() after state changes.",
                 category=DeprecationWarning,
                 stacklevel=2,
             )

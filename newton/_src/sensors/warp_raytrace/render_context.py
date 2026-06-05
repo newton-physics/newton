@@ -83,10 +83,9 @@ class RenderContext:
 
         Populates shape, triangle, and texture data from *model*. BVH
         acceleration structures for shapes and particles live on
-        :class:`~newton.Model` and must be built via
-        :meth:`~newton.Model.bvh_build_shapes` and
-        :meth:`~newton.Model.bvh_build_particles` before first use, then
-        refit via :meth:`~newton.Model.bvh_refit_shapes` and
+        :class:`~newton.Model` and are built for the initial state by
+        :meth:`~newton.ModelBuilder.finalize`; refit them via
+        :meth:`~newton.Model.bvh_refit_shapes` and
         :meth:`~newton.Model.bvh_refit_particles` before later frames that
         change geometry.
 
@@ -121,10 +120,8 @@ class RenderContext:
     def update(self, model: Model, state: State):
         """Synchronize triangle-mesh points from the current simulation state.
 
-        Shape and particle BVHs are built and refit separately via
-        :meth:`~newton.Model.bvh_build_shapes`,
-        :meth:`~newton.Model.bvh_build_particles`,
-        :meth:`~newton.Model.bvh_refit_shapes`, and
+        Shape and particle BVHs are built by :meth:`~newton.ModelBuilder.finalize`
+        and refit separately via :meth:`~newton.Model.bvh_refit_shapes` and
         :meth:`~newton.Model.bvh_refit_particles`.
 
         Args:
@@ -156,10 +153,9 @@ class RenderContext:
         output arrays must have shape
         ``(world_count, camera_count, height, width)``.
 
-        Shape and particle BVHs on *model* must be built once via
-        :meth:`~newton.Model.bvh_build_shapes` and
-        :meth:`~newton.Model.bvh_build_particles` before first use. Before
-        later frames that change geometry, refit them via
+        Shape and particle BVHs on *model* are built for the initial state by
+        :meth:`~newton.ModelBuilder.finalize`. Before later frames that change
+        geometry, refit them via
         :meth:`~newton.Model.bvh_refit_shapes` and
         :meth:`~newton.Model.bvh_refit_particles` before calling this
         method.
@@ -183,11 +179,14 @@ class RenderContext:
                 for the render megakernel.
         """
         if model.shape_count > 0 and model.bvh_shape_enabled is None:
-            raise RuntimeError("model.bvh_build_shapes(state) must be called before rendering shapes.")
+            raise RuntimeError(
+                "Shape BVH is missing. ModelBuilder.finalize() builds it for finalized models; "
+                "call model.bvh_build_shapes(state) for manually populated models."
+            )
 
         has_shapes = model.bvh_shape_count_enabled > 0
         if has_shapes and (model.bvh_shapes is None or model.bvh_shapes_group_roots is None):
-            raise RuntimeError("Shape BVH is incomplete; build it with model.bvh_build_shapes(state).")
+            raise RuntimeError("Shape BVH is incomplete; rebuild it with model.bvh_build_shapes(state).")
 
         has_particles = (
             self.config.enable_particles
@@ -196,7 +195,10 @@ class RenderContext:
             and state.particle_q.shape[0] > 0
         )
         if has_particles and (model.bvh_particles is None or model.bvh_particles_group_roots is None):
-            raise RuntimeError("model.bvh_build_particles(state) must be called before rendering particles.")
+            raise RuntimeError(
+                "Particle BVH is missing. ModelBuilder.finalize() builds it for finalized models; "
+                "call model.bvh_build_particles(state) for manually populated models."
+            )
 
         if has_shapes or has_particles or self.has_triangle_mesh or self.has_gaussians:
             if self.has_triangle_mesh:

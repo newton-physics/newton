@@ -34,8 +34,6 @@ def _render_tiny_color_and_hdr(model, *, output_color_space=newton.utils.ColorSp
     color_image = sensor.utils.create_color_image_output(4, 4, 1)
     hdr_color_image = sensor.utils.create_hdr_color_image_output(4, 4, 1)
 
-    model.bvh_build_shapes(state)
-    model.bvh_build_particles(state)
     sensor.update(
         state,
         camera_transforms,

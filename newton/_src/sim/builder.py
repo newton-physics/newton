@@ -85,6 +85,19 @@ else:
     UsdStage = Any
 
 
+class _ModelInitialStateView:
+    """State-like view over a model's initial arrays for finalize-time BVH construction."""
+
+    body_q: wp.array[wp.transform] | None
+    particle_q: wp.array[wp.vec3] | None
+    particle_count: int
+
+    def __init__(self, model: Model) -> None:
+        self.body_q = model.body_q
+        self.particle_q = model.particle_q
+        self.particle_count = model.particle_count
+
+
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
 
@@ -11458,6 +11471,7 @@ class ModelBuilder:
             # Add custom attributes onto the model (with lazy evaluation)
             # Early return if no custom attributes exist to avoid overhead
             if not self.custom_attributes:
+                self._build_initial_bvhs(m)
                 return m
 
             # Resolve authoritative counts for custom frequencies
@@ -11563,7 +11577,14 @@ class ModelBuilder:
                 result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
                 m.add_attribute(custom_attr.name, result, freq_key, custom_attr.assignment, custom_attr.namespace)
 
+            self._build_initial_bvhs(m)
             return m
+
+    @staticmethod
+    def _build_initial_bvhs(model: Model) -> None:
+        state = _ModelInitialStateView(model)
+        model.bvh_build_shapes(state)
+        model.bvh_build_particles(state)
 
     def _test_group_pair(self, group_a: int, group_b: int) -> bool:
         """Test if two collision groups should interact.

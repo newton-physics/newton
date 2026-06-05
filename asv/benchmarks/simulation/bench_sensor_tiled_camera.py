@@ -78,8 +78,8 @@ class SensorTiledCameraBenchmark:
         self.color_image = self.tiled_camera_sensor.utils.create_color_image_output(resolution, resolution)
         self.depth_image = self.tiled_camera_sensor.utils.create_depth_image_output(resolution, resolution)
 
-        self.model.bvh_build_shapes(self.state)
-        self.model.bvh_build_particles(self.state)
+        self.model.bvh_refit_shapes(self.state)
+        self.model.bvh_refit_particles(self.state)
         self.tiled_camera_sensor.sync_transforms(self.state)
 
         # Warmup Kernels

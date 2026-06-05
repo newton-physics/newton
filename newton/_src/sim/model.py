@@ -333,7 +333,7 @@ class Model:
 
         # Shape and particle BVH structures and related fields
         self.bvh_shapes: wp.Bvh | None = None
-        """BVH over visible shapes, indexed by ``bvh_shape_enabled``. ``None`` until first build."""
+        """BVH over visible shapes, indexed by ``bvh_shape_enabled``. Built by :meth:`ModelBuilder.finalize`."""
         self.bvh_shapes_group_roots: wp.array[wp.int32] | None = None
         """Per-world BVH group roots for shapes, shape ``[world_count + 1]`` (last slot is global)."""
         self.bvh_shape_enabled: wp.array[wp.uint32] | None = None
@@ -346,7 +346,7 @@ class Model:
         """World-space shape transforms computed during shape BVH build/refit, shape ``[shape_count]`` [m, unitless quaternion]."""
 
         self.bvh_particles: wp.Bvh | None = None
-        """BVH over particles. ``None`` until first build."""
+        """BVH over particles. Built by :meth:`ModelBuilder.finalize` when particles are present."""
         self.bvh_particles_group_roots: wp.array[wp.int32] | None = None
         """Per-world BVH group roots for particles, shape ``[world_count + 1]`` (last slot is global)."""
 
@@ -1403,11 +1403,13 @@ class Model:
         self.joint_target_qd = value
 
     def bvh_build_shapes(self, state: State, *, bvh_constructor: str | None = None) -> None:
-        """Build the shape BVH stored on this model.
+        """Build or rebuild the shape BVH stored on this model.
 
         Allocates :attr:`bvh_shapes` and related fields from the current
-        shape data and *state*. Call once before :meth:`bvh_refit_shapes` and
-        before rendering or ray queries that require the model shape BVH.
+        shape data and *state*. :meth:`ModelBuilder.finalize` calls this for
+        the initial model state. Call it again to rebuild with a custom
+        ``bvh_constructor`` or after structural changes. For ordinary state
+        changes, use :meth:`bvh_refit_shapes`.
 
         Args:
             state: Current simulation state with body transforms.
@@ -1481,7 +1483,8 @@ class Model:
     def bvh_refit_shapes(self, state: State) -> None:
         """Refit the shape BVH stored on this model for the current state.
 
-        Requires :meth:`bvh_build_shapes` to have been called beforehand.
+        The shape BVH is built automatically by :meth:`ModelBuilder.finalize`.
+        Manually populated models must call :meth:`bvh_build_shapes` first.
         Updates world-space shape transforms from ``state.body_q`` and refits
         the BVH in place.
 
@@ -1507,11 +1510,13 @@ class Model:
         self.bvh_shapes.refit()
 
     def bvh_build_particles(self, state: State, *, bvh_constructor: str | None = None) -> None:
-        """Build the particle BVH stored on this model.
+        """Build or rebuild the particle BVH stored on this model.
 
         Allocates :attr:`bvh_particles` and related fields from particle data
-        in *state*. Call once before :meth:`bvh_refit_particles` and before
-        rendering or queries that require the model particle BVH.
+        in *state*. :meth:`ModelBuilder.finalize` calls this for the initial
+        model state when particles are present. Call it again to rebuild with
+        a custom ``bvh_constructor``. For ordinary state changes, use
+        :meth:`bvh_refit_particles`.
 
         Args:
             state: Current simulation state with particle positions.
@@ -1545,7 +1550,9 @@ class Model:
     def bvh_refit_particles(self, state: State) -> None:
         """Refit the particle BVH stored on this model for the current state.
 
-        Requires :meth:`bvh_build_particles` to have been called beforehand.
+        The particle BVH is built automatically by :meth:`ModelBuilder.finalize`
+        when particles are present. Manually populated models must call
+        :meth:`bvh_build_particles` first.
         Recomputes particle bounds from ``state.particle_q`` and refits the
         BVH in place.
 

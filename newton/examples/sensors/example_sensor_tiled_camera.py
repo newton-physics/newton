@@ -241,9 +241,6 @@ class Example:
         self.shape_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
         self.semantic_rgba = wp.empty((n, H, W, 4), dtype=wp.uint8, device=device)
 
-        self.model.bvh_build_shapes(self.state)
-        self.model.bvh_build_particles(self.state)
-
     def step(self):
         wp.launch(
             animate_franka,
