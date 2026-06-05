@@ -215,6 +215,7 @@ def compute_shape_local_bounds(
         or in_shape_type[tid] == GeoType.CONVEX_MESH
         or in_shape_type[tid] == GeoType.HFIELD
     ):
+        # Heightfields and convex meshes store mesh-backed geometry in shape_source_ptr.
         mesh = wp.mesh_get(in_shape_ptr[tid])
         for i in range(mesh.points.shape[0]):
             min_point = wp.min(min_point, mesh.points[i])
