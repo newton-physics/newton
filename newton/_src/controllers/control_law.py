@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import warp as wp
 
@@ -62,28 +63,39 @@ class ControlLaw:
     def is_graphable(self) -> bool:
         raise NotImplementedError(f"{type(self).__name__} must implement is_graphable().")
 
-    def outputs(self) -> list[tuple[wp.array, wp.array[wp.uint32]]]:
-        """Return ``(output_array, output_port_indices)`` bindings.
+    def outputs(self) -> list[tuple[str, wp.array[wp.uint32]]]:
+        """Return ``(output_attr_name, output_port_indices)`` bindings.
 
-        :class:`Controller` collects these from every controller and zeros
-        the listed slots at the start of each :meth:`Controller.step` call.
-        Most controllers return a single binding; multi-output controllers
-        return more than one.
+        :class:`Controller` collects these from every control law, resolves
+        each ``output_attr_name`` against the ``output`` object passed to
+        :meth:`Controller.step` once per step, and zeros the listed slots
+        before any law's :meth:`compute` runs. Most laws return a single
+        binding; multi-output laws return more than one.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement outputs().")
 
     def compute(
         self,
+        input: Any,
+        output: Any,
         state: ControlLaw.State | None,
         next_state: ControlLaw.State | None,
         dt: float,
     ) -> None:
-        """Read bound inputs, write ``+=`` into bound outputs, write ``next_state``.
+        """Fetch port arrays from ``input``/``output``, then run kernels.
 
         Called by :meth:`Controller.step`. The device is fixed at
-        :meth:`finalize` time, so this method does not take one.
+        :meth:`finalize` time, so this method does not take one. Every port
+        is resolved here via ``getattr(input, attr_name)`` /
+        ``getattr(output, attr_name)`` — nothing is bound at construction.
 
         Args:
+            input: User-supplied object holding the read ports declared at
+                ``__init__`` (e.g. ``input.joint_q``, ``input.kp``). Can be
+                any duck-typed object — ``SimpleNamespace``, a dataclass,
+                a :class:`newton.State` if its fields happen to match, etc.
+            output: User-supplied object holding the write ports. Same
+                duck-typed contract as ``input``.
             state: Current controller state (``None`` if stateless).
             next_state: Next-step state to populate (``None`` if stateless).
             dt: Timestep [s].

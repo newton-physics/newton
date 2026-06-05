@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import warp as wp
 
 from .control_law import ControlLaw
+from .utils import _resolve_input_array
 
 
 @wp.kernel
@@ -26,13 +28,13 @@ class Controller:
 
     Owns the per-step zero / compute sequence and the reset fan-out.
     ControlLaws run serially in registration order; their contributions
-    accumulate via ``+=`` directly into their bound output arrays after a
-    single upfront zero pass.
+    accumulate via ``+=`` directly into the output arrays after a single
+    upfront zero pass.
 
     Args:
         control_laws: One or more :class:`ControlLaw` instances. All must
-            share the same device and the same per-binding ``num_outputs``
-            (the outer length of every ``outputs()`` binding).
+            agree on ``num_outputs`` (the outer length of every
+            ``outputs()`` binding).
         requires_grad: Single source of truth for gradient support across the
             controller. Propagated to each ControlLaw's :meth:`ControlLaw.finalize`
             and :meth:`ControlLaw.state`. When ``True``, every internally-allocated
@@ -49,29 +51,29 @@ class Controller:
 
         control_law_states: list = field(default_factory=list)
 
-    def __init__(self, control_laws: list[ControlLaw], requires_grad: bool = False):
+    def __init__(self, control_laws: list[ControlLaw], requires_grad: bool = False, device: wp.Device | None = None):
+        """Args:
+        control_laws: One or more :class:`ControlLaw`.
+        requires_grad: see class docstring.
+        device: Device for internal allocations. Defaults to
+            :func:`wp.get_device`.
+        """
         if not control_laws:
             raise ValueError("Controller requires at least one ControlLaw.")
         self._control_laws = list(control_laws)
         self._requires_grad = requires_grad
 
-        # Walk every output binding once: pick the device, enforce device
-        # agreement, and enforce that all bindings share an outer length
-        # (the group-wide num_outputs / reset-mask length).
-        device = None
+        # All output bindings must agree on ``num_outputs`` — the outer length
+        # of every ``outputs()`` binding — so a single reset mask covers all
+        # of them. Output *arrays* are looked up at step time (no longer
+        # stored on the laws), so we can only validate the indices length
+        # here, not the array shapes; that's deferred to step.
         num_outputs = None
         for c in self._control_laws:
             bindings = c.outputs()
             if not bindings:
                 raise ValueError(f"Controller: {type(c).__name__} returned no output bindings.")
-            for out_array, out_indices in bindings:
-                if device is None:
-                    device = out_array.device
-                elif out_array.device != device:
-                    raise ValueError(
-                        f"Controller: ControlLaws' output arrays are on different devices "
-                        f"({device} vs {out_array.device})."
-                    )
+            for _attr_name, out_indices in bindings:
                 n = len(out_indices)
                 if num_outputs is None:
                     num_outputs = n
@@ -80,13 +82,13 @@ class Controller:
                         f"Controller: all ControlLaws must share num_outputs (the outer length "
                         f"of their output bindings); got {num_outputs} and {n}."
                     )
-        self._device = device
         self._num_outputs = num_outputs
+        self._device = device if device is not None else wp.get_device()
 
         for c in self._control_laws:
             c.finalize(self._device, len(c.indices), requires_grad=self._requires_grad)
 
-        self._output_bindings: list[tuple[wp.array, wp.array[wp.uint32]]] = []
+        self._output_bindings: list[tuple[str, wp.array[wp.uint32]]] = []
         for c in self._control_laws:
             self._output_bindings.extend(c.outputs())
 
@@ -121,12 +123,34 @@ class Controller:
 
     def step(
         self,
+        input: Any,
+        output: Any,
         current_state: Controller.State,
         next_state: Controller.State,
         dt: float,
     ) -> None:
-        """Zero all outputs, then run each ControlLaw's :meth:`compute`."""
-        for out_array, out_indices in self._output_bindings:
+        """Zero all output slots, then run each ControlLaw's :meth:`compute`.
+
+        Args:
+            input: User-supplied object whose attributes hold the read ports
+                each ControlLaw declared (e.g. ``input.joint_q``, ``input.kp``).
+                Duck-typed — any object on which ``getattr(input, name)``
+                returns a :class:`wp.array` is acceptable.
+            output: User-supplied object whose attributes hold the write
+                ports each ControlLaw declared. The slots indicated by the
+                laws' ``outputs()`` bindings are zeroed before any
+                :meth:`compute` runs, then each law writes via ``+=``.
+            current_state: Current composed state (per-law sub-states for
+                stateful laws; ``None`` entries for stateless ones).
+            next_state: Next composed state. ``compute()`` populates the
+                per-law sub-states here.
+            dt: Timestep [s].
+        """
+        # Resolve every output array against ``output`` *once* per step, then
+        # zero its declared slots. If the user mutates ``output.<attr>`` to a
+        # different array between steps, the next step picks up the new one.
+        for attr_name, out_indices in self._output_bindings:
+            out_array = _resolve_input_array(output, attr_name, name=attr_name)
             wp.launch(
                 _zero_at_indices_kernel,
                 dim=len(out_indices),
@@ -139,7 +163,7 @@ class Controller:
             next_state.control_law_states,
             strict=True,
         ):
-            c.compute(cur_s, nxt_s, dt)
+            c.compute(input, output, cur_s, nxt_s, dt)
 
     def reset(self, state: Controller.State, mask: wp.array[wp.bool]) -> None:
         """Reset slots flagged by ``mask`` in every stateful ControlLaw.

@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import warp as wp
 
 from ..control_law import ControlLaw
-from ..utils import _normalize_port
+from ..utils import _normalize_port, _resolve_input_array
 
 
 @wp.kernel
@@ -65,8 +66,8 @@ class ControlLawPID(ControlLaw):
     """Stateful PID controller with symmetric anti-windup clamping.
 
     Independent per-DOF: ``output[i]`` depends only on the ``i``-th entries of
-    its bound ports. Each compute step adds the following to the bound
-    ``output`` array:
+    its declared ports. Each compute step adds the following to the output
+    array:
 
     .. code-block:: text
 
@@ -75,23 +76,25 @@ class ControlLawPID(ControlLaw):
                                         -integral_max, +integral_max)
                         + kd[i] * (setpoint_rate - measurement_rate)
 
-    Per-DOF port forms follow the unified rule: bare ``wp.array`` uses
-    ``indices`` as the lookup; ``(array, port_indices)`` uses ``port_indices``.
+    Every port is a **string** giving the attribute name on the ``input`` /
+    ``output`` object passed to :meth:`Controller.step` — e.g.
+    ``measurement="joint_q"`` resolves to ``input.joint_q`` at step time.
+    Per-DOF ports may also be passed as ``(attr_name, port_indices)`` if
+    the source array's layout differs from this controller's ``indices``.
 
     Args:
         indices: Global DOF indices this controller writes to. Length ``N``.
-        measurement: Process variable (per-DOF port).
-        measurement_rate: Time derivative of the measurement (per-DOF port).
-        setpoint: Target value for the measurement (per-DOF port).
-        setpoint_rate: Time derivative of the setpoint (per-DOF port).
-        kp: Proportional gain (per-DOF port).
-        ki: Integral gain (per-DOF port).
-        kd: Derivative gain (per-DOF port).
-        integral_max: Symmetric saturation bound on the integrator
-            (per-DOF port). Use ``wp.full(N, float('inf'))`` to disable
-            clamping.
-        output: Destination array (per-DOF port). ``compute()`` accumulates
-            ``+=`` into the bound slots.
+        measurement: Per-DOF read port. Process variable.
+        measurement_rate: Per-DOF read port. Time derivative of measurement.
+        setpoint: Per-DOF read port. Target for the measurement.
+        setpoint_rate: Per-DOF read port. Time derivative of the setpoint.
+        kp: Per-DOF read port. Proportional gain.
+        ki: Per-DOF read port. Integral gain.
+        kd: Per-DOF read port. Derivative gain.
+        integral_max: Per-DOF read port. Symmetric saturation bound on the
+            integrator. Use ``wp.full(N, float('inf'))`` to disable clamping.
+        output: Per-DOF write port. ``compute()`` accumulates ``+=`` into
+            the slots ``output[output_indices[i]]``.
     """
 
     @dataclass
@@ -116,15 +119,23 @@ class ControlLawPID(ControlLaw):
         if not isinstance(indices, wp.array):
             raise TypeError(f"ControlLawPID: indices must be wp.array[wp.uint32], got {type(indices).__name__}.")
         self.indices = indices
-        self._measurement = _normalize_port(measurement, indices, name="measurement")
-        self._measurement_rate = _normalize_port(measurement_rate, indices, name="measurement_rate")
-        self._setpoint = _normalize_port(setpoint, indices, name="setpoint")
-        self._setpoint_rate = _normalize_port(setpoint_rate, indices, name="setpoint_rate")
-        self._kp = _normalize_port(kp, indices, name="kp")
-        self._ki = _normalize_port(ki, indices, name="ki")
-        self._kd = _normalize_port(kd, indices, name="kd")
-        self._integral_max = _normalize_port(integral_max, indices, name="integral_max")
-        self._output = _normalize_port(output, indices, name="output")
+        self._measurement_attr, self._measurement_port_indices = _normalize_port(
+            measurement, indices, name="measurement"
+        )
+        self._measurement_rate_attr, self._measurement_rate_port_indices = _normalize_port(
+            measurement_rate, indices, name="measurement_rate"
+        )
+        self._setpoint_attr, self._setpoint_port_indices = _normalize_port(setpoint, indices, name="setpoint")
+        self._setpoint_rate_attr, self._setpoint_rate_port_indices = _normalize_port(
+            setpoint_rate, indices, name="setpoint_rate"
+        )
+        self._kp_attr, self._kp_port_indices = _normalize_port(kp, indices, name="kp")
+        self._ki_attr, self._ki_port_indices = _normalize_port(ki, indices, name="ki")
+        self._kd_attr, self._kd_port_indices = _normalize_port(kd, indices, name="kd")
+        self._integral_max_attr, self._integral_max_port_indices = _normalize_port(
+            integral_max, indices, name="integral_max"
+        )
+        self._output_attr, self._output_port_indices = _normalize_port(output, indices, name="output")
 
     def finalize(self, device: wp.Device, num_outputs: int, requires_grad: bool = False) -> None:
         self.reset_state = self.state(num_outputs, device, requires_grad=requires_grad)
@@ -140,45 +151,47 @@ class ControlLawPID(ControlLaw):
             integral=wp.zeros(num_outputs, dtype=wp.float32, device=device, requires_grad=requires_grad),
         )
 
-    def outputs(self) -> list[tuple[wp.array, wp.array[wp.uint32]]]:
-        return [self._output]
+    def outputs(self) -> list[tuple[str, wp.array[wp.uint32]]]:
+        return [(self._output_attr, self._output_port_indices)]
 
     def compute(
         self,
+        input: Any,
+        output: Any,
         state: ControlLawPID.State,
         next_state: ControlLawPID.State,
         dt: float,
     ) -> None:
-        meas, meas_idx = self._measurement
-        meas_rate, mrate_idx = self._measurement_rate
-        sp, sp_idx = self._setpoint
-        sp_rate, sp_rate_idx = self._setpoint_rate
-        kp, kp_idx = self._kp
-        ki, ki_idx = self._ki
-        kd, kd_idx = self._kd
-        imax, imax_idx = self._integral_max
-        out, out_idx = self._output
+        meas = _resolve_input_array(input, self._measurement_attr, name="measurement")
+        meas_rate = _resolve_input_array(input, self._measurement_rate_attr, name="measurement_rate")
+        sp = _resolve_input_array(input, self._setpoint_attr, name="setpoint")
+        sp_rate = _resolve_input_array(input, self._setpoint_rate_attr, name="setpoint_rate")
+        kp = _resolve_input_array(input, self._kp_attr, name="kp")
+        ki = _resolve_input_array(input, self._ki_attr, name="ki")
+        kd = _resolve_input_array(input, self._kd_attr, name="kd")
+        imax = _resolve_input_array(input, self._integral_max_attr, name="integral_max")
+        out = _resolve_input_array(output, self._output_attr, name="output")
         wp.launch(
             _pid_kernel,
             dim=len(self.indices),
             inputs=[
                 meas,
-                meas_idx,
+                self._measurement_port_indices,
                 meas_rate,
-                mrate_idx,
+                self._measurement_rate_port_indices,
                 sp,
-                sp_idx,
+                self._setpoint_port_indices,
                 sp_rate,
-                sp_rate_idx,
+                self._setpoint_rate_port_indices,
                 kp,
-                kp_idx,
+                self._kp_port_indices,
                 ki,
-                ki_idx,
+                self._ki_port_indices,
                 kd,
-                kd_idx,
+                self._kd_port_indices,
                 imax,
-                imax_idx,
-                out_idx,
+                self._integral_max_port_indices,
+                self._output_port_indices,
                 dt,
                 state.integral,
             ],

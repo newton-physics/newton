@@ -2,13 +2,15 @@
 
 A library for composable control blocks. A `ControlLaw` is a single, runnable control law (PID, differential IK, gravity comp, …). A `Controller` is a composer that wraps one or more `ControlLaw`s and orchestrates the per-step zero / compute sequence.
 
-Controllers typically run **before** actuators in a simulation step: a `ControlLaw` produces a desired joint position, velocity, or force; downstream actuators turn that target into effort. Users author their own `@wp.struct` instances for inputs and outputs (which can be views/slices of the `newton.State` or `newton.Control` objects).
+Controllers typically run **before** actuators in a simulation step: a `ControlLaw` produces a desired joint position, velocity, or force; downstream actuators turn that target into effort.
+
+**Data is separated from functions.** A `ControlLaw` never owns the live arrays it reads or writes; it stores only *attribute names* declaring where to look. At step time, the caller passes in an `input` object (read ports) and an `output` object (write ports), and the law resolves each name via `getattr(input, name)` / `getattr(output, name)`. The signature is `Controller.step(input, output, current_state, next_state, dt)` — mirroring `Actuator.step(sim_state, sim_control, …)` and the various `Solver.step(state_in, state_out, control, contacts, dt)`. `input` and `output` are duck-typed user objects (`SimpleNamespace`, dataclasses, or even `newton.State`/`newton.Control` when the attribute names happen to match).
 
 ---
 
 ## Core concepts
 
-- **ControlLaw** — Abstract base for a single control law. Subclass with prefix-first naming: `ControlLawPID`, `ControlLawFilter`, `ControlLawGravityComp`. Lifecycle methods: `finalize(device, num_outputs)`, `state(...)`, `is_stateful()`, `is_graphable()`, `outputs()`, `compute(state, next_state, dt)`. Holds a nested `State` dataclass.
+- **ControlLaw** — Abstract base for a single control law. Subclass with prefix-first naming: `ControlLawPID`, `ControlLawFilter`, `ControlLawGravityComp`. Lifecycle methods: `finalize(device, num_outputs)`, `state(...)`, `is_stateful()`, `is_graphable()`, `outputs()`, `compute(input, output, state, next_state, dt)`. Holds a nested `State` dataclass.
 - **Controller** — Composer of one or more `ControlLaw`s. Owns step / reset / state orchestration.
 
 Multiple `ControlLaw`s may bind to overlapping output slots; their contributions accumulate via `+=` directly into the output array (see *Output accumulation*).
@@ -45,52 +47,57 @@ Each robot's outputs depend on the full state of that robot. Examples: `ControlL
 
 ## The unified port form
 
-Every input/output port that addresses per-DOF data accepts one of two forms:
+Every input/output port that addresses per-DOF data is a **string attribute name** that is resolved against the `input` (read ports) or `output` (write ports) object at step time. Ports accept one of two forms:
 
 | Form | Meaning | Kernel access |
 |---|---|---|
-| `array` (bare) | use the controller-level `indices` as the lookup | `array[indices[i]]` |
-| `(array, port_indices)` | tuple; use `port_indices` as the lookup | `array[port_indices[i]]` |
+| `"attr_name"` (bare str) | use the controller-level `indices` as the lookup | `getattr(source, attr_name)[indices[i]]` |
+| `("attr_name", port_indices)` | tuple; use `port_indices` as the lookup | `getattr(source, attr_name)[port_indices[i]]` |
 
-For many controllers, the indices of all inputs will align, and the bare `wp.array` input is enough. The second option exists for when more flexibility is needed.
+For many controllers, the indices of all inputs will align, and the bare string is enough. The tuple form exists when a port's source array uses a different layout than the controller's `indices`.
 
-### Validation at `__init__`
+### Validation
 
-| Form | Check |
-|---|---|
-| bare `array` | `array.shape[0] >= max(indices) + 1` |
-| `(array, port_indices)` | `len(port_indices) == len(indices)` and `array.shape[0] >= max(port_indices) + 1` |
+| Stage | Form | Check |
+|---|---|---|
+| `__init__` | bare `str` | `isinstance(spec, str)` |
+| `__init__` | `(str, port_indices)` | `port_indices.shape == indices.shape` |
+| step | both | `getattr(source, attr_name)` exists and is a `wp.array`. Shape/dtype mismatches fail at the kernel launch with a precise Warp error. |
 
-The user can store their data wherever is most natural — locally allocated for one controller, globally shared across the sim, sliced into a bigger struct, etc.
+The user picks the attribute names freely; the same value can come from any container (a `SimpleNamespace`, a custom dataclass, or even `newton.State` itself if its fields match the chosen names).
 
 ### Per-group ports
 
-Some controllers have ports keyed by *robot index*, not by per-DOF index — e.g. `ControlLawDifferentialIK`'s `target_pos` (one 3D target per robot). These are a separate, simpler shape:
+Some controllers have ports keyed by *robot index*, not per-DOF index — e.g. `ControlLawDifferentialIK`'s `target_pos` (one 3D target per robot). These also use strings:
 
-- Bare `wp.array[D]` (with appropriate dtype `D`) of length `num_robots`.
-- Kernel does `target_pos[robot]` where `robot = wp.tid()[0]` (in a 2D launch) or `robot = i // dofs_per_robot` (in a 1D launch).
-- No tuple form. Each port's docstring identifies it as per-group.
+- The port spec is just `"attr_name"` (no tuple form).
+- At step, the kernel does `getattr(input, attr_name)[robot]` and the resolver checks `arr.shape == (num_robots,)` plus the documented dtype (`wp.vec3` / `wp.quat` / `wp.float32`).
 
 ### One-big-array example
 
-Measurement, setpoint, and output all live in the same global `state.x`:
+Measurement, setpoint, and output all live on a single `state` object:
 
 ```python
 pid = nc.ControlLawPID(
     indices=output_indices,
-    measurement=(state.x, measurement_indices),
-    measurement_rate=(state.x, measurement_rate_indices),
-    setpoint=(state.x, setpoint_indices),
-    setpoint_rate=(state.x, setpoint_rate_indices),
-    kp=(kp_array, identity),                        # uses a local array, not part of the sim data.
-    ki=(ki_array, identity),                        # uses a local array, not part of the sim data.
-    kd=(kd_array, identity),                        # uses a local array, not part of the sim data.
-    integral_max=(integral_max_array, identity),    # uses a local array, not part of the sim data.
-    output=(state.x, output_indices),
+    measurement=("x", measurement_indices),
+    measurement_rate=("x", measurement_rate_indices),
+    setpoint=("x", setpoint_indices),
+    setpoint_rate=("x", setpoint_rate_indices),
+    kp="kp",                          # bare str: looked up via the controller's own `indices`
+    ki="ki",
+    kd="kd",
+    integral_max="integral_max",
+    output=("x", output_indices),
 )
+
+# At step time:
+input  = SimpleNamespace(x=state.x, kp=kp_array, ki=ki_array, kd=kd_array, integral_max=integral_max_array)
+output = SimpleNamespace(x=state.x)
+controller.step(input, output, cs0, cs1, dt)
 ```
 
-The same `wp.array` reference appears in multiple ports; different index arrays disambiguate the slots.
+The same `wp.array` reference appears under one attribute (`input.x` / `output.x`); different `port_indices` arrays disambiguate which slots each port reads/writes.
 
 ---
 
@@ -99,75 +106,75 @@ The same `wp.array` reference appears in multiple ports; different index arrays 
 ```python
 import warp as wp
 import numpy as np
+from types import SimpleNamespace
 import newton
 import newton.controllers as nc
 
 N = 60                  # 10 robots * 6 DOFs
 N_global = 200          # total DOFs in the simulator
 dof_indices = wp.array(np.arange(N, dtype=np.uint32))    # this ControlLaw's output slots
-identity = wp.arange(N, dtype=wp.uint32)                 # for any local-layout ports
 
-@wp.struct
-class ArmInputs:
-    joint_q:           wp.array[float]   # global, length N_global
-    joint_qd:          wp.array[float]
-    joint_target_pos:  wp.array[float]
-    joint_target_vel:  wp.array[float]
-    kp:                wp.array[float]   # length N, laid out for this ControlLaw
-    ki:                wp.array[float]
-    kd:                wp.array[float]
-    integral_max:      wp.array[float]
-
-@wp.struct
-class ArmOutputs:
-    joint_target_force: wp.array[float]  # global
-
-arm_in  = ArmInputs();  arm_in.joint_q = wp.zeros(N_global, dtype=wp.float32); ...
-arm_out = ArmOutputs(); arm_out.joint_target_force = wp.zeros(N_global, dtype=wp.float32)
-
-# 1. Construct a ControlLaw. Bare-array ports use the ControlLaw-level `indices`
-#    as the lookup; tuple ports use their own.
+# 1. Construct a ControlLaw. Every port is a string giving the attribute name
+#    on the input/output object passed to step(). Bare string defaults the
+#    port indices to the ControlLaw-level `indices`; tuple form takes custom
+#    port_indices for ports whose source layout differs.
 pid = nc.ControlLawPID(
     indices=dof_indices,
-    measurement=arm_in.joint_q,
-    measurement_rate=arm_in.joint_qd,
-    setpoint=arm_in.joint_target_pos,
-    setpoint_rate=arm_in.joint_target_vel,
-    kp=(arm_in.kp, identity),
-    ki=(arm_in.ki, identity),
-    kd=(arm_in.kd, identity),
-    integral_max=(arm_in.integral_max, identity),
-    output=arm_out.joint_target_force,
+    measurement="joint_q",
+    measurement_rate="joint_qd",
+    setpoint="joint_target_pos",
+    setpoint_rate="joint_target_vel",
+    kp="kp",
+    ki="ki",
+    kd="kd",
+    integral_max="integral_max",
+    output="joint_target_force",
 )
 
-# 2. Compose into a Controller. Controller picks the device from the ControlLaws'
-#    bound arrays, validates agreement, calls finalize() on each, and
-#    precomputes the union of all output destinations for the upfront zero pass.
+# 2. Compose into a Controller. Controller validates that every ControlLaw
+#    agrees on num_outputs, calls finalize() on each (allocating per-law
+#    private buffers + the public reset_state), and collects every law's
+#    outputs() into a flat list to be zeroed at the start of each step.
 controller = nc.Controller([pid])
 
 # 3. Allocate state pair (double buffer).
 state_0 = controller.state()
 state_1 = controller.state()
 
-# 4. Step loop.
+# 4. Build the input/output containers. Plain duck-typed objects — fields
+#    are whatever the ControlLaws ask for. Live sim arrays can come from
+#    newton.State / newton.Control; gains and per-step targets can be your
+#    own arrays. Anything resolvable by getattr works.
+arm_in = SimpleNamespace(
+    joint_q          = wp.zeros(N_global, dtype=wp.float32),
+    joint_qd         = wp.zeros(N_global, dtype=wp.float32),
+    joint_target_pos = wp.zeros(N_global, dtype=wp.float32),
+    joint_target_vel = wp.zeros(N_global, dtype=wp.float32),
+    kp               = wp.full(N, 50.0, dtype=wp.float32),
+    ki               = wp.full(N,  1.0, dtype=wp.float32),
+    kd               = wp.full(N,  5.0, dtype=wp.float32),
+    integral_max     = wp.full(N, float("inf"), dtype=wp.float32),
+)
+arm_out = SimpleNamespace(joint_target_force=wp.zeros(N_global, dtype=wp.float32))
+
+# 5. Step loop.
 for _ in range(steps):
-    controller.step(state_0, state_1, dt=0.005)
+    controller.step(arm_in, arm_out, state_0, state_1, dt=0.005)
     state_0, state_1 = state_1, state_0
 
-    # ... actuators, stepping sim, etc etc...
+    # ... actuators, stepping sim, etc etc ...
 
-# 5. Reset (bool mask, length len(indices)).
-# NOTE: see more about resetting later in this doc.
+# 6. Reset (bool mask, length len(indices)).
 controller.reset(state_0, mask=reset_mask)
 ```
 
-A `ControlLaw`'s `__init__` validates and stashes bindings; it does not allocate device buffers. `Controller.__init__` picks the device, validates all ControlLaws agree, calls `control_law.finalize(device, num_outputs)` on each (allocating per-ControlLaw private buffers and the public `control_law.reset_state`), and collects every ControlLaw's `outputs()` bindings into a flat list to be zeroed at the start of each step.
+A `ControlLaw`'s `__init__` validates port specs and stashes them as `(attr_name, port_indices)` pairs; it does not allocate device buffers. `Controller.__init__` validates all ControlLaws agree on `num_outputs`, calls `control_law.finalize(device, num_outputs)` on each (allocating per-ControlLaw private buffers and the public `control_law.reset_state`), and collects every law's `outputs()` bindings into a flat list to be zeroed at the start of each step.
 
 ---
 
 ## Output accumulation (direct write)
 
-`Controller` zeros all output destinations before any ControlLaw's `compute()` is called. At the start of each `step()`, it walks the flat list of `(array, port_indices)` bindings collected from every ControlLaw's `outputs()` and, for each one, launches a kernel that writes zero into `array[port_indices[i]]`. Two ControlLaws binding overlapping slots will have those slots zeroed twice.
+`Controller` zeros all output destinations before any ControlLaw's `compute()` is called. At the start of each `step()`, it walks the flat list of `(attr_name, port_indices)` bindings collected from every ControlLaw's `outputs()`, resolves each `attr_name` against the passed-in `output` object once, and launches a kernel that writes zero into `output_array[port_indices[i]]`. Two ControlLaws binding overlapping slots will have those slots zeroed twice.
 
 Each `ControlLaw.compute()` then writes directly into its bound output array(s) using `+=`:
 
@@ -231,7 +238,7 @@ Every `ControlLaw` defines a nested `State` dataclass holding whatever internal 
 state_0 = controller.state()
 state_1 = controller.state()
 for _ in range(steps):
-    controller.step(state_0, state_1, dt=dt)
+    controller.step(input, output, state_0, state_1, dt=dt)
     state_0, state_1 = state_1, state_0
 ```
 
@@ -271,16 +278,17 @@ class ControlLaw:
     reset_state: ControlLaw.State | None
 
     def __init__(self, **ports):
-        """Validate shapes / dtypes, normalize each port to (array, port_indices)
-        form via _normalize_port, stash bindings on self. Does NOT allocate
-        device buffers — finalize() does that.
+        """Validate every port spec, normalize each to (attr_name, port_indices)
+        via _normalize_port (or just attr_name via _normalize_per_group_port),
+        stash on self. Does NOT allocate device buffers — finalize() does that.
 
         Subclasses declare which kwargs they accept; missing required ports
-        raise here, unknown ports raise here, and shape / dtype / length
-        mismatches raise here. Scalar value-range checks (e.g. ``kp >= 0``)
-        are NOT performed at this layer — they would force a synchronous
-        device-to-host copy. Such checks belong in a config layer above
-        the ControlLaw."""
+        raise here, unknown ports raise here, and port_indices shape
+        mismatches raise here. The live array shape/dtype is checked at
+        step time (the array doesn't exist until then). Scalar value-range
+        checks (e.g. ``kp >= 0``) are NOT performed at this layer — they
+        would force a synchronous device-to-host copy. Such checks belong
+        in a config layer above the ControlLaw."""
 
     def finalize(self, device: wp.Device, num_outputs: int) -> None:
         """Allocate device-side private buffers (e.g. internal Model +
@@ -295,22 +303,27 @@ class ControlLaw:
     def is_stateful(self) -> bool: ...
     def is_graphable(self) -> bool: ...
 
-    def outputs(self) -> list[tuple[wp.array[float], wp.array[wp.uint32]]]:
-        """Return the (output_array, output_port_indices) bindings this
+    def outputs(self) -> list[tuple[str, wp.array[wp.uint32]]]:
+        """Return the (output_attr_name, output_port_indices) bindings this
         ControlLaw writes to. Controller collects these from every
-        ControlLaw and zeros each one before every step. Most ControlLaws
-        return a single binding; multi-output ControlLaws (e.g.
-        ControlLawDifferentialIK) return multiple."""
+        ControlLaw, resolves each attr_name against the `output` arg of
+        step() once per step, and zeros the listed slots before any
+        compute() runs. Most ControlLaws return a single binding;
+        multi-output ControlLaws (e.g. ControlLawDifferentialIK) return
+        multiple."""
 
     def compute(
         self,
+        input,                                     # any object with the read-port attributes
+        output,                                    # any object with the write-port attributes
         state: ControlLaw.State | None,
         next_state: ControlLaw.State | None,
         dt: float,
     ) -> None:
-        """Read bound inputs, write `+=` into bound outputs, write next_state.
-        Called by Controller.step. The device is fixed at finalize()
-        time, so compute() does not take one."""
+        """Resolve port arrays via getattr(input, name) / getattr(output, name),
+        then launch kernels: read live data, write `+=` into outputs,
+        populate next_state. Called by Controller.step. The device is
+        fixed at finalize() time, so compute() does not take one."""
 
     def reset(
         self,
@@ -335,41 +348,46 @@ Reference implementation: `newton/_src/controllers/impl/controller_pid.py`.
 ```python
 import warp as wp
 import numpy as np
+from types import SimpleNamespace
 import newton.controllers as nc
 
 device = wp.get_device()
 N = 6                                                            # DOFs this ControlLaw manages
-indices  = wp.array(np.arange(N, dtype=np.uint32), device=device)
-identity = wp.arange(N, dtype=wp.uint32, device=device)          # for any local-layout port
+indices = wp.array(np.arange(N, dtype=np.uint32), device=device)
 
-zeros = lambda: wp.zeros(N, dtype=wp.float32, device=device)
-gain  = lambda v: wp.array([v] * N, dtype=wp.float32, device=device)
-
-measurement      = zeros()      # bare → looked up via the ControlLaw-level `indices`
-measurement_rate = zeros()
-setpoint         = zeros()
-setpoint_rate    = zeros()
-output           = zeros()
-
+# Construct the law: every port is a string attribute name.
 pid = nc.ControlLawPID(
     indices=indices,
-    measurement=measurement,
-    measurement_rate=measurement_rate,
-    setpoint=setpoint,
-    setpoint_rate=setpoint_rate,
-    kp=(gain(50.0), identity),                                    # local-layout gain
-    ki=(gain( 1.0), identity),
-    kd=(gain( 5.0), identity),
-    integral_max=(gain(float("inf")), identity),                  # disable clamping
-    output=output,
+    measurement="measurement",
+    measurement_rate="measurement_rate",
+    setpoint="setpoint",
+    setpoint_rate="setpoint_rate",
+    kp="kp",
+    ki="ki",
+    kd="kd",
+    integral_max="integral_max",
+    output="output",
 )
 controller = nc.Controller([pid])
+
+# Read/write containers (any duck-typed object works).
+input = SimpleNamespace(
+    measurement=wp.zeros(N, dtype=wp.float32, device=device),
+    measurement_rate=wp.zeros(N, dtype=wp.float32, device=device),
+    setpoint=wp.zeros(N, dtype=wp.float32, device=device),
+    setpoint_rate=wp.zeros(N, dtype=wp.float32, device=device),
+    kp=wp.full(N, 50.0, dtype=wp.float32, device=device),
+    ki=wp.full(N,  1.0, dtype=wp.float32, device=device),
+    kd=wp.full(N,  5.0, dtype=wp.float32, device=device),
+    integral_max=wp.full(N, float("inf"), dtype=wp.float32, device=device),
+)
+output = SimpleNamespace(output=wp.zeros(N, dtype=wp.float32, device=device))
 
 state_0, state_1 = controller.state(), controller.state()
 
 # Step loop:
 for _ in range(steps):
-    controller.step(state_0, state_1, dt=0.005)
+    controller.step(input, output, state_0, state_1, dt=0.005)
     state_0, state_1 = state_1, state_0
 
 # Reset some DOFs to the ControlLaw's reset_state values:
@@ -412,20 +430,33 @@ diffik = nc.ControlLawDifferentialIK(
     model_builder=builder,
     indices=indices,
     site="tool",
-    measurement=wp.zeros(N, dtype=wp.float32, device=device),
-    measurement_rate=wp.zeros(N, dtype=wp.float32, device=device),
-    target_pos=wp.array([wp.vec3(2.0, 0.1, 0.0)], dtype=wp.vec3, device=device),
-    target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
-    damping=wp.array([0.05], dtype=wp.float32, device=device),
-    gain=wp.array([1.0], dtype=wp.float32, device=device),    # per-robot multiplier on q_dot after the DLS solve
-    output_qd=wp.zeros(N, dtype=wp.float32, device=device),
-    output_q=wp.zeros(N, dtype=wp.float32, device=device),
+    measurement="joint_q",
+    measurement_rate="joint_qd",
+    target_pos="target_pos",
+    target_quat="target_quat",
+    damping="damping",
+    gain="gain",
+    output_qd="output_qd",
+    output_q="output_q",
 )
 controller = nc.Controller([diffik])
 
+input = SimpleNamespace(
+    joint_q=wp.zeros(N, dtype=wp.float32, device=device),
+    joint_qd=wp.zeros(N, dtype=wp.float32, device=device),
+    target_pos=wp.array([wp.vec3(2.0, 0.1, 0.0)], dtype=wp.vec3, device=device),
+    target_quat=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
+    damping=wp.array([0.05], dtype=wp.float32, device=device),
+    gain=wp.array([1.0], dtype=wp.float32, device=device),
+)
+output = SimpleNamespace(
+    output_qd=wp.zeros(N, dtype=wp.float32, device=device),
+    output_q=wp.zeros(N, dtype=wp.float32, device=device),
+)
+
 state_0, state_1 = controller.state(), controller.state()
 for _ in range(steps):
-    controller.step(state_0, state_1, dt=0.01)
+    controller.step(input, output, state_0, state_1, dt=0.01)
     state_0, state_1 = state_1, state_0
 ```
 
@@ -437,11 +468,13 @@ Internally the compute step is: gather `joint_q`/`joint_qd` → `eval_fk` → `e
 
 ```python
 class Controller:
-    def __init__(self, control_laws: list[ControlLaw]):
-        """Pick the device from ControlLaws' bound output arrays, validate
-        all agree, finalize() every ControlLaw (each ControlLaw's
-        num_outputs is len(its indices)), collect every ControlLaw's
-        outputs() into a flat list to be zeroed at the start of each step."""
+    def __init__(self, control_laws: list[ControlLaw],
+                 requires_grad: bool = False,
+                 device: wp.Device | None = None):
+        """Validate that every ControlLaw agrees on num_outputs (the outer
+        length of every binding their outputs() return), finalize() each
+        (allocating per-law buffers + reset_state), collect every law's
+        outputs() into a flat list to be resolved + zeroed at step time."""
 
     def is_stateful(self) -> bool: ...
     def is_graphable(self) -> bool: ...
@@ -449,13 +482,14 @@ class Controller:
     def state(self) -> Controller.State | None:
         """Allocate composed state with one entry per stateful ControlLaw."""
 
-    def step(self, current_state, next_state, dt: float) -> None:
-        """1. Walk the collected list of output bindings and zero each one.
-              Two ControlLaws binding overlapping slots will have those
-              slots zeroed twice — harmless (idempotent), and avoids any
-              wp.array-identity comparison.
-           2. For each ControlLaw (in registration order), call compute()
-              which += writes into its bound output array(s)."""
+    def step(self, input, output, current_state, next_state, dt: float) -> None:
+        """1. Resolve every output binding's attr_name against `output` once,
+              and zero each one's declared slots. Two ControlLaws binding
+              overlapping slots will have those slots zeroed twice —
+              harmless, and avoids any wp.array-identity comparison.
+           2. For each ControlLaw (in registration order), call
+              compute(input, output, ...) which fetches its own port
+              arrays via getattr and += writes into its outputs."""
 
     def reset(self, state: Controller.State, mask: wp.array[wp.bool]) -> None:
         """For each (control_law, sub_state) pair where sub_state is not
@@ -486,19 +520,19 @@ act_state_0 = actuator.state(); act_state_1 = actuator.state()
 for _ in range(steps):
     # 1. ControlLaws run first. Their outputs typically land in arrays the
     #    actuator reads from (e.g. joint_target_force, joint_target_qd).
-    controller.step(state_0, state_1, dt=dt)
+    controller.step(ctrl_input, ctrl_output, state_0, state_1, dt=dt)
 
     # 2. Actuator translates target → joint effort.
     actuator.step(sim_state, sim_control, act_state_0, act_state_1, dt=dt)
 
     # 3. Physics solver.
-    solver.step(model, sim_state, sim_state_next, dt)
+    solver.step(sim_state, sim_state_next, sim_control, contacts, dt)
 
     state_0, state_1 = state_1, state_0
     act_state_0, act_state_1 = act_state_1, act_state_0
 ```
 
-The user's output `@wp.struct` fields can be the *same* `wp.array`s set on `sim_control` (e.g. `joint_target_pos`, `joint_f`). That sharing is up to the user — the controllers module does not introspect Newton sim objects.
+The user can point `ctrl_output`'s fields at the *same* `wp.array`s that `sim_control` exposes (e.g. `joint_target_q`, `joint_f`), forming the bridge from controllers to actuators. That sharing is up to the user — the controllers module does not introspect Newton sim objects.
 
 ---
 
@@ -535,8 +569,10 @@ Users write `from newton.controllers import Controller, ControlLawPID, ControlLa
 - `Controller` composer with `state`, `step`, `reset`, `is_stateful`, `is_graphable`, plus the upfront-zero pass machinery.
 - `newton/controllers.py` public shim.
 - Helpers in `newton/_src/controllers/utils.py`:
-  - `_normalize_port(port, control_law_indices, name)` — normalize bare-array or tuple to `(array, port_indices)` with validation.
-  - `_validate_per_group(array, num_robots, dtype, name)` — shape + dtype check for per-group ports (e.g. DiffIK's `target_pos`, `target_quat`).
+  - `_normalize_port(spec, control_law_indices, name)` — validate `str` or `(str, port_indices)` at `__init__`, return `(attr_name, port_indices)`.
+  - `_normalize_per_group_port(spec, name)` — validate the per-group `str` spec at `__init__`.
+  - `_resolve_input_array(source, attr_name, name)` — step-time `getattr` with a type check.
+  - `_resolve_per_group_array(source, attr_name, num_robots, dtype, name)` — step-time `getattr` with the per-group shape + dtype check (DiffIK's `target_pos`, `target_quat`, etc.).
   - Replication uses :meth:`newton.ModelBuilder.replicate` directly at `finalize()` time; no separate helper. K-articulation homogeneity is asserted via `joint_dof_count % articulation_count == 0` in the consuming ControlLaw's `__init__` (necessary check; users are responsible for matching link/joint counts across articulations).
 - For each shipped ControlLaw: math-correctness tests, integral / state accumulation across the `state_0` / `state_1` swap, masked reset, accumulation when multiple ControlLaws overlap, one-big-array binding sanity tests.
 

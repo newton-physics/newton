@@ -19,12 +19,14 @@ constructed inside a ``Controller(..., requires_grad=True)``.
 
 from __future__ import annotations
 
+from typing import Any
+
 import warp as wp
 
 from ...sim.articulation import eval_fk, eval_jacobian
 from ...sim.builder import ModelBuilder
 from ..control_law import ControlLaw
-from ..utils import _normalize_port, _validate_per_group
+from ..utils import _normalize_per_group_port, _normalize_port, _resolve_input_array, _resolve_per_group_array
 
 
 @wp.kernel
@@ -274,24 +276,34 @@ class ControlLawDifferentialIK(ControlLaw):
             to have legitimately different end-effector geometry. Add a
             site at identity xform if you want to track an EE body's
             reference frame directly.
-        measurement: Per-DOF port. Source of joint positions ``q``.
-        measurement_rate: Per-DOF port. Source of joint velocities ``q_dot``
-            (used by ``eval_fk`` to populate ``body_qd``; the solve uses
-            position-only error).
-        target_pos: Per-group ``wp.array[wp.vec3]`` of length ``num_robots``.
-            Site position target in world (base) frame.
-        target_quat: Per-group ``wp.array[wp.quat]`` of length ``num_robots``.
-            Site orientation target.
-        damping: Per-group ``wp.array[float]`` of length ``num_robots``. DLS
-            ``lambda`` per robot. ``A = J_site J_site^T + lambda^2 * I``.
-        gain: Per-group ``wp.array[float]`` of length ``num_robots``. Scalar
-            multiplier applied to the DLS-solve output before writing into
-            ``output_qd`` / integrating into ``output_q``. Use ``1.0`` for the
-            raw DLS solution; raise or lower to tune convergence speed
-            independently from the damping term.
-        output_qd: Per-DOF port. Destination for ``q_dot`` (accumulated ``+=``).
-        output_q: Per-DOF port. Destination for ``q_current + q_dot * dt``
+
+    All remaining ports are **string** attribute names resolved against the
+    ``input`` / ``output`` objects passed to :meth:`Controller.step`.
+    Per-DOF ports also accept ``(attr_name, port_indices)`` for custom
+    layouts; per-group ports take just a name.
+
+    Args (continued):
+        measurement: Per-DOF read port. Source of joint positions ``q``.
+        measurement_rate: Per-DOF read port. Source of joint velocities
+            ``q_dot`` (used by ``eval_fk`` to populate ``body_qd``; the
+            solve uses position-only error).
+        target_pos: Per-group port; ``getattr(input, attr_name)`` must
+            return ``wp.array[wp.vec3]`` of length ``num_robots``. Site
+            position target in world (base) frame.
+        target_quat: Per-group port; must resolve to
+            ``wp.array[wp.quat]`` of length ``num_robots``. Site
+            orientation target.
+        damping: Per-group port; must resolve to ``wp.array[float]`` of
+            length ``num_robots``. DLS ``lambda`` per robot.
+        gain: Per-group port; must resolve to ``wp.array[float]`` of length
+            ``num_robots``. Scalar multiplier applied to the DLS-solve
+            output before writing into ``output_qd`` / integrating into
+            ``output_q``. Use ``1.0`` for the raw DLS solution; raise or
+            lower to tune convergence speed independently from damping.
+        output_qd: Per-DOF write port. Destination for ``q_dot``
             (accumulated ``+=``).
+        output_q: Per-DOF write port. Destination for
+            ``q_current + q_dot * dt`` (accumulated ``+=``).
     """
 
     def __init__(
@@ -383,15 +395,19 @@ class ControlLawDifferentialIK(ControlLaw):
         self._ee_link_within_variant: list[int] = [site_for_variant[v][0] for v in range(K)]
         self._site_xform_per_variant: list[wp.transform] = [site_for_variant[v][1] for v in range(K)]
 
-        self._target_pos = _validate_per_group(target_pos, self._num_robots, wp.vec3, name="target_pos")
-        self._target_quat = _validate_per_group(target_quat, self._num_robots, wp.quat, name="target_quat")
-        self._damping = _validate_per_group(damping, self._num_robots, wp.float32, name="damping")
-        self._gain = _validate_per_group(gain, self._num_robots, wp.float32, name="gain")
+        self._target_pos_attr = _normalize_per_group_port(target_pos, name="target_pos")
+        self._target_quat_attr = _normalize_per_group_port(target_quat, name="target_quat")
+        self._damping_attr = _normalize_per_group_port(damping, name="damping")
+        self._gain_attr = _normalize_per_group_port(gain, name="gain")
 
-        self._measurement = _normalize_port(measurement, indices, name="measurement")
-        self._measurement_rate = _normalize_port(measurement_rate, indices, name="measurement_rate")
-        self._output_qd = _normalize_port(output_qd, indices, name="output_qd")
-        self._output_q = _normalize_port(output_q, indices, name="output_q")
+        self._measurement_attr, self._measurement_port_indices = _normalize_port(
+            measurement, indices, name="measurement"
+        )
+        self._measurement_rate_attr, self._measurement_rate_port_indices = _normalize_port(
+            measurement_rate, indices, name="measurement_rate"
+        )
+        self._output_qd_attr, self._output_qd_port_indices = _normalize_port(output_qd, indices, name="output_qd")
+        self._output_q_attr, self._output_q_port_indices = _normalize_port(output_q, indices, name="output_q")
 
     def finalize(self, device: wp.Device, num_outputs: int, requires_grad: bool = False) -> None:
         # Replicate the K-articulation template R times into a fresh builder,
@@ -470,21 +486,47 @@ class ControlLawDifferentialIK(ControlLaw):
     def is_graphable(self) -> bool:
         return True
 
-    def outputs(self) -> list[tuple[wp.array, wp.array[wp.uint32]]]:
-        return [self._output_qd, self._output_q]
+    def outputs(self) -> list[tuple[str, wp.array[wp.uint32]]]:
+        return [
+            (self._output_qd_attr, self._output_qd_port_indices),
+            (self._output_q_attr, self._output_q_port_indices),
+        ]
 
     def compute(
         self,
+        input: Any,
+        output: Any,
         state: ControlLaw.State | None,
         next_state: ControlLaw.State | None,
         dt: float,
     ) -> None:
         n = len(self.indices)
 
-        meas, meas_idx = self._measurement
-        meas_rate, mrate_idx = self._measurement_rate
-        wp.launch(_gather_local_kernel, dim=n, inputs=[meas, meas_idx], outputs=[self._model_state.joint_q])
-        wp.launch(_gather_local_kernel, dim=n, inputs=[meas_rate, mrate_idx], outputs=[self._model_state.joint_qd])
+        meas = _resolve_input_array(input, self._measurement_attr, name="measurement")
+        meas_rate = _resolve_input_array(input, self._measurement_rate_attr, name="measurement_rate")
+        target_pos = _resolve_per_group_array(
+            input, self._target_pos_attr, self._num_robots, wp.vec3, name="target_pos"
+        )
+        target_quat = _resolve_per_group_array(
+            input, self._target_quat_attr, self._num_robots, wp.quat, name="target_quat"
+        )
+        damping = _resolve_per_group_array(input, self._damping_attr, self._num_robots, wp.float32, name="damping")
+        gain = _resolve_per_group_array(input, self._gain_attr, self._num_robots, wp.float32, name="gain")
+        out_qd = _resolve_input_array(output, self._output_qd_attr, name="output_qd")
+        out_q = _resolve_input_array(output, self._output_q_attr, name="output_q")
+
+        wp.launch(
+            _gather_local_kernel,
+            dim=n,
+            inputs=[meas, self._measurement_port_indices],
+            outputs=[self._model_state.joint_q],
+        )
+        wp.launch(
+            _gather_local_kernel,
+            dim=n,
+            inputs=[meas_rate, self._measurement_rate_port_indices],
+            outputs=[self._model_state.joint_qd],
+        )
 
         eval_fk(self._model, self._model_state.joint_q, self._model_state.joint_qd, self._model_state)
         eval_jacobian(self._model, self._model_state, J=self._jacobian)
@@ -497,8 +539,8 @@ class ControlLawDifferentialIK(ControlLaw):
                 self._jacobian,
                 self._model_state.body_q,
                 self._model.body_com,
-                self._target_pos,
-                self._target_quat,
+                target_pos,
+                target_quat,
                 self._ee_body_per_robot,
                 self._ee_link_per_robot,
                 self._site_xform_per_robot,
@@ -511,7 +553,7 @@ class ControlLawDifferentialIK(ControlLaw):
         wp.launch(
             _build_dls_matrix_kernel,
             dim=(self._num_robots, 6, 6),
-            inputs=[self._j_site, self._damping, self._dofs_per_robot],
+            inputs=[self._j_site, damping, self._dofs_per_robot],
             outputs=[self._A],
         )
 
@@ -529,13 +571,11 @@ class ControlLawDifferentialIK(ControlLaw):
         wp.launch(
             _qd_from_y_kernel,
             dim=(self._num_robots, self._dofs_per_robot),
-            inputs=[self._j_site, self._y, self._gain],
+            inputs=[self._j_site, self._y, gain],
             outputs=[self._qd_target_local],
         )
 
         # 5. Accumulate into global output arrays + integrate q.
-        out_qd, out_qd_idx = self._output_qd
-        out_q, out_q_idx = self._output_q
         wp.launch(
             _accumulate_outputs_kernel,
             dim=(self._num_robots, self._dofs_per_robot),
@@ -544,8 +584,8 @@ class ControlLawDifferentialIK(ControlLaw):
                 self._model_state.joint_q,
                 dt,
                 self._dofs_per_robot,
-                out_qd_idx,
-                out_q_idx,
+                self._output_qd_port_indices,
+                self._output_q_port_indices,
             ],
             outputs=[out_qd, out_q],
         )

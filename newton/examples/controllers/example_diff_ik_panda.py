@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import warp as wp
 
@@ -178,23 +180,35 @@ class Example:
             ]
             target_quat_init[r] = [site_quat[0], site_quat[1], site_quat[2], site_quat[3]]
 
-        self._target_pos = wp.array(target_pos_init, dtype=wp.vec3, device=self.device)
-        self._target_quat = wp.array(target_quat_init, dtype=wp.quat, device=self.device)
-        self._damping = wp.full(ROBOT_COUNT, 0.05, dtype=wp.float32, device=self.device)
-        self._gain = wp.full(ROBOT_COUNT, 20.0, dtype=wp.float32, device=self.device)
+        # The user-facing input/output containers. Read ports live on
+        # ``self._input``; write ports on ``self._output``. We rebind
+        # joint_q / joint_qd each step so the controller sees whichever
+        # state buffer the substep swap leaves at ``self.state_0``.
+        self._input = SimpleNamespace(
+            joint_q=self.state_0.joint_q,
+            joint_qd=self.state_0.joint_qd,
+            target_pos=wp.array(target_pos_init, dtype=wp.vec3, device=self.device),
+            target_quat=wp.array(target_quat_init, dtype=wp.quat, device=self.device),
+            damping=wp.full(ROBOT_COUNT, 0.05, dtype=wp.float32, device=self.device),
+            gain=wp.full(ROBOT_COUNT, 20.0, dtype=wp.float32, device=self.device),
+        )
+        self._output = SimpleNamespace(
+            output_qd=self._qd_buffer,
+            output_q=self._q_buffer,
+        )
 
         self._diff_ik = ControlLawDifferentialIK(
             model_builder=template,
             indices=indices,
             site="ee",
-            measurement=self.state_0.joint_q,
-            measurement_rate=self.state_0.joint_qd,
-            target_pos=self._target_pos,
-            target_quat=self._target_quat,
-            damping=self._damping,
-            gain=self._gain,
-            output_qd=self._qd_buffer,
-            output_q=self._q_buffer,
+            measurement="joint_q",
+            measurement_rate="joint_qd",
+            target_pos="target_pos",
+            target_quat="target_quat",
+            damping="damping",
+            gain="gain",
+            output_qd="output_qd",
+            output_q="output_q",
         )
         self.controller = Controller([self._diff_ik])
         self._cs0 = self.controller.state()
@@ -246,8 +260,8 @@ class Example:
             offset = self._base_offsets_np[r]
             pos[r] = [p[0] - offset[0], p[1] - offset[1], p[2] - offset[2]]
             quat[r] = [q[0], q[1], q[2], q[3]]
-        self._target_pos.assign(pos)
-        self._target_quat.assign(quat)
+        self._input.target_pos.assign(pos)
+        self._input.target_quat.assign(quat)
 
     def _scatter_arm_targets(self) -> None:
         wp.launch(
@@ -260,13 +274,20 @@ class Example:
 
     def step(self) -> None:
         self._push_gizmos()
+        # Rebind the live joint_q / joint_qd to whichever State buffer the
+        # substep swap left at ``self.state_0`` after the previous frame.
+        # SimpleNamespace's attributes are just Python refs, so this is
+        # cheap; we do it every frame for robustness regardless of the
+        # substep parity.
+        self._input.joint_q = self.state_0.joint_q
+        self._input.joint_qd = self.state_0.joint_qd
         # One controller step per frame. DiffIK's output_q is current_q +
         # q_dot * frame_dt — a position target one frame ahead. The MuJoCo PD
         # then tracks that fixed target for all ``sim_substeps`` physics
         # substeps; running DiffIK inside the substep loop would refresh the
         # target against the drifted current_q on every substep, leaving PD
         # with no restoring signal against gravity.
-        self.controller.step(self._cs0, self._cs1, dt=self.frame_dt)
+        self.controller.step(self._input, self._output, self._cs0, self._cs1, dt=self.frame_dt)
         self._scatter_arm_targets()
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
