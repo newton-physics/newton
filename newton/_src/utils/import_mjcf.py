@@ -28,6 +28,7 @@ from ..solvers.mujoco.constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
+from ..solvers.mujoco.equality import _add_equality_constraint
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
     mjc_add_equality_mimic,
@@ -296,7 +297,8 @@ def parse_mjcf(
         skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
         convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
             joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
-            equality constraints are stored in the legacy equality constraint arrays.
+            equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
+            and finalize under ``model.mujoco.equality_constraint_*``.
         convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
         ctrl_direct: If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
@@ -344,7 +346,10 @@ def parse_mjcf(
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
 
-    if convert_mjc_equality_constraints and "mujoco:equality_constraint_target_kind" not in builder.custom_attributes:
+    # The equality custom attributes are declared by ModelBuilder.__init__; register the remaining
+    # MuJoCo custom attributes (geom/actuator/solver options) needed to parse and convert the model.
+    # register_custom_attributes is idempotent, so re-registering the equality fields is a no-op.
+    if convert_mjc_equality_constraints:
         SolverMuJoCo.register_custom_attributes(builder)
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
@@ -365,7 +370,7 @@ def parse_mjcf(
     solref_mode_key = "mujoco:solref_mode"
     has_solref_mode = solref_mode_key in builder.custom_attributes
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [AttributeFrequency.EQUALITY_CONSTRAINT]
+        ["mujoco:equality_constraint"]
     )
     # MuJoCo actuator custom attributes (from "mujoco:actuator" frequency)
     builder_custom_attr_actuator: list[ModelBuilder.CustomAttribute] = [
@@ -2095,7 +2100,9 @@ def parse_mjcf(
                         custom_attrs,
                     )
                 else:
-                    builder.add_equality_constraint_connect(
+                    _add_equality_constraint(
+                        builder,
+                        constraint_type=EqType.CONNECT,
                         body1=body1_idx,
                         body2=body2_idx,
                         anchor=anchor_vec,
@@ -2130,7 +2137,9 @@ def parse_mjcf(
                             custom_attrs,
                         )
                     else:
-                        builder.add_equality_constraint_connect(
+                        _add_equality_constraint(
+                            builder,
+                            constraint_type=EqType.CONNECT,
                             body1=body1_idx,
                             body2=body2_idx,
                             anchor=anchor_vec,
@@ -2184,7 +2193,9 @@ def parse_mjcf(
                         custom_attrs,
                     )
                 else:
-                    builder.add_equality_constraint_weld(
+                    _add_equality_constraint(
+                        builder,
+                        constraint_type=EqType.WELD,
                         body1=body1_idx,
                         body2=body2_idx,
                         anchor=anchor_vec,
@@ -2224,7 +2235,9 @@ def parse_mjcf(
                             custom_attrs,
                         )
                     else:
-                        builder.add_equality_constraint_weld(
+                        _add_equality_constraint(
+                            builder,
+                            constraint_type=EqType.WELD,
                             body1=body1_idx,
                             body2=body2_idx,
                             anchor=anchor_vec,
@@ -2275,7 +2288,9 @@ def parse_mjcf(
                         custom_attrs,
                     )
                 else:
-                    builder.add_equality_constraint_joint(
+                    _add_equality_constraint(
+                        builder,
+                        constraint_type=EqType.JOINT,
                         joint1=joint1_idx,
                         joint2=joint2_idx,
                         polycoef=polycoef_values,

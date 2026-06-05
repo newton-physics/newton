@@ -96,6 +96,9 @@ class Control:
         """Deprecated alias for :attr:`joint_target_q` (DOF-shape only).
         Raises :class:`AttributeError` under
         :data:`newton.use_coord_layout_targets` ``True``.
+
+        .. deprecated:: 1.3
+            Use :attr:`joint_target_q` instead.
         """
         if self._use_coord_layout_targets:
             raise AttributeError(_JOINT_TARGET_POS_UNAVAILABLE_MSG)
@@ -114,6 +117,9 @@ class Control:
         """Deprecated alias for :attr:`joint_target_qd`. Raises
         :class:`AttributeError` under
         :data:`newton.use_coord_layout_targets` ``True``.
+
+        .. deprecated:: 1.3
+            Use :attr:`joint_target_qd` instead.
         """
         if self._use_coord_layout_targets:
             raise AttributeError(_JOINT_TARGET_VEL_UNAVAILABLE_MSG)
