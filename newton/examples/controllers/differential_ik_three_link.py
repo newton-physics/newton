@@ -1,10 +1,14 @@
+# THIS IS NOT A REAL EXAMPLE!!!!!
+# TEMPORARY FILE USED FOR INITIAL TESTS,
+# WILL BE DELETED. 
+
 from contextlib import nullcontext
 from types import SimpleNamespace
 
 import warp as wp
 
 import newton
-from newton.controllers import ControlLawPID, Controller
+from newton.controllers import ControlLawDifferentialIK, Controller
 
 # BUILD UP THE ARM MODEL.
 with nullcontext():
@@ -54,8 +58,8 @@ with nullcontext():
         child_xform=wp.transform(p=(-box_length / 2, 0.0, 0.0)),
         armature=armature,
         axis=wp.vec3(0.0, 0.0, 1.0),
-        target_ke=0.0,
-        target_kd=0.0,
+        target_ke=ke,
+        target_kd=kd,
     )
 
     j2 = arm_model_builder.add_joint_revolute(
@@ -65,8 +69,8 @@ with nullcontext():
         child_xform=wp.transform(p=(-box_length / 2, 0.0, 0.0)),
         armature=armature,
         axis=wp.vec3(0.0, 0.0, 1.0),
-        target_ke=0.0,
-        target_kd=0.0,
+        target_ke=ke,
+        target_kd=kd,
     )
 
     j3 = arm_model_builder.add_joint_revolute(
@@ -76,8 +80,8 @@ with nullcontext():
         child_xform=wp.transform(p=(-box_length / 2, 0.0, 0.0)),
         armature=armature,
         axis=wp.vec3(0.0, 0.0, 1.0),
-        target_ke=0.0,
-        target_kd=0.0,
+        target_ke=ke,
+        target_kd=kd,
     )
 
     arm_model_builder.add_articulation(joints=[j0, j1, j2, j3], label="arm")
@@ -91,14 +95,14 @@ def simulate():
         state_0.clear_forces()
         arm_model.collide(state_0, contacts)
 
-        # Rebind live read ports so the PID sees the latest joint_q / joint_qd
-        # regardless of how the substep swap left state_0.
-        pid_input.joint_q = state_0.joint_q
-        pid_input.joint_qd = state_0.joint_qd
-        # step the controllers:
+        # Rebind live read ports so the controller sees the latest
+        # joint_q / joint_qd regardless of substep-swap parity.
+        diff_ik_input.joint_q = state_0.joint_q
+        diff_ik_input.joint_qd = state_0.joint_qd
+        # step the controller:
         controller.step(
-            pid_input,
-            pid_output,
+            diff_ik_input,
+            diff_ik_output,
             controller_state_0,
             controller_state_1,
             dt=sim_dt,
@@ -128,37 +132,38 @@ if __name__ == "__main__":
     control = arm_model.control()
     contacts = arm_model.contacts()
 
-    # set some random joint target:
-    control.joint_target_q = wp.array(
-        [0.0, wp.pi / 2, wp.pi / 2], dtype=wp.float32, device=control.joint_target_q.device
-    )
+    # set the initial state of the robot such that it is not in a singularity:
+    state_0.joint_q = wp.array([0.1, 0.1, 0.1], dtype=wp.float32)
 
-    # Read ports: joint_q / joint_qd from the simulation state, gains and
-    # setpoint references freshly allocated. Write port: control.joint_f.
-    pid_input = SimpleNamespace(
+    # Read ports: joint_q / joint_qd from the simulation state, plus targets
+    # and gain/damping. Write ports: control.joint_target_q / joint_target_qd.
+    diff_ik_input = SimpleNamespace(
         joint_q=state_0.joint_q,
         joint_qd=state_0.joint_qd,
-        setpoint=control.joint_target_q,
-        setpoint_rate=control.joint_target_qd,
-        kp=wp.full(3, value=ke),
-        ki=wp.zeros(3),
-        kd=wp.full(3, value=kd),
-        integral_max=wp.full(3, value=10.0),
+        target_pos=wp.array([wp.vec3f(2.0, 0.0, 0.0)], dtype=wp.vec3f),
+        target_quat=wp.array([wp.quat_identity()], dtype=wp.quatf),
+        damping=wp.array([1e-8], dtype=wp.float32),
+        gain=wp.array([300.0], dtype=wp.float32),
     )
-    pid_output = SimpleNamespace(joint_f=control.joint_f)
+    diff_ik_output = SimpleNamespace(
+        joint_target_q=control.joint_target_q,
+        joint_target_qd=control.joint_target_qd,
+    )
 
-    # create an external PD controller to use:
-    control_law = ControlLawPID(
+    # create an external differential IK to control the robot to the desired pose.
+    control_law = ControlLawDifferentialIK(
+        model_builder=arm_model_builder,
+        # TODO: IS THERE A MORE ERGONOMIC WAY TO GRAB THESE INDICES?
         indices=wp.array(arm_model.joint_target_q_start[j1:-1], dtype=wp.uint32),
+        site="tool",
         measurement="joint_q",
         measurement_rate="joint_qd",
-        setpoint="setpoint",
-        setpoint_rate="setpoint_rate",
-        kp="kp",
-        ki="ki",
-        kd="kd",
-        integral_max="integral_max",
-        output="joint_f",
+        target_pos="target_pos",
+        target_quat="target_quat",
+        damping="damping",
+        gain="gain",
+        output_q="joint_target_q",
+        output_qd="joint_target_qd",
     )
 
     controller = Controller([control_law])
@@ -187,7 +192,7 @@ if __name__ == "__main__":
     viewer.set_model(arm_model)
 
     # run the simulation:
-    num_frames = 500
+    num_frames = 10000
     sim_time = 0.0
     for _ in range(num_frames):
         if graph:
