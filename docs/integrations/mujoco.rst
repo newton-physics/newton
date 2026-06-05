@@ -299,6 +299,12 @@ array; slot layout depends on the constraint type.
        :attr:`~newton.JointType.REVOLUTE` and
        :attr:`~newton.JointType.PRISMATIC` joints are supported.
 
+Newton's core API does not expose equality constraints as a dedicated
+builder call. Construct them through the MuJoCo
+:ref:`custom-attribute namespace <mujoco-custom-attributes>` with
+:meth:`~newton.ModelBuilder.add_custom_values` using the
+``mujoco:equality_constraint_*`` keys, then read or update finalized
+fields via ``model.mujoco.equality_constraint_*``.
 
 .. _mujoco-loop-closures:
 
@@ -498,6 +504,10 @@ handles this inline (:github:`newton/_src/utils/import_mjcf.py`); USD
 goes through :class:`~newton.usd.SchemaResolverMjc`
 (:github:`newton/_src/usd/schemas.py`).
 
+MuJoCo joint ``damping`` maps to :attr:`~newton.Model.joint_damping`.
+The old ``model.mujoco.dof_passive_damping`` custom attribute remains
+a deprecated alias and emits a ``DeprecationWarning`` when accessed.
+
 
 Unsupported MuJoCo features
 ---------------------------
@@ -628,7 +638,7 @@ by joint type:
 If you edit :attr:`~newton.Model.joint_X_p` or :attr:`~newton.Model.joint_X_c`
 for a fixed-root articulation after constructing the solver, call
 :meth:`~newton.solvers.SolverBase.notify_model_changed` with the
-:attr:`~newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES` flag to
+:attr:`~newton.ModelFlags.JOINT_PROPERTIES` flag to
 synchronize the updated fixed-root poses into MuJoCo.
 
 

@@ -649,7 +649,12 @@ class ViewerGL(ViewerBase):
             if _key not in capsule_keys:
                 if shapes.name not in self.objects:
                     if shapes.mesh in self.objects and isinstance(self.objects[shapes.mesh], MeshGL):
-                        self.objects[shapes.name] = MeshInstancerGL(max(n, 1), self.objects[shapes.mesh])
+                        instancer = MeshInstancerGL(max(n, 1), self.objects[shapes.mesh])
+                        # Planes (e.g. the ground) opt out of the wireframe edge
+                        # overlay. Keyed on geometry type, not the checker material
+                        # bit, so checker-shaded non-planes still get edges (#2808).
+                        instancer.draw_edge = shapes.geo_type != nt.GeoType.PLANE
+                        self.objects[shapes.name] = instancer
 
         self._packed_write_indices = wp.array(write_np, dtype=int, device=device)
         self._packed_world_xforms = all_world_xforms

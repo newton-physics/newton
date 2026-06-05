@@ -12,6 +12,7 @@ import warp as wp
 from ...core.types import vec5
 from ...sim import BodyFlags, EqType, JointTargetMode, JointType
 from ...sim.articulation import com_twist_to_point_velocity, origin_twist_to_com_twist
+from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
     DEFAULT_LIMIT_GAIN_RTOL,
     DEFAULT_LIMIT_KD,
@@ -368,15 +369,18 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
         bx_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid])
         bx_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid])
-        point_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid] + offset_a)
-        point_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid] + offset_b)
-
-        radius_eff = (rigid_contact_margin0[tid] - shape_margin[shape_a]) + (
-            rigid_contact_margin1[tid] - shape_margin[shape_b]
-        )
+        point_a = contact_surface_point(X_wb_a, rigid_contact_point0[tid], offset_a)
+        point_b = contact_surface_point(X_wb_b, rigid_contact_point1[tid], offset_b)
 
         n = rigid_contact_normal[tid]
-        dist = wp.dot(n, bx_b - bx_a) - radius_eff
+        # rigid_contact_margin includes shape_margin; MuJoCo handles it explicitly, subtract to recover radius_eff.
+        dist = contact_surface_separation(
+            bx_a,
+            bx_b,
+            n,
+            rigid_contact_margin0[tid] - shape_margin[shape_a],
+            rigid_contact_margin1[tid] - shape_margin[shape_b],
+        )
         pos = 0.5 * (point_a + point_b)
 
         frame = make_frame(n)
@@ -536,15 +540,18 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
         bx_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid])
         bx_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid])
-        point_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid] + offset_a)
-        point_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid] + offset_b)
-
-        radius_eff = (rigid_contact_margin0[tid] - shape_margin[shape_a]) + (
-            rigid_contact_margin1[tid] - shape_margin[shape_b]
-        )
+        point_a = contact_surface_point(X_wb_a, rigid_contact_point0[tid], offset_a)
+        point_b = contact_surface_point(X_wb_b, rigid_contact_point1[tid], offset_b)
 
         n = rigid_contact_normal[tid]
-        contact_dist_out[cid] = wp.dot(n, bx_b - bx_a) - radius_eff
+        # rigid_contact_margin includes shape_margin; MuJoCo handles it explicitly, subtract to recover radius_eff.
+        contact_dist_out[cid] = contact_surface_separation(
+            bx_a,
+            bx_b,
+            n,
+            rigid_contact_margin0[tid] - shape_margin[shape_a],
+            rigid_contact_margin1[tid] - shape_margin[shape_b],
+        )
         contact_pos_out[cid] = 0.5 * (point_a + point_b)
 
         for i in range(contact_efc_address_out.shape[1]):
@@ -2692,7 +2699,7 @@ def update_eq_data_and_active_kernel(
       - CONNECT: data[0:3] = anchor
       - JOINT: data[0:5] = polycoef
       - WELD: data[0:3] = anchor, data[3:6] = relpose translation, data[6:10] = relpose quaternion, data[10] = torquescale
-    - eq_active from equality_constraint_enabled
+    - eq_active from model.mujoco equality_constraint_enabled
     """
     world, mjc_eq = wp.tid()
     newton_eq = mjc_eq_to_newton_eq[world, mjc_eq]

@@ -461,6 +461,7 @@ class ModelBuilder:
             target_vel: float = 0.0,
             target_ke: float = 0.0,
             target_kd: float = 0.0,
+            damping: float = 0.0,
             armature: float = 0.0,
             effort_limit: float = 1e6,
             velocity_limit: float = 1e6,
@@ -487,6 +488,8 @@ class ModelBuilder:
             """The proportional gain of the target drive PD controller. Defaults to 0.0."""
             self.target_kd = target_kd
             """The derivative gain of the target drive PD controller. Defaults to 0.0."""
+            self.damping = damping
+            """Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] that is always active. Defaults to 0.0."""
             self.armature = armature
             """Artificial inertia added around the joint axis [kg·m² or kg]. Defaults to 0."""
             self.effort_limit = effort_limit
@@ -513,6 +516,7 @@ class ModelBuilder:
                 target_vel=0.0,
                 target_ke=0.0,
                 target_kd=0.0,
+                damping=0.0,
                 armature=0.0,
                 limit_ke=0.0,
                 limit_kd=0.0,
@@ -1102,6 +1106,8 @@ class ModelBuilder:
         """Joint target stiffness values accumulated for :attr:`Model.joint_target_ke`."""
         self.joint_target_kd: list[float] = []
         """Joint target damping values accumulated for :attr:`Model.joint_target_kd`."""
+        self.joint_damping: list[float] = []
+        """Passive velocity damping values accumulated for :attr:`Model.joint_damping`."""
         self.joint_limit_lower: list[float] = []
         """Lower joint limits accumulated for :attr:`Model.joint_limit_lower`."""
         self.joint_limit_upper: list[float] = []
@@ -1181,32 +1187,6 @@ class ModelBuilder:
         self.num_rigid_contacts_per_world: int | None = None
         """Optional per-world rigid-contact allocation budget used to set :attr:`Model.rigid_contact_max`."""
 
-        # equality constraints
-        self.equality_constraint_type: list[EqType] = []
-        """Equality constraint types accumulated for :attr:`Model.equality_constraint_type`."""
-        self.equality_constraint_body1: list[int] = []
-        """First body indices accumulated for :attr:`Model.equality_constraint_body1`."""
-        self.equality_constraint_body2: list[int] = []
-        """Second body indices accumulated for :attr:`Model.equality_constraint_body2`."""
-        self.equality_constraint_anchor: list[Vec3] = []
-        """Equality constraint anchors accumulated for :attr:`Model.equality_constraint_anchor`."""
-        self.equality_constraint_relpose: list[Transform] = []
-        """Relative poses accumulated for :attr:`Model.equality_constraint_relpose`."""
-        self.equality_constraint_torquescale: list[float] = []
-        """Torque scales accumulated for :attr:`Model.equality_constraint_torquescale`."""
-        self.equality_constraint_joint1: list[int] = []
-        """First joint indices accumulated for :attr:`Model.equality_constraint_joint1`."""
-        self.equality_constraint_joint2: list[int] = []
-        """Second joint indices accumulated for :attr:`Model.equality_constraint_joint2`."""
-        self.equality_constraint_polycoef: list[list[float]] = []
-        """Polynomial coefficient rows accumulated for :attr:`Model.equality_constraint_polycoef`."""
-        self.equality_constraint_label: list[str] = []
-        """Equality constraint labels accumulated for :attr:`Model.equality_constraint_label`."""
-        self.equality_constraint_enabled: list[bool] = []
-        """Equality constraint enabled flags accumulated for :attr:`Model.equality_constraint_enabled`."""
-        self.equality_constraint_world: list[int] = []
-        """World indices accumulated for :attr:`Model.equality_constraint_world`."""
-
         # mimic constraints
         self.constraint_mimic_joint0: list[int] = []
         """Follower joint indices accumulated for :attr:`Model.constraint_mimic_joint0`."""
@@ -1234,8 +1214,8 @@ class ModelBuilder:
         """Per-world joint starts accumulated for :attr:`Model.joint_world_start`."""
         self.articulation_world_start: list[int] = []
         """Per-world articulation starts accumulated for :attr:`Model.articulation_world_start`."""
-        self.equality_constraint_world_start: list[int] = []
-        """Per-world equality-constraint starts accumulated for :attr:`Model.equality_constraint_world_start`."""
+        self._equality_constraint_world_start: list[int] = []
+        """Per-world equality-constraint starts accumulated for ``model.mujoco.equality_constraint_world_start``."""
         self.joint_dof_world_start: list[int] = []
         """Per-world joint DoF starts accumulated for :attr:`Model.joint_dof_world_start`."""
         self.joint_coord_world_start: list[int] = []
@@ -1246,6 +1226,9 @@ class ModelBuilder:
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
         """Registered custom attributes to materialize during :meth:`finalize <ModelBuilder.finalize>`."""
+        self._custom_attribute_model_finalizers: dict[
+            str, Callable[[ModelBuilder, Model, ModelBuilder.CustomAttribute], None]
+        ] = {}
         # Registered custom frequencies (must be registered before adding attributes with that frequency)
         self.custom_frequencies: dict[str, ModelBuilder.CustomFrequency] = {}
         """Registered custom string frequencies keyed by ``namespace:name`` or bare name."""
@@ -1257,6 +1240,177 @@ class ModelBuilder:
         # Key is (controller_class, delay is not None, clamping_key, ctrl_shared_key) to group compatible actuators
         self.actuator_entries: dict[tuple, ModelBuilder.ActuatorEntry] = {}
         """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by controller class and shared params."""
+
+        # Deprecation shim (removal in a future release): auto-register the namespaced
+        # equality-constraint attributes so models built without ``SolverMuJoCo`` still expose
+        # ``model.mujoco.equality_constraint_*``. Lazy-import keeps ``ModelBuilder`` construction
+        # free of solver imports.
+        from ..solvers.mujoco.equality import _register_equality_constraint_attributes  # noqa: PLC0415
+
+        _register_equality_constraint_attributes(self)
+
+    # Deprecated equality-constraint accumulators (removal in a future release).
+    # The legacy ``ModelBuilder.equality_constraint_*`` lists are now thin read-only views over
+    # the ``mujoco:equality_constraint`` custom-attribute table. Delete this whole block when
+    # the deprecation window closes.
+
+    class _ReadOnlyEqualityList(list):
+        """Read-only snapshot of a deprecated ``ModelBuilder.equality_constraint_*`` list.
+
+        Indexing, iteration, and ``len`` behave like the historical builder lists, but every
+        in-place mutation raises :class:`TypeError`. These accessors are now snapshots over the
+        ``mujoco:equality_constraint`` custom attributes, so mutating one (e.g.
+        ``builder.equality_constraint_type.append(...)``) would silently drop the change instead
+        of updating the builder. Construct equality constraints with
+        :meth:`~newton.ModelBuilder.add_custom_values` using the ``mujoco:equality_constraint_*``
+        keys, and read finalized values from ``model.mujoco.equality_constraint_*``.
+        """
+
+        __slots__ = ()
+
+        def _readonly(self, *args, **kwargs):
+            raise TypeError(
+                "ModelBuilder.equality_constraint_* are deprecated read-only snapshots and cannot "
+                "be mutated in place; the change would be silently dropped. Add equality "
+                'constraints with add_custom_values(**{"mujoco:equality_constraint_*": ...}) and '
+                "read finalized values from model.mujoco.equality_constraint_*."
+            )
+
+        append = extend = insert = remove = pop = clear = sort = reverse = _readonly
+        __setitem__ = __delitem__ = __iadd__ = __imul__ = _readonly
+
+    def _eq_attr(self, name: str) -> ModelBuilder.CustomAttribute:
+        """Return the per-equality-constraint :class:`CustomAttribute` for the bare ``name`` (no ``mujoco:`` prefix)."""
+        return self.custom_attributes[f"mujoco:{name}"]
+
+    def _eq_values_raw(self, name: str) -> list[Any]:
+        """Backing values list for equality field ``name`` (no default-filling); empty list if unset.
+
+        Internal callers (``finalize`` validation/collapse) read this instead of :meth:`_eq_list`
+        to avoid materializing a dense, default-filled copy of every equality row up front.
+        """
+        return self._eq_attr(name).values or []
+
+    def _eq_list(self, name: str) -> list[Any]:
+        """Dense list of equality-constraint ``name`` values, default-filled to match :meth:`finalize`."""
+        attr = self._eq_attr(name)
+        count = self._equality_constraint_count
+        if not attr.values:
+            return [attr.default] * count
+        return [
+            (attr.values[i] if i < len(attr.values) and attr.values[i] is not None else attr.default)
+            for i in range(count)
+        ]
+
+    def _deprecated_eq_list(self, name: str) -> list[Any]:
+        """Warn that ``ModelBuilder.<name>`` is deprecated, then return a read-only snapshot.
+
+        The snapshot detaches mutable elements (e.g. ``polycoef`` lists, and the shared attribute
+        default returned for missing rows) and is wrapped in :class:`_ReadOnlyEqualityList`, so
+        neither replacing an entry nor mutating one in place can silently corrupt the builder's
+        ``mujoco:equality_constraint`` custom-attribute store.
+        """
+        warnings.warn(
+            f"ModelBuilder.{name} is deprecated in Newton 1.3 and is scheduled for removal in "
+            f"a future release. Populate equality constraints via "
+            f'add_custom_values(**{{"mujoco:{name}": ...}}) and read finalized values from '
+            f"model.mujoco.{name}.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        detached = [list(v) if isinstance(v, list) else v for v in self._eq_list(name)]
+        return ModelBuilder._ReadOnlyEqualityList(detached)
+
+    def _warn_deprecated_builder_add_equality_constraint(self, name: str) -> None:
+        warnings.warn(
+            f"ModelBuilder.{name} is deprecated in Newton 1.3 and is scheduled for removal in "
+            f"a future release. Equality constraints are now plain ``mujoco:equality_constraint`` "
+            f"custom-attribute rows; construct them with add_custom_values using the "
+            f"``mujoco:equality_constraint_*`` keys, and read finalized values from "
+            f"``model.mujoco.equality_constraint_*``.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+
+    @property
+    def _equality_constraint_count(self) -> int:
+        """Number of equality constraints added to this builder (from the ``mujoco:equality_constraint`` counter)."""
+        return self._custom_frequency_counts.get("mujoco:equality_constraint", 0)
+
+    @property
+    def equality_constraint_type(self) -> list[int]:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_type``."""
+        return self._deprecated_eq_list("equality_constraint_type")
+
+    @property
+    def equality_constraint_body1(self) -> list[int]:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_body1``."""
+        return self._deprecated_eq_list("equality_constraint_body1")
+
+    @property
+    def equality_constraint_body2(self) -> list[int]:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_body2``."""
+        return self._deprecated_eq_list("equality_constraint_body2")
+
+    @property
+    def equality_constraint_anchor(self) -> list[Vec3]:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_anchor``."""
+        return self._deprecated_eq_list("equality_constraint_anchor")
+
+    @property
+    def equality_constraint_torquescale(self) -> list[float]:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_torquescale``."""
+        return self._deprecated_eq_list("equality_constraint_torquescale")
+
+    @property
+    def equality_constraint_relpose(self) -> list[Transform]:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_relpose``."""
+        return self._deprecated_eq_list("equality_constraint_relpose")
+
+    @property
+    def equality_constraint_joint1(self) -> list[int]:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_joint1``."""
+        return self._deprecated_eq_list("equality_constraint_joint1")
+
+    @property
+    def equality_constraint_joint2(self) -> list[int]:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_joint2``."""
+        return self._deprecated_eq_list("equality_constraint_joint2")
+
+    @property
+    def equality_constraint_polycoef(self) -> list[list[float]]:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_polycoef``."""
+        return self._deprecated_eq_list("equality_constraint_polycoef")
+
+    @property
+    def equality_constraint_label(self) -> list[str]:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_label``."""
+        return self._deprecated_eq_list("equality_constraint_label")
+
+    @property
+    def equality_constraint_enabled(self) -> list[bool]:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_enabled``."""
+        return self._deprecated_eq_list("equality_constraint_enabled")
+
+    @property
+    def equality_constraint_world(self) -> list[int]:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_world``."""
+        return self._deprecated_eq_list("equality_constraint_world")
+
+    @property
+    def equality_constraint_world_start(self) -> list[int]:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_world_start``.
+
+        The per-world start array is built during :meth:`finalize`; before then this returns an empty list.
+        """
+        warnings.warn(
+            "ModelBuilder.equality_constraint_world_start is deprecated in Newton 1.3 and is "
+            "scheduled for removal in a future release. Read the finalized per-world starts from "
+            "``model.mujoco.equality_constraint_world_start`` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return list(self._equality_constraint_world_start)
 
     def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
         """Add a collision filter pair in canonical order.
@@ -1314,6 +1468,20 @@ class ModelBuilder:
                 # with the default value 20.0
                 assert np.allclose(model.my_namespace.my_attribute.numpy(), [30.0, 20.0])
         """
+        # Translate the deprecated EQUALITY_CONSTRAINT enum frequency to the equivalent
+        # ``mujoco:equality_constraint`` string frequency. The enum is on the path to removal
+        # in a future release; emitting the warning here surfaces it at the user's declaration site.
+        if attribute.frequency == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
+            warnings.warn(
+                "Model.AttributeFrequency.EQUALITY_CONSTRAINT is deprecated in Newton 1.3 "
+                "and is scheduled for removal in a future release. Declare custom attributes with "
+                'frequency="mujoco:equality_constraint" instead; the frequency itself is '
+                "registered automatically by ModelBuilder during the deprecation window.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            attribute = replace(attribute, frequency="mujoco:equality_constraint")
+
         key = attribute.key
 
         existing = self.custom_attributes.get(key)
@@ -1346,6 +1514,20 @@ class ModelBuilder:
             )
 
         self.custom_attributes[key] = attribute
+
+    def _add_custom_attribute_model_finalizer(
+        self,
+        key: str,
+        finalizer: Callable[[ModelBuilder, Model, ModelBuilder.CustomAttribute], None],
+    ) -> None:
+        """Register a callback that finalizes a model custom attribute itself."""
+        existing = self._custom_attribute_model_finalizers.get(key)
+        if existing is not None and existing is not finalizer:
+            raise ValueError(
+                f"Custom attribute finalizer '{key}' is already registered with a different callback "
+                f"({existing!r} != {finalizer!r})."
+            )
+        self._custom_attribute_model_finalizers[key] = finalizer
 
     def add_custom_frequency(self, frequency: CustomFrequency) -> None:
         """
@@ -1409,7 +1591,23 @@ class ModelBuilder:
         Returns:
             Custom attributes matching the requested frequencies.
         """
-        return [attr for attr in self.custom_attributes.values() if attr.frequency in frequencies]
+        # Backward-compat: callers that still pass the deprecated
+        # ``Model.AttributeFrequency.EQUALITY_CONSTRAINT`` get translated to the new string
+        # frequency. The warning fires at the lookup site so the migration target is obvious.
+        normalized: list[Model.AttributeFrequency | str] = []
+        for freq in frequencies:
+            if freq == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
+                warnings.warn(
+                    "Model.AttributeFrequency.EQUALITY_CONSTRAINT is deprecated in Newton 1.3 "
+                    "and is scheduled for removal in a future release. Look up by "
+                    '"mujoco:equality_constraint" instead.',
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                normalized.append("mujoco:equality_constraint")
+            else:
+                normalized.append(freq)
+        return [attr for attr in self.custom_attributes.values() if attr.frequency in normalized]
 
     def get_custom_frequency_keys(self) -> set[str]:
         """Return set of custom frequency keys (string frequencies) defined in this builder."""
@@ -1546,9 +1744,19 @@ class ModelBuilder:
                     f"but expected {expected_frequency} for this entity type"
                 )
 
-            # Set the value for this specific entity
+            # Set the value for this specific entity. The values container shape depends on
+            # the attribute's frequency: string-frequency attributes use a dense ``list``
+            # (sequential indices, ``None``-padded), enum-frequency attributes use a sparse
+            # ``dict``.
+            is_string_freq = custom_attr.is_custom_frequency
             if custom_attr.values is None:
-                custom_attr.values = {}
+                custom_attr.values = [] if is_string_freq else {}
+
+            def _assign_one(idx: int, val: Any, _attr=custom_attr, _list=is_string_freq) -> None:
+                if _list:
+                    while len(_attr.values) <= idx:
+                        _attr.values.append(None)
+                _attr.values[idx] = val
 
             # Fill in the value(s)
             if isinstance(entity_index, list):
@@ -1558,11 +1766,13 @@ class ModelBuilder:
                 if value_is_sequence:
                     if len(value) != len(entity_index):
                         raise ValueError(f"Expected {len(entity_index)} values, got {len(value)}")
-                    custom_attr.values.update(zip(entity_index, value, strict=False))
+                    for idx, val in zip(entity_index, value, strict=False):
+                        _assign_one(idx, val)
                 else:
-                    custom_attr.values.update((idx, value) for idx in entity_index)
+                    for idx in entity_index:
+                        _assign_one(idx, value)
             else:
-                custom_attr.values[entity_index] = value
+                _assign_one(entity_index, value)
 
     def _process_joint_custom_attributes(
         self,
@@ -1813,7 +2023,7 @@ class ModelBuilder:
         values are supported within the same group; the buffer is
         sized to ``max(delay_step_values)``.
 
-        .. deprecated::
+        .. deprecated:: 1.2
             The legacy ``newton_actuators`` signature is still accepted::
 
                 add_actuator(ActuatorPD, input_indices=[dof], kp=50.0)
@@ -2130,6 +2340,9 @@ class ModelBuilder:
         slot is dropped; other joints copy verbatim. Mutations do not
         propagate back. Raises :class:`AttributeError` under
         :data:`newton.use_coord_layout_targets` ``True``.
+
+        .. deprecated:: 1.3
+            Use :attr:`joint_target_q` instead.
         """
         import newton  # noqa: PLC0415
 
@@ -2153,6 +2366,9 @@ class ModelBuilder:
         fresh copy — mutations do not propagate back. Raises
         :class:`AttributeError` under
         :data:`newton.use_coord_layout_targets` ``True``.
+
+        .. deprecated:: 1.3
+            Use :attr:`joint_target_qd` instead.
         """
         import newton  # noqa: PLC0415
 
@@ -2655,7 +2871,8 @@ class ModelBuilder:
             parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
                 joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
-                equality constraints are stored in the legacy equality constraint arrays.
+                equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
+                and finalize under ``model.mujoco.equality_constraint_*``.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
             schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
                 Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -2887,7 +3104,8 @@ class ModelBuilder:
             skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
                 joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
-                equality constraints are stored in the legacy equality constraint arrays.
+                equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
+                and finalize under ``model.mujoco.equality_constraint_*``.
             convert_3d_hinge_to_ball_joints: If True, series of three hinge joints are converted to a single ball joint. Default is False.
             mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
             ctrl_direct: If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
@@ -3158,7 +3376,6 @@ class ModelBuilder:
         start_joint_coord_idx = self.joint_coord_count
         start_joint_constraint_idx = self.joint_constraint_count
         start_articulation_idx = self.articulation_count
-        start_equality_constraint_idx = len(self.equality_constraint_type)
         start_constraint_mimic_idx = len(self.constraint_mimic_joint0)
         start_edge_idx = self.edge_count
         start_triangle_idx = self.tri_count
@@ -3302,37 +3519,6 @@ class ModelBuilder:
             articulation_groups = [self.current_world] * builder.articulation_count
             self.articulation_world.extend(articulation_groups)
 
-        # For equality constraints
-        if len(builder.equality_constraint_type) > 0:
-            constraint_worlds = [self.current_world] * len(builder.equality_constraint_type)
-            self.equality_constraint_world.extend(constraint_worlds)
-
-            # Remap body and joint indices in equality constraints
-            self.equality_constraint_type.extend(builder.equality_constraint_type)
-            self.equality_constraint_body1.extend(
-                [b + start_body_idx if b != -1 else -1 for b in builder.equality_constraint_body1]
-            )
-            self.equality_constraint_body2.extend(
-                [b + start_body_idx if b != -1 else -1 for b in builder.equality_constraint_body2]
-            )
-            self.equality_constraint_anchor.extend(builder.equality_constraint_anchor)
-            self.equality_constraint_torquescale.extend(builder.equality_constraint_torquescale)
-            self.equality_constraint_relpose.extend(builder.equality_constraint_relpose)
-            self.equality_constraint_joint1.extend(
-                [j + start_joint_idx if j != -1 else -1 for j in builder.equality_constraint_joint1]
-            )
-            self.equality_constraint_joint2.extend(
-                [j + start_joint_idx if j != -1 else -1 for j in builder.equality_constraint_joint2]
-            )
-            self.equality_constraint_polycoef.extend(builder.equality_constraint_polycoef)
-            if label_prefix:
-                self.equality_constraint_label.extend(
-                    f"{label_prefix}/{lbl}" if lbl else lbl for lbl in builder.equality_constraint_label
-                )
-            else:
-                self.equality_constraint_label.extend(builder.equality_constraint_label)
-            self.equality_constraint_enabled.extend(builder.equality_constraint_enabled)
-
         # For mimic constraints
         if len(builder.constraint_mimic_joint0) > 0:
             constraint_worlds = [self.current_world] * len(builder.constraint_mimic_joint0)
@@ -3392,6 +3578,7 @@ class ModelBuilder:
             "joint_limit_kd",
             "joint_target_ke",
             "joint_target_kd",
+            "joint_damping",
             "joint_target_mode",
             "joint_effort_limit",
             "joint_velocity_limit",
@@ -3457,7 +3644,6 @@ class ModelBuilder:
             "joint_coord": start_joint_coord_idx,
             "joint_constraint": start_joint_constraint_idx,
             "articulation": start_articulation_idx,
-            "equality_constraint": start_equality_constraint_idx,
             "constraint_mimic": start_constraint_mimic_idx,
             "particle": start_particle_idx,
             "edge": start_edge_idx,
@@ -3523,9 +3709,14 @@ class ModelBuilder:
 
                 target_kind_attr = builder.custom_attributes.get("mujoco:equality_constraint_target_kind")
                 target_kind = 0
-                if target_kind_attr is not None and isinstance(target_kind_attr.values, dict):
+                if (
+                    target_kind_attr is not None
+                    and target_kind_attr.values
+                    and entity_idx < len(target_kind_attr.values)
+                    and target_kind_attr.values[entity_idx] is not None
+                ):
                     try:
-                        target_kind = int(target_kind_attr.values.get(entity_idx, 0))
+                        target_kind = int(target_kind_attr.values[entity_idx])
                     except (TypeError, ValueError):
                         target_kind = 0
 
@@ -3564,8 +3755,13 @@ class ModelBuilder:
             merged = self.custom_attributes.get(full_key)
             if merged is None:
                 if isinstance(freq_key, str):
-                    # String frequency: copy list as-is (no offset for sequential data)
-                    mapped_values = [transform_value(value) for value in attr.values]
+                    # String frequency: copy list, applying reference offsets and the polymorphic
+                    # equality-target remap (transform_enum_value falls back to transform_value).
+                    # Left-pad to index_offset so rows contributed by earlier builders that stored
+                    # no explicit value (sparse ``values``) keep their slots; ``None`` resolves to
+                    # the attribute default at finalize.
+                    mapped_values = [None] * index_offset
+                    mapped_values.extend(transform_enum_value(idx, value) for idx, value in enumerate(attr.values))
                 else:
                     # Enum frequency: remap dict indices with offset
                     mapped_values = {
@@ -3596,8 +3792,14 @@ class ModelBuilder:
                 merged.values = [] if isinstance(freq_key, str) else {}
 
             if isinstance(freq_key, str):
-                # String frequency: extend list with transformed values
-                new_values = [transform_value(value) for value in attr.values]
+                # String frequency: extend list with transformed values (reference offsets +
+                # the polymorphic equality-target remap via transform_enum_value). Pad to
+                # index_offset first so rows from earlier builders that stored no explicit value
+                # (sparse ``values``) keep their slots; ``None`` resolves to the attribute default
+                # at finalize.
+                if len(merged.values) < index_offset:
+                    merged.values.extend([None] * (index_offset - len(merged.values)))
+                new_values = [transform_enum_value(idx, value) for idx, value in enumerate(attr.values)]
                 merged.values.extend(new_values)
             else:
                 # Enum frequency: update dict with remapped indices
@@ -3605,6 +3807,21 @@ class ModelBuilder:
                     index_offset + idx: transform_enum_value(idx, value) for idx, value in attr.values.items()
                 }
                 merged.values.update(new_indices)
+
+        # Apply label_prefix to the merged equality-constraint labels. The standard merge above
+        # copies label values verbatim; prefixing is applied here so the behavior matches the
+        # other ``*_label`` entity lists handled at the top of this method.
+        if label_prefix and builder._equality_constraint_count > 0:
+            label_attr = self.custom_attributes.get("mujoco:equality_constraint_label")
+            if label_attr is not None and label_attr.values:
+                # The frequency count is bumped further below, so it still reads the pre-merge
+                # start index of the rows just appended from ``builder``.
+                start = self._equality_constraint_count
+                for i in range(start, start + builder._equality_constraint_count):
+                    if i < len(label_attr.values):
+                        lbl = label_attr.values[i]
+                        if lbl:
+                            label_attr.values[i] = f"{label_prefix}/{lbl}"
 
         # Carry over custom frequency registrations (including usd_prim_filter) from the source builder.
         # This must happen before updating counts so that the destination builder has the full
@@ -3617,6 +3834,10 @@ class ModelBuilder:
         for freq_key, builder_count in builder._custom_frequency_counts.items():
             offset = custom_frequency_offsets.get(freq_key, 0)
             self._custom_frequency_counts[freq_key] = offset + builder_count
+
+        # Carry over custom attribute finalizers from the source builder.
+        for key, finalizer in builder._custom_attribute_model_finalizers.items():
+            self._add_custom_attribute_model_finalizer(key, finalizer)
 
         # Merge actuator entries from the sub-builder with offset DOF indices
         for entry_key, sub_entry in builder.actuator_entries.items():
@@ -3995,6 +4216,7 @@ class ModelBuilder:
             self.joint_target_mode.append(mode)
             self.joint_target_ke.append(dim.target_ke)
             self.joint_target_kd.append(dim.target_kd)
+            self.joint_damping.append(dim.damping)
             self.joint_limit_ke.append(dim.limit_ke)
             self.joint_limit_kd.append(dim.limit_kd)
             self.joint_armature.append(dim.armature)
@@ -4103,6 +4325,7 @@ class ModelBuilder:
         target_vel: float | None = None,
         target_ke: float | None = None,
         target_kd: float | None = None,
+        damping: float | None = None,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
         limit_ke: float | None = None,
@@ -4132,6 +4355,7 @@ class ModelBuilder:
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
+            damping: Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
             limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
             limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
@@ -4163,6 +4387,7 @@ class ModelBuilder:
                 target_vel=target_vel if target_vel is not None else self.default_joint_cfg.target_vel,
                 target_ke=target_ke if target_ke is not None else self.default_joint_cfg.target_ke,
                 target_kd=target_kd if target_kd is not None else self.default_joint_cfg.target_kd,
+                damping=damping if damping is not None else self.default_joint_cfg.damping,
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
@@ -4196,6 +4421,7 @@ class ModelBuilder:
         target_vel: float | None = None,
         target_ke: float | None = None,
         target_kd: float | None = None,
+        damping: float | None = None,
         limit_lower: float | None = None,
         limit_upper: float | None = None,
         limit_ke: float | None = None,
@@ -4224,6 +4450,7 @@ class ModelBuilder:
             target_vel: The target velocity of the joint.
             target_ke: The stiffness of the joint target.
             target_kd: The damping of the joint target.
+            damping: Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.damping`` is used.
             limit_lower: The lower limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_lower`` is used.
             limit_upper: The upper limit of the joint. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_upper`` is used.
             limit_ke: The stiffness of the joint limit. If None, the default value from ``ModelBuilder.default_joint_cfg.limit_ke`` is used.
@@ -4255,6 +4482,7 @@ class ModelBuilder:
                 target_vel=target_vel if target_vel is not None else self.default_joint_cfg.target_vel,
                 target_ke=target_ke if target_ke is not None else self.default_joint_cfg.target_ke,
                 target_kd=target_kd if target_kd is not None else self.default_joint_cfg.target_kd,
+                damping=damping if damping is not None else self.default_joint_cfg.damping,
                 limit_ke=limit_ke if limit_ke is not None else self.default_joint_cfg.limit_ke,
                 limit_kd=limit_kd if limit_kd is not None else self.default_joint_cfg.limit_kd,
                 armature=armature if armature is not None else self.default_joint_cfg.armature,
@@ -4659,6 +4887,12 @@ class ModelBuilder:
     ) -> int:
         """Generic method to add any type of equality constraint to this ModelBuilder.
 
+        .. deprecated:: 1.3
+            Construct equality constraints with :meth:`add_custom_values` using the
+            ``mujoco:equality_constraint_*`` keys directly, and read finalized values
+            from ``model.mujoco.equality_constraint_*``. Scheduled for removal in
+            a future release.
+
         Args:
             constraint_type: Equality constraint type. Use ``EqType.CONNECT`` to
                 pin a point to another body or the world, ``EqType.WELD`` to
@@ -4678,44 +4912,24 @@ class ModelBuilder:
         Returns:
             Constraint index
         """
+        self._warn_deprecated_builder_add_equality_constraint("add_equality_constraint")
+        from ..solvers.mujoco.equality import _add_equality_constraint as _add  # noqa: PLC0415
 
-        if anchor is None:
-            anchor_vec = wp.vec3()
-        else:
-            anchor_vec = axis_to_vec3(anchor)
-        if relpose is None:
-            relpose_tf = wp.transform_identity()
-        else:
-            relpose_tf = wp.transform(*relpose)
-        if torquescale is None:
-            torquescale_value = 1.0 if constraint_type == EqType.WELD else 0.0
-        else:
-            torquescale_value = float(torquescale)
-
-        self.equality_constraint_type.append(constraint_type)
-        self.equality_constraint_body1.append(body1)
-        self.equality_constraint_body2.append(body2)
-        self.equality_constraint_anchor.append(anchor_vec)
-        self.equality_constraint_torquescale.append(torquescale_value)
-        self.equality_constraint_relpose.append(relpose_tf)
-        self.equality_constraint_joint1.append(joint1)
-        self.equality_constraint_joint2.append(joint2)
-        self.equality_constraint_polycoef.append(polycoef or [0.0, 0.0, 0.0, 0.0, 0.0])
-        self.equality_constraint_label.append(label or "")
-        self.equality_constraint_enabled.append(enabled)
-        self.equality_constraint_world.append(self.current_world)
-
-        constraint_idx = len(self.equality_constraint_type) - 1
-
-        # Process custom attributes
-        if custom_attributes:
-            self._process_custom_attributes(
-                entity_index=constraint_idx,
-                custom_attrs=custom_attributes,
-                expected_frequency=Model.AttributeFrequency.EQUALITY_CONSTRAINT,
-            )
-
-        return constraint_idx
+        return _add(
+            self,
+            constraint_type=constraint_type,
+            body1=body1,
+            body2=body2,
+            anchor=anchor,
+            torquescale=torquescale,
+            relpose=relpose,
+            joint1=joint1,
+            joint2=joint2,
+            polycoef=polycoef,
+            label=label,
+            enabled=enabled,
+            custom_attributes=custom_attributes,
+        )
 
     def add_equality_constraint_connect(
         self,
@@ -4729,6 +4943,11 @@ class ModelBuilder:
         """Adds a connect equality constraint to the model.
         This constraint connects two bodies at a point. It effectively defines a ball joint outside the kinematic tree.
 
+        .. deprecated:: 1.3
+            Construct equality constraints with :meth:`add_custom_values` using the
+            ``mujoco:equality_constraint_*`` keys directly. Scheduled for removal in
+            a future release.
+
         Args:
             body1: Index of the first body participating in the constraint (-1 for world)
             body2: Index of the second body participating in the constraint (-1 for world)
@@ -4740,8 +4959,11 @@ class ModelBuilder:
         Returns:
             Constraint index
         """
+        self._warn_deprecated_builder_add_equality_constraint("add_equality_constraint_connect")
+        from ..solvers.mujoco.equality import _add_equality_constraint as _add  # noqa: PLC0415
 
-        return self.add_equality_constraint(
+        return _add(
+            self,
             constraint_type=EqType.CONNECT,
             body1=body1,
             body2=body2,
@@ -4763,6 +4985,11 @@ class ModelBuilder:
         """Adds a joint equality constraint to the model.
         Constrains the position or angle of one joint to be a quartic polynomial of another joint. Only scalar joint types (prismatic and revolute) can be used.
 
+        .. deprecated:: 1.3
+            Construct equality constraints with :meth:`add_custom_values` using the
+            ``mujoco:equality_constraint_*`` keys directly. Scheduled for removal in
+            a future release.
+
         Args:
             joint1: Index of the first joint
             joint2: Index of the second joint
@@ -4774,8 +5001,11 @@ class ModelBuilder:
         Returns:
             Constraint index
         """
+        self._warn_deprecated_builder_add_equality_constraint("add_equality_constraint_joint")
+        from ..solvers.mujoco.equality import _add_equality_constraint as _add  # noqa: PLC0415
 
-        return self.add_equality_constraint(
+        return _add(
+            self,
             constraint_type=EqType.JOINT,
             joint1=joint1,
             joint2=joint2,
@@ -4799,6 +5029,11 @@ class ModelBuilder:
         """Adds a weld equality constraint to the model.
         Attaches two bodies to each other, removing all relative degrees of freedom between them (softly).
 
+        .. deprecated:: 1.3
+            Construct equality constraints with :meth:`add_custom_values` using the
+            ``mujoco:equality_constraint_*`` keys directly. Scheduled for removal in
+            a future release.
+
         Args:
             body1: Index of the first body participating in the constraint (-1 for world)
             body2: Index of the second body participating in the constraint (-1 for world)
@@ -4812,8 +5047,11 @@ class ModelBuilder:
         Returns:
             Constraint index
         """
+        self._warn_deprecated_builder_add_equality_constraint("add_equality_constraint_weld")
+        from ..solvers.mujoco.equality import _add_equality_constraint as _add  # noqa: PLC0415
 
-        return self.add_equality_constraint(
+        return _add(
+            self,
             constraint_type=EqType.WELD,
             body1=body1,
             body2=body2,
@@ -5113,6 +5351,7 @@ class ModelBuilder:
                         "actuator_mode": self.joint_target_mode[j],
                         "target_ke": self.joint_target_ke[j],
                         "target_kd": self.joint_target_kd[j],
+                        "damping": self.joint_damping[j],
                         "limit_ke": self.joint_limit_ke[j],
                         "limit_kd": self.joint_limit_kd[j],
                         "limit_lower": self.joint_limit_lower[j],
@@ -5129,9 +5368,11 @@ class ModelBuilder:
 
         # Find bodies referenced in equality constraints that shouldn't be merged into world
         bodies_in_constraints = set()
-        for i in range(len(self.equality_constraint_body1)):
-            body1 = self.equality_constraint_body1[i]
-            body2 = self.equality_constraint_body2[i]
+        for body1, body2 in zip(
+            self._eq_list("equality_constraint_body1"),
+            self._eq_list("equality_constraint_body2"),
+            strict=False,
+        ):
             if body1 >= 0:
                 bodies_in_constraints.add(body1)
             if body2 >= 0:
@@ -5454,6 +5695,7 @@ class ModelBuilder:
         self.joint_target_mode.clear()
         self.joint_target_ke.clear()
         self.joint_target_kd.clear()
+        self.joint_damping.clear()
         self.joint_limit_lower.clear()
         self.joint_limit_upper.clear()
         self.joint_limit_ke.clear()
@@ -5500,6 +5742,7 @@ class ModelBuilder:
                 self.joint_target_mode.append(axis["actuator_mode"])
                 self.joint_target_ke.append(axis["target_ke"])
                 self.joint_target_kd.append(axis["target_kd"])
+                self.joint_damping.append(axis["damping"])
                 self.joint_limit_lower.append(axis["limit_lower"])
                 self.joint_limit_upper.append(axis["limit_upper"])
                 self.joint_limit_ke.append(axis["limit_ke"])
@@ -5519,60 +5762,80 @@ class ModelBuilder:
         # Reset the constraint count based on the retained joints
         self.joint_constraint_count = len(self.joint_cts)
 
-        # Remap equality constraint body/joint indices and transform anchors for merged bodies
-        for i in range(len(self.equality_constraint_body1)):
-            old_body1 = self.equality_constraint_body1[i]
-            old_body2 = self.equality_constraint_body2[i]
-            body1_was_merged = False
-            body2_was_merged = False
+        # Remap equality constraint body/joint indices and transform anchors for merged bodies.
+        # Each ``*_values`` is the dense ``list`` backing the string-frequency CustomAttribute;
+        # the ``mujoco:equality_constraint`` ``add_custom_values`` path populates all twelve in
+        # lockstep so indexed access is safe for every ``i`` in
+        # ``range(self._equality_constraint_count)``.
+        body1_attr = self._eq_attr("equality_constraint_body1")
+        body2_attr = self._eq_attr("equality_constraint_body2")
+        type_attr = self._eq_attr("equality_constraint_type")
+        anchor_attr = self._eq_attr("equality_constraint_anchor")
+        relpose_attr = self._eq_attr("equality_constraint_relpose")
+        joint1_attr = self._eq_attr("equality_constraint_joint1")
+        joint2_attr = self._eq_attr("equality_constraint_joint2")
+        enabled_attr = self._eq_attr("equality_constraint_enabled")
+        body1_values = body1_attr.values or []
+        body2_values = body2_attr.values or []
+        type_values = type_attr.values or []
+        anchor_values = anchor_attr.values or []
+        relpose_values = relpose_attr.values or []
+        joint1_values = joint1_attr.values or []
+        joint2_values = joint2_attr.values or []
+        if enabled_attr.values is None:
+            enabled_attr.values = []
+        enabled_values = enabled_attr.values
 
-            if old_body1 in body_remap:
-                self.equality_constraint_body1[i] = body_remap[old_body1]
-            elif old_body1 in body_merged_parent:
-                self.equality_constraint_body1[i] = body_remap[body_merged_parent[old_body1]]
-                body1_was_merged = True
+        def _at(values: list, idx: int, default: Any) -> Any:
+            if idx >= len(values):
+                return default
+            return default if values[idx] is None else values[idx]
 
-            if old_body2 in body_remap:
-                self.equality_constraint_body2[i] = body_remap[old_body2]
-            elif old_body2 in body_merged_parent:
-                self.equality_constraint_body2[i] = body_remap[body_merged_parent[old_body2]]
-                body2_was_merged = True
+        # Body/joint index remapping for body1/body2/joint1/joint2 is handled generically below
+        # via the ``references`` field. Here we only apply the MuJoCo-specific fixups that depend
+        # on the original indices: anchor/relpose frame transforms when a referenced body was
+        # merged into its parent, and disabling rows whose joint reference was removed.
+        for i in range(self._equality_constraint_count):
+            old_body1 = _at(body1_values, i, body1_attr.default)
+            old_body2 = _at(body2_values, i, body2_attr.default)
+            body1_was_merged = old_body1 in body_merged_parent
+            body2_was_merged = old_body2 in body_merged_parent
 
-            constraint_type = self.equality_constraint_type[i]
+            constraint_type = _at(type_values, i, type_attr.default)
 
             # Transform anchor/relpose from merged body's frame to parent body's frame
             if body1_was_merged:
                 merge_xform = body_merged_transform[old_body1]
                 if constraint_type == EqType.CONNECT:
-                    anchor = axis_to_vec3(self.equality_constraint_anchor[i])
-                    self.equality_constraint_anchor[i] = wp.transform_point(merge_xform, anchor)
+                    anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
+                    anchor_values[i] = wp.transform_point(merge_xform, anchor)
                 if constraint_type == EqType.WELD:
-                    relpose = self.equality_constraint_relpose[i]
-                    self.equality_constraint_relpose[i] = merge_xform * relpose
+                    relpose = _at(relpose_values, i, relpose_attr.default)
+                    relpose_values[i] = merge_xform * relpose
 
             if body2_was_merged and constraint_type == EqType.WELD:
                 merge_xform = body_merged_transform[old_body2]
-                anchor = axis_to_vec3(self.equality_constraint_anchor[i])
-                relpose = self.equality_constraint_relpose[i]
-                self.equality_constraint_anchor[i] = wp.transform_point(merge_xform, anchor)
-                self.equality_constraint_relpose[i] = relpose * wp.transform_inverse(merge_xform)
+                anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
+                relpose = _at(relpose_values, i, relpose_attr.default)
+                anchor_values[i] = wp.transform_point(merge_xform, anchor)
+                relpose_values[i] = relpose * wp.transform_inverse(merge_xform)
 
-            old_joint1 = self.equality_constraint_joint1[i]
-            old_joint2 = self.equality_constraint_joint2[i]
+            old_joint1 = _at(joint1_values, i, joint1_attr.default)
+            old_joint2 = _at(joint2_values, i, joint2_attr.default)
 
-            if old_joint1 in joint_remap:
-                self.equality_constraint_joint1[i] = joint_remap[old_joint1]
-            elif old_joint1 != -1:
+            if old_joint1 != -1 and old_joint1 not in joint_remap:
                 if verbose:
                     print(f"Warning: Equality constraint references removed joint {old_joint1}, disabling constraint")
-                self.equality_constraint_enabled[i] = False
+                while len(enabled_values) <= i:
+                    enabled_values.append(None)
+                enabled_values[i] = False
 
-            if old_joint2 in joint_remap:
-                self.equality_constraint_joint2[i] = joint_remap[old_joint2]
-            elif old_joint2 != -1:
+            if old_joint2 != -1 and old_joint2 not in joint_remap:
                 if verbose:
                     print(f"Warning: Equality constraint references removed joint {old_joint2}, disabling constraint")
-                self.equality_constraint_enabled[i] = False
+                while len(enabled_values) <= i:
+                    enabled_values.append(None)
+                enabled_values[i] = False
 
         # Remap mimic constraint joint indices
         for i in range(len(self.constraint_mimic_joint0)):
@@ -5595,15 +5858,18 @@ class ModelBuilder:
 
         target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
         target_attr = self.custom_attributes.get("mujoco:equality_constraint_target")
-        if (
-            target_kind_attr is not None
-            and target_attr is not None
-            and isinstance(target_kind_attr.values, dict)
-            and isinstance(target_attr.values, dict)
-        ):
-            for eq_idx, target in list(target_attr.values.items()):
+        if target_kind_attr is not None and target_attr is not None and target_attr.values:
+            for eq_idx in range(len(target_attr.values)):
+                target = target_attr.values[eq_idx]
+                if target is None:
+                    continue
+                target_kind_value = (
+                    target_kind_attr.values[eq_idx]
+                    if target_kind_attr.values and eq_idx < len(target_kind_attr.values)
+                    else None
+                )
                 try:
-                    target_kind = int(target_kind_attr.values.get(eq_idx, 0))
+                    target_kind = int(target_kind_value) if target_kind_value is not None else 0
                     old_target = int(target)
                 except (TypeError, ValueError):
                     continue
@@ -5618,6 +5884,49 @@ class ModelBuilder:
                 elif target_kind == 2 and old_target >= len(self.constraint_mimic_joint0):
                     target_attr.values[eq_idx] = -1
                     target_kind_attr.values[eq_idx] = 0
+
+        # Generic entity-reference remap for any custom attribute that points at bodies or joints
+        # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
+        # Body references follow merges: a reference to a body that was merged into its parent
+        # resolves to the surviving parent. Joint references to removed joints collapse to -1.
+        # Domain-specific fixups that need the original indices run above, before this rewrite.
+        def _remap_body_reference(value: Any) -> Any:
+            if value is None:
+                return value
+            try:
+                idx = int(value)
+            except (TypeError, ValueError):
+                return value
+            if idx in body_remap:
+                return body_remap[idx]
+            if idx in body_merged_parent:
+                return body_remap[body_merged_parent[idx]]
+            return value
+
+        def _remap_joint_reference(value: Any) -> Any:
+            if value is None:
+                return value
+            try:
+                idx = int(value)
+            except (TypeError, ValueError):
+                return value
+            if idx == -1:
+                return value
+            return joint_remap.get(idx, -1)
+
+        for custom_attr in self.custom_attributes.values():
+            if custom_attr.references == "body":
+                remap_reference = _remap_body_reference
+            elif custom_attr.references == "joint":
+                remap_reference = _remap_joint_reference
+            else:
+                continue
+            if custom_attr.values is None:
+                continue
+            if isinstance(custom_attr.values, dict):
+                custom_attr.values = {key: remap_reference(value) for key, value in custom_attr.values.items()}
+            else:
+                custom_attr.values = [remap_reference(value) for value in custom_attr.values]
 
         # Rebuild parent/child lookups
         self.joint_parents.clear()
@@ -6052,6 +6361,10 @@ class ModelBuilder:
         The ellipsoid is centered at its local origin as defined by `xform`, with semi-axes
         `rx`, `ry`, `rz` along the local X, Y, Z axes respectively.
 
+        .. deprecated:: 1.1
+            The ``a``, ``b``, ``c`` parameter names are deprecated; use
+            ``rx``, ``ry``, ``rz`` instead.
+
         Note:
             Ellipsoid collision is handled by the GJK/MPR collision pipeline,
             which provides accurate collision detection for all convex shape pairs.
@@ -6482,6 +6795,10 @@ class ModelBuilder:
 
         The Gaussian is attached as a ``GeoType.GAUSSIAN`` shape for rendering.
         Collision is handled separately via *collision_proxy*.
+
+        .. deprecated:: 1.1
+            Passing ``gaussian`` as the second positional argument is
+            deprecated; pass it via the ``gaussian=`` keyword instead.
 
         Args:
             body: The index of the parent body this shape belongs to.
@@ -9414,7 +9731,7 @@ class ModelBuilder:
             ("shape_world", self.shape_world),
             ("joint_world", self.joint_world),
             ("articulation_world", self.articulation_world),
-            ("equality_constraint_world", self.equality_constraint_world),
+            ("equality_constraint_world", self._eq_list("equality_constraint_world")),
             ("constraint_mimic_world", self.constraint_mimic_world),
         ]
 
@@ -9660,51 +9977,59 @@ class ModelBuilder:
                     f"Self-referential joint: joint {idx} ('{joint_label}') has parent and child both set to body {joint_parent[idx]}."
                 )
 
-        # Validate equality constraint body references
-        equality_count = len(self.equality_constraint_type)
+        # Validate equality constraint body/joint references
+        equality_count = self._equality_constraint_count
         if equality_count > 0:
-            eq_body1 = np.array(self.equality_constraint_body1, dtype=np.int32)
+            label_values = self._eq_values_raw("equality_constraint_label")
+
+            def _eq_label(idx: int) -> str:
+                label = label_values[idx] if idx < len(label_values) and label_values[idx] is not None else None
+                return label or f"equality_constraint_{idx}"
+
+            def _eq_index_array(name: str) -> np.ndarray:
+                # Coerce raw custom-attribute values straight into the int32 array, applying the
+                # attribute default for missing/``None`` rows, without an intermediate Python list.
+                values = self._eq_values_raw(name)
+                count, default = len(values), self._eq_attr(name).default
+                return np.fromiter(
+                    (values[i] if i < count and values[i] is not None else default for i in range(equality_count)),
+                    dtype=np.int32,
+                    count=equality_count,
+                )
+
+            eq_body1 = _eq_index_array("equality_constraint_body1")
             invalid_mask = (eq_body1 < -1) | (eq_body1 >= body_count)
             if np.any(invalid_mask):
-                invalid_indices = np.where(invalid_mask)[0]
-                idx = invalid_indices[0]
-                eq_key = self.equality_constraint_label[idx] or f"equality_constraint_{idx}"
+                idx = int(np.where(invalid_mask)[0][0])
                 raise ValueError(
-                    f"Invalid body reference in equality_constraint_body1: constraint {idx} ('{eq_key}') references body {eq_body1[idx]}, "
+                    f"Invalid body reference in equality_constraint_body1: constraint {idx} ('{_eq_label(idx)}') references body {eq_body1[idx]}, "
                     f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
                 )
 
-            eq_body2 = np.array(self.equality_constraint_body2, dtype=np.int32)
+            eq_body2 = _eq_index_array("equality_constraint_body2")
             invalid_mask = (eq_body2 < -1) | (eq_body2 >= body_count)
             if np.any(invalid_mask):
-                invalid_indices = np.where(invalid_mask)[0]
-                idx = invalid_indices[0]
-                eq_key = self.equality_constraint_label[idx] or f"equality_constraint_{idx}"
+                idx = int(np.where(invalid_mask)[0][0])
                 raise ValueError(
-                    f"Invalid body reference in equality_constraint_body2: constraint {idx} ('{eq_key}') references body {eq_body2[idx]}, "
+                    f"Invalid body reference in equality_constraint_body2: constraint {idx} ('{_eq_label(idx)}') references body {eq_body2[idx]}, "
                     f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
                 )
 
-            # Validate equality constraint joint references
-            eq_joint1 = np.array(self.equality_constraint_joint1, dtype=np.int32)
+            eq_joint1 = _eq_index_array("equality_constraint_joint1")
             invalid_mask = (eq_joint1 < -1) | (eq_joint1 >= joint_count)
             if np.any(invalid_mask):
-                invalid_indices = np.where(invalid_mask)[0]
-                idx = invalid_indices[0]
-                eq_key = self.equality_constraint_label[idx] or f"equality_constraint_{idx}"
+                idx = int(np.where(invalid_mask)[0][0])
                 raise ValueError(
-                    f"Invalid joint reference in equality_constraint_joint1: constraint {idx} ('{eq_key}') references joint {eq_joint1[idx]}, "
+                    f"Invalid joint reference in equality_constraint_joint1: constraint {idx} ('{_eq_label(idx)}') references joint {eq_joint1[idx]}, "
                     f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
                 )
 
-            eq_joint2 = np.array(self.equality_constraint_joint2, dtype=np.int32)
+            eq_joint2 = _eq_index_array("equality_constraint_joint2")
             invalid_mask = (eq_joint2 < -1) | (eq_joint2 >= joint_count)
             if np.any(invalid_mask):
-                invalid_indices = np.where(invalid_mask)[0]
-                idx = invalid_indices[0]
-                eq_key = self.equality_constraint_label[idx] or f"equality_constraint_{idx}"
+                idx = int(np.where(invalid_mask)[0][0])
                 raise ValueError(
-                    f"Invalid joint reference in equality_constraint_joint2: constraint {idx} ('{eq_key}') references joint {eq_joint2[idx]}, "
+                    f"Invalid joint reference in equality_constraint_joint2: constraint {idx} ('{_eq_label(idx)}') references joint {eq_joint2[idx]}, "
                     f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
                 )
 
@@ -9774,6 +10099,7 @@ class ModelBuilder:
                 ("joint_armature", self.joint_armature),
                 ("joint_target_ke", self.joint_target_ke),
                 ("joint_target_kd", self.joint_target_kd),
+                ("joint_damping", self.joint_damping),
                 ("joint_limit_lower", self.joint_limit_lower),
                 ("joint_limit_upper", self.joint_limit_upper),
                 ("joint_limit_ke", self.joint_limit_ke),
@@ -9924,9 +10250,9 @@ class ModelBuilder:
             (self.joint_world_start, self.joint_count, self.joint_world, "joint"),
             (self.articulation_world_start, self.articulation_count, self.articulation_world, "articulation"),
             (
-                self.equality_constraint_world_start,
-                len(self.equality_constraint_type),
-                self.equality_constraint_world,
+                self._equality_constraint_world_start,
+                self._equality_constraint_count,
+                self._eq_list("equality_constraint_world"),
                 "equality constraint",
             ),
         ]
@@ -10489,8 +10815,6 @@ class ModelBuilder:
                     "and wp.Texture3D, which are CUDA-only."
                 )
 
-            sdf_block_coords = []
-            sdf_index2blocks = []
             from ..geometry.sdf_texture import (  # noqa: PLC0415
                 QuantizationMode,
                 TextureSDFData,
@@ -10535,7 +10859,6 @@ class ModelBuilder:
                 is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
                 has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
-                block_coords = []
                 cache_key = None
                 mesh_sdf = None
 
@@ -10573,12 +10896,6 @@ class ModelBuilder:
                             deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
                         cache_key = ("mesh_sdf", id(mesh_sdf))
-                        if mesh_sdf.texture_block_coords is not None:
-                            block_coords = list(mesh_sdf.texture_block_coords)
-                        elif mesh_sdf.block_coords is not None:
-                            block_coords = list(mesh_sdf.block_coords)
-                        else:
-                            block_coords = []
                 elif is_hydroelastic and has_shape_collision:
                     effective_max_resolution = sdf_max_resolution
                     if sdf_target_voxel_size is None and effective_max_resolution is None:
@@ -10602,7 +10919,6 @@ class ModelBuilder:
                         sdf_cache[cache_key] = sdf_idx
                         shape_sdf_index[i] = sdf_idx
 
-                        tex_block_coords = None
                         if mesh_sdf is not None:
                             tex_data = mesh_sdf.to_texture_kernel_data()
                             if tex_data is not None:
@@ -10610,8 +10926,6 @@ class ModelBuilder:
                                 compact_texture_sdf_coarse_textures.append(mesh_sdf._coarse_texture)
                                 compact_texture_sdf_subgrid_textures.append(mesh_sdf._subgrid_texture)
                                 compact_texture_sdf_subgrid_start_slots.append(tex_data.subgrid_start_slots)
-                                if mesh_sdf.texture_block_coords is not None:
-                                    tex_block_coords = mesh_sdf.texture_block_coords
                             else:
                                 compact_texture_sdf_data.append(create_empty_texture_sdf_data())
                                 compact_texture_sdf_coarse_textures.append(None)
@@ -10626,7 +10940,7 @@ class ModelBuilder:
                                     support_winding_number=True,
                                 )
                                 try:
-                                    tex_data, c_tex, s_tex, tex_bc = create_texture_sdf_from_mesh(
+                                    tex_data, c_tex, s_tex = create_texture_sdf_from_mesh(
                                         prim_wp_mesh,
                                         margin=sdf_gen_margin,
                                         narrow_band_range=tuple(sdf_narrow_band_range),
@@ -10645,38 +10959,27 @@ class ModelBuilder:
                                     tex_data = create_empty_texture_sdf_data()
                                     c_tex = None
                                     s_tex = None
-                                    tex_bc = None
                                 compact_texture_sdf_data.append(tex_data)
                                 compact_texture_sdf_coarse_textures.append(c_tex)
                                 compact_texture_sdf_subgrid_textures.append(s_tex)
                                 compact_texture_sdf_subgrid_start_slots.append(
                                     tex_data.subgrid_start_slots if c_tex is not None else None
                                 )
-                                tex_block_coords = tex_bc
                             else:
                                 compact_texture_sdf_data.append(create_empty_texture_sdf_data())
                                 compact_texture_sdf_coarse_textures.append(None)
                                 compact_texture_sdf_subgrid_textures.append(None)
                                 compact_texture_sdf_subgrid_start_slots.append(None)
 
-                        final_block_coords = list(tex_block_coords) if tex_block_coords is not None else block_coords
-                        block_start_idx = len(sdf_block_coords)
-                        sdf_block_coords.extend(final_block_coords)
-                        sdf_index2blocks.append([block_start_idx, len(sdf_block_coords)])
-
-            m.shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
-            m.sdf_block_coords = wp.array(sdf_block_coords, dtype=wp.vec3us)
-            m.sdf_index2blocks = (
-                wp.array(sdf_index2blocks, dtype=wp.vec2i) if sdf_index2blocks else wp.array([], dtype=wp.vec2i)
-            )
-            m.texture_sdf_data = (
+            m._shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
+            m._texture_sdf_data = (
                 wp.array(compact_texture_sdf_data, dtype=TextureSDFData, device=device)
                 if compact_texture_sdf_data
                 else wp.array([], dtype=TextureSDFData, device=device)
             )
-            m.texture_sdf_coarse_textures = compact_texture_sdf_coarse_textures
-            m.texture_sdf_subgrid_textures = compact_texture_sdf_subgrid_textures
-            m.texture_sdf_subgrid_start_slots = compact_texture_sdf_subgrid_start_slots
+            m._texture_sdf_coarse_textures = compact_texture_sdf_coarse_textures
+            m._texture_sdf_subgrid_textures = compact_texture_sdf_subgrid_textures
+            m._texture_sdf_subgrid_start_slots = compact_texture_sdf_subgrid_start_slots
 
             # ---------------------
             # heightfield collision data
@@ -10980,6 +11283,7 @@ class ModelBuilder:
             m.joint_target_mode = wp.array(self.joint_target_mode, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_damping = wp.array(self.joint_damping, dtype=wp.float32, requires_grad=requires_grad)
             import newton  # noqa: PLC0415
 
             if newton.use_coord_layout_targets:
@@ -11033,21 +11337,12 @@ class ModelBuilder:
             m.max_dofs_per_articulation = max_dofs_per_articulation
 
             # ---------------------
-            # equality constraints
-            m.equality_constraint_type = wp.array(self.equality_constraint_type, dtype=wp.int32)
-            m.equality_constraint_body1 = wp.array(self.equality_constraint_body1, dtype=wp.int32)
-            m.equality_constraint_body2 = wp.array(self.equality_constraint_body2, dtype=wp.int32)
-            m.equality_constraint_anchor = wp.array(self.equality_constraint_anchor, dtype=wp.vec3)
-            m.equality_constraint_torquescale = wp.array(self.equality_constraint_torquescale, dtype=wp.float32)
-            m.equality_constraint_relpose = wp.array(
-                self.equality_constraint_relpose, dtype=wp.transform, requires_grad=requires_grad
-            )
-            m.equality_constraint_joint1 = wp.array(self.equality_constraint_joint1, dtype=wp.int32)
-            m.equality_constraint_joint2 = wp.array(self.equality_constraint_joint2, dtype=wp.int32)
-            m.equality_constraint_polycoef = wp.array(self.equality_constraint_polycoef, dtype=wp.float32)
-            m.equality_constraint_label = self.equality_constraint_label
-            m.equality_constraint_enabled = wp.array(self.equality_constraint_enabled, dtype=wp.bool)
-            m.equality_constraint_world = wp.array(self.equality_constraint_world, dtype=wp.int32)
+            # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)
+            # can live on it. The per-row ``equality_constraint_*`` arrays are materialized by the
+            # standard custom-attribute pipeline below, which is exempted from the zero-count skip
+            # for this frequency so the arrays stay shape-stable (empty) even with no constraints.
+            if not hasattr(m, "mujoco"):
+                m.mujoco = Model.AttributeNamespace("mujoco")
 
             # mimic constraints
             m.constraint_mimic_joint0 = wp.array(self.constraint_mimic_joint0, dtype=wp.int32)
@@ -11065,7 +11360,6 @@ class ModelBuilder:
             m.shape_world_start = wp.array(self.shape_world_start, dtype=wp.int32)
             m.joint_world_start = wp.array(self.joint_world_start, dtype=wp.int32)
             m.articulation_world_start = wp.array(self.articulation_world_start, dtype=wp.int32)
-            m.equality_constraint_world_start = wp.array(self.equality_constraint_world_start, dtype=wp.int32)
             m.joint_dof_world_start = wp.array(self.joint_dof_world_start, dtype=wp.int32)
             m.joint_coord_world_start = wp.array(self.joint_coord_world_start, dtype=wp.int32)
             m.joint_constraint_world_start = wp.array(self.joint_constraint_world_start, dtype=wp.int32)
@@ -11085,7 +11379,8 @@ class ModelBuilder:
             m.spring_count = len(self.spring_rest_length)
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
-            m.equality_constraint_count = len(self.equality_constraint_type)
+            m.mujoco.equality_constraint_count = self._equality_constraint_count
+            m.mujoco.equality_constraint_world_start = wp.array(self._equality_constraint_world_start, dtype=wp.int32)
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
             self.find_shape_contact_pairs(m)
@@ -11186,14 +11481,16 @@ class ModelBuilder:
                     # Safety fallback: use max observed length
                     custom_frequency_counts[freq_key] = max_len
 
-            # Warn about MODEL attributes with fewer values than expected (non-MODEL
-            # attributes are filled at runtime via _add_custom_attributes).
+            # Only MODEL attributes are checked here; non-MODEL ones are filled at runtime via
+            # _add_custom_attributes. An empty values list opts into defaults and stays silent;
+            # partial population (some values, but fewer than the frequency expects) usually
+            # signals a missed row, so it warns.
             for full_key, custom_attr in self.custom_attributes.items():
                 freq_key = custom_attr.frequency
                 if isinstance(freq_key, str) and custom_attr.assignment == Model.AttributeAssignment.MODEL:
                     attr_count = len(custom_attr.values) if custom_attr.values else 0
                     expected_count = custom_frequency_counts[freq_key]
-                    if attr_count < expected_count:
+                    if 0 < attr_count < expected_count:
                         warnings.warn(
                             f"Custom attribute '{full_key}' has {attr_count} values but frequency '{freq_key}' "
                             f"expects {expected_count}. Missing values will be filled with defaults.",
@@ -11206,6 +11503,11 @@ class ModelBuilder:
 
             # Process custom attributes
             for _full_key, custom_attr in self.custom_attributes.items():
+                custom_finalizer = self._custom_attribute_model_finalizers.get(_full_key)
+                if custom_finalizer is not None:
+                    custom_finalizer(self, m, custom_attr)
+                    continue
+
                 freq_key = custom_attr.frequency
 
                 # determine count by frequency
@@ -11231,7 +11533,7 @@ class ModelBuilder:
                 elif freq_key == Model.AttributeFrequency.WORLD:
                     count = m.world_count
                 elif freq_key == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
-                    count = m.equality_constraint_count
+                    count = m.mujoco.equality_constraint_count
                 elif freq_key == Model.AttributeFrequency.CONSTRAINT_MIMIC:
                     count = m.constraint_mimic_count
                 elif freq_key == Model.AttributeFrequency.PARTICLE:
@@ -11247,8 +11549,15 @@ class ModelBuilder:
                 else:
                     continue
 
-                # Skip empty custom frequency attributes
-                if count == 0:
+                # Skip empty custom frequency attributes. The ``mujoco:equality_constraint``
+                # frequency is exempt: its arrays back a deprecated public surface
+                # (``model.equality_constraint_*`` and the ``model.mujoco.*`` migration target)
+                # whose historical contract is a shape-stable empty array at zero rows, not an
+                # absent attribute. Materializing them even at count 0 (``build_array`` handles
+                # empty arrays for every dtype) keeps the documented migration target usable and
+                # is driven by the registered attributes, so no field list needs to be kept in
+                # sync. Remove this exemption when the deprecation window closes.
+                if count == 0 and freq_key != "mujoco:equality_constraint":
                     continue
 
                 result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)

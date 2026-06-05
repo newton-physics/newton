@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import logging
+import warnings
+from collections.abc import Callable
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +18,8 @@ from ..core.types import Devicelike
 from .contacts import Contacts
 from .control import Control
 from .state import State
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
@@ -93,7 +98,15 @@ class Model:
         ARTICULATION = 7
         """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
         EQUALITY_CONSTRAINT = 8
-        """Attribute frequency follows the number of equality constraints (see :attr:`~newton.Model.equality_constraint_count`)."""
+        """Attribute frequency follows the number of equality constraints
+        (see ``model.mujoco.equality_constraint_count``).
+
+        .. deprecated:: 1.3
+            Use the string frequency ``"mujoco:equality_constraint"`` instead.
+            :meth:`ModelBuilder.add_custom_attribute` translates this enum value to the
+            string form for the duration of the deprecation window. Scheduled for removal
+            in a future release.
+        """
         PARTICLE = 9
         """Attribute frequency follows the number of particles (see :attr:`~newton.Model.particle_count`)."""
         EDGE = 10
@@ -123,12 +136,47 @@ class Model:
             Args:
                 name: The name of the namespace
             """
-            self._name: str = name
+            object.__setattr__(self, "_name", name)
+            object.__setattr__(self, "_deprecated_aliases", {})
+
+        def add_deprecated_alias(self, name: str, getter: Callable[[], Any], message: str) -> None:
+            """Add a deprecated attribute alias.
+
+            Args:
+                name: Alias name exposed on the namespace.
+                getter: Callable returning the canonical target object.
+                message: Deprecation warning message.
+            """
+            if name in self.__dict__ or name in self._deprecated_aliases:
+                raise AttributeError(f"Attribute already exists: {self._name}.{name}")
+            self._deprecated_aliases[name] = (getter, message)
+
+        def __getattr__(self, name: str) -> Any:
+            aliases = self.__dict__.get("_deprecated_aliases", {})
+            if name in aliases:
+                getter, message = aliases[name]
+                warnings.warn(message, DeprecationWarning, stacklevel=2)
+                return getter()
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+        def __setattr__(self, name: str, value: Any) -> None:
+            if not name.startswith("_"):
+                aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
+                if name in aliases:
+                    getter, message = aliases[name]
+                    warnings.warn(message, DeprecationWarning, stacklevel=2)
+                    target = getter()
+                    if isinstance(target, wp.array):
+                        target.assign(value)
+                        return
+                    raise AttributeError(f"Deprecated alias '{self._name}.{name}' does not support assignment")
+            object.__setattr__(self, name, value)
 
         def __repr__(self):
             """Return a string representation showing the namespace and its attributes."""
             # List all public attributes (not starting with _)
             attrs = [k for k in self.__dict__ if not k.startswith("_")]
+            attrs.extend(k for k in self._deprecated_aliases if k not in attrs)
             return f"AttributeNamespace('{self._name}', attributes={attrs})"
 
     def __init__(self, device: Devicelike | None = None):
@@ -320,23 +368,30 @@ class Model:
         self.shape_edge_range: wp.array[wp.vec2i] | None = None
         """Per-shape (start, count) into mesh_edge_indices, shape [shape_count]. (-1,0) if no edges."""
 
-        # SDF storage (compact table + per-shape index indirection)
-        self.shape_sdf_index: wp.array[wp.int32] | None = None
+        # SDF storage (compact table + per-shape index indirection).
+        # All SDF arrays are private; the public attribute names are exposed
+        # via deprecated property aliases further down for back-compat.
+        #
+        # .. experimental::
+        #     The SDF storage on ``Model`` is part of the experimental SDF API
+        #     (see :class:`~newton.SDF`) and may change without notice.
+        self._shape_sdf_index: wp.array[wp.int32] | None = None
         """Per-shape SDF index, shape [shape_count]. -1 means shape has no SDF."""
-        self.sdf_block_coords: wp.array[wp.vec3us] | None = None
-        """Compact flat array of active SDF block coordinates."""
-        self.sdf_index2blocks: wp.array[wp.vec2i] | None = None
-        """Per-SDF [start, end) indices into sdf_block_coords, shape [num_sdfs, 2]."""
 
         # Texture SDF storage
-        self.texture_sdf_data = None
+        self._texture_sdf_data = None
         """Compact array of TextureSDFData structs, shape [num_sdfs]."""
-        self.texture_sdf_coarse_textures = []
-        """Coarse 3D textures matching texture_sdf_data by index. Kept for reference counting."""
-        self.texture_sdf_subgrid_textures = []
-        """Subgrid 3D textures matching texture_sdf_data by index. Kept for reference counting."""
-        self.texture_sdf_subgrid_start_slots = []
-        """Subgrid start slot arrays matching texture_sdf_data by index. Kept for reference counting."""
+        self._texture_sdf_coarse_textures: list = []
+        """Coarse 3D textures matching _texture_sdf_data by index. Kept for reference counting."""
+        self._texture_sdf_subgrid_textures: list = []
+        """Subgrid 3D textures matching _texture_sdf_data by index. Kept for reference counting."""
+        self._texture_sdf_subgrid_start_slots: list = []
+        """Subgrid start slot arrays matching _texture_sdf_data by index. Kept for reference counting."""
+
+        # Caches for the deprecated lazy ``sdf_block_coords`` / ``sdf_index2blocks``
+        # properties. Populated on first access; cleared when SDF storage changes.
+        self._sdf_block_coords_cache: wp.array | None = None
+        self._sdf_index2blocks_cache: wp.array | None = None
 
         # Local AABB and voxel grid for contact reduction
         # Note: These are stored in Model (not Contacts) because they are static geometry properties
@@ -503,6 +558,8 @@ class Model:
         """Joint stiffness [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_kd: wp.array[wp.float32] | None = None
         """Joint damping [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float."""
+        self.joint_damping: wp.array[wp.float32] | None = None
+        """Passive velocity damping [N·s/m or N·m·s/rad, depending on joint type] always active on the joint, shape [joint_dof_count], float."""
         self.joint_effort_limit: wp.array[wp.float32] | None = None
         """Joint effort (force/torque) limits [N or N·m, depending on joint type], shape [joint_dof_count], float."""
         self.joint_velocity_limit: wp.array[wp.float32] | None = None
@@ -658,48 +715,6 @@ class Model:
         self.gravity: wp.array[wp.vec3] | None = None
         """Per-world gravity vectors [m/s²], shape [world_count, 3], dtype :class:`vec3`."""
 
-        self.equality_constraint_type: wp.array[wp.int32] | None = None
-        """Type of equality constraint, shape [equality_constraint_count], int."""
-        self.equality_constraint_body1: wp.array[wp.int32] | None = None
-        """First body index, shape [equality_constraint_count], int."""
-        self.equality_constraint_body2: wp.array[wp.int32] | None = None
-        """Second body index, shape [equality_constraint_count], int."""
-        self.equality_constraint_anchor: wp.array[wp.vec3] | None = None
-        """Anchor point on first body, shape [equality_constraint_count, 3], float."""
-        self.equality_constraint_torquescale: wp.array[wp.float32] | None = None
-        """Torque scale, shape [equality_constraint_count], float."""
-        self.equality_constraint_relpose: wp.array[wp.transform] | None = None
-        """Relative pose, shape [equality_constraint_count, 7], float."""
-        self.equality_constraint_joint1: wp.array[wp.int32] | None = None
-        """First joint index, shape [equality_constraint_count], int."""
-        self.equality_constraint_joint2: wp.array[wp.int32] | None = None
-        """Second joint index, shape [equality_constraint_count], int."""
-        self.equality_constraint_polycoef: wp.array2d[wp.float32] | None = None
-        """Polynomial coefficients, shape [equality_constraint_count, 5], float."""
-        self.equality_constraint_label: list[str] = []
-        """Constraint name/label, shape [equality_constraint_count], str."""
-        self.equality_constraint_enabled: wp.array[wp.bool] | None = None
-        """Whether constraint is active, shape [equality_constraint_count], bool."""
-        self.equality_constraint_world: wp.array[wp.int32] | None = None
-        """World index for each constraint, shape [equality_constraint_count], int."""
-        self.equality_constraint_world_start: wp.array[wp.int32] | None = None
-        """Start index of the first equality constraint per world, shape [world_count + 2], int.
-
-        The entries at indices ``0`` to ``world_count - 1`` store the start index of
-        the equality constraints belonging to that world. The second-last element
-        (accessible via index ``-2``) stores the start index of the global equality
-        constraints (i.e. with world index ``-1``) added to the end of the model,
-        and the last element stores the total equality constraint count.
-
-        The number of equality constraints in a given world ``w`` can be computed as::
-
-            num_equality_constraints_in_world = equality_constraint_world_start[w + 1] - equality_constraint_world_start[w]
-
-        The total number of global equality constraints can be computed as::
-
-            num_global_equality_constraints = equality_constraint_world_start[-1] - equality_constraint_world_start[-2] + equality_constraint_world_start[0]
-        """
-
         self.constraint_mimic_joint0: wp.array[wp.int32] | None = None
         """Follower joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
         self.constraint_mimic_joint1: wp.array[wp.int32] | None = None
@@ -741,8 +756,6 @@ class Model:
         """Total number of position degrees of freedom of all joints."""
         self.joint_constraint_count: int = 0
         """Total number of joint constraints of all joints."""
-        self.equality_constraint_count: int = 0
-        """Total number of equality constraints in the system."""
         self.constraint_mimic_count: int = 0
         """Total number of mimic constraints in the system."""
 
@@ -838,6 +851,7 @@ class Model:
         self.attribute_frequency["joint_target_mode"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_ke"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_kd"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_damping"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_lower"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_upper"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_ke"] = Model.AttributeFrequency.JOINT_DOF
@@ -870,6 +884,420 @@ class Model:
 
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
+
+    # Deprecated equality-constraint arrays (removal in a future release).
+    # The legacy top-level ``Model.equality_constraint_*`` arrays are now read-only forwards to
+    # the ``model.mujoco.equality_constraint_*`` namespace (the source of truth). Delete this
+    # whole block when the deprecation window closes.
+
+    _EQUALITY_CONSTRAINT_DEPRECATED_IN = "1.3"
+    _EQUALITY_CONSTRAINT_MODEL_FIELDS = frozenset(
+        (
+            "equality_constraint_count",
+            "equality_constraint_type",
+            "equality_constraint_body1",
+            "equality_constraint_body2",
+            "equality_constraint_anchor",
+            "equality_constraint_torquescale",
+            "equality_constraint_relpose",
+            "equality_constraint_joint1",
+            "equality_constraint_joint2",
+            "equality_constraint_polycoef",
+            "equality_constraint_label",
+            "equality_constraint_enabled",
+            "equality_constraint_world",
+            "equality_constraint_world_start",
+        )
+    )
+
+    @staticmethod
+    def _default_equality_constraint_model_field(name: str) -> Any:
+        if name not in Model._EQUALITY_CONSTRAINT_MODEL_FIELDS:
+            raise AttributeError(f"Unknown equality constraint field: {name}")
+        if name == "equality_constraint_count":
+            return 0
+        if name == "equality_constraint_label":
+            return []
+        return None
+
+    @staticmethod
+    def _deprecated_equality_constraint_model_field_message(name: str) -> str:
+        return (
+            f"Model.{name} is deprecated in Newton {Model._EQUALITY_CONSTRAINT_DEPRECATED_IN} "
+            f"and will be removed in a future release. "
+            f"Use model.mujoco.{name} instead. ModelBuilder.finalize() populates "
+            "the namespaced fields. The namespaced attribute is the source of truth "
+            "and the deprecated top-level property forwards to it."
+        )
+
+    def _ensure_mujoco_equality_constraint_model_field(self, name: str) -> Any:
+        mujoco_attrs = getattr(self, "mujoco", None)
+        if mujoco_attrs is None:
+            self.mujoco = Model.AttributeNamespace("mujoco")
+            mujoco_attrs = self.mujoco
+        if not hasattr(mujoco_attrs, name):
+            setattr(mujoco_attrs, name, self._default_equality_constraint_model_field(name))
+        return getattr(mujoco_attrs, name)
+
+    def _get_deprecated_equality_constraint_model_field(self, name: str) -> Any:
+        warnings.warn(
+            self._deprecated_equality_constraint_model_field_message(name),
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return self._ensure_mujoco_equality_constraint_model_field(name)
+
+    def _set_deprecated_equality_constraint_model_field(self, name: str, value: Any) -> None:
+        warnings.warn(
+            self._deprecated_equality_constraint_model_field_message(name),
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        if name not in self._EQUALITY_CONSTRAINT_MODEL_FIELDS:
+            raise AttributeError(f"Unknown equality constraint field: {name}")
+        if not hasattr(self, "mujoco"):
+            self.mujoco = Model.AttributeNamespace("mujoco")
+        setattr(self.mujoco, name, value)
+
+    @property
+    def equality_constraint_count(self) -> int:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_count``."""
+        return self._get_deprecated_equality_constraint_model_field("equality_constraint_count")
+
+    @equality_constraint_count.setter
+    def equality_constraint_count(self, value: int) -> None:
+        self._set_deprecated_equality_constraint_model_field("equality_constraint_count", value)
+
+    @property
+    def equality_constraint_type(self) -> wp.array[wp.int32] | None:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_type``."""
+        return self._get_deprecated_equality_constraint_model_field("equality_constraint_type")
+
+    @equality_constraint_type.setter
+    def equality_constraint_type(self, value: wp.array[wp.int32] | None) -> None:
+        self._set_deprecated_equality_constraint_model_field("equality_constraint_type", value)
+
+    @property
+    def equality_constraint_body1(self) -> wp.array[wp.int32] | None:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_body1``."""
+        return self._get_deprecated_equality_constraint_model_field("equality_constraint_body1")
+
+    @equality_constraint_body1.setter
+    def equality_constraint_body1(self, value: wp.array[wp.int32] | None) -> None:
+        self._set_deprecated_equality_constraint_model_field("equality_constraint_body1", value)
+
+    @property
+    def equality_constraint_body2(self) -> wp.array[wp.int32] | None:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_body2``."""
+        return self._get_deprecated_equality_constraint_model_field("equality_constraint_body2")
+
+    @equality_constraint_body2.setter
+    def equality_constraint_body2(self, value: wp.array[wp.int32] | None) -> None:
+        self._set_deprecated_equality_constraint_model_field("equality_constraint_body2", value)
+
+    @property
+    def equality_constraint_anchor(self) -> wp.array[wp.vec3] | None:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_anchor``."""
+        return self._get_deprecated_equality_constraint_model_field("equality_constraint_anchor")
+
+    @equality_constraint_anchor.setter
+    def equality_constraint_anchor(self, value: wp.array[wp.vec3] | None) -> None:
+        self._set_deprecated_equality_constraint_model_field("equality_constraint_anchor", value)
+
+    @property
+    def equality_constraint_torquescale(self) -> wp.array[wp.float32] | None:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_torquescale``."""
+        return self._get_deprecated_equality_constraint_model_field("equality_constraint_torquescale")
+
+    @equality_constraint_torquescale.setter
+    def equality_constraint_torquescale(self, value: wp.array[wp.float32] | None) -> None:
+        self._set_deprecated_equality_constraint_model_field("equality_constraint_torquescale", value)
+
+    @property
+    def equality_constraint_relpose(self) -> wp.array[wp.transform] | None:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_relpose``."""
+        return self._get_deprecated_equality_constraint_model_field("equality_constraint_relpose")
+
+    @equality_constraint_relpose.setter
+    def equality_constraint_relpose(self, value: wp.array[wp.transform] | None) -> None:
+        self._set_deprecated_equality_constraint_model_field("equality_constraint_relpose", value)
+
+    @property
+    def equality_constraint_joint1(self) -> wp.array[wp.int32] | None:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_joint1``."""
+        return self._get_deprecated_equality_constraint_model_field("equality_constraint_joint1")
+
+    @equality_constraint_joint1.setter
+    def equality_constraint_joint1(self, value: wp.array[wp.int32] | None) -> None:
+        self._set_deprecated_equality_constraint_model_field("equality_constraint_joint1", value)
+
+    @property
+    def equality_constraint_joint2(self) -> wp.array[wp.int32] | None:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_joint2``."""
+        return self._get_deprecated_equality_constraint_model_field("equality_constraint_joint2")
+
+    @equality_constraint_joint2.setter
+    def equality_constraint_joint2(self, value: wp.array[wp.int32] | None) -> None:
+        self._set_deprecated_equality_constraint_model_field("equality_constraint_joint2", value)
+
+    @property
+    def equality_constraint_polycoef(self) -> wp.array2d[wp.float32] | None:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_polycoef``."""
+        return self._get_deprecated_equality_constraint_model_field("equality_constraint_polycoef")
+
+    @equality_constraint_polycoef.setter
+    def equality_constraint_polycoef(self, value: wp.array2d[wp.float32] | None) -> None:
+        self._set_deprecated_equality_constraint_model_field("equality_constraint_polycoef", value)
+
+    @property
+    def equality_constraint_label(self) -> list[str]:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_label``."""
+        return self._get_deprecated_equality_constraint_model_field("equality_constraint_label")
+
+    @equality_constraint_label.setter
+    def equality_constraint_label(self, value: list[str]) -> None:
+        self._set_deprecated_equality_constraint_model_field("equality_constraint_label", value)
+
+    @property
+    def equality_constraint_enabled(self) -> wp.array[wp.bool] | None:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_enabled``."""
+        return self._get_deprecated_equality_constraint_model_field("equality_constraint_enabled")
+
+    @equality_constraint_enabled.setter
+    def equality_constraint_enabled(self, value: wp.array[wp.bool] | None) -> None:
+        self._set_deprecated_equality_constraint_model_field("equality_constraint_enabled", value)
+
+    @property
+    def equality_constraint_world(self) -> wp.array[wp.int32] | None:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_world``."""
+        return self._get_deprecated_equality_constraint_model_field("equality_constraint_world")
+
+    @equality_constraint_world.setter
+    def equality_constraint_world(self, value: wp.array[wp.int32] | None) -> None:
+        self._set_deprecated_equality_constraint_model_field("equality_constraint_world", value)
+
+    @property
+    def equality_constraint_world_start(self) -> wp.array[wp.int32] | None:
+        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_world_start``."""
+        return self._get_deprecated_equality_constraint_model_field("equality_constraint_world_start")
+
+    @equality_constraint_world_start.setter
+    def equality_constraint_world_start(self, value: wp.array[wp.int32] | None) -> None:
+        self._set_deprecated_equality_constraint_model_field("equality_constraint_world_start", value)
+
+    # ----- Deprecated SDF aliases -------------------------------------------
+    # The underlying SDF members on ``Model`` are now underscore-prefixed.
+    # The properties below preserve the historical attribute names for one
+    # release cycle and emit ``DeprecationWarning`` on access.
+
+    @property
+    def shape_sdf_index(self) -> wp.array[wp.int32] | None:
+        """Deprecated alias for :attr:`_shape_sdf_index`.
+
+        .. deprecated:: 1.3
+            Use the underscored private member or the appropriate accessor.
+            This alias will be removed in Newton 1.5.
+        """
+        warnings.warn(
+            "Model.shape_sdf_index is deprecated; use Model._shape_sdf_index. "
+            "The public alias will be removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._shape_sdf_index
+
+    @shape_sdf_index.setter
+    def shape_sdf_index(self, value):
+        warnings.warn(
+            "Model.shape_sdf_index is deprecated; assign to Model._shape_sdf_index. "
+            "The public alias will be removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._shape_sdf_index = value
+
+    @property
+    def texture_sdf_data(self):
+        """Deprecated alias for :attr:`_texture_sdf_data`.
+
+        .. deprecated:: 1.3
+            Use the underscored private member. The alias will be removed in
+            Newton 1.5.
+        """
+        warnings.warn(
+            "Model.texture_sdf_data is deprecated; use Model._texture_sdf_data. "
+            "The public alias will be removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._texture_sdf_data
+
+    @texture_sdf_data.setter
+    def texture_sdf_data(self, value):
+        warnings.warn(
+            "Model.texture_sdf_data is deprecated; assign to Model._texture_sdf_data. "
+            "The public alias will be removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._texture_sdf_data = value
+        self._sdf_block_coords_cache = None
+        self._sdf_index2blocks_cache = None
+
+    @property
+    def texture_sdf_coarse_textures(self) -> list:
+        """Deprecated alias for :attr:`_texture_sdf_coarse_textures`.
+
+        .. deprecated:: 1.3
+            Use the underscored private member. The alias will be removed in
+            Newton 1.5.
+        """
+        warnings.warn(
+            "Model.texture_sdf_coarse_textures is deprecated; use "
+            "Model._texture_sdf_coarse_textures. The public alias will be "
+            "removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._texture_sdf_coarse_textures
+
+    @texture_sdf_coarse_textures.setter
+    def texture_sdf_coarse_textures(self, value):
+        warnings.warn(
+            "Model.texture_sdf_coarse_textures is deprecated; assign to "
+            "Model._texture_sdf_coarse_textures. The public alias will be "
+            "removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._texture_sdf_coarse_textures = value
+        self._sdf_block_coords_cache = None
+        self._sdf_index2blocks_cache = None
+
+    @property
+    def texture_sdf_subgrid_textures(self) -> list:
+        """Deprecated alias for :attr:`_texture_sdf_subgrid_textures`.
+
+        .. deprecated:: 1.3
+            Use the underscored private member. The alias will be removed in
+            Newton 1.5.
+        """
+        warnings.warn(
+            "Model.texture_sdf_subgrid_textures is deprecated; use "
+            "Model._texture_sdf_subgrid_textures. The public alias will be "
+            "removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._texture_sdf_subgrid_textures
+
+    @texture_sdf_subgrid_textures.setter
+    def texture_sdf_subgrid_textures(self, value):
+        warnings.warn(
+            "Model.texture_sdf_subgrid_textures is deprecated; assign to "
+            "Model._texture_sdf_subgrid_textures. The public alias will be "
+            "removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._texture_sdf_subgrid_textures = value
+
+    @property
+    def texture_sdf_subgrid_start_slots(self) -> list:
+        """Deprecated alias for :attr:`_texture_sdf_subgrid_start_slots`.
+
+        .. deprecated:: 1.3
+            Use the underscored private member. The alias will be removed in
+            Newton 1.5.
+        """
+        warnings.warn(
+            "Model.texture_sdf_subgrid_start_slots is deprecated; use "
+            "Model._texture_sdf_subgrid_start_slots. The public alias will be "
+            "removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._texture_sdf_subgrid_start_slots
+
+    @texture_sdf_subgrid_start_slots.setter
+    def texture_sdf_subgrid_start_slots(self, value):
+        warnings.warn(
+            "Model.texture_sdf_subgrid_start_slots is deprecated; assign to "
+            "Model._texture_sdf_subgrid_start_slots. The public alias will be "
+            "removed in Newton 1.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._texture_sdf_subgrid_start_slots = value
+
+    @property
+    def sdf_block_coords(self):
+        """Deprecated.  Lazily-computed flat ``wp.vec3us`` block coords.
+
+        Per-SDF active-block coordinates were dropped when the hydroelastic
+        broadphase started deriving them arithmetically from each SDF's
+        coarse-texture dimensions. This property recomputes the legacy
+        layout on first access (and caches it) so external callers that
+        still read the attribute keep working.
+
+        .. deprecated:: 1.3
+            This attribute will be removed in Newton 1.5.
+        """
+        warnings.warn(
+            "Model.sdf_block_coords is deprecated and will be removed in "
+            "Newton 1.5. The hydroelastic broadphase now derives block "
+            "coordinates arithmetically from each SDF's coarse-texture "
+            "dimensions and no longer needs this attribute.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._ensure_legacy_sdf_block_arrays()
+        return self._sdf_block_coords_cache
+
+    @property
+    def sdf_index2blocks(self):
+        """Deprecated.  Lazily-computed per-SDF ``[start, end)`` ranges.
+
+        Per-SDF ``[start, end)`` indices into ``sdf_block_coords`` were
+        dropped when the hydroelastic broadphase started deriving block
+        ranges arithmetically from each SDF's coarse-texture dimensions.
+        This property recomputes the legacy layout on first access (and
+        caches it) so external callers that still read the attribute keep
+        working.
+
+        .. deprecated:: 1.3
+            This attribute will be removed in Newton 1.5.
+        """
+        warnings.warn(
+            "Model.sdf_index2blocks is deprecated and will be removed in "
+            "Newton 1.5. The hydroelastic broadphase now derives block "
+            "ranges arithmetically from each SDF's coarse-texture "
+            "dimensions and no longer needs this attribute.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._ensure_legacy_sdf_block_arrays()
+        return self._sdf_index2blocks_cache
+
+    def _ensure_legacy_sdf_block_arrays(self) -> None:
+        """Populate the legacy SDF block-coord caches on demand."""
+        if self._sdf_block_coords_cache is not None and self._sdf_index2blocks_cache is not None:
+            return
+        # Local import keeps the deprecated module out of the normal load path.
+        from ..geometry._deprecated_sdf_block_coords import (  # noqa: PLC0415
+            build_legacy_sdf_block_arrays,
+        )
+
+        subgrid_size = 8
+        if self._texture_sdf_data is not None and len(self._texture_sdf_data) > 0:
+            subgrid_size = int(self._texture_sdf_data.numpy()[0]["subgrid_size"])
+        block_coords, index2blocks = build_legacy_sdf_block_arrays(
+            self._texture_sdf_coarse_textures,
+            subgrid_size=subgrid_size,
+            device=self.device,
+        )
+        self._sdf_block_coords_cache = block_coords
+        self._sdf_index2blocks_cache = index2blocks
 
     @property
     def has_heightfields(self) -> bool:
@@ -905,6 +1333,9 @@ class Model:
         """Deprecated alias for :attr:`joint_target_q` (DOF-shape only).
         Raises :class:`AttributeError` when this Model was built under
         :attr:`use_coord_layout_targets` ``True``.
+
+        .. deprecated:: 1.3
+            Use :attr:`joint_target_q` instead.
         """
         import warnings  # noqa: PLC0415
 
@@ -939,6 +1370,9 @@ class Model:
         """Deprecated alias for :attr:`joint_target_qd`. Raises
         :class:`AttributeError` when this Model was built under
         :attr:`use_coord_layout_targets` ``True``.
+
+        .. deprecated:: 1.3
+            Use :attr:`joint_target_qd` instead.
         """
         import warnings  # noqa: PLC0415
 
@@ -1244,7 +1678,7 @@ class Model:
             world: If provided, set gravity only for this world.
 
         Note:
-            Call ``solver.notify_model_changed(SolverNotifyFlags.MODEL_PROPERTIES)`` after.
+            Call ``solver.notify_model_changed(ModelFlags.MODEL_PROPERTIES)`` after.
 
             Global entities (particles/bodies not assigned to a specific world) use
             gravity from world 0.
@@ -1454,7 +1888,7 @@ class Model:
                 setattr(self, namespace, Model.AttributeNamespace(namespace))
 
             ns_obj = getattr(self, namespace)
-            if hasattr(ns_obj, name):
+            if name in ns_obj.__dict__ or name in ns_obj._deprecated_aliases:
                 raise AttributeError(f"Attribute already exists: {namespace}.{name}")
 
             setattr(ns_obj, name, attrib)
