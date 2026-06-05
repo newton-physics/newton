@@ -53,19 +53,41 @@ There are several ways to participate in the Newton community:
 * Have a signed CLA on file (see [Legal Requirements](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md#legal-requirements)).
 * Have the pull request approved by a [Project Member](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md#project-members) and merged into the codebase.
 
-## Adding a Feature or Solver
+## Adding a Feature
 
 * Discuss your proposal ideally before starting with implementation. Open a GitHub Issue or Discussion to:
-  * propose and motivate the new feature or solver;
+  * propose and motivate the new feature;
   * detail technical specifications;
   * and list changes or additions to the Newton API.
 * Wait for feedback from [Project Members](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md#project-members) before proceeding.
-* Implement the feature or solver following the [style guide](https://newton-physics.github.io/newton/latest/guide/development.html#style-guide).
-* Add comprehensive testing and benchmarking for the new feature or solver.
+* Implement the feature following the [style guide](https://newton-physics.github.io/newton/latest/guide/development.html#style-guide).
+* Add comprehensive testing and benchmarking for the new feature.
 * Ensure all existing tests pass and that existing benchmarks do not regress.
-* Update or add documentation for the new feature or solver.
+* Update or add documentation for the new feature.
 * Have a signed CLA on file (see [Legal Requirements](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md#legal-requirements)).
 * Have the pull request approved by a [Project Member](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md#project-members) and merged into the codebase.
+
+## Adding a Solver or Large Extension
+
+Newton is designed to be extended outside this repository. Most new solvers and domain-specific extensions should start as separate packages that depend on Newton, so the solver authors can own their maintenance, documentation, testing, and release cadence.
+
+When developing an external solver or extension:
+
+* publish it in its own repository or package with a dependency on Newton;
+* use public Newton APIs only; do not import from `newton._src`;
+* keep solver-specific tests, examples, and documentation with the external project;
+* propose minimal Newton API additions separately if you need new extension points;
+* add the `newton-physics` GitHub topic to the repository for discoverability.
+
+The bar for adding a solver to the main Newton repository is high because every upstream solver adds API, testing, review, release, and support responsibilities for the project. Project Members may ask that a solver remain external, or that only smaller reusable API hooks or improvements be contributed upstream.
+
+Before investing in an upstream solver contribution, open a GitHub Issue or Discussion and wait for feedback from [Project Members](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md#project-members). Include:
+
+* the solver's scope, algorithms, and expected users;
+* why it should live in the main Newton repository instead of an external package;
+* the proposed Newton API additions or changes;
+* the long-term maintenance plan and owners;
+* tests, benchmarks, examples, and documentation you expect to provide.
 
 ## Adding Simulation Assets
 
