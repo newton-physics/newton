@@ -648,6 +648,39 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
         self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
 
+    def test_large_replicated_collision_filter_pairs_are_compact_and_preserve_contacts(self):
+        """Large replicated filters should stay compact while preserving contact pairs."""
+
+        robot = ModelBuilder()
+        body0 = robot.add_body()
+        shape0 = robot.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = robot.add_body()
+        shape1 = robot.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        robot.shape_collision_filter_pairs.append((shape0, shape1))
+
+        builder = ModelBuilder()
+        ground = builder.add_ground_plane()
+        builder.replicate(robot, 3)
+
+        self.assertNotIsInstance(builder.shape_collision_filter_pairs, list)
+        self.assertEqual(len(builder.shape_collision_filter_pairs), 3)
+        self.assertIn((1, 2), builder.shape_collision_filter_pairs)
+        self.assertIn((3, 4), builder.shape_collision_filter_pairs)
+        self.assertIn((5, 6), builder.shape_collision_filter_pairs)
+
+        with mock.patch.object(ModelBuilder, "_SHAPE_COLLISION_FILTER_PAIR_SET_LIMIT", 1, create=True):
+            model = builder.finalize()
+
+        self.assertNotIsInstance(model.shape_collision_filter_pairs, set)
+
+        filters = model.shape_collision_filter_pairs
+        self.assertIn((1, 2), filters)
+        self.assertIn((3, 4), filters)
+        self.assertIn((5, 6), filters)
+
+        contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+        self.assertEqual(contact_pairs, {(ground, 1), (ground, 2), (ground, 3), (ground, 4), (ground, 5), (ground, 6)})
+
     def test_collision_filter_fixed_to_world(self):
         """Bodies fixed to world via add_joint_fixed(parent=-1) should auto-filter
         their shapes against world-static shapes regardless of construction order
