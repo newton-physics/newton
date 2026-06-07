@@ -13,6 +13,7 @@ Safety: only stdlib ``ast`` parsing is used; no user code is imported or execute
 from __future__ import annotations
 
 import ast
+import html
 import json
 import sys
 from pathlib import Path
@@ -76,10 +77,20 @@ def _make_symbol(
     signature: str | None = None,
     *,
     value: str | None = None,
+    source_module: str | None = None,
 ) -> dict:
     symbol = {"kind": kind, "signature": signature}
     if value is not None:
         symbol["value"] = value
+    if source_module is not None:
+        symbol["source_module"] = source_module
+    return symbol
+
+
+def _copy_symbol(defn: dict, *, source_module: str | None = None) -> dict:
+    symbol = dict(defn)
+    if source_module is not None:
+        symbol["source_module"] = source_module
     return symbol
 
 
@@ -189,7 +200,35 @@ def _extract_string_literals(node: ast.AST | None) -> list[str] | None:
     return values
 
 
-def extract_api_symbols(workspace_root: Path) -> dict[str, dict]:
+def _parse_module_file(
+    workspace_root: Path,
+    file_path: Path,
+    skipped_modules: list[dict],
+    skipped_module_names: set[str],
+) -> ast.Module | None:
+    module_name = _module_name_from_path(workspace_root, file_path)
+    if module_name in skipped_module_names:
+        return None
+
+    relative_path = file_path.relative_to(workspace_root)
+    try:
+        source = file_path.read_text(encoding="utf-8")
+        return ast.parse(source, filename=str(relative_path))
+    except (OSError, SyntaxError, ValueError, RecursionError) as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        skipped_module_names.add(module_name)
+        skipped_modules.append(
+            {
+                "module": module_name,
+                "path": relative_path.as_posix(),
+                "reason": reason,
+            }
+        )
+        print(f"WARNING: skipping {relative_path.as_posix()}: {reason}", file=sys.stderr)
+        return None
+
+
+def extract_api_symbols(workspace_root: Path, skipped_modules: list[dict] | None = None) -> dict[str, dict]:
     """Extract all public API symbols from the package using AST parsing.
 
     Returns a dict mapping qualified symbol paths to their metadata.
@@ -200,6 +239,9 @@ def extract_api_symbols(workspace_root: Path) -> dict[str, dict]:
     package_root = workspace_root / PACKAGE_NAME
     if not package_root.exists():
         return {}
+    if skipped_modules is None:
+        skipped_modules = []
+    skipped_module_names = {item["module"] for item in skipped_modules}
 
     # Pass 1: parse all modules to build a definition lookup table
     all_definitions: dict[str, dict[str, dict]] = {}
@@ -210,10 +252,8 @@ def extract_api_symbols(workspace_root: Path) -> dict[str, dict]:
         module_name = _module_name_from_path(workspace_root, file_path)
         if _is_excluded(module_name):
             continue
-        try:
-            source = file_path.read_text(encoding="utf-8")
-            tree = ast.parse(source, filename=str(file_path.relative_to(workspace_root)))
-        except (OSError, SyntaxError):
+        tree = _parse_module_file(workspace_root, file_path, skipped_modules, skipped_module_names)
+        if tree is None:
             continue
         module_defs: dict[str, dict] = {}
         _collect_definitions(tree, module_name, module_defs)
@@ -238,10 +278,8 @@ def extract_api_symbols(workspace_root: Path) -> dict[str, dict]:
         module_name = _module_name_from_path(workspace_root, file_path)
         if _is_excluded(module_name) or not _is_public_module(module_name):
             continue
-        try:
-            source = file_path.read_text(encoding="utf-8")
-            tree = ast.parse(source, filename=str(file_path.relative_to(workspace_root)))
-        except (OSError, SyntaxError):
+        tree = _parse_module_file(workspace_root, file_path, skipped_modules, skipped_module_names)
+        if tree is None:
             continue
         is_package = file_path.name == "__init__.py"
         dunder_all = _extract_dunder_all(tree)
@@ -518,19 +556,33 @@ def _resolve_reexports(
             # Try to resolve from source module definitions
             source_def = source_defs.get(alias.name)
             if source_def:
-                symbols[path] = dict(source_def)
+                symbols[path] = _copy_symbol(source_def, source_module=source_module)
                 # Also pull in child definitions (methods/attributes of classes)
                 if source_def["kind"] in ("class", "enum"):
-                    _resolve_class_children(alias.name, module_name, exported_name, source_defs, symbols)
+                    _resolve_class_children(
+                        alias.name,
+                        module_name,
+                        exported_name,
+                        source_defs,
+                        symbols,
+                        source_module,
+                    )
                 elif source_def["kind"] == "module":
-                    _resolve_module_children_from_defs(alias.name, module_name, exported_name, source_defs, symbols)
+                    _resolve_module_children_from_defs(
+                        alias.name,
+                        module_name,
+                        exported_name,
+                        source_defs,
+                        symbols,
+                        source_module,
+                    )
             else:
                 module_alias = _resolve_module_alias(source_module, alias.name, all_definitions)
                 if module_alias is not None:
-                    symbols[path] = _make_symbol("module")
+                    symbols[path] = _make_symbol("module", source_module=module_alias)
                     _resolve_module_children(module_alias, module_name, exported_name, all_definitions, symbols)
                 elif path not in symbols:
-                    symbols[path] = _make_symbol("reexport")
+                    symbols[path] = _make_symbol("reexport", source_module=source_module)
 
 
 def _resolve_class_children(
@@ -539,6 +591,7 @@ def _resolve_class_children(
     target_class_name: str,
     source_defs: dict[str, dict],
     symbols: dict[str, dict],
+    source_module: str,
 ) -> None:
     """Copy class member definitions into the public symbol table."""
     prefix = f"{source_class_name}."
@@ -548,7 +601,7 @@ def _resolve_class_children(
         member_name = key[len(prefix) :]
         target_path = f"{target_module}.{target_class_name}.{member_name}"
         if target_path not in symbols:
-            symbols[target_path] = dict(defn)
+            symbols[target_path] = _copy_symbol(defn, source_module=source_module)
 
 
 def _resolve_module_children(
@@ -562,7 +615,7 @@ def _resolve_module_children(
     for key, defn in source_defs.items():
         target_path = f"{target_module}.{target_name}.{key}"
         if target_path not in symbols:
-            symbols[target_path] = dict(defn)
+            symbols[target_path] = _copy_symbol(defn, source_module=source_module)
 
 
 def _resolve_module_children_from_defs(
@@ -571,6 +624,7 @@ def _resolve_module_children_from_defs(
     target_name: str,
     source_defs: dict[str, dict],
     symbols: dict[str, dict],
+    source_module: str,
 ) -> None:
     prefix = f"{source_name}."
     for key, defn in source_defs.items():
@@ -579,7 +633,7 @@ def _resolve_module_children_from_defs(
         member_name = key[len(prefix) :]
         target_path = f"{target_module}.{target_name}.{member_name}"
         if target_path not in symbols:
-            symbols[target_path] = dict(defn)
+            symbols[target_path] = _copy_symbol(defn, source_module=source_module)
 
 
 def _resolve_import_source(node: ast.ImportFrom, current_module: str, *, is_package: bool = False) -> str | None:
@@ -756,15 +810,17 @@ def _extract_reexport_symbols(
             continue
         path = f"{module_name}.{exported_name}"
         if path not in symbols:
-            symbols[path] = _make_symbol("reexport")
+            symbols[path] = _make_symbol("reexport", source_module=source_module)
 
 
 def compare_symbols(
     base_symbols: dict[str, dict],
     head_symbols: dict[str, dict],
+    skipped_modules: set[str] | None = None,
 ) -> dict:
     """Compare two API snapshots and produce a structured diff report."""
     all_paths = sorted(set(base_symbols) | set(head_symbols))
+    skipped_modules = skipped_modules or set()
 
     added: list[dict] = []
     removed: list[dict] = []
@@ -773,11 +829,13 @@ def compare_symbols(
     for path in all_paths:
         base = base_symbols.get(path)
         head = head_symbols.get(path)
+        if _symbol_depends_on_skipped_module(path, base, head, skipped_modules):
+            continue
 
         if base is None and head is not None:
-            added.append({"path": path, **head})
+            added.append({"path": path, **_report_symbol(head)})
         elif head is None and base is not None:
-            removed.append({"path": path, **base})
+            removed.append({"path": path, **_report_symbol(base)})
         elif base is not None and head is not None:
             diffs: list[dict] = []
             if base["kind"] != head["kind"]:
@@ -815,29 +873,61 @@ def compare_symbols(
     }
 
 
-def format_comment(diff: dict) -> str:
+def _report_symbol(symbol: dict) -> dict:
+    return {key: value for key, value in symbol.items() if key != "source_module"}
+
+
+def _symbol_depends_on_skipped_module(
+    path: str,
+    base: dict | None,
+    head: dict | None,
+    skipped_modules: set[str],
+) -> bool:
+    if any(_module_path_matches(path, skipped_module) for skipped_module in skipped_modules):
+        return True
+
+    for symbol in (base, head):
+        source_module = symbol.get("source_module") if symbol is not None else None
+        if isinstance(source_module, str) and any(
+            _module_path_matches(source_module, skipped_module) for skipped_module in skipped_modules
+        ):
+            return True
+    return False
+
+
+def _module_path_matches(path: str, module_name: str) -> bool:
+    return path == module_name or path.startswith(f"{module_name}.")
+
+
+def format_comment(diff: dict, skipped_modules: dict[str, list[dict]] | None = None) -> str:
     """Format the diff report as a GitHub PR comment in markdown."""
-    if not diff["has_changes"]:
+    warning_entries = _format_warning_entries(skipped_modules)
+    if not diff["has_changes"] and not warning_entries:
         return ""
 
-    summary = diff["summary"]
-    lines = [
-        "## Public API Changes",
-        "",
-        f"This PR modifies the public API surface "
-        f"(**{summary['total']}** changes: "
-        f"{summary['added_count']} added, "
-        f"{summary['removed_count']} removed, "
-        f"{summary['changed_count']} modified).",
-        "",
-    ]
+    lines: list[str] = []
+
+    if diff["has_changes"]:
+        summary = diff["summary"]
+        lines.extend(
+            [
+                "## Public API Changes",
+                "",
+                f"This PR modifies the public API surface "
+                f"(**{summary['total']}** changes: "
+                f"{summary['added_count']} added, "
+                f"{summary['removed_count']} removed, "
+                f"{summary['changed_count']} modified).",
+                "",
+            ]
+        )
 
     if diff["added"]:
         lines.append("### Added")
         lines.append("")
         for item in diff["added"]:
             sig = _format_reported_symbol(item)
-            lines.append(f"- `{item['path']}` ({item['kind']}): `{sig}`")
+            lines.append(f"- `{_escape_report_text(item['path'])}` ({_escape_report_text(item['kind'])}): `{sig}`")
         lines.append("")
 
     if diff["removed"]:
@@ -845,35 +935,67 @@ def format_comment(diff: dict) -> str:
         lines.append("")
         for item in diff["removed"]:
             sig = _format_reported_symbol(item)
-            lines.append(f"- `{item['path']}` ({item['kind']}): `{sig}`")
+            lines.append(f"- `{_escape_report_text(item['path'])}` ({_escape_report_text(item['kind'])}): `{sig}`")
         lines.append("")
 
     if diff["changed"]:
         lines.append("### Modified")
         lines.append("")
         for item in diff["changed"]:
-            lines.append(f"- `{item['path']}` ({item['kind']})")
+            lines.append(f"- `{_escape_report_text(item['path'])}` ({_escape_report_text(item['kind'])})")
             for change in item["changes"]:
                 if change["field"] == "signature":
                     if change["before"]:
-                        lines.append(f"  - before: `{change['before']}`")
+                        lines.append(f"  - before: `{_escape_report_text(change['before'])}`")
                     if change["after"]:
-                        lines.append(f"  - after: `{change['after']}`")
+                        lines.append(f"  - after: `{_escape_report_text(change['after'])}`")
                 else:
-                    lines.append(f"  - {change['field']}: `{change['before']}` -> `{change['after']}`")
+                    lines.append(
+                        f"  - {_escape_report_text(change['field'])}: "
+                        f"`{_escape_report_text(change['before'])}` -> "
+                        f"`{_escape_report_text(change['after'])}`"
+                    )
+        lines.append("")
+
+    if warning_entries:
+        if lines:
+            lines.append("")
+        lines.extend(
+            [
+                "## Analysis warnings",
+                "",
+                "Some modules could not be parsed. API diffs that depend on those modules were suppressed.",
+                "",
+            ]
+        )
+        for side, item in warning_entries:
+            lines.append(
+                f"- {side}: `{_escape_report_text(item['path'])}` "
+                f"(`{_escape_report_text(item['module'])}`): `{_escape_report_text(item['reason'])}`"
+            )
         lines.append("")
 
     return "\n".join(lines)
 
 
+def _format_warning_entries(skipped_modules: dict[str, list[dict]] | None) -> list[tuple[str, dict]]:
+    if not skipped_modules:
+        return []
+    return [(side, item) for side, items in skipped_modules.items() for item in items]
+
+
+def _escape_report_text(value: object) -> str:
+    return html.escape(str(value).replace("\r", "\\r").replace("\n", "\\n"), quote=False)
+
+
 def _format_reported_symbol(item: dict) -> str:
-    signature = item.get("signature")
-    value = item.get("value")
+    signature = _escape_report_text(item.get("signature")) if item.get("signature") is not None else None
+    value = _escape_report_text(item.get("value")) if item.get("value") is not None else None
     if value is None:
-        return signature or item["path"].rsplit(".", 1)[-1]
+        return signature or _escape_report_text(item["path"].rsplit(".", 1)[-1])
     if signature:
         return f"{signature} = {value}"
-    return f"{item['path'].rsplit('.', 1)[-1]} = {value}"
+    return f"{_escape_report_text(item['path'].rsplit('.', 1)[-1])} = {value}"
 
 
 def main() -> int:
@@ -884,13 +1006,22 @@ def main() -> int:
     base_root = Path(sys.argv[1]).resolve()
     head_root = Path(sys.argv[2]).resolve()
 
-    base_symbols = extract_api_symbols(base_root)
-    head_symbols = extract_api_symbols(head_root)
-    diff = compare_symbols(base_symbols, head_symbols)
+    base_skipped_modules: list[dict] = []
+    head_skipped_modules: list[dict] = []
+    base_symbols = extract_api_symbols(base_root, base_skipped_modules)
+    head_symbols = extract_api_symbols(head_root, head_skipped_modules)
+    skipped_modules = {
+        "base": base_skipped_modules,
+        "head": head_skipped_modules,
+    }
+    skipped_module_names = {item["module"] for items in skipped_modules.values() for item in items}
+    diff = compare_symbols(base_symbols, head_symbols, skipped_module_names)
 
     output = {
         "diff": diff,
-        "comment": format_comment(diff),
+        "skipped_modules": skipped_modules,
+        "has_analysis_warnings": bool(skipped_module_names),
+        "comment": format_comment(diff, skipped_modules),
     }
     print(json.dumps(output, indent=2))
     return 0
