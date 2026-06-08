@@ -215,9 +215,8 @@ class TestSensorTiledCamera(unittest.TestCase):
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_checkerboard_material_projects_on_uvless_mesh(self):
-        mesh_pixels, has_shape_projected_textures = self._render_checkerboard_uvless_mesh_projection()
+        mesh_pixels = self._render_checkerboard_uvless_mesh_projection()
 
-        self.assertTrue(has_shape_projected_textures)
         self.assertGreater(mesh_pixels.size, 0)
         unique_colors = np.unique(mesh_pixels)
         self.assertGreater(unique_colors.size, 1)
@@ -228,11 +227,10 @@ class TestSensorTiledCamera(unittest.TestCase):
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_triplanar_checkerboard_blends_uvless_mesh_projection(self):
-        mesh_pixels, has_shape_projected_textures = self._render_checkerboard_uvless_mesh_projection(
+        mesh_pixels = self._render_checkerboard_uvless_mesh_projection(
             texture_projection_mode=SensorTiledCamera.TextureProjectionMode.TRIPLANAR
         )
 
-        self.assertTrue(has_shape_projected_textures)
         self.assertGreater(mesh_pixels.size, 0)
         unique_colors = np.unique(mesh_pixels)
         self.assertGreater(unique_colors.size, 2)
@@ -282,7 +280,7 @@ class TestSensorTiledCamera(unittest.TestCase):
         shape_indices = shape_index_image.numpy()[0, 0]
         return albedo[shape_indices == shape_index]
 
-    def _render_checkerboard_uvless_mesh_projection(self, texture_projection_mode=None) -> tuple[np.ndarray, bool]:
+    def _render_checkerboard_uvless_mesh_projection(self, texture_projection_mode=None) -> np.ndarray:
         builder = newton.ModelBuilder()
         vertices = np.array(
             [
@@ -332,10 +330,7 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         albedo = albedo_image.numpy()[0, 0]
         shape_indices = shape_index_image.numpy()[0, 0]
-        has_shape_projected_textures = (
-            tiled_camera_sensor._SensorTiledCamera__render_context.has_shape_projected_textures
-        )
-        return albedo[shape_indices == shape_index], has_shape_projected_textures
+        return albedo[shape_indices == shape_index]
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_output_image_parameters(self):

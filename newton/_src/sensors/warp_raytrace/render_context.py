@@ -68,11 +68,6 @@ class RenderContext:
         self.shape_source_ptr: wp.array[wp.uint64] | None = None
         self.shape_texture_ids: wp.array[wp.int32] | None = None
         self.shape_mesh_data_ids: wp.array[wp.int32] | None = None
-        self.shape_types_host: list[int] = []
-        self.shape_has_mesh_uvs: list[bool] = []
-        self.shape_uses_projected_texture: list[bool] = []
-        self.shape_texture_ids_host: list[int] = []
-        self.has_shape_projected_textures: bool = False
         self.shape_render_type: wp.array[wp.int32] | None = None
 
         self.mesh_data: wp.array[MeshData] | None = None
@@ -135,12 +130,6 @@ class RenderContext:
 
         self.shape_colors = model.shape_color
         self.gaussians_data = model.gaussians_data
-        self.shape_types_host = (
-            [int(shape_type) for shape_type in model.shape_type.numpy()] if model.shape_count else []
-        )
-        self.shape_uses_projected_texture = [
-            shape_type not in (GeoType.MESH, GeoType.PLANE, GeoType.GAUSSIAN) for shape_type in self.shape_types_host
-        ]
 
         self.__load_texture_and_mesh_data(model, load_textures)
 
@@ -432,27 +421,6 @@ class RenderContext:
         else:
             self.state.num_gaussians = gaussians_data.shape[0]
 
-    def update_has_shape_projected_textures(self, texture_data_ids: list[int] | np.ndarray | None = None):
-        """Update whether any textured shape needs projected texture handling.
-
-        Args:
-            texture_data_ids: Per-shape texture data indices. If ``None``,
-                uses :attr:`shape_texture_ids_host`.
-        """
-        if texture_data_ids is None:
-            texture_data_ids = self.shape_texture_ids_host
-
-        self.has_shape_projected_textures = any(
-            int(texture_data_id) > -1 and (uses_projected or (shape_type == GeoType.MESH and not has_mesh_uvs))
-            for shape_type, has_mesh_uvs, uses_projected, texture_data_id in zip(
-                self.shape_types_host,
-                self.shape_has_mesh_uvs,
-                self.shape_uses_projected_texture,
-                texture_data_ids,
-                strict=True,
-            )
-        )
-
     def __load_texture_and_mesh_data(self, model: Model, load_textures: bool):
         """Load mesh UV/normal data and textures from *model*.
 
@@ -473,11 +441,9 @@ class RenderContext:
 
         mesh_data_ids = []
         texture_data_ids = []
-        self.shape_has_mesh_uvs = []
 
         for shape in model.shape_source:
             if isinstance(shape, Mesh):
-                self.shape_has_mesh_uvs.append(shape.uvs is not None)
                 if shape.texture is not None and load_textures:
                     if shape.texture_hash not in texture_hashes:
                         pixels = load_texture(shape.texture)
@@ -523,14 +489,11 @@ class RenderContext:
                 else:
                     mesh_data_ids.append(-1)
             else:
-                self.shape_has_mesh_uvs.append(False)
                 texture_data_ids.append(-1)
                 mesh_data_ids.append(-1)
 
         self.texture_data = wp.array(self.__texture_data, dtype=TextureData, device=self.device)
         self.shape_texture_ids = wp.array(texture_data_ids, dtype=wp.int32, device=self.device)
-        self.shape_texture_ids_host = texture_data_ids
-        self.update_has_shape_projected_textures()
 
         self.mesh_data = wp.array(self.__mesh_data, dtype=MeshData, device=self.device)
         self.shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)

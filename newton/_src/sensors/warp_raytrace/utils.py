@@ -894,8 +894,6 @@ class Utils:
         self.__render_context.shape_texture_ids = wp.array(
             texture_ids, dtype=wp.int32, device=self.__render_context.device
         )
-        self.__render_context.shape_texture_ids_host = texture_ids.tolist()
-        self.__render_context.update_has_shape_projected_textures(texture_ids)
 
     def __reshape_buffer_for_flatten(
         self,
