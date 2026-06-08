@@ -8,9 +8,11 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.kamino._src.geometry import ContactAggregation
 from newton.sensors import SensorContact
-from newton.solvers import SolverMuJoCo
+from newton.solvers import SolverKamino, SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
+from newton.tests.utils import basics
 
 
 def _make_two_world_model(device=None, include_ground=False):
@@ -760,6 +762,73 @@ class TestSensorContactMuJoCo(unittest.TestCase):
 
         total_weight = (mass_a + mass_b + mass_c) * g
         self.assertAlmostEqual(base_force[0, 2], -total_weight, delta=total_weight * 0.01)
+
+
+class TestSensorContactKamino(unittest.TestCase):
+    """End-to-end contact-sensor tests using the Kamino solver.
+
+    Regression coverage that the Kamino->Newton conversion populates ``Contacts.force`` so
+    ``SensorContact.total_force`` matches ``ContactAggregation``.
+    """
+
+    def test_box_on_plane_total_force_matches_aggregation(self):
+        # Build a single box resting on a static ground plane.
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(builder)
+        builder.default_shape_cfg.margin = 0.0
+        builder.default_shape_cfg.gap = 0.0
+        basics.build_box_on_plane(builder=builder)
+        model = builder.finalize(skip_validation_joints=True)
+
+        # Use Kamino's internal collision detector (steps run with ``contacts=None``).
+        config = SolverKamino.Config.from_model(model)
+        config.use_collision_detector = True
+        config.collision_detector.max_contacts = 200
+        solver = SolverKamino(model=model, config=config)
+
+        # SensorContact requests the ``force`` contact attribute, so allocate the
+        # output ``Contacts`` buffer afterwards to pick it up.
+        sensor = SensorContact(model, sensing_obj_bodies=["box"])
+        contacts = newton.Contacts(
+            rigid_contact_max=200,
+            soft_contact_max=0,
+            device=model.device,
+            requested_attributes=model.get_requested_contact_attributes(),
+        )
+        self.assertIsNotNone(contacts.force, "force attribute must be allocated for the sensor path")
+
+        # Kamino's per-body aggregation reads the same internal contacts the conversion does.
+        aggregation = ContactAggregation(solver._model_kamino, solver._contacts_kamino)
+
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        sim_dt = 1.0 / 240.0
+
+        # Settle the box on the plane.
+        for _ in range(120):
+            solver.step(state_in, state_out, control, None, sim_dt)
+            state_in, state_out = state_out, state_in
+
+        # Average over a few steps for stability.
+        avg_steps = 10
+        sensor_acc = np.zeros((1, 3))
+        agg_acc = np.zeros((1, 3))
+        for _ in range(avg_steps):
+            solver.step(state_in, state_out, control, None, sim_dt)
+            state_in, state_out = state_out, state_in
+            solver.update_contacts(contacts, state_in)
+            sensor.update(state_in, contacts)
+            aggregation.compute(skip_if_no_contacts=False)
+            sensor_acc += sensor.total_force.numpy()
+            # The box is body 0 of world 0.
+            agg_acc += aggregation.body_net_force.numpy()[0, 0]
+        sensor_force = sensor_acc[0] / avg_steps
+        agg_force = agg_acc[0] / avg_steps
+
+        # Regression: the stock sensor must now report a non-zero, upward contact force.
+        self.assertGreater(np.linalg.norm(sensor_force), 1e-6, "SensorContact reported zero force under Kamino")
+        self.assertGreater(sensor_force[2], 0.0, "Normal contact force on the box should be upward")
+        # Equivalence: it must match Kamino's per-body aggregation.
+        np.testing.assert_allclose(sensor_force, agg_force, atol=1e-5, rtol=1e-4)
 
 
 if __name__ == "__main__":
