@@ -433,7 +433,12 @@ class RenderContext:
             self.state.num_gaussians = gaussians_data.shape[0]
 
     def update_has_shape_projected_textures(self, texture_data_ids: list[int] | np.ndarray | None = None):
-        """Update whether any textured shape needs projected texture handling."""
+        """Update whether any textured shape needs projected texture handling.
+
+        Args:
+            texture_data_ids: Per-shape texture data indices. If ``None``,
+                uses :attr:`shape_texture_ids_host`.
+        """
         if texture_data_ids is None:
             texture_data_ids = self.shape_texture_ids_host
 
