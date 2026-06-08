@@ -4,7 +4,7 @@
 """Deprecated helpers for legacy SDF block-coordinate arrays.
 
 .. deprecated:: 1.3
-    This entire module is deprecated and will be removed in Newton 1.5.
+    This entire module is deprecated and will be removed in a future release.
 
 The hydroelastic broadphase used to consume two precomputed arrays on
 ``Model`` — ``sdf_block_coords`` (flat ``wp.vec3us`` per active block)

@@ -15,7 +15,7 @@ from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.joints import JointActuationType
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.state import StateKamino
-from newton._src.solvers.kamino._src.core.types import float32, int32, transformf, vec6f
+from newton._src.solvers.kamino._src.core.types import float32, transformf, vec6f
 from newton._src.solvers.kamino._src.dynamics import DualProblem
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
@@ -416,7 +416,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         state_p = model.state()
         state_n = model.state()
         control = model.control()
-        world_mask = wp.array([0, 1, 0], dtype=int32, device=self.default_device)
+        world_mask = wp.array([False, True, False], dtype=wp.bool, device=self.default_device)
 
         # Step the solver a few times to change the state
         step_solver(
@@ -481,7 +481,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         state_p = model.state()
         state_n = model.state()
         control = model.control()
-        world_mask = wp.array([1, 1, 0], dtype=int32, device=self.default_device)
+        world_mask = wp.array([True, True, False], dtype=wp.bool, device=self.default_device)
 
         # Define the reset base pose
         base_q_0_np = [0.1, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0]
@@ -638,7 +638,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         state_p = model.state()
         state_n = model.state()
         control = model.control()
-        world_mask = wp.array([1, 0, 1], dtype=int32, device=self.default_device)
+        world_mask = wp.array([True, False, True], dtype=wp.bool, device=self.default_device)
 
         # Set default default reset joint coordinates
         joint_q_0_np = [0.1, 0.1, 0.1, 0.1]
@@ -864,7 +864,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         state_p = model.state()
         state_n = model.state()
         control = model.control()
-        world_mask = wp.array([1, 0, 1], dtype=int32, device=self.default_device)
+        world_mask = wp.array([True, False, True], dtype=wp.bool, device=self.default_device)
 
         # Set default default reset joint coordinates
         actuator_q_0_np = [0.25, 0.25]

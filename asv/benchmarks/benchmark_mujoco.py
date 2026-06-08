@@ -44,7 +44,6 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 80,
         "nconmax": 25,
-        "ls_parallel": False,
         "cone": "pyramidal",
         "sensing_bodies": ["*thigh*", "*shin*", "*foot*", "*arm*"],
     },
@@ -53,7 +52,6 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 210,
         "nconmax": 35,
-        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "h1": {
@@ -61,7 +59,6 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 65,
         "nconmax": 15,
-        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "cartpole": {
@@ -69,7 +66,6 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 5,
         "nconmax": 0,
-        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "ant": {
@@ -77,7 +73,6 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 38,
         "nconmax": 15,
-        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "quadruped": {
@@ -85,7 +80,6 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 75,
         "nconmax": 50,
-        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "allegro": {
@@ -93,7 +87,6 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 60,
         "nconmax": 40,
-        "ls_parallel": False,
         "cone": "elliptic",
     },
     "kitchen": {
@@ -305,7 +298,6 @@ class Example:
         njmax=None,
         nconmax=None,
         builder=None,
-        ls_parallel=None,
         cone=None,
     ):
         if _NEW_LAYOUT_AVAILABLE:
@@ -346,7 +338,6 @@ class Example:
             ls_iteration=ls_iteration,
             njmax=njmax,
             nconmax=nconmax,
-            ls_parallel=ls_parallel,
             cone=cone,
         )
 
@@ -491,7 +482,6 @@ class Example:
         ls_iteration=None,
         njmax=None,
         nconmax=None,
-        ls_parallel=None,
         cone=None,
     ):
         solver_iteration = solver_iteration if solver_iteration is not None else 100
@@ -500,7 +490,6 @@ class Example:
         integrator = integrator if integrator is not None else ROBOT_CONFIGS[robot]["integrator"]
         njmax = njmax if njmax is not None else ROBOT_CONFIGS[robot]["njmax"]
         nconmax = nconmax if nconmax is not None else ROBOT_CONFIGS[robot]["nconmax"]
-        ls_parallel = ls_parallel if ls_parallel is not None else ROBOT_CONFIGS[robot]["ls_parallel"]
         cone = cone if cone is not None else ROBOT_CONFIGS[robot]["cone"]
 
         njmax += ROBOT_CONFIGS.get(environment, {}).get("njmax", 0)
@@ -515,7 +504,6 @@ class Example:
             ls_iterations=ls_iteration,
             njmax=njmax,
             nconmax=nconmax,
-            ls_parallel=ls_parallel,
             cone=cone,
         )
 
@@ -587,9 +575,6 @@ if __name__ == "__main__":
     parser.add_argument("--ls-iteration", type=int, default=None, help="Number of linesearch iterations.")
     parser.add_argument("--njmax", type=int, default=None, help="Maximum number of constraints per world.")
     parser.add_argument("--nconmax", type=int, default=None, help="Maximum number of collision per world.")
-    parser.add_argument(
-        "--ls-parallel", default=None, action=argparse.BooleanOptionalAction, help="Use parallel line search."
-    )
     parser.add_argument("--cone", type=str, default=None, choices=["pyramidal", "elliptic"], help="Friction cone type.")
 
     args = parser.parse_known_args()[0]
@@ -617,7 +602,6 @@ if __name__ == "__main__":
                 ls_iteration=args.ls_iteration,
                 njmax=args.njmax,
                 nconmax=args.nconmax,
-                ls_parallel=args.ls_parallel,
                 cone=args.cone,
             )
 
@@ -658,7 +642,6 @@ if __name__ == "__main__":
             )
             print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")
             print(f"{'Integrator':<{LABEL_WIDTH}}: {actual_integrator}")
-            # print(f"{'Parallel Line Search':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_parallel}")
             print(f"{'Cone':<{LABEL_WIDTH}}: {actual_cone}")
             print(f"{'Solver Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.iterations}")
             print(f"{'Line Search Iterations':<{LABEL_WIDTH}}: {example.solver.mj_model.opt.ls_iterations}")

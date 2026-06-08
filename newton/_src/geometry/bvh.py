@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -156,6 +157,10 @@ def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
         return True
     if shape_type == GeoType.MESH:
         return True
+    if shape_type == GeoType.CONVEX_MESH:
+        return True
+    if shape_type == GeoType.HFIELD:
+        return True
     if shape_type == GeoType.GAUSSIAN:
         return True
     return False
@@ -205,7 +210,12 @@ def compute_shape_local_bounds(
     min_point = wp.vec3(MAXVAL)
     max_point = wp.vec3(-MAXVAL)
 
-    if in_shape_type[tid] == GeoType.MESH:
+    if (
+        in_shape_type[tid] == GeoType.MESH
+        or in_shape_type[tid] == GeoType.CONVEX_MESH
+        or in_shape_type[tid] == GeoType.HFIELD
+    ):
+        # Heightfields and convex meshes store mesh-backed geometry in shape_source_ptr.
         mesh = wp.mesh_get(in_shape_ptr[tid])
         for i in range(mesh.points.shape[0]):
             min_point = wp.min(min_point, mesh.points[i])
@@ -288,7 +298,12 @@ def compute_shape_bvh_bounds(
         lower, upper = compute_ellipsoid_bounds(transform, size)
     elif geom_type == GeoType.BOX:
         lower, upper = compute_box_bounds(transform, size)
-    elif geom_type == GeoType.MESH or geom_type == GeoType.GAUSSIAN:
+    elif (
+        geom_type == GeoType.MESH
+        or geom_type == GeoType.CONVEX_MESH
+        or geom_type == GeoType.HFIELD
+        or geom_type == GeoType.GAUSSIAN
+    ):
         min_bounds = shape_bounds[shape_index, 0]
         max_bounds = shape_bounds[shape_index, 1]
         lower, upper = compute_shape_bounds(transform, size, min_bounds, max_bounds)
@@ -336,11 +351,11 @@ def compute_bvh_group_roots(bvh_id: wp.uint64, out_bvh_group_roots: wp.array[wp.
     out_bvh_group_roots[tid] = wp.bvh_get_group_root(bvh_id, tid)
 
 
-def _compute_shape_bvh_bounds_launch(
+def compute_shape_bvh_bounds_launch(
     model: Model,
-    lowers: wp.array,
-    uppers: wp.array,
-    groups: wp.array,
+    lowers: wp.array[wp.vec3f],
+    uppers: wp.array[wp.vec3f],
+    groups: wp.array[wp.int32],
 ) -> None:
     """Launch the shape BVH bounds kernel into the provided ``lowers``/``uppers``/``groups`` arrays."""
     wp.launch(
@@ -363,7 +378,7 @@ def _compute_shape_bvh_bounds_launch(
     )
 
 
-def _compute_shape_world_transforms_launch(model: Model, state: State) -> None:
+def compute_shape_world_transforms_launch(model: Model, state: State) -> None:
     """Populate ``model.bvh_shape_world_transforms`` from body poses in *state*."""
     wp.launch(
         kernel=compute_shape_world_transforms,
@@ -378,102 +393,50 @@ def _compute_shape_world_transforms_launch(model: Model, state: State) -> None:
     )
 
 
-def build_bvh_shape(model: Model, state: State) -> None:
-    """Build the shape BVH stored on *model*.
+def build_bvh_shape(model: Model, state: State, *, bvh_constructor: str | None = None) -> None:
+    """Deprecated alias for :meth:`newton.Model.bvh_build_shapes`.
 
-    Allocates :attr:`~newton.Model.bvh_shapes` and related fields (shape
-    enabled filter, per-shape local AABBs, world-space transforms, group
-    roots) and populates them from the current *state*. Must be called
-    before :func:`refit_bvh_shape` and before any sensor that reads the
-    shape BVH (e.g. :class:`~newton.sensors.SensorTiledCamera`).
+    .. deprecated:: 1.3
+        Use :meth:`newton.Model.bvh_build_shapes` instead.
 
     Args:
         model: Simulation model providing shape metadata.
         state: Current simulation state with body transforms.
+        bvh_constructor: Warp BVH construction algorithm forwarded to
+            :meth:`newton.Model.bvh_build_shapes`.
     """
-    if model.shape_count == 0:
-        return
-
-    device = model.device
-    shape_count = model.shape_count
-    world_count_total = model.world_count + 1
-
-    model.bvh_shape_bounds = wp.empty((shape_count, 2), dtype=wp.vec3f, ndim=2, device=device)
-    wp.launch(
-        kernel=compute_shape_local_bounds,
-        dim=shape_count,
-        inputs=[
-            model.shape_type,
-            model.shape_source_ptr,
-            model.gaussians_data,
-            model.bvh_shape_bounds,
-        ],
-        device=device,
+    warnings.warn(
+        "newton.geometry.build_bvh_shape(model, state) is deprecated; use model.bvh_build_shapes(state) instead.",
+        DeprecationWarning,
+        stacklevel=2,
     )
-
-    model.bvh_shape_enabled = wp.empty(shape_count, dtype=wp.uint32, device=device)
-    num_enabled = wp.zeros(1, dtype=wp.int32, device=device)
-    wp.launch(
-        kernel=compute_enabled_shapes,
-        dim=shape_count,
-        inputs=[
-            model.shape_type,
-            model.shape_flags,
-            model.bvh_shape_enabled,
-            num_enabled,
-        ],
-        device=device,
-    )
-    model.bvh_shape_count_enabled = int(num_enabled.numpy()[0])
-    model.bvh_shape_world_transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
-
-    if model.bvh_shape_count_enabled == 0:
-        return
-
-    _compute_shape_world_transforms_launch(model, state)
-
-    lowers = wp.zeros(model.bvh_shape_count_enabled, dtype=wp.vec3f, device=device)
-    uppers = wp.zeros(model.bvh_shape_count_enabled, dtype=wp.vec3f, device=device)
-    groups = wp.zeros(model.bvh_shape_count_enabled, dtype=wp.int32, device=device)
-    _compute_shape_bvh_bounds_launch(model, lowers, uppers, groups)
-    model.bvh_shapes = wp.Bvh(lowers, uppers, groups=groups)
-
-    model.bvh_shapes_group_roots = wp.zeros(world_count_total, dtype=wp.int32, device=device)
-    wp.launch(
-        kernel=compute_bvh_group_roots,
-        dim=world_count_total,
-        inputs=[model.bvh_shapes.id, model.bvh_shapes_group_roots],
-        device=device,
-    )
+    model.bvh_build_shapes(state, bvh_constructor=bvh_constructor)
 
 
 def refit_bvh_shape(model: Model, state: State) -> None:
-    """Refit the shape BVH stored on *model* for the current *state*.
+    """Deprecated alias for :meth:`newton.Model.bvh_refit_shapes`.
 
-    Requires :func:`build_bvh_shape` to have been called beforehand. Updates
-    world-space shape transforms from ``state.body_q`` and refits the BVH
-    in place.
+    .. deprecated:: 1.3
+        Use :meth:`newton.Model.bvh_refit_shapes` instead.
 
     Args:
         model: Simulation model providing shape metadata.
         state: Current simulation state with body transforms.
     """
-    if model.shape_count == 0 or model.bvh_shape_count_enabled == 0:
-        return
-    if model.bvh_shapes is None:
-        raise RuntimeError("refit_bvh_shape requires build_bvh_shape to have been called first.")
-
-    _compute_shape_world_transforms_launch(model, state)
-    _compute_shape_bvh_bounds_launch(model, model.bvh_shapes.lowers, model.bvh_shapes.uppers, model.bvh_shapes.groups)
-    model.bvh_shapes.refit()
+    warnings.warn(
+        "newton.geometry.refit_bvh_shape(model, state) is deprecated; use model.bvh_refit_shapes(state) instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    model.bvh_refit_shapes(state)
 
 
-def _compute_particle_bvh_bounds_launch(
+def compute_particle_bvh_bounds_launch(
     model: Model,
     state: State,
-    lowers: wp.array,
-    uppers: wp.array,
-    groups: wp.array,
+    lowers: wp.array[wp.vec3f],
+    uppers: wp.array[wp.vec3f],
+    groups: wp.array[wp.int32],
 ) -> None:
     """Launch the particle BVH bounds kernel into the provided ``lowers``/``uppers``/``groups`` arrays."""
     wp.launch(
@@ -493,57 +456,39 @@ def _compute_particle_bvh_bounds_launch(
     )
 
 
-def build_bvh_particle(model: Model, state: State) -> None:
-    """Build the particle BVH stored on *model*.
+def build_bvh_particle(model: Model, state: State, *, bvh_constructor: str | None = None) -> None:
+    """Deprecated alias for :meth:`newton.Model.bvh_build_particles`.
 
-    Allocates :attr:`~newton.Model.bvh_particles` and
-    :attr:`~newton.Model.bvh_particles_group_roots` and populates them from
-    the current *state*. Must be called before :func:`refit_bvh_particle`
-    and before any sensor that reads the particle BVH.
+    .. deprecated:: 1.3
+        Use :meth:`newton.Model.bvh_build_particles` instead.
 
     Args:
         model: Simulation model providing particle metadata.
         state: Current simulation state with particle positions.
+        bvh_constructor: Warp BVH construction algorithm forwarded to
+            :meth:`newton.Model.bvh_build_particles`.
     """
-    if state.particle_q is None or state.particle_count == 0:
-        return
-
-    device = model.device
-    world_count_total = model.world_count + 1
-    num_particles = state.particle_count
-
-    lowers = wp.zeros(num_particles, dtype=wp.vec3f, device=device)
-    uppers = wp.zeros(num_particles, dtype=wp.vec3f, device=device)
-    groups = wp.zeros(num_particles, dtype=wp.int32, device=device)
-    _compute_particle_bvh_bounds_launch(model, state, lowers, uppers, groups)
-    model.bvh_particles = wp.Bvh(lowers, uppers, groups=groups)
-
-    model.bvh_particles_group_roots = wp.zeros(world_count_total, dtype=wp.int32, device=device)
-    wp.launch(
-        kernel=compute_bvh_group_roots,
-        dim=world_count_total,
-        inputs=[model.bvh_particles.id, model.bvh_particles_group_roots],
-        device=device,
+    warnings.warn(
+        "newton.geometry.build_bvh_particle(model, state) is deprecated; use model.bvh_build_particles(state) instead.",
+        DeprecationWarning,
+        stacklevel=2,
     )
+    model.bvh_build_particles(state, bvh_constructor=bvh_constructor)
 
 
 def refit_bvh_particle(model: Model, state: State) -> None:
-    """Refit the particle BVH stored on *model* for the current *state*.
+    """Deprecated alias for :meth:`newton.Model.bvh_refit_particles`.
 
-    Requires :func:`build_bvh_particle` to have been called beforehand.
-    Recomputes particle bounds from ``state.particle_q`` and refits the BVH
-    in place.
+    .. deprecated:: 1.3
+        Use :meth:`newton.Model.bvh_refit_particles` instead.
 
     Args:
         model: Simulation model providing particle metadata.
         state: Current simulation state with particle positions.
     """
-    if state.particle_q is None or state.particle_count == 0:
-        return
-    if model.bvh_particles is None:
-        raise RuntimeError("refit_bvh_particle requires build_bvh_particle to have been called first.")
-
-    _compute_particle_bvh_bounds_launch(
-        model, state, model.bvh_particles.lowers, model.bvh_particles.uppers, model.bvh_particles.groups
+    warnings.warn(
+        "newton.geometry.refit_bvh_particle(model, state) is deprecated; use model.bvh_refit_particles(state) instead.",
+        DeprecationWarning,
+        stacklevel=2,
     )
-    model.bvh_particles.refit()
+    model.bvh_refit_particles(state)

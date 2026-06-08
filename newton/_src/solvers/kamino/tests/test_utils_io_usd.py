@@ -1228,13 +1228,13 @@ class TestUSDKaminoSceneAPIImport(unittest.TestCase):
         )
         self.assertTrue(
             hasattr(kamino_attr, "padmm_use_acceleration")
-            and isinstance(kamino_attr.padmm_use_acceleration.numpy()[0], np.bool)
+            and isinstance(kamino_attr.padmm_use_acceleration.numpy()[0], np.bool_)
         )
         self.assertTrue(hasattr(kamino_attr, "joint_correction") and isinstance(kamino_attr.joint_correction[0], str))
 
         self.assertTrue(
             hasattr(kamino_attr, "constraints_use_preconditioning")
-            and isinstance(kamino_attr.constraints_use_preconditioning.numpy()[0], np.bool)
+            and isinstance(kamino_attr.constraints_use_preconditioning.numpy()[0], np.bool_)
         )
         self.assertTrue(
             hasattr(kamino_attr, "constraints_alpha")

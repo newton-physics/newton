@@ -238,7 +238,7 @@ def extract_delassus_sparse(
 
     entry_start_np = delassus.bsm.row_start.numpy()
 
-    world_mask = wp.ones((num_worlds,), dtype=wp.int32, device=delassus._device)
+    world_mask = wp.ones((num_worlds,), dtype=wp.bool, device=delassus._device)
 
     for dim in range(max_dim):
         # Query the operator by computing the product with a vector where only entry `dim` is set to 1.

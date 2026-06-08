@@ -1475,7 +1475,7 @@ class SolutionMetrics:
             problem.delassus.matvec(
                 x=lambdas,
                 y=self._buffer_v,
-                world_mask=wp.ones((problem.data.num_worlds,), dtype=wp.int32, device=self.device),
+                world_mask=wp.ones((problem.data.num_worlds,), dtype=wp.bool, device=self.device),
             )
             problem.delassus.set_regularization(delassus_reg_prev)
             problem.delassus.set_preconditioner(delassus_pre_prev)

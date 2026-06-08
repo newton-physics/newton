@@ -449,7 +449,7 @@ class RigidBodySim:
         self._tau_j_ref = wp.to_torch(self.sim.control.tau_j_ref).reshape(nw, njd)
 
         # World mask for selective resets
-        self._world_mask_wp = wp.zeros((nw,), dtype=wp.int32, device=self._device)
+        self._world_mask_wp = wp.zeros((nw,), dtype=wp.bool, device=self._device)
         self._world_mask = wp.to_torch(self._world_mask_wp)
 
         # Reset buffers
@@ -999,7 +999,7 @@ class RigidBodySim:
 
     @property
     def world_mask(self) -> torch.Tensor:
-        """World mask ``(num_worlds,)`` int32 for selective resets."""
+        """World mask ``(num_worlds,)`` bool for selective resets."""
         return self._world_mask
 
     # ------------------------------------------------------------------

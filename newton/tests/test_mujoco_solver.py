@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import math
 import os
 import tempfile
 import time
@@ -42,8 +43,8 @@ class TestMuJoCoSolver(unittest.TestCase):
         """
         self.assertTrue(True, "setUp method completed.")
 
-    def test_ls_parallel_option(self):
-        """Test that ls_parallel option is properly set on the MuJoCo Warp model."""
+    def test_ls_parallel_deprecated(self):
+        """Test that the deprecated ls_parallel option warns but is still applied."""
         # Create minimal model with proper inertia
         builder = newton.ModelBuilder()
         link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
@@ -51,13 +52,19 @@ class TestMuJoCoSolver(unittest.TestCase):
         builder.add_articulation([joint])
         model = builder.finalize()
 
-        # Test with ls_parallel=True
-        solver = SolverMuJoCo(model, ls_parallel=True)
+        # Passing ls_parallel emits a DeprecationWarning but is still applied while
+        # the targeted mujoco_warp supports it.
+        with self.assertWarns(DeprecationWarning):
+            solver = SolverMuJoCo(model, ls_parallel=True)
         self.assertTrue(solver.mjw_model.opt.ls_parallel, "ls_parallel should be True when set to True")
+        with self.assertWarns(DeprecationWarning):
+            solver = SolverMuJoCo(model, ls_parallel=False)
+        self.assertFalse(solver.mjw_model.opt.ls_parallel, "ls_parallel should be False when set to False")
 
-        # Test with ls_parallel=False (default)
-        solver_default = SolverMuJoCo(model, ls_parallel=False)
-        self.assertFalse(solver_default.mjw_model.opt.ls_parallel, "ls_parallel should be False when set to False")
+        # Omitting ls_parallel does not warn.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            SolverMuJoCo(model)
 
     def test_tolerance_options(self):
         """Test that tolerance and ls_tolerance options are properly set on the MuJoCo Warp model."""
@@ -7453,6 +7460,224 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         quat_dist = min(np.linalg.norm(q_after - q_before), np.linalg.norm(q_after + q_before))
         self.assertLess(quat_dist, 1e-3, "Free body orientation corrupted by ball loop joint q_start offset")
 
+    def test_ball_joint_fk_rotated_child_anchor(self):
+        """Newton, MuJoCo, and mujoco_warp FK agree on the child body's world pose and angular velocity for varying (joint_q, joint_qd) under non-identity child_xform rotation."""
+        import mujoco
+
+        child_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 6.0)
+        # (joint_q, joint_qd) chosen so neither commutes with child_rot — exercises the full bridge.
+        cases = {
+            "rx90_wz": (wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2.0), wp.vec3(0.0, 0.0, 1.0)),
+            "ry45_wx": (wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 4.0), wp.vec3(1.0, 0.0, 0.0)),
+            "compound": (
+                wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 1.0, 1.0)), math.pi / 3.0),
+                wp.vec3(0.7, 0.0, -0.5),
+            ),
+        }
+
+        builder = newton.ModelBuilder()
+        child = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        ball_j = builder.add_joint_ball(
+            -1,
+            child,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform(wp.vec3(0.1, 0.2, 0.0), child_rot),
+        )
+        builder.add_articulation([ball_j])
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        q_start = int(model.joint_q_start.numpy()[ball_j])
+        qd_start = int(model.joint_qd_start.numpy()[ball_j])
+        mj_body_id = solver.mj_model.body(model.body_label[child].replace("/", "_")).id
+
+        def quat_err(a, b):  # quaternion sign ambiguity: q and -q are the same rotation
+            return min(np.linalg.norm(a[3:] - b[3:]), np.linalg.norm(a[3:] + b[3:]))
+
+        for name, (r, w) in cases.items():
+            with self.subTest(case=name):
+                state = model.state()
+                q_np = state.joint_q.numpy().copy()
+                q_np[q_start : q_start + 4] = [r[0], r[1], r[2], r[3]]
+                wp.copy(state.joint_q, wp.array(q_np, dtype=wp.float32))
+                qd_np = state.joint_qd.numpy().copy()
+                qd_np[qd_start : qd_start + 3] = [w[0], w[1], w[2]]
+                wp.copy(state.joint_qd, wp.array(qd_np, dtype=wp.float32))
+
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                bq_newton = state.body_q.numpy()[child].copy()
+                # body_qd convention: (v_com_world, omega_world).
+                w_world_newton = state.body_qd.numpy()[child][3:6].copy()
+
+                solver._update_mjc_data(solver.mj_data, model, state)
+                mujoco.mj_forward(solver.mj_model, solver.mj_data)
+                mj_pos = np.array(solver.mj_data.xpos[mj_body_id], dtype=np.float64)
+                mj_quat_wxyz = np.array(solver.mj_data.xquat[mj_body_id], dtype=np.float64)
+                bq_mj = np.concatenate([mj_pos, [mj_quat_wxyz[1], mj_quat_wxyz[2], mj_quat_wxyz[3], mj_quat_wxyz[0]]])
+                vel = np.zeros(6, dtype=np.float64)
+                mujoco.mj_objectVelocity(solver.mj_model, solver.mj_data, mujoco.mjtObj.mjOBJ_BODY, mj_body_id, vel, 0)
+                # mj_objectVelocity with flg_local=0 returns [angular(3), linear(3)] in world.
+                w_world_mj = vel[:3]
+
+                solver._update_mjc_data(solver.mjw_data, model, state)
+                solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+                solver._update_newton_state(model, state, solver.mjw_data, state_prev=state)
+                bq_mjw = state.body_q.numpy()[child]
+
+                self.assertLess(
+                    np.max(np.abs(bq_newton[:3] - bq_mj[:3])), 1e-5, f"newton vs mj pos: {bq_newton}, {bq_mj}"
+                )
+                self.assertLess(quat_err(bq_newton, bq_mj), 1e-5, f"newton vs mj quat: {bq_newton}, {bq_mj}")
+                self.assertLess(
+                    np.max(np.abs(bq_newton[:3] - bq_mjw[:3])), 1e-5, f"newton vs mjw pos: {bq_newton}, {bq_mjw}"
+                )
+                self.assertLess(quat_err(bq_newton, bq_mjw), 1e-5, f"newton vs mjw quat: {bq_newton}, {bq_mjw}")
+                self.assertLess(
+                    np.max(np.abs(w_world_newton - w_world_mj)),
+                    1e-5,
+                    f"newton vs mj omega: {w_world_newton}, {w_world_mj}",
+                )
+
+    def test_ball_joint_applied_torque_rotated_child_anchor(self):
+        """control.joint_f drives both Newton's and MuJoCo's post-step world omega to tau*dt for varying (joint_q, torque) under non-identity child_xform rotation.
+
+        Pushing state_out back through _update_mjc_data and reading MuJoCo's own mj_objectVelocity catches missing factors that would cancel between apply and readback in a Newton-only view.
+        """
+        import mujoco
+
+        child_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 6.0)
+        # (joint_q, torque) chosen so R(r) * tau != tau — exercises the full r^{-1} factor in the apply path.
+        cases = {
+            "rx90_tz": (wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2.0), wp.vec3(0.0, 0.0, 1.0)),
+            "ry45_tx": (wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 4.0), wp.vec3(1.0, 0.0, 0.0)),
+            "compound": (
+                wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 1.0, 1.0)), math.pi / 3.0),
+                wp.vec3(0.7, 0.0, -0.5),
+            ),
+        }
+
+        builder = newton.ModelBuilder(gravity=0.0)
+        child = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        ball_j = builder.add_joint_ball(
+            -1,
+            child,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), child_rot),
+        )
+        builder.add_articulation([ball_j])
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        q_start = int(model.joint_q_start.numpy()[ball_j])
+        qd_start = int(model.joint_qd_start.numpy()[ball_j])
+        mj_body_id = solver.mj_model.body(model.body_label[child].replace("/", "_")).id
+        dt = 1.0e-4
+
+        for name, (r, tau) in cases.items():
+            with self.subTest(case=name):
+                state_in = model.state()
+                state_out = model.state()
+                control = model.control()
+
+                q_np = state_in.joint_q.numpy().copy()
+                q_np[q_start : q_start + 4] = [r[0], r[1], r[2], r[3]]
+                wp.copy(state_in.joint_q, wp.array(q_np, dtype=wp.float32))
+
+                joint_f_np = control.joint_f.numpy().copy()
+                joint_f_np[qd_start : qd_start + 3] = [tau[0], tau[1], tau[2]]
+                wp.copy(control.joint_f, wp.array(joint_f_np, dtype=wp.float32))
+
+                solver.step(state_in, state_out, control, None, dt)
+                omega_world_newton = state_out.body_qd.numpy()[child][3:6]
+
+                solver._update_mjc_data(solver.mj_data, model, state_out)
+                mujoco.mj_forward(solver.mj_model, solver.mj_data)
+                vel = np.zeros(6, dtype=np.float64)
+                mujoco.mj_objectVelocity(solver.mj_model, solver.mj_data, mujoco.mjtObj.mjOBJ_BODY, mj_body_id, vel, 0)
+                omega_world_mj = vel[:3]
+
+                expected = np.array([tau[0] * dt, tau[1] * dt, tau[2] * dt])
+                self.assertLess(
+                    np.max(np.abs(omega_world_mj - expected)), 1e-6, f"mj={omega_world_mj}, expected={expected}"
+                )
+                self.assertLess(
+                    np.max(np.abs(omega_world_newton - omega_world_mj)),
+                    1e-6,
+                    f"newton={omega_world_newton}, mj={omega_world_mj}",
+                )
+
+    def test_ball_joint_actuator_readback_rotated_child_anchor(self):
+        """convert_qfrc_actuator_from_mj_kernel BALL maps mj_data.qfrc_actuator to state.mujoco.qfrc_actuator in Newton's anchor frame for varying joint_q under non-identity child_xform rotation."""
+        child_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 6.0)
+        rx90 = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2.0)
+        ry45 = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 4.0)
+        compound = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 1.0, 1.0)), math.pi / 3.0)
+        cases = {
+            "rx90_tx": (rx90, wp.vec3(1.0, 0.0, 0.0)),
+            "ry45_tz": (ry45, wp.vec3(0.0, 0.0, 1.0)),
+            "compound": (compound, wp.vec3(0.3, -0.5, 0.7)),
+        }
+
+        builder = newton.ModelBuilder(gravity=0.0)
+        child = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        ball_j = builder.add_joint_ball(
+            -1,
+            child,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), child_rot),
+        )
+        builder.add_articulation([ball_j])
+        builder.request_state_attributes("mujoco:qfrc_actuator")
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        q_start = int(model.joint_q_start.numpy()[ball_j])
+        qd_start = int(model.joint_qd_start.numpy()[ball_j])
+
+        def qmul(a, b):
+            ax, ay, az, aw = a
+            bx, by, bz, bw = b
+            return np.array(
+                [
+                    aw * bx + ax * bw + ay * bz - az * by,
+                    aw * by - ax * bz + ay * bw + az * bx,
+                    aw * bz + ax * by - ay * bx + az * bw,
+                    aw * bw - ax * bx - ay * by - az * bz,
+                ]
+            )
+
+        def qinv(q):
+            return np.array([-q[0], -q[1], -q[2], q[3]])
+
+        def qrot(q, v):
+            return qmul(qmul(q, np.array([v[0], v[1], v[2], 0.0])), qinv(q))[:3]
+
+        c = np.array([child_rot[0], child_rot[1], child_rot[2], child_rot[3]], dtype=np.float64)
+
+        for name, (r, tau_mj) in cases.items():
+            with self.subTest(case=name):
+                state = model.state()
+                q_np = state.joint_q.numpy().copy()
+                q_np[q_start : q_start + 4] = [r[0], r[1], r[2], r[3]]
+                wp.copy(state.joint_q, wp.array(q_np, dtype=wp.float32))
+
+                solver._update_mjc_data(solver.mj_data, model, state)
+                qfrc_np = np.array(solver.mj_data.qfrc_actuator, dtype=np.float32).copy()
+                qfrc_np[qd_start : qd_start + 3] = [tau_mj[0], tau_mj[1], tau_mj[2]]
+                solver.mj_data.qfrc_actuator[:] = qfrc_np
+
+                solver._update_newton_state(model, state, solver.mj_data, state_prev=state)
+
+                # Expected: tau_newton = R(c^{-1} * q_mj) * tau_mj, where q_mj = c * r * c^{-1}.
+                r_np = np.array([r[0], r[1], r[2], r[3]], dtype=np.float64)
+                tau_mj_np = np.array([tau_mj[0], tau_mj[1], tau_mj[2]], dtype=np.float64)
+                q_mj = qmul(qmul(c, r_np), qinv(c))
+                expected = qrot(qmul(qinv(c), q_mj), tau_mj_np)
+
+                tau_newton = state.mujoco.qfrc_actuator.numpy()[qd_start : qd_start + 3]
+                err = float(np.max(np.abs(tau_newton - expected)))
+                self.assertLess(err, 1e-5, f"got={tau_newton}, expected={expected}, err={err:.2e}")
+
 
 class TestMuJoCoSolverPairProperties(unittest.TestCase):
     """Test contact pair property conversion and runtime updates across multiple worlds."""
@@ -10918,7 +11143,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         builder.add_shape_box(top, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
         model = builder.finalize()
         self._make_force_space(model)
-        solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=30, nconmax=30, iterations=10)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=32, nconmax=30, iterations=10)
         self._run_to_first_contact(model, solver, max_substeps=120)
 
         # Find a contact between the two dynamic boxes (both bodies > 0).

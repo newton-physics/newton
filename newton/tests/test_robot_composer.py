@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -350,11 +351,16 @@ class RobotComposerSim:
         hand_quat = quat_z * quat_y
         ee_xform = wp.transform((0.0, 0.0, 0.1), hand_quat)
 
-        franka_with_hand.add_mjcf(
-            str(self.allegro_path),
-            xform=ee_xform,
-            parent_body=franka_ee_idx,
-        )
+        # fr3_link8 is the canonical massless Franka tool flange, rigidly fixed
+        # to a massive parent; mounting the hand there is the intended use, so
+        # tolerate the advisory zero-mass-parent warning. Other warnings surface.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=r"parent_body \d+ has zero or negative mass")
+            franka_with_hand.add_mjcf(
+                str(self.allegro_path),
+                xform=ee_xform,
+                parent_body=franka_ee_idx,
+            )
 
         allegro_dof_count = franka_with_hand.joint_dof_count - 7 - 3
         franka_with_hand.joint_target_q[-allegro_dof_count:] = franka_with_hand.joint_q[-allegro_dof_count:]
