@@ -4,7 +4,7 @@
 import warp as wp
 
 from ...geometry import GeoType
-from .types import MeshData, TextureData
+from .types import MeshData, TextureData, TextureProjectionMode
 
 
 @wp.func
@@ -48,19 +48,83 @@ def sample_texture_mesh(
 
 
 @wp.func
-def sample_texture_triplanar(
+def sample_texture_cubic_projection_local(
+    local: wp.vec3f,
+    normal: wp.vec3f,
+    texture_data: TextureData,
+) -> wp.vec3f:
+    """Cubic projection for local coordinates without UVs, similar to OmniPBR project_uvw."""
+    repeat = texture_data.repeat
+    abs_normal = wp.vec3f(wp.abs(normal[0]), wp.abs(normal[1]), wp.abs(normal[2]))
+
+    uv = wp.vec2f(local[0], local[1])
+    if abs_normal[0] >= abs_normal[1] and abs_normal[0] >= abs_normal[2]:
+        uv = wp.vec2f(local[1], local[2])
+    elif abs_normal[1] >= abs_normal[2]:
+        uv = wp.vec2f(local[0], local[2])
+
+    return sample_texture_2d(flip_v(wp.cw_mul(uv, repeat)), texture_data)
+
+
+@wp.func
+def sample_texture_cubic_projection_shape(
+    hit_point: wp.vec3f,
+    hit_normal: wp.vec3f,
+    shape_transform: wp.transformf,
+    texture_data: TextureData,
+) -> wp.vec3f:
+    inv_transform = wp.transform_inverse(shape_transform)
+    local = wp.transform_point(inv_transform, hit_point)
+    normal = wp.transform_vector(inv_transform, hit_normal)
+
+    return sample_texture_cubic_projection_local(local, normal, texture_data)
+
+
+@wp.func
+def sample_texture_triplanar_local(
+    local: wp.vec3f,
+    normal: wp.vec3f,
+    texture_data: TextureData,
+) -> wp.vec3f:
+    """Weighted triplanar projection for local coordinates without UVs."""
+    w = wp.vec3f(wp.abs(normal[0]), wp.abs(normal[1]), wp.abs(normal[2]))
+    w_sum = w[0] + w[1] + w[2]
+    if w_sum > 0.0:
+        w = w / w_sum
+    else:
+        w = wp.vec3f(0.0, 0.0, 1.0)
+
+    repeat = texture_data.repeat
+    c_x = sample_texture_2d(flip_v(wp.cw_mul(wp.vec2f(local[1], local[2]), repeat)), texture_data)
+    c_y = sample_texture_2d(flip_v(wp.cw_mul(wp.vec2f(local[0], local[2]), repeat)), texture_data)
+    c_z = sample_texture_2d(flip_v(wp.cw_mul(wp.vec2f(local[0], local[1]), repeat)), texture_data)
+
+    return c_x * w[0] + c_y * w[1] + c_z * w[2]
+
+
+@wp.func
+def sample_texture_triplanar_shape(
+    hit_point: wp.vec3f,
+    hit_normal: wp.vec3f,
+    shape_transform: wp.transformf,
+    texture_data: TextureData,
+) -> wp.vec3f:
+    inv_transform = wp.transform_inverse(shape_transform)
+    local = wp.transform_point(inv_transform, hit_point)
+    normal = wp.transform_vector(inv_transform, hit_normal)
+
+    return sample_texture_triplanar_local(local, normal, texture_data)
+
+
+@wp.func
+def sample_texture_cubic_projection_mesh(
     hit_point: wp.vec3f,
     shape_transform: wp.transformf,
     mesh_id: wp.uint64,
     face_id: wp.int32,
     texture_data: TextureData,
 ) -> wp.vec3f:
-    """Triplanar texture projection for meshes without UVs (equivalent to project_uvw).
-
-    Samples the texture from 3 axis-aligned projections and blends based on
-    the face normal, producing seamless results on arbitrarily oriented surfaces.
-    """
-    # Compute face normal from mesh triangle vertices
+    """Cubic projection for UV-less meshes, similar to OmniPBR project_uvw."""
     i0 = wp.mesh_get_index(mesh_id, face_id * 3 + 0)
     i1 = wp.mesh_get_index(mesh_id, face_id * 3 + 1)
     i2 = wp.mesh_get_index(mesh_id, face_id * 3 + 2)
@@ -69,23 +133,32 @@ def sample_texture_triplanar(
     p2 = wp.mesh_get_point(mesh_id, i2)
     face_normal = wp.normalize(wp.cross(p1 - p0, p2 - p0))
 
-    # Transform hit point to local object space
     inv_transform = wp.transform_inverse(shape_transform)
     local = wp.transform_point(inv_transform, hit_point)
 
-    # Blending weights from absolute normal components (sum to 1)
-    w = wp.vec3f(wp.abs(face_normal[0]), wp.abs(face_normal[1]), wp.abs(face_normal[2]))
-    w_sum = w[0] + w[1] + w[2]
-    if w_sum > 0.0:
-        w = w / w_sum
+    return sample_texture_cubic_projection_local(local, face_normal, texture_data)
 
-    # Sample texture from 3 axis-aligned projections
-    repeat = texture_data.repeat
-    c_x = sample_texture_2d(flip_v(wp.cw_mul(wp.vec2f(local[1], local[2]), repeat)), texture_data)
-    c_y = sample_texture_2d(flip_v(wp.cw_mul(wp.vec2f(local[0], local[2]), repeat)), texture_data)
-    c_z = sample_texture_2d(flip_v(wp.cw_mul(wp.vec2f(local[0], local[1]), repeat)), texture_data)
 
-    return c_x * w[0] + c_y * w[1] + c_z * w[2]
+@wp.func
+def sample_texture_triplanar_mesh(
+    hit_point: wp.vec3f,
+    shape_transform: wp.transformf,
+    mesh_id: wp.uint64,
+    face_id: wp.int32,
+    texture_data: TextureData,
+) -> wp.vec3f:
+    i0 = wp.mesh_get_index(mesh_id, face_id * 3 + 0)
+    i1 = wp.mesh_get_index(mesh_id, face_id * 3 + 1)
+    i2 = wp.mesh_get_index(mesh_id, face_id * 3 + 2)
+    p0 = wp.mesh_get_point(mesh_id, i0)
+    p1 = wp.mesh_get_point(mesh_id, i1)
+    p2 = wp.mesh_get_point(mesh_id, i2)
+    face_normal = wp.normalize(wp.cross(p1 - p0, p2 - p0))
+
+    inv_transform = wp.transform_inverse(shape_transform)
+    local = wp.transform_point(inv_transform, hit_point)
+
+    return sample_texture_triplanar_local(local, face_normal, texture_data)
 
 
 @wp.func
@@ -101,6 +174,7 @@ def sample_texture(
     bary_u: wp.float32,
     bary_v: wp.float32,
     face_id: wp.int32,
+    projection_mode: wp.int32,
 ) -> wp.vec3f:
     DEFAULT_RETURN = wp.vec3f(1.0, 1.0, 1.0)
 
@@ -114,10 +188,15 @@ def sample_texture(
         if face_id < 0:
             return DEFAULT_RETURN
 
-        # Triplanar projection for meshes without UV data (equivalent to project_uvw).
-        # Check before mesh_data_index guard since triplanar doesn't need mesh_data.
+        # UV-less meshes can derive the projection normal directly in mesh-local space.
+        # Check before mesh_data_index guard since projection doesn't need mesh_data.
         if mesh_data_index < 0 or mesh_data[mesh_data_index].uvs.shape[0] == 0:
-            return sample_texture_triplanar(
+            if projection_mode == TextureProjectionMode.TRIPLANAR:
+                return sample_texture_triplanar_mesh(
+                    hit_point, shape_transform, mesh_id, face_id, texture_data[texture_index]
+                )
+
+            return sample_texture_cubic_projection_mesh(
                 hit_point, shape_transform, mesh_id, face_id, texture_data[texture_index]
             )
 

@@ -38,6 +38,16 @@ class GaussianRenderMode(enum.IntEnum):
     """Quality Render Mode, collect hits until minimum transmittance is reached"""
 
 
+class TextureProjectionMode(enum.IntEnum):
+    """Projection mode for texture-mapped shapes without authored UVs."""
+
+    CUBIC = 0
+    """Project from the dominant local axis and sample once."""
+
+    TRIPLANAR = 1
+    """Blend samples from all three local axes using normal-based weights."""
+
+
 @dataclass(unsafe_hash=True)
 class RenderConfig:
     """Raytrace render settings shared across all worlds."""
@@ -46,7 +56,10 @@ class RenderConfig:
     """Include shapes that belong to no specific world."""
 
     enable_textures: bool = False
-    """Enable texture-mapped rendering for meshes."""
+    """Enable texture-mapped rendering for shapes."""
+
+    texture_projection_mode: int = TextureProjectionMode.CUBIC
+    """Projection mode for texture-mapped shapes without UVs."""
 
     enable_shadows: bool = False
     """Enable shadow rays for directional lights."""

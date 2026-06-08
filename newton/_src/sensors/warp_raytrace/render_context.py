@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
-from ...geometry import Gaussian, Mesh
+from ...geometry import Gaussian, GeoType, Mesh
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
 from .render import create_kernel
@@ -32,6 +32,7 @@ class RenderContext:
         render_normal: bool = False
         render_albedo: bool = False
         render_hdr_color: bool = False
+        render_shape_projected_textures: bool = False
 
     DEFAULT_CLEAR_DATA = ClearData()
 
@@ -68,6 +69,8 @@ class RenderContext:
         self.shape_source_ptr: wp.array[wp.uint64] | None = None
         self.shape_texture_ids: wp.array[wp.int32] | None = None
         self.shape_mesh_data_ids: wp.array[wp.int32] | None = None
+        self.shape_uses_projected_texture: list[bool] = []
+        self.has_shape_projected_textures: bool = False
 
         self.mesh_data: wp.array[MeshData] | None = None
         self.texture_data: wp.array[TextureData] | None = None
@@ -115,6 +118,10 @@ class RenderContext:
 
         self.shape_colors = model.shape_color
         self.gaussians_data = model.gaussians_data
+        shape_types = model.shape_type.numpy() if model.shape_count else []
+        self.shape_uses_projected_texture = [
+            int(shape_type) not in (GeoType.MESH, GeoType.PLANE, GeoType.GAUSSIAN) for shape_type in shape_types
+        ]
 
         self.__load_texture_and_mesh_data(model, load_textures)
 
@@ -215,6 +222,9 @@ class RenderContext:
             self.state.render_normal = normal_image is not None
             self.state.render_albedo = albedo_image is not None
             self.state.render_hdr_color = hdr_color_image is not None
+            self.state.render_shape_projected_textures = (
+                self.config.enable_textures and self.has_shape_projected_textures
+            )
 
             assert camera_transforms.shape == (camera_count, self.world_count), (
                 f"camera_transforms size must match {camera_count} x {self.world_count}"
@@ -472,6 +482,10 @@ class RenderContext:
 
         self.texture_data = wp.array(self.__texture_data, dtype=TextureData, device=self.device)
         self.shape_texture_ids = wp.array(texture_data_ids, dtype=wp.int32, device=self.device)
+        self.has_shape_projected_textures = any(
+            uses_projected and texture_data_id > -1
+            for uses_projected, texture_data_id in zip(self.shape_uses_projected_texture, texture_data_ids, strict=True)
+        )
 
         self.mesh_data = wp.array(self.__mesh_data, dtype=MeshData, device=self.device)
         self.shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)

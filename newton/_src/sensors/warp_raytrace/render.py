@@ -9,7 +9,7 @@ import warp as wp
 
 from ...geometry import Gaussian, GeoType
 from . import lighting, raytrace, textures, tiling
-from .types import MeshData, RenderOrder, TextureData
+from .types import MeshData, RenderOrder, TextureData, TextureProjectionMode
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
@@ -189,19 +189,53 @@ def create_kernel(
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 texture_index = shape_texture_ids[closest_hit.shape_index]
                 if texture_index > -1:
-                    tex_color = textures.sample_texture(
-                        shape_types[closest_hit.shape_index],
-                        shape_transforms[closest_hit.shape_index],
-                        texture_data,
-                        texture_index,
-                        shape_source_ptr[closest_hit.shape_index],
-                        mesh_data,
-                        shape_mesh_data_ids[closest_hit.shape_index],
-                        hit_point,
-                        closest_hit.bary_u,
-                        closest_hit.bary_v,
-                        closest_hit.face_idx,
-                    )
+                    if wp.static(state.render_shape_projected_textures):
+                        shape_type = shape_types[closest_hit.shape_index]
+                        if shape_type == GeoType.MESH or shape_type == GeoType.PLANE:
+                            tex_color = textures.sample_texture(
+                                shape_type,
+                                shape_transforms[closest_hit.shape_index],
+                                texture_data,
+                                texture_index,
+                                shape_source_ptr[closest_hit.shape_index],
+                                mesh_data,
+                                shape_mesh_data_ids[closest_hit.shape_index],
+                                hit_point,
+                                closest_hit.bary_u,
+                                closest_hit.bary_v,
+                                closest_hit.face_idx,
+                                wp.static(config.texture_projection_mode),
+                            )
+                        else:
+                            if wp.static(config.texture_projection_mode == TextureProjectionMode.TRIPLANAR):
+                                tex_color = textures.sample_texture_triplanar_shape(
+                                    hit_point,
+                                    closest_hit.normal,
+                                    shape_transforms[closest_hit.shape_index],
+                                    texture_data[texture_index],
+                                )
+                            else:
+                                tex_color = textures.sample_texture_cubic_projection_shape(
+                                    hit_point,
+                                    closest_hit.normal,
+                                    shape_transforms[closest_hit.shape_index],
+                                    texture_data[texture_index],
+                                )
+                    else:
+                        tex_color = textures.sample_texture(
+                            shape_types[closest_hit.shape_index],
+                            shape_transforms[closest_hit.shape_index],
+                            texture_data,
+                            texture_index,
+                            shape_source_ptr[closest_hit.shape_index],
+                            mesh_data,
+                            shape_mesh_data_ids[closest_hit.shape_index],
+                            hit_point,
+                            closest_hit.bary_u,
+                            closest_hit.bary_v,
+                            closest_hit.face_idx,
+                            wp.static(config.texture_projection_mode),
+                        )
 
                     albedo_color = wp.cw_mul(albedo_color, tex_color)
 
