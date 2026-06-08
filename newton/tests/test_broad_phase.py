@@ -2117,5 +2117,84 @@ class TestBroadPhase(unittest.TestCase):
         self.assertFalse(has_sphere_a_ground, "SAP: Sphere A (small margin) should NOT overlap ground")
 
 
+class TestCollisionTypeAffinityBroadPhase(unittest.TestCase):
+    """Tests for explicit collision type/affinity masks in broad phase kernels."""
+
+    def _run_broad_phase(self, mode: str, types: list[int], affinities: list[int]) -> set[tuple[int, int]]:
+        n = len(types)
+        aabb_lower = wp.array(np.full((n, 3), -1.0, dtype=np.float32), dtype=wp.vec3)
+        aabb_upper = wp.array(np.full((n, 3), 1.0, dtype=np.float32), dtype=wp.vec3)
+        shape_world = wp.array(np.zeros(n, dtype=np.int32), dtype=wp.int32)
+        collision_type = wp.array(np.array(types, dtype=np.uint32), dtype=wp.uint32)
+        collision_affinity = wp.array(np.array(affinities, dtype=np.uint32), dtype=wp.uint32)
+        candidate_pair = wp.zeros(n * n, dtype=wp.vec2i)
+        candidate_pair_count = wp.zeros(1, dtype=wp.int32)
+
+        if mode == "nxn":
+            broad_phase = BroadPhaseAllPairs(shape_world)
+        elif mode == "sap":
+            broad_phase = BroadPhaseSAP(shape_world)
+        else:
+            raise ValueError(f"Unknown broad phase mode: {mode}")
+
+        broad_phase.launch(
+            aabb_lower,
+            aabb_upper,
+            None,
+            None,
+            shape_world,
+            n,
+            candidate_pair,
+            candidate_pair_count,
+            shape_collision_type=collision_type,
+            shape_collision_affinity=collision_affinity,
+        )
+
+        count = int(candidate_pair_count.numpy()[0])
+        pair_array = candidate_pair.numpy()
+        return {
+            (min(int(pair_array[i][0]), int(pair_array[i][1])), max(int(pair_array[i][0]), int(pair_array[i][1])))
+            for i in range(count)
+        }
+
+    def test_mujoco_style_floor_sphere_masks(self):
+        """Floor accepts sphere type, while spheres do not accept each other."""
+        for mode in ("nxn", "sap"):
+            with self.subTest(mode=mode):
+                pairs = self._run_broad_phase(mode, types=[0, 1, 1], affinities=[1, 0, 0])
+
+                self.assertIn((0, 1), pairs)
+                self.assertIn((0, 2), pairs)
+                self.assertNotIn((1, 2), pairs)
+
+    def test_zero_type_and_affinity_is_inert(self):
+        """A shape with type=0 and affinity=0 produces no automatic pairs."""
+        for mode in ("nxn", "sap"):
+            with self.subTest(mode=mode):
+                pairs = self._run_broad_phase(mode, types=[0, 0xFFFFFFFF], affinities=[0, 0xFFFFFFFF])
+
+                self.assertEqual(pairs, set())
+
+    def test_zero_type_shape_still_accepts_incoming(self):
+        """A zero-type shape can still collide if it accepts the other shape's type."""
+        for mode in ("nxn", "sap"):
+            with self.subTest(mode=mode):
+                pairs = self._run_broad_phase(
+                    mode,
+                    types=[0, 0xFFFFFFFF],
+                    affinities=[0xFFFFFFFF, 0xFFFFFFFF],
+                )
+
+                self.assertEqual(pairs, {(0, 1)})
+
+    def test_disjoint_type_affinity_bits_do_not_collide(self):
+        """Shapes in disjoint bit categories produce no candidate pair."""
+        for mode in ("nxn", "sap"):
+            with self.subTest(mode=mode):
+                pairs = self._run_broad_phase(mode, types=[0b01, 0b10], affinities=[0b01, 0b10])
+
+                self.assertEqual(pairs, set())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
