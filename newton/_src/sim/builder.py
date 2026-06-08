@@ -11,9 +11,9 @@ import inspect
 import math
 import warnings
 from collections import Counter, deque
-from collections.abc import Callable, Iterable, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Iterator, MutableSequence, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, overload
 
 import numpy as np
 import warp as wp
@@ -85,13 +85,29 @@ else:
     UsdStage = Any
 
 
+_ShapePair = tuple[int, int]
+_LocalShapePairs = tuple[_ShapePair, ...]
+_BuilderFilterBlock = tuple[int, _LocalShapePairs]
+_WorldFilterBlock = tuple[int, int, int, _LocalShapePairs]
+_WorldBlockSpec = tuple[int, int, _LocalShapePairs]
+_WorldTemplateBlockKey = tuple[int, int, int]
+_CollidingGlobalShape = tuple[int, int]
+_ContactTemplateKey = tuple[
+    tuple[int, ...],
+    tuple[int, ...],
+    tuple[_WorldTemplateBlockKey, ...],
+    tuple[_CollidingGlobalShape, ...],
+]
+_CachedContactTemplate = tuple[_LocalShapePairs, _LocalShapePairs]
+
+
 class _ShapeCollisionFilterPairs:
     """Lazy canonical view over shape collision filter pairs."""
 
-    def __init__(self, pairs: Sequence[tuple[int, int]], materialize_limit: int):
+    def __init__(self, pairs: Sequence[_ShapePair], materialize_limit: int):
         self._pairs = pairs
         self._materialize_limit = materialize_limit
-        self._set: set[tuple[int, int]] | None = None
+        self._set: set[_ShapePair] | None = None
 
     def __bool__(self) -> bool:
         return bool(self._pairs)
@@ -99,8 +115,10 @@ class _ShapeCollisionFilterPairs:
     def __len__(self) -> int:
         return len(self._pairs)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[_ShapePair]:
         for s1, s2 in self._pairs:
+            # Model-side filters are canonical even if a caller appended the pair
+            # in reverse order to the builder.
             if s1 <= s2:
                 yield (s1, s2)
             else:
@@ -114,22 +132,24 @@ class _ShapeCollisionFilterPairs:
 
         canonical = (s1, s2) if s1 <= s2 else (s2, s1)
         if self._set is None and len(self._pairs) <= self._materialize_limit:
+            # Small scenes keep the normal set-membership behavior. Very large
+            # replicated scenes avoid allocating a second copy of every pair.
             self._set = set(iter(self))
         if self._set is not None:
             return canonical in self._set
 
         return any(candidate == canonical for candidate in self)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"{type(self).__name__}(count={len(self._pairs)})"
 
 
-class _BuilderShapeCollisionFilterPairs(MutableSequence):
+class _BuilderShapeCollisionFilterPairs(MutableSequence[_ShapePair]):
     """Mutable sequence for builder collision filters with compact replicated blocks."""
 
     def __init__(self):
-        self._pairs: list[tuple[int, int]] = []
-        self._blocks: list[tuple[int, tuple[tuple[int, int], ...]]] = []
+        self._pairs: list[_ShapePair] = []
+        self._blocks: list[_BuilderFilterBlock] = []
         self._block_pair_count = 0
 
     def __len__(self) -> int:
@@ -138,13 +158,19 @@ class _BuilderShapeCollisionFilterPairs(MutableSequence):
     def __bool__(self) -> bool:
         return bool(self._pairs) or bool(self._blocks)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[_ShapePair]:
         yield from self._pairs
         for shape_offset, local_pairs in self._blocks:
             for s1, s2 in local_pairs:
                 yield (shape_offset + s1, shape_offset + s2)
 
-    def __getitem__(self, index):
+    @overload
+    def __getitem__(self, index: int) -> _ShapePair: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[_ShapePair]: ...
+
+    def __getitem__(self, index: int | slice) -> _ShapePair | list[_ShapePair]:
         if isinstance(index, slice):
             return list(self)[index]
 
@@ -165,11 +191,20 @@ class _BuilderShapeCollisionFilterPairs(MutableSequence):
 
         raise IndexError("shape collision filter pair index out of range")
 
-    def __setitem__(self, index, value):
-        self._materialize_blocks()
-        self._pairs[index] = value
+    @overload
+    def __setitem__(self, index: int, value: _ShapePair) -> None: ...
 
-    def __delitem__(self, index):
+    @overload
+    def __setitem__(self, index: slice, value: Iterable[_ShapePair]) -> None: ...
+
+    def __setitem__(self, index: int | slice, value: _ShapePair | Iterable[_ShapePair]) -> None:
+        self._materialize_blocks()
+        if isinstance(index, slice):
+            self._pairs[index] = list(cast(Iterable[_ShapePair], value))
+        else:
+            self._pairs[index] = cast(_ShapePair, value)
+
+    def __delitem__(self, index: int | slice) -> None:
         self._materialize_blocks()
         del self._pairs[index]
 
@@ -189,31 +224,36 @@ class _BuilderShapeCollisionFilterPairs(MutableSequence):
 
         return False
 
-    def insert(self, index: int, value: tuple[int, int]):
+    def insert(self, index: int, value: _ShapePair) -> None:
         self._materialize_blocks()
         self._pairs.insert(index, value)
 
-    def append(self, value: tuple[int, int]):
+    def append(self, value: _ShapePair) -> None:
         self._pairs.append(value)
 
-    def extend_offset(self, local_pairs: Iterable[tuple[int, int]], shape_offset: int):
+    def extend_offset(self, local_pairs: Iterable[_ShapePair], shape_offset: int) -> None:
         local_pairs = tuple(local_pairs)
         if not local_pairs:
             return
 
+        # Replication repeatedly appends the same source-builder local filter
+        # pairs with a different shape offset. Store that as one block instead
+        # of expanding every pair immediately.
         self._blocks.append((shape_offset, local_pairs))
         self._block_pair_count += len(local_pairs)
 
-    def _materialize_blocks(self):
+    def _materialize_blocks(self) -> None:
         if not self._blocks:
             return
 
+        # Preserve MutableSequence semantics for callers that mutate by index:
+        # once random mutation happens, the compact representation is expanded.
         for shape_offset, local_pairs in self._blocks:
             self._pairs.extend((shape_offset + s1, shape_offset + s2) for s1, s2 in local_pairs)
         self._blocks.clear()
         self._block_pair_count = 0
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"{type(self).__name__}(count={len(self)}, blocks={len(self._blocks)})"
 
 
@@ -1111,9 +1151,9 @@ class ModelBuilder:
         # filtering to ignore certain collision pairs
         self.shape_collision_filter_pairs = _BuilderShapeCollisionFilterPairs()
         """Shape collision filter pairs accumulated for :attr:`Model.shape_collision_filter_pairs`."""
-        self._shape_collision_filter_pair_blocks: list[tuple[int, int, int, tuple[tuple[int, int], ...]]] = []
+        self._shape_collision_filter_pair_blocks: list[_WorldFilterBlock] = []
         """Compact replicated collision-filter blocks: (world, shape_start, shape_count, local pairs)."""
-        self._shape_collision_filter_pair_template_cache: tuple[tuple[int, int], ...] | None = None
+        self._shape_collision_filter_pair_template_cache: _LocalShapePairs | None = None
 
         self._requested_contact_attributes: set[str] = set()
         """Optional contact attributes requested via :meth:`request_contact_attributes`."""
@@ -3623,10 +3663,15 @@ class ModelBuilder:
         if builder.shape_collision_filter_pairs:
             local_filter_pairs = builder._shape_collision_filter_pair_template_cache
             if local_filter_pairs is None or len(local_filter_pairs) != len(builder.shape_collision_filter_pairs):
+                # Cache the source-builder filter template because replicate()
+                # calls add_builder() repeatedly with the same source builder.
                 local_filter_pairs = tuple(builder.shape_collision_filter_pairs)
                 builder._shape_collision_filter_pair_template_cache = local_filter_pairs
 
             if self.current_world >= 0:
+                # Record enough metadata to regenerate absolute filter pairs
+                # and contact-pair templates without storing every replicated
+                # pair as an individual Python tuple.
                 self._shape_collision_filter_pair_blocks.append(
                     (self.current_world, start_shape_idx, builder.shape_count, local_filter_pairs)
                 )
@@ -10752,6 +10797,9 @@ class ModelBuilder:
                 len(self.shape_collision_filter_pairs) > self._SHAPE_COLLISION_FILTER_PAIR_SET_LIMIT
                 and self._shape_collision_filter_pair_blocks_cover_filters()
             ):
+                # For very large replicated scenes, avoid building a second
+                # Python set of all filter tuples. The contact-pair fast path
+                # below can consume the compact block metadata directly.
                 m.shape_collision_filter_pairs = _ShapeCollisionFilterPairs(
                     self.shape_collision_filter_pairs, self._SHAPE_COLLISION_FILTER_PAIR_SET_LIMIT
                 )
@@ -11765,6 +11813,8 @@ class ModelBuilder:
         return self._test_group_pair(collision_group_a, collision_group_b)
 
     def _shape_collision_filter_pair_blocks_cover_filters(self) -> bool:
+        """Whether every builder filter pair is represented by compact block metadata."""
+
         if not self._shape_collision_filter_pair_blocks:
             return False
 
@@ -11772,17 +11822,27 @@ class ModelBuilder:
         return block_filter_count == len(self.shape_collision_filter_pairs)
 
     @staticmethod
-    def _assign_shape_contact_pairs(model: Model, contact_pairs: list[tuple[int, int]]):
+    def _assign_shape_contact_pairs(model: Model, contact_pairs: list[_ShapePair]):
+        """Assign contact pairs using Warp's expected vec2i array shape."""
+
         pair_array = np.asarray(contact_pairs, dtype=np.int32).reshape((-1, 2))
         model.shape_contact_pairs = wp.array(pair_array, dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)
 
     def _try_find_shape_contact_pairs_from_filter_blocks(self, model: Model) -> bool:
+        """Build contact pairs from replicated filter blocks when the layout is regular.
+
+        This fast path applies when all explicit collision filters came from
+        ``add_builder()``/``replicate()`` calls inside worlds. It computes the
+        within-world contact-pair template once for each distinct local layout
+        and replays that template at every world's shape offset.
+        """
+
         if not self._shape_collision_filter_pair_blocks_cover_filters():
             return False
 
-        contact_pairs: list[tuple[int, int]] = []
-        blocks_by_world: dict[int, list[tuple[int, int, tuple[tuple[int, int], ...]]]] = {}
+        contact_pairs: list[_ShapePair] = []
+        blocks_by_world: dict[int, list[_WorldBlockSpec]] = {}
 
         for world, shape_start, shape_count, local_filter_pairs in self._shape_collision_filter_pair_blocks:
             if world < 0 or world >= self.world_count:
@@ -11793,9 +11853,12 @@ class ModelBuilder:
             if shape_start < world_start or shape_start + shape_count > world_end:
                 return False
 
+            # Convert global block starts to world-local offsets. The template
+            # cache can then be keyed by local layout rather than absolute shape
+            # ids, which lets homogeneous replicated worlds share one result.
             blocks_by_world.setdefault(world, []).append((shape_start - world_start, shape_count, local_filter_pairs))
 
-        colliding_globals = [
+        colliding_globals: list[_CollidingGlobalShape] = [
             (shape_idx, self.shape_collision_group[shape_idx])
             for shape_idx, (world, flag) in enumerate(zip(self.shape_world, self.shape_flags, strict=True))
             if world == -1 and flag & ShapeFlags.COLLIDE_SHAPES
@@ -11807,15 +11870,7 @@ class ModelBuilder:
                     continue
                 contact_pairs.append((shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a))
 
-        template_cache: dict[
-            tuple[
-                tuple[int, ...],
-                tuple[int, ...],
-                tuple[tuple[int, int, int], ...],
-                tuple[tuple[int, int], ...],
-            ],
-            tuple[tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]],
-        ] = {}
+        template_cache: dict[_ContactTemplateKey, _CachedContactTemplate] = {}
         global_groups_key = tuple(colliding_globals)
 
         for world in range(self.world_count):
@@ -11827,7 +11882,9 @@ class ModelBuilder:
             flags = tuple(self.shape_flags[world_start:world_end])
             collision_groups = tuple(self.shape_collision_group[world_start:world_end])
             block_specs = tuple(blocks_by_world.get(world, ()))
-            block_key = tuple((offset, shape_count, id(local_pairs)) for offset, shape_count, local_pairs in block_specs)
+            block_key = tuple(
+                (offset, shape_count, id(local_pairs)) for offset, shape_count, local_pairs in block_specs
+            )
             cache_key = (flags, collision_groups, block_key, global_groups_key)
             cached_pairs = template_cache.get(cache_key)
 
@@ -11836,7 +11893,10 @@ class ModelBuilder:
                     local_idx for local_idx, flag in enumerate(flags) if flag & ShapeFlags.COLLIDE_SHAPES
                 ]
 
-                local_filters: set[tuple[int, int]] = set()
+                # The source-builder filters are local to each replicated block.
+                # Shift them into world-local shape coordinates before checking
+                # candidate local contact pairs.
+                local_filters: set[_ShapePair] = set()
                 for block_offset, _shape_count, local_filter_pairs in block_specs:
                     for s1, s2 in local_filter_pairs:
                         shape_a = block_offset + s1
@@ -11846,13 +11906,16 @@ class ModelBuilder:
                         else:
                             local_filters.add((shape_b, shape_a))
 
-                global_local_pairs: list[tuple[int, int]] = []
+                # Store global/local pairs separately. The global shape id is
+                # already absolute; the local shape id is shifted by each
+                # world's start index when the cached template is replayed.
+                global_local_pairs: list[_ShapePair] = []
                 for global_shape, global_group in colliding_globals:
                     for local_shape in local_colliding_indices:
                         if self._test_group_pair(global_group, collision_groups[local_shape]):
                             global_local_pairs.append((global_shape, local_shape))
 
-                local_pairs: list[tuple[int, int]] = []
+                local_pairs: list[_ShapePair] = []
                 for i1, shape_a in enumerate(local_colliding_indices):
                     group_a = collision_groups[shape_a]
                     for shape_b in local_colliding_indices[i1 + 1 :]:
@@ -11870,6 +11933,8 @@ class ModelBuilder:
             for global_shape, local_shape in global_local_pairs:
                 shape_b = world_start + local_shape
                 contact_pairs.append((global_shape, shape_b) if global_shape <= shape_b else (shape_b, global_shape))
+            # Local/local pairs are stored as offsets inside the world and are
+            # shifted to absolute shape ids for the model array.
             contact_pairs.extend((world_start + shape_a, world_start + shape_b) for shape_a, shape_b in local_pairs)
 
         self._assign_shape_contact_pairs(model, contact_pairs)
