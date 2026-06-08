@@ -32,7 +32,6 @@ class RenderContext:
         render_normal: bool = False
         render_albedo: bool = False
         render_hdr_color: bool = False
-        render_shape_projected_textures: bool = False
 
     DEFAULT_CLEAR_DATA = ClearData()
 
@@ -248,9 +247,6 @@ class RenderContext:
             self.state.render_normal = normal_image is not None
             self.state.render_albedo = albedo_image is not None
             self.state.render_hdr_color = hdr_color_image is not None
-            self.state.render_shape_projected_textures = (
-                self.config.enable_textures and self.has_shape_projected_textures
-            )
 
             assert camera_transforms.shape == (camera_count, self.world_count), (
                 f"camera_transforms size must match {camera_count} x {self.world_count}"

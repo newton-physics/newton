@@ -117,51 +117,6 @@ def sample_texture_triplanar_shape(
 
 
 @wp.func
-def sample_texture_cubic_projection_mesh(
-    hit_point: wp.vec3f,
-    shape_transform: wp.transformf,
-    mesh_id: wp.uint64,
-    face_id: wp.int32,
-    texture_data: TextureData,
-) -> wp.vec3f:
-    """Cubic projection for UV-less meshes, similar to OmniPBR project_uvw."""
-    i0 = wp.mesh_get_index(mesh_id, face_id * 3 + 0)
-    i1 = wp.mesh_get_index(mesh_id, face_id * 3 + 1)
-    i2 = wp.mesh_get_index(mesh_id, face_id * 3 + 2)
-    p0 = wp.mesh_get_point(mesh_id, i0)
-    p1 = wp.mesh_get_point(mesh_id, i1)
-    p2 = wp.mesh_get_point(mesh_id, i2)
-    face_normal = wp.normalize(wp.cross(p1 - p0, p2 - p0))
-
-    inv_transform = wp.transform_inverse(shape_transform)
-    local = wp.transform_point(inv_transform, hit_point)
-
-    return sample_texture_cubic_projection_local(local, face_normal, texture_data)
-
-
-@wp.func
-def sample_texture_triplanar_mesh(
-    hit_point: wp.vec3f,
-    shape_transform: wp.transformf,
-    mesh_id: wp.uint64,
-    face_id: wp.int32,
-    texture_data: TextureData,
-) -> wp.vec3f:
-    i0 = wp.mesh_get_index(mesh_id, face_id * 3 + 0)
-    i1 = wp.mesh_get_index(mesh_id, face_id * 3 + 1)
-    i2 = wp.mesh_get_index(mesh_id, face_id * 3 + 2)
-    p0 = wp.mesh_get_point(mesh_id, i0)
-    p1 = wp.mesh_get_point(mesh_id, i1)
-    p2 = wp.mesh_get_point(mesh_id, i2)
-    face_normal = wp.normalize(wp.cross(p1 - p0, p2 - p0))
-
-    inv_transform = wp.transform_inverse(shape_transform)
-    local = wp.transform_point(inv_transform, hit_point)
-
-    return sample_texture_triplanar_local(local, face_normal, texture_data)
-
-
-@wp.func
 def sample_texture(
     shape_type: wp.int32,
     shape_transform: wp.transformf,
@@ -171,6 +126,7 @@ def sample_texture(
     mesh_data: wp.array[MeshData],
     mesh_data_index: wp.int32,
     hit_point: wp.vec3f,
+    hit_normal: wp.vec3f,
     bary_u: wp.float32,
     bary_v: wp.float32,
     face_id: wp.int32,
@@ -195,12 +151,16 @@ def sample_texture(
                 )
 
         if projection_mode == TextureProjectionMode.TRIPLANAR:
-            return sample_texture_triplanar_mesh(
-                hit_point, shape_transform, mesh_id, face_id, texture_data[texture_index]
-            )
+            return sample_texture_triplanar_shape(hit_point, hit_normal, shape_transform, texture_data[texture_index])
 
-        return sample_texture_cubic_projection_mesh(
-            hit_point, shape_transform, mesh_id, face_id, texture_data[texture_index]
+        return sample_texture_cubic_projection_shape(
+            hit_point, hit_normal, shape_transform, texture_data[texture_index]
         )
 
-    return DEFAULT_RETURN
+    if shape_type == GeoType.GAUSSIAN:
+        return DEFAULT_RETURN
+
+    if projection_mode == TextureProjectionMode.TRIPLANAR:
+        return sample_texture_triplanar_shape(hit_point, hit_normal, shape_transform, texture_data[texture_index])
+
+    return sample_texture_cubic_projection_shape(hit_point, hit_normal, shape_transform, texture_data[texture_index])

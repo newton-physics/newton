@@ -96,8 +96,8 @@ def load_bunny_mesh(scale: float = 0.82) -> newton.Mesh:
 def finalize_builder(builder: newton.ModelBuilder) -> tuple[newton.Model, newton.State]:
     model = builder.finalize()
     state = model.state()
-    newton.geometry.build_bvh_shape(model, state)
-    newton.geometry.build_bvh_particle(model, state)
+    model.bvh_build_shapes(state)
+    model.bvh_build_particles(state)
     return model, state
 
 
@@ -284,7 +284,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-images", action="store_true", help="Only run the benchmark.")
     parser.add_argument("--benchmark", action="store_true", help="Benchmark cubic and triplanar projection modes.")
     parser.add_argument("--benchmark-warmup", type=int, default=20, help="Warmup updates before benchmark timing.")
-    parser.add_argument("--benchmark-iterations", type=int, default=100, help="Timed benchmark updates per mode.")
+    parser.add_argument("--benchmark-iterations", type=int, default=500, help="Timed benchmark updates per mode.")
     return parser.parse_args()
 
 

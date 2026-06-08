@@ -1,8 +1,8 @@
 Resolution: 1024x1024
-Warmup/update iterations: 20/100
+Warmup/update iterations: 20/500
 
 scene                mode          mean_ms   relative
-primitives           cubic           0.032      1.000x
-primitives           triplanar       0.050      1.571x
-uvless_bunny_mesh    cubic           0.519      1.000x
-uvless_bunny_mesh    triplanar       0.536      1.033x
+primitives           cubic           0.034      1.000x
+primitives           triplanar       0.039      1.149x
+uvless_bunny_mesh    cubic           0.483      1.000x
+uvless_bunny_mesh    triplanar       0.529      1.094x
