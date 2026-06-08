@@ -5,7 +5,7 @@
 # Example Cable Twist
 #
 # Demonstrates twist propagation along cables with dynamic spinning.
-# Shows 3 cables side-by-side with zigzag paths and increasing bend stiffness.
+# Shows 3 cables side-by-side with zigzag paths and increasing twist stiffness.
 # The first segment of each cable continuously spins, propagating twist along the cable.
 # The zigzag routing introduces multiple 90-degree turns, demonstrating how twist
 # is transported through cable joints and across bends.
@@ -128,11 +128,11 @@ class Example:
 
         stretch_stiffness = 1.0e6
 
-        # Stiffness sweep (increasing) for bend stiffness
-        bend_stiffness_values = [1.0e2, 1.0e3, 1.0e4]
+        # Isotropic angular stiffness sweep: bend and twist use matching values.
+        angular_stiffness_values = [1.0e2, 1.0e3, 1.0e4]
 
         # All cables start untwisted, will be spun dynamically
-        self.num_cables = len(bend_stiffness_values)
+        self.num_cables = len(angular_stiffness_values)
 
         # Create builder for the simulation
         builder = newton.ModelBuilder()
@@ -149,7 +149,7 @@ class Example:
         y_separation = 3.0
 
         # Create 3 cables in a row along the y-axis, centered around origin
-        for i, bend_stiffness in enumerate(bend_stiffness_values):
+        for i, angular_stiffness in enumerate(angular_stiffness_values):
             # Center cables around origin: vary by y_separation
             y_pos = (i - (self.num_cables - 1) / 2.0) * y_separation
 
@@ -169,8 +169,10 @@ class Example:
                 quaternions=cable_edge_q,
                 radius=cable_radius,
                 stretch_stiffness=stretch_stiffness,
-                bend_stiffness=bend_stiffness,
+                bend_stiffness=angular_stiffness,
+                twist_stiffness=angular_stiffness,
                 bend_damping=1.0e-2,
+                twist_damping=1.0e-2,
                 label=f"cable_{i}",
             )
 
@@ -208,6 +210,11 @@ class Example:
         self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
+        if hasattr(self.viewer, "set_camera"):
+            self.viewer.set_camera(pos=wp.vec3(0.75, -10.0, 5.4), pitch=0.0, yaw=0.0)
+            if hasattr(self.viewer, "camera"):
+                self.viewer.camera.look_at(wp.vec3(0.75, 0.0, 0.25))
+                self.viewer.camera.fov = 44.0
 
         # Twist rates for first segments (radians per second)
         twist_rates = np.full(len(kinematic_body_indices), 0.5, dtype=np.float32)
