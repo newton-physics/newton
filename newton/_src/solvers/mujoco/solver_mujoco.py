@@ -4818,9 +4818,8 @@ class SolverMuJoCo(SolverBase):
         mjc_actuator_ctrl_source_list: list[int] = []
         mjc_actuator_to_newton_idx_list: list[int] = []
         mjc_actuator_to_target_q_idx_list: list[int] = []
-        # For ball-joint position actuators under the coord layout, the target slot
-        # holds a quaternion; this list selects which axis-angle component (0/1/2)
-        # to feed MuJoCo. -1 means "scalar passthrough" (all other actuators).
+        # For BALL-joint actuators (both layouts), this selects which axis-angle component (0/1/2)
+        # of the target to feed MuJoCo; -1 means "scalar passthrough" (all other actuators).
         mjc_actuator_to_target_q_axis_idx_list: list[int] = []
         mjc_actuator_to_newton_ball_jnt_list: list[int] = []
 

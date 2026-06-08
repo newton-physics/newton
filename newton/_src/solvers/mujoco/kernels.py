@@ -667,7 +667,6 @@ def convert_mj_coords_to_warp_kernel(
     elif type == JointType.BALL:
         # Newton uses the parent anchor frame for both qpos and qvel.
         # MuJoCo splits them: qpos in the child rest frame, qvel/qfrc in the current (post-qpos) body frame.
-        # So r = q_cj^{-1} * qpos * q_cj (state-invariant similarity), and w_newton = (q_cj^{-1} * qpos) * w_mj.
         q_cj = joint_X_c[joint_id].q
         q_mj = quat_wxyz_to_xyzw(
             wp.quat(qpos[worldid, q_i + 0], qpos[worldid, q_i + 1], qpos[worldid, q_i + 2], qpos[worldid, q_i + 3])
@@ -776,7 +775,6 @@ def convert_warp_coords_to_mj_kernel(
 
     elif jtype == JointType.BALL:
         # Inverse of convert_mj_coords_to_warp_kernel.
-        # So qpos = q_cj * r * q_cj^{-1}, and w_mj = (q_cj * r^{-1}) * w_newton.
         q_cj = joint_X_c[joint_id].q
         r = wp.quat(joint_q[wq_i + 0], joint_q[wq_i + 1], joint_q[wq_i + 2], joint_q[wq_i + 3])
         q_mj = q_cj * r * wp.quat_inverse(q_cj)
@@ -1420,7 +1418,7 @@ def apply_mjc_control_kernel(
     Position targets are rotated by the per-world child anchor ``q_cj`` (``joint_X_c`` indexed by
     ``mjc_actuator_to_newton_ball_jnt`` and the current world). Velocity targets read the current
     quaternion start from ``mjc_actuator_to_newton_target_q_idx`` and rotate by ``q_cj * r^{-1}``
-    (mirroring the qpos / qvel bridges in :func:`convert_mj_coords_to_warp_kernel` BALL). The
+    (mirroring the qpos / qvel bridges in :func:`convert_warp_coords_to_mj_kernel` BALL). The
     velocity case reuses the existing target-q lookup slot.
 
     For CTRL_DIRECT (source=1), mjc_actuator_to_newton_idx is the ctrl index.
@@ -1442,7 +1440,7 @@ def apply_mjc_control_kernel(
             else:
                 # Ball-joint position target
                 # Coord layout stores a 4-float quat (needs log-map); DOF layout stores
-                # extrinsic ZYX Euler target angles directly at the qd_start base.
+                # extrinsic ZYX Euler target angles directly at the joint's target-q base.
                 last_elem = world_target_q + wp.where(use_coord_layout_targets, 3, 2)  # check size
                 assert last_elem < joint_target_q.shape[0]
                 if not last_elem < joint_target_q.shape[0]:
@@ -1577,8 +1575,7 @@ def apply_mjc_qfrc_kernel(
     if jtype == JointType.FREE or jtype == JointType.DISTANCE:
         return
     elif jtype == JointType.BALL:
-        # same as qvel writeback in convert_warp_coords_to_mj_kernel:
-        # tau_mj = (q_cj * r^{-1}) * tau.
+        # Torque uses the same map as the qvel writeback in convert_warp_coords_to_mj_kernel.
         q_cj = joint_X_c[joint_id].q
         r = wp.quat(joint_q[wq_i + 0], joint_q[wq_i + 1], joint_q[wq_i + 2], joint_q[wq_i + 3])
         tau = wp.vec3(joint_f[wqd_i + 0], joint_f[wqd_i + 1], joint_f[wqd_i + 2])
@@ -3013,8 +3010,7 @@ def convert_qfrc_actuator_from_mj_kernel(
         qfrc_actuator[wqd_i + 4] = tau_world[1]
         qfrc_actuator[wqd_i + 5] = tau_world[2]
     elif jtype == JointType.BALL:
-        # Inverse of apply_mjc_qfrc_kernel BALL, same map as the qvel readback in convert_mj_coords_to_warp_kernel:
-        # tau = (q_cj^{-1} * q_mj) * tau_mj.
+        # Inverse of apply_mjc_qfrc_kernel BALL; same map as the qvel readback in convert_mj_coords_to_warp_kernel.
         q_cj = joint_X_c[joint_id].q
         q_mj = quat_wxyz_to_xyzw(
             wp.quat(qpos[worldid, q_i + 0], qpos[worldid, q_i + 1], qpos[worldid, q_i + 2], qpos[worldid, q_i + 3])
