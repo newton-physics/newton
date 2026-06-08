@@ -40,6 +40,54 @@ def _clear_counters_and_bump_generation(
         generation[0] = g
 
 
+@wp.func
+def contact_surface_separation(
+    point0_world: wp.vec3,
+    point1_world: wp.vec3,
+    normal: wp.vec3,
+    margin0: float,
+    margin1: float,
+) -> float:
+    """Signed separation between the two effective contact surfaces along the normal.
+
+    Positive values are a gap; negative values are penetration.
+
+    Args:
+        point0_world: Support-shape contact point on shape 0 [m], world space.
+        point1_world: Support-shape contact point on shape 1 [m], world space.
+        normal: Unit contact normal pointing from shape 0 toward shape 1.
+        margin0: Effective surface thickness of shape 0 [m] (effective radius + margin).
+        margin1: Effective surface thickness of shape 1 [m].
+
+    Returns:
+        Separation between the effective surfaces [m].
+    """
+    return wp.dot(normal, point1_world - point0_world) - (margin0 + margin1)
+
+
+@wp.func
+def contact_surface_point(
+    X_wb: wp.transform,
+    point_local: wp.vec3,
+    offset_local: wp.vec3,
+) -> wp.vec3:
+    """World-space effective-surface contact point for one shape.
+
+    Shifts the body-frame support point by the body-frame surface offset and maps the result
+    to world space. Because the offset is expressed in the body frame, a persisted/reused
+    contact tracks the material point under rotation.
+
+    Args:
+        X_wb: Body-to-world transform of the shape's body.
+        point_local: Support-shape contact point in the body frame [m].
+        offset_local: Surface offset in the body frame [m] (effective thickness along the normal).
+
+    Returns:
+        Effective-surface contact point [m], world space.
+    """
+    return wp.transform_point(X_wb, point_local + offset_local)
+
+
 class Contacts:
     """
     Stores contact information for rigid and soft body collisions, to be consumed by a solver.
@@ -48,8 +96,10 @@ class Contacts:
     for both rigid-rigid and soft-rigid contacts. The buffers are allocated on the specified device and can
     optionally require gradients for differentiable simulation.
 
-    .. note::
-        This class is a temporary solution and its interface may change in the future.
+    .. experimental::
+
+        This class is a temporary solution and its interface may change without
+        prior notice.
     """
 
     EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(("force",))
@@ -127,9 +177,11 @@ class Contacts:
                 :attr:`rigid_contact_broken_count`) populated each frame by
                 the collision pipeline.  Requires ``contact_matching=True``.
 
-        .. note::
-            The ``rigid_contact_diff_*`` arrays allocated when ``requires_grad=True`` are
-            **experimental**; see :meth:`newton.CollisionPipeline.collide`.
+        .. experimental::
+
+            The ``rigid_contact_diff_*`` arrays allocated when
+            ``requires_grad=True`` may change without prior notice; see
+            :meth:`newton.CollisionPipeline.collide`.
         """
         if contact_report and not contact_matching:
             raise ValueError("contact_report=True requires contact_matching=True")

@@ -390,6 +390,7 @@ def advance_task_kernel(
 
 class Example:
     def __init__(self, viewer, args=None):
+        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 60
@@ -432,13 +433,13 @@ class Example:
         franka_builder.joint_q[:7] = init_joints.tolist()
         franka_builder.joint_q[7] = GRIPPER_OPEN
         franka_builder.joint_q[8] = GRIPPER_OPEN
-        franka_builder.joint_target_pos[:9] = franka_builder.joint_q[:9]
+        franka_builder.joint_target_q[:9] = franka_builder.joint_q[:9]
 
         # Build full scene
         scene = newton.ModelBuilder()
         scene.add_builder(franka_builder)
         self.add_bricks(scene)
-        scene.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.75))
+        scene.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.75, gap=0.01))
 
         self.model = scene.finalize()
 
@@ -471,7 +472,7 @@ class Example:
         self.contacts = self.collision_pipeline.contacts()
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
-        wp.copy(self.control.joint_target_pos[:9], self.model.joint_q[:9])
+        wp.copy(self.control.joint_target_q[:9], self.model.joint_q[:9])
 
         self.setup_ik()
         self.setup_tasks()
@@ -492,6 +493,7 @@ class Example:
 
     def build_franka_with_table(self):
         builder = newton.ModelBuilder()
+        builder.rigid_gap = 0.005
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
         builder.add_urdf(
@@ -513,7 +515,7 @@ class Example:
             GRIPPER_OPEN,
             GRIPPER_OPEN,
         ]
-        builder.joint_target_pos[:9] = builder.joint_q[:9]
+        builder.joint_target_q[:9] = builder.joint_q[:9]
         builder.joint_target_ke[:9] = [400, 400, 400, 400, 400, 400, 400, 100, 100]
         builder.joint_target_kd[:9] = [40, 40, 40, 40, 40, 40, 40, 10, 10]
         builder.joint_effort_limit[:9] = [87, 87, 87, 87, 12, 12, 12, 100, 100]
@@ -931,8 +933,8 @@ class Example:
         else:
             self.ik_solver.step(self.joint_q_ik, self.joint_q_ik, iterations=self.ik_iters)
 
-        wp.copy(dest=self.control.joint_target_pos[:7], src=self.joint_q_ik.flatten()[:7])
-        wp.copy(dest=self.control.joint_target_pos[7:9], src=self.gripper_target.flatten()[:2])
+        wp.copy(dest=self.control.joint_target_q[:7], src=self.joint_q_ik.flatten()[:7])
+        wp.copy(dest=self.control.joint_target_q[7:9], src=self.gripper_target.flatten()[:2])
 
         wp.launch(
             advance_task_kernel,
@@ -973,7 +975,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
-        wp.copy(self.control.joint_target_pos[:9], self.model.joint_q[:9])
+        wp.copy(self.control.joint_target_q[:9], self.model.joint_q[:9])
         self.joint_q_ik = wp.clone(self.model.joint_q[: self.model_ik.joint_coord_count].reshape((1, -1)))
         self.setup_tasks()
         self.capture()

@@ -9,12 +9,6 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
-from ..geometry import (
-    build_bvh_particle,
-    build_bvh_shape,
-    refit_bvh_particle,
-    refit_bvh_shape,
-)
 from ..sim import Model, State
 from .warp_raytrace import (
     ClearData,
@@ -55,6 +49,10 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
     Shapes without the ``VISIBLE`` flag are excluded.
 
+    Shape colors and base-color textures are interpreted as display/sRGB RGB,
+    converted to linear RGB internally for shading, and packed according to
+    :attr:`RenderConfig.output_color_space` at the output boundary.
+
     Example:
         ::
 
@@ -62,14 +60,12 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             rays = sensor.utils.compute_pinhole_camera_rays(width, height, fov)
             color = sensor.utils.create_color_image_output(width, height)
 
-            # After setup, build BVHs once for the initial state.
+            # BVHs are built for the initial state by ModelBuilder.finalize().
             state = model.state()
-            newton.geometry.build_bvh_shape(model, state)
-            newton.geometry.build_bvh_particle(model, state)
 
-            # Before each later frame that changes geometry, refit BVHs.
-            newton.geometry.refit_bvh_shape(model, state)
-            newton.geometry.refit_bvh_particle(model, state)
+            # Before each frame that changes geometry, refit BVHs.
+            model.bvh_refit_shapes(state)
+            model.bvh_refit_particles(state)
             sensor.update(state, camera_transforms, rays, color_image=color)
 
     See :class:`RenderConfig` for optional rendering settings and :attr:`ClearData` / :attr:`DEFAULT_CLEAR_DATA` /
@@ -133,7 +129,10 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             config: Rendering configuration. Pass a :class:`RenderConfig` to
                 control raytrace settings directly, or ``None`` to use
                 defaults. The legacy :class:`Config` dataclass is still
-                accepted but deprecated.
+                accepted but deprecated. Use
+                ``RenderConfig.output_color_space`` to control whether packed
+                ``color`` and ``albedo`` outputs are display-encoded or left
+                linear.
             load_textures: Load texture data from the model. Set to ``False``
                 to skip texture loading when textures are not needed.
         """
@@ -180,12 +179,11 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
         :meth:`update` calls this automatically when *state* is not None.
 
-        Shape and particle BVHs on :attr:`model` must be built once via
-        :func:`~newton.geometry.build_bvh_shape` and
-        :func:`~newton.geometry.build_bvh_particle` before first use. Before
-        later frames that change geometry, refit them via
-        :func:`~newton.geometry.refit_bvh_shape` and
-        :func:`~newton.geometry.refit_bvh_particle` prior to calling
+        Shape and particle BVHs on :attr:`model` are built for the initial
+        state by :meth:`~newton.ModelBuilder.finalize`. Before later frames
+        that change geometry, refit them via
+        :meth:`~newton.Model.bvh_refit_shapes` and
+        :meth:`~newton.Model.bvh_refit_particles` prior to calling
         :meth:`update`.
 
         Args:
@@ -215,12 +213,11 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         ``[world_id, camera_id, y, x]`` corresponds to the ray in ``camera_rays[camera_id, y, x]``. Each output
         channel is optional -- pass None to skip that channel's rendering entirely.
 
-        Shape and particle BVHs on :attr:`model` must be built once for the
-        initial state via :func:`~newton.geometry.build_bvh_shape` and
-        :func:`~newton.geometry.build_bvh_particle` before first use. Before
-        later frames that change geometry, refit them for *state* via
-        :func:`~newton.geometry.refit_bvh_shape` and
-        :func:`~newton.geometry.refit_bvh_particle` before calling this method.
+        Shape and particle BVHs on :attr:`model` are built for the initial
+        state by :meth:`~newton.ModelBuilder.finalize`. Before later frames
+        that change geometry, refit them for *state* via
+        :meth:`~newton.Model.bvh_refit_shapes` and
+        :meth:`~newton.Model.bvh_refit_particles` before calling this method.
 
         Args:
             state: Simulation state with body and particle transforms.
@@ -228,19 +225,23 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             camera_transforms: Camera-to-world transforms, shape ``(camera_count, world_count)``.
             camera_rays: Camera-space rays from :meth:`compute_pinhole_camera_rays`, shape
                 ``(camera_count, height, width, 2)``.
-            color_image: Output for RGBA color. None to skip.
+            color_image: Output for packed RGBA color. The bytes are
+                display/sRGB by default, or linear when
+                ``self.render_config.output_color_space`` is
+                ``newton.utils.ColorSpace.LINEAR``. None to skip.
             depth_image: Output for ray-hit distance [m]. None to skip.
             shape_index_image: Output for per-pixel shape id. None to skip.
             normal_image: Output for surface normals. None to skip.
-            albedo_image: Output for unshaded surface color. None to skip.
-            clear_data: Values to clear output buffers with.
-                See :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
-            refit_bvh: Refit the BVH before rendering. This is deprecated, use
-                :func:`~newton.geometry.build_bvh_shape`,
-                :func:`~newton.geometry.refit_bvh_shape`,
-                :func:`~newton.geometry.build_bvh_particle`, and
-                :func:`~newton.geometry.refit_bvh_particle` explicitly
-                before calling this method instead.
+            albedo_image: Output for packed unshaded surface color, using the
+                same output color space as ``color_image``. None to skip.
+            clear_data: Values to clear output buffers with. Packed color and
+                albedo clear values are specified as display/sRGB RGBA and
+                converted to linear when linear output is requested. See
+                :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
+            refit_bvh: Refit the BVH before rendering. This is deprecated;
+                call :meth:`~newton.Model.bvh_refit_shapes` and
+                :meth:`~newton.Model.bvh_refit_particles` explicitly after
+                state changes instead.
             hdr_color_image: Output for linear HDR color. None to skip.
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
                 for the render megakernel.
@@ -253,8 +254,8 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         if state is None or refit_bvh is not None:
             warnings.warn(
                 "Passing state=None or refit_bvh to SensorTiledCamera.update() is deprecated. "
-                "Call SensorTiledCamera.sync_transforms(state) and manage BVHs explicitly with "
-                "newton.geometry.build_bvh_*() / refit_bvh_*() before update().",
+                "Call SensorTiledCamera.sync_transforms(state) and refit model BVHs explicitly with "
+                "model.bvh_refit_*() after state changes.",
                 category=DeprecationWarning,
                 stacklevel=2,
             )
@@ -262,15 +263,15 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
             if self.model.shape_count:
                 if self.model.bvh_shapes is None:
-                    build_bvh_shape(self.model, render_state)
+                    self.model.bvh_build_shapes(render_state)
                 elif should_refit:
-                    refit_bvh_shape(self.model, render_state)
+                    self.model.bvh_refit_shapes(render_state)
 
             if render_state.particle_q is not None and render_state.particle_count:
                 if self.model.bvh_particles is None:
-                    build_bvh_particle(self.model, render_state)
+                    self.model.bvh_build_particles(render_state)
                 elif should_refit:
-                    refit_bvh_particle(self.model, render_state)
+                    self.model.bvh_refit_particles(render_state)
 
         self.sync_transforms(render_state)
 

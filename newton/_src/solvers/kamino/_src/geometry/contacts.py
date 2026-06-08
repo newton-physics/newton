@@ -31,11 +31,21 @@ from functools import cache
 
 import warp as wp
 
-from .....sim.contacts import Contacts
+from .....math import safe_div
+from .....sim.contacts import Contacts, contact_surface_point, contact_surface_separation
 from .....sim.model import Model
 from .....sim.state import State
 from ..core.math import COS_PI_6, UNIT_X, UNIT_Y
 from ..core.model import ModelKamino
+from ..core.types import (
+    int32,
+    quatf,
+    to_warp_int32_array,
+    vec2f,
+    vec2i,
+    vec3f,
+    vec4f,
+)
 from ..utils import logger as msg
 from .keying import build_pair_key2
 
@@ -783,19 +793,19 @@ class ContactsKamino:
             self._data = ContactsKaminoData(
                 model_max_contacts_host=model_max_contacts,
                 world_max_contacts_host=world_max_contacts,
-                model_max_contacts=wp.array([model_max_contacts], dtype=wp.int32),
-                model_active_contacts=wp.zeros(shape=1, dtype=wp.int32),
-                world_max_contacts=wp.array(world_max_contacts, dtype=wp.int32),
-                world_active_contacts=wp.zeros(shape=len(world_max_contacts), dtype=wp.int32),
-                wid=wp.full(value=-1, shape=(model_max_contacts,), dtype=wp.int32),
-                cid=wp.full(value=-1, shape=(model_max_contacts,), dtype=wp.int32),
-                gid_AB=wp.full(value=wp.vec2i(-1, -1), shape=(model_max_contacts,), dtype=wp.vec2i),
-                bid_AB=wp.full(value=wp.vec2i(-1, -1), shape=(model_max_contacts,), dtype=wp.vec2i),
-                position_A=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec3f),
-                position_B=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec3f),
-                gapfunc=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec4f),
-                frame=wp.zeros(shape=(model_max_contacts,), dtype=wp.quatf),
-                material=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec2f),
+                model_max_contacts=to_warp_int32_array([model_max_contacts]),
+                model_active_contacts=wp.zeros(shape=1, dtype=int32),
+                world_max_contacts=to_warp_int32_array(world_max_contacts),
+                world_active_contacts=wp.zeros(shape=len(world_max_contacts), dtype=int32),
+                wid=wp.full(value=-1, shape=(model_max_contacts,), dtype=int32),
+                cid=wp.full(value=-1, shape=(model_max_contacts,), dtype=int32),
+                gid_AB=wp.full(value=vec2i(-1, -1), shape=(model_max_contacts,), dtype=vec2i),
+                bid_AB=wp.full(value=vec2i(-1, -1), shape=(model_max_contacts,), dtype=vec2i),
+                position_A=wp.zeros(shape=(model_max_contacts,), dtype=vec3f),
+                position_B=wp.zeros(shape=(model_max_contacts,), dtype=vec3f),
+                gapfunc=wp.zeros(shape=(model_max_contacts,), dtype=vec4f),
+                frame=wp.zeros(shape=(model_max_contacts,), dtype=quatf),
+                material=wp.zeros(shape=(model_max_contacts,), dtype=vec2f),
                 margins=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec2f),
                 key=wp.zeros(shape=(model_max_contacts,), dtype=wp.uint64),
                 reaction=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec3f),
@@ -855,10 +865,13 @@ def make_convert_contacts_newton_to_kamino_kernel(allow_positive_distance: bool 
         newton_shape1: wp.array[wp.int32],
         newton_point0: wp.array[wp.vec3f],
         newton_point1: wp.array[wp.vec3f],
+        newton_offset0: wp.array[wp.vec3f],
+        newton_offset1: wp.array[wp.vec3f],
         newton_normal: wp.array[wp.vec3f],
         newton_margin0: wp.array[wp.float32],
         newton_margin1: wp.array[wp.float32],
         newton_force: wp.array[wp.spatial_vectorf],
+        newton_shape_margin: wp.array[wp.float32],
         shape_body: wp.array[wp.int32],
         shape_world: wp.array[wp.int32],
         shape_mu: wp.array[wp.float32],
@@ -935,20 +948,25 @@ def make_convert_contacts_newton_to_kamino_kernel(allow_positive_distance: bool 
         X_1 = wp.transform_identity()
         if bid_1 >= 0:
             X_1 = body_q[bid_1]
-        r_0 = wp.transform_point(X_0, newton_point0[cid])
-        r_1 = wp.transform_point(X_1, newton_point1[cid])
+
+        # Skeleton points for the normal gap; physical surface points for the contact anchors.
+        p0_world = wp.transform_point(X_0, newton_point0[cid])
+        p1_world = wp.transform_point(X_1, newton_point1[cid])
+        margin_0 = newton_margin0[cid]
+        margin_1 = newton_margin1[cid]
+        offset_scale0 = safe_div(margin_0 - newton_shape_margin[sid_0], margin_0)
+        offset_scale1 = safe_div(margin_1 - newton_shape_margin[sid_1], margin_1)
+        p0_surf = contact_surface_point(X_0, newton_point0[cid], newton_offset0[cid] * offset_scale0)
+        p1_surf = contact_surface_point(X_1, newton_point1[cid], newton_offset1[cid] * offset_scale1)
 
         # Newton normal points from shape0 → shape1 (A → B).
         # Kamino convention: normal points A → B, with bid_B >= 0.
         normal = newton_normal[cid]
 
-        # Reconstruct Newton signed contact distance d from exported fields:
-        # d = dot((p1 - p0), n_a_to_b) - (offset0 + offset1),
-        # with n_newton = n_a_to_b and offset* stored in newton_margin*.
-        margin_0 = newton_margin0[cid]
-        margin_1 = newton_margin1[cid]
-        margin = margin_0 + margin_1
-        distance = wp.dot(r_1 - r_0, normal) - margin
+        # Reconstruct the Newton signed contact distance from exported fields:
+        # d = dot((p1 - p0), n_a_to_b) - (margin0 + margin1), with n_newton = n_a_to_b
+        # and the per-shape surface thicknesses stored in rigid_contact_margin*.
+        distance = contact_surface_separation(p0_world, p1_world, normal, margin_0, margin_1)
 
         # Skip conversion if the contact distance is positive
         if wp.static(not allow_positive_distance):
@@ -963,8 +981,8 @@ def make_convert_contacts_newton_to_kamino_kernel(allow_positive_distance: bool 
             gid_B = sid_0
             bid_A = bid_1
             bid_B = bid_0
-            r_A = r_1
-            r_B = r_0
+            pos_A = p1_surf
+            pos_B = p0_surf
             margin_A = margin_1
             margin_B = margin_0
             normal = -normal
@@ -975,8 +993,8 @@ def make_convert_contacts_newton_to_kamino_kernel(allow_positive_distance: bool 
             gid_B = sid_1
             bid_A = bid_0
             bid_B = bid_1
-            r_A = r_0
-            r_B = r_1
+            pos_A = p0_surf
+            pos_B = p1_surf
             margin_A = margin_0
             margin_B = margin_1
 
@@ -1000,8 +1018,8 @@ def make_convert_contacts_newton_to_kamino_kernel(allow_positive_distance: bool 
         kamino_cid[mcid] = wcid
         kamino_gid_AB[mcid] = wp.vec2i(gid_A, gid_B)
         kamino_bid_AB[mcid] = wp.vec2i(bid_A, bid_B)
-        kamino_position_A[mcid] = r_A
-        kamino_position_B[mcid] = r_B
+        kamino_position_A[mcid] = pos_A
+        kamino_position_B[mcid] = pos_B
         kamino_gapfunc[mcid] = gapfunc
         kamino_frame[mcid] = q_frame
         kamino_material[mcid] = wp.vec2f(mu, epsilon)
@@ -1343,10 +1361,13 @@ def convert_contacts_newton_to_kamino(
             contacts_in.rigid_contact_shape1,
             contacts_in.rigid_contact_point0,
             contacts_in.rigid_contact_point1,
+            contacts_in.rigid_contact_offset0,
+            contacts_in.rigid_contact_offset1,
             contacts_in.rigid_contact_normal,
             contacts_in.rigid_contact_margin0,
             contacts_in.rigid_contact_margin1,
             contacts_in_force,
+            model.shape_margin,
             model.shape_body,
             model.shape_world,
             model.shape_material_mu,

@@ -91,7 +91,7 @@ class Example:
         q_b = wp.quat_identity(dtype=wp.float32)
         q_base = wp.transformf((0.0, 0.0, 1.0), q_b)
         self.base_q.assign([q_base] * self.world_count)
-        self.solver.reset(state_out=self.state_0, base_q=self.base_q)
+        self.solver.reset(state=self.state_0, base_q=self.base_q)
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
