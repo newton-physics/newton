@@ -982,3 +982,240 @@ def intersect_ray(
         ],
         device=model.device,
     )
+
+
+@wp.func
+def ray_for_pixel(
+    camera_position: wp.vec3,
+    camera_direction: wp.vec3,
+    camera_up: wp.vec3,
+    camera_right: wp.vec3,
+    fov_scale: float,
+    camera_aspect_ratio: float,
+    resolution: wp.vec2,
+    pixel_x: int,
+    pixel_y: int,
+):
+    """Generate a ray for a given pixel in a perspective camera.
+
+    Args:
+        camera_position: Camera position in world space
+        camera_direction: Camera forward direction (normalized)
+        camera_up: Camera up direction (normalized)
+        camera_right: Camera right direction (normalized)
+        fov_scale: Scale factor for field of view, ``tan(fov_radians/2)``
+        camera_aspect_ratio: Width/height aspect ratio
+        resolution: Image resolution as (width, height)
+        pixel_x: Pixel x coordinate (0 to width-1)
+        pixel_y: Pixel y coordinate (0 to height-1)
+
+    Returns:
+        Tuple of (ray_origin, ray_direction) in world space, direction normalized.
+    """
+    width = resolution[0]
+    height = resolution[1]
+
+    # Convert to normalized coordinates [-1, 1] with (0,0) at center
+    ndc_x = (2.0 * float(pixel_x) + 1.0) / width - 1.0
+    ndc_y = 1.0 - (2.0 * float(pixel_y) + 1.0) / height  # Flip Y axis
+
+    # Apply field of view and aspect ratio
+    cam_x = ndc_x * fov_scale * camera_aspect_ratio
+    cam_y = ndc_y * fov_scale
+    cam_z = 1.0  # Forward is negative Z in camera space (camera_direction already looks at -Z)
+
+    ray_dir_camera = wp.vec3(cam_x, cam_y, cam_z)
+
+    # Transform ray direction from camera to world space
+    ray_direction_world = (
+        camera_right * ray_dir_camera[0] + camera_up * ray_dir_camera[1] + camera_direction * ray_dir_camera[2]
+    )
+    ray_direction_world = wp.normalize(ray_direction_world)
+
+    return camera_position, ray_direction_world
+
+
+@wp.kernel
+def sensor_raycast_kernel(
+    # Model
+    body_q: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    shape_transform: wp.array[wp.transform],
+    geom_type: wp.array[int],
+    geom_size: wp.array[wp.vec3],
+    shape_source_ptr: wp.array[wp.uint64],
+    # Camera parameters
+    camera_position: wp.vec3,
+    camera_direction: wp.vec3,
+    camera_up: wp.vec3,
+    camera_right: wp.vec3,
+    fov_scale: float,
+    camera_aspect_ratio: float,
+    resolution: wp.vec2,
+    # Output (per-pixel results)
+    hit_distances: wp.array2d[float],
+):
+    """Raycast sensor kernel that casts rays for each pixel in an image.
+
+    Each thread processes one pixel-shape pair, generating a ray and recording the
+    closest intersection per pixel. HFIELD shapes are raycast via their ``wp.Mesh``
+    id from ``shape_source_ptr`` (built during :meth:`~newton.ModelBuilder.finalize`).
+
+    Args:
+        body_q: Array of body transforms
+        shape_body: Maps shape index to body index
+        shape_transform: Array of local shape transforms
+        geom_type: Array of geometry types for each geometry
+        geom_size: Array of sizes for each geometry
+        shape_source_ptr: Array of mesh ids for MESH, CONVEX_MESH, and HFIELD geometries
+        camera_position: Camera position in world space
+        camera_direction: Camera forward direction (normalized)
+        camera_up: Camera up direction (normalized)
+        camera_right: Camera right direction (normalized)
+        fov_scale: Scale factor for field of view, computed as tan(fov_radians/2) where fov_radians is the vertical field of view angle in radians
+        camera_aspect_ratio: Width/height aspect ratio
+        resolution: Image resolution as (width, height)
+        hit_distances: Output array of hit distances per pixel
+    """
+    pixel_x, pixel_y, shape_idx = wp.tid()
+
+    # Skip if out of bounds
+    if pixel_x >= resolution[0] or pixel_y >= resolution[1]:
+        return
+
+    # Generate ray for this pixel
+    ray_origin, ray_direction = ray_for_pixel(
+        camera_position,
+        camera_direction,
+        camera_up,
+        camera_right,
+        fov_scale,
+        camera_aspect_ratio,
+        resolution,
+        pixel_x,
+        pixel_y,
+    )
+
+    # compute shape transform
+    b = shape_body[shape_idx]
+
+    X_wb = wp.transform_identity()
+    if b >= 0:
+        X_wb = body_q[b]
+
+    X_bs = shape_transform[shape_idx]
+
+    geom_to_world = wp.mul(X_wb, X_bs)
+
+    geomtype = geom_type[shape_idx]
+
+    # Get mesh ID for mesh-like geometries
+    if geomtype == GeoType.MESH or geomtype == GeoType.CONVEX_MESH or geomtype == GeoType.HFIELD:
+        mesh_id = shape_source_ptr[shape_idx]
+    else:
+        mesh_id = wp.uint64(0)
+
+    t, _normal = ray_intersect_geom(
+        geom_to_world,
+        geom_size[shape_idx],
+        geomtype,
+        ray_origin,
+        ray_direction,
+        mesh_id,
+    )
+
+    if t >= 0.0:
+        wp.atomic_min(hit_distances, pixel_y, pixel_x, t)
+
+
+@wp.kernel
+def sensor_raycast_particles_kernel(
+    grid: wp.uint64,
+    particle_positions: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    search_radius: float,
+    march_step: float,
+    max_steps: wp.int32,
+    camera_position: wp.vec3,
+    camera_direction: wp.vec3,
+    camera_up: wp.vec3,
+    camera_right: wp.vec3,
+    fov_scale: float,
+    camera_aspect_ratio: float,
+    resolution: wp.vec2,
+    max_distance: float,
+    hit_distances: wp.array2d[float],
+):
+    """March rays against particles stored in a hash grid and record the nearest hit if found before max_distance.
+
+    Args:
+        grid: The hash grid containing the particles.
+        particle_positions: Array of particle positions.
+        particle_radius: Array of particle radii.
+        search_radius: The radius around each sample point to search for nearby particles.
+        march_step: The step size for ray marching.
+        max_steps: Maximum number of ray-march iterations allowed for a pixel.
+        camera_position: Camera position in world space.
+        camera_direction: Camera forward direction (normalized); rays travel along this vector.
+        camera_up: Camera up direction (normalized).
+        camera_right: Camera right direction (normalized).
+        fov_scale: Scale factor for field of view, computed as tan(fov_radians/2) where fov_radians is the vertical field of view angle in radians.
+        camera_aspect_ratio: Width/height aspect ratio.
+        resolution: Image resolution as (width, height).
+        max_distance: Maximum distance to march along the ray.
+        hit_distances: Output array of hit distances per pixel.
+    """
+    pixel_x, pixel_y = wp.tid()
+
+    if pixel_x >= resolution[0] or pixel_y >= resolution[1]:
+        return
+
+    ray_origin, ray_direction = ray_for_pixel(
+        camera_position,
+        camera_direction,
+        camera_up,
+        camera_right,
+        fov_scale,
+        camera_aspect_ratio,
+        resolution,
+        pixel_x,
+        pixel_y,
+    )
+
+    best = hit_distances[pixel_y, pixel_x]
+    if best < 0.0:
+        best = max_distance
+
+    search_radius_local = search_radius
+    step = march_step
+
+    s = wp.int32(0)
+    t = float(0.0)
+
+    while s < max_steps and t <= max_distance and t <= best:
+        sample_pos = ray_origin + ray_direction * t
+
+        query = wp.hash_grid_query(grid, sample_pos, search_radius_local)
+        candidate = int(0)
+
+        while wp.hash_grid_query_next(query, candidate):
+            # Intersect ray with particle sphere
+            radius = particle_radius[candidate]
+            if radius <= 0.0:
+                continue
+
+            center = particle_positions[candidate]
+            t_hit, _normal = ray_intersect_particle_sphere(ray_origin, ray_direction, center, radius)
+
+            if t_hit < 0.0:
+                continue
+
+            if t_hit > max_distance:
+                continue
+
+            if t_hit < best:
+                hit_distances[pixel_y, pixel_x] = t_hit
+                best = t_hit
+
+        s += 1
+        t += step
