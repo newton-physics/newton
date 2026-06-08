@@ -47,6 +47,7 @@
 - Treat `NewtonSDFCollisionAPI` and `NewtonMeshCollisionAPI` as independent collision representations in the USD importer. Co-applying both APIs on the same prim emits a warning and SDF configuration is used. `physics:approximation` (inherited from `PhysicsMeshCollisionAPI`) is ignored on SDF prims with a warning. `ModelBuilder.approximate_meshes()` raises `ValueError` for mesh-replacing methods (`convex_hull`, `coacd`, `vhacd`, `bounding_box`, `bounding_sphere`) when a target shape carries deferred SDF configuration or the `HYDROELASTIC` flag.
 - The USD importer warns and degrades on invalid or under-specified SDF configuration instead of aborting the whole import. A hydroelastic `Mesh` prim without an SDF source (no `newton:sdfMaxResolution` / `newton:sdfTargetVoxelSize`) imports as a plain mesh collider with hydroelastic disabled. An `sdfMaxResolution` not divisible by 8, an unknown `sdfTextureFormat`, and both `sdfMaxResolution` and `sdfTargetVoxelSize` authored on the same prim each warn with the prim path and fall back to defaults (`sdfTargetVoxelSize` takes precedence over `sdfMaxResolution`). The Python API path (`ShapeConfig.validate()`) still raises.
 - Remove the `cbor2` `<6` dependency ceiling after updating recorder deserialization to accept mapping-like decoded containers
+- Mark `SolverVBD` as experimental
 - Mark `SolverKamino` as experimental
 - Mark the actuator API as experimental in its docstring
 - Mark the `"sticky"` contact-matching mode as experimental in its docstring
@@ -77,6 +78,7 @@
 - Deprecate `Model.sdf_block_coords` and `Model.sdf_index2blocks`; both attributes are now lazily recomputed from each SDF's coarse-texture dimensions (matching the new broadphase semantics) and will be removed in a future release
 - Deprecate the public attribute names `Model.shape_sdf_index`, `Model.texture_sdf_data`, `Model.texture_sdf_coarse_textures`, `Model.texture_sdf_subgrid_textures`, `Model.texture_sdf_subgrid_start_slots` in favor of their underscore-prefixed private counterparts (`Model._shape_sdf_index`, etc.); the public aliases keep working for one release cycle and will be removed in a future release
 - Deprecate the implicit `Actuator` default that resolves `control_target_pos_attr` / `control_target_vel_attr` to legacy `joint_target_pos` / `joint_target_vel` when `newton.use_coord_layout_targets` is `False`; the default will switch to `joint_target_q` / `joint_target_qd` in a future release. Pass `control_target_pos_attr="joint_target_q"` (and the velocity counterpart) explicitly to adopt the new behavior now
+- Deprecate the `ls_parallel` argument of `SolverMuJoCo`; parallel line search is being removed from `mujoco_warp`. Remove `ls_parallel` from solver construction.
 
 ### Removed
 
@@ -92,6 +94,7 @@
 ### Fixed
 
 - Fix `SensorTiledCamera` not rendering heightfield (`HFIELD`) shapes, which were missing from the render BVH. Heightfields are now rendered through the existing mesh path (they are triangulated `wp.Mesh` shapes), which also resolves a tiled-camera render-performance regression caused by the unused heightfield branch lowering the render kernel's GPU occupancy.
+- Fix `SolverMuJoCo` passing `numpy.bool_` scalars for the `mocap` and `actgravcomp` parameters when building the MuJoCo spec, causing a `DeprecationWarning` under NumPy 2.2 and silent behavioral breakage under NumPy 2.5 where boolean scalars are no longer interpreted as integer indices.
 - Fix `eval_fk()` overwriting VBD-simulated `JointType.CABLE` body poses.
 - Fix hydroelastic SDF contact surfaces dropping the central region under deep interpenetration. The broadphase used to skip subgrids whose centers were deeper than the SDF narrow band, leaving a hole in the contact patch when overlap exceeded the narrow-band thickness. Broadphase now visits every subgrid in the SDF coarse grid (block coordinates are derived arithmetically from per-shape SDF coarse-texture dimensions); sampling at far-inside locations is correct because the coarse SDF is dense and accurate everywhere. On-disk SDF caches written by earlier versions are transparently re-cooked on first load (`_sdf_cache.CACHE_FORMAT_VERSION` bumped to `2`)
 - Fix `SolverXPBD` `body_parent_f` reporting to include `Control.joint_f` contributions and accumulate multiple inbound joint contributions, matching the `SolverMuJoCo` and `SolverFeatherstone` convention.
@@ -110,6 +113,7 @@
 - Fix `SolverKamino` contact anchors being shifted off the geometry surface by `ShapeConfig.margin`, which biased friction.
 - Fix MJCF joint `damping` attribute being ignored by `SolverFeatherstone`
 - Fix `SolverMuJoCo` generated MuJoCo joint names for multi-axis D6 joints to avoid duplicate names
+- Fix `SolverMuJoCo` ball-joint frame conversion: `joint_q` and position-target quaternions were applied in the wrong basis when `child_xform` had a non-identity rotation, and `joint_qd` / velocity targets / applied / actuator torques were applied and read back in the wrong basis whenever the ball was away from its rest pose.
 - Fix USD import of revolute and D6-angular joint `limit_ke` / `limit_kd` from `mjc:solreflimit` being over-scaled by ~57x
 - Fix `ViewerGL` GUI rendering at half size on HiDPI / Retina displays by scaling the ImGui style, fonts, sidebar width, and `log_image` window/tile/spacing constants with pyglet's `window.scale` (with framebuffer-to-window ratio as a fallback). DPI changes are tracked at runtime via the pyglet `on_scale` event so the GUI follows the window across displays with different scaling
 - Fix USD import losing authored negative scales on shape and parent xforms, so mirrored primitives and meshes are now imported with the correct signed scale
