@@ -851,6 +851,24 @@ class ModelBuilder:
                 return 0
             return len(self.values)
 
+        def _build_default_array(
+            self, count: int, device: Devicelike | None = None, requires_grad: bool = False
+        ) -> wp.array | list:
+            """Build an attribute array when every entry is the default value."""
+            if self.dtype is str:
+                return [self.default] * count
+
+            # Empty numeric custom attributes are common for registered solver
+            # defaults. Let Warp fill the array directly instead of first
+            # allocating a large Python list of repeated default values.
+            return wp.full(
+                count,
+                self.default,
+                dtype=self.dtype,
+                requires_grad=requires_grad,
+                device=device,
+            )
+
         def build_array(
             self, count: int, device: Devicelike | None = None, requires_grad: bool = False
         ) -> wp.array | list:
@@ -859,8 +877,7 @@ class ModelBuilder:
             For string dtype, returns a Python list[str] instead of a Warp array.
             """
             if self.values is None or len(self.values) == 0:
-                # No values provided, use default for all
-                arr = [self.default] * count
+                return self._build_default_array(count, device=device, requires_grad=requires_grad)
             elif self.is_custom_frequency:
                 # Custom frequency: vals is a list, replace None with defaults and pad/truncate as needed
                 arr = [val if val is not None else self.default for val in self.values]

@@ -246,6 +246,46 @@ class TestModelBuilderDeprecations(unittest.TestCase):
 
 
 class TestModelMesh(unittest.TestCase):
+    def test_empty_numeric_custom_attribute_uses_wp_full_default(self):
+        attr = ModelBuilder.CustomAttribute(
+            name="default_shape_attr",
+            frequency=newton.Model.AttributeFrequency.SHAPE,
+            dtype=wp.float32,
+            default=3.5,
+        )
+
+        with mock.patch.object(wp, "full", wraps=wp.full) as full_mock:
+            values = attr.build_array(4, device="cpu")
+
+        full_mock.assert_called_once_with(
+            4,
+            3.5,
+            dtype=wp.float32,
+            requires_grad=False,
+            device="cpu",
+        )
+        np.testing.assert_allclose(values.numpy(), np.full(4, 3.5, dtype=np.float32))
+
+    def test_empty_vector_custom_attribute_uses_wp_full_default(self):
+        attr = ModelBuilder.CustomAttribute(
+            name="default_vector_shape_attr",
+            frequency=newton.Model.AttributeFrequency.SHAPE,
+            dtype=wp.vec2,
+            default=wp.vec2(1.25, -2.5),
+        )
+
+        with mock.patch.object(wp, "full", wraps=wp.full) as full_mock:
+            values = attr.build_array(3, device="cpu")
+
+        full_mock.assert_called_once_with(
+            3,
+            wp.vec2(1.25, -2.5),
+            dtype=wp.vec2,
+            requires_grad=False,
+            device="cpu",
+        )
+        np.testing.assert_allclose(values.numpy(), np.array([[1.25, -2.5]] * 3, dtype=np.float32))
+
     def test_add_triangles(self):
         rng = np.random.default_rng(123)
 
