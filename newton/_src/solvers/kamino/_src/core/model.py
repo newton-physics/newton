@@ -684,16 +684,13 @@ class ModelKamino:
         return control
 
     @staticmethod
-    def from_newton(model: Model, overwrite_source_model: bool = True) -> ModelKamino:
+    def from_newton(model: Model) -> ModelKamino:
         """
         Finalizes the :class:`ModelKamino` from an existing instance of :class:`newton.Model`.
 
         Args:
             model:
                 The source :class:`newton.Model` instance to be converted.
-            overwrite_source_model:
-                Whether to overwrite the source model with
-                the converted model. Defaults to `True`.
         """
 
         # Ensure the base model is valid
