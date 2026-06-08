@@ -423,11 +423,11 @@ class TestBlockSparseMatrixOperations(unittest.TestCase):
             input_start, output_start = (row_start_np, col_start_np) if transpose else (col_start_np, row_start_np)
 
             if mask_matrices:
-                mask_np = np.ones((num_matrices,), dtype=np.int32)
-                mask_np[::2] = 0
-                matrix_mask = wp.from_numpy(mask_np, dtype=wp.int32, device=self.default_device)
+                mask_np = np.ones((num_matrices,), dtype=bool)
+                mask_np[::2] = False
+                matrix_mask = wp.from_numpy(mask_np, dtype=wp.bool, device=self.default_device)
             else:
-                matrix_mask = wp.ones((num_matrices,), dtype=wp.int32, device=self.default_device)
+                matrix_mask = wp.ones((num_matrices,), dtype=wp.bool, device=self.default_device)
 
             # Create vectors for matrix-vector multiplications.
             alpha = float(self.rng.standard_normal((1,))[0])

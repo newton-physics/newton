@@ -11137,7 +11137,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         builder.add_shape_box(top, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
         model = builder.finalize()
         self._make_force_space(model)
-        solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=30, nconmax=30, iterations=10)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=32, nconmax=30, iterations=10)
         self._run_to_first_contact(model, solver, max_substeps=120)
 
         # Find a contact between the two dynamic boxes (both bodies > 0).

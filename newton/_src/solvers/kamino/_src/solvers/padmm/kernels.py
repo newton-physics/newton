@@ -80,7 +80,7 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _reset_solver_data(
     # Outputs:
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
     problem_vio: wp.array[int32],
     problem_maxdim: wp.array[int32],
     lambdas: wp.array[float32],
@@ -93,7 +93,7 @@ def _reset_solver_data(
     maxncts = problem_maxdim[wid]
 
     # Skip operation if the world is masked out
-    if world_mask[wid] == 0 or tid >= maxncts:
+    if not world_mask[wid] or tid >= maxncts:
         return
 
     # Retrieve the index offset of the vector block of the world

@@ -530,8 +530,25 @@ def _serialize_warp_dtype(dtype) -> dict:
     return result
 
 
+_MODEL_BVH_RECORDING_DEFAULTS = {
+    "bvh_shapes": None,
+    "bvh_shapes_group_roots": None,
+    "bvh_shape_enabled": None,
+    "bvh_shape_count_enabled": 0,
+    "bvh_shape_bounds": None,
+    "bvh_shape_world_transforms": None,
+    "bvh_particles": None,
+    "bvh_particles_group_roots": None,
+}
+
+
 def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = None):
     def callback(x, path):
+        if path.startswith("model."):
+            model_attr = path.removeprefix("model.").partition(".")[0]
+            if model_attr in _MODEL_BVH_RECORDING_DEFAULTS:
+                return _MODEL_BVH_RECORDING_DEFAULTS[model_attr]
+
         if isinstance(x, wp.array):
             # Skip arrays with struct dtypes - they can't be serialized
             if _is_struct_dtype(x.dtype):
@@ -566,6 +583,9 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
 
         if isinstance(x, wp.HashGrid):
             return {"__type__": "warp.HashGrid", "data": None}
+
+        if isinstance(x, wp.Bvh):
+            return {"__type__": "warp.Bvh", "data": None}
 
         if isinstance(x, wp.Mesh):
             return {"__type__": "warp.Mesh", "data": None}
@@ -971,6 +991,9 @@ def depointer_as_key(data: Mapping[str, Any], format_type: str = "json", cache: 
 
         elif x_type == "warp.HashGrid":
             # Return None or create empty HashGrid as appropriate
+            return None
+
+        elif x_type == "warp.Bvh":
             return None
 
         elif x_type == "warp.Mesh":
