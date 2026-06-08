@@ -56,7 +56,7 @@ class SensorRaycast:
             camera_transforms = wp.array([[t] * model.world_count], dtype=wp.transformf)
 
             # Build BVH once; refit before frames where geometry changes.
-            newton.geometry.build_bvh_shape(model, state)
+            model.bvh_build_shapes(state)
             sensor.update(state, camera_transforms, rays, depth_image=depth)
             # depth[0, 0] has shape (height, width) with 0.0 for no-hit by default.
             # Pass clear_data=SensorTiledCamera.ClearData(clear_depth=-1.0) to use
