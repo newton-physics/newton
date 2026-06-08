@@ -574,15 +574,17 @@ Construct a view by matching articulation keys with a pattern and optional filte
 
     builder = newton.ModelBuilder()
     for i in range(2):
-        root = builder.add_link(
-            xform=wp.transform(wp.vec3(float(i) * 2.0, 0.0, 0.0), wp.quat_identity())
-        )
+        root_xform = wp.transform(wp.vec3(float(i) * 2.0, 0.0, 0.0), wp.quat_identity())
+        root = builder.add_link(xform=root_xform)
         tip = builder.add_link(
             xform=wp.transform(wp.vec3(float(i) * 2.0 + 1.0, 0.0, 0.0), wp.quat_identity())
         )
         builder.add_shape_box(root, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(tip, hx=0.1, hy=0.1, hz=0.1)
-        j_root = builder.add_joint_free(parent=-1, child=root)
+        # carry the root body's initial world pose via parent_xform so the FK
+        # composition body_q = joint_X_p * joint_q * inv(joint_X_c) reproduces it
+        # with the default identity joint_q
+        j_root = builder.add_joint_free(parent=-1, child=root, parent_xform=root_xform)
         j_tip = builder.add_joint_revolute(
             parent=root,
             child=tip,

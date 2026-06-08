@@ -1292,7 +1292,11 @@ def test_fixed_loop_joint(test, device, solver_fn):
     )
     # In-tree: link_b gets a free joint — all 6 DOFs unconstrained in the tree.
     # Only the fixed loop joint below should lock link_b to link_a.
-    j_free = builder.add_joint_free(parent=-1, child=link_b)
+    j_free = builder.add_joint_free(
+        parent=-1,
+        child=link_b,
+        parent_xform=wp.transform(wp.vec3(0.25, -0.5, 0.0), wp.quat_identity()),
+    )
     builder.add_articulation([j_rev, j_free])
 
     # Fixed loop joint at the elbow:

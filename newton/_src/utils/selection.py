@@ -148,7 +148,7 @@ def compose_root_world_transform_kernel(
     root_joint_X_c: Any,  # (world, arti) wp.transform
     root_joint_q_tf: Any,  # (world, arti) wp.transform (joint_q[0:7] reinterpreted)
     # outputs
-    out: wp.array2d(dtype=wp.transform),  # (world, arti) wp.transform
+    out: wp.array2d[wp.transform],  # (world, arti) wp.transform
 ):
     wid, aid = wp.tid()
     xp = root_joint_X_p[wid, aid]
@@ -159,8 +159,8 @@ def compose_root_world_transform_kernel(
 
 @wp.kernel
 def decompose_root_world_transform_kernel(
-    view_mask: wp.array(dtype=bool),  # (world,) mask in ArticulationView
-    values: wp.array2d(dtype=wp.transform),  # (world, arti) user-supplied world poses
+    view_mask: wp.array[bool],  # (world,) mask in ArticulationView
+    values: wp.array2d[wp.transform],  # (world, arti) user-supplied world poses
     root_joint_X_p: Any,  # (world, arti) wp.transform
     root_joint_X_c: Any,  # (world, arti) wp.transform
     # outputs
@@ -177,8 +177,8 @@ def decompose_root_world_transform_kernel(
 
 @wp.kernel
 def decompose_root_world_transform_per_arti_kernel(
-    view_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
-    values: wp.array2d(dtype=wp.transform),  # (world, arti) user-supplied world poses
+    view_mask: wp.array2d[bool],  # (world, arti) mask in ArticulationView
+    values: wp.array2d[wp.transform],  # (world, arti) user-supplied world poses
     root_joint_X_p: Any,  # (world, arti) wp.transform
     root_joint_X_c: Any,  # (world, arti) wp.transform
     # outputs
