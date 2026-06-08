@@ -42,8 +42,8 @@ class TestMuJoCoSolver(unittest.TestCase):
         """
         self.assertTrue(True, "setUp method completed.")
 
-    def test_ls_parallel_option(self):
-        """Test that ls_parallel option is properly set on the MuJoCo Warp model."""
+    def test_ls_parallel_deprecated(self):
+        """Test that the deprecated ls_parallel option warns but is still applied."""
         # Create minimal model with proper inertia
         builder = newton.ModelBuilder()
         link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
@@ -51,13 +51,19 @@ class TestMuJoCoSolver(unittest.TestCase):
         builder.add_articulation([joint])
         model = builder.finalize()
 
-        # Test with ls_parallel=True
-        solver = SolverMuJoCo(model, ls_parallel=True)
+        # Passing ls_parallel emits a DeprecationWarning but is still applied while
+        # the targeted mujoco_warp supports it.
+        with self.assertWarns(DeprecationWarning):
+            solver = SolverMuJoCo(model, ls_parallel=True)
         self.assertTrue(solver.mjw_model.opt.ls_parallel, "ls_parallel should be True when set to True")
+        with self.assertWarns(DeprecationWarning):
+            solver = SolverMuJoCo(model, ls_parallel=False)
+        self.assertFalse(solver.mjw_model.opt.ls_parallel, "ls_parallel should be False when set to False")
 
-        # Test with ls_parallel=False (default)
-        solver_default = SolverMuJoCo(model, ls_parallel=False)
-        self.assertFalse(solver_default.mjw_model.opt.ls_parallel, "ls_parallel should be False when set to False")
+        # Omitting ls_parallel does not warn.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            SolverMuJoCo(model)
 
     def test_tolerance_options(self):
         """Test that tolerance and ls_tolerance options are properly set on the MuJoCo Warp model."""

@@ -3162,7 +3162,7 @@ class SolverMuJoCo(SolverBase):
         disable_contacts: bool = False,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
-        ls_parallel: bool = False,
+        ls_parallel: bool | None = None,  # Deprecated: being removed from mujoco_warp
         use_mujoco_contacts: bool = True,
         include_sites: bool = True,
         skip_visual_only_geoms: bool = True,
@@ -3201,11 +3201,20 @@ class SolverMuJoCo(SolverBase):
             disable_contacts: If True, disable contact computation in MuJoCo.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
-            ls_parallel: If True, enable parallel line search in MuJoCo. Defaults to False.
+            ls_parallel: Deprecated. Parallel line search is being removed from ``mujoco_warp``; passing this option emits a ``DeprecationWarning``.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
             include_sites: If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
         """
+        if ls_parallel is not None:
+            warnings.warn(
+                "ls_parallel is deprecated. Parallel line search is being removed "
+                "from mujoco_warp; this argument will stop having an effect in a "
+                "future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         super().__init__(model)
 
         # Import and cache MuJoCo modules (only happens once per class)
@@ -4436,7 +4445,7 @@ class SolverMuJoCo(SolverBase):
         target_filename: str | None = None,
         skip_visual_only_geoms: bool = True,
         include_sites: bool = True,
-        ls_parallel: bool = False,
+        ls_parallel: bool | None = None,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
@@ -4477,7 +4486,7 @@ class SolverMuJoCo(SolverBase):
             target_filename: Optional path to save generated MJCF file.
             skip_visual_only_geoms: If True, skip geoms that are visual-only.
             include_sites: If True, include sites in the model.
-            ls_parallel: If True, enable parallel line search.
+            ls_parallel: Deprecated. If not None, sets ``mjw_model.opt.ls_parallel``.
 
         Returns:
             tuple[MjWarpModel, MjWarpData, MjModel, MjData]: Model and data objects for
@@ -6288,8 +6297,9 @@ class SolverMuJoCo(SolverBase):
                         mjc_tendon_to_newton_tendon_np[w, mjc_tendon] = w * tendons_per_world + template_tendon
                 self.mjc_tendon_to_newton_tendon = wp.array(mjc_tendon_to_newton_tendon_np, dtype=wp.int32)
 
-            # set mjwarp-only settings
-            self.mjw_model.opt.ls_parallel = ls_parallel
+            # set mjwarp-only settings (ls_parallel is deprecated; only set when explicitly requested)
+            if ls_parallel is not None:
+                self.mjw_model.opt.ls_parallel = ls_parallel
 
             if separate_worlds:
                 nworld = model.world_count
