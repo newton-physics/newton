@@ -627,9 +627,11 @@ def _build_free_velocity_bias_contacts(
     # The gap-function value (penetration_k) is the margin-shifted
     # signed distance: negative means penetration past the resting
     # separation, zero means at rest, positive means within the
-    # detection gap. A dead-zone of config.delta on either side filters
-    # out floating-point noise on nearly-touching contacts.
-    penetration_k = wp.where(wp.abs(distance_k) < config.delta, 0.0, distance_k)
+    # detection gap.
+    # A dead-zone of config.delta on either side filters out floating-point
+    # noise on nearly-touching contacts. Outside the dead-zone, we shift
+    # penetration_k by delta to preserve continuity w.r.t. distance_k.
+    penetration_k = wp.sign(distance_k) * wp.max(0.0, wp.abs(distance_k) - config.delta)
 
     # Compute the per-contact penetration error reduction term
     # NOTE#1: Penetrations are represented as penetration_k < 0
