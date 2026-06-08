@@ -109,6 +109,7 @@
 - Fix `SolverKamino` contact anchors being shifted off the geometry surface by `ShapeConfig.margin`, which biased friction.
 - Fix MJCF joint `damping` attribute being ignored by `SolverFeatherstone`
 - Fix `SolverMuJoCo` generated MuJoCo joint names for multi-axis D6 joints to avoid duplicate names
+- Fix `SolverMuJoCo` ball-joint frame conversion: `joint_q` and position-target quaternions were applied in the wrong basis when `child_xform` had a non-identity rotation, and `joint_qd` / velocity targets / applied / actuator torques were applied and read back in the wrong basis whenever the ball was away from its rest pose.
 - Fix USD import of revolute and D6-angular joint `limit_ke` / `limit_kd` from `mjc:solreflimit` being over-scaled by ~57x
 - Fix `ViewerGL` GUI rendering at half size on HiDPI / Retina displays by scaling the ImGui style, fonts, sidebar width, and `log_image` window/tile/spacing constants with pyglet's `window.scale` (with framebuffer-to-window ratio as a fallback). DPI changes are tracked at runtime via the pyglet `on_scale` event so the GUI follows the window across displays with different scaling
 - Fix USD import losing authored negative scales on shape and parent xforms, so mirrored primitives and meshes are now imported with the correct signed scale
