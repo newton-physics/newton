@@ -5262,7 +5262,7 @@ class SolverMuJoCo(SolverBase):
             # add body
             body_mapping[child] = len(mj_bodies)
 
-            j_type = joint_type[j]
+            j_type = int(joint_type[j])
             # Export every world-fixed root as a MuJoCo mocap body: fixed
             # roots have no MuJoCo joint DOFs, but Newton can still update
             # their pose through joint_X_p/joint_X_c. Static world-attached
@@ -5469,7 +5469,7 @@ class SolverMuJoCo(SolverBase):
                     if joint_damping is not None:
                         joint_params["damping"] = float(joint_damping[ai])
                     if joint_actgravcomp is not None:
-                        joint_params["actgravcomp"] = joint_actgravcomp[ai]
+                        joint_params["actgravcomp"] = bool(joint_actgravcomp[ai])
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -MAXVAL and upper >= MAXVAL:
                         joint_params["limited"] = False
@@ -5584,7 +5584,7 @@ class SolverMuJoCo(SolverBase):
                     if joint_damping is not None:
                         joint_params["damping"] = float(joint_damping[ai])
                     if joint_actgravcomp is not None:
-                        joint_params["actgravcomp"] = joint_actgravcomp[ai]
+                        joint_params["actgravcomp"] = bool(joint_actgravcomp[ai])
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
                     if lower <= -MAXVAL and upper >= MAXVAL:
                         joint_params["limited"] = False
@@ -5784,7 +5784,7 @@ class SolverMuJoCo(SolverBase):
             if int(j) in converted_loop_joint_targets:
                 continue
 
-            j_type = joint_type[j]
+            j_type = int(joint_type[j])
             parent_name = get_body_name(joint_parent[j])
             child_name = get_body_name(joint_child[j])
             lin_count, ang_count = joint_dof_dim[j]
