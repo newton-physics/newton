@@ -14,36 +14,39 @@ import warp as wp
 class ControlLaw:
     """Abstract base for a single control law.
 
-    Subclasses implement :meth:`compute` (and optionally :meth:`reset`),
-    declare which output arrays they write to via :meth:`outputs`, and
-    expose a nested :class:`State` dataclass holding their internal
-    buffers.
+    Subclasses implement :meth:`compute`, declare which output arrays they
+    write to via :meth:`outputs`, and expose a nested :class:`State`
+    dataclass holding their internal buffers.
+
+    Every ``ControlLaw`` carries a unique-within-its-:class:`Controller`
+    ``label`` set at construction; the composing :class:`Controller` uses
+    that label as the key into its composed state's
+    ``control_law_states`` dict.
     """
 
     @dataclass
     class State:
         """Pure data container. Subclasses declare their fields."""
 
-    indices: wp.array[wp.uint32]
-    """Global DOF indices this controller writes to (set by subclasses in ``__init__``)."""
-
-    reset_state: ControlLaw.State | None = None
-    """Per-controller reset target. Allocated by :meth:`finalize` to zeros; user-mutable."""
+    label: str
+    """Unique-within-Controller string identifier. Set by subclasses in ``__init__``."""
 
     def finalize(self, device: wp.Device, num_outputs: int, requires_grad: bool = False) -> None:
-        """Allocate device-side private buffers and :attr:`reset_state`.
+        """Allocate device-side private buffers.
 
         Called by :class:`Controller` after construction.
 
         Args:
             device: Warp device to allocate on.
-            num_outputs: Equal to ``len(self.indices)``.
+            num_outputs: The shared outer length of every binding returned
+                by :meth:`outputs` — derived by the law from its output
+                port indices at ``__init__``.
             requires_grad: Propagated from :class:`Controller`. If True, all
-                internal buffers (including ``reset_state``) are allocated with
-                gradient support so the controller is transparent to
-                :class:`wp.Tape` — Isaac Lab and other autograd consumers can
-                differentiate through ``compute()`` end-to-end. Kernels are
-                autograd-able by default; this flag only controls allocations.
+                internal buffers are allocated with gradient support so the
+                controller is transparent to :class:`wp.Tape` — Isaac Lab
+                and other autograd consumers can differentiate through
+                ``compute()`` end-to-end. Kernels are autograd-able by
+                default; this flag only controls allocations.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement finalize().")
 
@@ -51,7 +54,7 @@ class ControlLaw:
         """Allocate a fresh state, or return ``None`` if stateless.
 
         Args:
-            num_outputs: Equal to ``len(self.indices)``.
+            num_outputs: The law's ``num_outputs``.
             device: Warp device for allocation.
             requires_grad: If True, allocate ``State`` fields with gradient support.
         """
@@ -101,20 +104,3 @@ class ControlLaw:
             dt: Timestep [s].
         """
         raise NotImplementedError(f"{type(self).__name__} must implement compute().")
-
-    def reset(self, state: ControlLaw.State, mask: wp.array[wp.bool]) -> None:
-        """Update ``state`` from :attr:`reset_state` where ``mask`` is True.
-
-        ``mask`` is a bool array of length equal to this controller's
-        ``num_outputs`` (the shared outer length of all output bindings
-        returned by :meth:`outputs`). ``mask[i] = True`` means "reset slot
-        ``i``." Slot ``i`` corresponds to whichever portion of the state
-        the controller associates with output slot ``i`` — for a simple
-        per-DOF controller like :class:`ControlLawPID`, that's a single
-        state element; for a controller with multi-component-per-output
-        state, it may be a wider chunk.
-
-        The default implementation is a no-op (suitable for stateless
-        controllers).
-        """
-        return

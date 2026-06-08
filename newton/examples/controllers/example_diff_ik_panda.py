@@ -4,11 +4,11 @@
 ###########################################################################
 # Example Controllers — Differential IK driving four Franka Panda arms
 #
-# A single ControlLawDifferentialIK is replicated across 4 Franka Panda
-# (fr3 + hand) robots arranged in a row. Each robot has its own 6DOF
-# draggable gizmo in the viewer; the controller drives every arm's TCP
-# toward its gizmo every step. The MuJoCo solver applies the controller's
-# commanded q-targets via its built-in joint-position PD.
+# A ControlLawDifferentialIK manages four Franka Panda (fr3 + hand) robots
+# arranged in a row. Each robot has its own 6DOF draggable gizmo in the
+# viewer; the controller drives every arm's TCP toward its gizmo every
+# step. The MuJoCo solver applies the controller's commanded q-targets
+# via its built-in joint-position PD.
 #
 # Command: python -m newton.examples diff_ik_panda
 ###########################################################################
@@ -113,12 +113,22 @@ class Example:
         self.home_q_per_robot = home_q
 
         # ------------------------------------------------------------------
-        # Scene — replicate 4 robots along +Y, add ground plane
+        # Scene — replicate 4 robots along +Y, add ground plane.
         # ------------------------------------------------------------------
         scene = newton.ModelBuilder()
         scene.replicate(template, ROBOT_COUNT, spacing=(0.0, ROBOT_SPACING_Y, 0.0))
         scene.add_ground_plane()
         self.model = scene.finalize()
+
+        # ------------------------------------------------------------------
+        # DiffIK template — a separate N-articulation builder with no
+        # ground plane and no physical spacing. The controller finalizes
+        # this independently and runs eval_fk / eval_jacobian on it; the
+        # all-at-origin layout means the user's per-robot target_pos lives
+        # in the same frame as the scene minus each robot's base offset.
+        # ------------------------------------------------------------------
+        diffik_template = newton.ModelBuilder()
+        diffik_template.replicate(template, ROBOT_COUNT)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -133,10 +143,11 @@ class Example:
         self.solver = newton.solvers.SolverMuJoCo(self.model, disable_contacts=True)
 
         # ------------------------------------------------------------------
-        # DiffIK — K=1 template replicated R=4 times inside the controller
+        # DiffIK setup
         # ------------------------------------------------------------------
         total_dofs = ROBOT_COUNT * DOFS_PER_ROBOT
-        indices = wp.array(np.arange(total_dofs, dtype=np.uint32), device=self.device)
+        dof_indices = wp.array(np.arange(total_dofs, dtype=np.uint32), device=self.device)
+        robot_indices = wp.array(np.arange(ROBOT_COUNT, dtype=np.uint32), device=self.device)
 
         # Controller writes to its own intermediate buffers; we then scatter
         # only the arm DOFs into control.joint_target_q each substep. Finger
@@ -147,12 +158,12 @@ class Example:
         self._q_buffer = wp.zeros(total_dofs, dtype=wp.float32, device=self.device)
         self._qd_buffer = wp.zeros(total_dofs, dtype=wp.float32, device=self.device)
 
-        # DiffIK's internal model is the template replicated with zero
-        # spacing — all robots at world origin. The scene replicate spaces
-        # robots out *and centers the grid* (so for 4 robots along Y at
-        # spacing 1.2 the bases sit at y = -1.8, -0.6, 0.6, 1.8, not at
-        # 0..3.6). Mirror replicate's offset computation so DiffIK sees its
-        # gizmos in the same internal frame.
+        # DiffIK's internal model is built from ``diffik_template`` — all
+        # robots at world origin. The scene's replicate spaces robots out
+        # *and centers the grid* (for 4 robots along Y at spacing 1.2 the
+        # bases sit at y = -1.8, -0.6, 0.6, 1.8). Mirror that offset
+        # computation here so a scene-world gizmo translates into the
+        # right DiffIK-internal target by subtracting the base offset.
         self._base_offsets_np = compute_world_offsets(
             ROBOT_COUNT, (0.0, ROBOT_SPACING_Y, 0.0), up_axis=self.model.up_axis
         )
@@ -198,17 +209,17 @@ class Example:
         )
 
         self._diff_ik = ControlLawDifferentialIK(
-            model_builder=template,
-            indices=indices,
+            label="panda_ik",
+            model_builder=diffik_template,
             site="ee",
-            measurement="joint_q",
-            measurement_rate="joint_qd",
-            target_pos="target_pos",
-            target_quat="target_quat",
-            damping="damping",
-            gain="gain",
-            output_qd="output_qd",
-            output_q="output_q",
+            measurement=("joint_q", dof_indices),
+            measurement_rate=("joint_qd", dof_indices),
+            target_pos=("target_pos", robot_indices),
+            target_quat=("target_quat", robot_indices),
+            damping=("damping", robot_indices),
+            gain=("gain", robot_indices),
+            output_qd=("output_qd", dof_indices),
+            output_q=("output_q", dof_indices),
         )
         self.controller = Controller([self._diff_ik])
         self._cs0 = self.controller.state()
@@ -223,8 +234,10 @@ class Example:
             wp.array(home_tile, dtype=wp.float32, device=self.device),
         )
 
-        # Arm DOF indices in the scene's per-robot layout. Since indices=arange
-        # for DiffIK, q_buffer flat index equals scene joint_target_q index.
+        # Arm DOF indices in the scene's per-robot layout. The DiffIK's
+        # dof_indices is arange(total_dofs), so q_buffer flat index equals
+        # the scene's joint_target_q index — we just pick out the 7 arm
+        # slots per robot for the scatter.
         arm_indices = []
         for r in range(ROBOT_COUNT):
             base = r * DOFS_PER_ROBOT

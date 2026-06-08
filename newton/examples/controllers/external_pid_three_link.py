@@ -1,6 +1,6 @@
 # THIS IS NOT A REAL EXAMPLE!!!!!
 # TEMPORARY FILE USED FOR INITIAL TESTS,
-# WILL BE DELETED. 
+# WILL BE DELETED.
 
 
 from contextlib import nullcontext
@@ -153,17 +153,18 @@ if __name__ == "__main__":
     pid_output = SimpleNamespace(joint_f=control.joint_f)
 
     # create an external PD controller to use:
+    pid_indices = wp.array(arm_model.joint_target_q_start[j1:-1], dtype=wp.uint32)
     control_law = ControlLawPID(
-        indices=wp.array(arm_model.joint_target_q_start[j1:-1], dtype=wp.uint32),
-        measurement="joint_q",
-        measurement_rate="joint_qd",
-        setpoint="setpoint",
-        setpoint_rate="setpoint_rate",
-        kp="kp",
-        ki="ki",
-        kd="kd",
-        integral_max="integral_max",
-        output="joint_f",
+        label="arm_pid",
+        measurement=("joint_q", pid_indices),
+        measurement_rate=("joint_qd", pid_indices),
+        setpoint=("setpoint", pid_indices),
+        setpoint_rate=("setpoint_rate", pid_indices),
+        kp=("kp", pid_indices),
+        ki=("ki", pid_indices),
+        kd=("kd", pid_indices),
+        integral_max=("integral_max", pid_indices),
+        output=("joint_f", pid_indices),
     )
 
     controller = Controller([control_law])

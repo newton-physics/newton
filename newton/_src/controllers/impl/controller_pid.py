@@ -51,23 +51,12 @@ def _pid_kernel(
     next_integral[i] = integral
 
 
-@wp.kernel
-def _pid_masked_reset_kernel(
-    integral: wp.array[float],
-    target_integral: wp.array[float],
-    mask: wp.array[wp.bool],
-):
-    i = wp.tid()
-    if mask[i]:
-        integral[i] = target_integral[i]
-
-
 class ControlLawPID(ControlLaw):
     """Stateful PID controller with symmetric anti-windup clamping.
 
-    Independent per-DOF: ``output[i]`` depends only on the ``i``-th entries of
-    its declared ports. Each compute step adds the following to the output
-    array:
+    Independent per-DOF: ``output[i]`` depends only on the ``i``-th entries
+    of its declared ports. Each compute step adds the following to the
+    output array:
 
     .. code-block:: text
 
@@ -76,36 +65,36 @@ class ControlLawPID(ControlLaw):
                                         -integral_max, +integral_max)
                         + kd[i] * (setpoint_rate - measurement_rate)
 
-    Every port is a **string** giving the attribute name on the ``input`` /
-    ``output`` object passed to :meth:`Controller.step` — e.g.
-    ``measurement="joint_q"`` resolves to ``input.joint_q`` at step time.
-    Per-DOF ports may also be passed as ``(attr_name, port_indices)`` if
-    the source array's layout differs from this controller's ``indices``.
+    Every port is a 2-tuple ``("attr_name", port_indices)``. ``attr_name``
+    is the attribute on the ``input`` / ``output`` object passed to
+    :meth:`Controller.step`. ``port_indices`` is a ``wp.array[wp.uint32]``
+    of length ``num_outputs`` (derived from the ``output`` port's
+    indices); the kernel reads/writes ``arr[port_indices[i]]``.
 
     Args:
-        indices: Global DOF indices this controller writes to. Length ``N``.
-        measurement: Per-DOF read port. Process variable.
-        measurement_rate: Per-DOF read port. Time derivative of measurement.
-        setpoint: Per-DOF read port. Target for the measurement.
-        setpoint_rate: Per-DOF read port. Time derivative of the setpoint.
-        kp: Per-DOF read port. Proportional gain.
-        ki: Per-DOF read port. Integral gain.
-        kd: Per-DOF read port. Derivative gain.
-        integral_max: Per-DOF read port. Symmetric saturation bound on the
-            integrator. Use ``wp.full(N, float('inf'))`` to disable clamping.
+        label: Unique-within-:class:`Controller` identifier.
+        measurement: Per-DOF read port (process variable).
+        measurement_rate: Per-DOF read port (derivative of measurement).
+        setpoint: Per-DOF read port (target value).
+        setpoint_rate: Per-DOF read port (derivative of setpoint).
+        kp: Per-DOF read port (proportional gain).
+        ki: Per-DOF read port (integral gain).
+        kd: Per-DOF read port (derivative gain).
+        integral_max: Per-DOF read port (symmetric integrator clamp). Use
+            ``wp.full(N, float('inf'))`` to disable clamping.
         output: Per-DOF write port. ``compute()`` accumulates ``+=`` into
-            the slots ``output[output_indices[i]]``.
+            the slots ``arr[port_indices[i]]``.
     """
 
     @dataclass
     class State(ControlLaw.State):
         integral: wp.array[float] | None = None
-        """Accumulated integral term, shape ``[N]``."""
+        """Accumulated integral term, shape ``[num_outputs]``."""
 
     def __init__(
         self,
         *,
-        indices: wp.array[wp.uint32],
+        label: str,
         measurement,
         measurement_rate,
         setpoint,
@@ -116,29 +105,34 @@ class ControlLawPID(ControlLaw):
         integral_max,
         output,
     ):
-        if not isinstance(indices, wp.array):
-            raise TypeError(f"ControlLawPID: indices must be wp.array[wp.uint32], got {type(indices).__name__}.")
-        self.indices = indices
-        self._measurement_attr, self._measurement_port_indices = _normalize_port(
-            measurement, indices, name="measurement"
-        )
-        self._measurement_rate_attr, self._measurement_rate_port_indices = _normalize_port(
-            measurement_rate, indices, name="measurement_rate"
-        )
-        self._setpoint_attr, self._setpoint_port_indices = _normalize_port(setpoint, indices, name="setpoint")
-        self._setpoint_rate_attr, self._setpoint_rate_port_indices = _normalize_port(
-            setpoint_rate, indices, name="setpoint_rate"
-        )
-        self._kp_attr, self._kp_port_indices = _normalize_port(kp, indices, name="kp")
-        self._ki_attr, self._ki_port_indices = _normalize_port(ki, indices, name="ki")
-        self._kd_attr, self._kd_port_indices = _normalize_port(kd, indices, name="kd")
-        self._integral_max_attr, self._integral_max_port_indices = _normalize_port(
-            integral_max, indices, name="integral_max"
-        )
-        self._output_attr, self._output_port_indices = _normalize_port(output, indices, name="output")
+        self.label = label
+        # Output port carries the controller's size: every per-DOF port's
+        # port_indices must agree with the output's.
+        self._output_attr, self._output_port_indices = _normalize_port(output, name="output")
+        self._num_outputs = self._output_port_indices.shape[0]
+
+        def _norm(spec, name):
+            attr, port_idx = _normalize_port(spec, name=name)
+            if port_idx.shape != self._output_port_indices.shape:
+                raise ValueError(
+                    f"Port '{name}': port_indices shape {port_idx.shape} must match "
+                    f"the output port's shape {self._output_port_indices.shape}."
+                )
+            return attr, port_idx
+
+        self._measurement_attr, self._measurement_port_indices = _norm(measurement, "measurement")
+        self._measurement_rate_attr, self._measurement_rate_port_indices = _norm(measurement_rate, "measurement_rate")
+        self._setpoint_attr, self._setpoint_port_indices = _norm(setpoint, "setpoint")
+        self._setpoint_rate_attr, self._setpoint_rate_port_indices = _norm(setpoint_rate, "setpoint_rate")
+        self._kp_attr, self._kp_port_indices = _norm(kp, "kp")
+        self._ki_attr, self._ki_port_indices = _norm(ki, "ki")
+        self._kd_attr, self._kd_port_indices = _norm(kd, "kd")
+        self._integral_max_attr, self._integral_max_port_indices = _norm(integral_max, "integral_max")
 
     def finalize(self, device: wp.Device, num_outputs: int, requires_grad: bool = False) -> None:
-        self.reset_state = self.state(num_outputs, device, requires_grad=requires_grad)
+        # No private buffers — state is allocated by Controller.state() via
+        # ControlLawPID.state() when needed.
+        pass
 
     def is_stateful(self) -> bool:
         return True
@@ -173,7 +167,7 @@ class ControlLawPID(ControlLaw):
         out = _resolve_input_array(output, self._output_attr, name="output")
         wp.launch(
             _pid_kernel,
-            dim=len(self.indices),
+            dim=self._num_outputs,
             inputs=[
                 meas,
                 self._measurement_port_indices,
@@ -196,15 +190,4 @@ class ControlLawPID(ControlLaw):
                 state.integral,
             ],
             outputs=[out, next_state.integral],
-        )
-
-    def reset(
-        self,
-        state: ControlLawPID.State,
-        mask: wp.array[wp.bool],
-    ) -> None:
-        wp.launch(
-            _pid_masked_reset_kernel,
-            dim=len(self.indices),
-            inputs=[state.integral, self.reset_state.integral, mask],
         )

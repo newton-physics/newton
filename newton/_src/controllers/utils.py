@@ -10,59 +10,40 @@ from typing import Any
 import warp as wp
 
 
-def _normalize_port(
-    spec: Any,
-    control_law_indices: wp.array[wp.uint32],
-    *,
-    name: str,
-) -> tuple[str, wp.array[wp.uint32]]:
-    """Normalize a per-DOF port spec at :meth:`ControlLaw.__init__` time.
+def _normalize_port(spec: Any, *, name: str) -> tuple[str, wp.array[wp.uint32]]:
+    """Normalize a port spec at :meth:`ControlLaw.__init__` time.
 
-    Per-DOF ports name *where on the* ``input``/``output`` object the array
-    lives at step time; they're never the array itself. The returned
-    ``attr_name`` is later resolved against the user-supplied ``input`` or
-    ``output`` via ``getattr(source, attr_name)``.
+    Every port spec is a 2-tuple ``(attr_name, port_indices)``:
+
+    - ``attr_name``: the attribute name on the user-supplied ``input`` or
+      ``output`` object where the live array lives at step time. Resolved
+      via ``getattr(source, attr_name)`` inside the law's ``compute()``.
+    - ``port_indices``: a ``wp.array[wp.uint32]`` giving the inner lookup
+      used to index into the live array — ``arr[port_indices[i]]`` for
+      per-DOF ports, ``arr[port_indices[r]]`` for per-robot ports.
+
+    The caller is responsible for cross-checking ``port_indices.shape``
+    against either ``num_outputs`` (per-DOF ports) or ``num_robots``
+    (per-robot ports). This helper only validates the structural shape
+    of the spec itself.
 
     Args:
-        spec: One of:
-
-            - ``str`` — attribute name on the source object. ``port_indices``
-              defaults to ``control_law_indices``.
-            - ``(str, wp.array[wp.uint32])`` — attribute name + custom
-              ``port_indices``. Used when the source array's layout differs
-              from the controller-level ``indices``.
-        control_law_indices: ControlLaw-level lookup. Default port indices.
+        spec: A 2-tuple ``(str, wp.array[wp.uint32])``.
         name: Port name used in error messages.
 
     Returns:
-        ``(attr_name, port_indices)`` ready to be stored on the ControlLaw.
+        ``(attr_name, port_indices)``.
     """
-    if isinstance(spec, str):
-        return spec, control_law_indices
-    if isinstance(spec, tuple):
-        if len(spec) != 2:
-            raise ValueError(f"Port '{name}': tuple must be (attr_name, port_indices); got {len(spec)} elements.")
-        attr_name, port_indices = spec
-        if not isinstance(attr_name, str):
-            raise TypeError(
-                f"Port '{name}': first tuple element must be str (attribute name), got {type(attr_name).__name__}."
-            )
-        if not isinstance(port_indices, wp.array):
-            raise TypeError(f"Port '{name}': second tuple element must be wp.array, got {type(port_indices).__name__}.")
-        if port_indices.shape != control_law_indices.shape:
-            raise ValueError(
-                f"Port '{name}': port_indices shape {port_indices.shape} must match "
-                f"ControlLaw indices shape {control_law_indices.shape}."
-            )
-        return attr_name, port_indices
-    raise TypeError(f"Port '{name}': expected str or (str, wp.array) tuple, got {type(spec).__name__}.")
-
-
-def _normalize_per_group_port(spec: Any, *, name: str) -> str:
-    """Normalize a per-group port spec at ``__init__`` time. Returns the attr name."""
-    if not isinstance(spec, str):
-        raise TypeError(f"Port '{name}': expected str (attribute name), got {type(spec).__name__}.")
-    return spec
+    if not isinstance(spec, tuple) or len(spec) != 2:
+        raise TypeError(f"Port '{name}': expected a 2-tuple (attr_name, port_indices), got {type(spec).__name__}.")
+    attr_name, port_indices = spec
+    if not isinstance(attr_name, str):
+        raise TypeError(
+            f"Port '{name}': first tuple element must be str (attribute name), got {type(attr_name).__name__}."
+        )
+    if not isinstance(port_indices, wp.array):
+        raise TypeError(f"Port '{name}': second tuple element must be wp.array, got {type(port_indices).__name__}.")
+    return attr_name, port_indices
 
 
 def _resolve_input_array(
@@ -90,18 +71,19 @@ def _resolve_input_array(
 def _resolve_per_group_array(
     source: Any,
     attr_name: str,
-    num_robots: int,
     dtype: Any,
     *,
     name: str,
 ) -> wp.array:
-    """Step-time resolver for per-group ports. Checks shape + dtype since
-    they're documented contract (``length == num_robots`` with a specific
-    Warp dtype like ``wp.vec3`` / ``wp.quat`` / ``wp.float32``).
+    """Step-time resolver for per-robot ports. Adds a dtype check on top of
+    :func:`_resolve_input_array` — the dtype is part of the port's
+    documented contract (``wp.vec3`` / ``wp.quat`` / ``wp.float32``).
+
+    Shape is no longer enforced here: with custom per-robot indices the
+    source array may be any length as long as every index is in bounds,
+    and bounds violations surface at the kernel launch.
     """
     arr = _resolve_input_array(source, attr_name, name=name)
-    if arr.shape != (num_robots,):
-        raise ValueError(f"Port '{name}': source.{attr_name} shape {arr.shape} must equal ({num_robots},).")
     if arr.dtype != dtype:
         raise TypeError(f"Port '{name}': source.{attr_name} dtype must be {dtype}, got {arr.dtype}.")
     return arr

@@ -26,48 +26,66 @@ def _zero_at_indices_kernel(
 class Controller:
     """Composes one or more :class:`ControlLaw` instances.
 
-    Owns the per-step zero / compute sequence and the reset fan-out.
-    ControlLaws run serially in registration order; their contributions
-    accumulate via ``+=`` directly into the output arrays after a single
-    upfront zero pass.
+    Owns the per-step zero / compute sequence and routes the user-supplied
+    ``input`` / ``output`` through every law. Laws run serially in
+    registration order; their contributions accumulate via ``+=`` into the
+    output arrays after a single upfront zero pass.
 
     Args:
-        control_laws: One or more :class:`ControlLaw` instances. All must
-            agree on ``num_outputs`` (the outer length of every
-            ``outputs()`` binding).
-        requires_grad: Single source of truth for gradient support across the
-            controller. Propagated to each ControlLaw's :meth:`ControlLaw.finalize`
-            and :meth:`ControlLaw.state`. When ``True``, every internally-allocated
-            buffer is created with ``requires_grad=True`` so the ControlLaws'
-            kernel launches are transparent to :class:`wp.Tape` — Isaac Lab
-            and other autograd consumers can differentiate through the
-            controller end-to-end. Users with mixed-grad needs split into
-            multiple Controllers.
+        control_laws: One or more :class:`ControlLaw` instances. Every
+            law's ``label`` must be unique within the controller and every
+            law must agree on ``num_outputs`` (the shared outer length of
+            every ``outputs()`` binding).
+        requires_grad: Single source of truth for gradient support across
+            the controller. Propagated to each ControlLaw's
+            :meth:`ControlLaw.finalize` and :meth:`ControlLaw.state`. When
+            ``True``, every internally-allocated buffer is created with
+            ``requires_grad=True`` so the ControlLaws' kernel launches are
+            transparent to :class:`wp.Tape`. Users with mixed-grad needs
+            split into multiple Controllers.
+        device: Device for internal allocations. Defaults to
+            :func:`wp.get_device`.
     """
 
     @dataclass
     class State:
-        """Composed state: one entry per ControlLaw (``None`` for stateless)."""
+        """Composed state, keyed by each :class:`ControlLaw`'s ``label``.
 
-        control_law_states: list = field(default_factory=list)
-
-    def __init__(self, control_laws: list[ControlLaw], requires_grad: bool = False, device: wp.Device | None = None):
-        """Args:
-        control_laws: One or more :class:`ControlLaw`.
-        requires_grad: see class docstring.
-        device: Device for internal allocations. Defaults to
-            :func:`wp.get_device`.
+        ``control_law_states[label]`` is the per-law sub-state, or
+        ``None`` for stateless laws. Dict insertion order matches the
+        order laws were passed to the :class:`Controller`.
         """
+
+        control_law_states: dict[str, ControlLaw.State | None] = field(default_factory=dict)
+
+    def __init__(
+        self,
+        control_laws: list[ControlLaw],
+        requires_grad: bool = False,
+        device: wp.Device | None = None,
+    ):
         if not control_laws:
             raise ValueError("Controller requires at least one ControlLaw.")
         self._control_laws = list(control_laws)
         self._requires_grad = requires_grad
 
-        # All output bindings must agree on ``num_outputs`` — the outer length
-        # of every ``outputs()`` binding — so a single reset mask covers all
-        # of them. Output *arrays* are looked up at step time (no longer
-        # stored on the laws), so we can only validate the indices length
-        # here, not the array shapes; that's deferred to step.
+        # Labels must be unique within a Controller — they're the dict
+        # keys into the composed state. Catching collisions at construction
+        # makes the failure mode loud instead of silently overwriting.
+        seen: set[str] = set()
+        for c in self._control_laws:
+            if not hasattr(c, "label") or not isinstance(c.label, str):
+                raise TypeError(f"Controller: {type(c).__name__} is missing a `label: str` attribute.")
+            if c.label in seen:
+                raise ValueError(f"Controller: duplicate ControlLaw label '{c.label}'.")
+            seen.add(c.label)
+
+        # All laws must share num_outputs (the outer length of every
+        # outputs() binding). Each law derives num_outputs from its own
+        # port_indices at construction; the Controller cross-checks the
+        # group-wide invariant here. Single shared value lets a single
+        # Controller-wide concept (e.g. a future reset mask) apply across
+        # the group.
         num_outputs = None
         for c in self._control_laws:
             bindings = c.outputs()
@@ -86,7 +104,7 @@ class Controller:
         self._device = device if device is not None else wp.get_device()
 
         for c in self._control_laws:
-            c.finalize(self._device, len(c.indices), requires_grad=self._requires_grad)
+            c.finalize(self._device, self._num_outputs, requires_grad=self._requires_grad)
 
         self._output_bindings: list[tuple[str, wp.array[wp.uint32]]] = []
         for c in self._control_laws:
@@ -98,8 +116,7 @@ class Controller:
 
     @property
     def num_outputs(self) -> int:
-        """Shared outer length of every ControlLaw's output bindings; also the
-        required length of the ``mask`` passed to :meth:`reset`."""
+        """Shared outer length of every ControlLaw's output bindings."""
         return self._num_outputs
 
     @property
@@ -114,11 +131,12 @@ class Controller:
         return all(c.is_graphable() for c in self._control_laws)
 
     def state(self) -> Controller.State:
-        """Allocate composed state with one entry per ControlLaw."""
+        """Allocate composed state, keyed by each ControlLaw's ``label``."""
         return Controller.State(
-            control_law_states=[
-                c.state(len(c.indices), self._device, requires_grad=self._requires_grad) for c in self._control_laws
-            ]
+            control_law_states={
+                c.label: c.state(self._num_outputs, self._device, requires_grad=self._requires_grad)
+                for c in self._control_laws
+            }
         )
 
     def step(
@@ -133,9 +151,9 @@ class Controller:
 
         Args:
             input: User-supplied object whose attributes hold the read ports
-                each ControlLaw declared (e.g. ``input.joint_q``, ``input.kp``).
-                Duck-typed — any object on which ``getattr(input, name)``
-                returns a :class:`wp.array` is acceptable.
+                each ControlLaw declared (e.g. ``input.joint_q``,
+                ``input.kp``). Duck-typed — any object on which
+                ``getattr(input, name)`` returns a :class:`wp.array` works.
             output: User-supplied object whose attributes hold the write
                 ports each ControlLaw declared. The slots indicated by the
                 laws' ``outputs()`` bindings are zeroed before any
@@ -146,9 +164,6 @@ class Controller:
                 per-law sub-states here.
             dt: Timestep [s].
         """
-        # Resolve every output array against ``output`` *once* per step, then
-        # zero its declared slots. If the user mutates ``output.<attr>`` to a
-        # different array between steps, the next step picks up the new one.
         for attr_name, out_indices in self._output_bindings:
             out_array = _resolve_input_array(output, attr_name, name=attr_name)
             wp.launch(
@@ -157,24 +172,7 @@ class Controller:
                 inputs=[out_array, out_indices],
                 device=self._device,
             )
-        for c, cur_s, nxt_s in zip(
-            self._control_laws,
-            current_state.control_law_states,
-            next_state.control_law_states,
-            strict=True,
-        ):
-            c.compute(input, output, cur_s, nxt_s, dt)
-
-    def reset(self, state: Controller.State, mask: wp.array[wp.bool]) -> None:
-        """Reset slots flagged by ``mask`` in every stateful ControlLaw.
-
-        ``mask`` is a bool array of length :attr:`num_outputs` (the
-        controller-wide shared output length validated at construction).
-        ``control_law.reset(sub_state, mask)`` is called for every ControlLaw
-        whose sub-state is not ``None``.
-        """
-        if len(mask) != self._num_outputs:
-            raise ValueError(f"Controller.reset: mask length {len(mask)} must equal num_outputs={self._num_outputs}.")
-        for c, sub_state in zip(self._control_laws, state.control_law_states, strict=True):
-            if sub_state is not None:
-                c.reset(sub_state, mask)
+        for c in self._control_laws:
+            cur = current_state.control_law_states[c.label]
+            nxt = next_state.control_law_states[c.label]
+            c.compute(input, output, cur, nxt, dt)

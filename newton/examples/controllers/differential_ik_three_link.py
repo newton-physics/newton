@@ -1,6 +1,6 @@
 # THIS IS NOT A REAL EXAMPLE!!!!!
 # TEMPORARY FILE USED FOR INITIAL TESTS,
-# WILL BE DELETED. 
+# WILL BE DELETED.
 
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -151,19 +151,21 @@ if __name__ == "__main__":
     )
 
     # create an external differential IK to control the robot to the desired pose.
+    # TODO: IS THERE A MORE ERGONOMIC WAY TO GRAB THESE INDICES?
+    dof_indices = wp.array(arm_model.joint_target_q_start[j1:-1], dtype=wp.uint32)
+    robot_indices = wp.array([0], dtype=wp.uint32)
     control_law = ControlLawDifferentialIK(
+        label="arm_ik",
         model_builder=arm_model_builder,
-        # TODO: IS THERE A MORE ERGONOMIC WAY TO GRAB THESE INDICES?
-        indices=wp.array(arm_model.joint_target_q_start[j1:-1], dtype=wp.uint32),
         site="tool",
-        measurement="joint_q",
-        measurement_rate="joint_qd",
-        target_pos="target_pos",
-        target_quat="target_quat",
-        damping="damping",
-        gain="gain",
-        output_q="joint_target_q",
-        output_qd="joint_target_qd",
+        measurement=("joint_q", dof_indices),
+        measurement_rate=("joint_qd", dof_indices),
+        target_pos=("target_pos", robot_indices),
+        target_quat=("target_quat", robot_indices),
+        damping=("damping", robot_indices),
+        gain=("gain", robot_indices),
+        output_q=("joint_target_q", dof_indices),
+        output_qd=("joint_target_qd", dof_indices),
     )
 
     controller = Controller([control_law])
