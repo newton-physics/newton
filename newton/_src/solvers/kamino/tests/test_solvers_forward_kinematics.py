@@ -8,6 +8,7 @@ Unit tests for the ForwardKinematicsSolver class of Kamino, in `solvers/fk.py`.
 import copy
 import hashlib
 import unittest
+from functools import partial
 
 import numpy as np
 import warp as wp
@@ -117,6 +118,60 @@ class JacobianCheckForwardKinematics(unittest.TestCase):
 
         success = run_test_single_joint_examples(test_function, test_name, device=self.default_device)
         self.assertTrue(success)
+
+
+class WorldMaskInitializationForwardKinematics(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def tearDown(self):
+        self.default_device = None
+
+    def test_initial_line_search_success_honors_world_mask(self):
+        num_worlds = 3
+        solver = ForwardKinematicsSolver.__new__(ForwardKinematicsSolver)
+        solver.device = self.default_device
+        solver.num_worlds = num_worlds
+        solver.config = ForwardKinematicsSolver.Config(
+            max_newton_iterations=1,
+            reset_state=False,
+            use_incremental_solve=False,
+            use_regularization=False,
+        )
+
+        with wp.ScopedDevice(self.default_device):
+            solver.all_worlds_mask = wp.full(shape=(num_worlds,), value=True, dtype=wp.bool)
+            solver.newton_iteration = wp.empty(shape=(num_worlds,), dtype=wp.int32)
+            solver.newton_success = wp.empty(shape=(num_worlds,), dtype=wp.bool)
+            solver.newton_mask = wp.empty(shape=(num_worlds,), dtype=wp.bool)
+            solver.min_newton_iterations = wp.empty(shape=(num_worlds,), dtype=wp.int32)
+            solver.max_newton_iterations = wp.array([solver.config.max_newton_iterations], dtype=wp.int32)
+            solver.newton_loop_condition = wp.empty(shape=(1,), dtype=wp.int32)
+            solver.line_search_success = wp.empty(shape=(num_worlds,), dtype=wp.bool)
+            solver.tolerance = wp.array([solver.config.tolerance], dtype=wp.float32)
+            solver.jacobian_early_update_mask = wp.empty(shape=0, dtype=wp.bool)
+            solver.jacobian_late_update_mask = wp.empty(shape=0, dtype=wp.bool)
+            solver.base_q_default = wp.empty(shape=(num_worlds,), dtype=wp.transformf)
+            solver.actuators_q_next = wp.empty(shape=0, dtype=wp.float32)
+            solver.target_rel_transforms = wp.empty(shape=0, dtype=wp.transformf)
+            solver.constraints = wp.empty(shape=(num_worlds, 0), dtype=wp.float32)
+            solver.grad = wp.empty(shape=(num_worlds, 0), dtype=wp.float32)
+            solver.max_residual = wp.zeros(shape=(num_worlds,), dtype=wp.float32)
+            actuators_q = wp.empty(shape=0, dtype=wp.float32)
+            bodies_q = wp.empty(shape=0, dtype=wp.transformf)
+            world_mask = wp.array([True, False, True], dtype=wp.bool)
+
+        solver._eval_target_actuators_q = lambda base_q, actuators_q, actuators_q_next: None
+        solver._eval_target_relative_transformations = lambda actuators_q_next, target_rel_transforms: None
+        solver._eval_kinematic_constraints = lambda bodies_q, target_rel_transforms, world_mask, constraints: None
+        solver._eval_max_residual = lambda constraints, grad, max_residual: None
+        solver._run_newton_iteration = lambda bodies_q: None
+
+        solver.run_fk_solve(actuators_q, bodies_q, world_mask=world_mask)
+
+        np.testing.assert_array_equal(solver.line_search_success.numpy(), np.array([1, 0, 1], dtype=np.int32))
 
 
 def get_actuators_q_quaternion_first_ids(model: ModelKamino):
@@ -321,6 +376,7 @@ def simulate_random_poses(
     rng: np.random._generator.Generator,
     use_graph: bool = False,
     verbose: bool = False,
+    **config_kwargs,
 ):
     # Generate random inputs
     base_q_np, actuators_q_np = generate_random_inputs_q(model, num_poses, max_base_q, max_actuators_q, rng)
@@ -335,11 +391,7 @@ def simulate_random_poses(
     residual_mask = compute_constraint_residual_mask(model)
 
     # Run forward kinematics on all random poses
-    config = ForwardKinematicsSolver.Config()
-    config.reset_state = True
-    config.use_sparsity = False  # Change for sparse/dense solver
-    config.preconditioner = "jacobi_block_diagonal"  # Change to test preconditioners
-    config.add_axis_joints = True  # Set to False to check that axis joints are needed for tie rod example
+    config = ForwardKinematicsSolver.Config(**config_kwargs)
     solver = ForwardKinematicsSolver(model, config)
     success_flags = []
     with wp.ScopedDevice(model.device):
@@ -350,7 +402,7 @@ def simulate_random_poses(
         base_u = wp.array(shape=(model.size.num_worlds), dtype=vec6f)
         actuators_u = wp.array(shape=(actuators_u_np.shape[1]), dtype=wp.float32)
     data = model.data(device=model.device)
-    epsilon = 1e-4
+    epsilon = 1e-3 if config.use_regularization else 1e-4
     for pose_id in range(num_poses):
         # Run FK solve and check convergence
         base_q.assign(base_q_np[pose_id])
@@ -438,13 +490,14 @@ class DRTestMechanismRandomPosesCheckForwardKinematics(unittest.TestCase):
         builder.set_base_joint("base")
         model = builder.finalize(device=self.default_device, requires_grad=False)
 
-        # Simulate random poses
+        # Generate helper function to simulate random poses
         num_poses = 30
         base_q_max = np.array(3 * [0.2] + 4 * [1.0])
         actuators_q_max = np.radians([360.0])
         base_u_max = np.array(3 * [0.1] + 3 * [0.5])
         actuators_u_max = np.array([0.5])
-        success = simulate_random_poses(
+        simulate_function = partial(
+            simulate_random_poses,
             model,
             num_poses,
             base_q_max,
@@ -452,9 +505,19 @@ class DRTestMechanismRandomPosesCheckForwardKinematics(unittest.TestCase):
             base_u_max,
             actuators_u_max,
             rng,
-            self.has_cuda,
-            self.verbose,
+            use_graph=self.has_cuda,
+            verbose=self.verbose,
+            reset_state=True,
+            use_incremental_solve=True,
+            tolerance=1e-6,
         )
+
+        # Simulate random poses with dense solver
+        success = simulate_function(use_sparsity=False)
+        self.assertTrue(success)
+
+        # Simulate random poses with sparse solver
+        success = simulate_function(use_sparsity=True, preconditioner="jacobi_block_diagonal")
         self.assertTrue(success)
 
 
@@ -482,14 +545,15 @@ class DRLegsRandomPosesCheckForwardKinematics(unittest.TestCase):
         builder.set_base_body("pelvis")
         model = builder.finalize(device=self.default_device, requires_grad=False)
 
-        # Simulate random poses
+        # Generate helper function to simulate random poses
         num_poses = 30
         theta_max = np.radians(10.0)  # Angles too far from the initial pose lead to singularities
         base_q_max = np.array(3 * [0.2] + 4 * [1.0])
         actuators_q_max = np.array(model.size.sum_of_num_actuated_joint_coords * [theta_max])
         base_u_max = np.array(3 * [0.5] + 3 * [0.5])
         actuators_u_max = np.array(model.size.sum_of_num_actuated_joint_dofs * [0.5])
-        success = simulate_random_poses(
+        simulate_function = partial(
+            simulate_random_poses,
             model,
             num_poses,
             base_q_max,
@@ -497,9 +561,18 @@ class DRLegsRandomPosesCheckForwardKinematics(unittest.TestCase):
             base_u_max,
             actuators_u_max,
             rng,
-            self.has_cuda,
-            self.verbose,
+            use_graph=self.has_cuda,
+            verbose=self.verbose,
+            reset_state=True,
+            tolerance=1e-6,
         )
+
+        # Simulate random poses with dense solver
+        success = simulate_function(use_sparsity=False)
+        self.assertTrue(success)
+
+        # Simulate random poses with sparse solver
+        success = simulate_function(use_sparsity=True, preconditioner="jacobi_block_diagonal")
         self.assertTrue(success)
 
 
@@ -531,7 +604,7 @@ class HeterogenousModelRandomPosesCheckForwardKinematics(unittest.TestCase):
         builder.add_builder(builder1)
         model = builder.finalize(device=self.default_device, requires_grad=False)
 
-        # Simulate random poses
+        # Generate helper function to simulate random poses
         num_poses = 30
         theta_max_test_mech = np.radians(360.0)
         theta_max_dr_legs = np.radians(10.0)
@@ -539,9 +612,28 @@ class HeterogenousModelRandomPosesCheckForwardKinematics(unittest.TestCase):
         actuators_q_max = np.array([theta_max_test_mech] + builder1.num_actuated_joint_coords * [theta_max_dr_legs])
         base_u_max = np.array(3 * [0.1] + 3 * [0.5] + 3 * [0.5] + 3 * [0.5])
         actuators_u_max = np.array(model.size.sum_of_num_actuated_joint_dofs * [0.5])
-        success = simulate_random_poses(
-            model, num_poses, base_q_max, actuators_q_max, base_u_max, actuators_u_max, rng, self.has_cuda, self.verbose
+        simulate_function = partial(
+            simulate_random_poses,
+            model,
+            num_poses,
+            base_q_max,
+            actuators_q_max,
+            base_u_max,
+            actuators_u_max,
+            rng,
+            use_graph=self.has_cuda,
+            verbose=self.verbose,
+            reset_state=True,
+            use_incremental_solve=True,
+            tolerance=1e-6,
         )
+
+        # Simulate random poses with dense solver
+        success = simulate_function(use_sparsity=False)
+        self.assertTrue(success)
+
+        # Simulate random poses with sparse solver
+        success = simulate_function(use_sparsity=True, preconditioner="jacobi_block_diagonal")
         self.assertTrue(success)
 
 
@@ -566,16 +658,43 @@ class FourBarTieRodRandomPosesCheckForwardKinematics(unittest.TestCase):
         builder = make_homogeneous_builder(num_worlds=10, build_fn=create_four_bar_tie_rod)
         model = builder.finalize(device=self.default_device, requires_grad=False)
 
-        # Simulate random poses
+        # Generate helper function to simulate random poses
         num_poses = 30
         theta_max = np.radians(30.0)
         base_q_max = np.array(builder.num_worlds * (3 * [0.2] + 4 * [1.0]))
         actuators_q_max = np.array(builder.num_actuated_joint_coords * [theta_max])
         base_u_max = np.array(builder.num_worlds * (3 * [0.5] + 3 * [0.5]))
         actuators_u_max = np.array(model.size.sum_of_num_actuated_joint_dofs * [0.5])
-        success = simulate_random_poses(
-            model, num_poses, base_q_max, actuators_q_max, base_u_max, actuators_u_max, rng, self.has_cuda, self.verbose
+        simulate_function = partial(
+            simulate_random_poses,
+            model,
+            num_poses,
+            base_q_max,
+            actuators_q_max,
+            base_u_max,
+            actuators_u_max,
+            rng,
+            use_graph=self.has_cuda,
+            verbose=self.verbose,
+            reset_state=True,
+            use_incremental_solve=True,
+            preconditioner="jacobi_block_diagonal",
         )
+
+        # Simulate random poses, adding axis joints to handle tie rod (dense solver)
+        success = simulate_function(add_axis_joints=True, tolerance=1e-6, use_sparsity=False)
+        self.assertTrue(success)
+
+        # Simulate random poses, adding axis joints to handle tie rod (sparse solver)
+        success = simulate_function(add_axis_joints=True, tolerance=1e-6, use_sparsity=True)
+        self.assertTrue(success)
+
+        # Simulate random poses, using regularization to handle tie rod (dense solver)
+        success = simulate_function(add_axis_joints=False, use_regularization=True, tolerance=1e-5, use_sparsity=False)
+        self.assertTrue(success)
+
+        # Simulate random poses, using regularization to handle tie rod (sparse solver)
+        success = simulate_function(add_axis_joints=False, use_regularization=True, tolerance=1e-5, use_sparsity=True)
         self.assertTrue(success)
 
 

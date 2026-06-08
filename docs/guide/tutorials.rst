@@ -4,7 +4,16 @@
 Tutorials
 =========
 
-This section contains tutorials to help you get started with Newton.
+These tutorial notebooks help you get started with Newton. They can be
+opened in Colab, but runtime resources and GPU availability can vary. When a
+notebook detects that it is running in Colab, its first code cell installs the
+notebook dependencies from PyPI.
+
+Open the notebooks directly in Colab:
+
+- :doc:`Introduction </tutorials/00_introduction>` |intro-colab|
+- :doc:`Robotics </tutorials/01_robotics>` |robotics-colab|
+
 You can also explore the examples in the ``newton/examples/`` directory for more use cases.
 
 .. toctree::
@@ -12,3 +21,4 @@ You can also explore the examples in the ``newton/examples/`` directory for more
    :caption: Tutorial Notebooks
 
    /tutorials/00_introduction
+   /tutorials/01_robotics

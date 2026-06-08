@@ -1816,9 +1816,9 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
     contacts = model.contacts()
 
     # Set drive target position.
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -1943,9 +1943,9 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     control = model.control()
     contacts = model.contacts()
 
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -2216,9 +2216,9 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
     contacts = model.contacts()
 
     # Set drive target position.
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_displacement
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -2343,9 +2343,9 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     control = model.control()
     contacts = model.contacts()
 
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_displacement
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -2929,10 +2929,10 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     contacts = model.contacts()
 
     # Set drive target positions.
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[lin_dof_idx] = target_displacement
     tp[ang_dof_idx] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -3084,10 +3084,10 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
     control = model.control()
     contacts = model.contacts()
 
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[qd_s] = target_displacement
     tp[qd_s + 1] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -3252,7 +3252,10 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
 
     fps = 60.0
     frame_dt = 1.0 / fps
-    sim_substeps = 2
+    # AVBD friction tracking under the surface-anchor moment arm needs either
+    # dt ≲ 4 ms (substeps ≥ 4) or rigid_avbd_contact_alpha ≲ 0.5; both stay
+    # well inside the 1 cm tolerance below.
+    sim_substeps = 4
     sim_dt = frame_dt / sim_substeps
 
     # Record initial pose
@@ -3436,6 +3439,59 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
     z_min = float(np.min(qf[rod_bodies, 2]))
     test.assertLess(z_min, z_init_min - 0.01, msg="Y-junction did not fall noticeably under gravity")
     _assert_bodies_above_ground(test, qf, rod_bodies, context="y-junction", margin=0.25 * cable_width)
+
+
+def _cable_eval_fk_preserves_body_state_impl(test: unittest.TestCase, device):
+    """eval_fk should not reconstruct CABLE child poses from unsupported joint coordinates."""
+    builder = newton.ModelBuilder()
+    rod_bodies, rod_joints = builder.add_rod_graph(
+        node_positions=[
+            wp.vec3(0.0, 0.0, 0.0),
+            wp.vec3(0.5, 0.0, 0.0),
+            wp.vec3(1.0, 0.0, 0.0),
+        ],
+        edges=[(0, 1), (1, 2)],
+        radius=0.01,
+        wrap_in_articulation=True,
+        label="ut_cable_eval_fk",
+    )
+    test.assertEqual(len(rod_bodies), 2)
+    test.assertEqual(len(rod_joints), 1)
+
+    builder.color()
+    model = builder.finalize(device=device)
+    state = model.state()
+
+    joint_types = model.joint_type.numpy()
+    test.assertTrue(np.all(joint_types == int(newton.JointType.CABLE)), msg="expected only CABLE joints")
+
+    child_body = int(rod_bodies[1])
+
+    body_q = state.body_q.numpy().copy()
+    body_q[child_body, 0] += 1.0
+    body_q[child_body, 2] -= 0.7
+    state.body_q.assign(body_q)
+
+    body_qd = state.body_qd.numpy().copy()
+    body_qd[child_body] = np.array([0.3, -0.2, 0.1, 0.4, -0.5, 0.6], dtype=body_qd.dtype)
+    state.body_qd.assign(body_qd)
+
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    np.testing.assert_allclose(
+        state.body_q.numpy()[child_body],
+        body_q[child_body],
+        rtol=0.0,
+        atol=1.0e-6,
+        err_msg="eval_fk should preserve VBD-owned CABLE body transform",
+    )
+    np.testing.assert_allclose(
+        state.body_qd.numpy()[child_body],
+        body_qd[child_body],
+        rtol=0.0,
+        atol=1.0e-6,
+        err_msg="eval_fk should preserve VBD-owned CABLE body velocity",
+    )
 
 
 def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device):
@@ -4221,6 +4277,12 @@ add_function_test(
     TestCable,
     "test_cable_graph_y_junction_spanning_tree",
     _cable_graph_y_junction_spanning_tree_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_eval_fk_preserves_body_state",
+    _cable_eval_fk_preserves_body_state_impl,
     devices=devices,
 )
 add_function_test(

@@ -876,6 +876,8 @@ Two approaches available:
         margin=0.005,                         # Extra AABB padding [m] (0.05)
         shape_margin=0.001,                   # Shrink SDF surface inward [m] (0.0)
         scale=(1.0, 1.0, 1.0),                # Bake non-unit scale into the SDF (None)
+        edge_lower_angle_threshold_rad=math.radians(0.1),  # Drop near-coplanar edges below this angle (0.1 deg)
+        edge_box_absorption=False,            # Drop edges fully covered by another edge's oriented box
     )
 
 ``max_resolution`` sets the voxel count along the longest AABB axis (must be divisible by 8);
@@ -886,6 +888,21 @@ memory and build time). Set the SDF ``margin`` to at least the sum of the shape'
 full contact detection range. Pass ``scale`` when the shape will be added with non-unit scale
 to bake it into the SDF grid. ``shape_margin`` is mainly useful for hydroelastic collision
 where a compliant-layer offset is desired.
+
+**Edge simplification.** ``mesh.build_sdf(...)`` also runs a dihedral-angle pre-filter over
+the mesh's manifold edges and caches the surviving subset on the mesh; the SDF-mesh contact
+pipeline picks up that cached set in preference to the unfiltered :attr:`~Mesh.edges`,
+which materially reduces edge-vs-shape work for typical CAD or scanned meshes. The default
+threshold (``edge_lower_angle_threshold_rad=math.radians(0.1)``) drops only edges that are
+geometrically coplanar to within 0.1 degrees, so it is safe for most meshes; raise it to
+prune more aggressively, set it to ``0`` to keep every manifold edge, or pass a negative
+value (e.g. ``-1.0``) to opt out of the simplification pass entirely. Set
+``edge_box_absorption=True`` to additionally drop manifold edges that are fully covered by
+another nearby edge's oriented box — useful for densely tessellated curved surfaces.
+``edge_box_half_normal``/``edge_box_half_normal_rel`` and
+``edge_box_half_lateral``/``edge_box_half_lateral_rel`` tune the box extents (absolute
+metres or fractions of the mesh AABB diagonal); see :meth:`~Mesh.build_sdf` for full
+parameter docs.
 
 **On-disk SDF cache.** Pass ``cache_dir`` to persist the cooked SDF and skip the cook on
 subsequent runs:
@@ -1366,10 +1383,11 @@ additional set of **differentiable** rigid-contact arrays that participate in
 distance and world-space contact points with respect to body poses
 (``state.body_q``).
 
-.. note::
-   Rigid-contact differentiability is **experimental**.  Accuracy and fitness for
-   real-world optimization or learning workflows should be validated case by case
-   before relying on these gradients.
+.. experimental::
+
+   Rigid-contact differentiability may change without prior notice. Accuracy
+   and fitness for real-world optimization or learning workflows should be
+   validated case by case before relying on these gradients.
 
 Making the full narrow-phase pipeline differentiable end-to-end would be
 prohibitively expensive and numerically fragile — iterative GJK/MPR solvers,
@@ -1654,20 +1672,72 @@ Example:
 USD Integration
 ---------------
 
-Custom collision properties can be authored in USD:
+Newton provides several USD schema APIs for authoring collision and contact
+properties directly in USD layers.
+
+**NewtonCollisionAPI**
+
+Applied to collision shapes to configure per-shape contact detection. The
+``newton:contactMargin`` and ``newton:contactGap`` attributes map to
+:attr:`~ModelBuilder.ShapeConfig.margin` and :attr:`~ModelBuilder.ShapeConfig.gap`
+respectively.
 
 .. code-block:: usda
 
-    def Xform "Box" (
-        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI"]
+    def Cube "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "NewtonCollisionAPI"]
+    ) {
+        float newton:contactMargin = 0.001
+        float newton:contactGap = 0.02
+    }
+
+**NewtonMaterialAPI**
+
+Extends ``PhysicsMaterialAPI`` with torsional/rolling friction
+(``newton:torsionalFriction``, ``newton:rollingFriction``) and contact response
+attributes. The contact response attributes map to :class:`~ModelBuilder.ShapeConfig`
+fields as follows: ``newton:contactStiffness`` → ``ke``,
+``newton:contactDamping`` → ``kd``, ``newton:contactFrictionGain`` → ``kf``,
+``newton:contactAdhesion`` → ``ka``. A value of ``-inf`` means "use the engine's
+default" (see :ref:`Contact Material Properties`).
+
+.. code-block:: usda
+
+    def Material "RubberMaterial" (
+        prepend apiSchemas = ["PhysicsMaterialAPI", "NewtonMaterialAPI"]
+    ) {
+        float physics:staticFriction = 1.0
+        float physics:dynamicFriction = 0.8
+        float newton:torsionalFriction = 0.1
+        float newton:rollingFriction = 0.01
+        float newton:contactStiffness = 5000.0
+        float newton:contactDamping = 200.0
+        float newton:contactFrictionGain = 800.0
+        float newton:contactAdhesion = 0.0
+    }
+
+    def Cube "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    ) {
+        rel material:binding:physics = </RubberMaterial>
+    }
+
+**NewtonMeshCollisionAPI**
+
+Applied on top of ``PhysicsMeshCollisionAPI`` to control mesh approximation.
+Currently exposes ``newton:maxHullVertices`` for convex hull generation.
+
+**Custom Properties**
+
+Additional per-shape attributes that Newton reads:
+
+.. code-block:: usda
+
+    def Cube "Collider" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
     ) {
         custom int newton:collision_group = 1
-        custom int newton:world = 0
-        custom float newton:contact_ke = 100000.0
-        custom float newton:contact_kd = 1000.0
-        custom float newton:contact_kf = 1000.0
-        custom float newton:contact_ka = 0.0
-        custom float newton:margin = 0.00001
+        custom bool newton:is_sensor = false
     }
 
 See :doc:`custom_attributes` and :doc:`usd_parsing` for details.
@@ -1718,7 +1788,7 @@ argument on :class:`~CollisionPipeline` selects one of three modes:
   frame and populate :attr:`Contacts.rigid_contact_match_index`, but keep the
   current frame's freshly generated contact geometry in the returned
   :class:`Contacts` buffer.
-- ``"sticky"`` (experimental) — match like ``"latest"``, then overwrite
+- ``"sticky"`` — match like ``"latest"``, then overwrite
   each matched contact's body-frame contact points (``point0``/``point1``),
   offsets (``offset0``/``offset1``), and world-frame ``normal`` with the
   saved previous-frame values.  The remaining contact fields
@@ -1729,9 +1799,10 @@ argument on :class:`~CollisionPipeline` selects one of three modes:
   scenarios where small frame-to-frame geometric jitter on persistent
   contacts degrades stability.
 
-  .. warning::
-     Sticky mode is experimental.  The way sticky contacts are updated
-     across frames may change in the future without warning.
+  .. experimental::
+
+     The way sticky contacts are updated across frames may change without prior
+     notice.
 
 Any non-disabled mode implies ``deterministic=True``.
 

@@ -360,7 +360,7 @@ class Simulator:
         Args:
             world_mask (wp.array, optional):
                 Optional array of per-world masks indicating which worlds should be reset.
-                Shape of `(num_worlds,)` and type :class:`wp.int8 | wp.bool`
+                Shape of `(num_worlds,)` and type :class:`wp.bool`
             joint_q (wp.array, optional):
                 Optional array of target joint coordinates.
                 Shape of `(num_joint_coords,)` and type :class:`wp.float32`

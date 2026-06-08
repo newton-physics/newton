@@ -3,7 +3,6 @@
 
 """Tests for Newton actuators."""
 
-import importlib.util
 import json
 import math
 import os
@@ -48,9 +47,8 @@ try:
 except ImportError:
     _HAS_LEGACY_ACTUATORS = False
 
-_HAS_TORCH = importlib.util.find_spec("torch") is not None
 
-if _HAS_TORCH:
+try:
     import torch as _torch
 
     class _LSTMNet(_torch.nn.Module):
@@ -68,6 +66,8 @@ if _HAS_TORCH:
         ) -> tuple[_torch.Tensor, tuple[_torch.Tensor, _torch.Tensor]]:
             out, (h, c) = self.lstm(x, hc)
             return self.dec(out[:, -1, :]), (h, c)
+except ImportError:
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -187,14 +187,24 @@ class TestControllerPID(unittest.TestCase):
             self.assertAlmostEqual(forces.numpy()[0], expected, places=4, msg=f"step {step_i}")
 
 
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
 class TestControllerNeuralMLP(unittest.TestCase):
     """ControllerNeuralMLP — load via model_path, call compute() directly."""
 
     def setUp(self):
-        self.torch = _torch
+        # Mark the test as skipped if Torch is not installed but required
+        try:
+            import torch
+
+            if wp.get_device().is_cuda and not torch.cuda.is_available():
+                # Ensure torch has CUDA support
+                self.skipTest("Torch not compiled with CUDA support")
+
+        except Exception as e:
+            self.skipTest(f"{e}")
+
+        self.torch = torch
         self.device = wp.get_device()
-        self._torch_dev = _torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
+        self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
 
     def _save_torchscript(self, net, filename="mlp.pt", metadata=None):
@@ -301,14 +311,24 @@ class TestControllerNeuralMLP(unittest.TestCase):
         self.assertAlmostEqual(forces.numpy()[0], 30.0, places=3, msg="bias=10 * effort_scale=3 -> 30")
 
 
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
 class TestControllerNeuralLSTM(unittest.TestCase):
     """ControllerNeuralLSTM — load via model_path, call compute() directly."""
 
     def setUp(self):
-        self.torch = _torch
+        # Mark the test as skipped if Torch is not installed but required
+        try:
+            import torch
+
+            if wp.get_device().is_cuda and not torch.cuda.is_available():
+                # Ensure torch has CUDA support
+                self.skipTest("Torch not compiled with CUDA support")
+
+        except Exception as e:
+            self.skipTest(f"{e}")
+
+        self.torch = torch
         self.device = wp.get_device()
-        self._torch_dev = _torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
+        self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
 
     def _make_lstm(self, hidden=8, layers=1):
@@ -651,7 +671,7 @@ class TestActuatorStep(unittest.TestCase):
         control = model.control()
         for step_i in range(5):
             tgt = target_schedule[step_i]
-            _write_dof_values(model, control.joint_target_pos, dofs, [tgt] * n)
+            _write_dof_values(model, control.joint_target_q, dofs, [tgt] * n)
             written_targets.append(tgt)
 
             control.joint_f.zero_()
@@ -1342,7 +1362,7 @@ class TestStateReset(unittest.TestCase):
 
         control = model.control()
         for _step in range(3):
-            _write_dof_values(model, control.joint_target_pos, dofs, [10.0] * n)
+            _write_dof_values(model, control.joint_target_q, dofs, [10.0] * n)
             control.joint_f.zero_()
             actuator.step(state, control, state_0, state_1, 0.01)
             state_0, state_1 = state_1, state_0
@@ -1438,17 +1458,17 @@ class TestDelayGraphCapture(unittest.TestCase):
 
         # --- Eager ---
         solver, s0, s1, ctrl, act, act_a, act_b = _setup()
-        wp.copy(ctrl.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        wp.copy(ctrl.joint_target_q, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
         s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, max_delay)
         eager_results = []
         for tgt in cycle_targets:
-            wp.copy(ctrl.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            wp.copy(ctrl.joint_target_q, wp.full(ndof, tgt, dtype=wp.float32, device=device))
             s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, N)
             eager_results.append(s0.joint_q.numpy().copy())
 
         # --- Graph ---
         solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g = _setup()
-        wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        wp.copy(ctrl_g.joint_target_q, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
         s0_g, s1_g, act_a_g, act_b_g = _loop(solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g, max_delay)
         sub_dt = dt / K
         with wp.ScopedCapture(device=device) as capture:
@@ -1464,7 +1484,7 @@ class TestDelayGraphCapture(unittest.TestCase):
 
         graph_results = []
         for tgt in cycle_targets:
-            wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            wp.copy(ctrl_g.joint_target_q, wp.full(ndof, tgt, dtype=wp.float32, device=device))
             wp.capture_launch(graph)
             graph_results.append(s0_g.joint_q.numpy().copy())
 
@@ -1482,7 +1502,7 @@ class TestDelayGraphCapture(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-@unittest.skipUnless(HAS_USD and _HAS_TORCH, "pxr or torch not installed")
+@unittest.skipUnless(HAS_USD, "pxr not installed")
 class TestNeuralActuatorUsdParsing(unittest.TestCase):
     """Verify ``parse_actuator_prim`` correctly handles neural controller
     prims with asset-typed ``newton:modelPath`` attributes.
@@ -1493,7 +1513,18 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
     """
 
     def setUp(self):
-        self.torch = _torch
+        # Mark the test as skipped if Torch is not installed but required
+        try:
+            import torch
+
+            if wp.get_device().is_cuda and not torch.cuda.is_available():
+                # Ensure torch has CUDA support
+                self.skipTest("Torch not compiled with CUDA support")
+
+        except Exception as e:
+            self.skipTest(f"{e}")
+
+        self.torch = torch
         self._tmp_dir = tempfile.mkdtemp()
 
     def tearDown(self):
@@ -1631,12 +1662,15 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
         target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (joint_target_pos layout)
 
         ctrl = ControllerPD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
-        actuator = Actuator(
-            indices=indices,
-            controller=ctrl,
-            pos_indices=pos_indices,
-            target_pos_indices=target_pos_indices,
-        )
+        # This test deliberately exercises the legacy DOF-shaped target layout via
+        # the default attr resolution, which is deprecated and warns.
+        with self.assertWarns(DeprecationWarning):
+            actuator = Actuator(
+                indices=indices,
+                controller=ctrl,
+                pos_indices=pos_indices,
+                target_pos_indices=target_pos_indices,
+            )
 
         # joint_q is coord-shaped; actual position at coord index 3
         joint_q = _a([0.0, 0.0, 0.0, actual_pos])

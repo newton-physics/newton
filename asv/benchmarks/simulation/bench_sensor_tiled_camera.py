@@ -5,7 +5,7 @@ import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
 wp.config.enable_backward = False
-wp.config.quiet = True
+wp.config.log_level = wp.LOG_WARNING
 
 import math
 
@@ -78,8 +78,8 @@ class SensorTiledCameraBenchmark:
         self.color_image = self.tiled_camera_sensor.utils.create_color_image_output(resolution, resolution)
         self.depth_image = self.tiled_camera_sensor.utils.create_depth_image_output(resolution, resolution)
 
-        newton.geometry.build_bvh_shape(self.model, self.state)
-        newton.geometry.build_bvh_particle(self.model, self.state)
+        self.model.bvh_refit_shapes(self.state)
+        self.model.bvh_refit_particles(self.state)
         self.tiled_camera_sensor.sync_transforms(self.state)
 
         # Warmup Kernels
