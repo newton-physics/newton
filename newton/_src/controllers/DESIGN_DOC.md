@@ -43,7 +43,7 @@ controller.step(input, output, current_state, next_state, dt)
 
 Importantly, the `input` and `output` structures are not neccesarilly the newton `simData` and `controlData` objects. This is because controllers may require input information which is not tracked as part of the simulation state (for example, targets pose for a given site on the robot).
 
-### Port forms
+### Flexibility on input/output indices
 
 Every per-DOF port accepts one of two specs at `__init__`:
 
@@ -54,9 +54,9 @@ Every per-DOF port accepts one of two specs at `__init__`:
 
 The bare-string form handles the common case where every port reads from the same flat layout the controller writes to. The tuple form covers the layout-mismatch case (e.g. reading densely packed gains while writing into sparse global output slots).
 
-**Per-group ports** (per-robot, not per-DOF — e.g. DiffIK's `target_pos`, `damping`, `gain`) accept just `"attr_name"`. At step the resolver checks `shape == (num_robots,)` and the documented dtype.
+**Per-robot ports** (e.g. controller targets which cannot be set per-dof, such as `target_pos` on an end-effector) accept just `"attr_name"`. At step the resolver checks `shape == (num_robots,)` and the documented dtype.
 
-### Validation
+On all controllers, basic input validation is performed at the `__init__` and `step` functions:
 
 | Stage | Check |
 |---|---|
