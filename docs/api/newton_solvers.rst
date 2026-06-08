@@ -123,6 +123,9 @@ Supported Features
 .. experimental::
     :class:`~newton.solvers.SolverKamino`'s public API and behavior may change without prior notice.
 
+.. experimental::
+    :class:`~newton.solvers.SolverVBD`'s public API and behavior may change without prior notice.
+
 .. _Joint feature support:
 
 Joint Feature Support

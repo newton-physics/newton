@@ -643,7 +643,7 @@ def _scale_row_vector_kernel(
     x: wp.array[Any],
     beta: Any,
     # Mask:
-    matrix_mask: wp.array[int32],
+    matrix_mask: wp.array[bool],
 ):
     """
     Computes a vector scaling for all active entries: y = beta * y
@@ -680,7 +680,7 @@ def _make_block_sparse_gemv_regularization_kernel(alpha: float32):
         y: wp.array[float32],
         z: wp.array[float32],
         # Mask:
-        matrix_mask: wp.array[int32],
+        matrix_mask: wp.array[bool],
     ):
         """
         Computes a generalized matrix-vector product with an added diagonal regularization component:
