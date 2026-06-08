@@ -105,6 +105,23 @@ nbsphinx_timeout = 600
 # Allow errors in notebook execution (useful for development)
 nbsphinx_allow_errors = False
 
+nbsphinx_prolog = r"""
+{% if env.docname.startswith("tutorials/") %}
+{% set notebook_name = env.docname.split("/")[-1] + ".ipynb" %}
+{% set notebook_path = "docs/" + env.docname + ".ipynb" %}
+{% set github_url = "https://github.com/newton-physics/newton/blob/" + env.config.github_version + "/" + notebook_path %}
+{% set colab_url = "https://colab.research.google.com/github/newton-physics/newton/blob/" + env.config.github_version + "/" + notebook_path %}
+
+.. raw:: html
+
+   <div class="notebook-link-bar">
+      <a href="{{ notebook_name }}">Download notebook</a>
+      <a href="{{ github_url }}">View on GitHub</a>
+      <a href="{{ colab_url }}">Open in Colab</a>
+   </div>
+{% endif %}
+"""
+
 
 templates_path = ["_templates"]
 exclude_patterns = [
@@ -198,6 +215,16 @@ source_suffix = {
 extlinks = {
     "github": (f"https://github.com/newton-physics/newton/blob/{github_version}/%s", "%s"),
 }
+
+rst_epilog = f"""
+.. |intro-colab| image:: https://colab.research.google.com/assets/colab-badge.svg
+   :target: https://colab.research.google.com/github/newton-physics/newton/blob/{github_version}/docs/tutorials/00_introduction.ipynb
+   :alt: Open in Colab
+
+.. |robotics-colab| image:: https://colab.research.google.com/assets/colab-badge.svg
+   :target: https://colab.research.google.com/github/newton-physics/newton/blob/{github_version}/docs/tutorials/01_robotics.ipynb
+   :alt: Open in Colab
+"""
 
 doctest_global_setup = """
 import warnings
@@ -454,6 +481,8 @@ def _on_builder_inited(_app: Any) -> None:
 
 
 def setup(app: Any) -> None:
+    app.add_config_value("github_version", github_version, "env")
+
     # Regenerate API .rst files so builds always reflect the current public API.
     from generate_api import generate_all  # noqa: PLC0415
 
