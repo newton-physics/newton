@@ -37,8 +37,8 @@ class TestSensorTiledCameraHeightfield(unittest.TestCase):
         # so the terrain robustly fills the whole frame.
         rays = sensor.utils.compute_pinhole_camera_rays(res, res, math.radians(30.0))
         depth = sensor.utils.create_depth_image_output(res, res)
-        newton.geometry.build_bvh_shape(model, state)
-        newton.geometry.build_bvh_particle(model, state)
+        model.bvh_build_shapes(state)
+        model.bvh_build_particles(state)
         sensor.sync_transforms(state)
 
         # Camera 5m above origin, identity orientation => looks straight down (-z).
