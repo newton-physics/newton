@@ -897,6 +897,9 @@ def _convert_contacts_kamino_to_newton(
     kamino_position_A: wp.array[vec3f],
     kamino_position_B: wp.array[vec3f],
     kamino_gapfunc: wp.array[vec4f],
+    kamino_frame: wp.array[quatf],
+    kamino_reaction: wp.array[vec3f],
+    kamino_mode: wp.array[int32],
     shape_body: wp.array[int32],
     body_q: wp.array[wp.transformf],
     # outputs
@@ -906,6 +909,7 @@ def _convert_contacts_kamino_to_newton(
     rigid_contact_point0: wp.array[vec3f],
     rigid_contact_point1: wp.array[vec3f],
     rigid_contact_normal: wp.array[vec3f],
+    rigid_contact_force: wp.array[wp.spatial_vector],
 ):
     """Converts Kamino's internal contact representation to Newton's Contacts format."""
     # Retrieve the contact index for this thread
@@ -952,6 +956,13 @@ def _convert_contacts_kamino_to_newton(
     rigid_contact_normal[cid] = vec3f(gapfunc[0], gapfunc[1], gapfunc[2])
     rigid_contact_point0[cid] = wp.transform_point(X_inv_a, position_A)
     rigid_contact_point1[cid] = wp.transform_point(X_inv_b, position_B)
+
+    # Force on shape0 (world frame); zero for inactive contacts.
+    if rigid_contact_force:
+        force_world = vec3f(0.0, 0.0, 0.0)
+        if kamino_mode[cid] != ContactMode.INACTIVE:
+            force_world = wp.quat_rotate(kamino_frame[cid], kamino_reaction[cid])
+        rigid_contact_force[cid] = wp.spatial_vector(-force_world, vec3f(0.0, 0.0, 0.0))
 
 
 ###
@@ -1083,6 +1094,9 @@ def convert_contacts_kamino_to_newton(
             contacts_in.data.position_A,
             contacts_in.data.position_B,
             contacts_in.data.gapfunc,
+            contacts_in.data.frame,
+            contacts_in.data.reaction,
+            contacts_in.data.mode,
             model.shape_body,
             state.body_q,
         ],
@@ -1093,6 +1107,7 @@ def convert_contacts_kamino_to_newton(
             contacts_out.rigid_contact_point0,
             contacts_out.rigid_contact_point1,
             contacts_out.rigid_contact_normal,
+            contacts_out.force,
         ],
         device=model.device,
     )
