@@ -1,38 +1,36 @@
 # Newton Controllers — Design Doc
 
-A small library for **control laws** — composable kernel-launched blocks that consume sensor data and emit joint targets or efforts. PID, differential IK, gravity compensation, low-pass filters, anything that sits between "I have a measurement" and "the actuator gets a setpoint."
+## Background
 
-Controllers run before actuators in a simulation step: a `ControlLaw` produces a desired joint position, velocity, or force; the actuator turns that target into effort; the solver advances the state.
+There are many controllers which have been implemented across Isaac Lab/Sim. The goal of this module is to centralize all of these controllers to the Newton repository, re-implementing each controller so that they are completely CUDA-graphable and vectorized. A list of controllers, their original location, and their status in this module is given below:
 
-This document is the design spec. For a tutorial-style introduction, see `OVERVIEW.md`.
+| Controller | Current Repo | Completed?
+| --- | --- | --- 
+| Differential IK | Isaac Lab | :heavy_check_mark: |
+| Operational Space | Isaac Lab | :x:  |
+| Joint Impedance | Isaac Lab | :x: |
+| Differential Drive | Isaac Sim | :x: |
+| Holonomic Drive | Isaac Sim | :x: |
+| Ackermann | Isaac Sim | :x: |
+
+*NOTE* List above may not be complete.
+
+Further, we may want to add some general purpose control algorithms which are very common in robotics, such as linear filtering (low-pass, band-pass, notch, etc).
 
 ---
 
 ## Architecture
 
-Two types:
+This module is built from two base classes:
 
 - **`ControlLaw`** — abstract base for a single law. Subclasses (`ControlLawPID`, `ControlLawDifferentialIK`, …) implement one algorithm. Each declares which named ports it reads and writes, owns any algorithm-specific buffers, and exposes a `compute(input, output, current_state, next_state, dt)` method.
 - **`Controller`** — composer that wraps a list of `ControlLaw`s. Owns the per-step zero / compute sequence, the device, the gradient-tracking flag, and reset orchestration.
 
-The split keeps `Controller` algorithm-agnostic: it routes data and orchestrates the step, the laws hold the actual math. Multiple laws bound to the same output slot accumulate via `+=` (see *Output accumulation*).
-
-The public API is exactly four names:
-
-```python
-from newton.controllers import (
-    Controller,
-    ControlLaw,
-    ControlLawPID,
-    ControlLawDifferentialIK,
-)
-```
-
-Backed by the internal package `newton/_src/controllers/`. Examples and external code import from the public shim only (project convention; see AGENTS.md).
+The split keeps `Controller` algorithm-agnostic: it routes data and orchestrates the step, the laws hold the actual math. Multiple laws bound to the same output slot accumulate via `+=` (see *Output accumulation*), which is useful for modular control, such as adding gravity compensation to an existing controller.
 
 ---
 
-## Ports: how data flows in and out
+## Duck-typing input/output data structures
 
 Every port on a `ControlLaw` is a **string** giving an attribute name. At step time, the Controller resolves the name via `getattr(input, name)` or `getattr(output, name)` against the duck-typed objects you pass to `step()`. Concretely:
 
@@ -43,15 +41,7 @@ controller.step(input, output, current_state, next_state, dt)
 - `input` — any object whose attributes hold the read ports (measurement, setpoint, gains, targets…).
 - `output` — any object whose attributes hold the write ports (joint_f, joint_target_q, …).
 
-`input` and `output` are usually `types.SimpleNamespace` or a small `@dataclass`. They can also be a `newton.State` / `newton.Control` directly when their fields happen to match the names the controller wants.
-
-### Why strings instead of array references
-
-Storing names rather than arrays gives the same data/function separation as `newton.actuators.Actuator.step` and every `Solver.step`: the law is a function of its arguments. Three properties follow:
-
-- The user can swap which array a port points at between steps just by mutating `input.foo = new_array`. The next launch picks it up. Common case: state double-buffering — `input.joint_q` rebinds to whichever `newton.State` instance holds the latest sim data this frame.
-- `input` and `output` can carry mixed content. The same object can hold simulation arrays read from `state.joint_q`, user-owned gain arrays that never change, and RL targets that update each policy step. The law's contract is just "an attribute by this name exists and is a wp.array."
-- Different laws in the same `Controller` can pull from different objects, or the same object — the routing is purely the user's choice of which attributes to populate where.
+Importantly, the `input` and `output` structures are not neccesarilly the newton `simData` and `controlData` objects. This is because controllers may require input information which is not tracked as part of the simulation state (for example, targets pose for a given site on the robot).
 
 ### Port forms
 
