@@ -188,20 +188,19 @@ def sample_texture(
         if face_id < 0:
             return DEFAULT_RETURN
 
-        # UV-less meshes can derive the projection normal directly in mesh-local space.
-        # Check before mesh_data_index guard since projection doesn't need mesh_data.
-        if mesh_data_index < 0 or mesh_data[mesh_data_index].uvs.shape[0] == 0:
-            if projection_mode == TextureProjectionMode.TRIPLANAR:
-                return sample_texture_triplanar_mesh(
-                    hit_point, shape_transform, mesh_id, face_id, texture_data[texture_index]
+        if mesh_data_index >= 0:
+            if mesh_data[mesh_data_index].uvs.shape[0] > 0:
+                return sample_texture_mesh(
+                    bary_u, bary_v, face_id, mesh_id, mesh_data[mesh_data_index], texture_data[texture_index]
                 )
 
-            return sample_texture_cubic_projection_mesh(
+        if projection_mode == TextureProjectionMode.TRIPLANAR:
+            return sample_texture_triplanar_mesh(
                 hit_point, shape_transform, mesh_id, face_id, texture_data[texture_index]
             )
 
-        return sample_texture_mesh(
-            bary_u, bary_v, face_id, mesh_id, mesh_data[mesh_data_index], texture_data[texture_index]
+        return sample_texture_cubic_projection_mesh(
+            hit_point, shape_transform, mesh_id, face_id, texture_data[texture_index]
         )
 
     return DEFAULT_RETURN

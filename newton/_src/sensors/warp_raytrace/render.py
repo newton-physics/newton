@@ -12,7 +12,6 @@ from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, 
 from . import lighting, raytrace, textures, tiling
 from .types import ClearData, MeshData, RenderOrder, TextureData, TextureProjectionMode
 
-
 if TYPE_CHECKING:
     from .render_context import RenderContext
 

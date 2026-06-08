@@ -213,6 +213,34 @@ class TestSensorTiledCamera(unittest.TestCase):
             msg="Triplanar projection should blend between axis-projected texture samples.",
         )
 
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    def test_checkerboard_material_projects_on_uvless_mesh(self):
+        mesh_pixels, has_shape_projected_textures = self._render_checkerboard_uvless_mesh_projection()
+
+        self.assertTrue(has_shape_projected_textures)
+        self.assertGreater(mesh_pixels.size, 0)
+        unique_colors = np.unique(mesh_pixels)
+        self.assertGreater(unique_colors.size, 1)
+        np.testing.assert_array_equal(
+            np.isin(unique_colors, np.array([0xFF808080, 0xFFBFBFBF], dtype=np.uint32)),
+            np.ones(unique_colors.shape, dtype=bool),
+        )
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    def test_triplanar_checkerboard_blends_uvless_mesh_projection(self):
+        mesh_pixels, has_shape_projected_textures = self._render_checkerboard_uvless_mesh_projection(
+            texture_projection_mode=SensorTiledCamera.TextureProjectionMode.TRIPLANAR
+        )
+
+        self.assertTrue(has_shape_projected_textures)
+        self.assertGreater(mesh_pixels.size, 0)
+        unique_colors = np.unique(mesh_pixels)
+        self.assertGreater(unique_colors.size, 2)
+        self.assertTrue(
+            np.any(~np.isin(unique_colors, np.array([0xFF808080, 0xFFBFBFBF], dtype=np.uint32))),
+            msg="Triplanar projection should blend between axis-projected texture samples on UV-less meshes.",
+        )
+
     def _render_checkerboard_sphere_projection(self, texture_projection_mode=None) -> np.ndarray:
         builder = newton.ModelBuilder()
         body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()))
@@ -253,6 +281,61 @@ class TestSensorTiledCamera(unittest.TestCase):
         albedo = albedo_image.numpy()[0, 0]
         shape_indices = shape_index_image.numpy()[0, 0]
         return albedo[shape_indices == shape_index]
+
+    def _render_checkerboard_uvless_mesh_projection(self, texture_projection_mode=None) -> tuple[np.ndarray, bool]:
+        builder = newton.ModelBuilder()
+        vertices = np.array(
+            [
+                [0.0, -0.9, -0.8],
+                [0.0, 0.9, -0.8],
+                [0.6, 0.9, 0.8],
+                [0.6, -0.9, 0.8],
+            ],
+            dtype=np.float32,
+        )
+        indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.int32)
+        mesh = newton.Mesh(vertices, indices, compute_inertia=False)
+        body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()))
+        shape_index = builder.add_shape_mesh(body, mesh=mesh, color=(1.0, 1.0, 1.0))
+        model = builder.finalize()
+
+        width = 64
+        height = 64
+        camera_count = 1
+
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(3.0, 0.0, 0.0), wp.quatf(0.5, 0.5, 0.5, 0.5))]], dtype=wp.transformf
+        )
+
+        if texture_projection_mode is None:
+            render_config = SensorTiledCamera.RenderConfig()
+        else:
+            render_config = SensorTiledCamera.RenderConfig(texture_projection_mode=texture_projection_mode)
+
+        tiled_camera_sensor = SensorTiledCamera(model=model, config=render_config)
+        tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes(resolution=16, checker_size=4)
+
+        camera_rays = tiled_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))
+        albedo_image = tiled_camera_sensor.utils.create_albedo_image_output(width, height, camera_count)
+        shape_index_image = tiled_camera_sensor.utils.create_shape_index_image_output(width, height, camera_count)
+
+        state = model.state()
+        newton.geometry.build_bvh_shape(model, state)
+        newton.geometry.build_bvh_particle(model, state)
+        tiled_camera_sensor.update(
+            state,
+            camera_transforms,
+            camera_rays,
+            albedo_image=albedo_image,
+            shape_index_image=shape_index_image,
+        )
+
+        albedo = albedo_image.numpy()[0, 0]
+        shape_indices = shape_index_image.numpy()[0, 0]
+        has_shape_projected_textures = (
+            tiled_camera_sensor._SensorTiledCamera__render_context.has_shape_projected_textures
+        )
+        return albedo[shape_indices == shape_index], has_shape_projected_textures
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_output_image_parameters(self):
