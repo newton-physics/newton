@@ -68,7 +68,7 @@ def _resolve_input_array(
     return arr
 
 
-def _resolve_per_group_array(
+def _resolve_per_robot_array(
     source: Any,
     attr_name: str,
     dtype: Any,

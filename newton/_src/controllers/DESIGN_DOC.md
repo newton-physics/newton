@@ -57,8 +57,6 @@ Per-DOF and per-robot ports use the same shape of spec — the only difference i
 - **Per-DOF**: `port_indices.shape == (num_outputs,)` where `num_outputs` is the controller's "size" (derived from the output port's indices length and cross-checked against every other per-DOF port at `__init__`).
 - **Per-robot**: `port_indices.shape == (num_robots,)` where `num_robots = model_builder.articulation_count` for articulated coupled laws.
 
-The same backing source array can show up under one attribute name with different per-port `port_indices` selecting different slots — useful for an input/output struct that bundles several read ports into one big array.
-
 ### Validation
 
 | Stage | Check |
@@ -69,6 +67,7 @@ The same backing source array can show up under one attribute name with differen
 | `step` | `getattr(source, attr_name)` resolves to a `wp.array`. Per-robot ports additionally check the dtype matches the documented contract (`wp.vec3` / `wp.quat` / `wp.float32`). Out-of-bounds reads via wrongly-sized source arrays surface at the kernel launch with Warp's diagnostic. |
 
 ### Example: shared backing array
+In particular example below, the same `wp.array` (`state.x`) appears under one attribute on both `input` and `output`; different `port_indices` arrays disambiguate which slots each port reads or writes.
 
 ```python
 pid = nc.ControlLawPID(
@@ -91,8 +90,6 @@ cs0, cs1 = controller.state(), controller.state()
 controller.step(input, output, cs0, cs1, dt)
 ```
 
-The same `wp.array` (`state.x`) appears under one attribute on both `input` and `output`; different `port_indices` arrays disambiguate which slots each port reads or writes.
-
 ---
 
 ## Two flavors of ControlLaw
@@ -111,9 +108,9 @@ Output `i` depends only on input `i` plus per-DOF parameters. Examples: `Control
 
 Each robot's outputs depend on the full state of that robot. Examples: `ControlLawDifferentialIK`, `ControlLawGravityComp`, `ControlLawDifferentialDrive`, `ControlLawHolonomic`, `ControlLawOperationalSpace`.
 
-The law must carry a model of the robots it controls. Two patterns, depending on whether the model is articulated or a mobile base:
+The law must carry a model of the robots it controls. Two patterns, depending on whether the data/functionality we need is found in a `newton.ModelBuilder` or must be passed as independent parameters.
 
-#### Articulated case
+#### Newton model case
 
 The caller passes a `model_builder: newton.ModelBuilder` containing exactly `N` topologically-identical articulations — `N = model_builder.articulation_count = num_robots` is the number of robots this controller manages. The N articulations share:
 
@@ -121,19 +118,38 @@ The caller passes a `model_builder: newton.ModelBuilder` containing exactly `N` 
 - link/joint count
 - joint types
 
-They may differ in physical parameters (mass, inertia, friction, joint limits) and in per-articulation site placement (so e.g. a fleet with mixed gripper lengths can sit under one DiffIK).
+They may differ in physical parameters (mass, inertia, friction, joint limits) and in per-articulation site placement (so e.g. a fleet with mixed gripper lengths can sit under one `ControlLawDifferentialIK`).
 
 The controller does **no replication** — if the user wants `N` copies of a single-robot template, they call `newton.ModelBuilder.replicate(template, world_count=N)` themselves before construction. Keeping the responsibility on the caller means a single, obvious mental model: the builder you hand in is exactly the set of robots the controller will manage.
 
 At `finalize()` the controller calls `model_builder.finalize(device, requires_grad)` to get an internal `Model`. Per-step compute uses `eval_fk`, `eval_jacobian`, etc. on this internal model — which is independent of the simulated scene's model, so the user can deliberately introduce modelling errors between controller and sim if they want to.
 
-#### Mobile base case
+#### Raw parameters case
 
 Mobile-robot controllers are parameterized by data that doesn't live in `newton.Model` (wheel radius, axle width, wheel-mapping matrix). The user passes those parameters as plain `wp.array` arguments of length `N = num_robots`. No replication; the controller just consumes the length-N parameter vectors directly.
 
 #### Indexing
 
-For both kinds of coupled law: the per-DOF output port's `port_indices` is laid out as `[r0_d0, r0_d1, …, r0_d(D-1), r1_d0, …, r(N-1)_d(D-1)]`, so `port_indices[r * dofs_per_robot + j]` is the global slot for robot `r`'s local DOF `j`. Kernels launch 2D with `dim=(num_robots, dofs_per_robot)`; inside, `robot, local_slot = wp.tid()` and the flat index is `robot * dofs_per_robot + local_slot`.
+For both kinds of coupled law, the per-DOF output port's `port_indices` is required to be **robot-contiguous**: all of robot 0's DOFs come first, then all of robot 1's DOFs, and so on. Concretely, with `N = num_robots` and `D = dofs_per_robot`, the array looks like:
+
+```
+port_indices = [
+    # robot 0's DOFs, in local order:
+    robot_0_dof_0, robot_0_dof_1, ..., robot_0_dof_{D-1},
+
+    # robot 1's DOFs, in local order:
+    robot_1_dof_0, robot_1_dof_1, ..., robot_1_dof_{D-1},
+
+    ...
+
+    # robot N-1's DOFs, in local order:
+    robot_{N-1}_dof_0, robot_{N-1}_dof_1, ..., robot_{N-1}_dof_{D-1},
+]
+```
+
+Each entry is the global output index (the slot in the user's `output` array) for that robot's local DOF. So `port_indices[robot * dofs_per_robot + local_dof]` gives the global slot for robot `robot`'s `local_dof`-th DOF.
+
+Kernels launch 2D with `dim=(num_robots, dofs_per_robot)`; inside, `robot, local_dof = wp.tid()` and the flat index into `port_indices` is `robot * dofs_per_robot + local_dof`.
 
 ---
 
@@ -156,18 +172,18 @@ Composition is sum-of-contributions: a PD term + a gravity-compensation term + a
 
 ## State and double-buffering
 
-Each `ControlLaw` defines a nested `State` dataclass holding whatever per-step internal buffers it needs (PID integrals, filter history, …). `ControlLaw.is_stateful()` reports whether it carries any; `ControlLaw.state(num_outputs, device, requires_grad)` allocates a fresh one.
+Each `ControlLaw` defines a nested `State` dataclass holding whatever per-step internal buffers it needs (PID integrals, filter history, …). `ControlLaw.is_stateful()` reports whether it carries any; `ControlLaw.state(num_outputs, device, requires_grad)` allocates a fresh state or returns `None` if the control law is not stateful.
 
 `Controller.State` composes per-law states as a `dict[str, ControlLaw.State | None]` keyed by each law's `label` (with `None` entries for stateless laws). Dict insertion order matches the order the laws were passed to the `Controller`, so step iteration is deterministic. Keying by label makes external introspection (`state.control_law_states["arm_pid"].integral.numpy()`) stable across reordering and easier to read than positional indexing.
 
 The step protocol is double-buffered: the Controller reads from `current_state`, writes to `next_state`, and the caller swaps:
 
 ```python
-state_0 = controller.state()
-state_1 = controller.state()
+controller_state_0 = controller.state()
+controller_state_1 = controller.state()
 for _ in range(steps):
-    controller.step(input, output, state_0, state_1, dt=dt)
-    state_0, state_1 = state_1, state_0
+    controller.step(input, output, controller_state_0, controller_state_1, dt=dt)
+    controller_state_0, controller_state_1 = controller_state_1, controller_state_0
 ```
 
 This mirrors the in/out State pattern used by `Solver.step(state_in, state_out, ...)` and avoids tape entanglement when running under `wp.Tape`.
@@ -196,6 +212,7 @@ Mixed grad-tracking needs (some laws gradient-tracked, others not) split into mu
 The standard ordering inside one simulation step:
 
 ```python
+# A controller which runs both a PID and Differential Inverse Kinematics
 controller = nc.Controller([pid, diff_ik])
 actuator   = newton.actuators.Actuator(controller=..., ...)
 
@@ -274,7 +291,7 @@ class ControlLaw:
                 next_state: ControlLaw.State | None,
                 dt: float) -> None:
         """Resolve port arrays via _resolve_input_array /
-        _resolve_per_group_array, launch kernels: read live data, write +=
+        _resolve_per_robot_array, launch kernels: read live data, write +=
         into outputs, populate next_state. Device is fixed at finalize()
         time."""
 ```
@@ -321,13 +338,13 @@ class Controller.State:
 
 - `_normalize_port(spec, name)` — validate the 2-tuple `(str, wp.array[uint32])` spec at `__init__`, return `(attr_name, port_indices)`.
 - `_resolve_input_array(source, attr_name, name)` — step-time `getattr` plus `wp.array` type check.
-- `_resolve_per_group_array(source, attr_name, dtype, name)` — step-time `getattr` plus dtype check (per-robot ports).
+- `_resolve_per_robot_array(source, attr_name, dtype, name)` — step-time `getattr` plus dtype check (per-robot ports).
 
 ### Choosing between independent and coupled
 
 If output `i` depends only on input `i` and per-DOF parameters, write it independent: 1D launch, no `Model`. Pure scalar math.
 
-If each robot's outputs depend on its full configuration (Jacobians, mass matrix, kinematic chain, base velocity), write it coupled: take a `model_builder` (articulated case) or raw per-robot parameter vectors (mobile case); finalize the builder once at finalize time; 2D launch over `(num_robots, outputs_per_robot)`.
+If each robot's outputs depend on its full configuration (Jacobians, mass matrix, kinematic chain, base velocity), write it coupled: take a `model_builder` (articulated case) or raw per-robot parameter vectors (mobile case) or both; finalize the builder once at finalize time; 2D launch over `(num_robots, outputs_per_robot)`.
 
 The reference implementations are `controller_pid.py` (independent) and `controller_diff_ik.py` (coupled, articulated).
 

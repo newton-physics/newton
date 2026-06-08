@@ -25,7 +25,7 @@ import warp as wp
 from ...sim.articulation import eval_fk, eval_jacobian
 from ...sim.builder import ModelBuilder
 from ..control_law import ControlLaw
-from ..utils import _normalize_port, _resolve_input_array, _resolve_per_group_array
+from ..utils import _normalize_port, _resolve_input_array, _resolve_per_robot_array
 
 
 @wp.kernel
@@ -477,10 +477,10 @@ class ControlLawDifferentialIK(ControlLaw):
     ) -> None:
         meas = _resolve_input_array(input, self._measurement_attr, name="measurement")
         meas_rate = _resolve_input_array(input, self._measurement_rate_attr, name="measurement_rate")
-        target_pos = _resolve_per_group_array(input, self._target_pos_attr, wp.vec3, name="target_pos")
-        target_quat = _resolve_per_group_array(input, self._target_quat_attr, wp.quat, name="target_quat")
-        damping = _resolve_per_group_array(input, self._damping_attr, wp.float32, name="damping")
-        gain = _resolve_per_group_array(input, self._gain_attr, wp.float32, name="gain")
+        target_pos = _resolve_per_robot_array(input, self._target_pos_attr, wp.vec3, name="target_pos")
+        target_quat = _resolve_per_robot_array(input, self._target_quat_attr, wp.quat, name="target_quat")
+        damping = _resolve_per_robot_array(input, self._damping_attr, wp.float32, name="damping")
+        gain = _resolve_per_robot_array(input, self._gain_attr, wp.float32, name="gain")
         out_qd = _resolve_input_array(output, self._output_qd_attr, name="output_qd")
         out_q = _resolve_input_array(output, self._output_q_attr, name="output_q")
 
