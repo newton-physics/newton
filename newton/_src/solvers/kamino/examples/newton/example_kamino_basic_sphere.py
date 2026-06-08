@@ -38,7 +38,7 @@ class Example:
         scene_builder.default_shape_cfg.margin = 1e-3
         scene_builder.default_shape_cfg.gap = 0.1
 
-        # Load the DR Legs USD and add it to the builder
+        # Add the sphere model to the builder
         basics.build_sphere_on_plane(
             builder=scene_builder,
             z_offset=0.5,

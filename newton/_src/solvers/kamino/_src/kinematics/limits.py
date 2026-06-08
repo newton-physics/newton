@@ -830,7 +830,6 @@ class LimitsKamino:
         Detects the active joint limits in the model and updates the limits data.
 
         Args:
-            model: The model container holding the time-invariant parameters of the system being simulated.
             q_j: An array containing the generalized joint coordinates of the system at the current state.
         """
         # Skip this operation if no contacts data has been allocated

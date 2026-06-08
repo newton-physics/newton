@@ -642,10 +642,10 @@ class ContactsKamino:
         return self._data.material
 
     @property
-    def margins(self) -> wp.array[wp.float32]:
+    def margins(self) -> wp.array[wp.vec2f]:
         """
         Returns the effective shape-pair margins of each active contact.\n
-        Shape of ``(model_max_contacts_host,)`` and type :class:`float32`.
+        Shape of ``(model_max_contacts_host,)`` and type :class:`vec2f`.
         """
         self._assert_has_data()
         return self._data.margins
