@@ -518,9 +518,8 @@ def test_sensor_raycast_heightfield(test: unittest.TestCase, device: str):
 
     Heightfields raycast through their wp.Mesh BVH via shape_source_ptr, a
     path with no dedicated test until now -- the prior heightfield coverage
-    moved to SensorTiledCamera when the sensor was removed. Mirror that
-    scenario (test_sensor_tiled_camera_heightfield): a flat terrain seen from
-    directly above must register hits at the expected depth.
+    moved to SensorTiledCamera when the sensor was removed. A flat terrain
+    seen from directly above must register hits at the expected depth.
     """
     # Flat heightfield at z=1 spanning [-2, 2]^2.
     data = np.full((3, 3), 1.0, dtype=np.float32)
@@ -550,19 +549,16 @@ def test_sensor_raycast_heightfield(test: unittest.TestCase, device: str):
     sensor.update(state)
     depth = sensor.get_depth_image_numpy()
 
-    hits = depth[depth > 0.0]
-    # The terrain fills the frame, but ~10-15% of rays miss along triangle
-    # edges (non-watertight mesh_query_ray), so require "most" pixels rather
-    # than all -- matching test_sensor_tiled_camera_heightfield.
-    test.assertGreaterEqual(
-        hits.size,
-        int(width * height * 0.8),
-        msg=f"heightfield should fill most of the view; only {hits.size}/{width * height} pixels hit",
+    # The footprint lies entirely within the terrain, so every ray hits.
+    test.assertTrue(
+        np.all(depth > 0.0),
+        msg=f"every ray should hit the heightfield; {int(np.count_nonzero(depth <= 0.0))} pixels missed",
     )
-    # Flat surface at z=1 seen from z=5: depth ~4, up to ~4.2 toward the edges.
-    test.assertGreater(float(hits.min()), 3.9)
-    test.assertLess(float(hits.max()), 4.4)
-    test.assertAlmostEqual(float(np.median(hits)), 4.0, delta=0.1)
+    # Flat surface at z=1 seen from z=5: slant depth ~4.0 at the center, growing
+    # to ~4.22 at the corners as the ray angle increases.
+    test.assertGreater(float(depth.min()), 3.9)
+    test.assertLess(float(depth.max()), 4.3)
+    test.assertAlmostEqual(float(depth[height // 2, width // 2]), 4.0, delta=0.05)
 
 
 class TestSensorRaycast(unittest.TestCase):
