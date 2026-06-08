@@ -668,6 +668,32 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn("box1", warning_msg)
         self.assertNotIn("good_capsule", warning_msg)
 
+    def test_shape_config_flags_preserve_authored_collision_masks(self):
+        """Setting non-site flags should not reset authored collision masks."""
+        cfg = ModelBuilder.ShapeConfig(collision_type=0x2, collision_affinity=0x4)
+
+        cfg.flags = int(newton.ShapeFlags.VISIBLE | newton.ShapeFlags.COLLIDE_SHAPES)
+
+        self.assertEqual(cfg.collision_type, 0x2)
+        self.assertEqual(cfg.collision_affinity, 0x4)
+
+    def test_collision_group_bits_ignore_explicit_mask_shapes(self):
+        """Explicit-mask shapes should not consume group-derived mask bits."""
+        builder = ModelBuilder()
+        body = builder.add_body(mass=1.0)
+
+        for group in range(1, 34):
+            cfg = ModelBuilder.ShapeConfig(collision_group=group, collision_type=1, collision_affinity=1)
+            builder.add_shape_sphere(body=body, radius=0.01, cfg=cfg)
+
+        group_cfg = ModelBuilder.ShapeConfig(collision_group=100)
+        group_shape = builder.add_shape_sphere(body=body, radius=0.01, cfg=group_cfg)
+
+        model = builder.finalize(skip_all_validations=True)
+
+        self.assertEqual(int(model.shape_collision_type.numpy()[group_shape]), 1)
+        self.assertEqual(int(model.shape_collision_affinity.numpy()[group_shape]), 1)
+
     def test_collision_filter_pairs_canonical_order(self):
         """Test that collision filter pairs are stored in canonical order (s1 < s2)."""
         builder = ModelBuilder()
