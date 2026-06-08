@@ -15,7 +15,7 @@ from newton.sensors import SensorTiledCamera
 class TestSensorTiledCameraHeightfield(unittest.TestCase):
     """The tiled camera must render heightfield (HFIELD) shapes.
 
-    SensorRaycast (removed in favor of SensorTiledCamera) supported
+    SensorRaycast (deprecated in favor of SensorTiledCamera) supports
     heightfields, so the replacement must too.
     """
 
