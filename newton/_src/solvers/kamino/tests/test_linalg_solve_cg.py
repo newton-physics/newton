@@ -62,7 +62,7 @@ class TestLinalgConjugate(unittest.TestCase):
         b_wp = problem.b_wp
         x_wp = wp.zeros(info.total_vec_size, dtype=float32, device=device)
 
-        world_active = wp.full(n_worlds, 1, dtype=wp.int32, device=device)
+        world_active = wp.full(n_worlds, True, dtype=wp.bool, device=device)
 
         maxdim = max(problem.maxdims)
         atol = wp.full(n_worlds, 1.0e-4, dtype=problem.wp_dtype, device=device)
@@ -210,7 +210,7 @@ class TestLinalgConjugate(unittest.TestCase):
             b_flat[vio_np[m] : vio_np[m] + dims[m]] = b_list[m]
         b_wp = wp.array(b_flat, dtype=float32, device=device)
 
-        world_active = wp.full(n_worlds, 1, dtype=wp.int32, device=device)
+        world_active = wp.full(n_worlds, True, dtype=wp.bool, device=device)
         atol = wp.full(n_worlds, 1.0e-6, dtype=float32, device=device)
         rtol = wp.full(n_worlds, 1.0e-6, dtype=float32, device=device)
 
@@ -325,7 +325,7 @@ class TestLinalgConjugate(unittest.TestCase):
 
         b_wp = wp.array(b, dtype=float32, device=device)
         x_wp = wp.zeros(dim, dtype=float32, device=device)
-        world_active = wp.full(1, 1, dtype=wp.int32, device=device)
+        world_active = wp.full(1, True, dtype=wp.bool, device=device)
         atol = wp.full(1, 1e-6, dtype=float32, device=device)
         rtol = wp.full(1, 1e-6, dtype=float32, device=device)
 
@@ -464,7 +464,7 @@ class TestLinalgConjugate(unittest.TestCase):
         b = problem.b_wp
         x_wp = wp.zeros(info.total_vec_size, dtype=float32, device=device)
 
-        world_active = wp.full(n_worlds, 1, dtype=wp.int32, device=device)
+        world_active = wp.full(n_worlds, True, dtype=wp.bool, device=device)
 
         maxdim = max(problem.maxdims)
         atol = wp.full(n_worlds, 1.0e-4, dtype=float32, device=device)
@@ -558,7 +558,7 @@ class TestLinalgConjugate(unittest.TestCase):
         b = problem.b_wp
         x_wp = wp.zeros(info.total_vec_size, dtype=float32, device=device)
 
-        world_active = wp.full(n_worlds, 1, dtype=wp.int32, device=device)
+        world_active = wp.full(n_worlds, True, dtype=wp.bool, device=device)
 
         atol = wp.full(n_worlds, 1.0e-4, dtype=float32, device=device)
         rtol = wp.full(n_worlds, 1.0e-5, dtype=float32, device=device)

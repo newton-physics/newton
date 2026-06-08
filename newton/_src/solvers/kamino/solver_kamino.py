@@ -58,12 +58,11 @@ class SolverKamino(SolverBase):
     as a Nonlinear Complementarity Problem (NCP) over the set of bilateral kinematic joint
     constraints and unilateral constraints that include joint-limits and contacts.
 
-    .. note::
-        Currently still in `Beta`, so we do not recommend using this solver for
-        production use cases yet, as we expect many things to change in future releases.
-        This includes both the public API and internal implementation; adding support for
-        more simulation features (e.g. joints, constraints, actuators), performance
-        optimizations, and bug fixes.
+    This solver is currently in Beta.
+
+    .. experimental::
+        SolverKamino's public API and internal implementation may change without
+        prior notice, including simulation feature support, performance, and bug fixes.
 
     References:
         - Tsounis, Vassilios, Ruben Grandia, and Moritz Bächer.

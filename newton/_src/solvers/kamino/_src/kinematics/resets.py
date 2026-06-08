@@ -45,7 +45,7 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _reset_time_of_select_worlds(
     # Inputs:
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
     # Outputs:
     data_time: wp.array[float32],
     data_steps: wp.array[int32],
@@ -54,7 +54,7 @@ def _reset_time_of_select_worlds(
     wid = wp.tid()
 
     # Skip resetting time if the world has not been marked for reset
-    if world_mask[wid] == 0:
+    if not world_mask[wid]:
         return
 
     # Reset both the physical time and step count to zero
@@ -65,7 +65,7 @@ def _reset_time_of_select_worlds(
 @wp.kernel
 def _reset_body_state_of_select_worlds(
     # Inputs:
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
     model_body_wid: wp.array[int32],
     model_body_q_i_0: wp.array[transformf],
     model_body_u_i_0: wp.array[vec6f],
@@ -82,7 +82,7 @@ def _reset_body_state_of_select_worlds(
     wid = model_body_wid[bid]
 
     # Skip resetting this body if the world has not been marked for reset
-    if world_mask[wid] == 0:
+    if not world_mask[wid]:
         return
 
     # Retrieve the target state for this body
@@ -99,7 +99,7 @@ def _reset_body_state_of_select_worlds(
 @wp.kernel
 def _reset_body_state_from_base(
     # Inputs:
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
     model_info_base_body_index: wp.array[int32],
     model_body_wid: wp.array[int32],
     model_bodies_q_i_0: wp.array[transformf],
@@ -117,7 +117,7 @@ def _reset_body_state_from_base(
     wid = model_body_wid[bid]
 
     # Skip resetting this body if the world has not been marked for reset
-    if world_mask[wid] == 0:
+    if not world_mask[wid]:
         return
 
     # Retrieve the index of the base body for this world
@@ -162,7 +162,7 @@ def _reset_body_state_from_base(
 @wp.kernel
 def _reset_joint_state_of_select_worlds(
     # Inputs:
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
     model_joint_wid: wp.array[int32],
     model_joint_num_dynamic_cts: wp.array[int32],
     model_joint_num_kinematic_cts: wp.array[int32],
@@ -184,7 +184,7 @@ def _reset_joint_state_of_select_worlds(
     wid = model_joint_wid[jid]
 
     # Skip resetting this joint if the world has not been marked for reset
-    if world_mask[wid] == 0:
+    if not world_mask[wid]:
         return
 
     # Retrieve the joint model data
@@ -214,7 +214,7 @@ def _reset_joint_state_of_select_worlds(
 def _set_joint_state_of_select_worlds(
     # Inputs:
     write_velocities: bool,
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
     model_joint_wid: wp.array[int32],
     model_joint_coords_offset: wp.array[int32],
     model_joint_dofs_offset: wp.array[int32],
@@ -232,7 +232,7 @@ def _set_joint_state_of_select_worlds(
     wid = model_joint_wid[jid]
 
     # Skip writing this joint's state if the world has not been marked for reset
-    if world_mask[wid] == 0:
+    if not world_mask[wid]:
         return
 
     # Write the joint's coordinate block to both `q` and `q_p` (TWOPI reference)
@@ -254,7 +254,7 @@ def _set_joint_state_of_select_worlds(
 @wp.kernel
 def _reset_bodies_of_select_worlds(
     # Inputs:
-    mask: wp.array[int32],
+    mask: wp.array[bool],
     # Inputs:
     model_bid: wp.array[int32],
     model_i_I_i: wp.array[mat33f],
@@ -317,7 +317,7 @@ def _reset_bodies_of_select_worlds(
 @wp.kernel
 def _reset_body_net_wrenches(
     # Inputs:
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
     body_wid: wp.array[int32],
     # Outputs:
     body_w_i: wp.array[vec6f],
@@ -329,7 +329,7 @@ def _reset_body_net_wrenches(
     wid = body_wid[bid]
 
     # Skip resetting this body if the world has not been marked for reset
-    if world_mask[wid] == 0:
+    if not world_mask[wid]:
         return
 
     # Zero-out wrenches
@@ -339,7 +339,7 @@ def _reset_body_net_wrenches(
 @wp.kernel
 def _reset_joint_constraint_reactions(
     # Inputs:
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
     model_joint_wid: wp.array[int32],
     model_joint_num_dynamic_cts: wp.array[int32],
     model_joint_num_kinematic_cts: wp.array[int32],
@@ -355,7 +355,7 @@ def _reset_joint_constraint_reactions(
     wid = model_joint_wid[jid]
 
     # Early exit the operation if the joint's world is flagged as skipped or if the joint is not actuated
-    if world_mask[wid] == 0:
+    if not world_mask[wid]:
         return
 
     # Retrieve the joint model data
@@ -375,7 +375,7 @@ def _reset_joint_constraint_reactions(
 def _reset_joints_of_select_worlds(
     # Inputs:
     reset_constraints: bool,
-    mask: wp.array[int32],
+    mask: wp.array[bool],
     model_joint_wid: wp.array[int32],
     model_joint_dof_type: wp.array[int32],
     model_joint_num_dynamic_cts: wp.array[int32],
@@ -550,8 +550,8 @@ def reset_joint_constraint_reactions(
             The array of joint constraint reaction forces/torques.\n
             Shape of ``(sum_of_num_joint_constraints,)`` and type :class:`float`.
         world_mask (wp.array):
-            An array indicating which worlds are active (1) or skipped (0).\n
-            Shape of ``(num_worlds,)`` and type :class:`int32`.
+            An array indicating which worlds are active (True) or skipped (False).\n
+            Shape of ``(num_worlds,)`` and type :class:`bool`.
     """
     wp.launch(
         _reset_joint_constraint_reactions,
@@ -629,7 +629,7 @@ def reset_state_to_model_default(
             Output state container to be reset to the model's default state.
         world_mask (wp.array):
             Array of per-world flags indicating which worlds should be reset.\n
-            Shape of ``(num_worlds,)`` and type :class:`int32`.
+            Shape of ``(num_worlds,)`` and type :class:`bool`.
     """
     reset_state_from_bodies_state(
         model,
@@ -658,7 +658,7 @@ def reset_state_from_bodies_state(
             Output state container to be reset to the model's default state.
         world_mask (wp.array):
             Array of per-world flags indicating which worlds should be reset.\n
-            Shape of ``(num_worlds,)`` and type :class:`int32`.
+            Shape of ``(num_worlds,)`` and type :class:`bool`.
         bodies_q (wp.array):
             Array of target poses for the rigid bodies of each world.\n
             Shape of ``(num_bodies,)`` and type :class:`transformf`.
@@ -733,7 +733,7 @@ def reset_state_from_base_state(
             Output state container to be reset based on the base body states.
         world_mask (wp.array):
             Array of per-world flags indicating which worlds should be reset.\n
-            Shape of ``(num_worlds,)`` and type :class:`int32`.
+            Shape of ``(num_worlds,)`` and type :class:`bool`.
         base_q (wp.array):
             Array of target poses for the base bodies of each world.\n
             Shape of ``(num_worlds,)`` and type :class:`transformf`.
