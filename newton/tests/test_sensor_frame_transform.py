@@ -4,6 +4,7 @@
 """Tests for SensorFrameTransform."""
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -628,6 +629,28 @@ class TestSensorFrameTransform(unittest.TestCase):
             sensor_int.transforms.numpy(),
             sensor_str.transforms.numpy(),
         )
+
+
+class TestSensorFrameTransformLabelMatching(unittest.TestCase):
+    @staticmethod
+    def _model():
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_site(body, label="probe")  # flat label
+        builder.add_site(body, label="left/probe")  # hierarchical, same leaf
+        builder.add_site(body, label="ref")
+        return builder.finalize()
+
+    def test_match_full_labels_true_matches_leaf(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            sensor = SensorFrameTransform(self._model(), shapes="probe", reference_sites="ref", match_full_labels=True)
+        self.assertEqual(sensor.transforms.shape[0], 2)
+
+    def test_default_warns_and_keeps_full_label_only(self):
+        with self.assertWarns(DeprecationWarning):
+            sensor = SensorFrameTransform(self._model(), shapes="probe", reference_sites="ref")
+        self.assertEqual(sensor.transforms.shape[0], 1)
 
 
 if __name__ == "__main__":

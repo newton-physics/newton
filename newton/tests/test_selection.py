@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
+from newton._src.utils.selection import match_labels, match_labels_with_transition, warn_label_match_transition
 from newton.selection import ArticulationView
 from newton.tests.unittest_utils import assert_np_equal
 
@@ -26,6 +28,79 @@ def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
         dtype=np.float32,
     )
     return body_qd[body_idx, :3] - np.cross(body_qd[body_idx, 3:6], com_world)
+
+
+_MATCH_LABELS = ["palm", "palm/left/fingertip", "palm/right/fingertip"]
+_TRANSITION_LABELS = ["foot", "robot/foot", "robot/hand"]
+
+
+def _build_gripper_model():
+    """Two-finger gripper whose distal bodies, finger joints, and tip shapes
+    each share a colliding leaf name (``fingertip`` / ``tip_collision``)."""
+    builder = newton.ModelBuilder()
+    palm = builder.add_link(label="palm")
+    left = builder.add_link(label="palm/left/fingertip")
+    right = builder.add_link(label="palm/right/fingertip")
+    builder.add_shape_box(body=left, hx=0.01, hy=0.01, hz=0.02, label="palm/left/tip_collision")
+    builder.add_shape_box(body=right, hx=0.01, hy=0.01, hz=0.02, label="palm/right/tip_collision")
+    j_root = builder.add_joint_free(parent=-1, child=palm, label="root")
+    j_left = builder.add_joint_revolute(
+        parent=palm, child=left, axis=(0.0, 0.0, 1.0), label="palm/left/fingertip_joint"
+    )
+    j_right = builder.add_joint_revolute(
+        parent=palm, child=right, axis=(0.0, 0.0, 1.0), label="palm/right/fingertip_joint"
+    )
+    builder.add_articulation([j_root, j_left, j_right], label="gripper")
+    return builder.finalize()
+
+
+class TestMatchLabels(unittest.TestCase):
+    def test_full_label_only_by_default(self):
+        # Default matches the full label only: a bare leaf does not match a
+        # hierarchical label, a path pattern does.
+        self.assertEqual(match_labels(_MATCH_LABELS, "fingertip"), [])
+        self.assertEqual(match_labels(_MATCH_LABELS, "*/left/fingertip"), [1])
+
+    def test_match_leaf_adds_basename_matches(self):
+        self.assertEqual(match_labels(_MATCH_LABELS, "fingertip", match_leaf=True), [1, 2])
+        # Path patterns are unaffected (still precise).
+        self.assertEqual(match_labels(_MATCH_LABELS, "*/left/fingertip", match_leaf=True), [1])
+
+    def test_slash_pattern_never_matches_leaf(self):
+        self.assertEqual(match_labels(_MATCH_LABELS, "palm/right/fingertip", match_leaf=True), [2])
+
+    def test_integer_indices_pass_through(self):
+        self.assertEqual(match_labels(_MATCH_LABELS, [0, 2], match_leaf=True), [0, 2])
+
+
+class TestMatchLabelsTransition(unittest.TestCase):
+    def test_true_matches_leaf_no_drift(self):
+        idx, differs = match_labels_with_transition(_TRANSITION_LABELS, "foot", True)
+        self.assertEqual(idx, [0, 1])
+        self.assertFalse(differs)
+
+    def test_false_keeps_full_label_reports_drift(self):
+        idx, differs = match_labels_with_transition(_TRANSITION_LABELS, "foot", False)
+        self.assertEqual(idx, [0])
+        self.assertTrue(differs)
+
+    def test_false_no_drift_for_flat_labels(self):
+        idx, differs = match_labels_with_transition(["a", "b"], "a", False)
+        self.assertEqual(idx, [0])
+        self.assertFalse(differs)
+
+
+class TestWarnLabelMatchTransition(unittest.TestCase):
+    def test_warns_when_false_and_differs(self):
+        with self.assertWarns(DeprecationWarning):
+            warn_label_match_transition("X", False, True)
+
+    def test_silent_otherwise(self):
+        # Adopting (True) is silent; so is the default (False) when nothing would change.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            warn_label_match_transition("X", True, True)
+            warn_label_match_transition("X", False, False)
 
 
 class TestSelection(unittest.TestCase):
@@ -70,28 +145,10 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(view.get_dof_forces(control).shape, (1, 1, 0))
 
     def test_labels_preserve_full_paths(self):
-        """Two-finger gripper whose distal bodies, finger joints, and tip
-        shapes each share a colliding leaf name. ``*_names`` attributes
-        collapse to the leaf; ``*_labels`` attributes expose the
-        full slash-delimited labels from the template articulation so
-        callers can still distinguish entries and recover selection order.
-        """
-        builder = newton.ModelBuilder()
-        palm = builder.add_link(label="palm")
-        left = builder.add_link(label="palm/left/fingertip")
-        right = builder.add_link(label="palm/right/fingertip")
-        builder.add_shape_box(body=left, hx=0.01, hy=0.01, hz=0.02, label="palm/left/tip_collision")
-        builder.add_shape_box(body=right, hx=0.01, hy=0.01, hz=0.02, label="palm/right/tip_collision")
-        j_root = builder.add_joint_free(parent=-1, child=palm, label="root")
-        j_left = builder.add_joint_revolute(
-            parent=palm, child=left, axis=(0.0, 0.0, 1.0), label="palm/left/fingertip_joint"
-        )
-        j_right = builder.add_joint_revolute(
-            parent=palm, child=right, axis=(0.0, 0.0, 1.0), label="palm/right/fingertip_joint"
-        )
-        builder.add_articulation([j_root, j_left, j_right], label="gripper")
-        model = builder.finalize()
-
+        """``*_names`` collapse colliding entries to their leaf; ``*_labels``
+        expose the full slash-delimited labels from the template articulation
+        so callers can distinguish them and recover selection order."""
+        model = _build_gripper_model()
         view = ArticulationView(model, "gripper", include_links="fingertip")
 
         # Leaf collisions are visible on the *_names attributes...
@@ -100,14 +157,8 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(view.shape_names, ["tip_collision", "tip_collision"])
 
         # ...and disambiguated on the *_labels attributes.
-        self.assertEqual(
-            view.link_labels,
-            ["palm/left/fingertip", "palm/right/fingertip"],
-        )
-        self.assertEqual(
-            view.shape_labels,
-            ["palm/left/tip_collision", "palm/right/tip_collision"],
-        )
+        self.assertEqual(view.link_labels, ["palm/left/fingertip", "palm/right/fingertip"])
+        self.assertEqual(view.shape_labels, ["palm/left/tip_collision", "palm/right/tip_collision"])
         self.assertIn("palm/left/fingertip_joint", view.joint_labels)
         self.assertIn("palm/right/fingertip_joint", view.joint_labels)
         self.assertEqual(len(view.joint_labels), view.joint_count)
@@ -139,6 +190,45 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(body_layout.value_count, len(model.body_label))
         self.assertEqual(view.get_link_transforms(model).shape, (1, 1, 2))
         self.assertEqual(view.get_link_velocities(model).shape, (1, 1, 2))
+
+    def test_bare_leaf_matches_all_colliding_without_warning(self):
+        # A slash-free pattern matches by leaf under all modes; the upcoming
+        # default does not change it, so no DeprecationWarning is emitted.
+        model = _build_gripper_model()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            view = ArticulationView(model, "gripper", include_links="fingertip")
+        self.assertEqual(view.link_count, 2)
+
+    def test_path_pattern_warns_and_keeps_legacy_under_default(self):
+        # Under the opt-in default, a path pattern matches nothing (legacy
+        # leaf-only) and warns that the upcoming default would select it.
+        model = _build_gripper_model()
+        with self.assertWarns(DeprecationWarning):
+            view = ArticulationView(model, "gripper", include_links="*/left/fingertip")
+        self.assertEqual(view.link_count, 0)
+
+    def test_path_pattern_selects_one_when_opted_in(self):
+        model = _build_gripper_model()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            view = ArticulationView(model, "gripper", include_links="*/left/fingertip", match_full_labels=True)
+        self.assertEqual(view.link_labels, ["palm/left/fingertip"])
+
+    def test_path_pattern_matches_nothing_when_opted_out(self):
+        # Explicit match_full_labels=False keeps legacy matching but still warns about
+        # the pending default change (the opt-out does not silence the warning).
+        model = _build_gripper_model()
+        with self.assertWarns(DeprecationWarning):
+            view = ArticulationView(model, "gripper", include_links="*/left/fingertip", match_full_labels=False)
+        self.assertEqual(view.link_count, 0)
+
+    def test_full_label_exclude_carves_one_when_opted_in(self):
+        model = _build_gripper_model()
+        view = ArticulationView(
+            model, "gripper", include_links="fingertip", exclude_links="*/left/fingertip", match_full_labels=True
+        )
+        self.assertEqual(view.link_labels, ["palm/right/fingertip"])
 
     def _test_selection_shapes(self, floating: bool):
         # load articulation

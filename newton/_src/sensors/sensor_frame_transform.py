@@ -8,7 +8,7 @@ import warp as wp
 from ..geometry import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
-from ..utils.selection import match_labels
+from ..utils.selection import match_labels_with_transition, warn_label_match_transition
 
 
 @wp.kernel
@@ -124,6 +124,7 @@ class SensorFrameTransform:
         reference_sites: str | list[str] | list[int],
         *,
         verbose: bool | None = None,
+        match_full_labels: bool = False,
     ):
         """Initialize the SensorFrameTransform.
 
@@ -136,6 +137,10 @@ class SensorFrameTransform:
                 to one site or the same number as ``shapes``.
             verbose: If True, print details. If False, suppress details. If None, print details when
                 ``wp.config.log_level`` is configured for debug logging.
+            match_full_labels: If ``True``, ``shapes``/``reference_sites`` patterns match leaf
+                names as well as full labels; ``False`` (default) matches full labels only and
+                warns when the upcoming default of ``True`` would match differently. The default
+                will become ``True`` in a future release.
 
         Raises:
             ValueError: If arguments are invalid or no labels match.
@@ -145,9 +150,12 @@ class SensorFrameTransform:
 
         # Resolve label patterns to indices
         original_shapes = shapes
-        shapes = match_labels(model.shape_label, shapes)
+        shapes, _shapes_differ = match_labels_with_transition(model.shape_label, shapes, match_full_labels)
         original_reference_sites = reference_sites
-        reference_sites = match_labels(model.shape_label, reference_sites)
+        reference_sites, _refs_differ = match_labels_with_transition(
+            model.shape_label, reference_sites, match_full_labels
+        )
+        warn_label_match_transition("SensorFrameTransform", match_full_labels, _shapes_differ or _refs_differ)
 
         # Validate shape indices
         if not shapes:

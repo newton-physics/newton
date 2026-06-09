@@ -4,6 +4,7 @@
 """Tests for SensorIMU."""
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -201,6 +202,34 @@ class TestSensorIMU(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             SensorIMU(model, sites="nonexistent_*")
+
+
+class TestSensorIMULabelMatching(unittest.TestCase):
+    @staticmethod
+    def _model():
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_site(body, label="imu")  # flat label
+        builder.add_site(body, label="left/imu")  # hierarchical, same leaf
+        return builder.finalize()
+
+    def test_match_full_labels_true_matches_leaf(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            sensor = SensorIMU(self._model(), sites="imu", match_full_labels=True)
+        self.assertEqual(sensor.n_sensors, 2)
+
+    def test_default_warns_and_keeps_full_label_only(self):
+        with self.assertWarns(DeprecationWarning):
+            sensor = SensorIMU(self._model(), sites="imu")
+        self.assertEqual(sensor.n_sensors, 1)
+
+    def test_opt_out_keeps_full_label_only_but_still_warns(self):
+        # Explicit match_full_labels=False keeps full-label-only matching but does not
+        # silence the pending-default-change warning.
+        with self.assertWarns(DeprecationWarning):
+            sensor = SensorIMU(self._model(), sites="imu", match_full_labels=False)
+        self.assertEqual(sensor.n_sensors, 1)
 
 
 if __name__ == "__main__":
