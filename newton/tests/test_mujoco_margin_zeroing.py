@@ -13,7 +13,8 @@ import unittest
 import numpy as np
 
 import newton
-from newton.solvers import SolverMuJoCo, SolverNotifyFlags
+from newton import ModelFlags
+from newton.solvers import SolverMuJoCo
 
 
 class TestMuJoCoMarginZeroing(unittest.TestCase):
@@ -68,7 +69,7 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
         model = self._build_model_with_margin(margin=1e-5)
         with self.assertWarnsRegex(UserWarning, r"zeroed for NATIVECCD/MULTICCD"):
             solver = SolverMuJoCo(model, use_mujoco_contacts=True)
-        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
         geom_margin = solver.mjw_model.geom_margin.numpy()
         np.testing.assert_array_equal(
             geom_margin,

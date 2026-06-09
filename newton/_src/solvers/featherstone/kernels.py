@@ -348,16 +348,18 @@ def jcalc_tau(
     joint_target_kd: wp.array[float],
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
+    joint_damping: wp.array[float],
     joint_S_s: wp.array[wp.spatial_vector],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
     joint_f: wp.array[float],
-    joint_target_pos: wp.array[float],
-    joint_target_vel: wp.array[float],
+    joint_target_q: wp.array[float],
+    joint_target_qd: wp.array[float],
     joint_limit_lower: wp.array[float],
     joint_limit_upper: wp.array[float],
     coord_start: int,
     dof_start: int,
+    target_q_start: int,
     lin_axis_count: int,
     ang_axis_count: int,
     body_f_s: wp.spatial_vector,
@@ -402,10 +404,13 @@ def jcalc_tau(
             limit_kd = joint_limit_kd[j]
             target_ke = joint_target_ke[j]
             target_kd = joint_target_kd[j]
-            target_pos = joint_target_pos[j]
-            target_vel = joint_target_vel[j]
+            target_pos = joint_target_q[target_q_start + i]
+            target_vel = joint_target_qd[j]
+            damping = joint_damping[j]
 
-            drive_f = joint_force(q, qd, target_pos, target_vel, target_ke, target_kd, lower, upper, limit_ke, limit_kd)
+            drive_f = joint_force(
+                q, qd, target_pos, target_vel, target_ke, target_kd, lower, upper, limit_ke, limit_kd, damping
+            )
 
             # total torque / force on the joint
             t = -wp.dot(S_s, body_f_s) + drive_f + joint_f[j]
@@ -1094,9 +1099,10 @@ def eval_rigid_tau(
     joint_child: wp.array[int],
     joint_q_start: wp.array[int],
     joint_qd_start: wp.array[int],
+    joint_target_q_start: wp.array[int],
     joint_dof_dim: wp.array2d[int],
-    joint_target_pos: wp.array[float],
-    joint_target_vel: wp.array[float],
+    joint_target_q: wp.array[float],
+    joint_target_qd: wp.array[float],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
     joint_f: wp.array[float],
@@ -1106,6 +1112,7 @@ def eval_rigid_tau(
     joint_limit_upper: wp.array[float],
     joint_limit_ke: wp.array[float],
     joint_limit_kd: wp.array[float],
+    joint_damping: wp.array[float],
     joint_S_s: wp.array[wp.spatial_vector],
     body_fb_s: wp.array[wp.spatial_vector],
     body_f_ext: wp.array[wp.spatial_vector],
@@ -1130,6 +1137,7 @@ def eval_rigid_tau(
         child = joint_child[i]
         dof_start = joint_qd_start[i]
         coord_start = joint_q_start[i]
+        target_q_start = joint_target_q_start[i]
         lin_axis_count = joint_dof_dim[i, 0]
         ang_axis_count = joint_dof_dim[i, 1]
 
@@ -1146,16 +1154,18 @@ def eval_rigid_tau(
             joint_target_kd,
             joint_limit_ke,
             joint_limit_kd,
+            joint_damping,
             joint_S_s,
             joint_q,
             joint_qd,
             joint_f,
-            joint_target_pos,
-            joint_target_vel,
+            joint_target_q,
+            joint_target_qd,
             joint_limit_lower,
             joint_limit_upper,
             coord_start,
             dof_start,
+            target_q_start,
             lin_axis_count,
             ang_axis_count,
             f_s,

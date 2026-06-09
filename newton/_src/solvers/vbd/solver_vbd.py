@@ -16,9 +16,9 @@ from ...sim import (
     JointType,
     Model,
     ModelBuilder,
+    ModelFlags,
     State,
 )
-from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from ..xpbd.kernels import apply_joint_forces
 from .particle_vbd_kernels import (
@@ -90,6 +90,9 @@ _vbd_migration_warned = {"value": False}
 
 class SolverVBD(SolverBase):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
+
+    .. experimental::
+        SolverVBD's public API and behavior may change without prior notice.
 
     This unified solver supports:
         - Particle simulation (cloth, soft bodies) using the VBD algorithm
@@ -805,8 +808,8 @@ class SolverVBD(SolverBase):
             )
 
     @override
-    def notify_model_changed(self, flags: int) -> None:
-        if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
 
     # =====================================================
@@ -2522,6 +2525,7 @@ class SolverVBD(SolverBase):
                     model.joint_X_c,
                     model.joint_axis,
                     model.joint_qd_start,
+                    model.joint_target_q_start,
                     self.joint_constraint_start,
                     self.joint_penalty_k,
                     self.joint_penalty_kd,
@@ -2529,8 +2533,8 @@ class SolverVBD(SolverBase):
                     self.joint_C_fric,
                     model.joint_target_ke,
                     model.joint_target_kd,
-                    control.joint_target_pos,
-                    control.joint_target_vel,
+                    control.joint_target_q,
+                    control.joint_target_qd,
                     model.joint_limit_lower,
                     model.joint_limit_upper,
                     model.joint_limit_ke,
@@ -2627,6 +2631,7 @@ class SolverVBD(SolverBase):
                     model.joint_X_c,
                     model.joint_axis,
                     model.joint_qd_start,
+                    model.joint_target_q_start,
                     self.joint_constraint_start,
                     state_in.body_q,
                     model.body_q,
@@ -2639,7 +2644,7 @@ class SolverVBD(SolverBase):
                     self.rigid_linear_beta,
                     self.rigid_angular_beta,
                     model.joint_target_ke,
-                    control.joint_target_pos,
+                    control.joint_target_q,
                     model.joint_limit_lower,
                     model.joint_limit_upper,
                     model.joint_limit_ke,

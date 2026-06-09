@@ -49,7 +49,7 @@ Supported Features
      - Soft bodies
      - Differentiable
    * - :class:`~newton.solvers.SolverFeatherstone`
-     - Explicit
+     - Semi-implicit
      - ✅
      - ✅ generalized coordinates
      - ✅
@@ -73,7 +73,7 @@ Supported Features
      - ❌
      - ❌
    * - :class:`~newton.solvers.SolverMuJoCo`
-     - Explicit, Semi-implicit, Implicit
+     - Explicit, Semi-implicit, Implicit-in-velocity
      - ✅ :sup:`1`
      - ✅ generalized coordinates
      - ❌
@@ -117,6 +117,12 @@ Supported Features
   unless ``use_mujoco_contacts`` is set to ``False``.
 | :sup:`2` ``basic`` means Newton includes several examples that use these solvers in diffsim workflows,
   see :ref:`Differentiability` for further details.
+
+.. experimental::
+    :class:`~newton.solvers.SolverKamino`'s public API and behavior may change without prior notice.
+
+.. experimental::
+    :class:`~newton.solvers.SolverVBD`'s public API and behavior may change without prior notice.
 
 .. _Joint feature support:
 
