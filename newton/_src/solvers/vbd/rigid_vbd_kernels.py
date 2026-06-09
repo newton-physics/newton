@@ -727,7 +727,6 @@ def _compute_body_particle_contact_force(
     relative_translation: wp.vec3,
     ke: float,
     kd: float,
-    damping_scale: float,
     mu: float,
     friction_epsilon: float,
     dt: float,
@@ -743,8 +742,7 @@ def _compute_body_particle_contact_force(
     hessian = ke * wp.outer(n, n)
 
     if wp.dot(n, relative_translation) < 0.0:
-        damping_coeff = kd * damping_scale
-        damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
+        damping_hessian = (kd / dt) * wp.outer(n, n)
         hessian = hessian + damping_hessian
         force = force - damping_hessian * relative_translation
 
@@ -764,7 +762,6 @@ def _eval_body_particle_contact(
     contact_index: int,
     body_particle_contact_ke: float,
     body_particle_contact_kd: float,
-    body_particle_contact_damping_scale: float,
     friction_mu: float,
     friction_epsilon: float,
     particle_radius: wp.array[float],
@@ -824,7 +821,6 @@ def _eval_body_particle_contact(
             relative_translation,
             body_particle_contact_ke,
             body_particle_contact_kd,
-            body_particle_contact_damping_scale,
             friction_mu,
             friction_epsilon,
             dt,
@@ -871,7 +867,6 @@ def evaluate_body_particle_contact(
         contact_index,
         body_particle_contact_ke,
         body_particle_contact_kd,
-        1.0,
         mixed_mu,
         friction_epsilon,
         particle_radius,
@@ -2603,7 +2598,6 @@ def accumulate_body_body_contacts_per_body(
 
         contact_kd = contact_material_kd[contact_idx]
         contact_mu = contact_material_mu[contact_idx]
-        contact_damping_scale = k / wp.max(contact_material_ke[contact_idx], 1.0e-12)
 
         (
             force_0,
@@ -2630,7 +2624,7 @@ def accumulate_body_body_contacts_per_body(
             C_eff,
             k,
             k,
-            contact_kd * contact_damping_scale,
+            contact_kd,
             lam_vec,
             contact_mu,
             friction_epsilon,
@@ -2769,7 +2763,6 @@ def compute_rigid_contact_forces(
 
     contact_kd = contact_material_kd[contact_idx]
     contact_mu = contact_material_mu[contact_idx]
-    contact_damping_scale = k / wp.max(contact_material_ke[contact_idx], 1.0e-12)
 
     (
         _force_0,
@@ -2796,7 +2789,7 @@ def compute_rigid_contact_forces(
         C_eff,
         k,
         k,
-        contact_kd * contact_damping_scale,
+        contact_kd,
         lam_vec,
         contact_mu,
         friction_epsilon,
@@ -2918,8 +2911,6 @@ def accumulate_body_particle_contacts_per_body(
             relative_translation,
             body_particle_contact_penalty_k[contact_idx],
             body_particle_contact_material_kd[contact_idx],
-            body_particle_contact_penalty_k[contact_idx]
-            / wp.max(body_particle_contact_material_ke[contact_idx], 1.0e-12),
             body_particle_contact_material_mu[contact_idx],
             friction_epsilon,
             dt,

@@ -12,11 +12,13 @@ import warp as wp
 
 import newton
 from newton._src.solvers.vbd.particle_vbd_kernels import (
+    accumulate_particle_body_contact_force_and_hessian,
     evaluate_self_contact_force_norm,
     evaluate_vertex_triangle_collision_force_hessian_4_vertices,
 )
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     RigidContactHistory,
+    compute_rigid_contact_forces,
     evaluate_angular_constraint_force_hessian,
     evaluate_body_particle_contact,
     evaluate_linear_constraint_force_hessian,
@@ -585,6 +587,151 @@ def _body_particle_contact_damping_is_absolute(test, device):
         np.testing.assert_allclose(damping_low_ke, [0.0, 0.0, 2.0], rtol=1.0e-6, atol=1.0e-6)
 
 
+def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
+    """Ramped body-particle contact stiffness must not scale absolute damping."""
+    with wp.ScopedDevice(device):
+        particle_q = wp.array([[0.0, 0.0, 0.04]] * 4, dtype=wp.vec3, device=device)
+        particle_q_prev = wp.array([[0.0, 0.0, 0.05]] * 4, dtype=wp.vec3, device=device)
+        particle_colors = wp.zeros(4, dtype=int, device=device)
+        particle_radius = wp.array([0.1] * 4, dtype=float, device=device)
+
+        contact_count = wp.array([4], dtype=int, device=device)
+        contact_particle = wp.array([0, 1, 2, 3], dtype=int, device=device)
+        contact_penalty_k = wp.array([400.0, 400.0, 100.0, 100.0], dtype=float, device=device)
+        contact_material_ke = wp.array([100.0] * 4, dtype=float, device=device)
+        contact_material_kd = wp.array([20.0, 0.0, 20.0, 0.0], dtype=float, device=device)
+        contact_material_mu = wp.zeros(4, dtype=float, device=device)
+
+        shape_material_mu = wp.zeros(1, dtype=float, device=device)
+        shape_body = wp.array([-1], dtype=int, device=device)
+        body_q = wp.zeros(0, dtype=wp.transform, device=device)
+        body_q_prev = wp.zeros(0, dtype=wp.transform, device=device)
+        body_qd = wp.zeros(0, dtype=wp.spatial_vector, device=device)
+        body_com = wp.zeros(0, dtype=wp.vec3, device=device)
+        contact_shape = wp.zeros(4, dtype=int, device=device)
+        contact_body_pos = wp.zeros(4, dtype=wp.vec3, device=device)
+        contact_body_vel = wp.zeros(4, dtype=wp.vec3, device=device)
+        contact_normal = wp.array([[0.0, 0.0, 1.0]] * 4, dtype=wp.vec3, device=device)
+
+        forces = wp.zeros(4, dtype=wp.vec3, device=device)
+        hessians = wp.zeros(4, dtype=wp.mat33, device=device)
+
+        wp.launch(
+            accumulate_particle_body_contact_force_and_hessian,
+            dim=4,
+            inputs=[
+                0.1,
+                0,
+                particle_q_prev,
+                particle_q,
+                particle_colors,
+                0.01,
+                particle_radius,
+                contact_particle,
+                contact_count,
+                4,
+                contact_penalty_k,
+                contact_material_ke,
+                contact_material_kd,
+                contact_material_mu,
+                shape_material_mu,
+                shape_body,
+                body_q,
+                body_q_prev,
+                body_qd,
+                body_com,
+                contact_shape,
+                contact_body_pos,
+                contact_body_vel,
+                contact_normal,
+            ],
+            outputs=[forces, hessians],
+            device=device,
+        )
+
+        force_np = forces.numpy()
+        damping_ramped = force_np[0] - force_np[1]
+        damping_unramped = force_np[2] - force_np[3]
+        np.testing.assert_allclose(damping_ramped, damping_unramped, rtol=1.0e-6, atol=1.0e-6)
+        np.testing.assert_allclose(damping_unramped, [0.0, 0.0, 2.0], rtol=1.0e-6, atol=1.0e-6)
+
+
+def _body_body_contact_damping_ignores_penalty_ramp(test, device):
+    """Ramped body-body contact stiffness must not scale absolute damping."""
+    with wp.ScopedDevice(device):
+        contact_count = wp.array([4], dtype=int, device=device)
+        shape0 = wp.zeros(4, dtype=int, device=device)
+        shape1 = wp.ones(4, dtype=int, device=device)
+        point0 = wp.zeros(4, dtype=wp.vec3, device=device)
+        point1 = wp.zeros(4, dtype=wp.vec3, device=device)
+        offset0 = wp.zeros(4, dtype=wp.vec3, device=device)
+        offset1 = wp.zeros(4, dtype=wp.vec3, device=device)
+        normal = wp.array([[0.0, 0.0, 1.0]] * 4, dtype=wp.vec3, device=device)
+        margin0 = wp.array([0.1] * 4, dtype=float, device=device)
+        margin1 = wp.zeros(4, dtype=float, device=device)
+
+        shape_body = wp.array([-1, 0], dtype=wp.int32, device=device)
+        body_q = wp.array(
+            [wp.transform(wp.vec3(0.0, 0.0, 0.04), wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        body_q_prev = wp.array(
+            [wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        body_com = wp.zeros(1, dtype=wp.vec3, device=device)
+
+        penalty_k = wp.array([400.0, 400.0, 100.0, 100.0], dtype=float, device=device)
+        material_ke = wp.array([100.0] * 4, dtype=float, device=device)
+        material_kd = wp.array([20.0, 0.0, 20.0, 0.0], dtype=float, device=device)
+        material_mu = wp.zeros(4, dtype=float, device=device)
+        contact_lambda = wp.zeros(4, dtype=wp.vec3, device=device)
+        contact_c0 = wp.zeros(4, dtype=wp.vec3, device=device)
+
+        body0 = wp.empty(4, dtype=wp.int32, device=device)
+        body1 = wp.empty(4, dtype=wp.int32, device=device)
+        point0_world = wp.empty(4, dtype=wp.vec3, device=device)
+        point1_world = wp.empty(4, dtype=wp.vec3, device=device)
+        force_on_body1 = wp.empty(4, dtype=wp.vec3, device=device)
+
+        wp.launch(
+            compute_rigid_contact_forces,
+            dim=4,
+            inputs=[
+                0.1,
+                contact_count,
+                shape0,
+                shape1,
+                point0,
+                point1,
+                offset0,
+                offset1,
+                normal,
+                margin0,
+                margin1,
+                shape_body,
+                body_q,
+                body_q_prev,
+                body_com,
+                penalty_k,
+                material_ke,
+                material_kd,
+                material_mu,
+                contact_lambda,
+                contact_c0,
+                0.95,
+                0,
+                0.01,
+            ],
+            outputs=[body0, body1, point0_world, point1_world, force_on_body1],
+            device=device,
+        )
+
+        force_np = force_on_body1.numpy()
+        damping_ramped = force_np[0] - force_np[1]
+        damping_unramped = force_np[2] - force_np[3]
+        np.testing.assert_allclose(damping_ramped, damping_unramped, rtol=1.0e-6, atol=1.0e-6)
+        np.testing.assert_allclose(damping_unramped, [0.0, 0.0, 2.0], rtol=1.0e-6, atol=1.0e-6)
+
+
 def _self_contact_damping_uses_relative_gap_rate(test, device):
     """Uniform motion of a contact stencil should not add normal damping."""
     with wp.ScopedDevice(device):
@@ -1057,6 +1204,18 @@ add_function_test(
     TestSolverVBD,
     "test_body_particle_contact_damping_is_absolute",
     _body_particle_contact_damping_is_absolute,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_contact_damping_ignores_penalty_ramp",
+    _body_particle_contact_damping_ignores_penalty_ramp,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_body_contact_damping_ignores_penalty_ramp",
+    _body_body_contact_damping_ignores_penalty_ramp,
     devices=devices,
 )
 add_function_test(

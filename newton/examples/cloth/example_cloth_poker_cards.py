@@ -74,7 +74,7 @@ class Example:
         cube_cfg = newton.ModelBuilder.ShapeConfig()
         cube_cfg.density = 0.0  # Static body (infinite mass)
         cube_cfg.ke = 5.0e6  # Contact stiffness
-        cube_cfg.kd = 5.0e2  # Contact damping
+        cube_cfg.kd = 1.0e4  # Contact damping
         cube_cfg.mu = 0.1  # Friction
         builder.add_shape_box(
             body_cube,
@@ -173,7 +173,7 @@ class Example:
         # Add ground plane
         ground_cfg = newton.ModelBuilder.ShapeConfig()
         ground_cfg.ke = 1.0e5  # Contact stiffness
-        ground_cfg.kd = 1.0e1  # Contact damping
+        ground_cfg.kd = 1.0e2  # Contact damping
         ground_cfg.mu = 0.3  #
         builder.add_ground_plane(cfg=ground_cfg)
 
@@ -197,6 +197,7 @@ class Example:
             particle_self_contact_margin=0.0015,  # m (0.15 cm)
             particle_topological_contact_filter_threshold=2,
             particle_rest_shape_contact_exclusion_radius=0.0,  # m (0.5 cm)
+            rigid_body_particle_contact_buffer_size=1024,
         )
 
         # Create states

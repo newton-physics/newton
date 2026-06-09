@@ -2233,7 +2233,6 @@ def accumulate_contact_force_and_hessian_no_self_contact(
         if particle_colors[particle_idx] == current_color:
             # Read per-contact AVBD penalty and material properties shared with the rigid side
             contact_ke = body_particle_contact_penalty_k[t_id]
-            contact_damping_scale = contact_ke / wp.max(body_particle_contact_material_ke[t_id], 1.0e-12)
             contact_kd = body_particle_contact_material_kd[t_id]
             contact_mu = body_particle_contact_material_mu[t_id]
 
@@ -2244,7 +2243,6 @@ def accumulate_contact_force_and_hessian_no_self_contact(
                 t_id,
                 contact_ke,
                 contact_kd,
-                contact_damping_scale,
                 contact_mu,
                 friction_epsilon,
                 particle_radius,
@@ -2736,7 +2734,6 @@ def accumulate_particle_body_contact_force_and_hessian(
         if particle_colors[particle_idx] == current_color:
             # Read per-contact AVBD penalty and material properties shared with the rigid side
             contact_ke = body_particle_contact_penalty_k[t_id]
-            contact_damping_scale = contact_ke / wp.max(body_particle_contact_material_ke[t_id], 1.0e-12)
             contact_kd = body_particle_contact_material_kd[t_id]
             contact_mu = body_particle_contact_material_mu[t_id]
 
@@ -2747,7 +2744,6 @@ def accumulate_particle_body_contact_force_and_hessian(
                 t_id,
                 contact_ke,
                 contact_kd,
-                contact_damping_scale,
                 contact_mu,
                 friction_epsilon,
                 particle_radius,
