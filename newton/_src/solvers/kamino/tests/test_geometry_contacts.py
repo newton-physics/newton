@@ -846,6 +846,67 @@ class TestGeometryContactConversions(unittest.TestCase):
                 nc_rt,
             )
 
+    def test_06_newton_to_kamino_surface_anchors_strip_shape_margin(self):
+        """Newton->Kamino conversion anchors sphere contacts on geometry surfaces, excluding margins."""
+        radius = 0.25
+        # Sphere seated exactly on the ground: the surface contact is the world origin,
+        # independent of the collision margin (an unstripped margin would shift it by ~margin in z).
+        expected_anchor = np.array([0.0, 0.0, 0.0])
+        anchors_by_margin = {}
+
+        for margin in (0.0, 0.05):
+            with self.subTest(margin=margin):
+                sphere = ModelBuilder()
+                body = sphere.add_link()
+                sphere.add_shape_sphere(
+                    body,
+                    radius=radius,
+                    cfg=ModelBuilder.ShapeConfig(margin=margin, gap=0.0),
+                )
+                joint = sphere.add_joint_free(
+                    parent=-1,
+                    child=body,
+                    parent_xform=wp.transform(p=wp.vec3(0.0, 0.0, radius), q=wp.quat_identity()),
+                    child_xform=wp.transform_identity(),
+                )
+                sphere.add_articulation([joint])
+
+                scene = ModelBuilder()
+                scene.add_ground_plane(cfg=ModelBuilder.ShapeConfig(gap=0.0))
+                scene.add_world(sphere)
+                model = scene.finalize(self.default_device)
+
+                state = model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                contacts = model.collide(state)
+                contact_count = int(contacts.rigid_contact_count.numpy()[0])
+                self.assertEqual(contact_count, 1)
+
+                kamino_contacts = ContactsKamino(capacity=contact_count + 1, device=self.default_device)
+                convert_contacts_newton_to_kamino(model, state, contacts, kamino_contacts)
+                kamino_count = int(kamino_contacts.model_active_contacts.numpy()[0])
+                self.assertEqual(kamino_count, 1)
+
+                # Ground is world-static (Kamino A, bid -1); the sphere body is B (bid >= 0).
+                bid_ab = kamino_contacts.bid_AB.numpy()[0]
+                self.assertEqual(int(bid_ab[0]), -1)
+                self.assertGreaterEqual(int(bid_ab[1]), 0)
+
+                # Normal points A->B (ground -> sphere) = +z.
+                normal = kamino_contacts.gapfunc.numpy()[0, :3]
+                np.testing.assert_allclose(normal, np.array([0.0, 0.0, 1.0]), atol=1e-6)
+
+                # Both anchors sit on the physical surfaces at the contact point regardless of margin.
+                position_a = kamino_contacts.position_A.numpy()[0]
+                position_b = kamino_contacts.position_B.numpy()[0]
+                np.testing.assert_allclose(position_a, expected_anchor, atol=1e-6)
+                np.testing.assert_allclose(position_b, expected_anchor, atol=1e-6)
+                anchors_by_margin[margin] = (position_a.copy(), position_b.copy())
+
+        self.assertEqual(set(anchors_by_margin), {0.0, 0.05})
+        np.testing.assert_allclose(anchors_by_margin[0.05][0], anchors_by_margin[0.0][0], atol=1e-6)
+        np.testing.assert_allclose(anchors_by_margin[0.05][1], anchors_by_margin[0.0][1], atol=1e-6)
+
 
 ###
 # Helpers
