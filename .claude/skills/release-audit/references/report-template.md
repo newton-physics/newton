@@ -119,6 +119,7 @@ real symbols / topics present in this specific report):
   - per-entry heading as sub-bullet
 - [Behavioral & Support Changes](#behavioral--support-changes)
   - per-topic heading as sub-bullet
+- [Dependency & License Audit](#dependency--license-audit)
 - [Fixed](#fixed)
 - [Calibration Notes](#calibration-notes) (retrospective mode only)
   - per-flag-class sub-bullet
@@ -460,6 +461,18 @@ access), deprecates the old names, and adjusts default Gaussian sorting modes.
      Each topic: a short paragraph summary, links, commits, bake. -->
 
 {{BEHAVIORAL_SECTIONS}}
+
+---
+
+## Dependency & License Audit
+
+{{DEPENDENCY_LICENSE_AUDIT}}
+
+<!-- Render the markdown emitted by scripts/license_audit.py. This section is
+     always present. It compares direct dependencies, resolved lockfile package
+     names, version changes, and in-tree license notice files across the release
+     range. Preserve "not checked" / "not declared" license metadata exactly
+     when package-index lookup was unavailable or inconclusive. -->
 
 ---
 
