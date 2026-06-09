@@ -308,13 +308,16 @@ class SolverFeatherstone(SolverBase):
         # allocate auxiliary variables that vary with state
         if model.body_count:
             # joints
+            # Generalized joint accelerations solved from H * qdd = tau.
             target.joint_qdd = wp.zeros_like(model.joint_qd, requires_grad=requires_grad)
+            # Net generalized joint forces after targets, limits, controls, and the RNEA pass.
             target.joint_tau = wp.empty_like(model.joint_qd, requires_grad=requires_grad)
             if requires_grad:
                 # used in the custom grad implementation of eval_dense_solve_batched
                 target.joint_solve_tmp = wp.zeros_like(model.joint_qd, requires_grad=True)
             else:
                 target.joint_solve_tmp = None
+            # Joint motion subspace columns expressed in the internal Featherstone solve frame.
             target.joint_S_s = wp.empty(
                 (model.joint_dof_count,),
                 dtype=wp.spatial_vector,
@@ -323,21 +326,33 @@ class SolverFeatherstone(SolverBase):
             )
 
             # derived rigid body data (maximal coordinates)
+            # FK body poses in the public body-frame/world-coordinate convention.
             target.body_q_fk = wp.empty_like(model.body_q, requires_grad=requires_grad)
+            # FK body twists in the public COM/world-coordinate convention.
             target.body_qd_fk = wp.empty_like(model.body_qd, requires_grad=requires_grad)
+            # Body COM poses in world coordinates for frame shifts back to public wrenches.
             target.body_q_com = wp.empty_like(model.body_q, requires_grad=requires_grad)
+            # Per-body origin of the internal solve frame; floating roots use root COM to avoid large moment arms.
+            target.body_solve_origin = wp.zeros(
+                (model.body_count,), dtype=wp.vec3, device=model.device, requires_grad=requires_grad
+            )
+            # Body spatial inertia expressed about body_solve_origin with world-aligned axes.
             target.body_I_s = wp.empty(
                 (model.body_count,), dtype=wp.spatial_matrix, device=model.device, requires_grad=requires_grad
             )
+            # Body spatial velocity expressed in the internal solve frame.
             target.body_v_s = wp.empty(
                 (model.body_count,), dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
             )
+            # Body spatial acceleration/bias recurrence value expressed in the internal solve frame.
             target.body_a_s = wp.empty(
                 (model.body_count,), dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
             )
+            # Per-body inertial bias minus gravity wrench in the internal solve frame.
             target.body_f_s = wp.zeros(
                 (model.body_count,), dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
             )
+            # External/contact body-force buffer copied from public ``State.body_f`` then shifted to the solve frame.
             # ``body_f_ext`` is fully overwritten at the top of every
             # :meth:`step` via ``wp.copy(body_f_ext, state_in.body_f)``, so the
             # initial contents are never observed. Use ``wp.empty`` to skip the
@@ -345,6 +360,7 @@ class SolverFeatherstone(SolverBase):
             target.body_f_ext = wp.empty(
                 (model.body_count,), dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
             )
+            # Accumulated descendant-subtree wrenches during the RNEA backward pass.
             target.body_ft_s = wp.zeros(
                 (model.body_count,), dtype=wp.spatial_vector, device=model.device, requires_grad=requires_grad
             )
@@ -419,7 +435,8 @@ class SolverFeatherstone(SolverBase):
             # now-deleted ``compute_body_q_com`` helper).
 
             if model.joint_count:
-                # evaluate joint inertias, motion vectors, and forces
+                # Evaluate FK plus solve-frame Featherstone scratch data. Only internal spatial quantities
+                # use ``body_solve_origin``; public state twists and wrenches keep their COM/world contract.
                 state_aug.body_f_s.zero_()
 
                 wp.launch(
@@ -448,6 +465,7 @@ class SolverFeatherstone(SolverBase):
                         state_aug.body_qd_fk,
                         state_aug.body_q_com,
                         state_aug.joint_S_s,
+                        state_aug.body_solve_origin,
                         state_aug.body_I_s,
                         state_aug.body_v_s,
                         state_aug.body_f_s,
@@ -560,8 +578,8 @@ class SolverFeatherstone(SolverBase):
                             model.joint_limit_ke,
                             model.joint_limit_kd,
                             state_aug.joint_S_s,
-                            state_aug.body_q_fk,
-                            self.body_X_com,
+                            state_aug.body_q_com,
+                            state_aug.body_solve_origin,
                             state_aug.body_f_s,
                             body_f,
                         ],
@@ -582,6 +600,7 @@ class SolverFeatherstone(SolverBase):
                             dim=model.body_count,
                             inputs=[
                                 state_aug.body_q_com,
+                                state_aug.body_solve_origin,
                                 state_aug.body_f_s,
                                 state_aug.body_ft_s,
                                 body_f,
