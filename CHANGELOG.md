@@ -23,11 +23,11 @@
 - Parse URDF `<material>` colors (inline `<color rgba>` and named material references) during import and apply them to `ModelBuilder.shape_color` for all shape types
 - Add opt-in `collapse_massless_fixed_root` to URDF and MJCF importers to collapse massless fixed-root chains for maximal-coordinate solvers while preserving topology by default
 - Parse `NewtonSDFCollisionAPI` attributes from USD in `ModelBuilder.add_usd()`, including the `newton:hydroelasticEnabled` toggle, absolute narrow band / margin, texture format, hydroelastic stiffness (`newton:hydroelasticStiffness`), and applied-API schema defaults. Hydroelastic configuration is folded into `NewtonSDFCollisionAPI` and opted into via `newton:hydroelasticEnabled` (default `false`). SDF generation is opt-in by applying the API; for primitive shapes the SDF is only built when hydroelastic is also enabled. (#2533)
-- Add USD parsing for `NewtonSiteAPI` to mark shapes as sites.
+- Add USD parsing for `NewtonSiteAPI` to mark shapes as sites
 - Add USD parsing for `NewtonMassAPI`: shell mass model (`newton:massModel`), shell thickness (`newton:shellThickness`), and compact inertia tensor (`newton:inertia`). (#2951)
 - Add USD parsing for contact response attributes (`ke`, `kd`, `kf`, `ka`) from `NewtonMaterialAPI` on bound materials. (#3005)
 - Add `ViewerGL.show_loading_splash()` / `ViewerGL.hide_loading_splash()` displaying a stylized Newton's-cradle overlay while the GL viewer waits on Warp kernel compilation; raised automatically by `newton.examples.init()` for visible GL viewers
-- Add an optional `kernel_block_dim` argument to `SensorTiledCamera.update()` for tuning the Warp ray-tracer's `render_megakernel` launch shape.
+- Add an optional `kernel_block_dim` argument to `SensorTiledCamera.update()` for tuning the Warp ray-tracer's `render_megakernel` launch shape
 - Add `rec_id` parameter to `ViewerRerun` for specifying the recording ID, enabling multiple processes to share a single Rerun recording
 - Add `ViewerRTX`, a real-time ray-traced viewer powered by NVIDIA OVRTX. (#1861)
 - Add edge overlay toggle (`renderer.draw_edges`) for wireframe visualization on top of solid geometry
@@ -49,7 +49,7 @@
 - Users passing negative scale to symmetric primitive shapes (sphere, box, capsule, cylinder, ellipsoid, plane, gaussian) should apply mirrors through the shape transform (`xform`) instead if the sign matters. `ModelBuilder.add_shape*` now normalizes these negative scale components to `abs()` because the shapes are point-symmetric. (#2837)
 - Users passing negative scale to cones or heightfields must now mirror cones through the shape `xform` and pre-mirror height data before passing positive heightfield scale. `ModelBuilder.add_shape_cone()` and heightfield shapes now reject negative scale components that were previously silently accepted and produced invalid geometry. (#2837)
 - MJCF/USD import users who need the legacy MuJoCo equality-constraint arrays should pass `convert_mjc_equality_constraints=False`. MuJoCo equality constraints now convert to Newton loop joints and mimic constraints by default while preserving MuJoCo metadata for `SolverMuJoCo` round-trips. (#2959)
-- Warn from `SolverMuJoCo` when a `JointType.FREE` joint has a non-world parent; MuJoCo requires free joints to attach directly to the world.
+- Warn from `SolverMuJoCo` when a `JointType.FREE` joint has a non-world parent; MuJoCo requires free joints to attach directly to the world
 - `SolverKamino.reset()` users should migrate `state_out=` calls to `state=` and pass reset targets by keyword, such as `base_q=...`. The method now resets in place on `state`, matches `SolverBase.reset()`, and no longer accepts beta `state_out=` or legacy positional reset-target compatibility. (#2657)
 - Accept plain `int` flag bitmasks in solver reset and model-change notification APIs so users can define extension bits beyond `StateFlags` and `ModelFlags`. (#2657)
 - Mark `SolverVBD` as experimental. (#3068)
@@ -57,7 +57,7 @@
 - Mark the actuator API as experimental in its docstring. (#3067)
 - Mark the `"sticky"` contact-matching mode as experimental in its docstring. (#3067)
 - `SensorTiledCamera` users who relied on previous linear-byte packed `color` and `albedo` outputs should pass `RenderConfig(output_color_space=ColorSpace.LINEAR)`. Packed `color` and `albedo` now default to sRGB-encoded bytes so authored display colors render at the expected display brightness. (#2411)
-- Auto-scale `ViewerGL` contact arrows, joint axes, and COM markers by `Viewer.scene_scale`; to approximate the previous fixed sizes after `set_model()`, set `viewer.renderer.arrow_length_scale = 0.1 / viewer.scene_scale`, `viewer.renderer.joint_scale = 0.1 / viewer.scene_scale`, and `viewer.renderer.com_scale = 0.1 / viewer.scene_scale`.
+- Auto-scale `ViewerGL` contact arrows, joint axes, and COM markers by `Viewer.scene_scale`; to approximate the previous fixed sizes after `set_model()`, set `viewer.renderer.arrow_length_scale = 0.1 / viewer.scene_scale`, `viewer.renderer.joint_scale = 0.1 / viewer.scene_scale`, and `viewer.renderer.com_scale = 0.1 / viewer.scene_scale`
 - Make the `ViewerGL` left control panel movable (drag the title bar) and resizable (drag the bottom-right corner); a vertical scrollbar appears automatically when contents overflow and is operable with the mouse wheel or two-finger trackpad gestures. The initial dock-on-left position is unchanged. (#2926)
 - Remove the `cbor2` `<6` dependency ceiling after updating recorder deserialization to accept mapping-like decoded containers
 - Users configuring Warp logging should use Newton's `--quiet` flag or `--warp-config log_level=...` instead of legacy Warp `verbose` or `quiet` config keys. Newton now requires Warp 1.14 and configures Warp logging through `warp.config.log_level`. (#2900, #3046)
@@ -95,13 +95,13 @@
 - Fix `SensorTiledCamera` not rendering heightfield (`HFIELD`) shapes, which were missing from the render BVH. Heightfields are now rendered through the existing mesh path (they are triangulated `wp.Mesh` shapes), which also resolves a tiled-camera render-performance regression caused by the unused heightfield branch lowering the render kernel's GPU occupancy. (#3088)
 - Fix hydroelastic SDF contact surfaces dropping the central region under deep interpenetration. The broadphase used to skip subgrids whose centers were deeper than the SDF narrow band, leaving a hole in the contact patch when overlap exceeded the narrow-band thickness. Broadphase now visits every subgrid in the SDF coarse grid (block coordinates are derived arithmetically from per-shape SDF coarse-texture dimensions); sampling at far-inside locations is correct because the coarse SDF is dense and accurate everywhere. On-disk SDF caches written by earlier versions are transparently re-cooked on first load (`_sdf_cache.CACHE_FORMAT_VERSION` bumped to `2`). (#2701)
 - Fix mesh and convex-mesh contact sign classification for watertight meshes with nearby opposing surfaces or inconsistent triangle winding. (#3004)
-- Fix `ModelBuilder.collapse_fixed_joints()` producing a NaN center of mass when collapsing joints between zero-mass bodies.
+- Fix `ModelBuilder.collapse_fixed_joints()` producing a NaN center of mass when collapsing joints between zero-mass bodies
 - Fix USD import losing authored negative scales on shape and parent xforms, so mirrored primitives and meshes are now imported with the correct signed scale. (#2936)
 - Respect USD color-space metadata for scalar material colors and convert linear-authored USD color textures to display space when loading them. (#2411)
 - Fix USD import of orphaned body-to-world fixed joints not accounting for ancestor xform offsets, so pinned bodies now FK to the correct world pose (env origin + spawn xform). (#2974)
 - Fix USD import of revolute and D6-angular joint `limit_ke` / `limit_kd` from `mjc:solreflimit` being over-scaled by ~57x. (#2736)
 - Fix `SolverMuJoCo` passing `numpy.bool_` scalars for the `mocap` and `actgravcomp` parameters when building the MuJoCo spec, causing a `DeprecationWarning` under NumPy 2.2 and silent behavioral breakage under NumPy 2.5 where boolean scalars are no longer interpreted as integer indices. (#3098)
-- Fix MJCF `xyaxes` parsing to treat the second vector as Y and derive Z from X cross Y.
+- Fix MJCF `xyaxes` parsing to treat the second vector as Y and derive Z from X cross Y
 - Fix `SolverMuJoCo` returning `State.joint_qd` in world frame for root `FREE` joints with non-identity `parent_xform`, violating the documented parent-frame contract and corrupting derived `body_qd`. (#2871)
 - Fix MJCF joint `damping` attribute being ignored by `SolverFeatherstone`
 - Fix `SolverMuJoCo` generated MuJoCo joint names for multi-axis D6 joints to avoid duplicate names
@@ -113,19 +113,19 @@
 - Fix `SolverMuJoCo` CPU backend dynamics for asymmetric MJCF `diaginertia` models whose principal moments are reordered during Newton/MJWarp synchronization
 - Fix `SolverMuJoCo` honoring force-space `shape_material_ke` / `shape_material_kd` for contacts (`use_mujoco_contacts=False`); authored `mjc:solref` is preserved via new `mujoco.solref` / `mujoco.solref_mode` per-shape custom attributes. Force-space scaling is unsupported on `use_mujoco_contacts=True` and the MuJoCo CPU backend. (#2964)
 - Fix MJCF importer rejecting MuJoCo's one-value `solreflimit`/`solref` shorthand emitted by `mujoco.MjSpec.to_xml()` for default-valued joints, which broke `SolverMuJoCo(save_to_mjcf=...)` round-trips
-- Fix `eval_fk()` overwriting VBD-simulated `JointType.CABLE` body poses.
-- Fix `SolverVBD` custom attribute setup so `vbd:joint_is_hard` can be authored without implicitly enabling Dahl cable friction by calling `SolverVBD.register_custom_attributes(..., dahl_defaults_enabled=False)`.
-- Fix `SolverKamino` contact anchors being shifted off the geometry surface by `ShapeConfig.margin`, which biased friction.
-- Fix rigid-rigid friction in `SolverVBD` for contacts with nonzero `rigid_contact_offset0/rigid_contact_offset1`.
-- Fix `SolverXPBD` `body_parent_f` reporting to include `Control.joint_f` contributions and accumulate multiple inbound joint contributions, matching the `SolverMuJoCo` and `SolverFeatherstone` convention.
+- Fix `eval_fk()` overwriting VBD-simulated `JointType.CABLE` body poses
+- Fix `SolverVBD` custom attribute setup so `vbd:joint_is_hard` can be authored without implicitly enabling Dahl cable friction by calling `SolverVBD.register_custom_attributes(..., dahl_defaults_enabled=False)`
+- Fix `SolverKamino` contact anchors being shifted off the geometry surface by `ShapeConfig.margin`, which biased friction
+- Fix rigid-rigid friction in `SolverVBD` for contacts with nonzero `rigid_contact_offset0/rigid_contact_offset1`
+- Fix `SolverXPBD` `body_parent_f` reporting to include `Control.joint_f` contributions and accumulate multiple inbound joint contributions, matching the `SolverMuJoCo` and `SolverFeatherstone` convention
 - Fix `SolverXPBD` tetrahedral constraints reading static model activations instead of runtime control activations
 - Fix `SolverXPBD` tetrahedral constraints ignoring FEM material stiffness and damping
-- Fix `ViewerFile` playback dropping namespaced custom attributes (e.g. `model.mujoco.geom_solimp`) when restoring into a fresh `Model`.
+- Fix `ViewerFile` playback dropping namespaced custom attributes (e.g. `model.mujoco.geom_solimp`) when restoring into a fresh `Model`
 - Fix `ViewerGL` GUI rendering at half size on HiDPI / Retina displays by scaling the ImGui style, fonts, sidebar width, and `log_image` window/tile/spacing constants with pyglet's `window.scale` (with framebuffer-to-window ratio as a fallback). DPI changes are tracked at runtime via the pyglet `on_scale` event so the GUI follows the window across displays with different scaling. (#2926)
 - Fix ground grid clipping in the Viser renderer
-- Fix `brick_stacking` example contact gaps to avoid oversized contact envelopes around the robot, table, and ground.
-- Fix `example_softbody_gift` emitting spurious non-manifold edge warnings caused by mismatched 5-tet diagonals across adjacent cubes in the soft body mesh.
-- Fix `basic_conveyor` example emitting a spurious inertia validation warning at finalize.
+- Fix `brick_stacking` example contact gaps to avoid oversized contact envelopes around the robot, table, and ground
+- Fix `example_softbody_gift` emitting spurious non-manifold edge warnings caused by mismatched 5-tet diagonals across adjacent cubes in the soft body mesh
+- Fix `basic_conveyor` example emitting a spurious inertia validation warning at finalize
 
 ## [1.2.1] - 2026-06-04
 
