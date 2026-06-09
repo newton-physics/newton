@@ -13,7 +13,11 @@ from newton import GeoType
 from newton._src.geometry import create_mesh_terrain
 from newton._src.geometry.flags import ParticleFlags, ShapeFlags
 from newton._src.geometry.kernels import create_soft_contacts, mesh_sdf
-from newton._src.sim.collide import _compute_per_world_shape_pairs_max, _estimate_rigid_contact_max
+from newton._src.sim.collide import (
+    _build_soft_contact_pairs,
+    _compute_per_world_shape_pairs_max,
+    _estimate_rigid_contact_max,
+)
 from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
@@ -662,11 +666,13 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
     soft_contact_body_vel = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_normal = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_tids = wp.empty(1, dtype=wp.int32, device=device)
+    soft_contact_pairs = wp.array([wp.vec2i(0, 0)], dtype=wp.vec2i, device=device)
 
     wp.launch(
         create_soft_contacts,
         dim=1,
         inputs=[
+            soft_contact_pairs,
             points,
             wp.array([0.05], dtype=wp.float32, device=device),
             wp.array([int(ParticleFlags.ACTIVE)], dtype=wp.int32, device=device),
@@ -679,7 +685,6 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
             wp.array([mesh.id], dtype=wp.uint64, device=device),
             wp.array([-1], dtype=wp.int32, device=device),
             0.0,
-            1,
             1,
             wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),
             wp.array([0], dtype=wp.int32, device=device),
@@ -1124,7 +1129,140 @@ for bp_name in ("explicit", "nxn", "sap"):
 
 
 class TestParticleShapeContacts(unittest.TestCase):
-    pass
+    @staticmethod
+    def _make_soft_pair_model(device, particle_worlds, shape_worlds, world_count):
+        model = newton.Model()
+        model.device = device
+        model.world_count = world_count
+        model.particle_count = len(particle_worlds)
+        model.shape_count = len(shape_worlds)
+        model.particle_world = wp.array(np.array(particle_worlds, dtype=np.int32), dtype=wp.int32, device=device)
+        model.shape_world = wp.array(np.array(shape_worlds, dtype=np.int32), dtype=wp.int32, device=device)
+        return model
+
+    def test_soft_pair_buffer_single_world_matches_dense(self):
+        model = self._make_soft_pair_model("cpu", [0, 0, 0], [0, 0], world_count=1)
+
+        pairs = _build_soft_contact_pairs(model).numpy()
+
+        self.assertEqual(len(pairs), model.particle_count * model.shape_count)
+        self.assertEqual({tuple(pair) for pair in pairs}, {(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)})
+
+    def test_soft_pair_buffer_multi_world_scales_linearly(self):
+        def pair_count(world_count):
+            particle_worlds = np.repeat(np.arange(world_count, dtype=np.int32), 10)
+            shape_worlds = np.repeat(np.arange(world_count, dtype=np.int32), 5)
+            model = self._make_soft_pair_model("cpu", particle_worlds, shape_worlds, world_count)
+            return len(_build_soft_contact_pairs(model))
+
+        self.assertEqual(pair_count(2), 2 * 10 * 5)
+        self.assertEqual(pair_count(4), 4 * 10 * 5)
+        self.assertEqual(pair_count(64), 64 * 10 * 5)
+
+    def test_soft_pair_buffer_includes_front_and_tail_globals(self):
+        model = self._make_soft_pair_model(
+            "cpu",
+            [-1, 0, 1, -1],
+            [-1, 0, 1, -1],
+            world_count=2,
+        )
+
+        pairs = {tuple(pair) for pair in _build_soft_contact_pairs(model).numpy()}
+
+        self.assertEqual(len(pairs), 14)
+        self.assertIn((1, 0), pairs)
+        self.assertIn((1, 3), pairs)
+        self.assertIn((2, 0), pairs)
+        self.assertIn((2, 3), pairs)
+        self.assertIn((0, 1), pairs)
+        self.assertIn((3, 2), pairs)
+
+    def test_soft_pair_buffer_excludes_cross_world_pairs(self):
+        model = self._make_soft_pair_model("cpu", [0, 1], [0, 1], world_count=2)
+
+        pairs = {tuple(pair) for pair in _build_soft_contact_pairs(model).numpy()}
+
+        self.assertEqual(pairs, {(0, 0), (1, 1)})
+
+    def test_soft_contact_capacity_defaults_to_pair_count(self):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_cloth_grid(
+            pos=wp.vec3(-0.5, -0.5, 0.05),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.2,
+            cell_y=0.2,
+            mass=0.1,
+        )
+        model = builder.finalize(device="cpu")
+
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        contacts = pipeline.contacts()
+
+        self.assertEqual(pipeline.soft_contact_max, pipeline.soft_contact_pair_count)
+        self.assertEqual(contacts.soft_contact_max, pipeline.soft_contact_pair_count)
+
+    def test_soft_contact_explicit_capacity_is_respected(self):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+        model = builder.finalize(device="cpu")
+
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_max=1)
+
+        self.assertEqual(pipeline.soft_contact_pair_count, 1)
+        self.assertEqual(pipeline.soft_contact_max, 1)
+
+    def test_soft_contact_explicit_capacity_overflow_still_counts_candidates(self):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+        builder.add_particle(pos=wp.vec3(0.1, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+        model = builder.finalize(device="cpu")
+
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_max=1)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+
+        self.assertEqual(pipeline.soft_contact_pair_count, 2)
+        self.assertEqual(contacts.soft_contact_max, 1)
+        self.assertEqual(contacts.soft_contact_count.numpy()[0], 2)
+
+    def test_soft_contacts_skip_cross_world_shape_particle_pairs(self):
+        particle_builder = newton.ModelBuilder()
+        particle_builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+
+        shape_builder = newton.ModelBuilder()
+        shape_builder.add_shape_sphere(body=-1, radius=1.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_world(particle_builder)
+        builder.add_world(shape_builder)
+        model = builder.finalize(device="cpu")
+
+        contacts = model.collide(model.state())
+
+        self.assertEqual(model._collision_pipeline.soft_contact_pair_count, 0)
+        self.assertEqual(contacts.soft_contact_count.numpy()[0], 0)
+
+    def test_global_shape_contacts_particles_in_all_worlds(self):
+        particle_builder = newton.ModelBuilder()
+        particle_builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_world(particle_builder)
+        builder.add_world(particle_builder)
+        model = builder.finalize(device="cpu")
+
+        contacts = model.contacts()
+        model.collide(model.state(), contacts)
+
+        self.assertEqual(model._collision_pipeline.soft_contact_pair_count, 2)
+        self.assertEqual(contacts.soft_contact_count.numpy()[0], 2)
 
 
 class TestContactEstimator(unittest.TestCase):
