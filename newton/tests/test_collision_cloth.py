@@ -397,6 +397,35 @@ def init_model(vs, fs, device, record_triangle_contacting_vertices=True, color=F
     return model, collision_detector
 
 
+def init_multiworld_model(vs, fs, device, world_count=2, record_triangle_contacting_vertices=True):
+    vertices = [wp.vec3(v) for v in vs]
+
+    world_builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+    world_builder.add_cloth_mesh(
+        pos=wp.vec3(0.0, 200.0, 0.0),
+        rot=wp.quat_identity(),
+        scale=1.0,
+        vertices=vertices,
+        indices=fs,
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        density=0.02,
+        tri_ke=0,
+        tri_ka=0,
+        tri_kd=0,
+    )
+
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+    for _ in range(world_count):
+        builder.add_world(world_builder)
+
+    model = builder.finalize(device=device)
+    collision_detector = TriMeshCollisionDetector(
+        model=model, record_triangle_contacting_vertices=record_triangle_contacting_vertices
+    )
+
+    return model, collision_detector
+
+
 def get_data():
     from pxr import Usd, UsdGeom
 
@@ -781,6 +810,80 @@ def test_mesh_ground_collision_index(test, device):
     test.assertTrue(np.allclose(normals[:, 2], 0.0, atol=1e-6))
 
 
+def test_vertex_triangle_collision_same_world_detected(test, device):
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.2, 0.2, 0.01],
+            [1.2, 0.2, 0.01],
+            [0.2, 1.2, 0.01],
+        ]
+    )
+    faces = [0, 1, 2, 3, 4, 5]
+    model, collision_detector = init_model(vertices, faces, device)
+
+    collision_detector.vertex_triangle_collision_detection(0.05)
+
+    test.assertGreater(np.sum(collision_detector.vertex_colliding_triangles_count.numpy()), 0)
+    test.assertEqual(model.world_count, 1)
+
+
+def test_vertex_triangle_collision_cross_world_rejected(test, device):
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ]
+    )
+    faces = [0, 1, 2]
+    model, collision_detector = init_multiworld_model(vertices, faces, device)
+
+    collision_detector.vertex_triangle_collision_detection(0.05)
+
+    test.assertEqual(np.sum(collision_detector.vertex_colliding_triangles_count.numpy()), 0)
+    test.assertEqual(model.world_count, 2)
+
+
+def test_edge_edge_collision_same_world_detected(test, device):
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.5, -0.1, 0.0],
+            [0.5, 0.1, 0.0],
+            [0.6, 0.0, 0.0],
+        ]
+    )
+    faces = [0, 1, 2, 3, 4, 5]
+    model, collision_detector = init_model(vertices, faces, device)
+
+    collision_detector.edge_edge_collision_detection(0.05)
+
+    test.assertGreater(np.sum(collision_detector.edge_colliding_edges_count.numpy()), 0)
+    test.assertEqual(model.world_count, 1)
+
+
+def test_edge_edge_collision_cross_world_rejected(test, device):
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ]
+    )
+    faces = [0, 1, 2]
+    model, collision_detector = init_multiworld_model(vertices, faces, device)
+
+    collision_detector.edge_edge_collision_detection(0.05)
+
+    test.assertEqual(np.sum(collision_detector.edge_colliding_edges_count.numpy()), 0)
+    test.assertEqual(model.world_count, 2)
+
+
 @wp.kernel
 def validate_vertex_collisions_distance_filter(
     max_query_radius: float,
@@ -1071,6 +1174,30 @@ add_function_test(TestCollision, "test_vertex_triangle_collision", test_vertex_t
 add_function_test(TestCollision, "test_edge_edge_collision", test_edge_edge_collision, devices=devices)
 add_function_test(TestCollision, "test_particle_collision", test_particle_collision, devices=devices)
 add_function_test(TestCollision, "test_mesh_ground_collision_index", test_mesh_ground_collision_index, devices=devices)
+add_function_test(
+    TestCollision,
+    "test_vertex_triangle_collision_same_world_detected",
+    test_vertex_triangle_collision_same_world_detected,
+    devices=devices,
+)
+add_function_test(
+    TestCollision,
+    "test_vertex_triangle_collision_cross_world_rejected",
+    test_vertex_triangle_collision_cross_world_rejected,
+    devices=devices,
+)
+add_function_test(
+    TestCollision,
+    "test_edge_edge_collision_same_world_detected",
+    test_edge_edge_collision_same_world_detected,
+    devices=devices,
+)
+add_function_test(
+    TestCollision,
+    "test_edge_edge_collision_cross_world_rejected",
+    test_edge_edge_collision_cross_world_rejected,
+    devices=devices,
+)
 add_function_test(TestCollision, "test_collision_filtering", test_collision_filtering, devices=devices)
 
 if __name__ == "__main__":

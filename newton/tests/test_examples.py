@@ -14,6 +14,7 @@ CUDA device.
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,47 @@ from newton.tests.unittest_utils import (
     get_test_devices,
     sanitize_identifier,
 )
+
+_CONTACT_ALLOC_RE = re.compile(r"\.contacts\(")
+_MODEL_COLLIDE_RE = re.compile(r"\bmodel\.collide\(")
+_SELF_CAPTURE_RE = re.compile(r"\bself\.capture\(")
+
+
+class TestExampleCaptureAudit(unittest.TestCase):
+    def test_captured_collision_examples_preallocate_contacts(self):
+        examples_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
+        violations = []
+
+        for root, _dirs, files in os.walk(examples_dir):
+            for filename in files:
+                if not filename.endswith(".py"):
+                    continue
+
+                path = os.path.join(root, filename)
+                relpath = os.path.relpath(path, examples_dir)
+                with open(path, encoding="utf-8") as f:
+                    lines = f.readlines()
+
+                capture_lines = [
+                    i
+                    for i, line in enumerate(lines, start=1)
+                    if _SELF_CAPTURE_RE.search(line) and not re.match(r"\s*def\s+capture\b", line)
+                ]
+                if capture_lines:
+                    first_capture = min(capture_lines)
+                    for i, line in enumerate(lines, start=1):
+                        if i > first_capture and _CONTACT_ALLOC_RE.search(line):
+                            violations.append(f"{relpath}:{i}: contacts() after self.capture()")
+
+                for i, line in enumerate(lines, start=1):
+                    match = _MODEL_COLLIDE_RE.search(line)
+                    if not match:
+                        continue
+                    call_expr = line[match.start() :]
+                    if "self.contacts" not in call_expr and ", contacts" not in call_expr:
+                        violations.append(f"{relpath}:{i}: model.collide() without a contacts argument")
+
+        self.assertEqual(violations, [])
 
 
 def _build_command_line_options(test_options: dict[str, Any]) -> list:
