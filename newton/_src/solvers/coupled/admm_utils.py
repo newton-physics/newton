@@ -18,6 +18,109 @@ from ...math.spatial import velocity_at_point
 
 _PARTICLE_FLAG_ACTIVE = wp.constant(int(ParticleFlags.ACTIVE))
 _INACTIVE_U_MIN = wp.constant(-1.0e8)
+_WEIGHT_RESCALE_EPS = wp.constant(1.0e-12)
+
+
+@wp.func
+def _interface_weight(m_a: float, m_b: float) -> float:
+    if m_a > 0.0 and m_b > 0.0:
+        return wp.sqrt((m_a * m_b) / (m_a + m_b))
+    if m_a > 0.0:
+        return wp.sqrt(m_a)
+    if m_b > 0.0:
+        return wp.sqrt(m_b)
+    return 1.0
+
+
+@wp.func
+def _rescale_lambda(lambda_value: wp.vec3, old_weight: float, new_weight: float) -> wp.vec3:
+    if old_weight > _WEIGHT_RESCALE_EPS and new_weight > _WEIGHT_RESCALE_EPS:
+        return lambda_value * (old_weight / new_weight)
+    return wp.vec3(0.0, 0.0, 0.0)
+
+
+@wp.kernel(enable_backward=False)
+def scatter_effective_mass_kernel(
+    global_id: wp.array[int],
+    local_mass: wp.array[float],
+    mass_out: wp.array[float],
+):
+    """Scatter local effective masses into a global effective-mass buffer."""
+    i = wp.tid()
+    mass_out[global_id[i]] = local_mass[i]
+
+
+@wp.kernel(enable_backward=False)
+def scatter_body_effective_mass_block_kernel(
+    global_body: wp.array[int],
+    local_mass: wp.array[float],
+    local_inertia: wp.array[wp.mat33],
+    mass_out: wp.array[float],
+    inertia_scalar_out: wp.array[float],
+):
+    """Scatter local effective mass blocks into global scalar buffers."""
+    i = wp.tid()
+    global_id = global_body[i]
+    mass_out[global_id] = local_mass[i]
+    inertia_scalar_out[global_id] = wp.max(wp.trace(local_inertia[i]) / 3.0, 0.0)
+
+
+@wp.kernel(enable_backward=False)
+def refresh_rr_attachment_weights_kernel(
+    body_a: wp.array[int],
+    body_b: wp.array[int],
+    body_local_to_global_a: wp.array[int],
+    body_local_to_global_b: wp.array[int],
+    body_mass_a: wp.array[float],
+    body_mass_b: wp.array[float],
+    W: wp.array[float],
+    lambda_: wp.array[wp.vec3],
+):
+    """Refresh rigid-rigid point attachment weights and preserve physical lambda."""
+    i = wp.tid()
+    global_a = body_local_to_global_a[body_a[i]]
+    global_b = body_local_to_global_b[body_b[i]]
+    new_weight = _interface_weight(body_mass_a[global_a], body_mass_b[global_b])
+    lambda_[i] = _rescale_lambda(lambda_[i], W[i], new_weight)
+    W[i] = new_weight
+
+
+@wp.kernel(enable_backward=False)
+def refresh_rp_attachment_weights_kernel(
+    body: wp.array[int],
+    particle: wp.array[int],
+    body_local_to_global: wp.array[int],
+    body_mass: wp.array[float],
+    particle_mass: wp.array[float],
+    W: wp.array[float],
+    lambda_: wp.array[wp.vec3],
+):
+    """Refresh rigid-particle attachment weights and preserve physical lambda."""
+    i = wp.tid()
+    global_body = body_local_to_global[body[i]]
+    new_weight = _interface_weight(body_mass[global_body], particle_mass[particle[i]])
+    lambda_[i] = _rescale_lambda(lambda_[i], W[i], new_weight)
+    W[i] = new_weight
+
+
+@wp.kernel(enable_backward=False)
+def refresh_rr_angular_attachment_weights_kernel(
+    body_a: wp.array[int],
+    body_b: wp.array[int],
+    body_local_to_global_a: wp.array[int],
+    body_local_to_global_b: wp.array[int],
+    inertia_scalar_a: wp.array[float],
+    inertia_scalar_b: wp.array[float],
+    W: wp.array[float],
+    lambda_: wp.array[wp.vec3],
+):
+    """Refresh angular attachment weights and preserve physical lambda."""
+    i = wp.tid()
+    global_a = body_local_to_global_a[body_a[i]]
+    global_b = body_local_to_global_b[body_b[i]]
+    new_weight = _interface_weight(inertia_scalar_a[global_a], inertia_scalar_b[global_b])
+    lambda_[i] = _rescale_lambda(lambda_[i], W[i], new_weight)
+    W[i] = new_weight
 
 
 @wp.kernel(enable_backward=False)
@@ -818,11 +921,13 @@ def contact_rr_accumulate_forces_active_kernel(
 def contact_rr_clear_contact_snapshot_kernel(
     prev_contact_active: wp.array[int],
     prev_contact_lambda: wp.array[wp.vec3],
+    prev_contact_W: wp.array[float],
 ):
     """Clear dynamic rigid-rigid ADMM dual state snapshots."""
     i = wp.tid()
     prev_contact_active[i] = 0
     prev_contact_lambda[i] = wp.vec3(0.0, 0.0, 0.0)
+    prev_contact_W[i] = 0.0
 
 
 @wp.kernel(enable_backward=False)
@@ -830,9 +935,11 @@ def contact_rr_snapshot_by_contact_kernel(
     active_count: wp.array[int],
     contact_id: wp.array[int],
     active: wp.array[int],
+    W: wp.array[float],
     lambda_: wp.array[wp.vec3],
     prev_contact_active: wp.array[int],
     prev_contact_lambda: wp.array[wp.vec3],
+    prev_contact_W: wp.array[float],
 ):
     """Snapshot dynamic rigid-rigid ADMM dual state by collision contact row."""
     i = wp.tid()
@@ -845,6 +952,7 @@ def contact_rr_snapshot_by_contact_kernel(
 
     prev_contact_active[cid] = 1
     prev_contact_lambda[cid] = lambda_[i]
+    prev_contact_W[cid] = W[i]
 
 
 @wp.kernel(enable_backward=False)
@@ -922,6 +1030,7 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     active_count_max: wp.array[int],
     prev_contact_active: wp.array[int],
     prev_contact_lambda: wp.array[wp.vec3],
+    prev_contact_W: wp.array[float],
     body_a: wp.array[int],
     point_a_local: wp.array[wp.vec3],
     body_b: wp.array[int],
@@ -1009,10 +1118,8 @@ def contact_rr_fill_from_rigid_contacts_kernel(
 
     ma = body_mass_a[ba]
     mb = body_mass_b[bb]
-    if ma > 0.0 and mb > 0.0:
-        W[dst] = wp.sqrt((ma * mb) / (ma + mb))
-    else:
-        W[dst] = 1.0
+    weight = _interface_weight(ma, mb)
+    W[dst] = weight
     # Geometric-mean combining of shape material friction (matches AVBD).
     friction[dst] = wp.sqrt(shape_material_mu[sa] * shape_material_mu[sb])
 
@@ -1020,7 +1127,7 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     if use_contact_matching != 0:
         prev_id = rigid_contact_match_index[i]
         if prev_id >= 0 and prev_id < prev_contact_active.shape[0] and prev_contact_active[prev_id] != 0:
-            lambda_out = prev_contact_lambda[prev_id]
+            lambda_out = _rescale_lambda(prev_contact_lambda[prev_id], prev_contact_W[prev_id], weight)
 
     u[dst] = wp.vec3(0.0, 0.0, 0.0)
     lambda_[dst] = lambda_out
@@ -1132,12 +1239,14 @@ def contact_rp_snapshot_kernel(
     particle_id: wp.array[int],
     shape_id: wp.array[int],
     active: wp.array[int],
+    W: wp.array[float],
     u: wp.array[wp.vec3],
     lambda_: wp.array[wp.vec3],
     prev_body_id: wp.array[int],
     prev_particle_id: wp.array[int],
     prev_shape_id: wp.array[int],
     prev_active: wp.array[int],
+    prev_W: wp.array[float],
     prev_u: wp.array[wp.vec3],
     prev_lambda: wp.array[wp.vec3],
 ):
@@ -1147,6 +1256,7 @@ def contact_rp_snapshot_kernel(
     prev_particle_id[i] = particle_id[i]
     prev_shape_id[i] = shape_id[i]
     prev_active[i] = active[i]
+    prev_W[i] = W[i]
     prev_u[i] = u[i]
     prev_lambda[i] = lambda_[i]
 
@@ -1215,6 +1325,7 @@ def contact_rp_fill_from_soft_contacts_kernel(
     prev_particle_id: wp.array[int],
     prev_shape_id: wp.array[int],
     prev_active: wp.array[int],
+    prev_W: wp.array[float],
     prev_u: wp.array[wp.vec3],
     prev_lambda: wp.array[wp.vec3],
     body_id: wp.array[int],
@@ -1265,9 +1376,7 @@ def contact_rp_fill_from_soft_contacts_kernel(
 
     m_a = body_mass[b]
     m_b = particle_mass[p]
-    weight = float(1.0)
-    if m_a > 0.0 and m_b > 0.0:
-        weight = wp.sqrt((m_a * m_b) / (m_a + m_b))
+    weight = _interface_weight(m_a, m_b)
 
     distance = contact_distance_value
     if use_particle_radius != 0:
@@ -1278,7 +1387,7 @@ def contact_rp_fill_from_soft_contacts_kernel(
     for j in range(capacity):
         if prev_active[j] != 0 and prev_particle_id[j] == p and prev_shape_id[j] == s:
             u0 = prev_u[j]
-            lambda0 = prev_lambda[j]
+            lambda0 = _rescale_lambda(prev_lambda[j], prev_W[j], weight)
             break
 
     active[dst] = 1
@@ -1367,11 +1476,13 @@ def contact_pp_snapshot_kernel(
     particle_a: wp.array[int],
     particle_b: wp.array[int],
     active: wp.array[int],
+    W: wp.array[float],
     u: wp.array[wp.vec3],
     lambda_: wp.array[wp.vec3],
     prev_particle_a: wp.array[int],
     prev_particle_b: wp.array[int],
     prev_active: wp.array[int],
+    prev_W: wp.array[float],
     prev_u: wp.array[wp.vec3],
     prev_lambda: wp.array[wp.vec3],
 ):
@@ -1380,6 +1491,7 @@ def contact_pp_snapshot_kernel(
     prev_particle_a[i] = particle_a[i]
     prev_particle_b[i] = particle_b[i]
     prev_active[i] = active[i]
+    prev_W[i] = W[i]
     prev_u[i] = u[i]
     prev_lambda[i] = lambda_[i]
 
@@ -1515,6 +1627,7 @@ def contact_pp_fill_from_particle_contacts_kernel(
     prev_particle_a: wp.array[int],
     prev_particle_b: wp.array[int],
     prev_active: wp.array[int],
+    prev_W: wp.array[float],
     prev_u: wp.array[wp.vec3],
     prev_lambda: wp.array[wp.vec3],
     particle_a: wp.array[int],
@@ -1543,16 +1656,14 @@ def contact_pp_fill_from_particle_contacts_kernel(
 
     m_a = particle_mass_a[pa]
     m_b = particle_mass_b[pb]
-    weight = float(1.0)
-    if m_a > 0.0 and m_b > 0.0:
-        weight = wp.sqrt((m_a * m_b) / (m_a + m_b))
+    weight = _interface_weight(m_a, m_b)
 
     u0 = wp.vec3(0.0, 0.0, 0.0)
     lambda0 = wp.vec3(0.0, 0.0, 0.0)
     for j in range(capacity):
         if prev_active[j] != 0 and prev_particle_a[j] == pa and prev_particle_b[j] == pb:
             u0 = prev_u[j]
-            lambda0 = prev_lambda[j]
+            lambda0 = _rescale_lambda(prev_lambda[j], prev_W[j], weight)
             break
 
     particle_a[dst] = pa

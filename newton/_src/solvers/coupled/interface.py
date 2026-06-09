@@ -38,7 +38,7 @@ Supported hook signatures are:
     ) -> None: ...
 
 
-    def coupling_notify_input_state_update(state, flags, *, restart=False, dt=0.0) -> None: ...
+    def coupling_notify_input_state_update(state, flags, *, iteration_restart=False, dt=0.0) -> None: ...
 
 
     def coupling_rewind_proxy_body_velocity(body_local_to_proxy_global, state, coupling_forces, dt) -> None: ...
@@ -79,10 +79,11 @@ from __future__ import annotations
 from enum import IntEnum, IntFlag
 from typing import TYPE_CHECKING
 
-import numpy as np
 import warp as wp
 
+from ...sim import BodyFlags
 from .proxy_utils import (
+    filter_proxy_rigid_contacts_kernel,
     harvest_proxy_momentum_forces_kernel,
     harvest_proxy_particle_momentum_forces_kernel,
     subtract_proxy_forces_kernel,
@@ -154,24 +155,37 @@ class CouplingInterface:
             return
 
         model = self.model
-        body_inv_mass = model.body_inv_mass.numpy() if getattr(model, "body_inv_mass", None) is not None else []
-        particle_inv_mass = (
-            model.particle_inv_mass.numpy() if getattr(model, "particle_inv_mass", None) is not None else []
-        )
-
-        values: list[float] = []
-        for raw_kind, raw_index in zip(endpoint_kind.numpy(), endpoint_index.numpy(), strict=True):
-            kind = int(raw_kind)
-            index = int(raw_index)
-            if kind == int(CouplingInterface.EndpointKind.BODY):
-                inv_mass = float(body_inv_mass[index]) if 0 <= index < len(body_inv_mass) else 0.0
-            elif kind == int(CouplingInterface.EndpointKind.PARTICLE):
-                inv_mass = float(particle_inv_mass[index]) if 0 <= index < len(particle_inv_mass) else 0.0
-            else:
-                raise ValueError(f"Unknown coupling endpoint kind {kind}")
-            values.append(0.0 if inv_mass == 0.0 else 1.0 / inv_mass)
-
-        wp.copy(out, wp.array(values, dtype=float, device=model.device))
+        body_inv_mass = getattr(model, "body_inv_mass", None)
+        particle_inv_mass = getattr(model, "particle_inv_mass", None)
+        if body_inv_mass is not None and particle_inv_mass is not None:
+            wp.launch(
+                _coupling_eval_effective_mass_kernel,
+                dim=out.shape[0],
+                inputs=[
+                    endpoint_kind,
+                    endpoint_index,
+                    body_inv_mass,
+                    particle_inv_mass,
+                    out,
+                ],
+                device=model.device,
+            )
+        elif body_inv_mass is not None:
+            wp.launch(
+                _coupling_eval_effective_mass_body_kernel,
+                dim=out.shape[0],
+                inputs=[endpoint_kind, endpoint_index, body_inv_mass, out],
+                device=model.device,
+            )
+        elif particle_inv_mass is not None:
+            wp.launch(
+                _coupling_eval_effective_mass_particle_kernel,
+                dim=out.shape[0],
+                inputs=[endpoint_kind, endpoint_index, particle_inv_mass, out],
+                device=model.device,
+            )
+        else:
+            wp.launch(_coupling_zero_mass_kernel, dim=out.shape[0], inputs=[out], device=model.device)
 
     def coupling_eval_effective_mass_block(
         self,
@@ -195,36 +209,41 @@ class CouplingInterface:
             return
 
         model = self.model
-        masses = out_mass.numpy()
-        body_mass = model.body_mass.numpy() if getattr(model, "body_mass", None) is not None else []
-        body_inertia = model.body_inertia.numpy() if getattr(model, "body_inertia", None) is not None else []
+        body_mass = getattr(model, "body_mass", None)
+        body_inertia = getattr(model, "body_inertia", None)
+        if body_mass is None or body_inertia is None:
+            wp.launch(
+                _coupling_zero_inertia_kernel,
+                dim=out_inertia.shape[0],
+                inputs=[out_inertia],
+                device=model.device,
+            )
+            return
 
-        inertias: list[wp.mat33] = []
-        for raw_kind, raw_index, mass in zip(endpoint_kind.numpy(), endpoint_index.numpy(), masses, strict=True):
-            kind = int(raw_kind)
-            index = int(raw_index)
-            if kind != int(CouplingInterface.EndpointKind.BODY) or index < 0 or index >= len(body_inertia):
-                inertias.append(wp.mat33(0.0))
-                continue
-
-            inertia = np.asarray(body_inertia[index], dtype=np.float32)
-            base_mass = float(body_mass[index]) if index < len(body_mass) else 0.0
-            if base_mass > 0.0:
-                inertia = inertia * (float(mass) / base_mass)
-            inertias.append(wp.mat33(inertia))
-
-        wp.copy(out_inertia, wp.array(inertias, dtype=wp.mat33, device=model.device))
+        wp.launch(
+            _coupling_eval_effective_inertia_kernel,
+            dim=out_inertia.shape[0],
+            inputs=[
+                endpoint_kind,
+                endpoint_index,
+                body_mass,
+                body_inertia,
+                out_mass,
+                out_inertia,
+            ],
+            device=model.device,
+        )
 
     def coupling_notify_input_state_update(
         self,
         state: State,
         flags: InputStateFlags | int,
         *,
-        restart: bool = False,
+        iteration_restart: bool = False,
         dt: float = 0.0,
     ) -> None:
         """React to coupler-produced input state updates."""
-        del state, flags, restart, dt
+        del state, flags, iteration_restart, dt
 
     def coupling_rewind_proxy_body_velocity(
         self,
@@ -233,7 +252,14 @@ class CouplingInterface:
         coupling_forces: wp.array[wp.spatial_vector],
         dt: float,
     ) -> None:
-        """Remove lagged proxy feedback, public forces, and gravity from body velocities."""
+        """Remove velocity-level feedback, public forces, and gravity from proxy velocities.
+
+        The default proxy feedback is harvested from destination momentum
+        change, so ``coupling_forces`` are treated as lagged velocity-level
+        response and rewound before the destination solve. Solvers whose
+        feedback is position-dependent, such as barrier-style contact, should
+        override this hook and leave ``coupling_forces`` in the synced velocity.
+        """
         if body_local_to_proxy_global.shape[0] == 0 or state.body_qd is None:
             return
 
@@ -263,7 +289,14 @@ class CouplingInterface:
         coupling_forces: wp.array[wp.vec3],
         dt: float,
     ) -> None:
-        """Remove lagged proxy feedback, public forces, and gravity from particle velocities."""
+        """Remove velocity-level feedback, public forces, and gravity from proxy velocities.
+
+        The default proxy feedback is harvested from destination momentum
+        change, so ``coupling_forces`` are treated as lagged velocity-level
+        response and rewound before the destination solve. Solvers whose
+        feedback is position-dependent, such as barrier-style contact, should
+        override this hook and leave ``coupling_forces`` in the synced velocity.
+        """
         if particle_local_to_proxy_global.shape[0] == 0 or state.particle_qd is None:
             return
 
@@ -296,7 +329,7 @@ class CouplingInterface:
         dt: float = 0.0,
     ) -> None:
         """Estimate proxy-body feedback from destination momentum change."""
-        del state, contacts
+        del contacts
         if body_local_to_proxy_global.shape[0] == 0:
             return
         if body_qd_before is None or state_out is None or state_out.body_qd is None:
@@ -313,6 +346,7 @@ class CouplingInterface:
                 body_local_to_proxy_global,
                 body_qd_before,
                 state_out.body_qd,
+                state.body_f if state is not None else None,
                 model.body_mass,
                 model.body_inertia,
                 state_out.body_q,
@@ -335,7 +369,7 @@ class CouplingInterface:
         dt: float = 0.0,
     ) -> None:
         """Estimate proxy-particle feedback from destination momentum change."""
-        del state, contacts
+        del contacts
         if particle_local_to_proxy_global.shape[0] == 0:
             return
         if particle_qd_before is None or state_out is None or state_out.particle_qd is None:
@@ -352,6 +386,7 @@ class CouplingInterface:
                 particle_local_to_proxy_global,
                 particle_qd_before,
                 state_out.particle_qd,
+                state.particle_f if state is not None else None,
                 model.particle_mass,
                 model.gravity,
                 model.particle_world,
@@ -367,9 +402,129 @@ class CouplingInterface:
         *,
         contacts_freshly_detected: bool = False,
     ) -> Contacts | None:
-        """Prepare contacts for a proxy destination solve."""
+        """Prepare contacts for a proxy destination solve.
+
+        The generic momentum harvest treats proxy feedback as a destination
+        momentum change. Proxy-static and proxy-proxy rigid contacts therefore
+        must not be passed through as solver contacts because they would feed
+        constraints between virtual objects back to the source.
+        """
         del state, contacts_freshly_detected
+        if contacts is None or contacts.rigid_contact_count is None or contacts.rigid_contact_max == 0:
+            return contacts
+
+        model = self.model
+        wp.launch(
+            filter_proxy_rigid_contacts_kernel,
+            dim=contacts.rigid_contact_shape0.shape[0],
+            inputs=[
+                contacts.rigid_contact_count,
+                contacts.rigid_contact_shape0,
+                contacts.rigid_contact_shape1,
+                model.shape_body,
+                model.body_flags,
+                model.body_inv_mass,
+                int(BodyFlags.PROXY),
+            ],
+            device=model.device,
+        )
         return contacts
+
+
+@wp.func
+def _mass_from_inverse(inv_mass: float) -> float:
+    if inv_mass == 0.0:
+        return 0.0
+    return 1.0 / inv_mass
+
+
+@wp.kernel(enable_backward=False)
+def _coupling_eval_effective_mass_kernel(
+    endpoint_kind: wp.array[int],
+    endpoint_index: wp.array[int],
+    body_inv_mass: wp.array[float],
+    particle_inv_mass: wp.array[float],
+    out: wp.array[float],
+):
+    i = wp.tid()
+    kind = endpoint_kind[i]
+    index = endpoint_index[i]
+    inv_mass = 0.0
+
+    if kind == wp.static(int(CouplingInterface.EndpointKind.BODY)):
+        if index >= 0 and index < body_inv_mass.shape[0]:
+            inv_mass = body_inv_mass[index]
+    elif kind == wp.static(int(CouplingInterface.EndpointKind.PARTICLE)):
+        if index >= 0 and index < particle_inv_mass.shape[0]:
+            inv_mass = particle_inv_mass[index]
+
+    out[i] = _mass_from_inverse(inv_mass)
+
+
+@wp.kernel(enable_backward=False)
+def _coupling_eval_effective_mass_body_kernel(
+    endpoint_kind: wp.array[int],
+    endpoint_index: wp.array[int],
+    inv_mass: wp.array[float],
+    out: wp.array[float],
+):
+    i = wp.tid()
+    mass = 0.0
+    index = endpoint_index[i]
+    if endpoint_kind[i] == wp.static(int(CouplingInterface.EndpointKind.BODY)) and index >= 0:
+        if index < inv_mass.shape[0]:
+            mass = _mass_from_inverse(inv_mass[index])
+    out[i] = mass
+
+
+@wp.kernel(enable_backward=False)
+def _coupling_eval_effective_mass_particle_kernel(
+    endpoint_kind: wp.array[int],
+    endpoint_index: wp.array[int],
+    inv_mass: wp.array[float],
+    out: wp.array[float],
+):
+    i = wp.tid()
+    mass = 0.0
+    index = endpoint_index[i]
+    if endpoint_kind[i] == wp.static(int(CouplingInterface.EndpointKind.PARTICLE)) and index >= 0:
+        if index < inv_mass.shape[0]:
+            mass = _mass_from_inverse(inv_mass[index])
+    out[i] = mass
+
+
+@wp.kernel(enable_backward=False)
+def _coupling_zero_mass_kernel(out: wp.array[float]):
+    out[wp.tid()] = 0.0
+
+
+@wp.kernel(enable_backward=False)
+def _coupling_eval_effective_inertia_kernel(
+    endpoint_kind: wp.array[int],
+    endpoint_index: wp.array[int],
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    out_mass: wp.array[float],
+    out_inertia: wp.array[wp.mat33],
+):
+    i = wp.tid()
+    index = endpoint_index[i]
+    inertia = wp.mat33(0.0)
+
+    if endpoint_kind[i] == wp.static(int(CouplingInterface.EndpointKind.BODY)) and index >= 0:
+        if index < body_inertia.shape[0]:
+            inertia = body_inertia[index]
+            if index < body_mass.shape[0]:
+                mass = body_mass[index]
+                if mass > 0.0:
+                    inertia = inertia * (out_mass[i] / mass)
+
+    out_inertia[i] = inertia
+
+
+@wp.kernel(enable_backward=False)
+def _coupling_zero_inertia_kernel(out_inertia: wp.array[wp.mat33]):
+    out_inertia[wp.tid()] = wp.mat33(0.0)
 
 
 CouplingEndpointKind = CouplingInterface.EndpointKind

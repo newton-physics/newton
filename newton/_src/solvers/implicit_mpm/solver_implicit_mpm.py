@@ -1103,7 +1103,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         state: newton.State,
         flags: CouplingInputStateFlags | int,
         *,
-        restart: bool = False,
+        iteration_restart: bool = False,
         dt: float = 0.0,
     ) -> None:
         """Synchronize deformable collider meshes after particle input-state updates."""
@@ -1122,7 +1122,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         # On iteration restart the source state is the same as at the start of
         # the outer step, so the collider mesh and its BVH are still valid from
         # the first call this step — skip the resync and refit.
-        if restart:
+        if iteration_restart:
             return
 
         for collider_id, vertex_start, vertex_end in self._mpm_model.deformable_collider_vertex_ranges:
@@ -1164,7 +1164,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         coupling_forces: wp.array[wp.spatial_vector],
         dt: float,
     ) -> None:
-        """Remove lagged proxy wrenches from MPM collider body velocities."""
+        """Remove lagged velocity-level proxy wrenches from collider velocities."""
         if state.body_q is None or state.body_qd is None or body_local_to_proxy_global.shape[0] == 0:
             return
 
@@ -1230,7 +1230,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         coupling_forces: wp.array[wp.vec3],
         dt: float,
     ) -> None:
-        """Remove lagged proxy forces from MPM proxy particle velocities."""
+        """Remove lagged velocity-level proxy forces from proxy particle velocities."""
         if state.particle_qd is None or particle_local_to_proxy_global.shape[0] == 0:
             return
 

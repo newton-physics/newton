@@ -276,9 +276,9 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
     else:
         lines.extend([f".. py:module:: {mod_name}", f".. currentmodule:: {mod_name}", ""])
 
-    # Render a simple bullet list of submodules (no autosummary/toctree) to
-    # avoid generating stub pages that can cause duplicate descriptions.
-    if modules and not is_solver_submodule:
+    # Render submodules as direct document links instead of autosummary stubs.
+    # Child module pages still need hidden toctree edges to satisfy Sphinx.
+    if modules:
         modules.sort()
         nested_modules = [sub for sub in modules if f"{mod_name}.{sub}" not in api_toctree_modules]
         if nested_modules:

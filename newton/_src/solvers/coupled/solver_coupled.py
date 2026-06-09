@@ -6,14 +6,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import warp as wp
 
 from ...geometry import ParticleFlags, ShapeFlags
-from ...sim import ModelFlags
+from ...sim import ModelFlags, StateFlags
 from ..solver import SolverBase
 from .interface import (
     CouplingEndpointKind,
@@ -115,10 +115,9 @@ class SolverEntry:
     state_0: State | None = None
     state_1: State | None = None
     state_tmp: State | None = None
-    state_tmp_1: State | None = None
     control: Control | None = None
-    body_force_input: wp.array = field(default=None)
-    particle_force_input: wp.array = field(default=None)
+    has_body_force_input: bool = False
+    has_particle_force_input: bool = False
 
 
 class SolverCoupled(SolverBase, CouplingInterface):
@@ -150,8 +149,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
         :class:`SolverBase`. Bind any extra constructor arguments in the
         factory itself (e.g. ``lambda v: SolverVBD(model=v, iterations=10)``).
         Entry names must be unique. In-place stepping is only valid for solvers
-        that explicitly support it and currently requires ``substeps=1``. Shape
-        ids remain in the parent model namespace by default; set
+        that explicitly support it. Shape ids remain in the parent model
+        namespace by default; set
         ``preserve_shape_ids=False`` to expose a compact entry-local shape
         namespace instead.
 
@@ -245,8 +244,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             substeps = int(cfg.substeps)
             if substeps < 1:
                 raise ValueError(f"SolverCoupled.Entry {cfg.name!r} substeps must be >= 1")
-            if cfg.in_place and substeps != 1:
-                raise ValueError(f"SolverCoupled.Entry {cfg.name!r} in_place requires substeps=1")
 
             body_indices = wp.array([int(i) for i in cfg.bodies], dtype=int, device=device)
             particle_indices = wp.array([int(i) for i in cfg.particles], dtype=int, device=device)
@@ -339,13 +336,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry.state_0 = entry.view.state()
             entry.state_1 = entry.state_0 if entry.in_place else entry.view.state()
             entry.control = _entry_control(entry.view)
-            if model.body_count:
-                entry.body_force_input = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
-            if model.particle_count:
-                entry.particle_force_input = wp.zeros(model.particle_count, dtype=wp.vec3, device=device)
-            if entry.substeps > 1:
+            entry.has_body_force_input = entry.state_0.body_f is not None
+            entry.has_particle_force_input = entry.state_0.particle_f is not None
+            if entry.substeps > 1 and not entry.in_place:
                 entry.state_tmp = entry.view.state()
-                entry.state_tmp_1 = entry.view.state()
 
         self._after_entry_states_created()
 
@@ -791,15 +785,47 @@ class SolverCoupled(SolverBase, CouplingInterface):
         body_global_to_local: dict[int, int],
         joint_global_to_local: dict[int, int],
     ) -> list[int] | None:
-        model = self.model
-        if model.equality_constraint_count == 0:
+        count = 0
+        body1 = body2 = joint1 = joint2 = None
+        world = world_start = None
+
+        for full_name, frequency in self.model.attribute_frequency.items():
+            if ":" not in full_name or not isinstance(frequency, str):
+                continue
+            if frequency.rsplit(":", 1)[-1] != "equality_constraint":
+                continue
+
+            count = int(self.model.custom_frequency_counts[frequency])
+            namespace_name, attr_name = full_name.split(":", 1)
+            namespace = getattr(self.model, namespace_name, None)
+            if namespace is None:
+                continue
+            try:
+                value = object.__getattribute__(namespace, attr_name)
+            except AttributeError:
+                continue
+            if not isinstance(value, wp.array):
+                continue
+
+            if attr_name == "equality_constraint_body1":
+                body1 = value.numpy()
+            elif attr_name == "equality_constraint_body2":
+                body2 = value.numpy()
+            elif attr_name == "equality_constraint_joint1":
+                joint1 = value.numpy()
+            elif attr_name == "equality_constraint_joint2":
+                joint2 = value.numpy()
+            elif attr_name == "equality_constraint_world":
+                world = value
+                world_start = self._world_start_array(value, count)
+
+        if count == 0:
             return []
-        body1 = model.equality_constraint_body1.numpy()
-        body2 = model.equality_constraint_body2.numpy()
-        joint1 = model.equality_constraint_joint1.numpy()
-        joint2 = model.equality_constraint_joint2.numpy()
+        if body1 is None or body2 is None or joint1 is None or joint2 is None:
+            return []
+
         selected: set[int] = set()
-        for constraint in range(model.equality_constraint_count):
+        for constraint in range(count):
             if not self._constraint_ref_visible(int(body1[constraint]), body_global_to_local):
                 continue
             if not self._constraint_ref_visible(int(body2[constraint]), body_global_to_local):
@@ -811,9 +837,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
             selected.add(constraint)
         return self._ordered_world_subset(
             selected,
-            model.equality_constraint_world,
-            getattr(model, "equality_constraint_world_start", None),
-            model.equality_constraint_count,
+            world,
+            world_start,
+            count,
             "equality constraints",
         )
 
@@ -871,7 +897,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.joint_dof_count = len(dof_order)
         view.shape_count = model.shape_count if preserve_shape_ids else len(shape_order)
         view.articulation_count = len(articulation_order)
-        view.equality_constraint_count = len(equality_order)
         view.constraint_mimic_count = len(mimic_order)
         view.particle_count = 0
         view.spring_count = 0
@@ -890,16 +915,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
             equality_order,
             mimic_order,
         )
+        self._set_compact_custom_frequency_counts(view, index_orders_by_frequency)
         remapped_or_derived_attrs = {
             "joint_parent",
             "joint_child",
             "joint_ancestor",
             "joint_articulation",
             "shape_body",
-            "equality_constraint_body1",
-            "equality_constraint_body2",
-            "equality_constraint_joint1",
-            "equality_constraint_joint2",
             "constraint_mimic_joint0",
             "constraint_mimic_joint1",
         }
@@ -917,7 +939,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 "shape_": (shape_order, model.shape_count),
                 "_shape_": (shape_order, model.shape_count),
                 "articulation_": (articulation_order, model.articulation_count),
-                "equality_constraint_": (equality_order, model.equality_constraint_count),
                 "constraint_mimic_": (mimic_order, model.constraint_mimic_count),
             },
             exclude=handled_attrs | remapped_or_derived_attrs | renamed_attrs,
@@ -1000,19 +1021,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
             )
             self._compact_shape_contact_pairs(view, shape_global_to_local)
 
-        view.articulation_start = wp.array(
-            self._compact_articulation_starts(joint_order, articulation_order),
-            dtype=wp.int32,
-            device=device,
-        )
+        articulation_starts = self._compact_articulation_starts(joint_order, articulation_order)
+        view.articulation_start = wp.array(articulation_starts, dtype=wp.int32, device=device)
+        view.articulation_end = wp.array(articulation_starts[1:], dtype=wp.int32, device=device)
         self._set_compact_articulation_extents(view, articulation_order)
 
-        self._compact_equality_constraints(
-            view,
-            equality_order,
-            body_global_to_local,
-            joint_global_to_local,
-        )
         self._compact_mimic_constraints(view, mimic_order, joint_global_to_local)
 
         # For VBD solver we require color groups to be compacted too.
@@ -1026,6 +1039,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             coord_order,
             dof_order,
             shape_order,
+            articulation_order,
             equality_order,
             mimic_order,
         )
@@ -1056,24 +1070,52 @@ class SolverCoupled(SolverBase, CouplingInterface):
         articulation_order: Sequence[int],
         equality_order: Sequence[int],
         mimic_order: Sequence[int],
-    ) -> dict[Model.AttributeFrequency, tuple[Sequence[int], int]]:
+    ) -> dict[Model.AttributeFrequency | str, tuple[Sequence[int], int]]:
         freq = self.model.AttributeFrequency
         model = self.model
-        return {
+        index_orders_by_frequency = {
             freq.BODY: (body_order, model.body_count),
             freq.JOINT: (joint_order, model.joint_count),
             freq.JOINT_COORD: (coord_order, model.joint_coord_count),
             freq.JOINT_DOF: (dof_order, model.joint_dof_count),
             freq.SHAPE: (shape_order, model.shape_count),
             freq.ARTICULATION: (articulation_order, model.articulation_count),
-            freq.EQUALITY_CONSTRAINT: (equality_order, model.equality_constraint_count),
             freq.CONSTRAINT_MIMIC: (mimic_order, model.constraint_mimic_count),
         }
+        index_orders_by_name = {
+            "body": (body_order, model.body_count),
+            "joint": (joint_order, model.joint_count),
+            "joint_coord": (coord_order, model.joint_coord_count),
+            "joint_dof": (dof_order, model.joint_dof_count),
+            "shape": (shape_order, model.shape_count),
+            "articulation": (articulation_order, model.articulation_count),
+            "equality_constraint": (equality_order, 0),
+            "constraint_mimic": (mimic_order, model.constraint_mimic_count),
+        }
+        for frequency in model.custom_frequency_counts:
+            frequency_name = frequency.rsplit(":", 1)[-1]
+            index_order = index_orders_by_name.get(frequency_name)
+            if index_order is not None:
+                indices, _source_count = index_order
+                index_orders_by_frequency[frequency] = (indices, int(model.custom_frequency_counts[frequency]))
+        return index_orders_by_frequency
+
+    def _set_compact_custom_frequency_counts(
+        self,
+        view: ModelView,
+        index_orders_by_frequency: dict[Model.AttributeFrequency | str, tuple[Sequence[int], int]],
+    ) -> None:
+        custom_frequency_counts = dict(self.model.custom_frequency_counts)
+        for frequency, (indices, _source_count) in index_orders_by_frequency.items():
+            if isinstance(frequency, str):
+                custom_frequency_counts[frequency] = len(indices)
+        if custom_frequency_counts != self.model.custom_frequency_counts:
+            view.custom_frequency_counts = custom_frequency_counts
 
     def _select_compact_attributes_by_frequency(
         self,
         view: ModelView,
-        indices_by_frequency: dict[Model.AttributeFrequency, tuple[Sequence[int], int]],
+        indices_by_frequency: dict[Model.AttributeFrequency | str, tuple[Sequence[int], int]],
         *,
         exclude: set[str],
     ) -> set[str]:
@@ -1108,7 +1150,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
         handled: set[str] = set()
         parent = object.__getattribute__(view, "_parent")
         overrides = object.__getattribute__(view, "_overrides")
-        names = sorted(set(vars(parent)) | set(overrides))
+        names = set(overrides)
+        for name in dir(parent):
+            if name.startswith("_") or hasattr(type(parent), name):
+                continue
+            names.add(name)
+        names = sorted(names)
         for name in names:
             if name in exclude or self._is_compact_projection_private_name(name):
                 continue
@@ -1285,42 +1332,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.max_joints_per_articulation = max_joints
         view.max_dofs_per_articulation = max_dofs
 
-    def _compact_equality_constraints(
-        self,
-        view: ModelView,
-        equality_order: Sequence[int],
-        body_global_to_local: dict[int, int],
-        joint_global_to_local: dict[int, int],
-    ) -> None:
-        body1 = self._select_numpy_array(view, "equality_constraint_body1", equality_order)
-        body2 = self._select_numpy_array(view, "equality_constraint_body2", equality_order)
-        joint1 = self._select_numpy_array(view, "equality_constraint_joint1", equality_order)
-        joint2 = self._select_numpy_array(view, "equality_constraint_joint2", equality_order)
-        if body1 is not None:
-            view.equality_constraint_body1 = wp.array(
-                [self._remap_optional_index(int(index), body_global_to_local) for index in body1],
-                dtype=wp.int32,
-                device=self.model.device,
-            )
-        if body2 is not None:
-            view.equality_constraint_body2 = wp.array(
-                [self._remap_optional_index(int(index), body_global_to_local) for index in body2],
-                dtype=wp.int32,
-                device=self.model.device,
-            )
-        if joint1 is not None:
-            view.equality_constraint_joint1 = wp.array(
-                [self._remap_optional_index(int(index), joint_global_to_local) for index in joint1],
-                dtype=wp.int32,
-                device=self.model.device,
-            )
-        if joint2 is not None:
-            view.equality_constraint_joint2 = wp.array(
-                [self._remap_optional_index(int(index), joint_global_to_local) for index in joint2],
-                dtype=wp.int32,
-                device=self.model.device,
-            )
-
     def _compact_mimic_constraints(
         self,
         view: ModelView,
@@ -1357,7 +1368,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 remapped.append(group)
                 continue
             local = [body_global_to_local[g] for g in (int(x) for x in group.numpy()) if g in body_global_to_local]
-            remapped.append(wp.array(local, dtype=group.dtype, device=self.model.device))
+            remapped.append(wp.array(local, dtype=wp.int32, device=self.model.device))
         view.body_color_groups = remapped
 
     def _set_world_start_arrays(self, view: ModelView) -> None:
@@ -1367,10 +1378,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.articulation_world_start = self._world_start_array(
             view.articulation_world,
             int(view.articulation_count),
-        )
-        view.equality_constraint_world_start = self._world_start_array(
-            view.equality_constraint_world,
-            int(view.equality_constraint_count),
         )
         view.joint_coord_world_start = self._joint_space_world_start_array(
             view.joint_world,
@@ -1435,19 +1442,27 @@ class SolverCoupled(SolverBase, CouplingInterface):
         coord_order: Sequence[int],
         dof_order: Sequence[int],
         shape_order: Sequence[int],
+        articulation_order: Sequence[int],
         equality_order: Sequence[int],
         mimic_order: Sequence[int],
     ) -> None:
         freq = self.model.AttributeFrequency
+        index_orders_by_frequency = self._compact_index_orders_by_frequency(
+            body_order,
+            joint_order,
+            coord_order,
+            dof_order,
+            shape_order,
+            articulation_order,
+            equality_order,
+            mimic_order,
+        )
         indices_by_frequency = {
-            freq.BODY: body_order,
-            freq.JOINT: joint_order,
-            freq.JOINT_COORD: coord_order,
-            freq.JOINT_DOF: dof_order,
-            freq.SHAPE: shape_order,
-            freq.EQUALITY_CONSTRAINT: equality_order,
-            freq.CONSTRAINT_MIMIC: mimic_order,
+            frequency: indices for frequency, (indices, _source_count) in index_orders_by_frequency.items()
         }
+        body_global_to_local = {global_id: local_id for local_id, global_id in enumerate(body_order)}
+        joint_global_to_local = {global_id: local_id for local_id, global_id in enumerate(joint_order)}
+
         for full_name, frequency in self.model.attribute_frequency.items():
             if ":" not in full_name:
                 continue
@@ -1455,12 +1470,23 @@ class SolverCoupled(SolverBase, CouplingInterface):
             parent_ns = getattr(self.model, namespace_name, None)
             if parent_ns is None:
                 continue
-            value = getattr(parent_ns, attr_name, None)
+            try:
+                value = object.__getattribute__(parent_ns, attr_name)
+            except AttributeError:
+                continue
             if value is None:
                 continue
-            namespace = getattr(view, namespace_name, None)
+            overrides = object.__getattribute__(view, "_overrides")
+            namespace = overrides.get(namespace_name)
             if namespace is None:
                 namespace = type(parent_ns)(namespace_name)
+                for name in dir(parent_ns):
+                    if name.startswith("_") or hasattr(type(parent_ns), name):
+                        continue
+                    try:
+                        setattr(namespace, name, object.__getattribute__(parent_ns, name))
+                    except AttributeError:
+                        continue
                 setattr(view, namespace_name, namespace)
             if frequency in (freq.ONCE, freq.WORLD):
                 setattr(namespace, attr_name, value)
@@ -1470,7 +1496,40 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 continue
             selected = self._select_attribute_value(value, indices)
             if selected is not None:
+                reference_map = None
+                if isinstance(frequency, str) and frequency.rsplit(":", 1)[-1] == "equality_constraint":
+                    if attr_name in ("equality_constraint_body1", "equality_constraint_body2"):
+                        reference_map = body_global_to_local
+                    elif attr_name in ("equality_constraint_joint1", "equality_constraint_joint2"):
+                        reference_map = joint_global_to_local
+                if reference_map is not None:
+                    selected = self._remap_compact_reference_value(selected, reference_map)
                 setattr(namespace, attr_name, selected)
+        self._sync_custom_frequency_namespace_metadata(view)
+
+    def _remap_compact_reference_value(self, value, global_to_local: dict[int, int]):
+        if isinstance(value, wp.array):
+            remapped = [self._remap_optional_index(int(index), global_to_local) for index in value.numpy()]
+            return wp.array(remapped, dtype=value.dtype, device=self.model.device)
+        if isinstance(value, np.ndarray):
+            return np.asarray([self._remap_optional_index(int(index), global_to_local) for index in value])
+        if isinstance(value, list):
+            return [self._remap_optional_index(int(index), global_to_local) for index in value]
+        return value
+
+    def _sync_custom_frequency_namespace_metadata(self, view: ModelView) -> None:
+        overrides = object.__getattribute__(view, "_overrides")
+        for frequency, count in view.custom_frequency_counts.items():
+            if ":" not in frequency:
+                continue
+            namespace_name, frequency_name = frequency.split(":", 1)
+            namespace = overrides.get(namespace_name)
+            if namespace is None:
+                continue
+            setattr(namespace, f"{frequency_name}_count", int(count))
+            world = getattr(namespace, f"{frequency_name}_world", None)
+            if isinstance(world, wp.array):
+                setattr(namespace, f"{frequency_name}_world_start", self._world_start_array(world, int(count)))
 
     def _select_attribute_value(self, value, indices: Sequence[int]):
         if isinstance(value, wp.array):
@@ -1728,6 +1787,37 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self._distribute_state(state_in, dt=dt)
         self._entry_output_state_valid = False
 
+    def reset(
+        self,
+        state: State,
+        world_mask: wp.array | None = None,
+        flags: StateFlags | int | None = None,
+    ) -> None:
+        """Reset coupled sub-solvers and clear coupled-solver transient state.
+
+        Args:
+            state: Parent-model simulation state to reset (modified in place).
+            world_mask: Optional boolean mask of shape ``(world_count,)``
+                selecting which worlds to reset. If ``None``, all worlds are
+                reset.
+            flags: Optional :class:`~newton.StateFlags` bitmask controlling
+                which state quantities sub-solvers should reset. If ``None``,
+                all state quantities are reset.
+        """
+        if state is None:
+            raise ValueError("'state' argument is required.")
+
+        self._distribute_state(state, iteration_restart=True)
+        for entry in self._entries.values():
+            entry.solver.reset(entry.state_0, world_mask=world_mask, flags=flags)
+            self._sync_entry_reset_state(entry)
+
+        self._reconcile_state(state)
+        self._reset_coupling_state(state, world_mask=world_mask, flags=flags)
+        self._clear_entry_contact_buffers()
+        self._rebuild_entry_solver_state_caches()
+        self._entry_output_state_valid = False
+
     # ------------------------------------------------------------------
     # SolverBase interface
     # ------------------------------------------------------------------
@@ -1761,6 +1851,38 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if entry.preserve_shape_ids:
                 self._ensure_entry_contact_buffer(entry, contacts)
 
+    def _sync_entry_reset_state(self, entry: SolverEntry) -> None:
+        """Mirror a reset entry input state to persistent entry buffers."""
+        if entry.state_1 is not None and entry.state_1 is not entry.state_0:
+            _copy_state(entry.state_0, entry.state_1)
+
+        for entry_state in (entry.state_0, entry.state_1):
+            if entry_state is not None:
+                _clear_transient_state_buffers(entry_state)
+
+    def _reset_coupling_state(
+        self,
+        state: State,
+        *,
+        world_mask: wp.array | None = None,
+        flags: StateFlags | int | None = None,
+    ) -> None:
+        """Hook for subclasses to clear algorithm-specific reset state."""
+        del state, world_mask, flags
+
+    def _clear_entry_contact_buffers(self) -> None:
+        """Invalidate cached entry-local contact buffers after a reset."""
+        for contacts in self._entry_contact_buffers.values():
+            contacts.clear(bump_generation=True)
+        self._entry_contact_sources.clear()
+
+    def _rebuild_entry_solver_state_caches(self) -> None:
+        """Refresh optional sub-solver spatial caches from reset entry states."""
+        for entry in self._entries.values():
+            rebuild_bvh = getattr(entry.solver, "rebuild_bvh", None)
+            if callable(rebuild_bvh):
+                rebuild_bvh(entry.state_0)
+
     def _step_coupled(
         self,
         state_in: State,
@@ -1784,13 +1906,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
         state_in: State,
         *,
         dt: float = 0.0,
-        restart: bool = False,
+        iteration_restart: bool = False,
     ) -> None:
         """Copy ``state_in`` into each sub-solver's ``state_0``."""
         for entry in self._entries.values():
             flags = self._input_state_copy_flags(state_in, entry.state_0)
             _copy_state_to_entry(state_in, entry.state_0, entry)
-            self._notify_input_state_update(entry, flags, dt=dt, restart=restart)
+            self._notify_input_state_update(entry, flags, dt=dt, iteration_restart=iteration_restart)
 
     def _reconcile_state(self, state_out: State) -> None:
         """Merge owned sub-solver state into ``state_out``."""
@@ -1998,14 +2120,16 @@ class SolverCoupled(SolverBase, CouplingInterface):
         flags: CouplingInputStateFlags | int,
         *,
         dt: float = 0.0,
-        restart: bool = False,
+        iteration_restart: bool = False,
     ) -> None:
         """Notify custom solvers after coupler-produced input state updates."""
         flags = CouplingInputStateFlags(flags)
-        if flags == 0 and not restart:
+        if flags == 0 and not iteration_restart:
             return
         _require_supports_coupling(entry.solver)
-        entry.solver.coupling_notify_input_state_update(entry.state_0, flags, restart=restart, dt=dt)
+        entry.solver.coupling_notify_input_state_update(
+            entry.state_0, flags, iteration_restart=iteration_restart, dt=dt
+        )
 
     def _step_entry(
         self,
@@ -2021,7 +2145,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
             contacts = self._contacts_for_entry(entry, contacts)
         control = _copy_control_to_entry(control, entry)
         if entry.in_place:
-            entry.solver.step(entry.state_0, entry.state_0, control, contacts, dt)
+            substep_dt = dt / float(entry.substeps)
+            for _ in range(entry.substeps):
+                entry.solver.step(entry.state_0, entry.state_0, control, contacts, substep_dt)
             return contacts
 
         if entry.substeps == 1:
@@ -2029,22 +2155,18 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return contacts
 
         substep_dt = dt / float(entry.substeps)
-        if entry.state_tmp is None or entry.state_tmp_1 is None:
-            raise RuntimeError(f"SolverCoupled.Entry {entry.name!r} is missing substep scratch states")
-        _copy_state(entry.state_0, entry.state_tmp)
-        state_in = entry.state_tmp
+        if entry.state_tmp is None:
+            raise RuntimeError(f"SolverCoupled.Entry {entry.name!r} is missing a substep scratch state")
+        _copy_state(entry.state_0, entry.state_1)
+        state_in = entry.state_1
+        state_out = entry.state_tmp
         for substep in range(entry.substeps):
-            remaining = entry.substeps - substep - 1
-            if remaining == 0:
-                state_out = entry.state_1
-            elif state_in is entry.state_tmp:
-                state_out = entry.state_tmp_1
-            else:
-                state_out = entry.state_tmp
             if substep > 0:
                 _copy_forces(entry.state_0, state_in)
             entry.solver.step(state_in, state_out, control, contacts, substep_dt)
-            state_in = state_out
+            state_in, state_out = state_out, state_in
+        if state_in is entry.state_tmp:
+            _copy_state(entry.state_tmp, entry.state_1)
         return contacts
 
     def _contacts_for_entry(self, entry: SolverEntry, contacts: Contacts | None) -> Contacts | None:
@@ -2479,6 +2601,14 @@ def _copy_forces(src: State, dst: State) -> None:
             _copy_prefix(dst.particle_f, src.particle_f, "particle_f")
         else:
             dst.particle_f.zero_()
+
+
+def _clear_transient_state_buffers(state: State) -> None:
+    """Clear force and acceleration buffers that should not survive reset."""
+    for name in ("body_f", "particle_f", "body_qdd", "body_parent_f"):
+        array = getattr(state, name, None)
+        if array is not None:
+            array.zero_()
 
 
 def _copy_prefix(dst: wp.array, src: wp.array, name: str) -> None:

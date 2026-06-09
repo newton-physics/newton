@@ -653,7 +653,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             # Kinematic bodies: set body_q.
             # Dynamic teleportation: also set body_q_prev and body_qd.
             self.body_q_prev = wp.clone(model.body_q, device=self.device)
-            self._coupling_proxy_body_q_prev = wp.clone(model.body_q, device=self.device)
+            self._coupling_body_q_prev_snapshot = wp.clone(model.body_q, device=self.device)
             self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)  # inertial target poses for AVBD
 
             # Adjacency and dimensions
@@ -801,7 +801,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         state: State,
         flags: CouplingInputStateFlags | int,
         *,
-        restart: bool = False,
+        iteration_restart: bool = False,
         dt: float = 0.0,
     ) -> None:
         """Convert input body pose updates into VBD-compatible history updates."""
@@ -809,15 +809,17 @@ class SolverVBD(SolverBase, CouplingInterface):
         if (
             dt <= 0.0
             or not (flags & CouplingInputStateFlags.BODY_Q)
-            or not (flags & CouplingInputStateFlags.BODY_QD)
             or state.body_q is None
             or state.body_qd is None
             or not self._coupling_has_rigid_avbd_state
         ):
             return
 
-        iteration_restart = int(bool(restart))
-        wp.copy(self._coupling_proxy_body_q_prev, self.body_q_prev)
+        if iteration_restart:
+            # Restore the beginning-of-iteration history after a previous solve advanced it.
+            wp.copy(dest=self.body_q_prev, src=self._coupling_body_q_prev_snapshot)
+        else:
+            wp.copy(dest=self._coupling_body_q_prev_snapshot, src=self.body_q_prev)
 
         wp.launch(
             _update_vbd_body_input_state_kernel,
@@ -826,16 +828,12 @@ class SolverVBD(SolverBase, CouplingInterface):
                 float(dt),
                 self.model.body_flags,
                 int(BodyFlags.KINEMATIC),
-                int(BodyFlags.PROXY),
-                iteration_restart,
                 state.body_q,
                 self.body_q_prev,
                 state.body_qd,
             ],
             device=self.device,
         )
-        if iteration_restart != 0:
-            wp.copy(self._coupling_proxy_body_q_prev, self.body_q_prev)
 
     def coupling_prepare_proxy_contacts(
         self,
@@ -856,8 +854,32 @@ class SolverVBD(SolverBase, CouplingInterface):
         coupling_forces: wp.array[wp.spatial_vector],
         dt: float,
     ) -> None:
-        """Keep synced VBD proxy-body velocities unchanged."""
-        del body_local_to_proxy_global, state, coupling_forces, dt
+        """Remove explicit loads while preserving VBD's position-level feedback.
+
+        VBD proxy feedback is barrier-style and position-dependent, so lagged
+        ``coupling_forces`` are not rewound. Public body forces and gravity are
+        removed because the destination VBD step will integrate them again.
+        """
+        del coupling_forces
+        if state.body_qd is None or body_local_to_proxy_global.shape[0] == 0:
+            return
+
+        wp.launch(
+            _rewind_vbd_proxy_body_external_forces_kernel,
+            dim=body_local_to_proxy_global.shape[0],
+            inputs=[
+                float(dt),
+                self.model.gravity,
+                self.model.body_world,
+                state.body_q,
+                state.body_f,
+                body_local_to_proxy_global,
+                self.model.body_inv_mass,
+                self.model.body_inv_inertia,
+                state.body_qd,
+            ],
+            device=self.device,
+        )
 
     def coupling_rewind_proxy_particle_velocity(
         self,
@@ -866,7 +888,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         coupling_forces: wp.array[wp.vec3],
         dt: float,
     ) -> None:
-        """Remove non-coupling particle forces already applied by the source."""
+        """Remove explicit loads while preserving VBD's position-level feedback.
+
+        VBD proxy feedback is barrier-style and position-dependent, so lagged
+        ``coupling_forces`` are not rewound. Public particle forces and gravity
+        are removed because the destination VBD step will integrate them again.
+        """
         del coupling_forces
         if state.particle_qd is None or particle_local_to_proxy_global.shape[0] == 0:
             return
@@ -913,7 +940,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         if contacts is None or state_out is None:
             return
 
-        body_q_prev = self._coupling_proxy_body_q_prev
+        body_q_prev = self._coupling_body_q_prev_snapshot
 
         if contacts.rigid_contact_max > 0:
             body0, body1, point0, point1, force_on_body1, rigid_contact_count = self.collect_rigid_contact_forces(
@@ -983,7 +1010,16 @@ class SolverVBD(SolverBase, CouplingInterface):
         contacts: Contacts | None = None,
         dt: float = 0.0,
     ) -> None:
-        """Harvest contact-only proxy-particle forces."""
+        """Harvest contact-only proxy-particle forces.
+
+        On the internal VBD/AVBD path, :meth:`step` advances ``state`` arrays
+        in place and mirrors final poses to ``state_out``. This hook therefore
+        reads ``state.particle_q`` and ``state.body_q`` as the converged
+        positions, while the pre-step body poses come from the coupling
+        snapshot because finalization advances ``body_q_prev``. With
+        ``integrate_with_external_rigid_solver=True``, rigid poses are supplied
+        by the external solver in ``state_out`` instead.
+        """
         del particle_qd_before
         if self.model.particle_count == 0 or particle_local_to_proxy_global.shape[0] == 0 or state is None:
             return
@@ -997,7 +1033,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             and self.body_particle_contact_penalty_k.shape[0] >= contacts.soft_contact_max
         ):
             body_q_for_particles = state.body_q
-            body_q_prev_for_particles = self.body_q_prev if self.model.body_count > 0 else None
+            body_q_prev_for_particles = self._coupling_body_q_prev_snapshot if self.model.body_count > 0 else None
             body_qd_for_particles = state.body_qd
             if self.integrate_with_external_rigid_solver and state_out is not None:
                 body_q_for_particles = state_out.body_q
@@ -3154,8 +3190,6 @@ def _update_vbd_body_input_state_kernel(
     dt: float,
     body_flags: wp.array[wp.int32],
     kinematic_flag: int,
-    proxy_flag: int,
-    iteration_restart: int,
     body_q: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -3164,15 +3198,8 @@ def _update_vbd_body_input_state_kernel(
     if (body_flags[local_body] & kinematic_flag) != 0:
         return
 
-    q_teleported = body_q[local_body]
-    if iteration_restart != 0:
-        body_q_prev[local_body] = q_teleported
-        return
-
-    if (body_flags[local_body] & proxy_flag) == 0:
-        return
-
     q_prev = body_q_prev[local_body]
+    q_teleported = body_q[local_body]
 
     p_teleported = wp.transform_get_translation(q_teleported)
     p_prev = wp.transform_get_translation(q_prev)
@@ -3182,8 +3209,41 @@ def _update_vbd_body_input_state_kernel(
     r_prev = wp.transform_get_rotation(q_prev)
     dw = quat_velocity(r_teleported, r_prev, dt)
 
-    body_qd[local_body] = body_qd[local_body] + wp.spatial_vector(dv, dw)
+    body_qd[local_body] += wp.spatial_vector(dv, dw)
     body_q[local_body] = q_prev
+
+
+@wp.kernel(enable_backward=False)
+def _rewind_vbd_proxy_body_external_forces_kernel(
+    dt: float,
+    gravity: wp.array[wp.vec3],
+    body_world: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_f: wp.array[wp.spatial_vector],
+    body_local_to_proxy_global: wp.array[int],
+    body_inv_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    local_id = wp.tid()
+    global_id = body_local_to_proxy_global[local_id]
+    if global_id < 0:
+        return
+
+    inv_m = body_inv_mass[local_id]
+    r = wp.transform_get_rotation(body_q[local_id])
+    inv_I = body_inv_inertia[local_id]
+
+    f = body_f[local_id]
+    delta_v = dt * inv_m * wp.spatial_top(f)
+    delta_w = dt * wp.quat_rotate(r, inv_I * wp.quat_rotate_inv(r, wp.spatial_bottom(f)))
+
+    world_idx = body_world[local_id]
+    delta_v_grav = wp.vec3(0.0, 0.0, 0.0)
+    if inv_m > 0.0:
+        delta_v_grav = dt * gravity[wp.max(world_idx, 0)]
+
+    body_qd[local_id] = body_qd[local_id] - wp.spatial_vector(delta_v + delta_v_grav, delta_w)
 
 
 @wp.kernel(enable_backward=False)
