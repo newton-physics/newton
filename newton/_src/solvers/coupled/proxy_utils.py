@@ -146,12 +146,15 @@ def subtract_proxy_forces_kernel(
     dst_body_inv_inertia: wp.array[wp.mat33],
     dst_body_qd: wp.array[wp.spatial_vector],
 ):
-    """Subtract already-integrated forces and gravity from proxy velocities.
+    """Subtract default velocity-level feedback, force inputs, and gravity.
 
-    Coupling forces were already applied to the driving solver; undoing them
-    here prevents double-counting. Destination external force inputs and
-    gravity are also subtracted because the synced proxy velocity came from a
-    driving solver that already accounted for those contributions.
+    The generic proxy path treats ``coupling_forces`` as lagged momentum or
+    velocity-level feedback, so they are rewound before the destination solve.
+    Position-dependent feedback, such as barrier-style contact, should use a
+    solver-specific rewind hook that preserves ``coupling_forces``.
+    Destination external force inputs and gravity are also subtracted because
+    the synced proxy velocity came from a driving solver that already accounted
+    for those contributions.
 
     Args:
         dt: Substep time step [s].
@@ -202,7 +205,7 @@ def subtract_proxy_particle_forces_kernel(
     dst_particle_inv_mass: wp.array[float],
     dst_particle_qd: wp.array[wp.vec3],
 ):
-    """Subtract already-integrated particle forces and gravity from proxy velocities."""
+    """Subtract default velocity-level feedback, particle force inputs, and gravity."""
     local_id = wp.tid()
     global_id = particle_local_to_proxy_global[local_id]
     if global_id < 0:
@@ -231,6 +234,7 @@ def harvest_proxy_momentum_forces_kernel(
     body_local_to_proxy_global: wp.array[int],
     qd_before: wp.array[wp.spatial_vector],
     qd_after: wp.array[wp.spatial_vector],
+    body_f: wp.array[wp.spatial_vector],
     body_mass: wp.array[float],
     body_inertia: wp.array[wp.mat33],
     body_q: wp.array[wp.transform],
@@ -254,8 +258,12 @@ def harvest_proxy_momentum_forces_kernel(
     world_idx = body_world[local_id]
     g = gravity[wp.max(world_idx, 0)]
 
-    f = m * dv / dt - m * g
-    tau = wp.quat_rotate(r, I_body * wp.quat_rotate_inv(r, dw)) / dt
+    f_ext = wp.spatial_vector(wp.vec3(0.0), wp.vec3(0.0))
+    if body_f:
+        f_ext = body_f[local_id]
+
+    f = m * dv / dt - m * g - wp.spatial_top(f_ext)
+    tau = wp.quat_rotate(r, I_body * wp.quat_rotate_inv(r, dw)) / dt - wp.spatial_bottom(f_ext)
 
     wp.atomic_add(out_coupling_forces, global_id, wp.spatial_vector(f, tau))
 
@@ -266,6 +274,7 @@ def harvest_proxy_particle_momentum_forces_kernel(
     particle_local_to_proxy_global: wp.array[int],
     qd_before: wp.array[wp.vec3],
     qd_after: wp.array[wp.vec3],
+    particle_f: wp.array[wp.vec3],
     particle_mass: wp.array[float],
     gravity: wp.array[wp.vec3],
     particle_world: wp.array[wp.int32],
@@ -282,8 +291,86 @@ def harvest_proxy_particle_momentum_forces_kernel(
 
     world_idx = particle_world[local_id]
     g = gravity[wp.max(world_idx, 0)]
+    f_ext = wp.vec3(0.0, 0.0, 0.0)
+    if particle_f:
+        f_ext = particle_f[local_id]
 
-    wp.atomic_add(out_coupling_forces, global_id, m * dv / dt - m * g)
+    wp.atomic_add(out_coupling_forces, global_id, m * dv / dt - m * g - f_ext)
+
+
+@wp.kernel(enable_backward=False)
+def filter_proxy_rigid_contacts_kernel(
+    rigid_contact_count: wp.array[int],
+    rigid_contact_shape0: wp.array[wp.int32],
+    rigid_contact_shape1: wp.array[wp.int32],
+    shape_body: wp.array[wp.int32],
+    body_flags: wp.array[wp.int32],
+    body_inv_mass: wp.array[float],
+    proxy_flag: int,
+):
+    """Invalidate proxy-vs-static and proxy-vs-proxy rigid contacts."""
+    contact_id = wp.tid()
+    if contact_id >= rigid_contact_count[0]:
+        return
+
+    s0 = rigid_contact_shape0[contact_id]
+    s1 = rigid_contact_shape1[contact_id]
+    body0 = shape_body[s0] if s0 >= 0 and s0 < shape_body.shape[0] else -1
+    body1 = shape_body[s1] if s1 >= 0 and s1 < shape_body.shape[0] else -1
+
+    is_proxy0 = 0
+    if body0 >= 0 and body0 < body_flags.shape[0]:
+        if (body_flags[body0] & proxy_flag) != 0:
+            is_proxy0 = 1
+    is_proxy1 = 0
+    if body1 >= 0 and body1 < body_flags.shape[0]:
+        if (body_flags[body1] & proxy_flag) != 0:
+            is_proxy1 = 1
+
+    is_static0 = 0
+    if body0 < 0:
+        is_static0 = 1
+    elif body0 < body_inv_mass.shape[0] and body_inv_mass[body0] == 0.0:
+        is_static0 = 1
+
+    is_static1 = 0
+    if body1 < 0:
+        is_static1 = 1
+    elif body1 < body_inv_mass.shape[0] and body_inv_mass[body1] == 0.0:
+        is_static1 = 1
+
+    discard = 0
+    if is_proxy0 == 1 and is_proxy1 == 1:
+        discard = 1
+    if is_proxy0 == 1 and is_static1 == 1:
+        discard = 1
+    if is_proxy1 == 1 and is_static0 == 1:
+        discard = 1
+
+    if discard == 1:
+        if s0 >= 0:
+            rigid_contact_shape0[contact_id] = -s0 - 2
+        if s1 >= 0:
+            rigid_contact_shape1[contact_id] = -s1 - 2
+
+
+@wp.kernel(enable_backward=False)
+def restore_filtered_proxy_rigid_contacts_kernel(
+    rigid_contact_count: wp.array[int],
+    rigid_contact_shape0: wp.array[wp.int32],
+    rigid_contact_shape1: wp.array[wp.int32],
+):
+    """Restore contacts temporarily encoded by proxy contact filtering."""
+    contact_id = wp.tid()
+    if contact_id >= rigid_contact_count[0]:
+        return
+
+    s0 = rigid_contact_shape0[contact_id]
+    s1 = rigid_contact_shape1[contact_id]
+    if s0 < -1:
+        rigid_contact_shape0[contact_id] = -s0 - 2
+    if s1 < -1:
+        rigid_contact_shape1[contact_id] = -s1 - 2
 
 
 @wp.kernel(enable_backward=False)

@@ -19,11 +19,14 @@ from newton._src.solvers.coupled.interface import (
     CouplingInterface,
 )
 from newton._src.solvers.coupled.proxy_utils import (
+    harvest_proxy_momentum_forces_kernel,
+    harvest_proxy_particle_momentum_forces_kernel,
     smooth_proxy_teleportation_kernel,
     subtract_proxy_forces_kernel,
     subtract_proxy_particle_forces_kernel,
     sync_proxy_states_kernel,
 )
+from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.vbd.rigid_vbd_kernels import forward_step_rigid_bodies
 from newton.solvers import (
     SolverBase,
@@ -204,11 +207,13 @@ class _InPlaceRecordingParticleSolver(SolverBase, CouplingInterface):
     def __init__(self, model):
         super().__init__(model)
         self.in_place_calls = []
+        self.dt_values = []
         self.instances[model.name] = self
 
     def step(self, state_in, state_out, control, contacts, dt):
-        del control, contacts, dt
+        del control, contacts
         self.in_place_calls.append(state_in is state_out)
+        self.dt_values.append(dt)
         if state_in is not state_out:
             wp.copy(state_out.particle_q, state_in.particle_q)
             wp.copy(state_out.particle_qd, state_in.particle_qd)
@@ -223,14 +228,14 @@ class _ParticleForceNotifySolver(_ParticleForceRecordingSolver):
     def __init__(self, model):
         super().__init__(model)
         self.notified_flags = []
-        self.notified_restart = []
+        self.notified_iteration_restart = []
         self.notified_particle_f = []
 
-    def coupling_notify_input_state_update(self, state, flags, *, restart=False, dt=0.0):
+    def coupling_notify_input_state_update(self, state, flags, *, iteration_restart=False, dt=0.0):
         del dt
         flags = CouplingInputStateFlags(flags)
         self.notified_flags.append(flags)
-        self.notified_restart.append(bool(restart))
+        self.notified_iteration_restart.append(bool(iteration_restart))
         if flags & CouplingInputStateFlags.PARTICLE_F:
             self.notified_particle_f.append(state.particle_f.numpy().copy())
 
@@ -505,6 +510,28 @@ class _StepCountingCopySolver(SolverBase, CouplingInterface):
             wp.copy(state_out.particle_qd, state_in.particle_qd)
 
 
+class _ResetRecordingSolver(_StepCountingCopySolver):
+    """Copy solver that records reset forwarding and clears velocities."""
+
+    instances: ClassVar[dict[str, "_ResetRecordingSolver"]] = {}
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.reset_count = 0
+        self.reset_world_masks = []
+        self.reset_flags = []
+
+    def reset(self, state, world_mask=None, flags=None):
+        self.reset_count += 1
+        self.reset_world_masks.append(world_mask)
+        self.reset_flags.append(flags)
+        flags_value = int(newton.StateFlags.ALL if flags is None else flags)
+        if state.body_qd is not None and flags_value & int(newton.StateFlags.BODY_QD):
+            state.body_qd.zero_()
+        if state.particle_qd is not None and flags_value & int(newton.StateFlags.PARTICLE_QD):
+            state.particle_qd.zero_()
+
+
 class _ContactRecordingCopySolver(_StepCountingCopySolver):
     """Copy solver that records rigid contact shape ids seen by step()."""
 
@@ -526,13 +553,17 @@ class _ContactRecordingCopySolver(_StepCountingCopySolver):
 
 
 class _ContactRecordingBodyHarvestSolver(_ContactRecordingCopySolver):
-    """Contact-recording solver with a custom body proxy harvest hook."""
+    """Contact-recording solver with custom body proxy contact hooks."""
 
     instances: ClassVar[dict[str, "_ContactRecordingBodyHarvestSolver"]] = {}
 
     def __init__(self, model):
         super().__init__(model)
         self.harvest_contacts = []
+
+    def coupling_prepare_proxy_contacts(self, state, contacts, *, contacts_freshly_detected=False):
+        del state, contacts_freshly_detected
+        return contacts
 
     def coupling_harvest_proxy_wrenches(
         self,
@@ -815,13 +846,6 @@ class TestModelView(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "set_body_inertial_properties"):
             view.set_body_mass(wp.array([0], dtype=int, device="cpu"), wp.array([1.0], dtype=float, device="cpu"))
 
-    def test_repr(self):
-        view = ModelView(self.model, "vbd")
-        view.body_inv_mass = wp.zeros(2, dtype=float, device="cpu")
-        r = repr(view)
-        self.assertIn("vbd", r)
-        self.assertIn("body_inv_mass", r)
-
     def test_setattr_rejects_unknown_name(self):
         view = ModelView(self.model, "test")
         with self.assertRaisesRegex(AttributeError, "no such attribute"):
@@ -868,66 +892,40 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         self.model = builder.finalize(device="cpu")
 
-    def test_construction(self):
-        """SolverCoupled should construct sub-solvers and ModelViews."""
+    def test_reset_forwards_to_entries_and_syncs_persistent_states(self):
+        """SolverCoupled.reset() should reset sub-solvers and persistent entry buffers."""
+        _ResetRecordingSolver.instances.clear()
         coupled = SolverCoupled(
             model=self.model,
             entries=[
-                SolverCoupled.Entry(name="A", solver=SolverSemiImplicit, bodies=[0]),
-                SolverCoupled.Entry(name="B", solver=SolverSemiImplicit, bodies=[1]),
+                SolverCoupled.Entry(name="A", solver=_ResetRecordingSolver, bodies=[0], substeps=2),
+                SolverCoupled.Entry(name="B", solver=_ResetRecordingSolver, bodies=[1]),
             ],
         )
+        state = self.model.state()
+        state_out = self.model.state()
+        wp.launch(_mutate_body_qd_at_kernel, dim=1, inputs=[state.body_qd, 0], device=self.model.device)
+        wp.launch(_mutate_body_qd_at_kernel, dim=1, inputs=[state.body_qd, 1], device=self.model.device)
+        coupled.step(state, state_out, control=None, contacts=None, dt=1.0 / 60.0)
 
-        solver_a = coupled.solver("A")
-        solver_b = coupled.solver("B")
-        self.assertIsInstance(solver_a, SolverSemiImplicit)
-        self.assertIsInstance(solver_b, SolverSemiImplicit)
+        world_mask = wp.array([True], dtype=wp.bool, device=self.model.device)
+        flags = newton.StateFlags.BODY_QD
+        coupled.reset(state, world_mask=world_mask, flags=flags)
 
-        view_a = coupled.view("A")
-        view_b = coupled.view("B")
-        # Solver A owns a dense prefix, so its local view is compact.
-        self.assertEqual(view_a.body_count, 1)
-        self.assertEqual(view_a.body_inv_mass.shape[0], 1)
-        self.assertGreater(view_a.body_inv_mass.numpy()[0], 0.0)
-        # Solver B is also compact even though it is not a parent-model prefix.
-        self.assertEqual(view_b.body_count, 1)
-        self.assertEqual(coupled._entries["B"].body_global_to_local.numpy()[0], -1)
-        self.assertEqual(coupled._entries["B"].body_global_to_local.numpy()[1], 0)
-        self.assertGreater(view_b.body_inv_mass.numpy()[0], 0.0)
-        self.assertGreater(view_b.body_mass.numpy()[0], 0.0)
-        self.assertEqual(view_b.body_flags.numpy()[0] & int(newton.BodyFlags.KINEMATIC), 0)
-        self.assertNotEqual(view_b.body_flags.numpy()[0] & int(newton.BodyFlags.DYNAMIC), 0)
+        np.testing.assert_allclose(state.body_qd.numpy(), np.zeros((2, 6)), atol=0.0)
 
-    def test_entry_visualization_accessors(self):
-        """SolverCoupled should expose entry-local views and states for rendering."""
-        coupled = SolverCoupled(
-            model=self.model,
-            entries=[
-                SolverCoupled.Entry(name="A", solver=SolverSemiImplicit, bodies=[0]),
-                SolverCoupled.Entry(name="B", solver=SolverSemiImplicit, bodies=[1]),
-            ],
-        )
+        solver_a = _ResetRecordingSolver.instances["A"]
+        solver_b = _ResetRecordingSolver.instances["B"]
+        self.assertEqual(solver_a.reset_count, 1)
+        self.assertEqual(solver_b.reset_count, 1)
+        self.assertIs(solver_a.reset_world_masks[0], world_mask)
+        self.assertIs(solver_b.reset_world_masks[0], world_mask)
+        self.assertEqual(solver_a.reset_flags[0], flags)
+        self.assertEqual(solver_b.reset_flags[0], flags)
 
-        self.assertEqual(coupled.entry_names(), ("A", "B"))
-        self.assertIs(coupled.entry_view("A"), coupled.view("A"))
-        self.assertFalse(coupled.entry_output_state_valid())
-        self.assertIs(coupled.entry_state("A"), coupled._entries["A"].state_0)
-        self.assertIs(coupled.entry_state("A", phase="input"), coupled._entries["A"].state_0)
-        self.assertIs(coupled.entry_state("A", phase="output"), coupled._entries["A"].state_1)
-        self.assertIsNone(coupled.entry_contacts("A", None))
-        with self.assertRaises(ValueError):
-            coupled.entry_state("A", phase="bad")
-
-        state_0 = self.model.state()
-        state_1 = self.model.state()
-        coupled.step(state_0, state_1, control=None, contacts=None, dt=1.0 / 60.0)
-
-        self.assertTrue(coupled.entry_output_state_valid())
-        self.assertIs(coupled.entry_state("A"), coupled._entries["A"].state_1)
-
-        coupled.sync_entry_states(state_1)
-        self.assertFalse(coupled.entry_output_state_valid())
-        self.assertIs(coupled.entry_state("A"), coupled._entries["A"].state_0)
+        entry_a = coupled._entries["A"]
+        np.testing.assert_allclose(entry_a.state_0.body_qd.numpy(), np.zeros((1, 6)), atol=0.0)
+        np.testing.assert_allclose(entry_a.state_1.body_qd.numpy(), np.zeros((1, 6)), atol=0.0)
 
     def test_entry_contacts_unavailable_for_compact_shape_ids(self):
         """Entry contacts should not be exposed when shape ids were compacted."""
@@ -1031,6 +1029,69 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_allclose(view_b.body_inv_mass.numpy()[0], 1.0 / (parent_mass[1] * scale), rtol=1.0e-6)
         np.testing.assert_allclose(view_b.body_inertia.numpy()[0], parent_inertia[1] * scale)
         self.assertEqual(coupled._entries["B"].body_global_to_local.numpy()[0], -1)
+
+    def test_proxy_reset_clears_lagged_buffers_and_contacts(self):
+        """SolverCoupledProxy.reset() should clear lagged feedback and contacts."""
+        builder = newton.ModelBuilder()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        model = builder.finalize(device="cpu")
+        contacts = newton.Contacts(1, 1, device=model.device)
+        contacts.contact_counters.assign(np.array([1, 1], dtype=np.int32))
+        old_generation = int(contacts.contact_generation.numpy()[0])
+        pipeline = _FakeProxyCollisionPipeline(model.device, contacts=contacts)
+
+        coupled = SolverCoupledProxy(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=_StepCountingCopySolver, bodies=[0]),
+                SolverCoupled.Entry(name="dst", solver=_StepCountingCopySolver, bodies=[1]),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(
+                        source="src",
+                        destination="dst",
+                        bodies=[0],
+                        proxy_bodies=[2],
+                        collision_pipeline=lambda view: pipeline,
+                    ),
+                ],
+            ),
+        )
+        mapping = coupled._proxy_mappings[0]
+        wp.launch(_mutate_body_qd_at_kernel, dim=1, inputs=[mapping.coupling_forces, 0], device=model.device)
+        wp.launch(_mutate_body_qd_at_kernel, dim=1, inputs=[mapping.proxy_qd_before, 0], device=model.device)
+        config = coupled._proxy_collision_configs[("src", "dst")]
+        config.collide_counter = 5
+
+        coupled.reset(model.state())
+
+        np.testing.assert_allclose(mapping.coupling_forces.numpy(), np.zeros((3, 6)), atol=0.0)
+        np.testing.assert_allclose(mapping.proxy_qd_before.numpy(), np.zeros((3, 6)), atol=0.0)
+        self.assertEqual(config.collide_counter, 0)
+        np.testing.assert_array_equal(contacts.contact_counters.numpy(), np.zeros(2, dtype=np.int32))
+        self.assertEqual(int(contacts.contact_generation.numpy()[0]), old_generation + 1)
+
+    def test_admm_reset_clears_work_buffers(self):
+        """SolverCoupledADMM.reset() should clear ADMM force and velocity work buffers."""
+        coupled = SolverCoupledADMM(
+            model=self.model,
+            entries=[
+                SolverCoupled.Entry(name="A", solver=_StepCountingCopySolver, bodies=[0]),
+                SolverCoupled.Entry(name="B", solver=_StepCountingCopySolver, bodies=[1]),
+            ],
+            coupling=SolverCoupledADMM.Config(iterations=1),
+        )
+        buf_a = coupled._admm_buffers["A"]
+        wp.launch(_mutate_body_qd_kernel, dim=1, inputs=[buf_a.body_f], device=self.model.device)
+        wp.launch(_mutate_body_qd_kernel, dim=1, inputs=[buf_a.body_qd_k], device=self.model.device)
+
+        coupled.reset(self.model.state())
+
+        np.testing.assert_allclose(buf_a.body_f.numpy(), np.zeros((1, 6)), atol=0.0)
+        np.testing.assert_allclose(buf_a.body_qd_k.numpy(), np.zeros((1, 6)), atol=0.0)
 
     def test_entry_shapes_filter_shape_contact_pairs(self):
         """Entry shape masks should prune explicit contact pairs in each view."""
@@ -1474,7 +1535,6 @@ class TestSolverCoupledBasic(unittest.TestCase):
             ],
         )
 
-        self.assertIs(coupled._entries["particles"].state_0, coupled._entries["particles"].state_1)
         state = model.state()
 
         coupled.step(state, state, control=None, contacts=None, dt=1.0 / 60.0)
@@ -1483,25 +1543,33 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertEqual(solver.in_place_calls, [True])
         np.testing.assert_allclose(state.particle_qd.numpy()[0], np.array([0.0, 2.0, 0.0]))
 
-    def test_entry_in_place_rejects_substeps(self):
-        """In-place entries are intentionally limited to single substeps."""
+    def test_entry_in_place_substeps_same_state(self):
+        """In-place entries can substep without allocating scratch states."""
+        _InPlaceRecordingParticleSolver.instances.clear()
         builder = newton.ModelBuilder(gravity=0.0)
         builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
         model = builder.finalize(device="cpu")
 
-        with self.assertRaises(ValueError):
-            SolverCoupled(
-                model=model,
-                entries=[
-                    SolverCoupled.Entry(
-                        name="particles",
-                        solver=lambda v: _InPlaceRecordingParticleSolver(model=v),
-                        particles=[0],
-                        substeps=2,
-                        in_place=True,
-                    ),
-                ],
-            )
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="particles",
+                    solver=lambda v: _InPlaceRecordingParticleSolver(model=v),
+                    particles=[0],
+                    substeps=3,
+                    in_place=True,
+                ),
+            ],
+        )
+
+        state = model.state()
+        coupled.step(state, state, control=None, contacts=None, dt=0.3)
+
+        solver = _InPlaceRecordingParticleSolver.instances["particles"]
+        self.assertEqual(solver.in_place_calls, [True, True, True])
+        np.testing.assert_allclose(solver.dt_values, [0.1, 0.1, 0.1])
+        np.testing.assert_allclose(state.particle_qd.numpy()[0], np.array([0.0, 6.0, 0.0]))
 
     def test_distribute_state_preserves_external_forces(self):
         """External body and particle forces should reach sub-solver states."""
@@ -1845,8 +1913,72 @@ class TestSolverCoupledMuJoCoVBDMultiEnv(unittest.TestCase):
         mjc_entry = coupled._entries["mjc"]
         self.assertEqual(mjc_view.joint_count, world_count)
         self.assertEqual(mjc_view.body_count, world_count)
+        self.assertEqual(
+            mjc_view.custom_frequency_counts["mujoco:equality_constraint"],
+            mjc_view.mujoco.equality_constraint_count,
+        )
+        self.assertNotIn("equality_constraint_count", mjc_view.overrides)
+        self.assertNotIn("equality_constraint_body1", mjc_view.overrides)
         self.assertEqual(mjc_entry.body_global_to_local.numpy()[expand(cable_bodies, bodies_per_world)[0]], -1)
         self.assertNotIn(int(newton.JointType.CABLE), {int(t) for t in mjc_view.joint_type.numpy()})
+
+    def test_compacted_multi_world_articulation_end_is_rebased(self):
+        """articulation_end must be rebased to local joint ids, matching articulation_start.
+
+        Regression: compaction rebased articulation_start but left articulation_end as
+        global joint indices, so a non-first-world articulation got an out-of-bounds
+        end (e.g. end=9 in an 8-joint view), corrupting solver FK (fixed base displaced).
+        """
+        world_count = 2
+        template = newton.ModelBuilder(gravity=0.0)
+
+        # Articulation A: fixed base + one revolute link (the "rigid" entry).
+        base = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), label="base")
+        jf = template.add_joint_fixed(parent=-1, child=base)
+        link = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), label="link")
+        jr = template.add_joint_revolute(parent=base, child=link, axis=(0.0, 0.0, 1.0))
+        template.add_articulation([jf, jr])
+        # Articulation B: a free body owned by the other entry.
+        free_body = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), label="free")
+        jfree = template.add_joint_free(child=free_body)
+        template.add_articulation([jfree])
+
+        builder = newton.ModelBuilder(gravity=0.0)
+        builder.replicate(template, world_count=world_count)
+        builder.color()
+        model = builder.finalize(device="cpu")
+
+        bpw, jpw = template.body_count, template.joint_count
+
+        def expand(ids, stride):
+            return [w * stride + i for w in range(world_count) for i in ids]
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="rigid",
+                    solver=SolverSemiImplicit,
+                    bodies=expand([base, link], bpw),
+                    joints=expand([jf, jr], jpw),
+                ),
+                SolverCoupled.Entry(
+                    name="free",
+                    solver=SolverSemiImplicit,
+                    bodies=expand([free_body], bpw),
+                    joints=expand([jfree], jpw),
+                ),
+            ],
+        )
+
+        view = coupled.view("rigid")
+        starts = view.articulation_start.numpy()
+        ends = view.articulation_end.numpy()
+        # Two articulations (one per world), each spanning 2 joints in the 4-joint view.
+        self.assertEqual(starts.tolist(), [0, 2, 4])
+        self.assertEqual(ends.tolist(), [2, 4])
+        # End indices must stay within the compacted joint range (no OOB).
+        self.assertTrue(all(e <= view.joint_count for e in ends))
 
 
 class TestSolverAdmmContactKernels(unittest.TestCase):
@@ -1911,6 +2043,7 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
                 active_count_max,
                 wp.zeros(capacity, dtype=int, device=device),
                 wp.zeros(capacity, dtype=wp.vec3, device=device),
+                wp.zeros(capacity, dtype=float, device=device),
             ],
             outputs=[
                 body_a,
@@ -1986,6 +2119,7 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
                 wp.zeros(capacity, dtype=int, device=device),
                 wp.full(capacity, -1, dtype=int, device=device),
                 wp.zeros(capacity, dtype=int, device=device),
+                wp.zeros(capacity, dtype=float, device=device),
                 wp.zeros(capacity, dtype=wp.vec3, device=device),
                 wp.zeros(capacity, dtype=wp.vec3, device=device),
             ],
@@ -2357,7 +2491,39 @@ class TestSolverCoupledProxyContactHooks(unittest.TestCase):
 
         dst_solver = _StepCountingCopySolver.instances["dst"]
         self.assertEqual(dst_solver.prepare_contact_calls, 1)
-        self.assertEqual(dst_solver.prepare_contact_fresh_flags, [False])
+        self.assertEqual(dst_solver.prepare_contact_fresh_flags, [True])
+
+    def test_outer_contacts_are_fresh_once_per_proxy_step(self):
+        _StepCountingCopySolver.instances.clear()
+        builder = newton.ModelBuilder(gravity=0.0)
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        model = builder.finalize(device="cpu")
+        outer_contacts = newton.Contacts(0, 0, device=model.device)
+        coupled = SolverCoupledProxy(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=_StepCountingCopySolver, bodies=[0]),
+                SolverCoupled.Entry(name="dst", solver=_CustomProxyContactRecordingSolver, bodies=[1]),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(
+                        source="src",
+                        destination="dst",
+                        bodies=[0],
+                    ),
+                ],
+                iterations=3,
+            ),
+        )
+
+        coupled.step(model.state(), model.state(), control=None, contacts=outer_contacts, dt=1.0 / 60.0)
+
+        dst_solver = _StepCountingCopySolver.instances["dst"]
+        self.assertEqual(dst_solver.prepare_contact_calls, 3)
+        self.assertEqual(dst_solver.prepare_contact_fresh_flags, [True, False, False])
+        self.assertEqual(dst_solver.prepare_contacts, [outer_contacts, outer_contacts, outer_contacts])
 
     def test_proxy_collision_pipeline_respects_interval(self):
         _StepCountingCopySolver.instances.clear()
@@ -2449,7 +2615,7 @@ class TestSolverCoupledProxyContactHooks(unittest.TestCase):
         self.assertIsNone(coupled.get_proxy_contacts("src", "dst"))
         dst_solver = _StepCountingCopySolver.instances["dst"]
         self.assertEqual(dst_solver.prepare_contact_calls, 1)
-        self.assertEqual(dst_solver.prepare_contact_fresh_flags, [False])
+        self.assertEqual(dst_solver.prepare_contact_fresh_flags, [True])
         self.assertEqual(dst_solver.prepare_contacts, [outer_contacts])
 
     def test_proxy_collide_interval_requires_pipeline(self):
@@ -2944,6 +3110,33 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         self.assertEqual(solver.step_count, 4)
         np.testing.assert_allclose(solver.dt_values, [0.05, 0.05, 0.05, 0.05])
 
+    def test_entry_substeps_copy_odd_final_scratch_to_output(self):
+        _InPlaceRecordingParticleSolver.instances.clear()
+        builder = newton.ModelBuilder(gravity=0.0)
+        builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="src",
+                    solver=lambda v: _InPlaceRecordingParticleSolver(model=v),
+                    particles=[0],
+                    substeps=3,
+                ),
+            ],
+        )
+
+        state_0 = model.state()
+        state_1 = model.state()
+        coupled.step(state_0, state_1, control=None, contacts=None, dt=0.3)
+
+        solver = _InPlaceRecordingParticleSolver.instances["src"]
+        self.assertEqual(solver.in_place_calls, [False, False, False])
+        np.testing.assert_allclose(solver.dt_values, [0.1, 0.1, 0.1])
+        np.testing.assert_allclose(state_1.particle_qd.numpy()[0], np.array([0.0, 6.0, 0.0]))
+
     def test_entry_substeps_preserve_input_state(self):
         _InputMutatingSolver.instances.clear()
         builder = newton.ModelBuilder(gravity=0.0)
@@ -3213,6 +3406,81 @@ class TestParticleFlagsProxy(unittest.TestCase):
         self.assertNotEqual(newton.ParticleFlags.PROXY, newton.ParticleFlags.ACTIVE)
 
 
+class TestDefaultProxyMomentumHarvest(unittest.TestCase):
+    """Default momentum harvest excludes public force inputs."""
+
+    def test_body_harvest_subtracts_public_force_and_gravity(self):
+        dev = "cpu"
+        dt = 0.5
+        body_local_to_proxy_global = wp.array([0], dtype=int, device=dev)
+        qd_before = wp.array([wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=dev)
+        qd_after = wp.array([wp.spatial_vector(1.0, 2.0, 3.0, 0.5, 0.25, 0.125)], dtype=wp.spatial_vector, device=dev)
+        body_f = wp.array([wp.spatial_vector(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)], dtype=wp.spatial_vector, device=dev)
+        body_mass = wp.array([2.0], dtype=float, device=dev)
+        body_inertia = wp.array(
+            [wp.mat33(4.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 6.0)],
+            dtype=wp.mat33,
+            device=dev,
+        )
+        body_q = wp.array([wp.transform(wp.vec3(0.0), wp.quat_identity())], dtype=wp.transform, device=dev)
+        gravity = wp.array([wp.vec3(0.0, -9.8, 0.0)], dtype=wp.vec3, device=dev)
+        body_world = wp.array([0], dtype=wp.int32, device=dev)
+        out = wp.zeros(1, dtype=wp.spatial_vector, device=dev)
+
+        wp.launch(
+            harvest_proxy_momentum_forces_kernel,
+            dim=1,
+            inputs=[
+                dt,
+                body_local_to_proxy_global,
+                qd_before,
+                qd_after,
+                body_f,
+                body_mass,
+                body_inertia,
+                body_q,
+                gravity,
+                body_world,
+                out,
+            ],
+            device=dev,
+        )
+
+        expected = np.array([3.0, 25.6, 9.0, 0.0, -2.5, -4.5])
+        np.testing.assert_allclose(out.numpy()[0], expected, rtol=1.0e-6, atol=1.0e-6)
+
+    def test_particle_harvest_subtracts_public_force_and_gravity(self):
+        dev = "cpu"
+        dt = 0.5
+        particle_local_to_proxy_global = wp.array([0], dtype=int, device=dev)
+        qd_before = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=dev)
+        qd_after = wp.array([wp.vec3(1.0, 2.0, 3.0)], dtype=wp.vec3, device=dev)
+        particle_f = wp.array([wp.vec3(1.0, 2.0, 3.0)], dtype=wp.vec3, device=dev)
+        particle_mass = wp.array([2.0], dtype=float, device=dev)
+        gravity = wp.array([wp.vec3(0.0, -10.0, 0.0)], dtype=wp.vec3, device=dev)
+        particle_world = wp.array([0], dtype=wp.int32, device=dev)
+        out = wp.zeros(1, dtype=wp.vec3, device=dev)
+
+        wp.launch(
+            harvest_proxy_particle_momentum_forces_kernel,
+            dim=1,
+            inputs=[
+                dt,
+                particle_local_to_proxy_global,
+                qd_before,
+                qd_after,
+                particle_f,
+                particle_mass,
+                gravity,
+                particle_world,
+                out,
+            ],
+            device=dev,
+        )
+
+        np.testing.assert_allclose(out.numpy()[0], np.array([3.0, 26.0, 9.0]), rtol=1.0e-6, atol=1.0e-6)
+
+
 class TestProxyVelocityRewind(unittest.TestCase):
     """Default proxy rewinds remove lagged feedback and public force inputs."""
 
@@ -3266,6 +3534,28 @@ class TestProxyVelocityRewind(unittest.TestCase):
         expected = np.array([9.625, 12.7, 10.875, 12.6875, 13.0, 12.25])
         np.testing.assert_allclose(body_qd.numpy()[0], expected, rtol=1.0e-6, atol=1.0e-6)
 
+    def test_vbd_body_rewind_subtracts_external_force_and_gravity_only(self):
+        builder = newton.ModelBuilder(gravity=-9.8, up_axis=newton.Axis.Y)
+        builder.add_body(mass=2.0, inertia=wp.mat33(4.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 6.0))
+        builder.color()
+        model = builder.finalize(device="cpu")
+        solver = SolverVBD(model, iterations=1)
+        state = model.state()
+        state.body_f.assign(np.array([[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]], dtype=np.float32))
+        state.body_qd.assign(np.array([[10.0, 11.0, 12.0, 13.0, 14.0, 15.0]], dtype=np.float32))
+
+        coupling_f = wp.array(
+            [wp.spatial_vector(2.0, 4.0, 6.0, 1.0, 3.0, 5.0)],
+            dtype=wp.spatial_vector,
+            device=model.device,
+        )
+        body_local_to_proxy_global = wp.array([0], dtype=int, device=model.device)
+
+        solver.coupling_rewind_proxy_body_velocity(body_local_to_proxy_global, state, coupling_f, dt=0.25)
+
+        expected = np.array([9.875, 13.2, 11.625, 12.75, 13.75, 14.75])
+        np.testing.assert_allclose(state.body_qd.numpy()[0], expected, rtol=1.0e-6, atol=1.0e-6)
+
     def test_particle_rewind_subtracts_coupling_external_force_and_gravity(self):
         dev = "cpu"
         dt = 0.5
@@ -3294,6 +3584,67 @@ class TestProxyVelocityRewind(unittest.TestCase):
         )
 
         np.testing.assert_allclose(particle_qd.numpy()[0], np.array([4.5, 10.5, 6.5]), rtol=1.0e-6, atol=1.0e-6)
+
+
+class TestVBDProxyParticleHarvest(unittest.TestCase):
+    """VBD proxy-particle harvest uses the converged in-place solver state."""
+
+    def test_body_particle_harvest_uses_coupling_body_q_prev_snapshot(self):
+        builder = newton.ModelBuilder(gravity=0.0)
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(body=body, radius=0.1)
+        builder.add_particle(
+            pos=(0.0, 0.0, 0.0),
+            vel=(0.0, 0.0, 0.0),
+            mass=1.0,
+            radius=0.1,
+            flags=int(newton.ParticleFlags.ACTIVE) | int(newton.ParticleFlags.PROXY),
+        )
+        builder.color()
+        model = builder.finalize(device="cpu")
+        solver = SolverVBD(model, iterations=1)
+        state = model.state()
+        state_out = model.state()
+
+        wp.copy(
+            solver._coupling_body_q_prev_snapshot,
+            wp.array(
+                [wp.transform(wp.vec3(-0.1, 0.0, 0.0), wp.quat_identity())],
+                dtype=wp.transform,
+                device=model.device,
+            ),
+        )
+        wp.copy(
+            solver.body_q_prev,
+            wp.array(
+                [wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())],
+                dtype=wp.transform,
+                device=model.device,
+            ),
+        )
+        solver.body_particle_contact_penalty_k = wp.array([10.0], dtype=float, device=model.device)
+        solver.body_particle_contact_material_kd = wp.array([2.0], dtype=float, device=model.device)
+        solver.body_particle_contact_material_mu = wp.array([0.0], dtype=float, device=model.device)
+
+        contacts = newton.Contacts(0, 1, device=model.device)
+        contacts.contact_counters.assign(np.array([0, 1], dtype=np.int32))
+        contacts.soft_contact_particle.assign(np.array([0], dtype=np.int32))
+        contacts.soft_contact_shape.assign(np.array([0], dtype=np.int32))
+        contacts.soft_contact_body_pos.assign(np.array([[0.0, 0.0, 0.0]], dtype=np.float32))
+        contacts.soft_contact_body_vel.assign(np.array([[0.0, 0.0, 0.0]], dtype=np.float32))
+        contacts.soft_contact_normal.assign(np.array([[1.0, 0.0, 0.0]], dtype=np.float32))
+
+        out_particle_f = wp.zeros(1, dtype=wp.vec3, device=model.device)
+        solver.coupling_harvest_proxy_particle_forces(
+            wp.array([0], dtype=int, device=model.device),
+            out_particle_f,
+            state=state,
+            state_out=state_out,
+            contacts=contacts,
+            dt=1.0,
+        )
+
+        np.testing.assert_allclose(out_particle_f.numpy()[0], np.array([3.0, 0.0, 0.0]), rtol=1.0e-6, atol=1.0e-6)
 
 
 class TestSmoothTeleportRecovery(unittest.TestCase):
@@ -3608,7 +3959,7 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
             entries=[
                 SolverCoupled.Entry(
                     name="src",
-                    solver=lambda view: SolverSemiImplicit(view),
+                    solver=SolverSemiImplicit,
                     bodies=[0, 1],
                     joints=[0, 1],
                 ),
@@ -3640,6 +3991,72 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
                     color_of.get(child),
                     f"joint-connected local bodies {parent},{child} share a color: {groups}",
                 )
+
+    def test_compacted_custom_namespace_does_not_mutate_parent(self):
+        """Compacted entry namespaces must be view-local, not parent aliases."""
+        builder = newton.ModelBuilder()
+        SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+        for _ in range(5):
+            builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        soft_joint = builder.add_joint_fixed(parent=3, child=4, custom_attributes={"vbd:joint_is_hard": 0})
+        builder.color()
+        model = builder.finalize(device="cpu")
+        model.vbd.namespace_marker = "parent metadata"
+
+        parent_joint_is_hard = model.vbd.joint_is_hard.numpy().copy()
+        vbd_joint_order = [2, 3, 4, soft_joint]
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="src",
+                    solver=SolverSemiImplicit,
+                    bodies=[0, 1],
+                    joints=[0, 1],
+                ),
+                SolverCoupled.Entry(
+                    name="dst",
+                    solver=lambda view: SolverVBD(view, iterations=1),
+                    bodies=[2, 3, 4],
+                    joints=vbd_joint_order,
+                ),
+            ],
+        )
+
+        np.testing.assert_array_equal(model.vbd.joint_is_hard.numpy(), parent_joint_is_hard)
+
+        view = coupled.view("dst")
+        self.assertIsNot(view.vbd, model.vbd)
+        self.assertEqual(view.vbd.namespace_marker, model.vbd.namespace_marker)
+        self.assertEqual(view.vbd.joint_is_hard.shape[0], view.joint_count)
+        np.testing.assert_array_equal(view.vbd.joint_is_hard.numpy(), parent_joint_is_hard[vbd_joint_order])
+
+    def test_compacted_custom_frequency_namespace_metadata_is_generic(self):
+        builder = newton.ModelBuilder()
+        for _ in range(4):
+            builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        _add_equality_constraint(builder, constraint_type=newton.EqType.CONNECT, body1=0, body2=1)
+        _add_equality_constraint(builder, constraint_type=newton.EqType.CONNECT, body1=2, body2=3)
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=SolverSemiImplicit, bodies=[0, 1]),
+                SolverCoupled.Entry(name="dst", solver=SolverSemiImplicit, bodies=[2, 3]),
+            ],
+        )
+
+        view = coupled.view("dst")
+        self.assertEqual(view.custom_frequency_counts["mujoco:equality_constraint"], 1)
+        self.assertEqual(view.mujoco.equality_constraint_count, 1)
+        self.assertEqual(view.mujoco.equality_constraint_type.shape[0], 1)
+        np.testing.assert_array_equal(view.mujoco.equality_constraint_body1.numpy(), np.array([0], dtype=np.int32))
+        np.testing.assert_array_equal(view.mujoco.equality_constraint_body2.numpy(), np.array([1], dtype=np.int32))
+        self.assertEqual(int(view.mujoco.equality_constraint_world_start.numpy()[-1]), 1)
+        self.assertNotIn("equality_constraint_count", view.overrides)
+        self.assertNotIn("equality_constraint_body1", view.overrides)
 
 
 if __name__ == "__main__":

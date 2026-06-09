@@ -13,7 +13,7 @@ import numpy as np
 import warp as wp
 
 from ...geometry.flags import ShapeFlags
-from ...sim import JointType, ModelFlags
+from ...sim import JointType, ModelFlags, StateFlags
 from .admm_contact_stream import (
     AdmmContactStream,
     AdmmContactType,
@@ -63,6 +63,11 @@ from .admm_utils import (
     lambda_update_kernel,
     particle_gravity_compensation_kernel,
     particle_particle_contacts_hashgrid_kernel,
+    refresh_rp_attachment_weights_kernel,
+    refresh_rr_angular_attachment_weights_kernel,
+    refresh_rr_attachment_weights_kernel,
+    scatter_body_effective_mass_block_kernel,
+    scatter_effective_mass_kernel,
     u_update_quadratic_kernel,
     velocity_proximal_shift_body_kernel,
     velocity_proximal_shift_joint_kernel,
@@ -104,7 +109,17 @@ class _AdmmBuffers:
     body_f: wp.array = field(default=None)
     particle_f: wp.array = field(default=None)
     body_effective_mass: wp.array = field(default=None)
+    body_effective_inertia_scalar: wp.array = field(default=None)
     particle_effective_mass: wp.array = field(default=None)
+    body_endpoint_kind: wp.array = field(default=None)
+    body_endpoint_index: wp.array = field(default=None)
+    body_endpoint_local_pos: wp.array = field(default=None)
+    body_effective_mass_local: wp.array = field(default=None)
+    body_effective_inertia_local: wp.array = field(default=None)
+    particle_endpoint_kind: wp.array = field(default=None)
+    particle_endpoint_index: wp.array = field(default=None)
+    particle_endpoint_local_pos: wp.array = field(default=None)
+    particle_effective_mass_local: wp.array = field(default=None)
 
 
 @dataclass
@@ -223,6 +238,7 @@ class _AdmmRigidRigidContactGroup:
     point_ids: wp.array | None = None
     prev_contact_active: wp.array | None = None
     prev_contact_lambda: wp.array | None = None
+    prev_contact_W: wp.array | None = None
     body_mask_a: wp.array | None = None
     body_mask_b: wp.array | None = None
     shape_mask_a: wp.array | None = None
@@ -267,6 +283,7 @@ class _AdmmRigidParticleContactGroup:
     prev_particle_ids: wp.array | None = None
     prev_shape_ids: wp.array | None = None
     prev_active: wp.array | None = None
+    prev_W: wp.array | None = None
     prev_u: wp.array | None = None
     prev_lambda: wp.array | None = None
 
@@ -305,6 +322,7 @@ class _AdmmParticleParticleContactGroup:
     prev_particle_ids_a: wp.array | None = None
     prev_particle_ids_b: wp.array | None = None
     prev_active: wp.array | None = None
+    prev_W: wp.array | None = None
     prev_u: wp.array | None = None
     prev_lambda: wp.array | None = None
 
@@ -560,6 +578,10 @@ class SolverCoupledADMM(SolverCoupled):
                 disables ADMM-managed contacts. Use
                 :meth:`SolverCoupledADMM.auto_detect_contact_pairs` to build the
                 old auto-discovery list.
+            effective_mass_refresh_interval: Number of ADMM steps between
+                effective-mass and attachment-weight refreshes. ``0`` disables
+                automatic step refresh, ``1`` refreshes every step, and ``n``
+                refreshes every nth step.
         """
 
         iterations: int = 5
@@ -575,6 +597,7 @@ class SolverCoupledADMM(SolverCoupled):
         joint_proximal_mass_scale: float = 1.0
         rigid_contact_matching: Literal["disabled", "latest", "sticky"] = "disabled"
         contact_pairs: Sequence[SolverCoupledADMM.ContactPair] = ()
+        effective_mass_refresh_interval: int = 1
 
     def __init__(
         self,
@@ -605,12 +628,15 @@ class SolverCoupledADMM(SolverCoupled):
         self._entry_particle_sets: dict[str, set[int]] = {}
         self._admm_rigid_particle_shape_filters: dict[int, set[int] | None] = {}
         self._admm_effective_mass_unsupported: set[tuple[str, int]] = set()
+        self._admm_effective_mass_refresh_step = 0
         self._admm_joint_proxy_body_keep: dict[str, set[int]] = {}
         self._admm_joint_proxy_joint_keep: dict[str, set[int]] = {}
         self._admm_joint_proxy_mappings: list[_AdmmJointProxyMapping] = []
 
         if coupling.joint_proximal_mass_scale <= 0.0:
             raise ValueError("ADMM joint_proximal_mass_scale must be positive")
+        if coupling.effective_mass_refresh_interval < 0:
+            raise ValueError("ADMM effective_mass_refresh_interval must be non-negative")
         if coupling.joint_proximal_bodies:
             self._init_admm_joint_proxy_visibility(model, entries, coupling.joint_proximal_destination_entries)
 
@@ -820,6 +846,11 @@ class SolverCoupledADMM(SolverCoupled):
         if int(flags) & int(ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._apply_admm_joint_proxy_effective_masses()
 
+    def notify_model_changed(self, flags: int) -> None:
+        super().notify_model_changed(flags)
+        if int(flags) & int(ModelFlags.BODY_INERTIAL_PROPERTIES):
+            self._refresh_admm_effective_masses_and_weights()
+
     def _sum_active_count(self, attr: str) -> int:
         """Sum a per-group active-count array across all dynamic contact groups.
 
@@ -984,46 +1015,132 @@ class SolverCoupledADMM(SolverCoupled):
         ) and self._admm_internal_contacts is None:
             self._admm_internal_contacts = self._admm_collision_pipeline.contacts()
 
+    def _reset_coupling_state(
+        self,
+        state: State,
+        *,
+        world_mask: wp.array | None = None,
+        flags: StateFlags | int | None = None,
+    ) -> None:
+        """Clear ADMM warm-start and internal contact buffers after reset."""
+        super()._reset_coupling_state(state, world_mask=world_mask, flags=flags)
+        for name, entry in self._entries.items():
+            buf = self._admm_buffers[name]
+            if buf.body_q_n is not None:
+                wp.copy(buf.body_q_n, entry.state_0.body_q)
+                wp.copy(buf.body_qd_n, entry.state_0.body_qd)
+                wp.copy(buf.body_qd_k, entry.state_0.body_qd)
+            if buf.particle_q_n is not None:
+                wp.copy(buf.particle_q_n, entry.state_0.particle_q)
+                wp.copy(buf.particle_qd_n, entry.state_0.particle_qd)
+                wp.copy(buf.particle_qd_k, entry.state_0.particle_qd)
+            if buf.joint_q_n is not None:
+                wp.copy(buf.joint_q_n, entry.state_0.joint_q)
+                wp.copy(buf.joint_qd_n, entry.state_0.joint_qd)
+                wp.copy(buf.joint_qd_k, entry.state_0.joint_qd)
+            self._zero_array(buf.body_f)
+            self._zero_array(buf.particle_f)
+
+        for group in (
+            *self._admm_rr_groups,
+            *self._admm_rr_angular_groups,
+            *self._admm_rr_revolute_angular_groups,
+            *self._admm_rr_angular_friction_groups,
+            *self._admm_rp_groups,
+            *self._admm_rr_contact_groups,
+            *self._admm_rp_contact_groups,
+            *self._admm_pp_contact_groups,
+        ):
+            self._zero_group_reset_arrays(group)
+
+        if self._admm_internal_contacts is not None:
+            self._admm_internal_contacts.clear(bump_generation=True)
+        self._admm_effective_mass_refresh_step = 0
+
+    @staticmethod
+    def _zero_array(array) -> None:
+        if array is not None:
+            array.zero_()
+
+    @classmethod
+    def _zero_group_reset_arrays(cls, group) -> None:
+        for attr in (
+            "u",
+            "lambda_",
+            "Jv",
+            "u_target",
+            "u_min",
+            "active",
+            "active_count",
+            "active_count_max",
+            "prev_active",
+            "prev_W",
+            "prev_u",
+            "prev_lambda",
+            "prev_contact_active",
+            "prev_contact_lambda",
+            "prev_contact_W",
+        ):
+            cls._zero_array(getattr(group, attr, None))
+        contact_stream = getattr(group, "contact_stream", None)
+        if contact_stream is None:
+            return
+        for attr in ("count", "count_max", "normal_force", "normal_impulse"):
+            cls._zero_array(getattr(contact_stream, attr, None))
+
     def _setup_admm_effective_mass_buffers(self, entry: SolverEntry, buf: _AdmmBuffers) -> None:
         device = self.model.device
         if self.model.body_mass is not None:
-            body_mass = self.model.body_mass.numpy().copy()
-            self._apply_custom_effective_mass(
+            buf.body_effective_mass = wp.array(self.model.body_mass.numpy().copy(), dtype=float, device=device)
+            if self.model.body_inertia is not None:
+                body_inertia = self.model.body_inertia.numpy()
+                buf.body_effective_inertia_scalar = wp.array(
+                    [self._inertia_scalar(wp.mat33(np.asarray(inertia, dtype=np.float32))) for inertia in body_inertia],
+                    dtype=float,
+                    device=device,
+                )
+            (
+                buf.body_endpoint_kind,
+                buf.body_endpoint_index,
+                buf.body_endpoint_local_pos,
+                buf.body_effective_mass_local,
+            ) = self._setup_admm_effective_mass_endpoint_buffers(
                 entry,
                 CouplingEndpointKind.BODY,
                 entry.body_indices,
-                body_mass,
             )
-            buf.body_effective_mass = wp.array(body_mass, dtype=float, device=device)
+            buf.body_effective_inertia_local = wp.empty(entry.body_indices.shape[0], dtype=wp.mat33, device=device)
+            self._refresh_admm_body_effective_mass_buffer(entry, buf, raise_on_unsupported=False)
         if self.model.particle_mass is not None:
-            particle_mass = self.model.particle_mass.numpy().copy()
-            self._apply_custom_effective_mass(
+            buf.particle_effective_mass = wp.array(self.model.particle_mass.numpy().copy(), dtype=float, device=device)
+            (
+                buf.particle_endpoint_kind,
+                buf.particle_endpoint_index,
+                buf.particle_endpoint_local_pos,
+                buf.particle_effective_mass_local,
+            ) = self._setup_admm_effective_mass_endpoint_buffers(
                 entry,
                 CouplingEndpointKind.PARTICLE,
                 entry.particle_indices,
-                particle_mass,
             )
-            buf.particle_effective_mass = wp.array(particle_mass, dtype=float, device=device)
+            self._refresh_admm_particle_effective_mass_buffer(entry, buf, raise_on_unsupported=False)
 
-    def _apply_custom_effective_mass(
+    def _setup_admm_effective_mass_endpoint_buffers(
         self,
         entry: SolverEntry,
         endpoint_kind: CouplingEndpointKind,
         endpoint_indices: wp.array,
-        mass_values,
-    ) -> None:
-        masses = self._eval_effective_masses(
-            entry,
-            endpoint_kind,
-            endpoint_indices,
-            raise_on_unsupported=False,
-        )
-        if masses is None:
-            self._admm_effective_mass_unsupported.add((entry.name, int(endpoint_kind)))
-            return
+    ) -> tuple[wp.array, wp.array, wp.array, wp.array]:
+        device = self.model.device
         indices = [int(i) for i in endpoint_indices.numpy()]
-        for index, mass in zip(indices, masses, strict=True):
-            mass_values[index] = float(mass)
+        local_indices = self._endpoint_indices_to_local(entry, endpoint_kind, indices)
+        count = len(indices)
+        return (
+            wp.array([int(endpoint_kind)] * count, dtype=int, device=device),
+            wp.array(local_indices, dtype=int, device=device),
+            wp.zeros(count, dtype=wp.vec3, device=device),
+            wp.empty(count, dtype=float, device=device),
+        )
 
     def _body_effective_mass_np(self, entry_name: str):
         buf = self._admm_buffers[entry_name]
@@ -1033,8 +1150,18 @@ class SolverCoupledADMM(SolverCoupled):
         buf = self._admm_buffers[entry_name]
         return buf.particle_effective_mass.numpy() if buf.particle_effective_mass is not None else []
 
+    def _mark_effective_mass_unsupported(
+        self,
+        entry: SolverEntry,
+        endpoint_kind: CouplingEndpointKind,
+    ) -> None:
+        self._admm_effective_mass_unsupported.add((entry.name, int(endpoint_kind)))
+
+    def _is_effective_mass_unsupported(self, entry_name: str, endpoint_kind: CouplingEndpointKind) -> bool:
+        return (entry_name, int(endpoint_kind)) in self._admm_effective_mass_unsupported
+
     def _require_effective_mass(self, entry_name: str, endpoint_kind: CouplingEndpointKind) -> None:
-        if (entry_name, int(endpoint_kind)) not in self._admm_effective_mass_unsupported:
+        if not self._is_effective_mass_unsupported(entry_name, endpoint_kind):
             return
         solver = self._entries[entry_name].solver
         raise NotImplementedError(f"{solver.__class__.__name__} does not support coupling_eval_effective_mass()")
@@ -1043,7 +1170,192 @@ class SolverCoupledADMM(SolverCoupled):
     def _interface_weight(m_a: float, m_b: float) -> float:
         if m_a > 0.0 and m_b > 0.0:
             return ((m_a * m_b) / (m_a + m_b)) ** 0.5
+        if m_a > 0.0:
+            return m_a**0.5
+        if m_b > 0.0:
+            return m_b**0.5
         return 1.0
+
+    def _refresh_admm_effective_mass_buffers(self, *, raise_on_unsupported: bool = True) -> None:
+        for entry_name, entry in self._entries.items():
+            buf = self._admm_buffers[entry_name]
+            if not self._is_effective_mass_unsupported(entry_name, CouplingEndpointKind.BODY):
+                self._refresh_admm_body_effective_mass_buffer(entry, buf, raise_on_unsupported=raise_on_unsupported)
+            if not self._is_effective_mass_unsupported(entry_name, CouplingEndpointKind.PARTICLE):
+                self._refresh_admm_particle_effective_mass_buffer(
+                    entry,
+                    buf,
+                    raise_on_unsupported=raise_on_unsupported,
+                )
+
+    def _refresh_admm_body_effective_mass_buffer(
+        self,
+        entry: SolverEntry,
+        buf: _AdmmBuffers,
+        *,
+        raise_on_unsupported: bool = True,
+    ) -> None:
+        if buf.body_effective_mass is None or buf.body_endpoint_index is None or buf.body_endpoint_index.shape[0] == 0:
+            return
+
+        if buf.body_effective_inertia_scalar is not None:
+            try:
+                entry.solver.coupling_eval_effective_mass_block(
+                    buf.body_endpoint_kind,
+                    buf.body_endpoint_index,
+                    buf.body_endpoint_local_pos,
+                    buf.body_effective_mass_local,
+                    buf.body_effective_inertia_local,
+                )
+            except NotImplementedError:
+                if raise_on_unsupported:
+                    raise
+                self._mark_effective_mass_unsupported(entry, CouplingEndpointKind.BODY)
+                return
+            wp.launch(
+                scatter_body_effective_mass_block_kernel,
+                dim=entry.body_indices.shape[0],
+                inputs=[
+                    entry.body_indices,
+                    buf.body_effective_mass_local,
+                    buf.body_effective_inertia_local,
+                    buf.body_effective_mass,
+                    buf.body_effective_inertia_scalar,
+                ],
+                device=self.model.device,
+            )
+            return
+
+        try:
+            entry.solver.coupling_eval_effective_mass(
+                buf.body_endpoint_kind,
+                buf.body_endpoint_index,
+                buf.body_endpoint_local_pos,
+                buf.body_effective_mass_local,
+            )
+        except NotImplementedError:
+            if raise_on_unsupported:
+                raise
+            self._mark_effective_mass_unsupported(entry, CouplingEndpointKind.BODY)
+            return
+        wp.launch(
+            scatter_effective_mass_kernel,
+            dim=entry.body_indices.shape[0],
+            inputs=[entry.body_indices, buf.body_effective_mass_local, buf.body_effective_mass],
+            device=self.model.device,
+        )
+
+    def _refresh_admm_particle_effective_mass_buffer(
+        self,
+        entry: SolverEntry,
+        buf: _AdmmBuffers,
+        *,
+        raise_on_unsupported: bool = True,
+    ) -> None:
+        if (
+            buf.particle_effective_mass is None
+            or buf.particle_endpoint_index is None
+            or buf.particle_endpoint_index.shape[0] == 0
+        ):
+            return
+
+        try:
+            entry.solver.coupling_eval_effective_mass(
+                buf.particle_endpoint_kind,
+                buf.particle_endpoint_index,
+                buf.particle_endpoint_local_pos,
+                buf.particle_effective_mass_local,
+            )
+        except NotImplementedError:
+            if raise_on_unsupported:
+                raise
+            self._mark_effective_mass_unsupported(entry, CouplingEndpointKind.PARTICLE)
+            return
+
+        wp.launch(
+            scatter_effective_mass_kernel,
+            dim=entry.particle_indices.shape[0],
+            inputs=[entry.particle_indices, buf.particle_effective_mass_local, buf.particle_effective_mass],
+            device=self.model.device,
+        )
+
+    def _refresh_admm_attachment_weights(self) -> None:
+        for group in self._admm_rr_groups:
+            if group.count == 0:
+                continue
+            entry_a = self._entries[group.body_entry_name_a]
+            entry_b = self._entries[group.body_entry_name_b]
+            buf_a = self._admm_buffers[group.body_entry_name_a]
+            buf_b = self._admm_buffers[group.body_entry_name_b]
+            wp.launch(
+                refresh_rr_attachment_weights_kernel,
+                dim=group.count,
+                inputs=[
+                    group.body_ids_a,
+                    group.body_ids_b,
+                    entry_a.body_local_to_global,
+                    entry_b.body_local_to_global,
+                    buf_a.body_effective_mass,
+                    buf_b.body_effective_mass,
+                    group.W,
+                    group.lambda_,
+                ],
+                device=self.model.device,
+            )
+
+        for group in self._admm_rp_groups:
+            if group.count == 0:
+                continue
+            body_entry = self._entries[group.body_entry_name]
+            body_buf = self._admm_buffers[group.body_entry_name]
+            particle_buf = self._admm_buffers[group.particle_entry_name]
+            wp.launch(
+                refresh_rp_attachment_weights_kernel,
+                dim=group.count,
+                inputs=[
+                    group.body_ids,
+                    group.particle_ids,
+                    body_entry.body_local_to_global,
+                    body_buf.body_effective_mass,
+                    particle_buf.particle_effective_mass,
+                    group.W,
+                    group.lambda_,
+                ],
+                device=self.model.device,
+            )
+
+        for group in (
+            *self._admm_rr_angular_groups,
+            *self._admm_rr_revolute_angular_groups,
+            *self._admm_rr_angular_friction_groups,
+        ):
+            if group.count == 0:
+                continue
+            entry_a = self._entries[group.body_entry_name_a]
+            entry_b = self._entries[group.body_entry_name_b]
+            buf_a = self._admm_buffers[group.body_entry_name_a]
+            buf_b = self._admm_buffers[group.body_entry_name_b]
+            if buf_a.body_effective_inertia_scalar is None or buf_b.body_effective_inertia_scalar is None:
+                continue
+            wp.launch(
+                refresh_rr_angular_attachment_weights_kernel,
+                dim=group.count,
+                inputs=[
+                    group.body_ids_a,
+                    group.body_ids_b,
+                    entry_a.body_local_to_global,
+                    entry_b.body_local_to_global,
+                    buf_a.body_effective_inertia_scalar,
+                    buf_b.body_effective_inertia_scalar,
+                    group.W,
+                    group.lambda_,
+                ],
+                device=self.model.device,
+            )
+
+    def _refresh_admm_effective_masses_and_weights(self) -> None:
+        self._refresh_admm_effective_mass_buffers()
+        self._refresh_admm_attachment_weights()
 
     def _setup_admm_contact_specs(self, coupling: SolverCoupledADMM.Config) -> None:
         """Populate dynamic ADMM contact specs from configured contact pairs."""
@@ -1862,6 +2174,10 @@ class SolverCoupledADMM(SolverCoupled):
         del state_out
         coupling = self._coupling
         iters = max(1, int(coupling.iterations))
+        interval = int(coupling.effective_mass_refresh_interval)
+        if interval > 0 and self._admm_effective_mass_refresh_step % interval == 0:
+            self._refresh_admm_effective_masses_and_weights()
+        self._admm_effective_mass_refresh_step += 1
         self._refresh_collision_contact_groups(state_in)
 
         for name, entry in self._entries.items():
@@ -1938,6 +2254,7 @@ class SolverCoupledADMM(SolverCoupled):
                 inputs=[
                     group.prev_contact_active,
                     group.prev_contact_lambda,
+                    group.prev_contact_W,
                 ],
                 device=self.model.device,
             )
@@ -1948,9 +2265,11 @@ class SolverCoupledADMM(SolverCoupled):
                     group.active_count,
                     group.contact_ids,
                     group.active,
+                    group.W,
                     group.lambda_,
                     group.prev_contact_active,
                     group.prev_contact_lambda,
+                    group.prev_contact_W,
                 ],
                 device=self.model.device,
             )
@@ -2011,6 +2330,7 @@ class SolverCoupledADMM(SolverCoupled):
                     group.active_count_max,
                     group.prev_contact_active,
                     group.prev_contact_lambda,
+                    group.prev_contact_W,
                 ],
                 outputs=[
                     group.body_ids_a,
@@ -2047,6 +2367,7 @@ class SolverCoupledADMM(SolverCoupled):
                         group.particle_ids,
                         group.shape_ids,
                         group.active,
+                        group.W,
                         group.u,
                         group.lambda_,
                     ],
@@ -2055,6 +2376,7 @@ class SolverCoupledADMM(SolverCoupled):
                         group.prev_particle_ids,
                         group.prev_shape_ids,
                         group.prev_active,
+                        group.prev_W,
                         group.prev_u,
                         group.prev_lambda,
                     ],
@@ -2109,6 +2431,7 @@ class SolverCoupledADMM(SolverCoupled):
                         group.prev_particle_ids,
                         group.prev_shape_ids,
                         group.prev_active,
+                        group.prev_W,
                         group.prev_u,
                         group.prev_lambda,
                     ],
@@ -2146,6 +2469,7 @@ class SolverCoupledADMM(SolverCoupled):
                     group.particle_ids_a,
                     group.particle_ids_b,
                     group.active,
+                    group.W,
                     group.u,
                     group.lambda_,
                 ],
@@ -2153,6 +2477,7 @@ class SolverCoupledADMM(SolverCoupled):
                     group.prev_particle_ids_a,
                     group.prev_particle_ids_b,
                     group.prev_active,
+                    group.prev_W,
                     group.prev_u,
                     group.prev_lambda,
                 ],
@@ -2229,6 +2554,7 @@ class SolverCoupledADMM(SolverCoupled):
                     group.prev_particle_ids_a,
                     group.prev_particle_ids_b,
                     group.prev_active,
+                    group.prev_W,
                     group.prev_u,
                     group.prev_lambda,
                 ],
@@ -2304,6 +2630,7 @@ class SolverCoupledADMM(SolverCoupled):
                     point_ids=wp.full(capacity, -1, dtype=int, device=device),
                     prev_contact_active=wp.zeros(contact_capacity, dtype=int, device=device),
                     prev_contact_lambda=wp.zeros(contact_capacity, dtype=wp.vec3, device=device),
+                    prev_contact_W=wp.zeros(contact_capacity, dtype=float, device=device),
                     body_mask_a=self._make_int_mask_array(self.model.body_count, self._entry_body_sets[spec.owner_a]),
                     body_mask_b=self._make_int_mask_array(self.model.body_count, self._entry_body_sets[spec.owner_b]),
                     shape_mask_a=self._make_int_mask_array(self.model.shape_count, set(shapes_a)),
@@ -2367,6 +2694,7 @@ class SolverCoupledADMM(SolverCoupled):
                     prev_particle_ids=wp.zeros(capacity, dtype=int, device=device),
                     prev_shape_ids=wp.full(capacity, -1, dtype=int, device=device),
                     prev_active=wp.zeros(capacity, dtype=int, device=device),
+                    prev_W=wp.zeros(capacity, dtype=float, device=device),
                     prev_u=wp.zeros(capacity, dtype=wp.vec3, device=device),
                     prev_lambda=wp.zeros(capacity, dtype=wp.vec3, device=device),
                 )
@@ -2430,6 +2758,7 @@ class SolverCoupledADMM(SolverCoupled):
                     prev_particle_ids_a=wp.zeros(capacity, dtype=int, device=device),
                     prev_particle_ids_b=wp.zeros(capacity, dtype=int, device=device),
                     prev_active=wp.zeros(capacity, dtype=int, device=device),
+                    prev_W=wp.zeros(capacity, dtype=float, device=device),
                     prev_u=wp.zeros(capacity, dtype=wp.vec3, device=device),
                     prev_lambda=wp.zeros(capacity, dtype=wp.vec3, device=device),
                 )
@@ -2666,7 +2995,7 @@ class SolverCoupledADMM(SolverCoupled):
             wp.copy(entry.state_0.joint_qd, buf.joint_qd_n)
             flags |= CouplingInputStateFlags.JOINT
 
-        self._notify_input_state_update(entry, flags, dt=dt, restart=bool(iteration_restart) and bool(flags))
+        self._notify_input_state_update(entry, flags, dt=dt, iteration_restart=bool(iteration_restart) and bool(flags))
 
         if apply_proximal:
             self._apply_admm_velocity_proximal_shift(entry, buf, gamma, dt)

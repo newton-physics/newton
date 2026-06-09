@@ -112,15 +112,15 @@ class _AdmmParticleForceNotifySolver(_CustomAdmmParticleCopySolver):
     def __init__(self, model):
         super().__init__(model)
         self.notified_flags = []
-        self.notified_restart = []
+        self.notified_iteration_restart = []
         self.notified_particle_f = []
         self.instances.append(self)
 
-    def coupling_notify_input_state_update(self, state, flags, *, restart=False, dt=0.0):
+    def coupling_notify_input_state_update(self, state, flags, *, iteration_restart=False, dt=0.0):
         del dt
         flags = CouplingInputStateFlags(flags)
         self.notified_flags.append(flags)
-        self.notified_restart.append(bool(restart))
+        self.notified_iteration_restart.append(bool(iteration_restart))
         if flags & CouplingInputStateFlags.PARTICLE_F:
             self.notified_particle_f.append(state.particle_f.numpy().copy())
 
@@ -133,16 +133,16 @@ class _CustomAdmmInputStateUpdateSolver(_CustomAdmmParticleCopySolver):
     def __init__(self, model):
         super().__init__(model)
         self.update_calls = []
-        self.update_restart = []
+        self.update_iteration_restart = []
         self.proximal_shift_calls = 0
         self.input_particle_qd = None
         self.instances.append(self)
 
-    def coupling_notify_input_state_update(self, state, flags, *, restart=False, dt=0.0):
+    def coupling_notify_input_state_update(self, state, flags, *, iteration_restart=False, dt=0.0):
         del dt
         flags = CouplingInputStateFlags(flags)
         self.update_calls.append(flags)
-        self.update_restart.append(bool(restart))
+        self.update_iteration_restart.append(bool(iteration_restart))
         if flags == CouplingInputStateFlags.PARTICLE_QD:
             self.proximal_shift_calls += 1
             self.input_particle_qd = state.particle_qd.numpy().copy()
@@ -575,17 +575,28 @@ class TestAdmmComReference(unittest.TestCase):
         )
         prev_contact_active = wp.array([1, 1, 1, 1, 1], dtype=int, device=device)
         prev_contact_lambda = wp.array([wp.vec3(9.0, 9.0, 9.0)] * 5, dtype=wp.vec3, device=device)
+        prev_contact_W = wp.array([9.0] * 5, dtype=float, device=device)
+        W = wp.array([2.0, 4.0, 8.0], dtype=float, device=device)
 
         wp.launch(
             contact_rr_clear_contact_snapshot_kernel,
             dim=prev_contact_active.shape[0],
-            inputs=[prev_contact_active, prev_contact_lambda],
+            inputs=[prev_contact_active, prev_contact_lambda, prev_contact_W],
             device=device,
         )
         wp.launch(
             contact_rr_snapshot_by_contact_kernel,
             dim=contact_id.shape[0],
-            inputs=[active_count, contact_id, active, lambda_, prev_contact_active, prev_contact_lambda],
+            inputs=[
+                active_count,
+                contact_id,
+                active,
+                W,
+                lambda_,
+                prev_contact_active,
+                prev_contact_lambda,
+                prev_contact_W,
+            ],
             device=device,
         )
 
@@ -593,6 +604,7 @@ class TestAdmmComReference(unittest.TestCase):
         np.testing.assert_allclose(prev_contact_lambda.numpy()[1], np.array([1.0, 0.0, 0.0]), atol=1.0e-6)
         np.testing.assert_allclose(prev_contact_lambda.numpy()[3], np.array([3.0, 0.0, 0.0]), atol=1.0e-6)
         np.testing.assert_allclose(prev_contact_lambda.numpy()[0], np.zeros(3), atol=1.0e-6)
+        np.testing.assert_allclose(prev_contact_W.numpy(), [0.0, 4.0, 0.0, 2.0, 0.0], atol=1.0e-6)
 
     def test_gamma_gravity_compensation_uses_pre_scaled_mass(self):
         device = "cpu"
@@ -1370,8 +1382,10 @@ class TestAdmmCouplingHooks(unittest.TestCase):
         custom_solver = _CustomAdmmInputStateUpdateSolver.instances[-1]
         self.assertTrue(
             any(
-                restart and bool(flags & CouplingInputStateFlags.PARTICLE)
-                for flags, restart in zip(custom_solver.update_calls, custom_solver.update_restart, strict=True)
+                iteration_restart and bool(flags & CouplingInputStateFlags.PARTICLE)
+                for flags, iteration_restart in zip(
+                    custom_solver.update_calls, custom_solver.update_iteration_restart, strict=True
+                )
             )
         )
 
@@ -1404,6 +1418,53 @@ class TestAdmmCouplingHooks(unittest.TestCase):
         expected = (36.0 / 13.0) ** 0.5
         self.assertEqual(int(group.active_count.numpy()[0]), 1)
         np.testing.assert_allclose(group.W.numpy()[:1], [expected], atol=1.0e-6)
+
+    def test_effective_mass_refresh_interval_updates_contact_weights(self):
+        _CustomEffectiveMassSolver.instances.clear()
+        model = _build_two_particle_contact_scene(gap=-0.08)
+        solver = SolverCoupledADMM(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="a",
+                    solver=lambda v: _CustomEffectiveMassSolver(model=v, effective_mass=4.0),
+                    particles=[0],
+                ),
+                SolverCoupled.Entry(
+                    name="b",
+                    solver=lambda v: _CustomEffectiveMassSolver(model=v, effective_mass=9.0),
+                    particles=[1],
+                ),
+            ],
+            coupling=SolverCoupledADMM.Config(
+                iterations=1,
+                effective_mass_refresh_interval=2,
+                contact_pairs=[
+                    SolverCoupledADMM.ContactPair(source="a", destination="b", contact_distance=0.1),
+                ],
+            ),
+        )
+
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+
+        solver.step(state_0, state_1, control, contacts=None, dt=1.0 / 60.0)
+        state_0, state_1 = state_1, state_0
+        group = solver._admm_dynamic_pp_contact_groups[0]
+        old_weight = (36.0 / 13.0) ** 0.5
+        np.testing.assert_allclose(group.W.numpy()[:1], [old_weight], atol=1.0e-6)
+
+        _CustomEffectiveMassSolver.instances[0].effective_mass = 16.0
+        _CustomEffectiveMassSolver.instances[1].effective_mass = 25.0
+
+        solver.step(state_0, state_1, control, contacts=None, dt=1.0 / 60.0)
+        state_0, state_1 = state_1, state_0
+        np.testing.assert_allclose(group.W.numpy()[:1], [old_weight], atol=1.0e-6)
+
+        solver.step(state_0, state_1, control, contacts=None, dt=1.0 / 60.0)
+        new_weight = (400.0 / 41.0) ** 0.5
+        np.testing.assert_allclose(group.W.numpy()[:1], [new_weight], atol=1.0e-6)
 
 
 class TestAdmmSmoke(unittest.TestCase):
@@ -1766,6 +1827,29 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         solver = _make_semi_body_particle_solver(model)
 
         self.assertEqual(len(solver._admm_rp_groups), 0)
+
+    def test_notify_refreshes_attachment_weight_and_rescales_lambda(self):
+        model = _build_body_particle_attachment_scene()
+        solver = _make_semi_body_particle_solver(model)
+        group = solver._admm_rp_groups[0]
+
+        old_weight = float(group.W.numpy()[0])
+        wp.copy(
+            group.lambda_,
+            wp.array([wp.vec3(4.0, 0.0, 0.0)], dtype=wp.vec3, device=model.device),
+        )
+
+        model.body_mass.assign(np.array([4.0], dtype=np.float32))
+        model.body_inv_mass.assign(np.array([0.25], dtype=np.float32))
+        solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+        new_weight = (4.0 / 5.0) ** 0.5
+        np.testing.assert_allclose(group.W.numpy(), [new_weight], atol=1.0e-6)
+        np.testing.assert_allclose(
+            group.lambda_.numpy()[0],
+            np.array([4.0 * old_weight / new_weight, 0.0, 0.0]),
+            atol=1.0e-6,
+        )
 
 
 class TestAdmmExternalForces(unittest.TestCase):

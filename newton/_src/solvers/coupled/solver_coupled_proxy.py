@@ -13,13 +13,13 @@ from typing import TYPE_CHECKING
 import numpy as np
 import warp as wp
 
-from ...sim import BodyFlags, ModelFlags
+from ...sim import ModelFlags, StateFlags
 from .interface import (
     CouplingEndpointKind,
     CouplingInputStateFlags,
-    CouplingInterface,
 )
 from .proxy_utils import (
+    restore_filtered_proxy_rigid_contacts_kernel,
     sync_proxy_particles_kernel,
     sync_proxy_states_kernel,
 )
@@ -97,15 +97,6 @@ class _ProxyMode(IntEnum):
 
 
 _PROXY_MODE_BY_NAME = {"lagged": _ProxyMode.LAGGED, "staggered": _ProxyMode.STAGGERED}
-
-
-def _uses_default_body_proxy_harvest(solver: CouplingInterface) -> bool:
-    """Return whether ``solver`` inherits the mixin's body momentum harvest."""
-    for cls in type(solver).mro():
-        method = cls.__dict__.get("coupling_harvest_proxy_wrenches")
-        if method is not None:
-            return method is CouplingInterface.coupling_harvest_proxy_wrenches
-    return False
 
 
 class SolverCoupledProxy(SolverCoupled):
@@ -569,6 +560,30 @@ class SolverCoupledProxy(SolverCoupled):
             mapping.coupling_forces = wp.zeros(model.particle_count, dtype=wp.vec3, device=device)
             mapping.proxy_qd_before = wp.zeros(model.particle_count, dtype=wp.vec3, device=device)
 
+    def _reset_coupling_state(
+        self,
+        state: State,
+        *,
+        world_mask: wp.array | None = None,
+        flags: StateFlags | int | None = None,
+    ) -> None:
+        """Clear lagged proxy feedback and collision caches after reset."""
+        super()._reset_coupling_state(state, world_mask=world_mask, flags=flags)
+        for mapping in self._proxy_mappings:
+            if mapping.coupling_forces is not None:
+                mapping.coupling_forces.zero_()
+            if mapping.proxy_qd_before is not None:
+                mapping.proxy_qd_before.zero_()
+        for mapping in self._proxy_particle_mappings:
+            if mapping.coupling_forces is not None:
+                mapping.coupling_forces.zero_()
+            if mapping.proxy_qd_before is not None:
+                mapping.proxy_qd_before.zero_()
+        for config in self._proxy_collision_configs.values():
+            config.collide_counter = 0
+            if config.contacts is not None:
+                config.contacts.clear(bump_generation=True)
+
     def _entry_has_body_proxy_overrides(self, name: str) -> bool:
         for proxy in self._proxy_mappings:
             if (
@@ -663,10 +678,10 @@ class SolverCoupledProxy(SolverCoupled):
         for k in range(iterations):
             # Some solvers use state_in arrays as temporary buffers during a
             # step. Proxy iterations are repeated solves over the same top-level
-            # interval, so each relaxation pass restarts from the original
-            # distributed input state and only carries harvested feedback
-            # buffers forward.
-            self._distribute_state(state_in, dt=dt, restart=k > 0)
+            # interval, so relaxation restarts copy the original distributed
+            # input state and only carry harvested feedback buffers forward.
+            if k > 0:
+                self._distribute_state(state_in, dt=dt, iteration_restart=True)
             self._step_proxy(state_in, control, contacts, dt, iteration_restart=k > 0)
 
     def _build_proxy_groups(self) -> dict[tuple[str, str], dict[str, list]]:
@@ -695,7 +710,7 @@ class SolverCoupledProxy(SolverCoupled):
             src = self._entries[src_name]
             dst = self._entries[dst_name]
 
-            if src.body_force_input is not None and (src.body_indices.shape[0] > 0 or body_proxies):
+            if src.has_body_force_input and (src.body_indices.shape[0] > 0 or body_proxies):
                 self._clear_body_force_input(src)
                 self._add_body_force_input(src, src.body_local_to_global, state_in.body_f)
                 for proxy in body_proxies:
@@ -706,7 +721,7 @@ class SolverCoupledProxy(SolverCoupled):
                     )
                 self._notify_input_state_update(src, CouplingInputStateFlags.BODY_F, dt=dt)
 
-            if src.particle_force_input is not None and (src.particle_indices.shape[0] > 0 or particle_proxies):
+            if src.has_particle_force_input and (src.particle_indices.shape[0] > 0 or particle_proxies):
                 self._clear_particle_force_input(src)
                 self._add_particle_force_input(src, src.particle_local_to_global, state_in.particle_f)
                 for proxy in particle_proxies:
@@ -788,7 +803,10 @@ class SolverCoupledProxy(SolverCoupled):
                 self._notify_input_state_update(dst, CouplingInputStateFlags.PARTICLE_QD, dt=dt)
 
             dst_contacts = contacts
-            contacts_freshly_detected = False
+            # Without a proxy-local collision pipeline, the caller-provided
+            # contact set is the fresh outer-step result. Inner proxy
+            # iterations reuse it.
+            contacts_freshly_detected = not iteration_restart
             filter_dst_contacts = True
             collision_config = self._proxy_collision_configs.get((src_name, dst_name))
             if collision_config is not None:
@@ -797,55 +815,42 @@ class SolverCoupledProxy(SolverCoupled):
                 )
                 filter_dst_contacts = False
 
-            use_body_momentum_harvest = body_proxies and _uses_default_body_proxy_harvest(dst.solver)
-            restore_filtered_contacts = False
+            restore_external_contacts = None
             dst_contacts_used = dst_contacts
+
+            if body_proxies:
+                contacts_before_prepare = dst_contacts
+                dst_contacts = dst.solver.coupling_prepare_proxy_contacts(
+                    dst.state_0,
+                    dst_contacts,
+                    contacts_freshly_detected=contacts_freshly_detected,
+                )
+                if (
+                    collision_config is None
+                    and contacts_before_prepare is contacts
+                    and contacts_before_prepare is not None
+                    and contacts_before_prepare.rigid_contact_count is not None
+                ):
+                    restore_external_contacts = contacts_before_prepare
+
+            for proxy in body_proxies:
+                wp.copy(proxy.proxy_qd_before, dst.state_0.body_qd)
+            for proxy in particle_proxies:
+                wp.copy(proxy.proxy_qd_before, dst.state_0.particle_qd)
+
             try:
-                if body_proxies:
-                    dst_contacts = dst.solver.coupling_prepare_proxy_contacts(
-                        dst.state_0,
-                        dst_contacts,
-                        contacts_freshly_detected=contacts_freshly_detected,
-                    )
-
-                    if (
-                        use_body_momentum_harvest
-                        and dst_contacts is not None
-                        and dst_contacts.rigid_contact_count is not None
-                    ):
-                        wp.launch(
-                            _filter_proxy_rigid_contacts_kernel,
-                            dim=dst_contacts.rigid_contact_shape0.shape[0],
-                            inputs=[
-                                dst_contacts.rigid_contact_count,
-                                dst_contacts.rigid_contact_shape0,
-                                dst_contacts.rigid_contact_shape1,
-                                dst.view.shape_body,
-                                dst.view.body_flags,
-                                dst.view.body_inv_mass,
-                                int(BodyFlags.PROXY),
-                            ],
-                            device=self.model.device,
-                        )
-                        restore_filtered_contacts = True
-
-                for proxy in body_proxies:
-                    wp.copy(proxy.proxy_qd_before, dst.state_0.body_qd)
-                for proxy in particle_proxies:
-                    wp.copy(proxy.proxy_qd_before, dst.state_0.particle_qd)
-
                 dst_contacts_used = self._step_entry(
                     dst, control, dst_contacts, dt, filter_contacts=filter_dst_contacts
                 )
             finally:
-                if restore_filtered_contacts:
+                if restore_external_contacts is not None:
                     wp.launch(
-                        _restore_filtered_proxy_rigid_contacts_kernel,
-                        dim=dst_contacts.rigid_contact_shape0.shape[0],
+                        restore_filtered_proxy_rigid_contacts_kernel,
+                        dim=restore_external_contacts.rigid_contact_shape0.shape[0],
                         inputs=[
-                            dst_contacts.rigid_contact_count,
-                            dst_contacts.rigid_contact_shape0,
-                            dst_contacts.rigid_contact_shape1,
+                            restore_external_contacts.rigid_contact_count,
+                            restore_external_contacts.rigid_contact_shape0,
+                            restore_external_contacts.rigid_contact_shape1,
                         ],
                         device=self.model.device,
                     )
@@ -873,78 +878,3 @@ class SolverCoupledProxy(SolverCoupled):
                     contacts=dst_contacts_used,
                     dt=dt,
                 )
-
-
-@wp.kernel(enable_backward=False)
-def _filter_proxy_rigid_contacts_kernel(
-    rigid_contact_count: wp.array[int],
-    rigid_contact_shape0: wp.array[wp.int32],
-    rigid_contact_shape1: wp.array[wp.int32],
-    shape_body: wp.array[wp.int32],
-    body_flags: wp.array[wp.int32],
-    body_inv_mass: wp.array[float],
-    proxy_flag: int,
-):
-    """Invalidate proxy-vs-static and proxy-vs-proxy rigid contacts."""
-    contact_id = wp.tid()
-    if contact_id >= rigid_contact_count[0]:
-        return
-
-    s0 = rigid_contact_shape0[contact_id]
-    s1 = rigid_contact_shape1[contact_id]
-    body0 = shape_body[s0] if s0 >= 0 and s0 < shape_body.shape[0] else -1
-    body1 = shape_body[s1] if s1 >= 0 and s1 < shape_body.shape[0] else -1
-
-    is_proxy0 = 0
-    if body0 >= 0 and body0 < body_flags.shape[0]:
-        if (body_flags[body0] & proxy_flag) != 0:
-            is_proxy0 = 1
-    is_proxy1 = 0
-    if body1 >= 0 and body1 < body_flags.shape[0]:
-        if (body_flags[body1] & proxy_flag) != 0:
-            is_proxy1 = 1
-
-    is_static0 = 0
-    if body0 < 0:
-        is_static0 = 1
-    elif body0 < body_inv_mass.shape[0] and body_inv_mass[body0] == 0.0:
-        is_static0 = 1
-
-    is_static1 = 0
-    if body1 < 0:
-        is_static1 = 1
-    elif body1 < body_inv_mass.shape[0] and body_inv_mass[body1] == 0.0:
-        is_static1 = 1
-
-    discard = 0
-    if is_proxy0 == 1 and is_proxy1 == 1:
-        discard = 1
-    if is_proxy0 == 1 and is_static1 == 1:
-        discard = 1
-    if is_proxy1 == 1 and is_static0 == 1:
-        discard = 1
-
-    if discard == 1:
-        if s0 >= 0:
-            rigid_contact_shape0[contact_id] = -s0 - 2
-        if s1 >= 0:
-            rigid_contact_shape1[contact_id] = -s1 - 2
-
-
-@wp.kernel(enable_backward=False)
-def _restore_filtered_proxy_rigid_contacts_kernel(
-    rigid_contact_count: wp.array[int],
-    rigid_contact_shape0: wp.array[wp.int32],
-    rigid_contact_shape1: wp.array[wp.int32],
-):
-    """Restore contacts temporarily encoded by proxy contact filtering."""
-    contact_id = wp.tid()
-    if contact_id >= rigid_contact_count[0]:
-        return
-
-    s0 = rigid_contact_shape0[contact_id]
-    s1 = rigid_contact_shape1[contact_id]
-    if s0 < -1:
-        rigid_contact_shape0[contact_id] = -s0 - 2
-    if s1 < -1:
-        rigid_contact_shape1[contact_id] = -s1 - 2
