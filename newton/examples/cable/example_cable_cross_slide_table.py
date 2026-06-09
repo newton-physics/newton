@@ -868,7 +868,7 @@ class Example:
             radius=cable_radius,
             cfg=cable_cfg,
             stretch_stiffness=1.0e5,
-            stretch_damping=0.0,
+            stretch_damping=1.0e-4,
             bend_stiffness=1.0e-2,
             bend_damping=1.0e-2,
             wrap_in_articulation=False,
@@ -937,14 +937,13 @@ class Example:
             self.model,
             iterations=sim_iterations,
             rigid_body_contact_buffer_size=256,
-            rigid_contact_hard=True,
-            rigid_contact_history=True,
+            rigid_contact_hard=False,
         )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        pipeline = newton.CollisionPipeline(self.model, broad_phase="explicit", contact_matching="latest")
+        pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.model.contacts(collision_pipeline=pipeline)
 
         # Device arrays used by kernels during simulation and CUDA graph replay.
@@ -1013,7 +1012,6 @@ class Example:
         """Advance the XY table simulation by one rendered frame."""
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.viewer.apply_forces(self.state_0)
 
             wp.launch(
                 drive_input_pulleys,
@@ -1030,6 +1028,7 @@ class Example:
                 device=self.model.device,
             )
 
+            self.viewer.apply_forces(self.state_0)
             self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
