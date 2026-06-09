@@ -133,7 +133,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             # shared Mesh — finalize() must not mutate user-owned geometry).
             model = builder.finalize(device=device)
             self.assertGreaterEqual(
-                int(model.shape_sdf_index.numpy()[s1]),
+                int(model._shape_sdf_index.numpy()[s1]),
                 0,
                 "Expected an SDF entry for shape s1 in the finalized model.",
             )
@@ -193,7 +193,7 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             model = builder.finalize(device=device)
             self.assertGreaterEqual(
-                int(model.shape_sdf_index.numpy()[s1]),
+                int(model._shape_sdf_index.numpy()[s1]),
                 0,
                 "Expected SDF built from default_shape_cfg during finalize.",
             )
@@ -267,7 +267,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             # shared Mesh.
             model = builder.finalize(device=device)
             self.assertGreaterEqual(
-                int(model.shape_sdf_index.numpy()[s1]),
+                int(model._shape_sdf_index.numpy()[s1]),
                 0,
                 "Expected SDF built with sdfPadding during finalize.",
             )
@@ -396,7 +396,7 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             model = builder.finalize(device=device)
             self.assertGreaterEqual(
-                int(model.shape_sdf_index.numpy()[s1]),
+                int(model._shape_sdf_index.numpy()[s1]),
                 0,
                 "Applied SDF API should land an SDF entry on the finalized model.",
             )
@@ -493,8 +493,8 @@ class TestSDFUSDParsing(unittest.TestCase):
         builder.shape_sdf_max_resolution[s1] = 32
 
         model = builder.finalize(device=device)
-        idx0 = int(model.shape_sdf_index.numpy()[s0])
-        idx1 = int(model.shape_sdf_index.numpy()[s1])
+        idx0 = int(model._shape_sdf_index.numpy()[s0])
+        idx1 = int(model._shape_sdf_index.numpy()[s1])
 
         self.assertGreaterEqual(idx0, 0)
         self.assertGreaterEqual(idx1, 0)

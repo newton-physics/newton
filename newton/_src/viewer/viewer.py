@@ -191,7 +191,7 @@ class ViewerBase(ABC):
             model: The Newton model to visualize.
             max_worlds: Maximum number of worlds to render (None = all).
 
-                .. deprecated::
+                .. deprecated:: 1.1
                     Use :meth:`set_visible_worlds` instead.
         """
         if self.model is not None:
@@ -211,7 +211,7 @@ class ViewerBase(ABC):
 
         if model is not None:
             self.device = model.device
-            self._shape_sdf_index_host = model.shape_sdf_index.numpy() if model.shape_sdf_index is not None else None
+            self._shape_sdf_index_host = model._shape_sdf_index.numpy() if model._shape_sdf_index is not None else None
             self._build_visible_worlds_mask()
             self._populate_shapes()
 
@@ -331,15 +331,15 @@ class ViewerBase(ABC):
             return None
 
         sdf_idx = int(self._shape_sdf_index_host[shape_idx]) if self._shape_sdf_index_host is not None else -1
-        if sdf_idx < 0 or self.model.texture_sdf_data is None:
+        if sdf_idx < 0 or self.model._texture_sdf_data is None:
             return None
 
         if sdf_idx in self._isomesh_cache:
             return self._isomesh_cache[sdf_idx]
 
         slots = (
-            self.model.texture_sdf_subgrid_start_slots[sdf_idx]
-            if hasattr(self.model, "texture_sdf_subgrid_start_slots") and self.model.texture_sdf_subgrid_start_slots
+            self.model._texture_sdf_subgrid_start_slots[sdf_idx]
+            if self.model._texture_sdf_subgrid_start_slots
             else None
         )
         if slots is None:
@@ -348,10 +348,10 @@ class ViewerBase(ABC):
 
         from ..geometry.sdf_texture import compute_isomesh_from_texture_sdf  # noqa: PLC0415
 
-        coarse_tex = self.model.texture_sdf_coarse_textures[sdf_idx]
+        coarse_tex = self.model._texture_sdf_coarse_textures[sdf_idx]
         coarse_dims = (coarse_tex.width - 1, coarse_tex.height - 1, coarse_tex.depth - 1)
         isomesh = compute_isomesh_from_texture_sdf(
-            self.model.texture_sdf_data, sdf_idx, slots, coarse_dims, device=self.device
+            self.model._texture_sdf_data, sdf_idx, slots, coarse_dims, device=self.device
         )
         self._isomesh_cache[sdf_idx] = isomesh
         return isomesh
@@ -1708,7 +1708,7 @@ class ViewerBase(ABC):
             is_visible = flags & int(newton.ShapeFlags.VISIBLE)
             # Check for texture SDF existence without computing the isomesh (lazy evaluation)
             sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
-            has_sdf = sdf_idx >= 0 and self.model.texture_sdf_data is not None
+            has_sdf = sdf_idx >= 0 and self.model._texture_sdf_data is not None
             if is_collision_shape and is_visible and has_sdf:
                 # Remove COLLIDE_SHAPES flag so this is treated as a visual shape
                 flags = flags & ~int(newton.ShapeFlags.COLLIDE_SHAPES)
@@ -1825,7 +1825,7 @@ class ViewerBase(ABC):
         shape_flags = self.model.shape_flags.numpy()
         shape_world = self.model.shape_world.numpy()
         shape_geo_scale = self.model.shape_scale.numpy()
-        tex_sdf_np = self.model.texture_sdf_data.numpy() if self.model.texture_sdf_data is not None else None
+        tex_sdf_np = self.model._texture_sdf_data.numpy() if self.model._texture_sdf_data is not None else None
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
 
@@ -1916,6 +1916,10 @@ class ViewerBase(ABC):
     def update_shape_colors(self, shape_colors: dict[int, wp.vec3 | tuple[float, float, float]]):
         """
         Set colors for a set of shapes at runtime.
+
+        .. deprecated:: 1.1
+            Write to :attr:`Model.shape_color` instead.
+
         Args:
             shape_colors: mapping from shape index -> color
         """

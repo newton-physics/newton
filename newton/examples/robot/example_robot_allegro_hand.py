@@ -10,7 +10,7 @@
 # apply a continuous rotation to the fixed root joint in the form
 # of the joint parent transform. The MuJoCo solver is updated
 # about this change in the joint parent transform by calling
-# self.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES).
+# self.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES).
 #
 # Command: python -m newton.examples robot_allegro_hand --world-count 16
 #
@@ -22,8 +22,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton import JointTargetMode
-from newton.solvers import SolverNotifyFlags
+from newton import JointTargetMode, ModelFlags
 
 
 @wp.kernel
@@ -183,7 +182,7 @@ class Example:
             )
 
             # # update the solver since we have updated the joint parent transforms
-            self.solver.notify_model_changed(SolverNotifyFlags.JOINT_PROPERTIES)
+            self.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 

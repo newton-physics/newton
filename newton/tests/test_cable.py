@@ -1835,9 +1835,9 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
     contacts = model.contacts()
 
     # Set drive target position.
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -1963,9 +1963,9 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     control = model.control()
     contacts = model.contacts()
 
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -2238,9 +2238,9 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
     contacts = model.contacts()
 
     # Set drive target position.
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_displacement
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -2366,9 +2366,9 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     control = model.control()
     contacts = model.contacts()
 
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_displacement
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -2956,10 +2956,10 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     contacts = model.contacts()
 
     # Set drive target positions.
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[lin_dof_idx] = target_displacement
     tp[ang_dof_idx] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -3112,10 +3112,10 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
     control = model.control()
     contacts = model.contacts()
 
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[qd_s] = target_displacement
     tp[qd_s + 1] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
