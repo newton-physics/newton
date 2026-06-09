@@ -130,6 +130,46 @@ def Xform "Root" (
         self.assertTrue(all(art_id == -1 for art_id in model.joint_articulation.numpy()))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_body_to_world_fixed_joint_without_articulation_root_stays_orphan(self):
+        """A USD fixed joint to world must not synthesize an articulation root."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Base")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+        mass_api.GetMassAttr().Set(1.0)
+        mass_api.GetCenterOfMassAttr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        mass_api.GetDiagonalInertiaAttr().Set(Gf.Vec3f(1.0, 1.0, 1.0))
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/root_joint")
+        fixed.CreateBody1Rel().SetTargets([body.GetPath()])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        builder = newton.ModelBuilder()
+        with self.assertWarns(UserWarning) as cm:
+            builder.add_usd(stage, load_visual_shapes=False)
+
+        self.assertIn("No articulation was found but 1 joints were parsed", str(cm.warning))
+        self.assertEqual(builder.articulation_count, 0)
+        self.assertEqual(builder.joint_count, 1)
+        self.assertEqual(builder.joint_label, ["/World/root_joint"])
+        self.assertEqual(builder.joint_articulation, [-1])
+
+        with self.assertRaisesRegex(ValueError, "not belonging to any articulation"):
+            builder.finalize()
+
+        model = builder.finalize(skip_validation_joints=True)
+        self.assertEqual(model.articulation_count, 0)
+        self.assertEqual(model.joint_articulation.numpy().tolist(), [-1])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_disabled_joints_create_free_joints(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -266,7 +306,7 @@ def Xform "Root" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_body_to_world_fixed_joint(self):
         """A body connected to the world via a PhysicsFixedJoint must be imported
-        with a FIXED joint (not FREE) and placed in its own articulation."""
+        with a FIXED joint (not FREE) without synthesizing a new articulation."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -313,10 +353,14 @@ def Xform "Root" (
         fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+        with self.assertWarns(UserWarning) as cm:
+            builder.add_usd(stage)
+        self.assertIn("not included in any articulation", str(cm.warning).lower())
+        self.assertIn("/World/WorldLink/FixedJoint", str(cm.warning))
 
         # 3 bodies: Base, Link1, WorldLink.
         self.assertEqual(builder.body_count, 3)
+        self.assertEqual(builder.articulation_count, 1)
 
         wl_body_idx = builder.body_label.index("/World/WorldLink")
         wl_joint_idx = next(i for i in range(builder.joint_count) if builder.joint_child[i] == wl_body_idx)
@@ -325,22 +369,23 @@ def Xform "Root" (
         self.assertEqual(builder.joint_type[wl_joint_idx], newton.JointType.FIXED)
         # Parent is -1 (world).
         self.assertEqual(builder.joint_parent[wl_joint_idx], -1)
-        # world_link's FIXED joint must belong to its own articulation,
-        # separate from the main arm articulation.
-        wl_art = builder.joint_articulation[wl_joint_idx]
-        self.assertNotEqual(wl_art, -1)
+        # A rootless world-fixed joint remains an orphan joint. It should not
+        # create a second articulation next to the authored arm articulation.
+        self.assertEqual(builder.joint_articulation[wl_joint_idx], -1)
 
         rev_joint_idx = builder.joint_label.index("/World/Arm/RevJoint")
         arm_art = builder.joint_articulation[rev_joint_idx]
-        self.assertNotEqual(wl_art, arm_art)
+        self.assertNotEqual(arm_art, -1)
 
-        # Model must finalize without errors (no orphan joint issues).
-        model = builder.finalize()
+        # Model finalization requires the orphan-joint escape hatch.
+        with self.assertRaisesRegex(ValueError, "not belonging to any articulation"):
+            builder.finalize()
+        model = builder.finalize(skip_validation_joints=True)
         self.assertEqual(model.body_count, 3)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_orphan_world_fixed_joint_respects_env_offset_and_xform(self):
-        """Orphan body-to-world fixed joints must FK to env-origin + spawn xform."""
+        """Orphan body-to-world fixed joints keep env-origin + spawn xform."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         local_pose0 = wp.transform(wp.vec3(0.1, 0.2, 0.3), wp.quat(0.0, 0.0, 0.7071068, 0.7071068))  # 90deg about z
@@ -371,15 +416,17 @@ def Xform "Root" (
                 fixed.CreateLocalRot1Attr().Set(Gf.Quatf(float(q1[3]), float(q1[0]), float(q1[1]), float(q1[2])))
 
                 builder = newton.ModelBuilder()
-                builder.add_usd(stage, xform=wp.transform(wp.vec3(5.0, 0.0, 0.0), wp.quat_identity()))
+                with self.assertWarns(UserWarning):
+                    builder.add_usd(stage, xform=wp.transform(wp.vec3(5.0, 0.0, 0.0), wp.quat_identity()))
 
                 link_idx = builder.body_label.index("/World/env/PinnedLink")
                 joint_idx = builder.joint_label.index("/World/env/PinnedLink/FixedJoint")
+                self.assertEqual(builder.articulation_count, 0)
                 self.assertEqual(builder.joint_type[joint_idx], newton.JointType.FIXED)
                 self.assertEqual(builder.joint_parent[joint_idx], -1)
+                self.assertEqual(builder.joint_articulation[joint_idx], -1)
 
                 # Check the fixed joint frame by validating the joint_X_c.
-                # Checking joint_X_p is left to the FK check below, which implicitly validates it.
                 expected_X_c = local_pose0 if side == "body0" else local_pose1
                 joint_X_c = builder.joint_X_c[joint_idx]
                 assert_np_equal(np.array(joint_X_c.p), np.array(expected_X_c.p), tol=1e-4)
@@ -387,15 +434,15 @@ def Xform "Root" (
                 q_err = joint_X_c.q * wp.quat_inverse(expected_X_c.q)
                 self.assertLessEqual(2.0 * math.acos(min(1.0, abs(q_err[3]))), 1e-4)
 
-                model = builder.finalize()
-                state = model.state()
-                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                # Check that the body is in the right pose: FK reproduces spawn * USD child world pose
+                # Check that the body is imported at spawn * USD child world pose
                 # (env origin + spawn translation, identity rotation).
-                body_q = state.body_q.numpy()[link_idx]
-                assert_np_equal(body_q[:3], np.array([105.0, 200.0, 0.0]), tol=1e-4)
-                q_err = wp.quat(*body_q[3:7]) * wp.quat_inverse(wp.quat_identity())
+                body_q = builder.body_q[link_idx]
+                assert_np_equal(np.array(body_q.p), np.array([105.0, 200.0, 0.0]), tol=1e-4)
+                q_err = body_q.q * wp.quat_inverse(wp.quat_identity())
                 self.assertLessEqual(2.0 * math.acos(min(1.0, abs(q_err[3]))), 1e-4)
+
+                model = builder.finalize(skip_validation_joints=True)
+                self.assertEqual(model.articulation_count, 0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collapse_fixed_joints_preserves_orphan_joints(self):

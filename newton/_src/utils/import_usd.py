@@ -2579,9 +2579,10 @@ def parse_usd(
         if str(joint_desc.body0) in ignored_body_paths or str(joint_desc.body1) in ignored_body_paths:
             continue
         # Skip body-to-world joints (where one body is empty/world) only when
-        # FREE joints will be auto-inserted for remaining bodies — but always
-        # keep body-to-world FIXED joints so the body is properly welded to
-        # world instead of receiving an incorrect FREE base joint.
+        # FREE joints will be auto-inserted for remaining bodies. Keep
+        # body-to-world FIXED joints as real joints so maximal-coordinate
+        # solvers can enforce the authored weld, but do not synthesize
+        # articulation metadata for them.
         body0_path = str(joint_desc.body0)
         body1_path = str(joint_desc.body1)
         is_body_to_world = body0_path in ("", "/") or body1_path in ("", "/")
@@ -2616,12 +2617,7 @@ def parse_usd(
                     world_body_xform_o = child_world_xform_o * child_tf_o * wp.transform_inverse(parent_tf_o)
                     orphan_incoming_xform = incoming_world_xform * world_body_xform_o
             joint_index = parse_joint(joint_desc, incoming_xform=orphan_incoming_xform)
-            # Handle body-to-world FIXED joints separately to ensure proper welding.
-            # Creates an articulation for the body-to-world FIXED joint (consistent with MuJoCo approach)
-            if joint_index is not None and is_body_to_world and is_fixed_joint:
-                child_body = builder.joint_child[joint_index]
-                builder.add_articulation([joint_index], label=builder.body_label[child_body])
-            else:
+            if joint_index is not None:
                 orphan_joints.append(joint_path)
         except ValueError as exc:
             if verbose:
