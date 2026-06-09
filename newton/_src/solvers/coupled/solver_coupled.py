@@ -1015,6 +1015,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         )
         self._compact_mimic_constraints(view, mimic_order, joint_global_to_local)
 
+        # For VBD solver we require color groups to be compacted too.
+        self._compact_color_groups(view, body_global_to_local)
+
         self._set_world_start_arrays(view)
         self._compact_custom_attribute_namespaces(
             view,
@@ -1338,6 +1341,24 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 dtype=wp.int32,
                 device=self.model.device,
             )
+
+    def _compact_color_groups(
+        self,
+        view: ModelView,
+        body_global_to_local: dict[int, int],
+    ) -> None:
+        value = self._raw_view_value(view, "body_color_groups")
+        # List (length number of color groups) of body ids.
+        if not isinstance(value, list):
+            return
+        remapped: list = []
+        for group in value:
+            if not isinstance(group, wp.array):
+                remapped.append(group)
+                continue
+            local = [body_global_to_local[g] for g in (int(x) for x in group.numpy()) if g in body_global_to_local]
+            remapped.append(wp.array(local, dtype=group.dtype, device=self.model.device))
+        view.body_color_groups = remapped
 
     def _set_world_start_arrays(self, view: ModelView) -> None:
         view.body_world_start = self._world_start_array(view.body_world, int(view.body_count))
