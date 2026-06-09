@@ -3585,5 +3585,62 @@ class TestSmoothTeleportRecovery(unittest.TestCase):
         self._assert_quat_close(result[3:], ref[3:], angle_tol_rad=np.radians(0.15))
 
 
+class TestSolverCoupledVBDColoring(unittest.TestCase):
+    """Compaction must remap ``body_color_groups`` for VBD entries.
+
+    A VBD entry whose global body ids are not a 0-prefix gets compacted to dense
+    local indices; the color groups must be remapped global->local, or two bodies
+    joined by a joint can share a color, race in VBD's parallel solve, and the
+    constraint diverges.
+    """
+
+    def test_compacted_vbd_entry_color_groups_are_valid(self):
+        builder = newton.ModelBuilder()
+        for _ in range(5):
+            builder.add_body(mass=1.0)  # each auto-adds a free joint + articulation
+        fixed_joint = builder.add_joint_fixed(parent=3, child=4)
+        builder.color()
+        model = builder.finalize(device="cpu")
+
+        # "dst" owns {2,3,4} (not a 0-prefix) -> compaction maps it to local 0,1,2.
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="src",
+                    solver=lambda view: SolverSemiImplicit(view),
+                    bodies=[0, 1],
+                    joints=[0, 1],
+                ),
+                SolverCoupled.Entry(
+                    name="dst",
+                    solver=lambda view: SolverVBD(view, iterations=1),
+                    bodies=[2, 3, 4],
+                    joints=[2, 3, 4, fixed_joint],
+                ),
+            ],
+        )
+
+        view = coupled.view("dst")
+        body_count = int(view.body_count)
+        groups = [[int(x) for x in g.numpy()] for g in view.body_color_groups]
+        parents = [int(x) for x in view.joint_parent.numpy()]
+        children = [int(x) for x in view.joint_child.numpy()]
+
+        # Color groups must partition the local body set.
+        union = sorted(body for group in groups for body in group)
+        self.assertEqual(union, list(range(body_count)), f"groups must partition local bodies; got {groups}")
+
+        # No joint-connected pair may share a color.
+        color_of = {body: color for color, group in enumerate(groups) for body in group}
+        for parent, child in zip(parents, children, strict=True):
+            if 0 <= parent < body_count and 0 <= child < body_count:
+                self.assertNotEqual(
+                    color_of.get(parent),
+                    color_of.get(child),
+                    f"joint-connected local bodies {parent},{child} share a color: {groups}",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

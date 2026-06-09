@@ -282,10 +282,9 @@ class ModelView:
             else:
                 filtered_groups.append(wp.array(filtered, dtype=group.dtype, device=parent.device))
 
-        if not changed:
-            return value
-        cache[cache_name] = filtered_groups
-        return filtered_groups
+        result = value if not changed else filtered_groups
+        cache[cache_name] = result
+        return result
 
     # ------------------------------------------------------------------
     # State creation - reuses Model.state() through this view
