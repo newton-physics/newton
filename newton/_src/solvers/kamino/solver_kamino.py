@@ -681,6 +681,9 @@ class SolverKamino(SolverBase):
         """
         Converts Kamino contacts to Newton's Contacts format.
 
+        Note: produces undefined behavior if a different Newton Contacts object was
+        passed to step().
+
         Args:
             contacts: The Newton Contacts object to populate.
             state: Simulation state providing ``body_q`` for converting

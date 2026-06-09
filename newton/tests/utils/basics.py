@@ -154,7 +154,7 @@ def build_sphere_on_plane(
             restitution=restitution if restitution is not None else _builder.default_shape_cfg.restitution,
         )
         if use_custom_shape_cfg
-        else _builder.default_shape_cfg
+        else _shape_cfg_basic()
     )
 
     # Add collision geometries
@@ -250,7 +250,7 @@ def build_box_on_plane(
             restitution=restitution if restitution is not None else _builder.default_shape_cfg.restitution,
         )
         if use_custom_shape_cfg
-        else _builder.default_shape_cfg
+        else _shape_cfg_basic()
     )
 
     # Add collision geometries
@@ -762,7 +762,7 @@ def build_boxes_stacked_on_plane(
     # Add top body
     bid_t = _builder.add_body(
         label="top_box",
-        mass=1.0,
+        mass=m_t,
         inertia=I_t,
         xform=xform_t,
         lock_inertia=True,

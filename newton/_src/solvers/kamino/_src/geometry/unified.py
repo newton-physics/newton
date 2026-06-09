@@ -164,13 +164,21 @@ def _write_contact_unified_kamino(
     # Always allocate from the model-level counter so the active count
     # stays accurate regardless of whether the narrowphase pre-allocated
     # an output_index (primitive kernel) or left it to the writer (-1).
-    mcid = wp.atomic_add(writer_data.contacts_model_num_active, 0, 1)
     wcid = wp.atomic_add(writer_data.contacts_world_num_active, wid, 1)
-    if mcid >= writer_data.model_max_contacts or wcid >= world_max_contacts:
-        # TODO: Are these roll-backs correct? Can't they cause overwriting of other contacts?
-        # wp.atomic_sub(writer_data.contacts_model_num_active, 0, 1)
-        # wp.atomic_sub(writer_data.contacts_world_num_active, wid, 1)
+    if wcid >= world_max_contacts:  # Roll back and exit if world counter exceeds max
+        wp.atomic_sub(writer_data.contacts_world_num_active, wid, 1)
         return
+    mcid = wp.atomic_add(writer_data.contacts_model_num_active, 0, 1)
+    if mcid >= writer_data.model_max_contacts:  # Roll back and exit if model counter exceeds max
+        wp.atomic_sub(writer_data.contacts_model_num_active, 0, 1)
+        wp.atomic_sub(writer_data.contacts_world_num_active, wid, 1)
+        return
+    # Note: the world counter must be incremented first to ensure that once
+    # a thread increments the global counter, it won't decrease it again after
+    # because its world is saturated (leading to potential non-unique
+    # mcid in other threads working on other worlds)
+    # The decrease to the world counter if the model is saturated is not
+    # problematic because the model is saturated for all threads in all worlds anyway.
 
     # Retrieve the geom/body/material indices
     gid_a = contact_data.shape_a

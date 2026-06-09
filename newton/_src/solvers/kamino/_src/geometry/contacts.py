@@ -434,19 +434,25 @@ class ContactsKamino:
         Args:
             model:
                 The model container holding the time-invariant data of the system being simulated.\n
-                If provided, the contacts will be finalized using the contact allocation meta-data of the model.\n
-                If `None`, the contacts will be created empty without allocating data, and
-                can be finalized later by providing a model to the `finalize` method.\n
+                If provided, the contacts will be finalized using the contact allocation meta-data of the model,
+                taking precedence over `capacity` and `default_max_contacts`.\n
+                If `None``, and `capacity` is also `None`, the contacts will be created empty without
+                allocating data, and can be finalized later by providing model/capacity to `finalize`.\n
             capacity:
-                The maximum number of contacts to allocate.\n
-                If not provided, the contact allocation meta-data of the model will be used.\n
+                The maximum number of contacts to allocate if no model is provided.\n
                 If an integer is provided, it specifies the capacity for a single world.\n
                 If a list of integers is provided, it specifies the capacity for each world.
             default_max_contacts:
-                The default maximum number of contacts per world.\n
-                If `None`, uses the default value of 1000.
+                The default maximum number of contacts per world, if no model and no positive capacity
+                are provided.\n
+                If `None`, uses the default value of 128.
             device:
                 The device on which to allocate the contacts data.
+            remappable:
+                Whether to allocate a buffer necessary for consistent mapping of Kamino and Newton
+                contacts during conversions. Defaults to `False`, to be set to `True` if these
+                contacts need to be converted from/to Newton contacts (e.g. if Kamino is used
+                through the Newton API).
         """
         # Declare and initialize the default maximum number of contacts per world
         self._default_max_world_contacts: int = DEFAULT_WORLD_MAX_CONTACTS
@@ -721,16 +727,19 @@ class ContactsKamino:
         Args:
             model:
                 The model container holding the time-invariant data of the system being simulated.\n
-                If provided, the contacts will be finalized using the contact allocation meta-data of the model.\n
-                If `None`, the contacts will be created empty without allocating data, and
-                can be finalized later by providing a model to the `finalize` method.\n
+                If provided, the contacts will be finalized using the contact allocation meta-data of the model,
+                taking precedence over `capacity` and `default_max_contacts`.\n
             capacity:
-                The maximum number of contacts to allocate.\n
-                If not provided, the contact allocation meta-data of the model will be used.\n
+                The maximum number of contacts to allocate if no model is provided.\n
                 If an integer is provided, it specifies the capacity for a single world.\n
                 If a list of integers is provided, it specifies the capacity for each world.
             device:
-                The device on which to allocate the contacts data.
+                The device on which to allocate the contacts data, if no model is provided.
+            remappable:
+                Whether to allocate a buffer necessary for consistent mapping of Kamino and Newton
+                contacts during conversions. Defaults to `False`, to be set to `True` if these
+                contacts need to be converted from/to Newton contacts (e.g. if Kamino is used
+                through the Newton API).
         """
         # Raise errors if both model and capacity are provided or both are None
         if model is not None and capacity is not None:
@@ -1197,7 +1206,6 @@ def _convert_existing_contacts_kamino_to_newton(
     # Skip conversion if this contact index exceeds the number of active
     # contacts or it has no mapping to the target Newton contacts container.
     if cid >= num_active or cid_out < 0:
-        newton_force[cid] = wp.spatial_vectorf()
         return
 
     # Retrieve contact-specific data
