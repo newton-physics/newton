@@ -10,6 +10,7 @@ import ctypes
 import inspect
 import math
 import warnings
+from array import array
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, MutableSequence, Sequence
 from dataclasses import dataclass, replace
@@ -367,6 +368,83 @@ class ModelBuilder:
         "Add any isotropic artificial inertia directly to 'inertia' instead."
     )
     _SHAPE_COLLISION_FILTER_PAIR_SET_LIMIT = 1_000_000
+    _FINALIZE_COMPACT_INT_FIELDS: ClassVar[tuple[str, ...]] = (
+        "shape_body",
+        "shape_flags",
+        "shape_type",
+        "shape_world",
+        "shape_collision_group",
+        "joint_type",
+        "joint_enabled",
+        "joint_collision_filter_parent",
+        "joint_parent",
+        "joint_child",
+        "joint_q_start",
+        "joint_qd_start",
+        "joint_cts_start",
+        "joint_articulation",
+        "articulation_start",
+        "articulation_end",
+        "articulation_world",
+        "body_flags",
+        "body_world",
+        "constraint_mimic_joint0",
+        "constraint_mimic_joint1",
+        "constraint_mimic_enabled",
+        "constraint_mimic_world",
+    )
+    _FINALIZE_COMPACT_FLOAT_FIELDS: ClassVar[tuple[str, ...]] = (
+        "joint_q",
+        "joint_qd",
+        "joint_f",
+        "joint_act",
+        "joint_armature",
+        "joint_target_q",
+        "joint_target_qd",
+        "joint_limit_lower",
+        "joint_limit_upper",
+        "joint_limit_ke",
+        "joint_limit_kd",
+        "joint_target_ke",
+        "joint_target_kd",
+        "joint_damping",
+        "joint_effort_limit",
+        "joint_velocity_limit",
+        "joint_friction",
+        "shape_material_ke",
+        "shape_material_kd",
+        "shape_material_kf",
+        "shape_material_ka",
+        "shape_material_mu",
+        "shape_material_restitution",
+        "shape_material_mu_torsional",
+        "shape_material_mu_rolling",
+        "shape_material_kh",
+        "shape_margin",
+        "shape_collision_radius",
+        "shape_gap",
+    )
+    _FINALIZE_COMPACT_STRUCTURED_FLOAT_FIELDS: ClassVar[tuple[str, ...]] = (
+        "particle_q",
+        "particle_qd",
+        "shape_transform",
+        "shape_scale",
+        "shape_color",
+        "body_inertia",
+        "body_inv_inertia",
+        "body_com",
+        "body_q",
+        "body_qd",
+        "joint_axis",
+        "joint_X_p",
+        "joint_X_c",
+        "tri_poses",
+        "tri_activations",
+        "tri_materials",
+        "tet_poses",
+        "tet_activations",
+        "tet_materials",
+    )
 
     @staticmethod
     def _shape_palette_color(index: int) -> tuple[float, float, float]:
@@ -1441,6 +1519,39 @@ class ModelBuilder:
         from ..solvers.mujoco.equality import _register_equality_constraint_attributes  # noqa: PLC0415
 
         _register_equality_constraint_attributes(self)
+
+    def compact_finalize_storage(self) -> dict[str, int]:
+        """Convert selected builder fields to compact containers before :meth:`finalize`.
+
+        This is an opt-in finalization accelerator for completed builders. It
+        preserves finalized model values, but it intentionally mutates selected
+        fields from Python lists into ``array.array`` or NumPy arrays. Call it
+        after building/replicating worlds and before timing :meth:`finalize`;
+        do not keep appending to the compacted builder.
+
+        Returns:
+            A mapping from converted field name to element count.
+        """
+        converted: dict[str, int] = {}
+        for name in self._FINALIZE_COMPACT_INT_FIELDS:
+            values = getattr(self, name, None)
+            if isinstance(values, list) and values:
+                setattr(self, name, array("i", (int(value) for value in values)))
+                converted[name] = len(values)
+
+        for name in self._FINALIZE_COMPACT_FLOAT_FIELDS:
+            values = getattr(self, name, None)
+            if isinstance(values, list) and values:
+                setattr(self, name, array("f", (float(value) for value in values)))
+                converted[name] = len(values)
+
+        for name in self._FINALIZE_COMPACT_STRUCTURED_FLOAT_FIELDS:
+            values = getattr(self, name, None)
+            if isinstance(values, list) and values:
+                setattr(self, name, np.asarray(values, dtype=np.float32))
+                converted[name] = len(values)
+
+        return converted
 
     # Deprecated equality-constraint accumulators (removal in a future release).
     # The legacy ``ModelBuilder.equality_constraint_*`` lists are now thin read-only views over
@@ -10747,9 +10858,12 @@ class ModelBuilder:
             gaussians = []
             heightfield_meshes = []
             for geo in self.shape_source:
-                geo_hash = hash(geo)  # avoid repeated hash computations
                 if isinstance(geo, Heightfield):
-                    if geo_hash not in finalized_geos:
+                    # Replicated builders reuse the same geometry objects across
+                    # worlds. Identity dedup avoids expensive content hashing
+                    # while still sharing the finalized geometry for instances.
+                    geo_key = id(geo)
+                    if geo_key not in finalized_geos:
                         # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
                         # while Heightfield stores row-major data (row=Y, col=X).
                         actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
@@ -10760,20 +10874,21 @@ class ModelBuilder:
                             ground_z=geo.min_z,
                             compute_inertia=False,
                         )
-                        finalized_geos[geo_hash] = hf_geo.finalize(device=device)
+                        finalized_geos[geo_key] = hf_geo.finalize(device=device)
                         # keep mesh alive for the model's lifetime
                         heightfield_meshes.append(hf_geo.mesh)
-                    geo_sources.append(finalized_geos[geo_hash])
+                    geo_sources.append(finalized_geos[geo_key])
                 elif geo:
-                    if geo_hash not in finalized_geos:
+                    geo_key = id(geo)
+                    if geo_key not in finalized_geos:
                         if isinstance(geo, Mesh):
-                            finalized_geos[geo_hash] = geo.finalize(device=device)
+                            finalized_geos[geo_key] = geo.finalize(device=device)
                         elif isinstance(geo, Gaussian):
-                            finalized_geos[geo_hash] = len(gaussians)
+                            finalized_geos[geo_key] = len(gaussians)
                             gaussians.append(geo.finalize(device=device))
                         else:
-                            finalized_geos[geo_hash] = geo.finalize()
-                    geo_sources.append(finalized_geos[geo_hash])
+                            finalized_geos[geo_key] = geo.finalize()
+                    geo_sources.append(finalized_geos[geo_key])
                 else:
                     geo_sources.append(0)
 

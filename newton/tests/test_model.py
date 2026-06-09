@@ -1,10 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 import math
 import sys
 import unittest
 import warnings
+from array import array
 from types import SimpleNamespace
 from unittest import mock
 
@@ -285,6 +287,72 @@ class TestModelMesh(unittest.TestCase):
             device="cpu",
         )
         np.testing.assert_allclose(values.numpy(), np.array([[1.25, -2.5]] * 3, dtype=np.float32))
+
+    def test_mesh_hash_uses_cached_sha_digest(self):
+        mesh = newton.Mesh.create_box(
+            1.0,
+            0.5,
+            0.25,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+
+        with mock.patch("newton._src.geometry.types.hashlib.sha256", wraps=hashlib.sha256) as sha256_mock:
+            first_hash = hash(mesh)
+            second_hash = hash(mesh)
+
+            self.assertEqual(first_hash, second_hash)
+            sha256_mock.assert_called_once()
+
+            mesh.vertices = mesh.vertices.copy()
+            self.assertEqual(hash(mesh), first_hash)
+            self.assertEqual(sha256_mock.call_count, 2)
+
+    def test_finalize_deduplicates_reused_mesh_by_identity_without_hashing(self):
+        mesh = newton.Mesh.create_box(
+            1.0,
+            0.5,
+            0.25,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        builder = ModelBuilder()
+        builder.add_shape_mesh(body=-1, mesh=mesh)
+        builder.add_shape_mesh(body=-1, mesh=mesh)
+
+        with mock.patch.object(newton.Mesh, "__hash__", side_effect=AssertionError("finalize should not hash meshes")):
+            model = builder.finalize(device="cpu")
+
+        shape_source_ptr = model.shape_source_ptr.numpy()
+        self.assertEqual(shape_source_ptr[0], shape_source_ptr[1])
+
+    def test_compact_finalize_storage_preserves_model_arrays(self):
+        def build_builder():
+            builder = ModelBuilder()
+            body = builder.add_body(xform=wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_identity()))
+            builder.add_shape_box(body=body, hx=0.5, hy=0.25, hz=0.125)
+            return builder
+
+        baseline = build_builder()
+        compact = build_builder()
+
+        converted = compact.compact_finalize_storage()
+
+        self.assertIn("shape_body", converted)
+        self.assertIn("shape_transform", converted)
+        self.assertIsInstance(compact.shape_body, array)
+        self.assertIsInstance(compact.shape_transform, np.ndarray)
+
+        baseline_model = baseline.finalize(device="cpu")
+        compact_model = compact.finalize(device="cpu")
+
+        np.testing.assert_array_equal(compact_model.shape_body.numpy(), baseline_model.shape_body.numpy())
+        np.testing.assert_allclose(compact_model.shape_transform.numpy(), baseline_model.shape_transform.numpy())
+        np.testing.assert_allclose(compact_model.body_q.numpy(), baseline_model.body_q.numpy())
 
     def test_add_triangles(self):
         rng = np.random.default_rng(123)
