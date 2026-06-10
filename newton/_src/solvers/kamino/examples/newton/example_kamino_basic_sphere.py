@@ -117,26 +117,26 @@ class Example:
     # simulate() performs one frame's worth of updates
     def simulate(self):
         for _ in range(self.sim_substeps):
-            print("\n\n--------------------------------------------------------------------")
+            msg.debug("\n\n--------------------------------------------------------------------")
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             if not self.use_kamino_contacts:
                 self.collision_pipeline.collide(self.state_0, self.contacts)
                 nc = self.contacts.rigid_contact_count.numpy()[0]
-                msg.warning("contacts.rigid_contact_count: %s", nc)
-                msg.warning("contacts.rigid_contact_margin0: %s", self.contacts.rigid_contact_margin0.numpy()[:nc])
-                msg.warning("contacts.rigid_contact_margin1: %s", self.contacts.rigid_contact_margin1.numpy()[:nc])
-                msg.warning("contacts.rigid_contact_offset0:\n%s", self.contacts.rigid_contact_offset0.numpy()[:nc])
-                msg.warning("contacts.rigid_contact_offset1:\n%s", self.contacts.rigid_contact_offset1.numpy()[:nc])
-                msg.warning("contacts.rigid_contact_point0:\n%s", self.contacts.rigid_contact_point0.numpy()[:nc])
-                msg.warning("contacts.rigid_contact_point1:\n%s", self.contacts.rigid_contact_point1.numpy()[:nc])
-                msg.warning("contacts.rigid_contact_normal:\n%s\n", self.contacts.rigid_contact_normal.numpy()[:nc])
-                msg.notif("state_0.body_q:\n%s", self.state_0.body_q.numpy())
-                msg.notif("state_0.body_qd:\n%s\n", self.state_0.body_qd.numpy())
+                msg.debug("contacts.rigid_contact_count: %s", nc)
+                msg.debug("contacts.rigid_contact_margin0: %s", self.contacts.rigid_contact_margin0.numpy()[:nc])
+                msg.debug("contacts.rigid_contact_margin1: %s", self.contacts.rigid_contact_margin1.numpy()[:nc])
+                msg.debug("contacts.rigid_contact_offset0:\n%s", self.contacts.rigid_contact_offset0.numpy()[:nc])
+                msg.debug("contacts.rigid_contact_offset1:\n%s", self.contacts.rigid_contact_offset1.numpy()[:nc])
+                msg.debug("contacts.rigid_contact_point0:\n%s", self.contacts.rigid_contact_point0.numpy()[:nc])
+                msg.debug("contacts.rigid_contact_point1:\n%s", self.contacts.rigid_contact_point1.numpy()[:nc])
+                msg.debug("contacts.rigid_contact_normal:\n%s\n", self.contacts.rigid_contact_normal.numpy()[:nc])
+                msg.debug("state_0.body_q:\n%s", self.state_0.body_q.numpy())
+                msg.debug("state_0.body_qd:\n%s\n", self.state_0.body_qd.numpy())
                 self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             else:
-                msg.notif("state_0.body_q:\n%s", self.state_0.body_q.numpy())
-                msg.notif("state_0.body_qd:\n%s\n", self.state_0.body_qd.numpy())
+                msg.debug("state_0.body_q:\n%s", self.state_0.body_q.numpy())
+                msg.debug("state_0.body_qd:\n%s\n", self.state_0.body_qd.numpy())
                 self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.solver.update_contacts(self.contacts, self.state_0)
             self.state_0, self.state_1 = self.state_1, self.state_0

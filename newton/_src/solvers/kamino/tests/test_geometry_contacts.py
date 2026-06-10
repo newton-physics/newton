@@ -1257,7 +1257,7 @@ class TestGeometryContactConversions(unittest.TestCase):
     # Optional Contacts.force handling
     ###
 
-    def test_06_force_optional(self):
+    def test_07_force_optional(self):
         """Both conversion launchers tolerate a missing optional ``Contacts.force``.
 
         - N->K with ``convert_forces=False`` (the default) and no
@@ -1318,7 +1318,7 @@ class TestGeometryContactConversions(unittest.TestCase):
     # Edge cases
     ###
 
-    def test_07_edge_cases(self):
+    def test_08_edge_cases(self):
         """Edge cases for the contact conversion pipeline.
 
         - No-collision scene: Newton produces zero contacts, N->K also

@@ -382,23 +382,30 @@ def make_add_multiple_contacts(MAX_CONTACTS: int, SHARED_NORMAL: bool):
             gid_AB = vec2i(gid_1, gid_2)
             bid_AB = vec2i(bid_1, bid_2)
 
-        # Safely increment the active contact counters (see notes in _write_contact_unified_kamino in unified.py)
+        # Safely increment the per-world active contact counter (see notes in _write_contact_unified_kamino in unified.py)
         wcio = wp.atomic_add(contact_world_num, wid, num_contacts)
         if wcio >= world_max_contacts:
             wp.atomic_sub(contact_world_num, wid, num_contacts)
             return
-        mcio = wp.atomic_add(contact_model_num, 0, num_contacts)
+
+        # Handle case where this thread saturated the counter and only partial contacts can be written
+        max_num_contacts = wp.min(world_max_contacts - wcio, num_contacts)
+        if max_num_contacts < num_contacts:
+            wp.atomic_sub(contact_world_num, wid, num_contacts - max_num_contacts)
+
+        # Safely increment the model active contact counter
+        mcio = wp.atomic_add(contact_model_num, 0, max_num_contacts)
         if mcio >= model_max_contacts:
-            wp.atomic_sub(contact_model_num, 0, num_contacts)
-            wp.atomic_sub(contact_world_num, wid, num_contacts)
+            wp.atomic_sub(contact_model_num, 0, max_num_contacts)
+            wp.atomic_sub(contact_world_num, wid, max_num_contacts)
             return
 
-        # Determine the maximum number of contacts that can be stored for this geom pair
-        # (may be < num_contacts if this thread saturated the world/model counter)
-        max_num_contacts = wp.min(wp.min(model_max_contacts - mcio, world_max_contacts - wcio), num_contacts)
-        if max_num_contacts < num_contacts:  # Correct counters if partial contacts were written
-            wp.atomic_sub(contact_model_num, 0, num_contacts - max_num_contacts)
-            wp.atomic_sub(contact_world_num, wid, num_contacts - max_num_contacts)
+        # Handle case where this thread saturated the counter and only partial contacts can be written
+        max_num_contacts_prev = max_num_contacts
+        max_num_contacts = wp.min(model_max_contacts - mcio, max_num_contacts_prev)
+        if max_num_contacts < max_num_contacts_prev:
+            wp.atomic_sub(contact_model_num, 0, max_num_contacts_prev - max_num_contacts)
+            wp.atomic_sub(contact_world_num, wid, max_num_contacts_prev - max_num_contacts)
 
         # Create the common material for this contact set
         material = vec2f(friction, restitution)

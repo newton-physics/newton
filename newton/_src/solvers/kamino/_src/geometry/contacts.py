@@ -434,14 +434,15 @@ class ContactsKamino:
         Args:
             model:
                 The model container holding the time-invariant data of the system being simulated.\n
-                If provided, the contacts will be finalized using the contact allocation meta-data of the model,
-                taking precedence over `capacity` and `default_max_contacts`.\n
+                If provided, the contacts will be finalized using the contact allocation meta-data of the model.
+                Cannot be specified together with `capacity`.\n
                 If `None``, and `capacity` is also `None`, the contacts will be created empty without
-                allocating data, and can be finalized later by providing model/capacity to `finalize`.\n
+                allocating data, and can be finalized later by providing model/capacity to `finalize`.
             capacity:
                 The maximum number of contacts to allocate if no model is provided.\n
-                If an integer is provided, it specifies the capacity for a single world.\n
+                If an integer is provided, it specifies the capacity for a single world.
                 If a list of integers is provided, it specifies the capacity for each world.
+                Cannot be specified together with `model`.
             default_max_contacts:
                 The default maximum number of contacts per world, if no model and no positive capacity
                 are provided.\n
@@ -529,7 +530,7 @@ class ContactsKamino:
     @property
     def model_max_contacts(self) -> wp.array[wp.int32]:
         """
-        Returns the number of active contacts per model.\n
+        Returns the maximum number contacts pre-allocated across all worlds in the model.\n
         Shape of ``(1,)`` and type :class:`int32`.
         """
         self._assert_has_data()
@@ -727,12 +728,13 @@ class ContactsKamino:
         Args:
             model:
                 The model container holding the time-invariant data of the system being simulated.\n
-                If provided, the contacts will be finalized using the contact allocation meta-data of the model,
-                taking precedence over `capacity` and `default_max_contacts`.\n
+                If provided, the contacts will be finalized using the contact allocation meta-data of the model.
+                Cannot be specified together with `capacity`.
             capacity:
                 The maximum number of contacts to allocate if no model is provided.\n
-                If an integer is provided, it specifies the capacity for a single world.\n
+                If an integer is provided, it specifies the capacity for a single world.
                 If a list of integers is provided, it specifies the capacity for each world.
+                Cannot be specified together with `model`.
             device:
                 The device on which to allocate the contacts data, if no model is provided.
             remappable:
@@ -856,7 +858,8 @@ class ContactsKamino:
 def _convert_contacts_newton_to_kamino(
     # Inputs:
     num_worlds: wp.int32,
-    max_converted_contacts: wp.int32,
+    kamino_model_max_contacts: wp.array[wp.int32],
+    kamino_world_max_contacts: wp.array[wp.int32],
     newton_count: wp.array[wp.int32],
     newton_shape0: wp.array[wp.int32],
     newton_shape1: wp.array[wp.int32],
@@ -914,11 +917,9 @@ def _convert_contacts_newton_to_kamino(
     # Retrieve the contact index for this thread
     cid = wp.tid()
 
-    # Retrieve the total number of active contacts to convert
-    num_active = wp.min(newton_count[0], max_converted_contacts)
-
     # Skip conversion if this contact index exceeds the number
-    # of contacts to convert or the maximum output capacity.
+    # of contacts to convert.
+    num_active = newton_count[0]
     if cid >= num_active:
         return
 
@@ -937,6 +938,10 @@ def _convert_contacts_newton_to_kamino(
         wid = wid_1
     if wid < 0 or wid >= num_worlds:
         return
+
+    # Retrieve per-world/global contact capacities
+    world_max_contacts = kamino_world_max_contacts[wid]
+    model_max_contacts = kamino_model_max_contacts[0]
 
     # Body-local → world-space
     X_0 = wp.transform_identity()
@@ -999,10 +1004,15 @@ def _convert_contacts_newton_to_kamino(
     gapfunc = wp.vec4f(normal[0], normal[1], normal[2], distance)
     q_frame = wp.quat_from_matrix(make_contact_frame_znorm(normal))
 
-    # Increment the number of active contacts in the model and world
-    mcid = wp.atomic_add(kamino_model_active, 0, 1)
+    # Safely increment the active contact counters (see notes in _write_contact_unified_kamino in unified.py)
     wcid = wp.atomic_add(kamino_world_active, wid, 1)
-    if mcid >= max_converted_contacts:
+    if wcid >= world_max_contacts:
+        wp.atomic_sub(kamino_world_active, wid, 1)
+        return
+    mcid = wp.atomic_add(kamino_model_active, 0, 1)
+    if mcid >= model_max_contacts:
+        wp.atomic_sub(kamino_model_active, 0, 1)
+        wp.atomic_sub(kamino_world_active, wid, 1)
         return
 
     # Store the contact data in the Kamino format if the contact is valid
@@ -1339,7 +1349,8 @@ def convert_contacts_newton_to_kamino(
         dim=max_converted_contacts,
         inputs=[
             wp.int32(model.world_count),
-            wp.int32(max_converted_contacts),
+            contacts_out.model_max_contacts,
+            contacts_out.world_max_contacts,
             contacts_in.rigid_contact_count,
             contacts_in.rigid_contact_shape0,
             contacts_in.rigid_contact_shape1,
