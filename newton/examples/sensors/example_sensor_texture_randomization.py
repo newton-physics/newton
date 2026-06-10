@@ -1,15 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Sensor Texture Randomization
-#
-# Shows how to use SensorTiledCamera.set_shape_texture_ids(..., per_world=True)
-# to randomize table textures in a tiled-camera robot scene.
-#
-# Command: python -m newton.examples sensor_texture_randomization
-#
-###########################################################################
+"""Randomize table textures per world with SensorTiledCamera.set_shape_texture_ids(..., per_world=True).
+
+Run with ``python -m newton.examples sensor_texture_randomization``.
+"""
 
 from __future__ import annotations
 

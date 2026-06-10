@@ -103,7 +103,7 @@ class TestSensorTiledCamera(unittest.TestCase):
         return builder.finalize(device="cpu")
 
     @staticmethod
-    def _build_global_textured_quad_scene() -> newton.Model:
+    def _build_global_textured_quad_scene() -> tuple[newton.Model, int]:
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         for _ in range(2):
             builder.begin_world()
@@ -140,9 +140,9 @@ class TestSensorTiledCamera(unittest.TestCase):
             compute_inertia=False,
             texture=blue,
         )
-        builder.add_shape_mesh(-1, mesh=visible_mesh, color=(1.0, 1.0, 1.0))
+        visible_shape_index = builder.add_shape_mesh(-1, mesh=visible_mesh, color=(1.0, 1.0, 1.0))
         builder.add_shape_mesh(-1, mesh=hidden_mesh, color=(1.0, 1.0, 1.0))
-        return builder.finalize(device="cpu")
+        return builder.finalize(device="cpu"), visible_shape_index
 
     @staticmethod
     def _unpack_rgba(packed: int) -> np.ndarray:
@@ -158,12 +158,14 @@ class TestSensorTiledCamera(unittest.TestCase):
         )
 
     def test_per_world_shape_texture_ids_render_shared_shape_differently(self) -> None:
-        model = self._build_global_textured_quad_scene()
+        model, visible_shape_index = self._build_global_textured_quad_scene()
         sensor = SensorTiledCamera(
             model=model,
             config=SensorTiledCamera.RenderConfig(enable_textures=True, enable_ambient_lighting=False),
         )
-        sensor.set_shape_texture_ids(np.array([[0, -1], [1, -1]], dtype=np.int32), per_world=True)
+        texture_ids = np.full((2, model.shape_count), -1, dtype=np.int32)
+        texture_ids[:, visible_shape_index] = [0, 1]
+        sensor.set_shape_texture_ids(texture_ids, per_world=True)
 
         camera_transforms = wp.array(
             [
@@ -189,27 +191,28 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         albedo = albedo_image.numpy()
         shape_index = shape_index_image.numpy()
-        self.assertEqual(shape_index[0, 0, 1, 1], 0)
-        self.assertEqual(shape_index[1, 0, 1, 1], 0)
+        self.assertEqual(shape_index[0, 0, 1, 1], visible_shape_index)
+        self.assertEqual(shape_index[1, 0, 1, 1], visible_shape_index)
         np.testing.assert_allclose(self._unpack_rgba(albedo[0, 0, 1, 1])[:3], [255, 0, 0], atol=1)
         np.testing.assert_allclose(self._unpack_rgba(albedo[1, 0, 1, 1])[:3], [0, 0, 255], atol=1)
 
     def test_set_shape_texture_ids_reuses_same_layout_allocation(self) -> None:
-        model = self._build_global_textured_quad_scene()
+        model, visible_shape_index = self._build_global_textured_quad_scene()
         sensor = SensorTiledCamera(model=model, config=SensorTiledCamera.RenderConfig(enable_textures=True))
-        sensor.set_shape_texture_ids(np.array([[0, -1], [1, -1]], dtype=np.int32), per_world=True)
+        texture_ids = np.full((2, model.shape_count), -1, dtype=np.int32)
+        texture_ids[:, visible_shape_index] = [0, 1]
+        sensor.set_shape_texture_ids(texture_ids, per_world=True)
 
         with self.assertWarns(DeprecationWarning):
             render_context = sensor.render_context
 
         ptr = render_context.shape_texture_ids.ptr
-        sensor.set_shape_texture_ids(np.array([[1, -1], [0, -1]], dtype=np.int32), per_world=True)
+        texture_ids[:, visible_shape_index] = [1, 0]
+        sensor.set_shape_texture_ids(texture_ids, per_world=True)
 
         self.assertTrue(render_context.shape_texture_ids_per_world)
         self.assertEqual(render_context.shape_texture_ids.ptr, ptr)
-        np.testing.assert_array_equal(
-            render_context.shape_texture_ids.numpy(), np.array([1, -1, 0, -1], dtype=np.int32)
-        )
+        np.testing.assert_array_equal(render_context.shape_texture_ids.numpy(), texture_ids.reshape(-1))
 
     def test_render_config_uses_utils_color_space_enum(self) -> None:
         self.assertEqual(SensorTiledCamera.RenderConfig().output_color_space, newton.utils.ColorSpace.SRGB)
