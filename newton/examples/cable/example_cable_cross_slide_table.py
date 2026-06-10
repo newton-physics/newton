@@ -30,14 +30,14 @@ import newton.examples
 TABLE_RECT_HALF_X = 0.050
 TABLE_RECT_HALF_Y = 0.060
 TABLE_RECT_PERIOD = 16.0
-TABLE_RECT_POINTS = (
-    (-TABLE_RECT_HALF_X, -TABLE_RECT_HALF_Y),
-    (TABLE_RECT_HALF_X, -TABLE_RECT_HALF_Y),
-    (TABLE_RECT_HALF_X, TABLE_RECT_HALF_Y),
-    (-TABLE_RECT_HALF_X, TABLE_RECT_HALF_Y),
-)
-TABLE_RECT_HIT_TOLERANCE = 0.1
 TABLE_RECT_TEST_FRAMES = 2100
+TABLE_TRACKING_MAX_ERROR_TOLERANCE = 0.005
+TABLE_TRACKING_RMS_ERROR_TOLERANCE = 0.0025
+CABLE_Z_BOUNDS = (0.04, 0.055)
+CABLE_XY_ABS_BOUND = 0.30
+JOINT_LIMIT_TOLERANCE = 0.003
+SLIDE_Z_BOUNDS = (0.010, 0.018)
+TABLE_Z_BOUNDS = (0.018, 0.026)
 START_RAMP_DURATION = 1.2
 
 
@@ -48,6 +48,7 @@ def drive_input_pulleys(
     body_base_xforms: wp.array[wp.transform],
     input_drive_radius: float,
     input_pulley_angles: wp.array[wp.float32],
+    target_table_xy: wp.array[wp.float32],
     body_q0: wp.array[wp.transform],
     body_q1: wp.array[wp.transform],
 ):
@@ -82,6 +83,9 @@ def drive_input_pulleys(
 
     target_x = ramp * table_x
     target_y = ramp * table_y
+    if tid == 0:
+        target_table_xy[0] = target_x
+        target_table_xy[1] = target_y
     command_x = -target_y
     command_y = target_x
     q_left = (command_x + command_y) / input_drive_radius
@@ -120,6 +124,25 @@ def set_body_xforms(
     xform = body_xforms[tid]
     body_q0[body] = xform
     body_q1[body] = xform
+
+
+def _symmetric_bounds(half_extent: float) -> tuple[float, float]:
+    return (-half_extent, half_extent)
+
+
+def _pad_bounds(bounds: tuple[float, float], padding: float) -> tuple[float, float]:
+    return (bounds[0] - padding, bounds[1] + padding)
+
+
+def _check_range(label: str, value: float, bounds: tuple[float, float]):
+    lower, upper = bounds
+    if not lower <= value <= upper:
+        raise ValueError(f"{label} {value:.4f} m is outside [{lower:.4f}, {upper:.4f}] m.")
+
+
+def _check_abs_bound(label: str, value: float, bound: float):
+    if abs(value) > bound:
+        raise ValueError(f"{label} {value:.4f} m exceeds +/-{bound:.4f} m.")
 
 
 def _dim_color(color: tuple[float, float, float], scale: float) -> tuple[float, float, float]:
@@ -458,8 +481,11 @@ class Example:
             label="beige_y_table",
         )
         self.table_origin_xy = (float(table_origin[0]), float(table_origin[1]))
-        self.table_rect_points = np.array(TABLE_RECT_POINTS, dtype=np.float32)
-        self.table_rect_min_distances = np.full(len(TABLE_RECT_POINTS), np.inf, dtype=np.float32)
+        self.table_tracking_max_error = 0.0
+        self.table_tracking_error_sq_sum = 0.0
+        self.table_tracking_sample_count = 0
+        self.slide_x_bounds = _symmetric_bounds(TABLE_RECT_HALF_X)
+        self.table_y_bounds = _symmetric_bounds(TABLE_RECT_HALF_Y)
 
         slide_joint = builder.add_joint_prismatic(
             parent=-1,
@@ -467,8 +493,8 @@ class Example:
             axis=wp.vec3(1.0, 0.0, 0.0),
             parent_xform=wp.transform(slide_origin, wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
-            limit_lower=-0.07,
-            limit_upper=0.07,
+            limit_lower=self.slide_x_bounds[0],
+            limit_upper=self.slide_x_bounds[1],
             limit_ke=2.0e3,
             limit_kd=1.0e-4,
             friction=0.0,
@@ -480,8 +506,8 @@ class Example:
             axis=wp.vec3(0.0, 1.0, 0.0),
             parent_xform=wp.transform(table_origin - slide_origin, wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
-            limit_lower=-0.08,
-            limit_upper=0.08,
+            limit_lower=self.table_y_bounds[0],
+            limit_upper=self.table_y_bounds[1],
             limit_ke=2.0e3,
             limit_kd=1.0e-4,
             friction=0.0,
@@ -751,6 +777,7 @@ class Example:
             dtype=wp.float32,
             device=self.model.device,
         )
+        self.target_table_xy = wp.zeros(2, dtype=wp.float32, device=self.model.device)
         cable_body_indices = wp.array(
             self.cable_bodies,
             dtype=wp.int32,
@@ -808,6 +835,7 @@ class Example:
                     self.kinematic_body_base_xforms,
                     self.input_drive_radius,
                     self.input_pulley_angles,
+                    self.target_table_xy,
                     self.state_0.body_q,
                     self.state_1.body_q,
                 ],
@@ -836,17 +864,21 @@ class Example:
         q_left = float(input_pulley_angles[0])
         q_right = float(input_pulley_angles[1])
         body_q = self.state_0.body_q.numpy()
+        target_table_xy = self.target_table_xy.numpy()
         table_pos = body_q[self.table_body, 0:3]
         table_x = float(table_pos[0]) - self.table_origin_xy[0]
         table_y = float(table_pos[1]) - self.table_origin_xy[1]
         table_xy = np.array((table_x, table_y), dtype=np.float32)
-        table_rect_distances = np.linalg.norm(self.table_rect_points - table_xy, axis=1)
-        self.table_rect_min_distances = np.minimum(self.table_rect_min_distances, table_rect_distances)
+        tracking_error = float(np.linalg.norm(table_xy - target_table_xy))
+        self.table_tracking_max_error = max(self.table_tracking_max_error, tracking_error)
+        self.table_tracking_error_sq_sum += tracking_error * tracking_error
+        self.table_tracking_sample_count += 1
 
         self.viewer.log_scalar("Blue left input rotation [rad]", q_left)
         self.viewer.log_scalar("Blue right input rotation [rad]", q_right)
         self.viewer.log_scalar("Beige table X position [m]", table_x)
         self.viewer.log_scalar("Beige table Y position [m]", table_y)
+        self.viewer.log_scalar("Beige table tracking error [m]", tracking_error)
 
     def render(self):
         """Render the current simulation state and contact points."""
@@ -855,43 +887,64 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
-    def test_final(self):
-        """Validate table travel, cable bounds, and rectangle coverage."""
+    def _check_state_bounds(self, body_q: np.ndarray):
+        """Validate that the mechanism remains finite and inside its workspace."""
+        if not np.all(np.isfinite(body_q)):
+            raise ValueError("NaN/Inf in body transforms.")
+
+        self._check_cable_bounds(body_q)
+        self._check_table_stage_bounds(body_q)
+
+    def _check_cable_bounds(self, body_q: np.ndarray):
+        """Validate that the cable has not escaped the table workspace."""
+        cable_pos = body_q[[int(body) for body in self.cable_bodies], 0:3]
+        _check_range("Cable minimum Z", float(np.min(cable_pos[:, 2])), CABLE_Z_BOUNDS)
+        _check_range("Cable maximum Z", float(np.max(cable_pos[:, 2])), CABLE_Z_BOUNDS)
+        _check_abs_bound("Cable maximum XY displacement", float(np.max(np.abs(cable_pos[:, 0:2]))), CABLE_XY_ABS_BOUND)
+
+    def _check_table_stage_bounds(self, body_q: np.ndarray):
+        """Validate that the slide and table bodies stay near their joint limits."""
+        slide_pos = body_q[self.slide_body, 0:3]
+        table_pos = body_q[self.table_body, 0:3]
+        slide_x_bounds = _pad_bounds(self.slide_x_bounds, JOINT_LIMIT_TOLERANCE)
+        table_y_bounds = _pad_bounds(self.table_y_bounds, JOINT_LIMIT_TOLERANCE)
+
+        _check_range("Horizontal green carriage X", float(slide_pos[0]), slide_x_bounds)
+        _check_range("Vertical beige carriage Y", float(table_pos[1]), table_y_bounds)
+        _check_range("Horizontal green carriage Z", float(slide_pos[2]), SLIDE_Z_BOUNDS)
+        _check_range("Vertical beige carriage Z", float(table_pos[2]), TABLE_Z_BOUNDS)
+
+    def test_post_step(self):
+        """Catch instability as soon as a rendered frame completes."""
         if self.state_0.body_q is None:
             raise RuntimeError("Body state is not available.")
 
         body_q = self.state_0.body_q.numpy()
-        if not np.all(np.isfinite(body_q)):
-            raise ValueError("NaN/Inf in body transforms.")
+        self._check_state_bounds(body_q)
 
-        cable_pos = body_q[[int(body) for body in self.cable_bodies], 0:3]
-        if np.min(cable_pos[:, 2]) < -0.04:
-            raise ValueError("Cable fell below the ground plane.")
-        if np.max(cable_pos[:, 2]) > 0.12:
-            raise ValueError("Cable lifted too far from the ground-plane table.")
-        if np.max(np.abs(cable_pos[:, 0])) > 0.34 or np.max(np.abs(cable_pos[:, 1])) > 0.34:
-            raise ValueError("Cable moved outside the expected XY table bounds.")
+    def test_final(self):
+        """Validate table drift and final mechanism bounds."""
+        if self.state_0.body_q is None:
+            raise RuntimeError("Body state is not available.")
 
-        slide_pos = body_q[self.slide_body, 0:3]
-        table_pos = body_q[self.table_body, 0:3]
-        joint_limit_tolerance = 0.005
-        if not (-0.07 - joint_limit_tolerance <= slide_pos[0] <= 0.07 + joint_limit_tolerance):
-            raise ValueError("Horizontal green carriage moved outside its travel range.")
-        if not (-0.08 - joint_limit_tolerance <= table_pos[1] <= 0.08 + joint_limit_tolerance):
-            raise ValueError("Vertical beige carriage moved outside its travel range.")
-        if not (0.0 <= slide_pos[2] <= 0.04 and 0.0 <= table_pos[2] <= 0.05):
-            raise ValueError("Table bodies left the ground-plane layout.")
+        body_q = self.state_0.body_q.numpy()
+        self._check_state_bounds(body_q)
 
-        missed_points = np.nonzero(self.table_rect_min_distances > TABLE_RECT_HIT_TOLERANCE)[0]
-        if len(missed_points) > 0:
-            details = []
-            for point_index in missed_points:
-                point = self.table_rect_points[point_index]
-                distance = self.table_rect_min_distances[point_index]
-                details.append(f"({point[0]:.3f}, {point[1]:.3f}) min error {distance:.4f} m")
+        if self.table_tracking_sample_count == 0:
+            raise ValueError("No table tracking samples were recorded.")
+
+        table_tracking_rms_error = math.sqrt(self.table_tracking_error_sq_sum / self.table_tracking_sample_count)
+        if self.table_tracking_max_error > TABLE_TRACKING_MAX_ERROR_TOLERANCE:
             raise ValueError(
-                "XY table did not hit every rectangle point within "
-                f"{TABLE_RECT_HIT_TOLERANCE:.3f} m: {', '.join(details)}"
+                "XY table drifted too far from the commanded path: "
+                f"max error {self.table_tracking_max_error:.4f} m exceeds "
+                f"{TABLE_TRACKING_MAX_ERROR_TOLERANCE:.4f} m."
+            )
+        if table_tracking_rms_error > TABLE_TRACKING_RMS_ERROR_TOLERANCE:
+            raise ValueError(
+                "XY table tracking error stayed too high: "
+                f"RMS error {table_tracking_rms_error:.4f} m exceeds "
+                f"{TABLE_TRACKING_RMS_ERROR_TOLERANCE:.4f} m."
             )
 
     @staticmethod
