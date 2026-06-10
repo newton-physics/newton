@@ -306,7 +306,8 @@ def Xform "Root" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_body_to_world_fixed_joint(self):
         """A body connected to the world via a PhysicsFixedJoint must be imported
-        with a FIXED joint (not FREE) without synthesizing a new articulation."""
+        with a FIXED joint (not FREE) and placed in its own articulation when
+        the USD already contains articulation metadata."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -353,14 +354,11 @@ def Xform "Root" (
         fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
 
         builder = newton.ModelBuilder()
-        with self.assertWarns(UserWarning) as cm:
-            builder.add_usd(stage)
-        self.assertIn("not included in any articulation", str(cm.warning).lower())
-        self.assertIn("/World/WorldLink/FixedJoint", str(cm.warning))
+        builder.add_usd(stage)
 
         # 3 bodies: Base, Link1, WorldLink.
         self.assertEqual(builder.body_count, 3)
-        self.assertEqual(builder.articulation_count, 1)
+        self.assertEqual(builder.articulation_count, 2)
 
         wl_body_idx = builder.body_label.index("/World/WorldLink")
         wl_joint_idx = next(i for i in range(builder.joint_count) if builder.joint_child[i] == wl_body_idx)
@@ -369,18 +367,18 @@ def Xform "Root" (
         self.assertEqual(builder.joint_type[wl_joint_idx], newton.JointType.FIXED)
         # Parent is -1 (world).
         self.assertEqual(builder.joint_parent[wl_joint_idx], -1)
-        # A rootless world-fixed joint remains an orphan joint. It should not
-        # create a second articulation next to the authored arm articulation.
-        self.assertEqual(builder.joint_articulation[wl_joint_idx], -1)
+        # When the USD already has articulation metadata, preserve the legacy
+        # compatibility behavior and put the extra world-fixed joint in its own
+        # articulation so the mixed authored asset finalizes cleanly.
+        wl_art = builder.joint_articulation[wl_joint_idx]
+        self.assertNotEqual(wl_art, -1)
 
         rev_joint_idx = builder.joint_label.index("/World/Arm/RevJoint")
         arm_art = builder.joint_articulation[rev_joint_idx]
-        self.assertNotEqual(arm_art, -1)
+        self.assertNotEqual(wl_art, arm_art)
 
-        # Model finalization requires the orphan-joint escape hatch.
-        with self.assertRaisesRegex(ValueError, "not belonging to any articulation"):
-            builder.finalize()
-        model = builder.finalize(skip_validation_joints=True)
+        # Model must finalize without errors (no orphan joint issues).
+        model = builder.finalize()
         self.assertEqual(model.body_count, 3)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
