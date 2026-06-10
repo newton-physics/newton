@@ -25,7 +25,7 @@ import warp as wp
 from ...sim.articulation import eval_fk, eval_jacobian
 from ...sim.builder import ModelBuilder
 from ..control_law import ControlLaw
-from ..utils import _normalize_port, _resolve_input_array, _resolve_per_robot_array
+from ..utils import HardwareInterface, _normalize_port, _resolve_input_array
 
 
 @wp.kernel
@@ -243,7 +243,6 @@ class ControlLawDifferentialIK(ControlLaw):
     - The intended "world frame" is the base frame of the builder.
 
     Args:
-        label: Unique-within-:class:`Controller` identifier.
         model_builder: Unfinalized N-articulation builder. ``num_robots =
             model_builder.articulation_count``.
         site: Label of the site (added via
@@ -251,33 +250,45 @@ class ControlLawDifferentialIK(ControlLaw):
             must contain **exactly one** site with this label on each
             articulation (``N`` sites total). The N occurrences may sit on
             different bodies and carry different body-local xforms.
-        measurement: Per-DOF read port ``(attr_name, port_indices)``.
+        measurement: Per-DOF read port ``(ControlSignal, port_indices)``.
             Source of joint positions ``q``. ``port_indices`` length
             ``num_robots * dofs_per_robot``, laid out
             ``[r0_d0, r0_d1, ..., r1_d0, ...]``.
         measurement_rate: Per-DOF read port. Source of joint velocities
             ``q_dot`` (used by ``eval_fk`` to populate ``body_qd``; the
             solve uses position-only error).
-        target_pos: Per-robot read port ``(attr_name, robot_indices)``.
-            The kernel reads ``arr[robot_indices[r]]``; ``arr`` must be a
-            ``wp.array[wp.vec3]``. Site position target in world frame.
-        target_quat: Per-robot read port. ``arr`` must be a
-            ``wp.array[wp.quat]``. Site orientation target.
-        damping: Per-robot read port. ``arr`` must be a
-            ``wp.array[float]``. DLS ``lambda`` per robot.
-        gain: Per-robot read port. ``arr`` must be a ``wp.array[float]``.
-            Scalar multiplier applied to the DLS-solve output before
-            writing into ``output_qd`` / integrating into ``output_q``.
+        target_pos: Per-robot read port ``(ControlSignal, robot_indices)``.
+            The kernel reads ``arr[robot_indices[r]]``; the bound
+            signal's ``dtype`` should be ``wp.vec3``. Site position
+            target in world frame.
+        target_quat: Per-robot read port. Signal dtype ``wp.quat``. Site
+            orientation target.
+        damping: Per-robot read port. Signal dtype ``wp.float32``. DLS
+            ``lambda`` per robot.
+        gain: Per-robot read port. Signal dtype ``wp.float32``. Scalar
+            multiplier applied to the DLS-solve output before writing
+            into ``output_qd`` / integrating into ``output_q``.
         output_qd: Per-DOF write port. Destination for ``q_dot``
             (accumulated ``+=``).
         output_q: Per-DOF write port. Destination for
             ``q_current + q_dot * dt`` (accumulated ``+=``).
     """
 
+    INPUT_PORTS = frozenset(
+        {
+            "measurement",
+            "measurement_rate",
+            "target_pos",
+            "target_quat",
+            "damping",
+            "gain",
+        }
+    )
+    OUTPUT_PORTS = frozenset({"output_qd", "output_q"})
+
     def __init__(
         self,
         *,
-        label: str,
         model_builder: ModelBuilder,
         site: str,
         measurement,
@@ -289,8 +300,6 @@ class ControlLawDifferentialIK(ControlLaw):
         output_qd,
         output_q,
     ):
-        self.label = label
-
         if not isinstance(model_builder, ModelBuilder):
             raise TypeError(
                 f"ControlLawDifferentialIK: model_builder must be a newton.ModelBuilder, "
@@ -358,22 +367,22 @@ class ControlLawDifferentialIK(ControlLaw):
         self._bodies_per_robot = bodies_per_robot
 
         # --- Port normalization ---
-        # Per-robot ports: tuple form (attr_name, robot_indices). robot_indices
-        # must be length num_robots; kernel reads arr[robot_indices[r]].
+        # Per-robot ports: kernel reads arr[robot_indices[r]]; port_indices
+        # must be length num_robots.
         def _norm_per_robot(spec, name):
-            attr, idx = _normalize_port(spec, name=name)
+            signal, idx = _normalize_port(spec, name=name)
             if idx.shape != (self._num_robots,):
                 raise ValueError(f"Port '{name}': robot_indices shape {idx.shape} must equal ({self._num_robots},).")
-            return attr, idx
+            return signal, idx
 
-        self._target_pos_attr, self._target_pos_indices = _norm_per_robot(target_pos, "target_pos")
-        self._target_quat_attr, self._target_quat_indices = _norm_per_robot(target_quat, "target_quat")
-        self._damping_attr, self._damping_indices = _norm_per_robot(damping, "damping")
-        self._gain_attr, self._gain_indices = _norm_per_robot(gain, "gain")
+        self._target_pos_signal, self._target_pos_indices = _norm_per_robot(target_pos, "target_pos")
+        self._target_quat_signal, self._target_quat_indices = _norm_per_robot(target_quat, "target_quat")
+        self._damping_signal, self._damping_indices = _norm_per_robot(damping, "damping")
+        self._gain_signal, self._gain_indices = _norm_per_robot(gain, "gain")
 
         # Per-DOF ports: output_qd defines num_outputs; everything else
         # must match. num_outputs == num_robots * dofs_per_robot for DiffIK.
-        self._output_qd_attr, self._output_qd_port_indices = _normalize_port(output_qd, name="output_qd")
+        self._output_qd_signal, self._output_qd_port_indices = _normalize_port(output_qd, name="output_qd")
         expected_n_outputs = self._num_robots * self._dofs_per_robot
         if self._output_qd_port_indices.shape != (expected_n_outputs,):
             raise ValueError(
@@ -383,21 +392,53 @@ class ControlLawDifferentialIK(ControlLaw):
         self._num_outputs = expected_n_outputs
 
         def _norm_per_dof(spec, name):
-            attr, idx = _normalize_port(spec, name=name)
+            signal, idx = _normalize_port(spec, name=name)
             if idx.shape != self._output_qd_port_indices.shape:
                 raise ValueError(
                     f"Port '{name}': port_indices shape {idx.shape} must match "
                     f"output_qd's shape {self._output_qd_port_indices.shape}."
                 )
-            return attr, idx
+            return signal, idx
 
-        self._measurement_attr, self._measurement_port_indices = _norm_per_dof(measurement, "measurement")
-        self._measurement_rate_attr, self._measurement_rate_port_indices = _norm_per_dof(
+        self._measurement_signal, self._measurement_port_indices = _norm_per_dof(measurement, "measurement")
+        self._measurement_rate_signal, self._measurement_rate_port_indices = _norm_per_dof(
             measurement_rate, "measurement_rate"
         )
-        self._output_q_attr, self._output_q_port_indices = _norm_per_dof(output_q, "output_q")
+        self._output_q_signal, self._output_q_port_indices = _norm_per_dof(output_q, "output_q")
 
-    def finalize(self, device: wp.Device, num_outputs: int, requires_grad: bool = False) -> None:
+        self._used_inputs = frozenset(
+            {
+                self._measurement_signal,
+                self._measurement_rate_signal,
+                self._target_pos_signal,
+                self._target_quat_signal,
+                self._damping_signal,
+                self._gain_signal,
+            }
+        )
+        self._used_outputs = frozenset({self._output_qd_signal, self._output_q_signal})
+
+        # Resolved attribute names — filled by _resolve().
+        self._measurement_attr: str | None = None
+        self._measurement_rate_attr: str | None = None
+        self._target_pos_attr: str | None = None
+        self._target_quat_attr: str | None = None
+        self._damping_attr: str | None = None
+        self._gain_attr: str | None = None
+        self._output_qd_attr: str | None = None
+        self._output_q_attr: str | None = None
+
+    def _resolve(self, hw: HardwareInterface) -> None:
+        self._measurement_attr = hw.inputs[self._measurement_signal]
+        self._measurement_rate_attr = hw.inputs[self._measurement_rate_signal]
+        self._target_pos_attr = hw.inputs[self._target_pos_signal]
+        self._target_quat_attr = hw.inputs[self._target_quat_signal]
+        self._damping_attr = hw.inputs[self._damping_signal]
+        self._gain_attr = hw.inputs[self._gain_signal]
+        self._output_qd_attr = hw.outputs[self._output_qd_signal]
+        self._output_q_attr = hw.outputs[self._output_q_signal]
+
+    def finalize(self, device: wp.Device, requires_grad: bool = False) -> None:
         # Finalize the user's N-articulation builder directly. No
         # replication: the builder is already the N-robot model the
         # controller manages.
@@ -461,6 +502,16 @@ class ControlLawDifferentialIK(ControlLaw):
     def is_graphable(self) -> bool:
         return True
 
+    def inputs(self) -> list[tuple[str, wp.array[wp.uint32]]]:
+        return [
+            (self._measurement_attr, self._measurement_port_indices),
+            (self._measurement_rate_attr, self._measurement_rate_port_indices),
+            (self._target_pos_attr, self._target_pos_indices),
+            (self._target_quat_attr, self._target_quat_indices),
+            (self._damping_attr, self._damping_indices),
+            (self._gain_attr, self._gain_indices),
+        ]
+
     def outputs(self) -> list[tuple[str, wp.array[wp.uint32]]]:
         return [
             (self._output_qd_attr, self._output_qd_port_indices),
@@ -477,10 +528,10 @@ class ControlLawDifferentialIK(ControlLaw):
     ) -> None:
         meas = _resolve_input_array(input, self._measurement_attr, name="measurement")
         meas_rate = _resolve_input_array(input, self._measurement_rate_attr, name="measurement_rate")
-        target_pos = _resolve_per_robot_array(input, self._target_pos_attr, wp.vec3, name="target_pos")
-        target_quat = _resolve_per_robot_array(input, self._target_quat_attr, wp.quat, name="target_quat")
-        damping = _resolve_per_robot_array(input, self._damping_attr, wp.float32, name="damping")
-        gain = _resolve_per_robot_array(input, self._gain_attr, wp.float32, name="gain")
+        target_pos = _resolve_input_array(input, self._target_pos_attr, name="target_pos")
+        target_quat = _resolve_input_array(input, self._target_quat_attr, name="target_quat")
+        damping = _resolve_input_array(input, self._damping_attr, name="damping")
+        gain = _resolve_input_array(input, self._gain_attr, name="gain")
         out_qd = _resolve_input_array(output, self._output_qd_attr, name="output_qd")
         out_q = _resolve_input_array(output, self._output_q_attr, name="output_q")
 

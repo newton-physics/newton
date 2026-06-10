@@ -25,8 +25,24 @@ import newton.examples
 import newton.solvers
 import newton.utils
 from newton import JointTargetMode
-from newton.controllers import ControlLawDifferentialIK, Controller
+from newton.controllers import (
+    JOINT_Q,
+    JOINT_QD,
+    ControlLawDifferentialIK,
+    Controller,
+    ControlSignal,
+    HardwareInterface,
+)
 from newton.utils import compute_world_offsets
+
+# DiffIK-specific signals (not in Newton's canonical set — defined per
+# application).
+_TARGET_POS = ControlSignal(dtype=wp.vec3, ndim=1, description="site position target")
+_TARGET_QUAT = ControlSignal(dtype=wp.quat, ndim=1, description="site orientation target")
+_DAMPING = ControlSignal(dtype=wp.float32, ndim=1, description="DLS damping lambda")
+_GAIN = ControlSignal(dtype=wp.float32, ndim=1, description="DLS output gain")
+_OUTPUT_QD = ControlSignal(dtype=wp.float32, ndim=1, description="commanded joint velocity")
+_OUTPUT_Q = ControlSignal(dtype=wp.float32, ndim=1, description="commanded joint position")
 
 ROBOT_COUNT = 4
 ROBOT_SPACING_Y = 1.2
@@ -209,19 +225,36 @@ class Example:
         )
 
         self._diff_ik = ControlLawDifferentialIK(
-            label="panda_ik",
             model_builder=diffik_template,
             site="ee",
-            measurement=("joint_q", dof_indices),
-            measurement_rate=("joint_qd", dof_indices),
-            target_pos=("target_pos", robot_indices),
-            target_quat=("target_quat", robot_indices),
-            damping=("damping", robot_indices),
-            gain=("gain", robot_indices),
-            output_qd=("output_qd", dof_indices),
-            output_q=("output_q", dof_indices),
+            measurement=(JOINT_Q, dof_indices),
+            measurement_rate=(JOINT_QD, dof_indices),
+            target_pos=(_TARGET_POS, robot_indices),
+            target_quat=(_TARGET_QUAT, robot_indices),
+            damping=(_DAMPING, robot_indices),
+            gain=(_GAIN, robot_indices),
+            output_qd=(_OUTPUT_QD, dof_indices),
+            output_q=(_OUTPUT_Q, dof_indices),
         )
-        self.controller = Controller([self._diff_ik])
+
+        # HardwareInterface wires each signal to its attribute name on
+        # the input/output objects passed to step(). Names match
+        # self._input / self._output below.
+        hw = HardwareInterface(
+            inputs={
+                JOINT_Q: "joint_q",
+                JOINT_QD: "joint_qd",
+                _TARGET_POS: "target_pos",
+                _TARGET_QUAT: "target_quat",
+                _DAMPING: "damping",
+                _GAIN: "gain",
+            },
+            outputs={
+                _OUTPUT_QD: "output_qd",
+                _OUTPUT_Q: "output_q",
+            },
+        )
+        self.controller = Controller(hw, [self._diff_ik])
         self._cs0 = self.controller.state()
         self._cs1 = self.controller.state()
 

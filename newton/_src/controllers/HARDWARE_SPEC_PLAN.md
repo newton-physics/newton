@@ -27,14 +27,12 @@ A `ControlLaw` is wired against signals (canonically by default; overridable per
 ## User sketch (target API shape)
 
 ```python
-# --- Newton ships a small set of canonical signals (newton.State only) ---
-JOINT_Q         = ControlSignal(dtype=wp.float32,        ndim=1, description="joint positions [m or rad]")
-JOINT_QD        = ControlSignal(dtype=wp.float32,        ndim=1, description="joint velocities")
-JOINT_TARGET_Q  = ControlSignal(dtype=wp.float32,        ndim=1, description="commanded joint positions")
-JOINT_TARGET_QD = ControlSignal(dtype=wp.float32,        ndim=1, description="commanded joint velocities")
-JOINT_F         = ControlSignal(dtype=wp.float32,        ndim=1, description="joint efforts [N or N·m]")
-BODY_Q          = ControlSignal(dtype=wp.transform,      ndim=1, description="body world transforms")
-BODY_QD         = ControlSignal(dtype=wp.spatial_vector, ndim=1, description="body spatial velocities")
+# --- Newton ships a small set of canonical signals (joint-level only for now) ---
+JOINT_Q         = ControlSignal(dtype=wp.float32, ndim=1, description="joint positions [m or rad]")
+JOINT_QD        = ControlSignal(dtype=wp.float32, ndim=1, description="joint velocities")
+JOINT_TARGET_Q  = ControlSignal(dtype=wp.float32, ndim=1, description="commanded joint positions")
+JOINT_TARGET_QD = ControlSignal(dtype=wp.float32, ndim=1, description="commanded joint velocities")
+JOINT_F         = ControlSignal(dtype=wp.float32, ndim=1, description="joint efforts [N or N·m]")
 
 # --- Other signals are demonstrated in tests/examples/docs, not shipped ---
 SETPOINT = ControlSignal(dtype=wp.float32, ndim=1, description="PID setpoint")
@@ -98,7 +96,7 @@ controller.step(input, output, cs0, cs1, dt)
 - **Law's signal tracking:** Each law records the set of signals it received per port. The Controller validates `law._used_inputs ⊆ hw.inputs.keys()` and `law._used_outputs ⊆ hw.outputs.keys()` at construction.
 - **Controller composition:** `+=` accumulation. Controller resolves the union of declared output signals' attribute names via the interface, zeros those slots, then each law `+=` writes into the resolved arrays. Two laws binding the same output signal sum into the same slot.
 - **Dtype validation:** No construction-time dtype check in the initial cut (the `PORT_DTYPES` concept is dropped). Kernel-launch errors surface dtype mismatches loudly. A later refinement can validate dtype at construction by reading the bound signal's `dtype` against an expectation declared on the law's class, but that's deferred to keep the initial code minimal.
-- **Newton's canonical signal set:** Newton publishes a short, Newton-state-only vocabulary of canonical `ControlSignal`s as module-level constants. Day-one list: `JOINT_Q`, `JOINT_QD`, `JOINT_TARGET_Q`, `JOINT_TARGET_QD`, `JOINT_F`, `BODY_Q` (wp.transform), `BODY_QD` (wp.spatial_vector). No `_IN` / `_OUT` direction duals — `JOINT_TARGET_Q` is a single signal, listed in whichever direction(s) a given user's `HardwareInterface` needs. PID/DiffIK-specific concepts (`SETPOINT`, `SETPOINT_RATE`, `KP`, `KI`, `KD`, `INTEGRAL_MAX`, `TARGET_POS`, `TARGET_QUAT`, `DAMPING`, `GAIN`) are **not** shipped as canonical — they're demonstrated in tests / examples / docs as the natural pattern for user-defined signals.
+- **Newton's canonical signal set:** Newton publishes a short, joint-level vocabulary of canonical `ControlSignal`s as module-level constants. Day-one list: `JOINT_Q`, `JOINT_QD`, `JOINT_TARGET_Q`, `JOINT_TARGET_QD`, `JOINT_F`. No `_IN` / `_OUT` direction duals — `JOINT_TARGET_Q` is a single signal, listed in whichever direction(s) a given user's `HardwareInterface` needs. Body-level signals (`BODY_Q`, `BODY_QD`) and PID/DiffIK-specific concepts (`SETPOINT`, `SETPOINT_RATE`, `KP`, `KI`, `KD`, `INTEGRAL_MAX`, `TARGET_POS`, `TARGET_QUAT`, `DAMPING`, `GAIN`) are **not** shipped as canonical — they're demonstrated in tests / examples / docs as the natural pattern for user-defined signals.
 - **Direction exclusivity, revised:** A given `ControlSignal` may appear in *both* `hw.inputs` and `hw.outputs` of a `HardwareInterface` (different uses on different laws). The earlier "ship two distinct constants for the two directions" rule is dropped, since Newton no longer ships per-direction duals.
 - **Input/output factories:** `controller.input()` / `controller.output()` allocate fresh objects whose attributes match the interface's name strings, with `wp.zeros(<size>, dtype=signal.dtype)` per used signal. Mirrors `controller.state()`. User mutates fields to share arrays with sim.
 - **`num_outputs` on per-DOF laws:** Derived from the output port's `port_indices` length. Every other per-port `port_indices` is cross-checked against it at `__init__`.
@@ -253,7 +251,7 @@ The HardwareInterface is only consulted at construction / `Controller.__init__`.
 This is a substantial refactor; rough scope:
 
 - `newton/_src/controllers/utils.py` — add `ControlSignal`, `HardwareInterface`. Replace string-name port normalizers with signal-based normalizers that take `(ControlSignal, wp.array[uint32])` tuples.
-- `newton/_src/controllers/standard_signals.py` (new) — Newton-state canonical `ControlSignal` module-level constants only: `JOINT_Q`, `JOINT_QD`, `JOINT_TARGET_Q`, `JOINT_TARGET_QD`, `JOINT_F`, `BODY_Q`, `BODY_QD`. Nothing PID/DiffIK-specific. No pre-built `HardwareInterface`.
+- `newton/_src/controllers/standard_signals.py` (new) — joint-level canonical `ControlSignal` module-level constants only: `JOINT_Q`, `JOINT_QD`, `JOINT_TARGET_Q`, `JOINT_TARGET_QD`, `JOINT_F`. Nothing body-level, nothing PID/DiffIK-specific. No pre-built `HardwareInterface`.
 - `newton/_src/controllers/control_law.py` — `ControlLaw` base records `_used_inputs`, `_used_outputs`. Adds a `_resolve(hw)` hook the `Controller` calls at composition time to stash per-port `attr_name` on the law. Subclasses declare `INPUT_PORTS` / `OUTPUT_PORTS` (sets of port-name strings) — no canonical-signal defaults yet, no `PORT_DTYPES`.
 - `newton/_src/controllers/controller.py` — `Controller` takes `hw: HardwareInterface` and `control_laws=`; validates that every law's used signals are covered by `hw` in the right direction; calls `law._resolve(hw)` on each; records output `(attr_name, port_indices)` for the upfront zero pass; passes `input`/`output` straight to each `compute()`.
 - `newton/_src/controllers/impl/controller_pid.py` — declare `INPUT_PORTS` / `OUTPUT_PORTS`. Every kwarg accepts only `(signal, indices)`. Derive `num_outputs` from the output port. Track `_used_inputs` / `_used_outputs`. No construction-time dtype validation (kernel-launch handles it).

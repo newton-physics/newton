@@ -2,105 +2,123 @@
 
 ## Background
 
-There are many controllers which have been implemented across Isaac Lab/Sim. The goal of this module is to centralize all of these controllers to the Newton repository, re-implementing each controller so that they are completely CUDA-graphable and vectorized. A list of controllers, their original location, and their status in this module is given below:
+Many control laws are implemented across Isaac Lab and Isaac Sim. The goal of this module is to centralise them in Newton, re-implemented to be CUDA-graphable and vectorized. Status of the controllers being ported:
 
-| Controller | Current Repo | Completed?
-| --- | --- | --- 
-| Differential IK | Isaac Lab | :heavy_check_mark: |
-| Operational Space | Isaac Lab | :x:  |
-| Joint Impedance | Isaac Lab | :x: |
+| Controller | Original repo | In Newton? |
+| --- | --- | --- |
+| Differential IK    | Isaac Lab | :heavy_check_mark: |
+| Operational Space  | Isaac Lab | :x: |
+| Joint Impedance    | Isaac Lab | :x: |
 | Differential Drive | Isaac Sim | :x: |
-| Holonomic Drive | Isaac Sim | :x: |
-| Ackermann | Isaac Sim | :x: |
+| Holonomic Drive    | Isaac Sim | :x: |
+| Ackermann          | Isaac Sim | :x: |
 
-*NOTE* List above may not be complete.
+*NOTE:* the list may not be complete.
 
-Further, we may want to add some general purpose control algorithms which are very common in robotics, such as linear filtering (low-pass, band-pass, notch, etc).
+General-purpose blocks (linear filters, saturation, feedforward, …) will land alongside the ported controllers as they become useful.
 
 ---
 
 ## Architecture
 
-This module is built from two base classes:
+The module is built from two base classes plus two data types:
 
-- **`ControlLaw`** — abstract base for a single law. Subclasses (`ControlLawPID`, `ControlLawDifferentialIK`, …) implement one algorithm. Each carries a unique-within-`Controller` `label`, declares which named ports it reads and writes, owns any algorithm-specific buffers, and exposes a `compute(input, output, current_state, next_state, dt)` method.
-- **`Controller`** — composer that wraps a list of `ControlLaw`s. Owns the per-step zero / compute sequence, the device, the gradient-tracking flag, and the composed state.
+- **`ControlSignal`** — a *slot type*. Carries `(dtype, ndim, description)`; no attribute name. Module-level constants are canonical (identity-equal). Newton ships a small joint-level vocabulary (`JOINT_Q`, `JOINT_QD`, `JOINT_TARGET_Q`, `JOINT_TARGET_QD`, `JOINT_F`); user-defined signals (setpoint, gains, IK targets, …) are demonstrated in tests and examples.
+- **`HardwareInterface`** — per-deployment wiring: two `dict[ControlSignal, str]`s, `inputs` and `outputs`, mapping each signal to the attribute name on the runtime `input` / `output` object. The interface is the *only* place where signal-to-name resolution lives.
+- **`ControlLaw`** — abstract base for a single law. Subclasses (`ControlLawPID`, `ControlLawDifferentialIK`, …) declare `INPUT_PORTS` and `OUTPUT_PORTS` (frozen sets of port-name strings) and accept `(ControlSignal, port_indices)` tuples as their constructor port kwargs. Each law records the set of signals it consumes / produces.
+- **`Controller`** — composer that takes a `HardwareInterface` and a list of `ControlLaw`s. Validates that every law's used signals are covered by the interface in the right direction, asks each law to resolve its signal bindings against the interface (so step-time is plain `getattr`), and owns the per-step "zero outputs, then accumulate via `+=`" pattern.
 
-The split keeps `Controller` algorithm-agnostic: it routes data and orchestrates the step, the laws hold the actual math. Multiple laws bound to the same output slot accumulate via `+=` (see *Output accumulation*), which is useful for modular control, such as adding gravity compensation to an existing controller.
+The split keeps `Controller` algorithm-agnostic: it routes data and orchestrates the step, the laws hold the actual math, and the interface holds the deployment-specific naming. Multiple laws bound to the same output signal accumulate via `+=` (see *Output accumulation*) — useful for modular control like summing a gravity-compensation term with a PID feedback term.
 
 ---
 
-## Duck-typing input/output data structures
+## Signals, interfaces, and the input/output structs at step time
 
-Every port on a `ControlLaw` is a **string** giving an attribute name. At step time, the Controller resolves the name via `getattr(input, name)` or `getattr(output, name)` against the duck-typed `input`/`output` objects you pass to `step()`. Concretely:
+A user wiring up a controller takes three steps:
+
+1. **Pick or define signals.** Newton ships canonical joint-level signals; if a law needs something Newton doesn't ship (setpoint, gains, target poses), the user defines it as a module-level `ControlSignal`.
+2. **Build a `HardwareInterface`** mapping each signal to the attribute name on whatever object will be passed as `input` / `output` at step time. The interface is reusable across configurations and shared by every law in the same `Controller`.
+3. **Construct each `ControlLaw`** by binding each port kwarg to a `(signal, port_indices)` tuple, then compose them under a `Controller(hw, [law_a, law_b, ...])`.
 
 ```python
+# Per-application signals (Newton doesn't ship these — they belong to the
+# user's controller configuration):
+SETPOINT = ControlSignal(dtype=wp.float32, ndim=1, description="PID setpoint")
+KP       = ControlSignal(dtype=wp.float32, ndim=1, description="proportional gain")
+# ... KI, KD, INTEGRAL_MAX, ...
+
+# Wiring for this application: which attribute on input/output holds each signal.
+hw = HardwareInterface(
+    inputs={
+        JOINT_Q:       "joint_q",
+        JOINT_QD:      "joint_qd",
+        SETPOINT:      "setpoint",
+        SETPOINT_RATE: "setpoint_rate",
+        KP: "kp", KI: "ki", KD: "kd",
+        INTEGRAL_MAX:  "integral_max",
+    },
+    outputs={JOINT_F: "joint_f"},
+)
+
+# Law construction takes only signals + port_indices — no attribute names.
+pid = ControlLawPID(
+    measurement      = (JOINT_Q,       indices),
+    measurement_rate = (JOINT_QD,      indices),
+    setpoint         = (SETPOINT,      indices),
+    setpoint_rate    = (SETPOINT_RATE, indices),
+    kp               = (KP,            indices),
+    ki               = (KI,            indices),
+    kd               = (KD,            indices),
+    integral_max     = (INTEGRAL_MAX,  indices),
+    output           = (JOINT_F,       indices),
+)
+
+controller = Controller(hw, [pid])
+
+# At step time, the user supplies whatever input/output object they like;
+# the attributes on it must match the interface's names.
 controller.step(input, output, current_state, next_state, dt)
 ```
 
-- `input` — any object whose attributes hold the read ports (measurement, setpoint, gains, targets…).
-- `output` — any object whose attributes hold the write ports (joint_f, joint_target_q, …).
-
-Importantly, the `input` and `output` structures are not neccesarilly the newton `simData` and `controlData` objects. This is because controllers may require input information which is not tracked as part of the simulation state (for example, a target pose for a given site on the robot, or a live update to a controller gain if it has variable impedance).
+The `input` and `output` objects are duck-typed — `SimpleNamespace`, an `@dataclass`, or anything that exposes the right attributes. They don't have to be `newton.State` / `newton.Control`; the interface mediates between the canonical signal vocabulary and whatever object the user passes.
 
 ### Port form
 
-Every port spec is a 2-tuple ``("attr_name", port_indices)``:
+Every port spec is a 2-tuple `(ControlSignal, wp.array[wp.uint32])`:
 
 | Element | Type | Meaning |
 |---|---|---|
-| `attr_name` | `str` | The attribute name on the `input` / `output` object. Resolved at step time via `getattr(source, attr_name)`. |
-| `port_indices` | `wp.array[wp.uint32]` | The inner lookup. Kernel reads `arr[port_indices[i]]` (per-DOF) or `arr[port_indices[r]]` (per-robot). |
+| `signal` | `ControlSignal` | The slot type. Identifies which `HardwareInterface` entry this port reads from / writes to. |
+| `port_indices` | `wp.array[wp.uint32]` | Per-element kernel lookup. `arr[port_indices[i]]` for per-DOF ports, `arr[port_indices[r]]` for per-robot ports. |
 
 Per-DOF and per-robot ports use the same shape of spec — the only difference is the length of `port_indices`:
 
-- **Per-DOF**: `port_indices.shape == (num_outputs,)` where `num_outputs` is the controller's "size" (derived from the output port's indices length and cross-checked against every other per-DOF port at `__init__`).
+- **Per-DOF**: `port_indices.shape == (num_outputs,)` where `num_outputs` is derived from the output port's `port_indices` length and cross-checked against every other per-DOF port at `__init__`.
 - **Per-robot**: `port_indices.shape == (num_robots,)` where `num_robots = model_builder.articulation_count` for articulated coupled laws.
 
 ### Validation
 
 | Stage | Check |
 |---|---|
-| `__init__` | `spec` is `(str, wp.array[wp.uint32])`. |
-| `__init__` (per-DOF) | `port_indices.shape == (num_outputs,)`. |
-| `__init__` (per-robot) | `port_indices.shape == (num_robots,)`. |
-| `step` | `getattr(source, attr_name)` resolves to a `wp.array`. Per-robot ports additionally check the dtype matches the documented contract (`wp.vec3` / `wp.quat` / `wp.float32`). Out-of-bounds reads via wrongly-sized source arrays surface at the kernel launch with Warp's diagnostic. |
+| `__init__` | Each port spec is a 2-tuple `(ControlSignal, wp.array[wp.uint32])`. Per-DOF / per-robot `port_indices` lengths cross-check against the law's structural sizes. |
+| `Controller.__init__` | Every signal the law's `_used_inputs` contains is a key in `hw.inputs`; same for `_used_outputs` / `hw.outputs`. |
+| `step` | `getattr(input, attr_name)` resolves to a `wp.array`. Dtype/shape mismatches surface at the kernel launch with Warp's diagnostic. No construction-time dtype check yet — relying on kernel launches keeps subclass authoring minimal. |
 
-### Example: shared backing array
-In particular example below, the same `wp.array` (`state.x`) appears under one attribute on both `input` and `output`; different `port_indices` arrays disambiguate which slots each port reads or writes.
+### Shared backing array
 
-```python
-pid = nc.ControlLawPID(
-    label            = "arm_pid",
-    measurement      = ("x", measurement_indices),
-    measurement_rate = ("x", measurement_rate_indices),
-    setpoint         = ("x", setpoint_indices),
-    setpoint_rate    = ("x", setpoint_rate_indices),
-    kp               = ("kp", gain_indices),
-    ki               = ("ki", gain_indices),
-    kd               = ("kd", gain_indices),
-    integral_max     = ("integral_max", gain_indices),
-    output           = ("x", output_indices),
-)
-
-input  = SimpleNamespace(x=state.x, kp=kp, ki=ki, kd=kd, integral_max=imax)
-output = SimpleNamespace(x=state.x)
-
-cs0, cs1 = controller.state(), controller.state()
-controller.step(input, output, cs0, cs1, dt)
-```
+A single backing `wp.array` can be referenced under one attribute on both `input` and `output`. Distinct signals with different `port_indices` then read/write different slots of that backing array — useful for "controller writes joint_target_q; downstream PID reads joint_target_q" wiring.
 
 ---
 
 ## Two flavors of ControlLaw
 
-There is no difference at the class level, but the conventions diverge between independent-per-DOF laws and structurally coupled laws.
+The class hierarchy is flat — both flavors derive from `ControlLaw`. The distinction shows up in kernel-launch shape and structural arguments.
 
 ### Independent per-DOF
 
 Output `i` depends only on input `i` plus per-DOF parameters. Examples: `ControlLawPID`, low-pass filter, saturation, feedforward.
 
-- Construction takes only the port specs.
+- Construction takes only port specs.
 - Kernel launches 1D with `dim=num_outputs`; `i = wp.tid()`.
 - No `newton.Model` required.
 
@@ -108,48 +126,35 @@ Output `i` depends only on input `i` plus per-DOF parameters. Examples: `Control
 
 Each robot's outputs depend on the full state of that robot. Examples: `ControlLawDifferentialIK`, `ControlLawGravityComp`, `ControlLawDifferentialDrive`, `ControlLawHolonomic`, `ControlLawOperationalSpace`.
 
-The law must carry a model of the robots it controls. Two patterns, depending on whether the data/functionality we need is found in a `newton.ModelBuilder` or must be passed as independent parameters.
+The law must carry a model of the robots it controls. Two patterns, depending on whether the data lives in a `newton.ModelBuilder` or in raw parameter arrays:
 
-#### Newton model case
+#### Articulated case
 
-The caller passes a `model_builder: newton.ModelBuilder` containing exactly `N` topologically-identical articulations — `N = model_builder.articulation_count = num_robots` is the number of robots this controller manages. The N articulations share:
+The caller passes a `model_builder: newton.ModelBuilder` containing exactly `N` topologically-identical articulations — `N = model_builder.articulation_count = num_robots`. The N articulations share DOF count, link/joint count, and joint types. They may differ in physical parameters (mass, inertia, friction, joint limits) and per-articulation site placement.
 
-- DOF count
-- link/joint count
-- joint types
+The controller does **no replication** — if the user wants `N` copies of a single-robot template, they call `newton.ModelBuilder.replicate(template, world_count=N)` themselves before construction.
 
-They may differ in physical parameters (mass, inertia, friction, joint limits) and in per-articulation site placement (so e.g. a fleet with mixed gripper lengths can sit under one `ControlLawDifferentialIK`).
+At `finalize()` the law calls `model_builder.finalize(device, requires_grad)` to get its internal `Model`. Per-step compute uses `eval_fk`, `eval_jacobian`, etc. on this internal model — independent of the simulated scene's model, so the user can deliberately introduce modelling errors between controller and sim.
 
-The controller does **no replication** — if the user wants `N` copies of a single-robot template, they call `newton.ModelBuilder.replicate(template, world_count=N)` themselves before construction. Keeping the responsibility on the caller means a single, obvious mental model: the builder you hand in is exactly the set of robots the controller will manage.
+#### Mobile case
 
-At `finalize()` the controller calls `model_builder.finalize(device, requires_grad)` to get an internal `Model`. Per-step compute uses `eval_fk`, `eval_jacobian`, etc. on this internal model — which is independent of the simulated scene's model, so the user can deliberately introduce modelling errors between controller and sim if they want to.
-
-#### Raw parameters case
-
-Mobile-robot controllers are parameterized by data that doesn't live in `newton.Model` (wheel radius, axle width, wheel-mapping matrix). The user passes those parameters as plain `wp.array` arguments of length `N = num_robots`. No replication; the controller just consumes the length-N parameter vectors directly.
+Mobile-robot controllers are parameterized by data that doesn't live in `newton.Model` (wheel radius, axle width, wheel-mapping matrix). The user passes those parameters as plain `wp.array`s of length `N = num_robots`. No replication.
 
 #### Indexing
 
-For both kinds of coupled law, the per-DOF output port's `port_indices` is required to be **robot-contiguous**: all of robot 0's DOFs come first, then all of robot 1's DOFs, and so on. Concretely, with `N = num_robots` and `D = dofs_per_robot`, the array looks like:
+For coupled laws, the per-DOF output port's `port_indices` is required to be **robot-contiguous**:
 
 ```
 port_indices = [
-    # robot 0's DOFs, in local order:
+    # robot 0's DOFs:
     robot_0_dof_0, robot_0_dof_1, ..., robot_0_dof_{D-1},
-
-    # robot 1's DOFs, in local order:
+    # robot 1's DOFs:
     robot_1_dof_0, robot_1_dof_1, ..., robot_1_dof_{D-1},
-
     ...
-
-    # robot N-1's DOFs, in local order:
-    robot_{N-1}_dof_0, robot_{N-1}_dof_1, ..., robot_{N-1}_dof_{D-1},
 ]
 ```
 
-Each entry is the global output index (the slot in the user's `output` array) for that robot's local DOF. So `port_indices[robot * dofs_per_robot + local_dof]` gives the global slot for robot `robot`'s `local_dof`-th DOF.
-
-Kernels launch 2D with `dim=(num_robots, dofs_per_robot)`; inside, `robot, local_dof = wp.tid()` and the flat index into `port_indices` is `robot * dofs_per_robot + local_dof`.
+Each entry is the global output index (slot in the user's `output` array) for that robot's local DOF. Kernels launch 2D with `dim=(num_robots, dofs_per_robot)`; the flat index into `port_indices` is `robot * dofs_per_robot + local_dof`.
 
 ---
 
@@ -164,7 +169,7 @@ out_idx = output_indices[i]
 output_array[out_idx] += contribution
 ```
 
-Composition is sum-of-contributions: a PD term + a gravity-compensation term + a feedforward term all writing to the same `joint_f` produce their pointwise sum. There are no overlap checks — laws compose at the user's discretion. Two laws binding overlapping slots have those slots zeroed twice in the upfront pass; idempotent and avoids any wp.array identity comparison.
+Composition is sum-of-contributions: a PD term + a gravity-compensation term + a feedforward term all writing to the same `joint_f` produce their pointwise sum. There are no overlap checks — laws compose at the user's discretion. Two laws binding overlapping slots have those slots zeroed twice in the upfront pass; idempotent.
 
 **Multi-output laws** (e.g. `ControlLawDifferentialIK` writes both `output_qd` and `output_q`) declare multiple bindings via `outputs()`. Each is treated identically for zero / accumulate purposes. All of a law's outputs must share the same outer length (`num_outputs`).
 
@@ -172,58 +177,55 @@ Composition is sum-of-contributions: a PD term + a gravity-compensation term + a
 
 ## State and double-buffering
 
-Each `ControlLaw` defines a nested `State` dataclass holding whatever per-step internal buffers it needs (PID integrals, filter history, …). `ControlLaw.is_stateful()` reports whether it carries any; `ControlLaw.state(num_outputs, device, requires_grad)` allocates a fresh state or returns `None` if the control law is not stateful.
+Each `ControlLaw` defines a nested `State` dataclass holding whatever per-step internal buffers it needs (PID integrals, filter history, …). `ControlLaw.is_stateful()` reports whether it carries any; `ControlLaw.state(device, requires_grad)` allocates a fresh one.
 
-`Controller.State` composes per-law states as a `dict[str, ControlLaw.State | None]` keyed by each law's `label` (with `None` entries for stateless laws). Dict insertion order matches the order the laws were passed to the `Controller`, so step iteration is deterministic. Keying by label makes external introspection (`state.control_law_states["arm_pid"].integral.numpy()`) stable across reordering and easier to read than positional indexing.
+`Controller.State` composes per-law states as a flat list keyed by registration order. `controller.state()` returns a composed state with every stateful law's state already allocated (and `None` entries for stateless laws).
 
 The step protocol is double-buffered: the Controller reads from `current_state`, writes to `next_state`, and the caller swaps:
 
 ```python
-controller_state_0 = controller.state()
-controller_state_1 = controller.state()
+state_0 = controller.state()
+state_1 = controller.state()
 for _ in range(steps):
-    controller.step(input, output, controller_state_0, controller_state_1, dt=dt)
-    controller_state_0, controller_state_1 = controller_state_1, controller_state_0
+    controller.step(input, output, state_0, state_1, dt=dt)
+    state_0, state_1 = state_1, state_0
 ```
 
-This mirrors the in/out State pattern used by `Solver.step(state_in, state_out, ...)` and avoids tape entanglement when running under `wp.Tape`.
+This mirrors the in/out State pattern used by `Solver.step(state_in, state_out, ...)` and keeps autograd-safe kernels free of aliased read/write arrays.
 
 ---
 
 ## Differentiability
 
-`Controller.__init__(control_laws, requires_grad=False)` is the single source of truth for gradient support. The flag propagates into every `ControlLaw.finalize(device, num_outputs, requires_grad)` and `ControlLaw.state(num_outputs, device, requires_grad)` call, and from there into every internally allocated buffer (PID's `integral`; DiffIK's internal `Model`, `_jacobian`, `_qd_target_local`, …).
+`Controller.__init__(..., requires_grad=False)` is the single source of truth for gradient support. The flag propagates into every `ControlLaw.finalize(device, requires_grad)` and `ControlLaw.state(device, requires_grad)` call, and from there into every internally allocated buffer.
 
-User-supplied input arrays (`measurement`, `target_pos`, `kp`, …) carry their own `requires_grad` — the laws don't own those allocations.
+User-supplied arrays bound to ports (`measurement`, `target_pos`, `kp`, …) carry their own `requires_grad` — the laws don't own those allocations.
 
-Kernels use the default `@wp.kernel` decorator, which records adjoints onto an active `wp.Tape`. The module is tape-agnostic: the caller (Isaac Lab, a custom training loop) wraps the relevant block in `wp.Tape()` and runs `tape.backward(loss=…)` on its own. This matches `newton.actuators.Actuator.step`.
+Kernels use the default `@wp.kernel` decorator, which records adjoints onto an active `wp.Tape`. The module is tape-agnostic: the caller (Isaac Lab, a custom training loop) wraps the relevant block in `wp.Tape()` and runs `tape.backward(loss=…)` on its own.
 
 ### Per-law status
 
-- **`ControlLawPID`** — fully differentiable end-to-end. Gradients flow from `output` back through `measurement`, `measurement_rate`, `setpoint`, `setpoint_rate`, `kp`, `ki`, `kd`, `integral_max`.
-- **`ControlLawDifferentialIK`** — tape-safe; forward-only through the damped least squares (DLS) solve. The compute chain is split into per-element kernels (gather --> build site Jacobian --> build the 6×6 DLS matrix --> q_dot back-projection --> accumulate) plus one tile-cooperative Cholesky-solve kernel. Every kernel except the solve is autograd-able by default. The solve uses `wp.tile_cholesky` + `wp.tile_cholesky_solve`; their adjoints are advertised but return zero gradients in Warp 1.14.0 (verified directly: forward correct, backward gives zero gradients on both A and the rhs). The solve kernel is therefore marked `enable_backward=False` to make the zero-gradient behaviour explicit. Gradients propagate from the loss back to `output_qd` and stop at the solve. Useful for RL pipelines that wrap a whole sim in `wp.Tape` without needing IK gradients; not yet usable for end-to-end diff-physics training through the IK. Revisit if upstream `wp.tile_cholesky` backward lands.
+- **`ControlLawPID`** — fully differentiable end-to-end. Gradients flow from `output` back through every read port.
+- **`ControlLawDifferentialIK`** — tape-safe; forward-only through the damped least squares (DLS) solve. Every kernel except the solve is autograd-able by default. The solve uses `wp.tile_cholesky` + `wp.tile_cholesky_solve`; their adjoints are advertised but return zero gradients in Warp 1.14.0 (verified directly). The solve kernel is therefore marked `enable_backward=False`. Useful for RL pipelines that wrap a whole sim in `wp.Tape` without needing IK gradients; not yet usable for end-to-end diff-physics training through the IK. Revisit if upstream `wp.tile_cholesky` backward lands.
 
-Mixed grad-tracking needs (some laws gradient-tracked, others not) split into multiple `Controller`s; there is no per-law override.
+Mixed grad-tracking needs (some laws gradient-tracked, others not) split into multiple `Controller`s.
 
 ---
 
 ## How controllers compose with actuators and solvers
 
-The standard ordering inside one simulation step:
-
 ```python
-# A controller which runs both a PID and Differential Inverse Kinematics
-controller = nc.Controller([pid, diff_ik])
+controller = Controller(hw, [pid, diff_ik])
 actuator   = newton.actuators.Actuator(controller=..., ...)
 
 ctrl_state_0 = controller.state(); ctrl_state_1 = controller.state()
-act_state_0  = actuator.state();  act_state_1  = actuator.state()
+act_state_0  = actuator.state();   act_state_1  = actuator.state()
 
 for _ in range(steps):
     # 1. Control laws compute targets (joint position, velocity, or feedforward effort).
     controller.step(ctrl_in, ctrl_out, ctrl_state_0, ctrl_state_1, dt=dt)
 
-    # 2. Actuators translate target -> joint effort, applying delay / clamping / etc.
+    # 2. Actuators translate target -> joint effort.
     actuator.step(sim_state, sim_control, act_state_0, act_state_1, dt=dt)
 
     # 3. Physics solver advances the state.
@@ -231,69 +233,74 @@ for _ in range(steps):
 
     ctrl_state_0, ctrl_state_1 = ctrl_state_1, ctrl_state_0
     act_state_0,  act_state_1  = act_state_1,  act_state_0
-    sim_state, sim_state_next = sim_state_next, sim_state
+    sim_state, sim_state_next  = sim_state_next, sim_state
 ```
 
-The bridge is `ctrl_out` <--> `sim_control`: the user typically points `ctrl_out`'s attributes at the same `wp.array`s exposed on `sim_control` (e.g. `joint_target_q`, `joint_f`). The controllers module never introspects Newton sim objects — that wiring is the user's responsibility, and it stays explicit at the call site.
+The bridge from controllers to actuators is the runtime `wp.array` reference: the user typically points an attribute of `ctrl_out` (named per the `HardwareInterface`) at the same `wp.array` exposed on `sim_control` (e.g. `joint_target_q`, `joint_f`). The controllers module never introspects Newton sim objects — that wiring is the user's responsibility.
 
-For controllers which only result in joint targets, they can write directly to the `sim_control` object rather than constructing a separate `ctrl_out` object.
+For controllers whose only output is a joint target, the user can point `ctrl_out` directly at the corresponding attribute on `sim_control` (skipping a separate `Output` namespace).
 
 ---
 
 ## Subclassing a ControlLaw
 
-The base class is a minimal contract. Subclasses are free to choose their kernel shapes, decide whether to take a `model_builder` argument, etc.
+The base class is a minimal contract. Subclasses choose their kernel shapes, declare their port roles, and (for coupled laws) declare what structural arguments their constructor takes beyond ports.
 
 ```python
 class ControlLaw:
+    INPUT_PORTS:  ClassVar[frozenset[str]] = frozenset()
+    OUTPUT_PORTS: ClassVar[frozenset[str]] = frozenset()
+
     @dataclass
     class State:
-        """Pure data container. Subclasses declare their fields (integral
-        arrays, history buffers). No methods."""
+        """Pure data container. Subclasses declare fields (integral
+        arrays, filter history, …). No methods."""
 
-    label: str
-    """Unique-within-Controller string identifier. Set in __init__."""
+    _used_inputs:  frozenset[ControlSignal]
+    _used_outputs: frozenset[ControlSignal]
 
-    def __init__(self, *, label: str, **ports):
-        """Validate port specs and stash them as (attr_name, port_indices)
-        pairs. Cheap CPU-side work only: device buffers are allocated in
-        finalize().
+    def __init__(self, **port_bindings):
+        """Validate every port spec (a 2-tuple of (ControlSignal,
+        wp.array[uint32])), cross-check per-DOF / per-robot lengths,
+        record _used_inputs / _used_outputs, stash (signal, port_indices)
+        keyed by port name. Cheap CPU-side work; device-side buffers are
+        allocated in finalize()."""
 
-        Subclasses declare which kwargs they accept; missing required ports
-        raise here, unknown ports raise here, and port_indices shape
-        mismatches raise here. The output port carries the controller's
-        num_outputs (= its port_indices length) — every per-DOF port is
-        cross-checked against it at __init__."""
+    def _resolve(self, hw: HardwareInterface) -> None:
+        """Convert each stashed (signal, port_indices) into
+        (attr_name, port_indices) using hw. Called by the composing
+        Controller once at construction. After this call, compute() can
+        do plain getattr(input, self._<port>_attr)."""
 
-    def finalize(self, device: wp.Device, num_outputs: int,
-                 requires_grad: bool = False) -> None:
+    def finalize(self, device: wp.Device, requires_grad: bool = False) -> None:
         """Allocate device-side private buffers (e.g. internal Model +
-        Jacobian buffers for articulated laws). Called by Controller after
-        construction."""
+        Jacobian buffers for articulated laws). Called by the Controller
+        after _resolve."""
 
-    def state(self, num_outputs: int, device: wp.Device,
+    def state(self, device: wp.Device,
               requires_grad: bool = False) -> ControlLaw.State | None:
         """Allocate a fresh State, or None for stateless laws."""
 
     def is_stateful(self) -> bool: ...
     def is_graphable(self) -> bool: ...
 
+    def inputs(self) -> list[tuple[str, wp.array[wp.uint32]]]:
+        """Resolved (attr_name, port_indices) pairs for read ports. Used
+        by Controller.input() to size the auto-allocated namespace."""
+
     def outputs(self) -> list[tuple[str, wp.array[wp.uint32]]]:
-        """Return the law's (output_attr_name, output_port_indices)
-        bindings. The Controller resolves each attr_name against the
-        `output` arg of step() once per step and zeros the listed slots
-        before any compute() runs."""
+        """Resolved (attr_name, port_indices) pairs for write ports.
+        Used by Controller.step()'s upfront zero pass and by
+        Controller.output() for auto-allocation."""
 
     def compute(self,
-                input,
-                output,
+                input, output,
                 state: ControlLaw.State | None,
                 next_state: ControlLaw.State | None,
                 dt: float) -> None:
-        """Resolve port arrays via _resolve_input_array /
-        _resolve_per_robot_array, launch kernels: read live data, write +=
-        into outputs, populate next_state. Device is fixed at finalize()
-        time."""
+        """Read live arrays via getattr(input, self._<port>_attr) (the
+        resolved name was stashed by _resolve), launch kernels, write
+        via += into outputs, populate next_state."""
 ```
 
 The `Controller` itself is small:
@@ -301,29 +308,26 @@ The `Controller` itself is small:
 ```python
 class Controller:
     def __init__(self,
+                 hw: HardwareInterface,
                  control_laws: list[ControlLaw],
                  requires_grad: bool = False,
                  device: wp.Device | None = None):
-        """Validate that every law has a unique label and agrees on
-        num_outputs, finalize() each, collect every law's outputs() into
-        a flat list to be resolved + zeroed at step time."""
+        """For each law: verify _used_inputs ⊆ hw.inputs.keys() and
+        _used_outputs ⊆ hw.outputs.keys(); call law._resolve(hw) to stash
+        attr_name per port; call law.finalize(device, requires_grad).
+        Collect a flat list of (attr_name, port_indices) output bindings
+        for the upfront zero pass at step time."""
 
-    def is_stateful(self) -> bool: ...
-    def is_graphable(self) -> bool: ...
+    def state(self)  -> Controller.State: ...
+    def input(self)  -> SimpleNamespace: ...    # auto-allocated; mutate fields as needed
+    def output(self) -> SimpleNamespace: ...
 
-    def state(self) -> Controller.State:
-        """Allocate composed state — keyed by each ControlLaw's label
-        (None entries for stateless laws)."""
-
-    def step(self,
-             input,
-             output,
+    def step(self, input, output,
              current_state: Controller.State,
              next_state: Controller.State,
              dt: float) -> None:
-        """1. Resolve each output binding's attr_name against `output`,
-              and zero the declared slots. Two laws binding overlapping
-              slots get zeroed twice — idempotent.
+        """1. For each (attr_name, port_indices) output binding, zero
+              output[attr_name][port_indices].
            2. For each law in registration order, call compute(input,
               output, cur, nxt, dt), which += writes into outputs."""
 ```
@@ -331,34 +335,40 @@ class Controller:
 ```python
 @dataclass
 class Controller.State:
-    control_law_states: dict[str, ControlLaw.State | None]
+    control_law_states: list[ControlLaw.State | None]
 ```
 
 ### Internal helpers (`newton/_src/controllers/utils.py`)
 
-- `_normalize_port(spec, name)` — validate the 2-tuple `(str, wp.array[uint32])` spec at `__init__`, return `(attr_name, port_indices)`.
+- `_normalize_port(spec, name)` — validate the 2-tuple `(ControlSignal, wp.array[uint32])` spec at `__init__`, return `(signal, port_indices)`.
 - `_resolve_input_array(source, attr_name, name)` — step-time `getattr` plus `wp.array` type check.
-- `_resolve_per_robot_array(source, attr_name, dtype, name)` — step-time `getattr` plus dtype check (per-robot ports).
 
 ### Choosing between independent and coupled
 
 If output `i` depends only on input `i` and per-DOF parameters, write it independent: 1D launch, no `Model`. Pure scalar math.
 
-If each robot's outputs depend on its full configuration (Jacobians, mass matrix, kinematic chain, base velocity), write it coupled: take a `model_builder` (articulated case) or raw per-robot parameter vectors (mobile case) or both; finalize the builder once at finalize time; 2D launch over `(num_robots, outputs_per_robot)`.
+If each robot's outputs depend on its full configuration (Jacobians, mass matrix, kinematic chain, base velocity), write it coupled: take a `model_builder` (articulated case) or raw per-robot parameter vectors (mobile case); finalize the builder at `finalize()`; 2D launch over `(num_robots, outputs_per_robot)`.
 
-The reference implementations are `controller_pid.py` (independent) and `controller_diff_ik.py` (coupled, articulated).
+Reference implementations: `controller_pid.py` (independent) and `controller_diff_ik.py` (coupled, articulated).
 
 ---
 
 ## Roadmap
 
-ControlLaws currently implemented:
+Implemented:
 
 1. **`ControlLawPID`** — independent per-DOF, fully differentiable.
 2. **`ControlLawDifferentialIK`** — coupled articulated, tape-safe (forward-only through the solve).
 
-Planned, but blocked by lack of inverse-dynamics function:
+Planned, blocked by lack of a public inverse-dynamics function in Newton:
 
 - `ControlLawGravityComp`
 - `ControlLawJointImpedance`
 - `ControlLawOperationalSpace`
+
+Planned, unblocked:
+
+- `ControlLawDifferentialDrive`
+- `ControlLawHolonomic`
+- `ControlLawAckermann`
+- Linear filters (low-pass, band-pass, notch).
