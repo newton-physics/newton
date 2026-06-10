@@ -2334,11 +2334,13 @@ class ModelBuilder:
 
     @property
     def joint_target_pos(self) -> list[float]:
-        """Deprecated read-only alias for :attr:`joint_target_q` (DOF-shape).
+        """Deprecated alias for :attr:`joint_target_q` (DOF-shape).
 
         Returns a fresh DOF-shaped list — for FREE/BALL/DISTANCE the quat-w
-        slot is dropped; other joints copy verbatim. Mutations do not
-        propagate back. Raises :class:`AttributeError` under
+        slot is dropped; other joints copy verbatim. Mutating the returned
+        list does not propagate back; assign to this alias to update the
+        underlying targets during the deprecation window. Raises
+        :class:`AttributeError` under
         :data:`newton.use_coord_layout_targets` ``True``.
 
         .. deprecated:: 1.3
@@ -2360,10 +2362,31 @@ class ModelBuilder:
         )
         return self._project_target_q_to_dof()
 
+    @joint_target_pos.setter
+    def joint_target_pos(self, value: Sequence[float]) -> None:
+        import newton  # noqa: PLC0415
+
+        if newton.use_coord_layout_targets:
+            raise AttributeError(
+                "ModelBuilder.joint_target_pos is unavailable when "
+                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_q."
+            )
+        warnings.warn(
+            "ModelBuilder.joint_target_pos is deprecated; use ModelBuilder.joint_target_q "
+            "(coord-shaped). Assignments to the legacy alias are converted from DOF layout "
+            "during the deprecation window. The attribute will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._assign_target_q_from_dof(value)
+
     @property
     def joint_target_vel(self) -> list[float]:
-        """Deprecated read-only alias for :attr:`joint_target_qd`. Returns a
-        fresh copy — mutations do not propagate back. Raises
+        """Deprecated alias for :attr:`joint_target_qd`.
+
+        Returns a fresh copy — mutating it does not propagate back; assign to
+        this alias to update :attr:`joint_target_qd` during the deprecation
+        window. Raises
         :class:`AttributeError` under
         :data:`newton.use_coord_layout_targets` ``True``.
 
@@ -2384,6 +2407,27 @@ class ModelBuilder:
             stacklevel=2,
         )
         return list(self.joint_target_qd)
+
+    @joint_target_vel.setter
+    def joint_target_vel(self, value: Sequence[float]) -> None:
+        import newton  # noqa: PLC0415
+
+        if newton.use_coord_layout_targets:
+            raise AttributeError(
+                "ModelBuilder.joint_target_vel is unavailable when "
+                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_qd."
+            )
+        warnings.warn(
+            "ModelBuilder.joint_target_vel is deprecated; use ModelBuilder.joint_target_qd. "
+            "Assignments to the legacy alias are forwarded during the deprecation window. "
+            "The attribute will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        values = list(value)
+        if len(values) != self.joint_dof_count:
+            raise ValueError(f"ModelBuilder.joint_target_vel expects {self.joint_dof_count} values, got {len(values)}.")
+        self.joint_target_qd = values
 
     def _project_target_q_to_dof(self) -> list[float]:
         """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
@@ -2407,6 +2451,31 @@ class ModelBuilder:
                 num_lin, num_ang = self.joint_dof_dim[j]
                 result.extend(self.joint_target_q[q_start : q_start + num_lin + num_ang])
         return result
+
+    def _assign_target_q_from_dof(self, values: Sequence[float]) -> None:
+        """Write DOF-shaped legacy target values into the coord-sized buffer."""
+        values = list(values)
+        if len(values) != self.joint_dof_count:
+            raise ValueError(f"ModelBuilder.joint_target_pos expects {self.joint_dof_count} values, got {len(values)}.")
+
+        value_start = 0
+        for j, jtype in enumerate(self.joint_type):
+            q_start = self.joint_q_start[j]
+            if jtype == JointType.BALL:
+                self.joint_target_q[q_start : q_start + 3] = values[value_start : value_start + 3]
+                self.joint_target_q[q_start + 3] = 1.0
+                value_start += 3
+            elif jtype == JointType.FREE or jtype == JointType.DISTANCE:
+                self.joint_target_q[q_start : q_start + 6] = values[value_start : value_start + 6]
+                self.joint_target_q[q_start + 6] = 1.0
+                value_start += 6
+            elif jtype == JointType.FIXED:
+                pass
+            else:
+                num_lin, num_ang = self.joint_dof_dim[j]
+                dof_count = num_lin + num_ang
+                self.joint_target_q[q_start : q_start + dof_count] = values[value_start : value_start + dof_count]
+                value_start += dof_count
 
     @staticmethod
     def _quat_from_axis_targets(t_x: float, t_y: float, t_z: float) -> tuple[float, float, float, float]:

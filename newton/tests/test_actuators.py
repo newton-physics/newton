@@ -671,7 +671,7 @@ class TestActuatorStep(unittest.TestCase):
         control = model.control()
         for step_i in range(5):
             tgt = target_schedule[step_i]
-            _write_dof_values(model, control.joint_target_pos, dofs, [tgt] * n)
+            _write_dof_values(model, control.joint_target_q, dofs, [tgt] * n)
             written_targets.append(tgt)
 
             control.joint_f.zero_()
@@ -1362,7 +1362,7 @@ class TestStateReset(unittest.TestCase):
 
         control = model.control()
         for _step in range(3):
-            _write_dof_values(model, control.joint_target_pos, dofs, [10.0] * n)
+            _write_dof_values(model, control.joint_target_q, dofs, [10.0] * n)
             control.joint_f.zero_()
             actuator.step(state, control, state_0, state_1, 0.01)
             state_0, state_1 = state_1, state_0
@@ -1458,17 +1458,17 @@ class TestDelayGraphCapture(unittest.TestCase):
 
         # --- Eager ---
         solver, s0, s1, ctrl, act, act_a, act_b = _setup()
-        wp.copy(ctrl.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        wp.copy(ctrl.joint_target_q, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
         s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, max_delay)
         eager_results = []
         for tgt in cycle_targets:
-            wp.copy(ctrl.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            wp.copy(ctrl.joint_target_q, wp.full(ndof, tgt, dtype=wp.float32, device=device))
             s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, N)
             eager_results.append(s0.joint_q.numpy().copy())
 
         # --- Graph ---
         solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g = _setup()
-        wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        wp.copy(ctrl_g.joint_target_q, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
         s0_g, s1_g, act_a_g, act_b_g = _loop(solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g, max_delay)
         sub_dt = dt / K
         with wp.ScopedCapture(device=device) as capture:
@@ -1484,7 +1484,7 @@ class TestDelayGraphCapture(unittest.TestCase):
 
         graph_results = []
         for tgt in cycle_targets:
-            wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            wp.copy(ctrl_g.joint_target_q, wp.full(ndof, tgt, dtype=wp.float32, device=device))
             wp.capture_launch(graph)
             graph_results.append(s0_g.joint_q.numpy().copy())
 
@@ -1662,12 +1662,15 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
         target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (joint_target_pos layout)
 
         ctrl = ControllerPD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
-        actuator = Actuator(
-            indices=indices,
-            controller=ctrl,
-            pos_indices=pos_indices,
-            target_pos_indices=target_pos_indices,
-        )
+        # This test deliberately exercises the legacy DOF-shaped target layout via
+        # the default attr resolution, which is deprecated and warns.
+        with self.assertWarns(DeprecationWarning):
+            actuator = Actuator(
+                indices=indices,
+                controller=ctrl,
+                pos_indices=pos_indices,
+                target_pos_indices=target_pos_indices,
+            )
 
         # joint_q is coord-shaped; actual position at coord index 3
         joint_q = _a([0.0, 0.0, 0.0, actual_pos])
