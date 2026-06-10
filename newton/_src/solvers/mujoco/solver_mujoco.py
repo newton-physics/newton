@@ -4870,9 +4870,19 @@ class SolverMuJoCo(SolverBase):
         # get the shapes for the first environment
         first_env_shapes = np.where(shape_world == first_world)[0]
 
-        # split joints into loop and non-loop joints (loop joints will be instantiated separately as equality constraints)
-        joints_loop = selected_joints[joint_articulation[selected_joints] == -1]
-        joints_non_loop = selected_joints[joint_articulation[selected_joints] >= 0]
+        # Split joints into tree joints and loop joints. Joints outside an
+        # articulation normally become equality constraints, except fixed roots:
+        # those can be exported as MuJoCo bodies without adding any joint DOFs.
+        joints_fixed_root = selected_joints[
+            (joint_articulation[selected_joints] == -1)
+            & (joint_parent[selected_joints] == -1)
+            & (joint_type[selected_joints] == JointType.FIXED)
+        ]
+        joints_loop = selected_joints[
+            (joint_articulation[selected_joints] == -1)
+            & ~((joint_parent[selected_joints] == -1) & (joint_type[selected_joints] == JointType.FIXED))
+        ]
+        joints_non_loop = np.concatenate((selected_joints[joint_articulation[selected_joints] >= 0], joints_fixed_root))
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
         joints_simple = [(joint_parent[i], joint_child[i]) for i in joints_non_loop]

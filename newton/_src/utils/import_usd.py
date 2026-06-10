@@ -2581,10 +2581,8 @@ def parse_usd(
         # Skip body-to-world joints (where one body is empty/world) only when
         # FREE joints will be auto-inserted for remaining bodies. Keep
         # body-to-world FIXED joints as real joints so maximal-coordinate
-        # solvers can enforce the authored weld. When the USD already has
-        # articulation metadata, preserve the legacy compatibility behavior and
-        # put the fixed joint in its own articulation so existing authored
-        # articulated assets still finalize cleanly.
+        # solvers can enforce the authored weld without synthesizing articulation
+        # metadata.
         body0_path = str(joint_desc.body0)
         body1_path = str(joint_desc.body1)
         is_body_to_world = body0_path in ("", "/") or body1_path in ("", "/")
@@ -2620,10 +2618,7 @@ def parse_usd(
                     orphan_incoming_xform = incoming_world_xform * world_body_xform_o
             joint_index = parse_joint(joint_desc, incoming_xform=orphan_incoming_xform)
             if joint_index is not None:
-                if is_body_to_world and is_fixed_joint and not no_articulations:
-                    child_body = builder.joint_child[joint_index]
-                    builder.add_articulation([joint_index], label=builder.body_label[child_body])
-                else:
+                if not (is_body_to_world and is_fixed_joint):
                     orphan_joints.append(joint_path)
         except ValueError as exc:
             if verbose:

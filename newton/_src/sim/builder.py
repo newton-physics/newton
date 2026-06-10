@@ -9841,7 +9841,13 @@ class ModelBuilder:
             orphan_joints = []
             for i, art in enumerate(self.joint_articulation):
                 if art < 0:  # Joint is not in an articulation
+                    parent = self.joint_parent[i]
                     child = self.joint_child[i]
+                    if parent == -1 and self.joint_type[i] == JointType.FIXED:
+                        # A body-to-world fixed joint pins the child without
+                        # adding generalized coordinates, so it does not need
+                        # reduced-coordinate articulation metadata.
+                        continue
                     if child not in articulated_bodies:
                         # This is a true orphan - the child body has no articulated path
                         orphan_joints.append(i)

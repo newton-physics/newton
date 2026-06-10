@@ -153,19 +153,14 @@ def Xform "Root" (
         fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
 
         builder = newton.ModelBuilder()
-        with self.assertWarns(UserWarning) as cm:
-            builder.add_usd(stage, load_visual_shapes=False)
+        builder.add_usd(stage, load_visual_shapes=False)
 
-        self.assertIn("No articulation was found but 1 joints were parsed", str(cm.warning))
         self.assertEqual(builder.articulation_count, 0)
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_label, ["/World/root_joint"])
         self.assertEqual(builder.joint_articulation, [-1])
 
-        with self.assertRaisesRegex(ValueError, "not belonging to any articulation"):
-            builder.finalize()
-
-        model = builder.finalize(skip_validation_joints=True)
+        model = builder.finalize()
         self.assertEqual(model.articulation_count, 0)
         self.assertEqual(model.joint_articulation.numpy().tolist(), [-1])
 
@@ -306,8 +301,7 @@ def Xform "Root" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_body_to_world_fixed_joint(self):
         """A body connected to the world via a PhysicsFixedJoint must be imported
-        with a FIXED joint (not FREE) and placed in its own articulation when
-        the USD already contains articulation metadata."""
+        with a FIXED joint (not FREE) without synthesizing a new articulation."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -358,7 +352,7 @@ def Xform "Root" (
 
         # 3 bodies: Base, Link1, WorldLink.
         self.assertEqual(builder.body_count, 3)
-        self.assertEqual(builder.articulation_count, 2)
+        self.assertEqual(builder.articulation_count, 1)
 
         wl_body_idx = builder.body_label.index("/World/WorldLink")
         wl_joint_idx = next(i for i in range(builder.joint_count) if builder.joint_child[i] == wl_body_idx)
@@ -367,15 +361,13 @@ def Xform "Root" (
         self.assertEqual(builder.joint_type[wl_joint_idx], newton.JointType.FIXED)
         # Parent is -1 (world).
         self.assertEqual(builder.joint_parent[wl_joint_idx], -1)
-        # When the USD already has articulation metadata, preserve the legacy
-        # compatibility behavior and put the extra world-fixed joint in its own
-        # articulation so the mixed authored asset finalizes cleanly.
-        wl_art = builder.joint_articulation[wl_joint_idx]
-        self.assertNotEqual(wl_art, -1)
+        # The world-fixed joint pins a standalone body without generalized
+        # coordinates, so it stays outside the authored arm articulation.
+        self.assertEqual(builder.joint_articulation[wl_joint_idx], -1)
 
         rev_joint_idx = builder.joint_label.index("/World/Arm/RevJoint")
         arm_art = builder.joint_articulation[rev_joint_idx]
-        self.assertNotEqual(wl_art, arm_art)
+        self.assertNotEqual(arm_art, -1)
 
         # Model must finalize without errors (no orphan joint issues).
         model = builder.finalize()
@@ -414,8 +406,7 @@ def Xform "Root" (
                 fixed.CreateLocalRot1Attr().Set(Gf.Quatf(float(q1[3]), float(q1[0]), float(q1[1]), float(q1[2])))
 
                 builder = newton.ModelBuilder()
-                with self.assertWarns(UserWarning):
-                    builder.add_usd(stage, xform=wp.transform(wp.vec3(5.0, 0.0, 0.0), wp.quat_identity()))
+                builder.add_usd(stage, xform=wp.transform(wp.vec3(5.0, 0.0, 0.0), wp.quat_identity()))
 
                 link_idx = builder.body_label.index("/World/env/PinnedLink")
                 joint_idx = builder.joint_label.index("/World/env/PinnedLink/FixedJoint")
@@ -439,7 +430,7 @@ def Xform "Root" (
                 q_err = body_q.q * wp.quat_inverse(wp.quat_identity())
                 self.assertLessEqual(2.0 * math.acos(min(1.0, abs(q_err[3]))), 1e-4)
 
-                model = builder.finalize(skip_validation_joints=True)
+                model = builder.finalize()
                 self.assertEqual(model.articulation_count, 0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
