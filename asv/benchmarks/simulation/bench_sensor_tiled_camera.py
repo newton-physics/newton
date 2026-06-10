@@ -34,7 +34,7 @@ def nice_name_collector():
 
 
 @nice_name_collector()
-class SensorTiledCameraBenchmark:
+class FastSensorTiledCamera:
     param_names = ["resolution", "world_count", "iterations"]
     params = ([64], [4096], [50])
 
@@ -221,7 +221,7 @@ if __name__ == "__main__":
     from newton.utils import run_benchmark
 
     benchmark_list = {
-        "SensorTiledCameraBenchmark": SensorTiledCameraBenchmark,
+        "FastSensorTiledCamera": FastSensorTiledCamera,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
