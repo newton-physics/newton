@@ -20,7 +20,7 @@ from newton.controllers import ControllerPID
 
 class Example:
     def __init__(self, viewer, args):
-        self.fps = 60
+        self.fps = 200
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
@@ -52,7 +52,7 @@ class Example:
         builder.add_articulation([j0, j1], label="pendulum")
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverXPBD(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(self.model)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
@@ -64,8 +64,8 @@ class Example:
         # output struct. Gains baked in as wp.arrays.
         default_dof_indices = wp.array([0, 1], dtype=wp.uint32, device=self.device)
         self.controller = ControllerPID(
-            kp=wp.array([80.0, 40.0], dtype=wp.float32, device=self.device),
-            kd=wp.array([8.0, 4.0], dtype=wp.float32, device=self.device),
+            kp=wp.array([900.0, 300.0], dtype=wp.float32, device=self.device),
+            kd=wp.array([80.0, 80.0], dtype=wp.float32, device=self.device),
             ki=wp.zeros(2, dtype=wp.float32, device=self.device),
             integral_max=wp.full(2, float("inf"), dtype=wp.float32, device=self.device),
             default_dof_indices=default_dof_indices,
@@ -76,7 +76,7 @@ class Example:
         # fields default to wp.zeros; we rebind joint_q/qd each frame to the
         # current sim state, and seed the setpoint once.
         self._input = self.controller.input_struct()
-        self._input.joint_target_q.assign([0.6, -1.2])  # target angles [rad]
+        self._input.joint_target_q.assign([-wp.pi/2, 0.0])  # target angles [rad]
 
         # The output struct's joint_f field is what the solver consumes — wire it
         # straight into control.joint_f so the PID writes directly into the
