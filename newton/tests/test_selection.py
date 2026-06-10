@@ -69,10 +69,10 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(view.get_dof_velocities(state).shape, (1, 1, 0))
         self.assertEqual(view.get_dof_forces(control).shape, (1, 1, 0))
 
-    def test_template_labels_preserve_full_paths(self):
+    def test_labels_preserve_full_paths(self):
         """Two-finger gripper whose distal bodies, finger joints, and tip
         shapes each share a colliding leaf name. ``*_names`` attributes
-        collapse to the leaf; ``*_template_labels`` attributes expose the
+        collapse to the leaf; ``*_labels`` attributes expose the
         full slash-delimited labels from the template articulation so
         callers can still distinguish entries and recover selection order.
         """
@@ -99,19 +99,19 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(view.link_names, ["fingertip", "fingertip"])
         self.assertEqual(view.shape_names, ["tip_collision", "tip_collision"])
 
-        # ...and disambiguated on the *_template_labels attributes.
+        # ...and disambiguated on the *_labels attributes.
         self.assertEqual(
-            view.link_template_labels,
+            view.link_labels,
             ["palm/left/fingertip", "palm/right/fingertip"],
         )
         self.assertEqual(
-            view.shape_template_labels,
+            view.shape_labels,
             ["palm/left/tip_collision", "palm/right/tip_collision"],
         )
-        self.assertIn("palm/left/fingertip_joint", view.joint_template_labels)
-        self.assertIn("palm/right/fingertip_joint", view.joint_template_labels)
-        self.assertEqual(len(view.joint_template_labels), view.joint_count)
-        self.assertEqual(view.body_template_labels, view.link_template_labels)
+        self.assertIn("palm/left/fingertip_joint", view.joint_labels)
+        self.assertIn("palm/right/fingertip_joint", view.joint_labels)
+        self.assertEqual(len(view.joint_labels), view.joint_count)
+        self.assertEqual(view.body_labels, view.link_labels)
 
     def test_duplicate_joint_child_is_one_link(self):
         """BODY-frequency link axis uses unique physical bodies, not joint slots."""
@@ -131,9 +131,9 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(list(model.body_label), ["root", "tip"])
         self.assertEqual(view.link_count, 2)
         self.assertEqual(view.link_names, ["root", "tip"])
-        self.assertEqual(view.link_template_labels, ["root", "tip"])
+        self.assertEqual(view.link_labels, ["root", "tip"])
         self.assertEqual(view.shape_count, 1)
-        self.assertEqual(view.shape_template_labels, ["tip_shape"])
+        self.assertEqual(view.shape_labels, ["tip_shape"])
 
         body_layout = view.frequency_layouts[newton.Model.AttributeFrequency.BODY]
         self.assertEqual(body_layout.value_count, len(model.body_label))
@@ -444,12 +444,12 @@ class TestSelection(unittest.TestCase):
 
         # test default mask
         model_mask = view.get_model_articulation_mask()
-        expected = np.full(num_artis, 1, dtype=np.bool)
+        expected = np.full(num_artis, 1, dtype=bool)
         assert_np_equal(model_mask.numpy(), expected)
 
         # test per-world mask
         model_mask = view.get_model_articulation_mask(mask=[0, 1, 1, 0])
-        expected = np.array([0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0], dtype=np.bool)
+        expected = np.array([0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0], dtype=bool)
         assert_np_equal(model_mask.numpy(), expected)
 
         # test world-arti mask
@@ -460,7 +460,7 @@ class TestSelection(unittest.TestCase):
             [0, 0, 0],
         ]
         model_mask = view.get_model_articulation_mask(mask=m)
-        expected = np.array([0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0], dtype=np.bool)
+        expected = np.array([0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0], dtype=bool)
         assert_np_equal(model_mask.numpy(), expected)
 
     def run_test_joint_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):

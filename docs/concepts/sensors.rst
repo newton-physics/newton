@@ -87,7 +87,7 @@ Examples::
    SensorIMU(model, sites="foot_*")
 
    # list of patterns: union of two groups
-   SensorContact(model, sensing_obj_shapes=["*Plate*", "*Flap*"])
+   SensorContact(model, sensing_shapes=["*Plate*", "*Flap*"])
 
    # list of indices: explicit selection
    SensorFrameTransform(model, shapes=[0, 3, 7], reference_sites=[1])
@@ -95,7 +95,7 @@ Examples::
 Available Sensors
 -----------------
 
-Newton provides four sensor types. See the
+Newton provides five sensor types. See the
 :doc:`API reference <../api/newton_sensors>` for constructor arguments,
 attributes, and usage examples.
 
@@ -103,6 +103,8 @@ attributes, and usage examples.
   with optional per-counterpart breakdown.
 * :class:`~newton.sensors.SensorFrameTransform` -- relative transforms of shapes/sites with respect to reference sites.
 * :class:`~newton.sensors.SensorIMU` -- linear acceleration and angular velocity at site frames.
+* :class:`~newton.sensors.SensorRaycast` -- *(deprecated)* ray-based depth images from a virtual camera; use
+  :class:`~newton.sensors.SensorTiledCamera` instead.
 * :class:`~newton.sensors.SensorTiledCamera` -- raytraced color and depth rendering across multiple worlds.
 
 Extended Attributes

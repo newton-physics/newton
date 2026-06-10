@@ -40,10 +40,12 @@ newton
    Mesh
    Model
    ModelBuilder
+   ModelFlags
    ParticleFlags
    SDF
    ShapeFlags
    State
+   StateFlags
    TetMesh
 
 .. rubric:: Functions
@@ -69,6 +71,6 @@ newton
    * - ``MAXVAL``
      - ``10000000000.0``
    * - ``__version__``
-     - ``1.3.0.dev0``
+     - ``1.4.0.dev0``
    * - ``use_coord_layout_targets``
      - ``False``

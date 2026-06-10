@@ -96,7 +96,6 @@ Specifically, the entity types that currently support world grouping include:
 - Shapes: :attr:`~newton.Model.shape_world`
 - Joints: :attr:`~newton.Model.joint_world`
 - Articulations: :attr:`~newton.Model.articulation_world`
-- Equality Constraints: :attr:`~newton.Model.equality_constraint_world`
 
 The corresponding world grouping arrays for the example above are:
 
@@ -127,7 +126,6 @@ These arrays include:
 - Shapes: :attr:`~newton.Model.shape_world_start`
 - Joints: :attr:`~newton.Model.joint_world_start`
 - Articulations: :attr:`~newton.Model.articulation_world_start`
-- Equality Constraints: :attr:`~newton.Model.equality_constraint_world_start`
 
 To handle the special case of joint entities, that vary in the number of DOFs, coordinates and constraints, the model also provides arrays that store the per-world starting indices in these specific dimensions:
 
