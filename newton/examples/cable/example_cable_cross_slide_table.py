@@ -30,7 +30,6 @@ import newton.examples
 TABLE_RECT_HALF_X = 0.050
 TABLE_RECT_HALF_Y = 0.060
 TABLE_RECT_PERIOD = 16.0
-TABLE_RECT_TEST_FRAMES = 2100
 TABLE_TRACKING_MAX_ERROR_TOLERANCE = 0.005
 TABLE_TRACKING_RMS_ERROR_TOLERANCE = 0.0025
 CABLE_Z_BOUNDS = (0.04, 0.055)
@@ -947,15 +946,8 @@ class Example:
                 f"{TABLE_TRACKING_RMS_ERROR_TOLERANCE:.4f} m."
             )
 
-    @staticmethod
-    def create_parser():
-        parser = newton.examples.create_parser()
-        parser.set_defaults(num_frames=TABLE_RECT_TEST_FRAMES)
-        return parser
-
 
 if __name__ == "__main__":
-    parser = Example.create_parser()
-    viewer, args = newton.examples.init(parser)
+    viewer, args = newton.examples.init()
     example = Example(viewer, args)
     newton.examples.run(example, args)
