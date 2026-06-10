@@ -19,7 +19,7 @@ from ......geometry.types import GeoType
 from ...core.data import DataKamino
 from ...core.model import ModelKamino
 from ...core.state import StateKamino
-from ...core.types import float32, int32, vec6f
+from ...core.types import float32, int32, to_warp_int32_array, vec6f
 from ..contacts import DEFAULT_GEOM_PAIR_CONTACT_GAP, ContactsKamino
 from .broadphase import (
     PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES,
@@ -150,9 +150,9 @@ class CollisionPipelinePrimitive:
             self._cmodel = CollisionCandidatesModel(
                 num_model_geom_pairs=self._model.geoms.num_collidable_pairs,
                 num_world_geom_pairs=world_num_geom_pairs,
-                model_num_pairs=wp.array([self._model.geoms.num_collidable_pairs], dtype=int32),
-                world_num_pairs=wp.array(world_num_geom_pairs, dtype=int32),
-                wid=wp.array(geom_pair_wid, dtype=int32),
+                model_num_pairs=to_warp_int32_array([self._model.geoms.num_collidable_pairs]),
+                world_num_pairs=to_warp_int32_array(world_num_geom_pairs),
+                wid=to_warp_int32_array(geom_pair_wid),
                 geom_pair=self._model.geoms.collidable_pairs,
             )
 

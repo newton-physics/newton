@@ -14,10 +14,111 @@ import warp as wp
 import newton
 from newton import ModelBuilder
 from newton._src.geometry.utils import transform_points
+from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton.tests.unittest_utils import assert_np_equal
 
 
+def _eq_set_value(builder, name, idx, value):
+    """Inject ``value`` at ``idx`` into the equality-constraint custom-attr table (padding with None)."""
+    attr = builder.custom_attributes[f"mujoco:{name}"]
+    if attr.values is None:
+        attr.values = []
+    while len(attr.values) <= idx:
+        attr.values.append(None)
+    attr.values[idx] = value
+
+
 class TestModelBuilderDeprecations(unittest.TestCase):
+    def test_equality_constraint_model_fields_warn_and_forward_to_mujoco_namespace(self):
+        builder = ModelBuilder()
+        body1 = builder.add_body()
+        body2 = builder.add_body()
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.CONNECT,
+            body1=body1,
+            body2=body2,
+            anchor=wp.vec3(1.0, 2.0, 3.0),
+        )
+
+        model = builder.finalize(skip_all_validations=True)
+
+        self.assertEqual(model.mujoco.equality_constraint_count, 1)
+        self.assertNotIn("_equality_constraint_body1", model.__dict__)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            np.testing.assert_array_equal(model.equality_constraint_body1.numpy(), np.array([body1], dtype=np.int32))
+
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+        self.assertIn("Model.equality_constraint_body1 is deprecated in Newton 1.3", str(caught[0].message))
+        self.assertIn("model.mujoco.equality_constraint_body1", str(caught[0].message))
+        self.assertTrue(caught[0].filename.endswith("test_model.py"))
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.assertEqual(model.equality_constraint_count, 1)
+
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+        self.assertIn("Model.equality_constraint_count is deprecated in Newton 1.3", str(caught[0].message))
+        self.assertIn("model.mujoco.equality_constraint_count", str(caught[0].message))
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            model.equality_constraint_count = 2
+
+        self.assertEqual(model.mujoco.equality_constraint_count, 2)
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+        model.mujoco.equality_constraint_count = 1
+
+        new_body1 = wp.array([body2], dtype=wp.int32, device=model.device)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            model.equality_constraint_body1 = new_body1
+
+        self.assertIs(model.mujoco.equality_constraint_body1, new_body1)
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+
+        namespaced_body1 = wp.array([body1], dtype=wp.int32, device=model.device)
+        model.mujoco.equality_constraint_body1 = namespaced_body1
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.assertIs(model.equality_constraint_body1, namespaced_body1)
+
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+
+    def test_equality_constraint_model_fields_are_created_lazily_for_bare_models(self):
+        model = newton.Model()
+        self.assertFalse(hasattr(model, "mujoco"))
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.assertIsNone(model.equality_constraint_body1)
+
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertIsNone(model.mujoco.equality_constraint_body1)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            model.equality_constraint_label.append("legacy")
+
+        self.assertEqual(len(caught), 1)
+        self.assertEqual(model.mujoco.equality_constraint_label, ["legacy"])
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            model.equality_constraint_count = 3
+
+        self.assertEqual(len(caught), 1)
+        self.assertEqual(model.mujoco.equality_constraint_count, 3)
+
     def test_default_body_armature_get_and_set_warn(self):
         builder = ModelBuilder()
 
@@ -88,6 +189,107 @@ class TestModelBuilderDeprecations(unittest.TestCase):
             np.eye(3, dtype=np.float32) * 0.125,
             atol=1e-6,
         )
+
+    def test_joint_target_pos_vel_aliases_warn(self):
+        """Legacy ``joint_target_pos`` / ``joint_target_vel`` warn under the
+        default flag and raise under ``use_coord_layout_targets=True``;
+        ``joint_target_q`` / ``joint_target_qd`` are always silent. The Model
+        snapshot freezes the flag at construction, so each branch builds its
+        own model under the corresponding flag value."""
+
+        def _build_revolute_model():
+            builder = ModelBuilder()
+            base = builder.add_link(mass=1.0)
+            j = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z)
+            builder.add_articulation([j])
+            return builder.finalize()
+
+        prev_flag = newton.use_coord_layout_targets
+        try:
+            newton.use_coord_layout_targets = False
+            model = _build_revolute_model()
+            control = newton.Control()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                _ = control.joint_target_pos
+                _ = control.joint_target_vel
+                _ = model.joint_target_pos
+                _ = model.joint_target_vel
+            deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+            self.assertEqual(len(deprecations), 4)
+            self.assertTrue(any("Control.joint_target_pos" in str(w.message) for w in deprecations))
+            self.assertTrue(any("Control.joint_target_vel" in str(w.message) for w in deprecations))
+            self.assertTrue(any("Model.joint_target_pos" in str(w.message) for w in deprecations))
+            self.assertTrue(any("Model.joint_target_vel" in str(w.message) for w in deprecations))
+
+            newton.use_coord_layout_targets = True
+            model = _build_revolute_model()
+            control = newton.Control()
+            with self.assertRaises(AttributeError):
+                _ = control.joint_target_pos
+            with self.assertRaises(AttributeError):
+                _ = control.joint_target_vel
+            with self.assertRaises(AttributeError):
+                _ = model.joint_target_pos
+            with self.assertRaises(AttributeError):
+                _ = model.joint_target_vel
+        finally:
+            newton.use_coord_layout_targets = prev_flag
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _ = control.joint_target_q
+            _ = control.joint_target_qd
+            _ = model.joint_target_q
+            _ = model.joint_target_qd
+        self.assertFalse(any(issubclass(w.category, DeprecationWarning) for w in caught))
+
+    def test_model_builder_joint_target_pos_vel_setters_warn_and_forward(self):
+        prev_flag = newton.use_coord_layout_targets
+        try:
+            newton.use_coord_layout_targets = False
+
+            builder = ModelBuilder()
+            inertia = np.eye(3, dtype=np.float32)
+            b0 = builder.add_link(mass=1.0, inertia=inertia)
+            j_free = builder.add_joint_free(child=b0)
+            b1 = builder.add_link(mass=1.0, inertia=inertia)
+            j_ball = builder.add_joint_ball(parent=-1, child=b1)
+            b2 = builder.add_link(mass=1.0, inertia=inertia)
+            j_revolute = builder.add_joint_revolute(parent=b1, child=b2, axis=newton.Axis.Z)
+            builder.add_articulation([j_free])
+            builder.add_articulation([j_ball, j_revolute])
+
+            target_pos = [1.0, 2.0, 3.0, 0.1, 0.2, 0.3, -0.4, 0.5, 0.6, 0.7]
+            target_vel = [10.0 + i for i in range(builder.joint_dof_count)]
+
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                builder.joint_target_pos = target_pos
+                builder.joint_target_vel = target_vel
+
+            deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+            self.assertEqual(len(deprecations), 2)
+            self.assertTrue(any("ModelBuilder.joint_target_pos" in str(w.message) for w in deprecations))
+            self.assertTrue(any("ModelBuilder.joint_target_vel" in str(w.message) for w in deprecations))
+
+            free_q_start = builder.joint_q_start[j_free]
+            ball_q_start = builder.joint_q_start[j_ball]
+            self.assertEqual(builder.joint_target_q[free_q_start + 6], 1.0)
+            self.assertEqual(builder.joint_target_q[ball_q_start + 3], 1.0)
+
+            model = builder.finalize(skip_all_validations=True)
+            np.testing.assert_allclose(model.joint_target_q.numpy(), target_pos, rtol=0.0, atol=1e-6)
+            np.testing.assert_allclose(model.joint_target_qd.numpy(), target_vel, rtol=0.0, atol=1e-6)
+
+            newton.use_coord_layout_targets = True
+            coord_builder = ModelBuilder()
+            with self.assertRaises(AttributeError):
+                coord_builder.joint_target_pos = []
+            with self.assertRaises(AttributeError):
+                coord_builder.joint_target_vel = []
+        finally:
+            newton.use_coord_layout_targets = prev_flag
 
 
 class TestModelMesh(unittest.TestCase):
@@ -615,6 +817,137 @@ class TestModelMesh(unittest.TestCase):
 
 
 class TestModelJoints(unittest.TestCase):
+    def test_joint_target_q_qd_shape_with_free_and_ball_joints(self):
+        """``joint_target_q`` follows ``joint_q`` (coord) under
+        ``use_coord_layout_targets``; ``joint_target_qd`` always follows
+        ``joint_qd`` (DOF). Free and ball joints are where the two layouts
+        diverge. Multi-articulation builder also exercises the per-env start
+        arrays."""
+        for use_coord in (False, True):
+            prev = newton.use_coord_layout_targets
+            newton.use_coord_layout_targets = use_coord
+            try:
+                builder = ModelBuilder()
+                # env 0: free + revolute (7 coords / 6 DOFs from free)
+                b0 = builder.add_link(mass=1.0)
+                j0_free = builder.add_joint_free(child=b0)
+                b1 = builder.add_link(mass=1.0)
+                j0_rev = builder.add_joint_revolute(parent=b0, child=b1, axis=newton.Axis.Z)
+                builder.add_articulation([j0_free, j0_rev])
+                # env 1: ball + revolute (4 coords / 3 DOFs from ball)
+                b2 = builder.add_link(mass=1.0)
+                j1_ball = builder.add_joint_ball(parent=-1, child=b2)
+                b3 = builder.add_link(mass=1.0)
+                j1_rev = builder.add_joint_revolute(parent=b2, child=b3, axis=newton.Axis.Z)
+                builder.add_articulation([j1_ball, j1_rev])
+                model = builder.finalize()
+
+                self.assertEqual(model.joint_dof_count, 7 + 4)
+                self.assertEqual(model.joint_coord_count, 8 + 5)
+
+                target_q_size = model.joint_coord_count if use_coord else model.joint_dof_count
+                self.assertEqual(model.joint_target_q.shape[0], target_q_size)
+                self.assertEqual(model.joint_target_qd.shape[0], model.joint_dof_count)
+
+                control = model.control()
+                self.assertEqual(control.joint_target_q.shape[0], target_q_size)
+                self.assertEqual(control.joint_target_qd.shape[0], model.joint_dof_count)
+
+                expected_start = model.joint_q_start.numpy() if use_coord else model.joint_qd_start.numpy()
+                np.testing.assert_array_equal(model.joint_target_q_start.numpy(), expected_start)
+
+                if use_coord:
+                    target_q = model.joint_target_q.numpy()
+                    q_starts = model.joint_q_start.numpy()
+                    # env 0 free joint: w-component at offset 6 (3 lin + 3 quat-xyz)
+                    self.assertAlmostEqual(float(target_q[int(q_starts[0]) + 6]), 1.0)
+                    # env 1 ball joint: w-component at offset 3 (3 quat-xyz)
+                    self.assertAlmostEqual(float(target_q[int(q_starts[2]) + 3]), 1.0)
+            finally:
+                newton.use_coord_layout_targets = prev
+
+    def test_ball_free_per_axis_target_pos_preserved(self):
+        """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
+        into ``joint_target_q`` under both flag values.
+
+        - Flag=False (legacy DOF): the 3 angular scalars are projected verbatim
+          into the DOF slice (matching the pre-coord-layout behavior).
+        - Flag=True (coord): the 3 angular scalars are interpreted as extrinsic
+          ZYX Euler angles and converted to a unit quaternion via
+          :meth:`ModelBuilder._quat_from_euler_zyx`, matching kamino's
+          DOF→coord conversion.
+        """
+        ang_targets = (0.1, 0.2, -0.3)
+
+        def _make_axes():
+            return [
+                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_pos=ang_targets[0]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_pos=ang_targets[1]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_pos=ang_targets[2]),
+            ]
+
+        lin_targets = (1.5, -2.5, 3.5)
+
+        def _make_linear_axes():
+            return [
+                ModelBuilder.JointDofConfig(axis=newton.Axis.X, target_pos=lin_targets[0]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Y, target_pos=lin_targets[1]),
+                ModelBuilder.JointDofConfig(axis=newton.Axis.Z, target_pos=lin_targets[2]),
+            ]
+
+        expected_quat = ModelBuilder._quat_from_axis_targets(*ang_targets)
+
+        for use_coord in (False, True):
+            prev = newton.use_coord_layout_targets
+            newton.use_coord_layout_targets = use_coord
+            try:
+                builder = ModelBuilder()
+                # BALL via low-level add_joint with per-axis targets
+                b_ball = builder.add_link(mass=1.0)
+                j_ball = builder.add_joint(
+                    newton.JointType.BALL,
+                    parent=-1,
+                    child=b_ball,
+                    angular_axes=_make_axes(),
+                )
+                # FREE via low-level add_joint with per-axis linear+angular targets
+                b_free = builder.add_link(mass=1.0)
+                j_free = builder.add_joint(
+                    newton.JointType.FREE,
+                    parent=-1,
+                    child=b_free,
+                    linear_axes=_make_linear_axes(),
+                    angular_axes=_make_axes(),
+                )
+                builder.add_articulation([j_ball])
+                builder.add_articulation([j_free])
+                model = builder.finalize()
+
+                target_q = model.joint_target_q.numpy()
+
+                if use_coord:
+                    # BALL coord slice = (qx, qy, qz, qw) — full unit quaternion
+                    q_starts = model.joint_q_start.numpy()
+                    b = int(q_starts[j_ball])
+                    np.testing.assert_allclose(target_q[b : b + 4], expected_quat, rtol=0, atol=1e-6)
+                    # FREE coord slice = (px, py, pz, qx, qy, qz, qw)
+                    f = int(q_starts[j_free])
+                    np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
+                    np.testing.assert_allclose(target_q[f + 3 : f + 7], expected_quat, rtol=0, atol=1e-6)
+                    # Verify unit norm (would only hold post-conversion)
+                    self.assertAlmostEqual(float(np.linalg.norm(target_q[b : b + 4])), 1.0, places=5)
+                    self.assertAlmostEqual(float(np.linalg.norm(target_q[f + 3 : f + 7])), 1.0, places=5)
+                else:
+                    # DOF projection: BALL → 3 raw angular floats; FREE → 3 lin + 3 raw ang
+                    qd_starts = model.joint_qd_start.numpy()
+                    b = int(qd_starts[j_ball])
+                    np.testing.assert_allclose(target_q[b : b + 3], ang_targets, rtol=0, atol=1e-6)
+                    f = int(qd_starts[j_free])
+                    np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
+                    np.testing.assert_allclose(target_q[f + 3 : f + 6], ang_targets, rtol=0, atol=1e-6)
+            finally:
+                newton.use_coord_layout_targets = prev
+
     def test_collapse_fixed_joints(self):
         shape_cfg = ModelBuilder.ShapeConfig(density=1.0)
 
@@ -735,6 +1068,55 @@ class TestModelJoints(unittest.TestCase):
         assert builder2.articulation_count == 2 * builder.articulation_count
         assert builder2.articulation_start == [0, 1, 2, 3]
 
+    def test_collapse_fixed_joints_remaps_custom_body_and_joint_references(self):
+        # A custom attribute declaring references="body"/"joint" must have its indices remapped
+        # when fixed joints are collapsed, just like the built-in arrays. This is the generic path
+        # that also covers MuJoCo tendons and equality constraints (which reference joints/bodies).
+        shape_cfg = ModelBuilder.ShapeConfig(density=1.0)
+        builder = ModelBuilder()
+
+        # b0 is fixed to the world -> collapsed away (its body and joint are removed).
+        b0 = builder.add_link()
+        builder.add_shape_box(body=b0, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
+        j_fixed = builder.add_joint_fixed(parent=-1, child=b0)
+
+        # b1 has a revolute joint -> survives; its body and joint indices shift down by one.
+        b1 = builder.add_link()
+        builder.add_shape_box(body=b1, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
+        j_rev = builder.add_joint_revolute(parent=-1, child=b1, axis=wp.vec3(0.0, 1.0, 0.0))
+        builder.add_articulation([j_fixed, j_rev])
+
+        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="thing", namespace="test"))
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="ref_body",
+                dtype=wp.int32,
+                frequency="test:thing",
+                namespace="test",
+                references="body",
+                default=-1,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="ref_joint",
+                dtype=wp.int32,
+                frequency="test:thing",
+                namespace="test",
+                references="joint",
+                default=-1,
+            )
+        )
+        # Row 0 references the survivors; row 1 references the collapsed-away body and joint.
+        builder.add_custom_values(**{"test:ref_body": b1, "test:ref_joint": j_rev})
+        builder.add_custom_values(**{"test:ref_body": b0, "test:ref_joint": j_fixed})
+
+        builder.collapse_fixed_joints()
+
+        # Survivors remap to their new indices; references to removed entities collapse to -1.
+        self.assertEqual(builder.custom_attributes["test:ref_body"].values, [0, -1])
+        self.assertEqual(builder.custom_attributes["test:ref_joint"].values, [0, -1])
+
     def test_collapse_fixed_joints_with_locked_inertia(self):
         builder = ModelBuilder()
         b0 = builder.add_link(mass=1.0, lock_inertia=True)
@@ -748,6 +1130,29 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.body_count, 1)
         self.assertAlmostEqual(builder.body_mass[0], 3.0)
         self.assertTrue(builder.body_lock_inertia[0])
+
+    def test_collapse_fixed_joints_massless_chain(self):
+        """Collapsing a chain of massless bodies into a positive-mass body must yield a finite center of mass."""
+        for use_articulation in (True, False):
+            with self.subTest(use_articulation=use_articulation):
+                builder = ModelBuilder()
+                root = builder.add_link(mass=0.0, label="massless_root")
+                dummy = builder.add_link(mass=0.0, label="massless_dummy")
+                mass_body = builder.add_link(mass=2.0, com=wp.vec3(1.0, 0.0, 0.0), label="mass_body")
+
+                joints = [
+                    builder.add_joint_free(parent=-1, child=root, label="floating_base"),
+                    builder.add_joint_fixed(parent=root, child=dummy, label="root_to_dummy"),
+                    builder.add_joint_fixed(parent=dummy, child=mass_body, label="dummy_to_mass_body"),
+                ]
+
+                if use_articulation:
+                    builder.add_articulation(joints)
+                builder.collapse_fixed_joints()
+
+                self.assertEqual(builder.body_count, 1)
+                self.assertAlmostEqual(builder.body_mass[0], 2.0)
+                assert_np_equal(np.array(builder.body_com[0]), np.array([1.0, 0.0, 0.0]))
 
     def test_collapse_fixed_joints_with_groups(self):
         """Test that collapse_fixed_joints correctly preserves world groups."""
@@ -868,9 +1273,6 @@ class TestModelJoints(unittest.TestCase):
         articulation_world_start = (
             model.articulation_world_start.numpy() if model.articulation_world_start is not None else []
         )
-        equality_constraint_world_start = (
-            model.equality_constraint_world_start.numpy() if model.equality_constraint_world_start is not None else []
-        )
         joint_dof_world_start = model.joint_dof_world_start.numpy() if model.joint_dof_world_start is not None else []
         joint_coord_world_start = (
             model.joint_coord_world_start.numpy() if model.joint_coord_world_start is not None else []
@@ -886,7 +1288,6 @@ class TestModelJoints(unittest.TestCase):
             print(f"shape_world_start: {shape_world_start}")
             print(f"joint_world_start: {joint_world_start}")
             print(f"articulation_world_start: {articulation_world_start}")
-            print(f"equality_constraint_world_start: {equality_constraint_world_start}")
             print(f"joint_dof_world_start: {joint_dof_world_start}")
             print(f"joint_coord_world_start: {joint_coord_world_start}")
             print(f"joint_constraint_world_start: {joint_constraint_world_start}")
@@ -897,7 +1298,7 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.shape_count, 0)
         self.assertEqual(builder.joint_count, 5)
         self.assertEqual(builder.articulation_count, 3)
-        self.assertEqual(len(builder.equality_constraint_world), 0)
+        self.assertEqual(builder._equality_constraint_count, 0)
         self.assertEqual(builder.joint_dof_count, 10)
         self.assertEqual(builder.joint_coord_count, 11)
         self.assertEqual(builder.joint_constraint_count, 20)
@@ -906,7 +1307,6 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(shape_world_start[-1], builder.shape_count)
         self.assertEqual(joint_world_start[-1], builder.joint_count)
         self.assertEqual(articulation_world_start[-1], builder.articulation_count)
-        self.assertEqual(equality_constraint_world_start[-1], len(builder.equality_constraint_world))
         self.assertEqual(joint_dof_world_start[-1], builder.joint_dof_count)
         self.assertEqual(joint_coord_world_start[-1], builder.joint_coord_count)
         self.assertEqual(joint_constraint_world_start[-1], builder.joint_constraint_count)
@@ -917,7 +1317,6 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(shape_world_start.size, model.world_count + 2)
         self.assertEqual(joint_world_start.size, model.world_count + 2)
         self.assertEqual(articulation_world_start.size, model.world_count + 2)
-        self.assertEqual(equality_constraint_world_start.size, model.world_count + 2)
         self.assertEqual(joint_dof_world_start.size, model.world_count + 2)
         self.assertEqual(joint_coord_world_start.size, model.world_count + 2)
         self.assertEqual(joint_constraint_world_start.size, model.world_count + 2)
@@ -928,7 +1327,6 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(shape_world_start[-1], model.shape_count)
         self.assertEqual(joint_world_start[-1], model.joint_count)
         self.assertEqual(articulation_world_start[-1], model.articulation_count)
-        self.assertEqual(equality_constraint_world_start[-1], model.equality_constraint_count)
         self.assertEqual(joint_dof_world_start[-1], model.joint_dof_count)
         self.assertEqual(joint_coord_world_start[-1], model.joint_coord_count)
         self.assertEqual(joint_constraint_world_start[-1], model.joint_constraint_count)
@@ -940,7 +1338,6 @@ class TestModelJoints(unittest.TestCase):
             self.assertLessEqual(shape_world_start[i], shape_world_start[i + 1])
             self.assertLessEqual(joint_world_start[i], joint_world_start[i + 1])
             self.assertLessEqual(articulation_world_start[i], articulation_world_start[i + 1])
-            self.assertLessEqual(equality_constraint_world_start[i], equality_constraint_world_start[i + 1])
             self.assertLessEqual(joint_dof_world_start[i], joint_dof_world_start[i + 1])
             self.assertLessEqual(joint_coord_world_start[i], joint_coord_world_start[i + 1])
             self.assertLessEqual(joint_constraint_world_start[i], joint_constraint_world_start[i + 1])
@@ -951,7 +1348,6 @@ class TestModelJoints(unittest.TestCase):
         self.assertTrue(np.array_equal(shape_world_start, np.array([0, 0, 0, 0])))
         self.assertTrue(np.array_equal(joint_world_start, np.array([0, 2, 4, 5])))
         self.assertTrue(np.array_equal(articulation_world_start, np.array([0, 1, 2, 3])))
-        self.assertTrue(np.array_equal(equality_constraint_world_start, np.array([0, 0, 0, 0])))
         self.assertTrue(np.array_equal(joint_dof_world_start, np.array([0, 2, 4, 10])))
         self.assertTrue(np.array_equal(joint_coord_world_start, np.array([0, 2, 4, 11])))
         self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 10, 20, 20])))
@@ -1707,9 +2103,6 @@ class TestModelWorld(unittest.TestCase):
         articulation_world_start = (
             model.articulation_world_start.numpy() if model.articulation_world_start is not None else []
         )
-        equality_constraint_world_start = (
-            model.equality_constraint_world_start.numpy() if model.equality_constraint_world_start is not None else []
-        )
         joint_dof_world_start = model.joint_dof_world_start.numpy() if model.joint_dof_world_start is not None else []
         joint_coord_world_start = (
             model.joint_coord_world_start.numpy() if model.joint_coord_world_start is not None else []
@@ -1725,7 +2118,6 @@ class TestModelWorld(unittest.TestCase):
             print(f"shape_world_start: {shape_world_start}")
             print(f"joint_world_start: {joint_world_start}")
             print(f"articulation_world_start: {articulation_world_start}")
-            print(f"equality_constraint_world_start: {equality_constraint_world_start}")
             print(f"joint_dof_world_start: {joint_dof_world_start}")
             print(f"joint_coord_world_start: {joint_coord_world_start}")
             print(f"joint_constraint_world_start: {joint_constraint_world_start}")
@@ -1736,7 +2128,6 @@ class TestModelWorld(unittest.TestCase):
         self.assertEqual(shape_world_start.size, model.world_count + 2)
         self.assertEqual(joint_world_start.size, model.world_count + 2)
         self.assertEqual(articulation_world_start.size, model.world_count + 2)
-        self.assertEqual(equality_constraint_world_start.size, model.world_count + 2)
         self.assertEqual(joint_dof_world_start.size, model.world_count + 2)
         self.assertEqual(joint_coord_world_start.size, model.world_count + 2)
         self.assertEqual(joint_constraint_world_start.size, model.world_count + 2)
@@ -1747,7 +2138,6 @@ class TestModelWorld(unittest.TestCase):
         self.assertEqual(shape_world_start[-1], model.shape_count)
         self.assertEqual(joint_world_start[-1], model.joint_count)
         self.assertEqual(articulation_world_start[-1], model.articulation_count)
-        self.assertEqual(equality_constraint_world_start[-1], model.equality_constraint_count)
         self.assertEqual(joint_dof_world_start[-1], model.joint_dof_count)
         self.assertEqual(joint_coord_world_start[-1], model.joint_coord_count)
         self.assertEqual(joint_constraint_world_start[-1], model.joint_constraint_count)
@@ -1759,7 +2149,6 @@ class TestModelWorld(unittest.TestCase):
             self.assertLessEqual(shape_world_start[i], shape_world_start[i + 1])
             self.assertLessEqual(joint_world_start[i], joint_world_start[i + 1])
             self.assertLessEqual(articulation_world_start[i], articulation_world_start[i + 1])
-            self.assertLessEqual(equality_constraint_world_start[i], equality_constraint_world_start[i + 1])
             self.assertLessEqual(joint_dof_world_start[i], joint_dof_world_start[i + 1])
             self.assertLessEqual(joint_coord_world_start[i], joint_coord_world_start[i + 1])
             self.assertLessEqual(joint_constraint_world_start[i], joint_constraint_world_start[i + 1])
@@ -1770,7 +2159,6 @@ class TestModelWorld(unittest.TestCase):
         self.assertTrue(np.array_equal(shape_world_start, np.array([1, 4, 7, 10, 12])))
         self.assertTrue(np.array_equal(joint_world_start, np.array([1, 3, 5, 7, 9])))
         self.assertTrue(np.array_equal(articulation_world_start, np.array([1, 2, 3, 4, 6])))
-        self.assertTrue(np.array_equal(equality_constraint_world_start, np.array([0, 0, 0, 0, 0])))
         self.assertTrue(np.array_equal(joint_dof_world_start, np.array([6, 8, 10, 12, 24])))
         self.assertTrue(np.array_equal(joint_coord_world_start, np.array([7, 9, 11, 13, 27])))
         self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 10, 20, 30, 30])))
@@ -1978,14 +2366,16 @@ class TestModelValidation(unittest.TestCase):
         builder = ModelBuilder()
         body1 = builder.add_body(mass=1.0)
         body2 = builder.add_body(mass=1.0)
-        builder.add_equality_constraint_weld(
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.WELD,
             body1=body1,
             body2=body2,
             label="test_constraint",
         )
 
         # Manually set invalid body reference
-        builder.equality_constraint_body1[0] = 999
+        _eq_set_value(builder, "equality_constraint_body1", 0, 999)
 
         with self.assertRaises(ValueError) as context:
             builder.finalize()
@@ -2005,14 +2395,16 @@ class TestModelValidation(unittest.TestCase):
         builder.add_articulation([joint1, joint2])
 
         # Add a joint equality constraint
-        builder.add_equality_constraint_joint(
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.EqType.JOINT,
             joint1=joint1,
             joint2=joint2,
             label="joint_constraint",
         )
 
         # Manually set invalid joint reference
-        builder.equality_constraint_joint1[0] = 999
+        _eq_set_value(builder, "equality_constraint_joint1", 0, 999)
 
         with self.assertRaises(ValueError) as context:
             builder.finalize()

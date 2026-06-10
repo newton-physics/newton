@@ -1171,6 +1171,7 @@ def test_cloth_enable_tri_contact(test, device, solver):
     test.assertTrue(final_pos[-1, 1] < 0.0)
 
 
+# Cloth solver coverage is intentionally single-GPU here to keep CI time bounded.
 devices = get_test_devices(mode="basic")
 
 

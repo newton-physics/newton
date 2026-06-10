@@ -30,7 +30,8 @@ from enum import IntEnum
 
 import warp as wp
 
-from .....sim.contacts import Contacts
+from .....math import safe_div
+from .....sim.contacts import Contacts, contact_surface_point, contact_surface_separation
 from .....sim.model import Model
 from .....sim.state import State
 from ..core.math import COS_PI_6, UNIT_X, UNIT_Y
@@ -39,6 +40,7 @@ from ..core.types import (
     int32,
     mat33f,
     quatf,
+    to_warp_int32_array,
     uint32,
     vec2f,
     vec2i,
@@ -697,9 +699,9 @@ class ContactsKamino:
             self._data = ContactsKaminoData(
                 model_max_contacts_host=model_max_contacts,
                 world_max_contacts_host=world_max_contacts,
-                model_max_contacts=wp.array([model_max_contacts], dtype=int32),
+                model_max_contacts=to_warp_int32_array([model_max_contacts]),
                 model_active_contacts=wp.zeros(shape=1, dtype=int32),
-                world_max_contacts=wp.array(world_max_contacts, dtype=int32),
+                world_max_contacts=to_warp_int32_array(world_max_contacts),
                 world_active_contacts=wp.zeros(shape=len(world_max_contacts), dtype=int32),
                 wid=wp.full(value=-1, shape=(model_max_contacts,), dtype=int32),
                 cid=wp.full(value=-1, shape=(model_max_contacts,), dtype=int32),
@@ -756,9 +758,12 @@ def _convert_contacts_newton_to_kamino(
     newton_shape1: wp.array[int32],
     newton_point0: wp.array[vec3f],
     newton_point1: wp.array[vec3f],
+    newton_offset0: wp.array[vec3f],
+    newton_offset1: wp.array[vec3f],
     newton_normal: wp.array[vec3f],
     newton_thickness0: wp.array[float32],
     newton_thickness1: wp.array[float32],
+    newton_shape_margin: wp.array[float32],
     # Model lookups
     shape_body: wp.array[int32],
     shape_world: wp.array[int32],
@@ -817,17 +822,22 @@ def _convert_contacts_newton_to_kamino(
     if b1 >= 0:
         X1 = body_q[b1]
 
+    # Skeleton points for the normal gap; physical surface points for the contact anchors.
     p0_world = wp.transform_point(X0, newton_point0[tid])
     p1_world = wp.transform_point(X1, newton_point1[tid])
+    offset_scale0 = safe_div(newton_thickness0[tid] - newton_shape_margin[s0], newton_thickness0[tid])
+    offset_scale1 = safe_div(newton_thickness1[tid] - newton_shape_margin[s1], newton_thickness1[tid])
+    p0_surf = contact_surface_point(X0, newton_point0[tid], newton_offset0[tid] * offset_scale0)
+    p1_surf = contact_surface_point(X1, newton_point1[tid], newton_offset1[tid] * offset_scale1)
 
     # Newton normal points from shape0 → shape1 (A → B).
     # Kamino convention: normal points A → B, with bid_B >= 0.
     n_newton = newton_normal[tid]
 
-    # Reconstruct Newton signed contact distance d from exported fields:
-    # d = dot((p1 - p0), n_a_to_b) - (offset0 + offset1),
-    # with n_newton = n_a_to_b and offset* stored in rigid_contact_thickness*.
-    d_newton = wp.dot(p1_world - p0_world, n_newton) - (newton_thickness0[tid] + newton_thickness1[tid])
+    # Reconstruct the Newton signed contact distance from exported fields:
+    # d = dot((p1 - p0), n_a_to_b) - (margin0 + margin1), with n_newton = n_a_to_b
+    # and the per-shape surface thicknesses stored in rigid_contact_margin*.
+    d_newton = contact_surface_separation(p0_world, p1_world, n_newton, newton_thickness0[tid], newton_thickness1[tid])
 
     if b1 < 0:
         # shape1 is world-static → make it Kamino A, shape0 becomes Kamino B.
@@ -836,8 +846,8 @@ def _convert_contacts_newton_to_kamino(
         gid_B = s0
         bid_A = b1
         bid_B = b0
-        pos_A = p1_world
-        pos_B = p0_world
+        pos_A = p1_surf
+        pos_B = p0_surf
         normal = vec3f(-n_newton[0], -n_newton[1], -n_newton[2])
     else:
         # Both dynamic or shape0 is static → keep A=shape0, B=shape1.
@@ -846,8 +856,8 @@ def _convert_contacts_newton_to_kamino(
         gid_B = s1
         bid_A = b0
         bid_B = b1
-        pos_A = p0_world
-        pos_B = p1_world
+        pos_A = p0_surf
+        pos_B = p1_surf
         normal = vec3f(n_newton[0], n_newton[1], n_newton[2])
 
     distance = d_newton
@@ -996,9 +1006,12 @@ def convert_contacts_newton_to_kamino(
             contacts_in.rigid_contact_shape1,
             contacts_in.rigid_contact_point0,
             contacts_in.rigid_contact_point1,
+            contacts_in.rigid_contact_offset0,
+            contacts_in.rigid_contact_offset1,
             contacts_in.rigid_contact_normal,
             contacts_in.rigid_contact_margin0,
             contacts_in.rigid_contact_margin1,
+            model.shape_margin,
             model.shape_body,
             model.shape_world,
             model.shape_material_mu,

@@ -16,9 +16,9 @@ from ...sim import (
     JointType,
     Model,
     ModelBuilder,
+    ModelFlags,
     State,
 )
-from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from ..xpbd.kernels import apply_joint_forces
 from .particle_vbd_kernels import (
@@ -89,6 +89,9 @@ __all__ = ["SolverVBD"]
 class SolverVBD(SolverBase):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
+    .. experimental::
+        SolverVBD's public API and behavior may change without prior notice.
+
     This unified solver supports:
         - Particle simulation (cloth, soft bodies) using the VBD algorithm
         - Rigid body simulation (joints, contacts) using the AVBD algorithm
@@ -101,8 +104,10 @@ class SolverVBD(SolverBase):
 
     Non-cable structural joint slots default to **hard mode** (augmented Lagrangian
     with persistent lambda and C0 stabilization). Cable stretch, shear, bend,
-    and twist default to soft mode. The hard/soft mode can be changed per
-    slot via :meth:`set_joint_constraint_mode`.
+    and twist default to **soft mode**. Joint hard/soft mode is initialized from
+    the optional ``model.vbd.joint_is_hard`` custom attribute; author values at
+    joint creation, before constructing the solver. The hard/soft mode can also
+    be changed per slot at runtime via :meth:`set_joint_constraint_mode`.
 
     Joint limitations:
         - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, CABLE.
@@ -219,7 +224,7 @@ class SolverVBD(SolverBase):
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
         particle_external_edge_contact_filtering_map: dict | None = None,
-        # Rigid body parameters — AVBD hyperparameters
+        # Rigid body parameters - AVBD hyperparameters
         rigid_avbd_alpha: float = 0.95,  # C0 stabilization strength (C_stab = C - alpha * C0)
         rigid_avbd_joint_alpha: float | None = None,  # Joint alpha override; None uses rigid_avbd_alpha
         rigid_avbd_contact_alpha: float | None = None,  # Body-body contact alpha; None selects default
@@ -243,7 +248,7 @@ class SolverVBD(SolverBase):
         rigid_joint_angular_k_start: float = 1.0e1,  # Angular penalty seed (used when angular beta > 0)
         rigid_joint_linear_kd: float = 0.0,  # Rayleigh damping for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Rayleigh damping for non-cable angular joint constraints
-        rigid_enable_dahl_friction: bool | None = None,  # Deprecated: auto-detected from model attributes
+        rigid_enable_dahl_friction: bool | None = None,  # Deprecated: controlled by model attributes
     ):
         """
         Args:
@@ -351,8 +356,8 @@ class SolverVBD(SolverBase):
                 Negative values are clamped to 0.
             rigid_joint_angular_kd: Rayleigh damping coefficient for non-cable angular joint constraints.
                 Negative values are clamped to 0.
-            rigid_enable_dahl_friction: Deprecated and ignored. Dahl friction is auto-detected
-                from ``model.vbd.dahl_eps_max`` / ``model.vbd.dahl_tau``.
+            rigid_enable_dahl_friction: Deprecated and ignored. Dahl friction is controlled
+                by ``model.vbd.dahl_eps_max`` / ``model.vbd.dahl_tau``.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
@@ -364,17 +369,18 @@ class SolverVBD(SolverBase):
               Setting them too small may result in undetected collisions (particles) or contact overflow (rigid body
               contacts).
               Setting them excessively large may increase memory usage and degrade performance.
-            - Dahl hysteresis friction for cable bend/twist is auto-detected from custom model attributes
-              ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` (set via
-              ``SolverVBD.register_custom_attributes``).
+            - Dahl hysteresis friction for cable angular response is controlled by custom model attributes
+              ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau``. Register them with
+              ``SolverVBD.register_custom_attributes`` before building the model. Dahl friction is
+              enabled only when positive Dahl parameters are authored.
 
         """
         if rigid_enable_dahl_friction is not None:
             warnings.warn(
                 "rigid_enable_dahl_friction is deprecated and ignored. "
-                "Dahl friction is now auto-detected from model attributes "
+                "Dahl friction is now controlled by model attributes "
                 "(model.vbd.dahl_eps_max / model.vbd.dahl_tau). "
-                "To disable for a joint, set dahl_eps_max=0.",
+                "It is enabled only where both values are positive.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -700,6 +706,8 @@ class SolverVBD(SolverBase):
             self._prev_contact_penalty_k = None
             self._prev_contact_point0 = None
             self._prev_contact_point1 = None
+            self._prev_contact_offset0 = None
+            self._prev_contact_offset1 = None
             self._prev_contact_normal = None
 
             # Joint augmented-Lagrangian state (vec3, per-joint, bilateral)
@@ -717,8 +725,7 @@ class SolverVBD(SolverBase):
             self.joint_sigma_start = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self.joint_C_fric = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
 
-            # Dahl friction: auto-detected from model.vbd custom attributes.
-            # Enabled when model has dahl_eps_max and dahl_tau (set via register_custom_attributes).
+            # Dahl friction: registered custom attributes are inert until enabled by positive values.
             vbd_attrs: Any = getattr(model, "vbd", None)
             has_dahl = (
                 model.joint_count > 0
@@ -726,13 +733,16 @@ class SolverVBD(SolverBase):
                 and hasattr(vbd_attrs, "dahl_eps_max")
                 and hasattr(vbd_attrs, "dahl_tau")
             )
-            self.enable_dahl_friction = has_dahl
             if has_dahl:
                 self.joint_dahl_eps_max = vbd_attrs.dahl_eps_max
                 self.joint_dahl_tau = vbd_attrs.dahl_tau
+                dahl_eps_max = self._to_numpy(self.joint_dahl_eps_max, dtype=float)
+                dahl_tau = self._to_numpy(self.joint_dahl_tau, dtype=float)
+                self.enable_dahl_friction = bool(np.any((dahl_eps_max > 0.0) & (dahl_tau > 0.0)))
             else:
                 self.joint_dahl_eps_max = wp.zeros(model.joint_count, dtype=float, device=self.device)
                 self.joint_dahl_tau = wp.zeros(model.joint_count, dtype=float, device=self.device)
+                self.enable_dahl_friction = False
 
             # Split cables use local +Z as the material tangent (a SolverVBD convention).
             self.joint_cable_kb_rest_local = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
@@ -782,10 +792,10 @@ class SolverVBD(SolverBase):
             )
 
     @override
-    def notify_model_changed(self, flags: int) -> None:
-        if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
-        if flags & (SolverNotifyFlags.JOINT_PROPERTIES | SolverNotifyFlags.BODY_PROPERTIES):
+        if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_PROPERTIES):
             self._refresh_cable_rest_bend_twist_cache()
 
     # =====================================================
@@ -817,6 +827,8 @@ class SolverVBD(SolverBase):
         self._prev_contact_penalty_k = wp.zeros(cap, dtype=float, device=self.device)
         self._prev_contact_point0 = wp.zeros(cap, dtype=wp.vec3, device=self.device)
         self._prev_contact_point1 = wp.zeros(cap, dtype=wp.vec3, device=self.device)
+        self._prev_contact_offset0 = wp.zeros(cap, dtype=wp.vec3, device=self.device)
+        self._prev_contact_offset1 = wp.zeros(cap, dtype=wp.vec3, device=self.device)
         self._prev_contact_normal = wp.zeros(cap, dtype=wp.vec3, device=self.device)
 
     def _raise_if_capturing_resize(self, name: str, current: int, required: int) -> None:
@@ -1182,23 +1194,41 @@ class SolverVBD(SolverBase):
 
     @override
     @classmethod
-    def register_custom_attributes(cls, builder: ModelBuilder) -> None:
-        """Register solver-specific custom Model attributes for SolverVBD.
+    def register_custom_attributes(cls, builder: ModelBuilder, *, dahl_defaults_enabled: bool = True) -> None:
+        """Register SolverVBD custom Model attributes.
 
-        Currently used for:
-          - Cable angular plasticity/hysteresis (Dahl friction model)
-          - Per-joint hard/soft default for non-cable structural constraints
+        Currently registers:
+          - ``vbd:joint_is_hard`` for per-joint hard/soft constraint mode
+          - ``vbd:dahl_eps_max`` and ``vbd:dahl_tau`` for optional cable angular Dahl friction
 
-        Attributes are declared in the ``vbd`` namespace so they can be authored in scenes
-        and in USD as ``newton:vbd:<attr>``.
+        Attributes are declared in the ``vbd`` namespace so they can be authored
+        in scenes and in USD as ``newton:vbd:<attr>``.
+
+        Args:
+            builder: Model builder to register attributes on.
+            dahl_defaults_enabled: Deprecated compatibility mode. When True, Dahl parameters
+                default to positive values. Prefer passing ``False`` and explicitly authoring
+                positive Dahl values only when Dahl cable friction is desired.
         """
+        dahl_eps_default = 0.5 if dahl_defaults_enabled else 0.0
+        dahl_tau_default = 1.0 if dahl_defaults_enabled else 0.0
+        if dahl_defaults_enabled:
+            warnings.warn(
+                "Implicit positive Dahl defaults in SolverVBD.register_custom_attributes() are deprecated "
+                "and will be disabled by default in a future release. Pass dahl_defaults_enabled=False and "
+                "explicitly author positive model.vbd.dahl_eps_max and model.vbd.dahl_tau values to enable "
+                "Dahl cable friction.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dahl_eps_max",
                 frequency=Model.AttributeFrequency.JOINT,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
-                default=0.5,
+                default=dahl_eps_default,
                 namespace="vbd",
             )
         )
@@ -1208,7 +1238,7 @@ class SolverVBD(SolverBase):
                 frequency=Model.AttributeFrequency.JOINT,
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
-                default=1.0,
+                default=dahl_tau_default,
                 namespace="vbd",
             )
         )
@@ -1558,16 +1588,22 @@ class SolverVBD(SolverBase):
         By default, cable stretch, shear, bend, and twist slots are soft, while
         non-cable structural slots are hard.
 
-        Intended for configuration before the first :meth:`step`. It only flips
-        per-slot hard flags.
+        Hard/soft mode can also be authored per joint at build time via the
+        ``vbd:joint_is_hard`` custom attribute, avoiding a runtime
+        :meth:`set_joint_constraint_mode` call::
+
+            SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)  # before adding joints
+            builder.add_joint_fixed(..., custom_attributes={"vbd:joint_is_hard": 0})
+            model = builder.finalize()
+            solver = SolverVBD(model, ...)
 
         Args:
             joint_index: Index of the joint to modify.
             hard: True for hard mode (AL), False for soft mode (penalty-only).
             slot: Specific slot index to set. If None, sets all structural slots.
-                  Use JointSlot.LINEAR / JointSlot.ANGULAR for non-cable joints,
-                  or JointSlot.STRETCH / JointSlot.SHEAR / JointSlot.BEND /
-                  JointSlot.TWIST for cables.
+                Use JointSlot.LINEAR / JointSlot.ANGULAR for non-cable joints,
+                or JointSlot.STRETCH / JointSlot.SHEAR / JointSlot.BEND /
+                JointSlot.TWIST for cables.
 
         Raises:
             ValueError: If the joint index is out of range or the slot is not a
@@ -1679,6 +1715,8 @@ class SolverVBD(SolverBase):
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_point0,
                 contacts.rigid_contact_point1,
+                contacts.rigid_contact_offset0,
+                contacts.rigid_contact_offset1,
                 contacts.rigid_contact_normal,
                 self.body_body_contact_lambda,
                 self.body_body_contact_stick_flag,
@@ -1690,6 +1728,8 @@ class SolverVBD(SolverBase):
                 self._prev_contact_penalty_k,
                 self._prev_contact_point0,
                 self._prev_contact_point1,
+                self._prev_contact_offset0,
+                self._prev_contact_offset1,
                 self._prev_contact_normal,
             ],
             device=self.device,
@@ -1896,6 +1936,8 @@ class SolverVBD(SolverBase):
                         history.penalty_k = self._prev_contact_penalty_k
                         history.point0 = self._prev_contact_point0
                         history.point1 = self._prev_contact_point1
+                        history.offset0 = self._prev_contact_offset0
+                        history.offset1 = self._prev_contact_offset1
                         history.normal = self._prev_contact_normal
 
                         wp.launch(
@@ -1917,6 +1959,8 @@ class SolverVBD(SolverBase):
                             outputs=[
                                 contacts.rigid_contact_point0,
                                 contacts.rigid_contact_point1,
+                                contacts.rigid_contact_offset0,
+                                contacts.rigid_contact_offset1,
                                 self.body_body_contact_penalty_k,
                                 self.body_body_contact_lambda,
                                 self.body_body_contact_material_kd,
@@ -1965,6 +2009,8 @@ class SolverVBD(SolverBase):
                         contacts.rigid_contact_shape1,
                         contacts.rigid_contact_point0,
                         contacts.rigid_contact_point1,
+                        contacts.rigid_contact_offset0,
+                        contacts.rigid_contact_offset1,
                         contacts.rigid_contact_normal,
                         contacts.rigid_contact_margin0,
                         contacts.rigid_contact_margin1,
@@ -2006,9 +2052,11 @@ class SolverVBD(SolverBase):
                         model.joint_dof_dim,
                         model.joint_axis,
                         control.joint_f,
+                        dt,
                     ],
                     outputs=[
                         body_f_for_integration,
+                        None,  # joint_impulse: VBD does not populate body_parent_f
                     ],
                     device=self.device,
                 )
@@ -2483,6 +2531,8 @@ class SolverVBD(SolverBase):
                         contacts.rigid_contact_shape1,
                         contacts.rigid_contact_point0,
                         contacts.rigid_contact_point1,
+                        contacts.rigid_contact_offset0,
+                        contacts.rigid_contact_offset1,
                         contacts.rigid_contact_normal,
                         contacts.rigid_contact_margin0,
                         contacts.rigid_contact_margin1,
@@ -2525,6 +2575,7 @@ class SolverVBD(SolverBase):
                     self.joint_cable_kb_rest_local,
                     self.joint_cable_twist_rest,
                     model.joint_qd_start,
+                    model.joint_target_q_start,
                     self.joint_constraint_start,
                     self.joint_penalty_k,
                     self.joint_penalty_kd,
@@ -2532,8 +2583,8 @@ class SolverVBD(SolverBase):
                     self.joint_C_fric,
                     model.joint_target_ke,
                     model.joint_target_kd,
-                    control.joint_target_pos,
-                    control.joint_target_vel,
+                    control.joint_target_q,
+                    control.joint_target_qd,
                     model.joint_limit_lower,
                     model.joint_limit_upper,
                     model.joint_limit_ke,
@@ -2570,6 +2621,8 @@ class SolverVBD(SolverBase):
                     contacts.rigid_contact_shape1,
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_point1,
+                    contacts.rigid_contact_offset0,
+                    contacts.rigid_contact_offset1,
                     contacts.rigid_contact_normal,
                     contacts.rigid_contact_margin0,
                     contacts.rigid_contact_margin1,
@@ -2630,6 +2683,7 @@ class SolverVBD(SolverBase):
                     self.joint_cable_kb_rest_local,
                     self.joint_cable_twist_rest,
                     model.joint_qd_start,
+                    model.joint_target_q_start,
                     self.joint_constraint_start,
                     state_in.body_q,
                     model.body_q,
@@ -2642,7 +2696,7 @@ class SolverVBD(SolverBase):
                     self.rigid_linear_beta,
                     self.rigid_angular_beta,
                     model.joint_target_ke,
-                    control.joint_target_pos,
+                    control.joint_target_q,
                     model.joint_limit_lower,
                     model.joint_limit_upper,
                     model.joint_limit_ke,
@@ -2752,6 +2806,8 @@ class SolverVBD(SolverBase):
                 contacts.rigid_contact_shape1,
                 contacts.rigid_contact_point0,
                 contacts.rigid_contact_point1,
+                contacts.rigid_contact_offset0,
+                contacts.rigid_contact_offset1,
                 contacts.rigid_contact_normal,
                 contacts.rigid_contact_margin0,
                 contacts.rigid_contact_margin1,

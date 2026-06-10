@@ -184,6 +184,7 @@ def advance_task_kernel(
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -238,8 +239,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.joint_target_shape = self.control.joint_target_pos.reshape((self.world_count, -1)).shape
-        wp.copy(self.control.joint_target_pos[:9], self.model.joint_q[:9])
+        self.joint_target_shape = self.control.joint_target_q.reshape((self.world_count, -1)).shape
+        wp.copy(self.control.joint_target_q, self.model.joint_q)
 
         # Evaluate forward kinematics for collision detection
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
@@ -353,7 +354,7 @@ class Example:
             0.05,
         ]
 
-        builder.joint_target_pos[:9] = [
+        builder.joint_target_q[:9] = [
             -3.6802115e-03,
             2.3901723e-02,
             3.6804110e-03,
@@ -648,9 +649,9 @@ class Example:
             self.ik_solver.step(self.joint_q_ik, self.joint_q_ik, iterations=self.ik_iters)
 
         # Set the joint target positions
-        joint_target_pos_view = self.control.joint_target_pos.reshape((self.world_count, -1))
-        wp.copy(dest=joint_target_pos_view[:, :7], src=self.joint_q_ik[:, :7])
-        wp.copy(dest=joint_target_pos_view[:, 7:9], src=self.gripper_target_interpolated[:, :2])
+        joint_target_q_view = self.control.joint_target_q.reshape((self.world_count, -1))
+        wp.copy(dest=joint_target_q_view[:, :7], src=self.joint_q_ik[:, :7])
+        wp.copy(dest=joint_target_q_view[:, 7:9], src=self.gripper_target_interpolated[:, :2])
 
         wp.launch(
             advance_task_kernel,

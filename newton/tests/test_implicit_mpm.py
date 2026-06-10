@@ -179,9 +179,10 @@ def test_finite_difference_collider_velocity(test, device):
         end_mean_x = np.mean(state_0.particle_q.numpy()[:, 0])
         return end_mean_x - init_mean_x
 
-    # Run with both modes
-    displacement_instantaneous = run_simulation("instantaneous")
-    displacement_finite_diff = run_simulation("finite_difference")
+    # Run with both modes ('instantaneous'/'finite_difference' are deprecated
+    # aliases for 'forward'/'backward').
+    displacement_instantaneous = run_simulation("forward")
+    displacement_finite_diff = run_simulation("backward")
 
     # With instantaneous mode and body_qd=0, particles should barely move
     # (they see zero collider velocity, so no friction drag)
@@ -210,7 +211,7 @@ def test_finite_difference_collider_velocity(test, device):
     )
 
 
-devices = get_test_devices(mode="basic")
+devices = get_test_devices()
 
 
 class TestImplicitMPM(unittest.TestCase):

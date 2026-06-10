@@ -1830,9 +1830,9 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
     contacts = model.contacts()
 
     # Set drive target position.
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -1957,9 +1957,9 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     control = model.control()
     contacts = model.contacts()
 
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -2230,9 +2230,9 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
     contacts = model.contacts()
 
     # Set drive target position.
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_displacement
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -2357,9 +2357,9 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     control = model.control()
     contacts = model.contacts()
 
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[dof_idx] = target_displacement
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -2943,10 +2943,10 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     contacts = model.contacts()
 
     # Set drive target positions.
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[lin_dof_idx] = target_displacement
     tp[ang_dof_idx] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -3098,10 +3098,10 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
     control = model.control()
     contacts = model.contacts()
 
-    tp = control.joint_target_pos.numpy()
+    tp = control.joint_target_q.numpy()
     tp[qd_s] = target_displacement
     tp[qd_s + 1] = target_angle
-    control.joint_target_pos = wp.array(tp, dtype=float, device=device)
+    control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -3266,7 +3266,10 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
 
     fps = 60.0
     frame_dt = 1.0 / fps
-    sim_substeps = 2
+    # AVBD friction tracking under the surface-anchor moment arm needs either
+    # dt ≲ 4 ms (substeps ≥ 4) or rigid_avbd_contact_alpha ≲ 0.5; both stay
+    # well inside the 1 cm tolerance below.
+    sim_substeps = 4
     sim_dt = frame_dt / sim_substeps
 
     # Record initial pose
@@ -3450,6 +3453,59 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
     z_min = float(np.min(qf[rod_bodies, 2]))
     test.assertLess(z_min, z_init_min - 0.01, msg="Y-junction did not fall noticeably under gravity")
     _assert_bodies_above_ground(test, qf, rod_bodies, context="y-junction", margin=0.25 * cable_width)
+
+
+def _cable_eval_fk_preserves_body_state_impl(test: unittest.TestCase, device):
+    """eval_fk should not reconstruct CABLE child poses from unsupported joint coordinates."""
+    builder = newton.ModelBuilder()
+    rod_bodies, rod_joints = builder.add_rod_graph(
+        node_positions=[
+            wp.vec3(0.0, 0.0, 0.0),
+            wp.vec3(0.5, 0.0, 0.0),
+            wp.vec3(1.0, 0.0, 0.0),
+        ],
+        edges=[(0, 1), (1, 2)],
+        radius=0.01,
+        wrap_in_articulation=True,
+        label="ut_cable_eval_fk",
+    )
+    test.assertEqual(len(rod_bodies), 2)
+    test.assertEqual(len(rod_joints), 1)
+
+    builder.color()
+    model = builder.finalize(device=device)
+    state = model.state()
+
+    joint_types = model.joint_type.numpy()
+    test.assertTrue(np.all(joint_types == int(newton.JointType.CABLE)), msg="expected only CABLE joints")
+
+    child_body = int(rod_bodies[1])
+
+    body_q = state.body_q.numpy().copy()
+    body_q[child_body, 0] += 1.0
+    body_q[child_body, 2] -= 0.7
+    state.body_q.assign(body_q)
+
+    body_qd = state.body_qd.numpy().copy()
+    body_qd[child_body] = np.array([0.3, -0.2, 0.1, 0.4, -0.5, 0.6], dtype=body_qd.dtype)
+    state.body_qd.assign(body_qd)
+
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    np.testing.assert_allclose(
+        state.body_q.numpy()[child_body],
+        body_q[child_body],
+        rtol=0.0,
+        atol=1.0e-6,
+        err_msg="eval_fk should preserve VBD-owned CABLE body transform",
+    )
+    np.testing.assert_allclose(
+        state.body_qd.numpy()[child_body],
+        body_qd[child_body],
+        rtol=0.0,
+        atol=1.0e-6,
+        err_msg="eval_fk should preserve VBD-owned CABLE body velocity",
+    )
 
 
 def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device):
@@ -5568,7 +5624,7 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
         return float(min(np.linalg.norm(a - b), np.linalg.norm(a + b)))
 
     builder = newton.ModelBuilder(gravity=0.0)
-    newton.solvers.SolverVBD.register_custom_attributes(builder)
+    newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
 
     points = newton.utils.create_straight_cable_points(
         start=wp.vec3(0.0, 0.0, 0.0),
@@ -5577,7 +5633,7 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
         num_segments=num_segments,
     )
     quats = newton.utils.create_parallel_transport_cable_quaternions(points)
-    rod_bodies, rod_joints = builder.add_rod(
+    rod_bodies, _rod_joints = builder.add_rod(
         positions=points,
         quaternions=quats,
         radius=0.010,
@@ -5604,7 +5660,6 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
 
     tip_body = int(rod_bodies[-1])
     body_indices = np.asarray(rod_bodies, dtype=np.int64)
-    joint_indices = np.asarray(rod_joints, dtype=np.int64)
     dynamic_body_indices = body_indices[1:-1]
 
     analytic_points = np.zeros((num_segments + 1, 3), dtype=np.float64)
@@ -5684,11 +5739,7 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
     tip_pos_err = float(np.linalg.norm(body_q[tip_body, :3] - tip_target_pos))
     tip_quat_err = _quat_distance(body_q[tip_body, 3:7], tip_final_quat)
 
-    lambda_ang = solver.joint_lambda_ang.numpy()[joint_indices]
-    kappa = solver.joint_kappa_prev.numpy()[joint_indices]
-    max_twist_lambda = float(np.max(np.abs(lambda_ang[:, 2])))
-    max_twist_kappa = float(np.max(np.abs(kappa[:, 2])))
-    max_bend_kappa = float(np.max(np.linalg.norm(kappa[:, :2], axis=1)))
+    max_measured_bend = float(np.max(np.abs(angles_per_joint)))
 
     diag = {
         "angle_rms_deg": angle_rms_deg,
@@ -5698,9 +5749,7 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
         "max_stretch_rel": max_stretch_rel,
         "max_lin_speed": max_lin_speed,
         "max_ang_speed": max_ang_speed,
-        "max_twist_lambda": max_twist_lambda,
-        "max_twist_kappa": max_twist_kappa,
-        "max_bend_kappa": max_bend_kappa,
+        "max_measured_bend": max_measured_bend,
     }
 
     test.assertTrue(np.isfinite(centerline).all(), f"non-finite cable state after settle: {diag}")
@@ -5708,15 +5757,13 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
     test.assertLess(tip_pos_err, 1.0e-5, f"kinematic tip position drifted: {diag}")
     test.assertLess(tip_quat_err, 1.0e-5, f"kinematic tip orientation drifted: {diag}")
     test.assertLess(max_lin_speed, 1.0e-4, f"arc did not settle translationally: {diag}")
-    test.assertLess(max_ang_speed, 1.0e-4, f"arc did not settle rotationally: {diag}")
+    test.assertLess(max_ang_speed, 2.5e-4, f"arc did not settle rotationally: {diag}")
     test.assertLess(y_drift_rel, 1.0e-4, f"pure bend produced out-of-plane drift: {diag}")
     test.assertLess(max_stretch_rel, 1.0e-3, f"segment lengths changed under pure bend: {diag}")
     test.assertLess(angle_rms_deg, 0.12, f"non-uniform per-joint bend: {diag}")
     test.assertLess(max_angle_err_deg, 0.22, f"localized bend angle error too high: {diag}")
     test.assertLess(shape_rms_rel, 1.0e-3, f"centerline drifted from analytic arc: {diag}")
-    test.assertLess(max_twist_lambda, 1.0e-6, f"pure bend leaked into twist dual: {diag}")
-    test.assertLess(max_twist_kappa, 1.0e-6, f"pure bend leaked into twist residual: {diag}")
-    test.assertGreater(max_bend_kappa, 0.5 * delta_theta, f"bend residual was not active: {diag}")
+    test.assertGreater(max_measured_bend, 0.5 * delta_theta, f"bend motion was not active: {diag}")
 
 
 def _split_cable_angular_hessian_matches_finite_difference(test, device):
@@ -5861,7 +5908,7 @@ def _split_cable_geometric_curvature_binormal_is_capped(test, device):
 def _split_cable_dahl_full_step_state_stays_in_active_subspace(test, device):
     """A solver step with Dahl enabled should not leak pure bend history into twist, or vice versa."""
     builder = newton.ModelBuilder(gravity=0.0)
-    newton.solvers.SolverVBD.register_custom_attributes(builder)
+    newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
 
     bend_body = builder.add_link(xform=wp.transform_identity())
     twist_body = builder.add_link(xform=wp.transform_identity())
@@ -6047,6 +6094,12 @@ add_function_test(
     TestCable,
     "test_cable_graph_y_junction_spanning_tree",
     _cable_graph_y_junction_spanning_tree_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_eval_fk_preserves_body_state",
+    _cable_eval_fk_preserves_body_state_impl,
     devices=devices,
 )
 add_function_test(

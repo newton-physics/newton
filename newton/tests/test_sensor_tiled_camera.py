@@ -89,6 +89,69 @@ class TestSensorTiledCamera(unittest.TestCase):
             f"Images differ more than {allowed_difference:.2f}%, total difference is {percentage_diff:.2f}%",
         )
 
+    @staticmethod
+    def _build_single_sphere_scene(color: tuple[float, float, float]) -> newton.Model:
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -2.0), q=wp.quat_identity()))
+        builder.add_shape_sphere(body, radius=0.75, color=color)
+        return builder.finalize(device="cpu")
+
+    @staticmethod
+    def _build_single_particle_scene() -> newton.Model:
+        builder = newton.ModelBuilder()
+        builder.add_particle(pos=wp.vec3(0.0), vel=wp.vec3(0.0), mass=1.0, radius=0.1)
+        return builder.finalize(device="cpu")
+
+    @staticmethod
+    def _unpack_rgba(packed: int) -> np.ndarray:
+        value = int(packed)
+        return np.array(
+            [
+                value & 0xFF,
+                (value >> 8) & 0xFF,
+                (value >> 16) & 0xFF,
+                (value >> 24) & 0xFF,
+            ],
+            dtype=np.uint8,
+        )
+
+    def test_render_config_uses_utils_color_space_enum(self) -> None:
+        self.assertEqual(SensorTiledCamera.RenderConfig().output_color_space, newton.utils.ColorSpace.SRGB)
+        config = SensorTiledCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)
+        self.assertEqual(config.output_color_space, newton.utils.ColorSpace.LINEAR)
+
+        linear = newton.utils.color_srgb_to_linear((0.5, 0.25, 0.1))
+        np.testing.assert_allclose(newton.utils.color_linear_to_srgb(linear), (0.5, 0.25, 0.1), atol=1e-6)
+
+    def test_albedo_output_follows_output_color_space(self) -> None:
+        color = (0.25, 0.5, 0.75)
+        model = self._build_single_sphere_scene(color)
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        state = model.state()
+
+        for output_color_space in (newton.utils.ColorSpace.SRGB, newton.utils.ColorSpace.LINEAR):
+            sensor = SensorTiledCamera(
+                model=model,
+                config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
+            )
+            camera_rays = sensor.utils.compute_pinhole_camera_rays(1, 1, math.radians(30.0))
+            albedo_image = sensor.utils.create_albedo_image_output(1, 1, camera_count=1)
+
+            sensor.update(state, camera_transforms, camera_rays, albedo_image=albedo_image)
+
+            packed = self._unpack_rgba(albedo_image.numpy()[0, 0, 0, 0])
+            expected_rgb = (
+                np.array([63, 127, 191], dtype=np.uint8)
+                if output_color_space == newton.utils.ColorSpace.SRGB
+                else np.array([12, 54, 133], dtype=np.uint8)
+            )
+            np.testing.assert_array_equal(packed[:3], expected_rgb)
+            self.assertEqual(packed[3], 255)
+
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_golden_image(self):
         model = self._shared_model
@@ -110,8 +173,6 @@ class TestSensorTiledCamera(unittest.TestCase):
         depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
 
         state = model.state()
-        newton.geometry.build_bvh_shape(model, state)
-        newton.geometry.build_bvh_particle(model, state)
         tiled_camera_sensor.update(
             state, camera_transforms, camera_rays, color_image=color_image, depth_image=depth_image
         )
@@ -142,8 +203,6 @@ class TestSensorTiledCamera(unittest.TestCase):
         camera_rays = tiled_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))
 
         state = model.state()
-        newton.geometry.build_bvh_shape(model, state)
-        newton.geometry.build_bvh_particle(model, state)
 
         color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
         depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
@@ -170,6 +229,53 @@ class TestSensorTiledCamera(unittest.TestCase):
         tiled_camera_sensor.update(state, camera_transforms, camera_rays, color_image=None, depth_image=None)
         self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
         self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")
+
+    def test_deprecated_geometry_bvh_helpers_forward_to_model_methods(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        state = model.state()
+
+        with self.assertWarns(DeprecationWarning):
+            newton.geometry.build_bvh_shape(model, state, bvh_constructor="median")
+        self.assertIsNotNone(model.bvh_shapes)
+
+        with self.assertWarns(DeprecationWarning):
+            newton.geometry.refit_bvh_shape(model, state)
+
+        particle_model = self._build_single_particle_scene()
+        particle_state = particle_model.state()
+
+        with self.assertWarns(DeprecationWarning):
+            newton.geometry.build_bvh_particle(particle_model, particle_state, bvh_constructor="median")
+        self.assertIsNotNone(particle_model.bvh_particles)
+
+        with self.assertWarns(DeprecationWarning):
+            newton.geometry.refit_bvh_particle(particle_model, particle_state)
+
+    def test_model_bvh_build_accepts_constructor(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        state = model.state()
+
+        model.bvh_build_shapes(state, bvh_constructor="median")
+        self.assertIsNotNone(model.bvh_shapes)
+
+        particle_model = self._build_single_particle_scene()
+        particle_state = particle_model.state()
+
+        particle_model.bvh_build_particles(particle_state, bvh_constructor="median")
+        self.assertIsNotNone(particle_model.bvh_particles)
+
+    def test_model_bvhs_are_built_by_finalize_and_refit(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        state = model.state()
+
+        self.assertIsNotNone(model.bvh_shapes)
+        model.bvh_refit_shapes(state)
+
+        particle_model = self._build_single_particle_scene()
+        particle_state = particle_model.state()
+
+        self.assertIsNotNone(particle_model.bvh_particles)
+        particle_model.bvh_refit_particles(particle_state)
 
 
 if __name__ == "__main__":

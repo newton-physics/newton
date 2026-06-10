@@ -18,6 +18,7 @@ from ..core.model import ModelKamino
 from ..core.types import (
     float32,
     int32,
+    to_warp_int32_array,
     uint32,
     uint64,
     vec1f,
@@ -794,9 +795,9 @@ class LimitsKamino:
             self._data = LimitsKaminoData(
                 model_max_limits_host=model_max_limits,
                 world_max_limits_host=world_max_limits,
-                model_max_limits=wp.array([model_max_limits], dtype=int32),
+                model_max_limits=to_warp_int32_array([model_max_limits]),
                 model_active_limits=wp.zeros(shape=1, dtype=int32),
-                world_max_limits=wp.array(world_max_limits, dtype=int32),
+                world_max_limits=to_warp_int32_array(world_max_limits),
                 world_active_limits=wp.zeros(shape=len(world_max_limits), dtype=int32),
                 wid=wp.zeros(shape=model_max_limits, dtype=int32),
                 lid=wp.zeros(shape=model_max_limits, dtype=int32),

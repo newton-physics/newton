@@ -88,6 +88,10 @@ BETA_THRESHOLD = 0.0001  # 0.1mm
 
 VALUES_PER_KEY = NUM_SPATIAL_DIRECTIONS + 1
 
+# Open-addressed linear probing gets expensive at high load and failed inserts
+# scan the whole table.
+HASHTABLE_WARN_LOAD_PERCENT = 80
+
 # Vector type for tracking exported contact IDs (used in export kernels)
 exported_ids_vec_type = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
 
@@ -723,6 +727,7 @@ class GlobalContactReducer:
         store_hydroelastic_data: bool = False,
         store_moment_data: bool = False,
         deterministic: bool = False,
+        hashtable_size_factor: float = 0.25,
     ):
         """Initialize the global contact reducer.
 
@@ -735,7 +740,13 @@ class GlobalContactReducer:
             deterministic: If True, use deterministic fingerprint-based tiebreaking
                 in contact reduction and replace the pre-prune probe with a
                 deterministic variant.
+            hashtable_size_factor: Multiplier applied to ``capacity`` when sizing
+                the reduction hashtable. Must be positive.
         """
+        hashtable_size_factor = float(hashtable_size_factor)
+        if not hashtable_size_factor > 0.0:
+            raise ValueError(f"hashtable_size_factor must be > 0.0, got {hashtable_size_factor}")
+
         max_det_contacts = 1 << int(CONTACT_ID_BITS)
         if deterministic and capacity > max_det_contacts:
             raise ValueError(
@@ -748,6 +759,7 @@ class GlobalContactReducer:
         self.device = device
         self.store_hydroelastic_data = store_hydroelastic_data
         self.deterministic = deterministic
+        self.hashtable_size_factor = hashtable_size_factor
 
         self.values_per_key = NUM_SPATIAL_DIRECTIONS + 1
 
@@ -773,13 +785,10 @@ class GlobalContactReducer:
         # Count failed hashtable inserts (e.g., table full)
         self.ht_insert_failures = wp.zeros(1, dtype=wp.int32, device=device)
 
-        # Hashtable sizing: estimate unique (shape_pair, bin) keys needed
-        # - NUM_NORMAL_BINS + ceil(NUM_VOXEL_DEPTH_SLOTS / values_per_key) bins per pair
-        # - Dense hydroelastic contacts: many contacts share the same bin
-        # - Assume ~8 contacts per unique key on average (conservative for dense contacts)
-        # - Provides 2x load factor headroom within the /4 estimate
-        # - If table fills, contacts gracefully skip reduction (still in buffer)
-        hashtable_size = max(capacity // 4, 1024)  # minimum 1024 for small scenes
+        # Hashtable sizing: keep the historical default at capacity / 4 for
+        # memory compatibility, while exposing a factor for dense batched scenes.
+        # A full open-addressed table can turn failed inserts into whole-table probes.
+        hashtable_size = max(int(capacity * hashtable_size_factor), 1024)
         self.hashtable = HashTable(hashtable_size, device=device)
 
         # Values array for hashtable - managed here, not by HashTable
