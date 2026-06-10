@@ -5,45 +5,73 @@
 
 from __future__ import annotations
 
+from dataclasses import field, make_dataclass
 from typing import Any
 
 import warp as wp
 
 
-def _normalize_port(spec: Any, *, name: str) -> tuple[str, wp.array[wp.uint32]]:
-    """Normalize a port spec at :meth:`ControlLaw.__init__` time.
+def _normalize_live_port(
+    attr_name: Any,
+    idx: Any,
+    default_idx: wp.array,
+    *,
+    name: str,
+) -> tuple[str, wp.array]:
+    """Normalize a ``(attr_name, idx)`` "live" port pair.
 
-    Every port spec is a 2-tuple ``(attr_name, port_indices)``:
-
-    - ``attr_name``: the attribute name on the user-supplied ``input`` or
-      ``output`` object where the live array lives at step time. Resolved
-      via ``getattr(source, attr_name)`` inside the law's ``compute()``.
-    - ``port_indices``: a ``wp.array[wp.uint32]`` giving the inner lookup
-      used to index into the live array — ``arr[port_indices[i]]`` for
-      per-DOF ports, ``arr[port_indices[r]]`` for per-robot ports.
-
-    The caller is responsible for cross-checking ``port_indices.shape``
-    against either ``num_outputs`` (per-DOF ports) or ``num_robots``
-    (per-robot ports). This helper only validates the structural shape
-    of the spec itself.
-
-    Args:
-        spec: A 2-tuple ``(str, wp.array[wp.uint32])``.
-        name: Port name used in error messages.
-
-    Returns:
-        ``(attr_name, port_indices)``.
+    Live ports are looked up on the user-supplied ``input`` / ``output``
+    object at step time via ``getattr(source, attr_name)``. The kernel reads
+    / writes ``arr[idx[i]]``. When ``idx`` is ``None`` the controller's
+    ``default_idx`` is used in its place — i.e. natural-order indexing into
+    a source array whose layout already matches the controller's view.
     """
-    if not isinstance(spec, tuple) or len(spec) != 2:
-        raise TypeError(f"Port '{name}': expected a 2-tuple (attr_name, port_indices), got {type(spec).__name__}.")
-    attr_name, port_indices = spec
     if not isinstance(attr_name, str):
-        raise TypeError(
-            f"Port '{name}': first tuple element must be str (attribute name), got {type(attr_name).__name__}."
-        )
-    if not isinstance(port_indices, wp.array):
-        raise TypeError(f"Port '{name}': second tuple element must be wp.array, got {type(port_indices).__name__}.")
-    return attr_name, port_indices
+        raise TypeError(f"Port '{name}': attr name must be str, got {type(attr_name).__name__}.")
+    if idx is None:
+        indices = default_idx
+    elif isinstance(idx, wp.array):
+        indices = idx
+    else:
+        raise TypeError(f"Port '{name}': idx must be wp.array[uint32] or None, got {type(idx).__name__}.")
+    return attr_name, indices
+
+
+def _normalize_gain_port(
+    value: Any,
+    expected_size: int,
+    dtype: Any,
+    device: Any,
+    requires_grad: bool,
+    *,
+    name: str,
+) -> tuple[str, str | None, wp.array | None]:
+    """Normalize a ``wp.array[dtype] | str`` gain-style port.
+
+    Gain ports are read in natural order: the kernel evaluates ``arr[i]``
+    where ``i`` is the natural per-output (or per-robot) loop index. They
+    accept two shapes:
+
+    - ``str``: live — at step time the controller resolves
+      ``getattr(input, value)`` and reads from that array.
+    - ``wp.array``: baked — the controller stores a copy of the supplied
+      array and reads from that copy each step. Mutating the user's
+      original after construction has no effect.
+
+    Returns ``(mode, attr_name_if_live, baked_array_if_baked)`` where exactly
+    one of the two trailing fields is non-``None``.
+    """
+    if isinstance(value, str):
+        return "live", value, None
+    if isinstance(value, wp.array):
+        if value.size != expected_size:
+            raise ValueError(f"Port '{name}': baked array length {value.size} must equal {expected_size}.")
+        if value.dtype != dtype:
+            raise TypeError(f"Port '{name}': baked array dtype {value.dtype} must equal {dtype}.")
+        baked = wp.zeros(expected_size, dtype=dtype, device=device, requires_grad=requires_grad)
+        wp.copy(baked, value)
+        return "baked", None, baked
+    raise TypeError(f"Port '{name}': must be wp.array[{dtype}] or str (attr name); got {type(value).__name__}.")
 
 
 def _resolve_input_array(
@@ -52,12 +80,11 @@ def _resolve_input_array(
     *,
     name: str,
 ) -> wp.array:
-    """Step-time: fetch a port array from ``source`` (an ``input`` or
-    ``output`` object) and validate it's a :class:`wp.array`.
+    """Step-time: fetch a port array from ``source`` and validate it's a
+    :class:`wp.array`.
 
-    Shape/dtype are not validated here — Warp will raise on a kernel-launch
-    mismatch with a precise message. The cheap type check catches typos
-    early (e.g. ``input.joint_q = some_list``).
+    Shape/dtype are not validated here — Warp surfaces those at the kernel
+    launch with a precise message. The cheap type check catches typos early.
     """
     try:
         arr = getattr(source, attr_name)
@@ -68,22 +95,71 @@ def _resolve_input_array(
     return arr
 
 
-def _resolve_per_robot_array(
+def _resolve_typed_array(
     source: Any,
     attr_name: str,
     dtype: Any,
     *,
     name: str,
 ) -> wp.array:
-    """Step-time resolver for per-robot ports. Adds a dtype check on top of
-    :func:`_resolve_input_array` — the dtype is part of the port's
-    documented contract (``wp.vec3`` / ``wp.quat`` / ``wp.float32``).
-
-    Shape is no longer enforced here: with custom per-robot indices the
-    source array may be any length as long as every index is in bounds,
-    and bounds violations surface at the kernel launch.
-    """
+    """Step-time resolver with a dtype check on top of :func:`_resolve_input_array`."""
     arr = _resolve_input_array(source, attr_name, name=name)
     if arr.dtype != dtype:
         raise TypeError(f"Port '{name}': source.{attr_name} dtype must be {dtype}, got {arr.dtype}.")
     return arr
+
+
+class _StructFieldSpec:
+    """Per-field record used by :func:`_build_struct_type` /
+    :func:`_allocate_struct`. The controller subclass populates one of these
+    per *live* port; baked ports are absent from the struct entirely.
+    """
+
+    __slots__ = ("attr_name", "dtype", "size")
+
+    def __init__(self, attr_name: str, dtype: Any, size: int):
+        self.attr_name = attr_name
+        self.dtype = dtype
+        self.size = size
+
+
+def _merge_field_specs(specs: list[_StructFieldSpec]) -> dict[str, _StructFieldSpec]:
+    """Merge per-port specs by attr name. When two ports point at the same
+    attr, the field is shared and sized to the larger size — the smaller
+    view is a prefix of the larger.
+    """
+    merged: dict[str, _StructFieldSpec] = {}
+    for s in specs:
+        existing = merged.get(s.attr_name)
+        if existing is None:
+            merged[s.attr_name] = _StructFieldSpec(s.attr_name, s.dtype, s.size)
+            continue
+        if existing.dtype != s.dtype:
+            raise TypeError(
+                f"Field '{s.attr_name}': two ports declared incompatible dtypes ({existing.dtype} vs {s.dtype})."
+            )
+        existing.size = max(existing.size, s.size)
+    return merged
+
+
+def _build_struct_type(class_name: str, field_names: list[str]):
+    """Create a small dataclass type with one ``wp.array | None`` field per name."""
+    return make_dataclass(
+        class_name,
+        [(n, "wp.array | None", field(default=None)) for n in field_names],
+    )
+
+
+def _allocate_struct(
+    struct_type,
+    specs: dict[str, _StructFieldSpec],
+    device: Any,
+    requires_grad: bool,
+):
+    """Instantiate ``struct_type`` with a fresh :func:`wp.zeros` per field."""
+    return struct_type(
+        **{
+            spec.attr_name: wp.zeros(spec.size, dtype=spec.dtype, device=device, requires_grad=requires_grad)
+            for spec in specs.values()
+        }
+    )

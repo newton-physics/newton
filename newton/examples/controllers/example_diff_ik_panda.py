@@ -25,7 +25,7 @@ import newton.examples
 import newton.solvers
 import newton.utils
 from newton import JointTargetMode
-from newton.controllers import ControlLawDifferentialIK, Controller
+from newton.controllers import ControllerDifferentialKinematics
 from newton.utils import compute_world_offsets
 
 ROBOT_COUNT = 4
@@ -191,6 +191,23 @@ class Example:
             ]
             target_quat_init[r] = [site_quat[0], site_quat[1], site_quat[2], site_quat[3]]
 
+        self.controller = ControllerDifferentialKinematics(
+            model_builder=diffik_template,
+            site="ee",
+            default_dof_indices=dof_indices,
+            solver_damping=wp.full(ROBOT_COUNT, 0.05, dtype=wp.float32, device=self.device),
+            bandwidth=wp.full(ROBOT_COUNT, 20.0, dtype=wp.float32, device=self.device),
+            target_pos_attr="target_pos",
+            target_pos_idx=robot_indices,
+            target_quat_attr="target_quat",
+            target_quat_idx=robot_indices,
+            joint_measurement_attr="joint_q",
+            joint_measurement_rate_attr="joint_qd",
+            joint_target_q_attr="output_q",
+            joint_target_qd_attr="output_qd",
+            device=self.device,
+        )
+
         # The user-facing input/output containers. Read ports live on
         # ``self._input``; write ports on ``self._output``. We rebind
         # joint_q / joint_qd each step so the controller sees whichever
@@ -200,30 +217,11 @@ class Example:
             joint_qd=self.state_0.joint_qd,
             target_pos=wp.array(target_pos_init, dtype=wp.vec3, device=self.device),
             target_quat=wp.array(target_quat_init, dtype=wp.quat, device=self.device),
-            damping=wp.full(ROBOT_COUNT, 0.05, dtype=wp.float32, device=self.device),
-            gain=wp.full(ROBOT_COUNT, 20.0, dtype=wp.float32, device=self.device),
         )
         self._output = SimpleNamespace(
             output_qd=self._qd_buffer,
             output_q=self._q_buffer,
         )
-
-        self._diff_ik = ControlLawDifferentialIK(
-            label="panda_ik",
-            model_builder=diffik_template,
-            site="ee",
-            measurement=("joint_q", dof_indices),
-            measurement_rate=("joint_qd", dof_indices),
-            target_pos=("target_pos", robot_indices),
-            target_quat=("target_quat", robot_indices),
-            damping=("damping", robot_indices),
-            gain=("gain", robot_indices),
-            output_qd=("output_qd", dof_indices),
-            output_q=("output_q", dof_indices),
-        )
-        self.controller = Controller([self._diff_ik])
-        self._cs0 = self.controller.state()
-        self._cs1 = self.controller.state()
 
         # Seed control.joint_target_q with the home pose for every robot.
         # The arm slots get overwritten every substep by the scatter; the
@@ -300,7 +298,7 @@ class Example:
         # substeps; running DiffIK inside the substep loop would refresh the
         # target against the drifted current_q on every substep, leaving PD
         # with no restoring signal against gravity.
-        self.controller.step(self._input, self._output, self._cs0, self._cs1, dt=self.frame_dt)
+        self.controller.compute(self._input, self._output, None, None, time_step=self.frame_dt)
         self._scatter_arm_targets()
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()

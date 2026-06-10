@@ -1,14 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""ControlLawDifferentialIK — one-step damped-least-squares differential IK.
+"""ControllerDifferentialKinematics — one-step damped-least-squares
+differential IK.
 
 Stateless. For each robot in the batch, computes a joint-velocity command
 that drives a user-defined site pose (position + orientation) toward a
 target, using a damped pseudoinverse of the per-robot spatial Jacobian.
 
 The DLS solve is split across four kernels so that the autograd-able tile
-primitives (`wp.tile_cholesky`, `wp.tile_cholesky_solve`) only see pure
+primitives (``wp.tile_cholesky``, ``wp.tile_cholesky_solve``) only see pure
 tile_load -> tile_cholesky -> tile_cholesky_solve -> tile_store flows — no
 element-wise mutation, which would break Warp's adjoint. All other math
 (building the site-frame Jacobian, forming A = J J^T + lambda^2 I,
@@ -20,12 +21,22 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 from ...sim.articulation import eval_fk, eval_jacobian
 from ...sim.builder import ModelBuilder
-from ..control_law import ControlLaw
-from ..utils import _normalize_port, _resolve_input_array, _resolve_per_robot_array
+from ..controller import Controller
+from ..utils import (
+    _allocate_struct,
+    _build_struct_type,
+    _merge_field_specs,
+    _normalize_gain_port,
+    _normalize_live_port,
+    _resolve_input_array,
+    _resolve_typed_array,
+    _StructFieldSpec,
+)
 
 
 @wp.kernel
@@ -40,10 +51,6 @@ def _gather_local_kernel(
 
 @wp.kernel
 def _build_site_jacobian_kernel(
-    # The full spatial Jacobian for the model from ``eval_jacobian``,
-    # shape (num_robots, max_links * 6, max_dofs). For each EE link, the 6
-    # rows at j_row = ee_link * 6 are the COM-frame body twist
-    # (v_com_world, omega_world).
     jacobian: wp.array3d[float],
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
@@ -51,45 +58,26 @@ def _build_site_jacobian_kernel(
     target_pos_indices: wp.array[wp.uint32],
     target_quat: wp.array[wp.quat],
     target_quat_indices: wp.array[wp.uint32],
-    # Per-robot site-lookup arrays (precomputed at finalize() from the
-    # per-articulation site lookup). Each articulation may sit on a
-    # different EE body and carry a different body-local site xform.
     ee_body_per_robot: wp.array[int],
     ee_link_per_robot: wp.array[int],
     site_xform_per_robot: wp.array[wp.transform],
     dofs_per_robot: int,
-    # outputs:
     j_site: wp.array3d[float],  # (num_robots, 6, dofs_per_robot)
     e_buffer: wp.array2d[float],  # (num_robots, 6)
 ):
-    """Per-robot: compute the site-frame Jacobian + task-space error vector.
-
-    Splits site geometry out of the tile-Cholesky kernel so that the latter
-    sees only pure tile primitives. No element mutation; gradients propagate
-    cleanly from inputs (target_pos / target_quat / site_xform via body_q)
-    to j_site / e_buffer.
-    """
     r = wp.tid()
     ee_body = ee_body_per_robot[r]
     j_row = ee_link_per_robot[r] * 6
     site_xform = site_xform_per_robot[r]
 
-    # --- Site pose in world ---
     t_body = body_q[ee_body]
     t_site = t_body * site_xform
     site_pos = wp.transform_get_translation(t_site)
     site_quat = wp.transform_get_rotation(t_site)
     com_world = wp.transform_point(t_body, body_com[ee_body])
-    # Vector from COM (where Newton's Jacobian linear rows are defined) to
-    # the site point. Translates v_com to v_site via cross(omega, offset).
     offset = site_pos - com_world
 
-    # --- Task-space error e in R^6 ---
     pos_err = target_pos[target_pos_indices[r]] - site_pos
-    # Orientation: q_err = target * conj(site) carries (cos(theta/2), sin(theta/2)*axis).
-    # Doubling the vector part yields 2 sin(theta/2) axis ~ theta * axis for small theta;
-    # multiplying by sign(q_err.w) selects the representative with positive
-    # scalar part (the shorter rotation).
     q_err = target_quat[target_quat_indices[r]] * wp.quat_inverse(site_quat)
     s = wp.sign(q_err[3])
     rot_err = wp.vec3(2.0 * s * q_err[0], 2.0 * s * q_err[1], 2.0 * s * q_err[2])
@@ -100,8 +88,6 @@ def _build_site_jacobian_kernel(
     e_buffer[r, 4] = rot_err[1]
     e_buffer[r, 5] = rot_err[2]
 
-    # --- Site-frame Jacobian rows ---
-    # Linear rows take the cross-product correction; angular rows pass through.
     for j in range(dofs_per_robot):
         jl_x = jacobian[r, j_row + 0, j]
         jl_y = jacobian[r, j_row + 1, j]
@@ -119,15 +105,13 @@ def _build_site_jacobian_kernel(
 
 @wp.kernel
 def _build_dls_matrix_kernel(
-    j_site: wp.array3d[float],  # (num_robots, 6, dofs_per_robot)
-    damping: wp.array[float],
-    damping_indices: wp.array[wp.uint32],
+    j_site: wp.array3d[float],
+    solver_damping: wp.array[float],
     dofs_per_robot: int,
-    A: wp.array3d[float],  # (num_robots, 6, 6) — output, A = J J^T + lambda^2 I
+    A: wp.array3d[float],
 ):
-    """Per-(robot, row, col): build the 6x6 SPD DLS matrix from J_site and lambda."""
     r, i, k = wp.tid()
-    lam = damping[damping_indices[r]]
+    lam = solver_damping[r]
     lam_sq = lam * lam
     acc = float(0.0)
     for j in range(dofs_per_robot):
@@ -137,21 +121,14 @@ def _build_dls_matrix_kernel(
     A[r, i, k] = acc
 
 
-# NOTE on differentiability: ``wp.tile_cholesky`` and ``wp.tile_cholesky_solve``
-# advertise registered adjoints, but as of Warp 1.14.0 the backward pass
-# produces zero gradients on the input arrays in practice (verified with a
-# standalone test on this kernel — forward correct, but gradients of both
-# A and the rhs vector come back all-zero). Until that upstream gap is
-# fixed we mark this kernel ``enable_backward=False``, which blocks
-# gradient propagation at the solve. Every other kernel in the chain is
-# autograd-able by default.
+# wp.tile_cholesky*'s registered adjoints return zero gradients in Warp
+# 1.14.0; marking the solve kernel enable_backward=False makes that explicit.
 @wp.kernel(enable_backward=False)
 def _cholesky_solve_kernel(
-    A: wp.array3d[float],  # (num_robots, 6, 6)
-    e_buffer: wp.array2d[float],  # (num_robots, 6)
-    y: wp.array2d[float],  # (num_robots, 6) — output, solution of A y = e
+    A: wp.array3d[float],
+    e_buffer: wp.array2d[float],
+    y: wp.array2d[float],
 ):
-    """Per-robot tile solve: y = A^{-1} e via Cholesky."""
     r = wp.tid()
     A_tile = wp.tile_load(A[r], shape=(6, 6))
     e_tile = wp.tile_load(e_buffer[r], shape=(6,))
@@ -162,15 +139,13 @@ def _cholesky_solve_kernel(
 
 @wp.kernel
 def _qd_from_y_kernel(
-    j_site: wp.array3d[float],  # (num_robots, 6, dofs_per_robot)
-    y: wp.array2d[float],  # (num_robots, 6)
-    gain: wp.array[float],
-    gain_indices: wp.array[wp.uint32],
-    qd_target_local: wp.array2d[float],  # (num_robots, dofs_per_robot) — output
+    j_site: wp.array3d[float],
+    y: wp.array2d[float],
+    bandwidth: wp.array[float],
+    qd_target_local: wp.array2d[float],
 ):
-    """Per-(robot, dof_j): q_dot[j] = gain * sum_i J_site[i, j] * y[i]."""
     r, j = wp.tid()
-    g = gain[gain_indices[r]]
+    g = bandwidth[r]
     val = float(0.0)
     for i in range(6):
         val += j_site[r, i, j] * y[r, i]
@@ -178,42 +153,37 @@ def _qd_from_y_kernel(
 
 
 @wp.kernel
-def _accumulate_outputs_kernel(
-    qd_target_local: wp.array2d[float],  # (num_robots, dofs_per_robot)
-    joint_q_local: wp.array[float],  # (num_robots * dofs_per_robot,)
+def _write_outputs_kernel(
+    qd_target_local: wp.array2d[float],
+    joint_q_local: wp.array[float],
     dt: float,
     dofs_per_robot: int,
-    output_qd_indices: wp.array[wp.uint32],
-    output_q_indices: wp.array[wp.uint32],
-    output_qd: wp.array[float],
-    output_q: wp.array[float],
+    joint_target_qd_indices: wp.array[wp.uint32],
+    joint_target_q_indices: wp.array[wp.uint32],
+    joint_target_qd: wp.array[float],
+    joint_target_q: wp.array[float],
 ):
     r, j = wp.tid()
     flat = r * dofs_per_robot + j
     qd = qd_target_local[r, j]
-    output_qd[output_qd_indices[flat]] = output_qd[output_qd_indices[flat]] + qd
-    output_q[output_q_indices[flat]] = output_q[output_q_indices[flat]] + (joint_q_local[flat] + qd * dt)
+    joint_target_qd[joint_target_qd_indices[flat]] = qd
+    joint_target_q[joint_target_q_indices[flat]] = joint_q_local[flat] + qd * dt
 
 
-class ControlLawDifferentialIK(ControlLaw):
+class ControllerDifferentialKinematics(Controller):
     """One-step damped-least-squares differential IK for a single
     end-effector per robot.
 
     Coupled per-robot: each robot's joint-velocity solution depends on its
     full configuration ``q``. Stateless. Drives the **site** pose in world
     frame toward the target. The site is identified by the ``label`` you
-    gave it when calling :meth:`newton.ModelBuilder.add_site`; the
-    controller looks up the EE link and the body-frame offset xform from
-    the builder by that label.
+    gave it when calling :meth:`newton.ModelBuilder.add_site`.
 
     **Tape-safe, forward-only through the solve.** Every kernel in the
-    chain except the DLS solve itself is autograd-able by default. The
-    solve uses ``wp.tile_cholesky`` / ``wp.tile_cholesky_solve``; those
-    primitives' docstrings advertise registered adjoints, but the backward
-    path returns zero gradients in Warp 1.14.0. The solve kernel is
-    therefore marked ``enable_backward=False`` to make the zero-gradient
-    behaviour explicit. Revisit when upstream tile_cholesky backward
-    lands.
+    chain except the DLS solve itself is autograd-able by default; the
+    solve uses ``wp.tile_cholesky`` / ``wp.tile_cholesky_solve`` whose
+    backward path returns zero gradients in Warp 1.14.0, so that one
+    kernel is marked ``enable_backward=False``.
 
     Solve form (per robot, ``J_site`` is the 6xN site-frame Jacobian)::
 
@@ -221,239 +191,254 @@ class ControlLawDifferentialIK(ControlLaw):
         A        = J_site J_site^T + lambda^2 * I_6                              (6x6 SPD)
         L L^T    = A                                                            (Cholesky)
         L L^T y  = e                                                            (solve)
-        q_dot    = gain * J_site^T y
+        q_dot    = bandwidth * J_site^T y
 
-    where ``q_err = target_quat * conj(site_quat)``. ``output_q`` is
-    written as ``q_current + q_dot * dt``.
+    where ``q_err = target_quat * conj(site_quat)``. The joint_target_q
+    output is written as ``q_current + q_dot * dt``.
 
     Construction takes a :class:`newton.ModelBuilder` containing exactly
     ``N`` topologically-identical articulations — the N robots this
     controller manages. The N articulations must share DOF count,
     link/joint count, and joint types; they may differ in physical
-    parameters (mass, inertia, joint limits) and in per-articulation site
-    placement. The controller does no replication: if the user wants R
-    copies of a single-robot template, they call
-    :meth:`newton.ModelBuilder.replicate` themselves before passing the
-    builder in.
+    parameters and per-articulation site placement. No replication: if
+    the user wants R copies of a template they call
+    :meth:`newton.ModelBuilder.replicate` themselves first.
 
-    The controller assumes:
+    Assumptions:
 
-    - All joints in the builder are **scalar-DOF** (revolute or
-      prismatic), so ``joint_q.shape == joint_qd.shape == (joint_dof_count,)``.
-    - The intended "world frame" is the base frame of the builder.
+    - All joints in the builder are scalar-DOF (revolute or prismatic).
+    - The intended "world frame" is the builder's base frame.
+
+    **Per-robot gain ports** (``solver_damping``, ``bandwidth``) accept
+    either a :class:`wp.array` (baked; stored by copy at construction;
+    length ``num_robots``, dtype ``wp.float32``) or a ``str`` (live;
+    resolved from the input struct each step, read in natural per-robot
+    order).
 
     Args:
-        label: Unique-within-:class:`Controller` identifier.
-        model_builder: Unfinalized N-articulation builder. ``num_robots =
-            model_builder.articulation_count``.
-        site: Label of the site (added via
-            :meth:`newton.ModelBuilder.add_site`) to drive. The builder
-            must contain **exactly one** site with this label on each
-            articulation (``N`` sites total). The N occurrences may sit on
-            different bodies and carry different body-local xforms.
-        measurement: Per-DOF read port ``(attr_name, port_indices)``.
-            Source of joint positions ``q``. ``port_indices`` length
+        model_builder: Unfinalized N-articulation builder.
+            ``num_robots = model_builder.articulation_count``.
+        site: Label of the site to drive (added via
+            :meth:`newton.ModelBuilder.add_site`). The builder must contain
+            **exactly one** site with this label per articulation.
+        default_dof_indices: Default indices for any live-data per-DOF
+            port whose ``*_idx`` is ``None``. Length
             ``num_robots * dofs_per_robot``, laid out
             ``[r0_d0, r0_d1, ..., r1_d0, ...]``.
-        measurement_rate: Per-DOF read port. Source of joint velocities
-            ``q_dot`` (used by ``eval_fk`` to populate ``body_qd``; the
-            solve uses position-only error).
-        target_pos: Per-robot read port ``(attr_name, robot_indices)``.
-            The kernel reads ``arr[robot_indices[r]]``; ``arr`` must be a
-            ``wp.array[wp.vec3]``. Site position target in world frame.
-        target_quat: Per-robot read port. ``arr`` must be a
-            ``wp.array[wp.quat]``. Site orientation target.
-        damping: Per-robot read port. ``arr`` must be a
-            ``wp.array[float]``. DLS ``lambda`` per robot.
-        gain: Per-robot read port. ``arr`` must be a ``wp.array[float]``.
-            Scalar multiplier applied to the DLS-solve output before
-            writing into ``output_qd`` / integrating into ``output_q``.
-        output_qd: Per-DOF write port. Destination for ``q_dot``
-            (accumulated ``+=``).
-        output_q: Per-DOF write port. Destination for
-            ``q_current + q_dot * dt`` (accumulated ``+=``).
+        solver_damping: DLS lambda per robot.
+        bandwidth: Scalar multiplier on the DLS-solve output (per robot).
+        target_pos_attr: Live read port — site position target in world
+            frame. Dtype :class:`wp.vec3`.
+        target_pos_idx: Override per-robot indices for ``target_pos_attr``,
+            or ``None`` to use natural per-robot order.
+        target_quat_attr: Live read port — site orientation target. Dtype
+            :class:`wp.quat`.
+        target_quat_idx: Override per-robot indices.
+        joint_measurement_attr: Live read port — joint positions.
+        joint_measurement_idx: Override per-DOF indices.
+        joint_measurement_rate_attr: Live read port — joint velocities.
+            Consumed by ``eval_fk`` to populate ``body_qd``; the DLS solve
+            uses position-only error.
+        joint_measurement_rate_idx: Override per-DOF indices.
+        joint_target_q_attr: Live write port — commanded joint positions
+            (``q_current + q_dot * dt``).
+        joint_target_q_idx: Override per-DOF indices.
+        joint_target_qd_attr: Live write port — commanded joint
+            velocities.
+        joint_target_qd_idx: Override per-DOF indices.
+        device: Warp device for internal buffers. Defaults to
+            :func:`wp.get_device`.
+        requires_grad: If ``True``, internally-allocated buffers are
+            created with gradient support.
     """
 
     def __init__(
         self,
-        *,
-        label: str,
         model_builder: ModelBuilder,
         site: str,
-        measurement,
-        measurement_rate,
-        target_pos,
-        target_quat,
-        damping,
-        gain,
-        output_qd,
-        output_q,
+        default_dof_indices: wp.array,
+        solver_damping: wp.array | str,
+        bandwidth: wp.array | str,
+        target_pos_attr: str = "site_target_position",
+        target_pos_idx: wp.array | None = None,
+        target_quat_attr: str = "site_target_quaternion",
+        target_quat_idx: wp.array | None = None,
+        joint_measurement_attr: str = "joint_q",
+        joint_measurement_idx: wp.array | None = None,
+        joint_measurement_rate_attr: str = "joint_qd",
+        joint_measurement_rate_idx: wp.array | None = None,
+        joint_target_q_attr: str = "joint_target_q",
+        joint_target_q_idx: wp.array | None = None,
+        joint_target_qd_attr: str = "joint_target_qd",
+        joint_target_qd_idx: wp.array | None = None,
+        device: Any = None,
+        requires_grad: bool = False,
     ):
-        self.label = label
-
         if not isinstance(model_builder, ModelBuilder):
-            raise TypeError(
-                f"ControlLawDifferentialIK: model_builder must be a newton.ModelBuilder, "
-                f"got {type(model_builder).__name__}."
-            )
+            raise TypeError(f"model_builder must be a newton.ModelBuilder, got {type(model_builder).__name__}.")
+        if not isinstance(default_dof_indices, wp.array):
+            raise TypeError(f"default_dof_indices must be wp.array[uint32], got {type(default_dof_indices).__name__}.")
         n = model_builder.articulation_count
         if n < 1:
-            raise ValueError("ControlLawDifferentialIK: model_builder has no articulations.")
+            raise ValueError("model_builder has no articulations.")
         if model_builder.joint_dof_count % n != 0:
             raise ValueError(
-                f"ControlLawDifferentialIK: model_builder.joint_dof_count={model_builder.joint_dof_count} "
-                f"is not divisible by articulation_count={n}; the N articulations must share DOF count."
+                f"model_builder.joint_dof_count={model_builder.joint_dof_count} is not divisible by "
+                f"articulation_count={n}; the N articulations must share DOF count."
             )
+        body_count = len(model_builder.body_q)
+        if body_count % n != 0:
+            raise ValueError(
+                f"template body_count={body_count} is not divisible by articulation_count={n}; "
+                f"the N articulations must share body count."
+            )
+
         self._template = model_builder
         self._num_robots = n
         self._dofs_per_robot = model_builder.joint_dof_count // n
+        self._bodies_per_robot = body_count // n
+        self._num_outputs = self._num_robots * self._dofs_per_robot
+        self._device = device if device is not None else wp.get_device()
+        self._requires_grad = requires_grad
 
-        # Per-articulation site lookup. The user gives one ``site`` label
-        # that's expected to appear on every one of the N articulations;
-        # each occurrence may sit on a different body and have a different
-        # body-local xform. We pick out one shape per articulation and
-        # stash its (within-articulation body index, body-local xform)
-        # pair. `finalize()` later turns these into length-num_robots Warp
-        # arrays keyed by robot index.
-        #
-        # Bodies are assumed grouped by articulation in the builder
-        # (articulation 0's bodies first, then articulation 1's, …) —
-        # the natural pattern when the user calls add_link / add_joint /
-        # add_articulation one articulation at a time, or via
-        # ModelBuilder.replicate. The check below enforces this
-        # implicitly: if a site lands on a body outside its articulation's
-        # block, we'll get duplicate articulation assignments and raise.
-        body_count_in_template = len(model_builder.body_q)
-        if body_count_in_template % n != 0:
+        if int(default_dof_indices.size) != self._num_outputs:
             raise ValueError(
-                f"ControlLawDifferentialIK: template body_count={body_count_in_template} is not "
-                f"divisible by articulation_count={n}; the N articulations must share body count."
+                f"default_dof_indices length {default_dof_indices.size} must equal "
+                f"num_robots * dofs_per_robot = {self._num_outputs}."
             )
-        bodies_per_robot = body_count_in_template // n
+        self._default_dof_indices = default_dof_indices
+
+        # Per-articulation site lookup. Bodies are assumed grouped by
+        # articulation in builder order (the natural pattern when
+        # articulations are added one at a time, or via replicate()).
         all_site_idxs = [i for i, lbl in enumerate(model_builder.shape_label) if lbl == site]
         if len(all_site_idxs) != n:
             raise ValueError(
-                f"ControlLawDifferentialIK: expected exactly {n} shapes with label '{site}' "
-                f"(one per articulation), found {len(all_site_idxs)} in model_builder; "
+                f"expected exactly {n} shapes with label '{site}' (one per articulation), "
+                f"found {len(all_site_idxs)} in model_builder; "
                 f"available labels: {model_builder.shape_label}."
             )
         site_for_robot: dict[int, tuple[int, wp.transform]] = {}
         for shape_idx in all_site_idxs:
             body_global = int(model_builder.shape_body[shape_idx])
-            r = body_global // bodies_per_robot
-            within_robot = body_global % bodies_per_robot
+            r = body_global // self._bodies_per_robot
+            within_robot = body_global % self._bodies_per_robot
             if r in site_for_robot:
                 raise ValueError(
-                    f"ControlLawDifferentialIK: multiple shapes labeled '{site}' resolved to "
-                    f"articulation {r}. Each articulation must contribute exactly one site with this label."
+                    f"multiple shapes labeled '{site}' resolved to articulation {r}; "
+                    f"each articulation must contribute exactly one site with this label."
                 )
             site_for_robot[r] = (within_robot, model_builder.shape_transform[shape_idx])
         for r in range(n):
             if r not in site_for_robot:
-                raise ValueError(f"ControlLawDifferentialIK: articulation {r} has no shape labeled '{site}'.")
-        # Stash as lists ordered by articulation; finalize() turns these
-        # into length-num_robots Warp arrays.
-        self._ee_link_per_robot_list: list[int] = [site_for_robot[r][0] for r in range(n)]
-        self._site_xform_per_robot_list: list[wp.transform] = [site_for_robot[r][1] for r in range(n)]
-        self._bodies_per_robot = bodies_per_robot
+                raise ValueError(f"articulation {r} has no shape labeled '{site}'.")
 
-        # --- Port normalization ---
-        # Per-robot ports: tuple form (attr_name, robot_indices). robot_indices
-        # must be length num_robots; kernel reads arr[robot_indices[r]].
-        def _norm_per_robot(spec, name):
-            attr, idx = _normalize_port(spec, name=name)
-            if idx.shape != (self._num_robots,):
-                raise ValueError(f"Port '{name}': robot_indices shape {idx.shape} must equal ({self._num_robots},).")
-            return attr, idx
+        ee_link_per_robot = [site_for_robot[r][0] for r in range(n)]
+        ee_body_per_robot = [r * self._bodies_per_robot + ee_link_per_robot[r] for r in range(n)]
+        site_xform_per_robot = [site_for_robot[r][1] for r in range(n)]
 
-        self._target_pos_attr, self._target_pos_indices = _norm_per_robot(target_pos, "target_pos")
-        self._target_quat_attr, self._target_quat_indices = _norm_per_robot(target_quat, "target_quat")
-        self._damping_attr, self._damping_indices = _norm_per_robot(damping, "damping")
-        self._gain_attr, self._gain_indices = _norm_per_robot(gain, "gain")
-
-        # Per-DOF ports: output_qd defines num_outputs; everything else
-        # must match. num_outputs == num_robots * dofs_per_robot for DiffIK.
-        self._output_qd_attr, self._output_qd_port_indices = _normalize_port(output_qd, name="output_qd")
-        expected_n_outputs = self._num_robots * self._dofs_per_robot
-        if self._output_qd_port_indices.shape != (expected_n_outputs,):
-            raise ValueError(
-                f"Port 'output_qd': port_indices shape {self._output_qd_port_indices.shape} must equal "
-                f"({expected_n_outputs},) (num_robots * dofs_per_robot)."
-            )
-        self._num_outputs = expected_n_outputs
-
-        def _norm_per_dof(spec, name):
-            attr, idx = _normalize_port(spec, name=name)
-            if idx.shape != self._output_qd_port_indices.shape:
-                raise ValueError(
-                    f"Port '{name}': port_indices shape {idx.shape} must match "
-                    f"output_qd's shape {self._output_qd_port_indices.shape}."
-                )
-            return attr, idx
-
-        self._measurement_attr, self._measurement_port_indices = _norm_per_dof(measurement, "measurement")
-        self._measurement_rate_attr, self._measurement_rate_port_indices = _norm_per_dof(
-            measurement_rate, "measurement_rate"
+        # Per-DOF live ports.
+        self._meas_attr, self._meas_idx = _normalize_live_port(
+            joint_measurement_attr, joint_measurement_idx, default_dof_indices, name="joint_measurement"
         )
-        self._output_q_attr, self._output_q_port_indices = _norm_per_dof(output_q, "output_q")
+        self._meas_rate_attr, self._meas_rate_idx = _normalize_live_port(
+            joint_measurement_rate_attr,
+            joint_measurement_rate_idx,
+            default_dof_indices,
+            name="joint_measurement_rate",
+        )
+        self._target_q_attr, self._target_q_idx = _normalize_live_port(
+            joint_target_q_attr, joint_target_q_idx, default_dof_indices, name="joint_target_q"
+        )
+        self._target_qd_attr, self._target_qd_idx = _normalize_live_port(
+            joint_target_qd_attr, joint_target_qd_idx, default_dof_indices, name="joint_target_qd"
+        )
 
-    def finalize(self, device: wp.Device, num_outputs: int, requires_grad: bool = False) -> None:
-        # Finalize the user's N-articulation builder directly. No
-        # replication: the builder is already the N-robot model the
-        # controller manages.
-        self._model = self._template.finalize(device=device, requires_grad=requires_grad)
+        # Per-robot live ports. Default natural-order = wp.arange(num_robots).
+        default_robot_idx = wp.array(np.arange(n, dtype=np.uint32), device=self._device)
+        self._default_robot_idx = default_robot_idx
+        self._target_pos_attr, self._target_pos_idx = _normalize_live_port(
+            target_pos_attr, target_pos_idx, default_robot_idx, name="target_pos"
+        )
+        self._target_quat_attr, self._target_quat_idx = _normalize_live_port(
+            target_quat_attr, target_quat_idx, default_robot_idx, name="target_quat"
+        )
+
+        # Per-robot gain ports.
+        self._damping_mode, self._damping_attr, self._damping_baked = _normalize_gain_port(
+            solver_damping, n, wp.float32, self._device, requires_grad, name="solver_damping"
+        )
+        self._bandwidth_mode, self._bandwidth_attr, self._bandwidth_baked = _normalize_gain_port(
+            bandwidth, n, wp.float32, self._device, requires_grad, name="bandwidth"
+        )
+
+        # Allocate compute-side scratch + build the internal model.
+        self._model = self._template.finalize(device=self._device, requires_grad=requires_grad)
         self._model_state = self._model.state()
-
-        # Fan the per-articulation site data out to length-num_robots
-        # Warp arrays keyed by robot index. ee_body is the global body
-        # index (robot r's local ee_link plus the offset for r's body
-        # block).
-        ee_link_per_robot = self._ee_link_per_robot_list
-        ee_body_per_robot = [r * self._bodies_per_robot + ee_link_per_robot[r] for r in range(self._num_robots)]
-        # These are build-time constants — no gradient flow through them.
-        self._ee_body_per_robot = wp.array(ee_body_per_robot, dtype=int, device=device)
-        self._ee_link_per_robot = wp.array(ee_link_per_robot, dtype=int, device=device)
-        self._site_xform_per_robot = wp.array(self._site_xform_per_robot_list, dtype=wp.transform, device=device)
-
+        self._ee_body_per_robot = wp.array(ee_body_per_robot, dtype=int, device=self._device)
+        self._ee_link_per_robot = wp.array(ee_link_per_robot, dtype=int, device=self._device)
+        self._site_xform_per_robot = wp.array(site_xform_per_robot, dtype=wp.transform, device=self._device)
         self._jacobian = wp.zeros(
-            (self._num_robots, self._model.max_joints_per_articulation * 6, self._model.max_dofs_per_articulation),
+            (n, self._model.max_joints_per_articulation * 6, self._model.max_dofs_per_articulation),
             dtype=wp.float32,
-            device=device,
+            device=self._device,
             requires_grad=requires_grad,
         )
-        # Bridging buffers between the per-element kernels and the
-        # tile-Cholesky solve. Shapes match the tile-load shapes exactly
-        # so we never tile-load a slice — keeps the autograd path simple.
         self._j_site = wp.zeros(
-            (self._num_robots, 6, self._dofs_per_robot),
+            (n, 6, self._dofs_per_robot),
             dtype=wp.float32,
-            device=device,
+            device=self._device,
             requires_grad=requires_grad,
         )
-        self._e_buffer = wp.zeros(
-            (self._num_robots, 6),
-            dtype=wp.float32,
-            device=device,
-            requires_grad=requires_grad,
-        )
-        self._A = wp.zeros(
-            (self._num_robots, 6, 6),
-            dtype=wp.float32,
-            device=device,
-            requires_grad=requires_grad,
-        )
-        self._y = wp.zeros(
-            (self._num_robots, 6),
-            dtype=wp.float32,
-            device=device,
-            requires_grad=requires_grad,
-        )
+        self._e_buffer = wp.zeros((n, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+        self._A = wp.zeros((n, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+        self._y = wp.zeros((n, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad)
         self._qd_target_local = wp.zeros(
-            (self._num_robots, self._dofs_per_robot),
-            dtype=wp.float32,
-            device=device,
-            requires_grad=requires_grad,
+            (n, self._dofs_per_robot), dtype=wp.float32, device=self._device, requires_grad=requires_grad
         )
+
+        # Input/output struct field specs.
+        in_specs: list[_StructFieldSpec] = [
+            _StructFieldSpec(self._meas_attr, wp.float32, _idx_max(self._meas_idx)),
+            _StructFieldSpec(self._meas_rate_attr, wp.float32, _idx_max(self._meas_rate_idx)),
+            _StructFieldSpec(self._target_pos_attr, wp.vec3, _idx_max(self._target_pos_idx)),
+            _StructFieldSpec(self._target_quat_attr, wp.quat, _idx_max(self._target_quat_idx)),
+        ]
+        for mode, attr in ((self._damping_mode, self._damping_attr), (self._bandwidth_mode, self._bandwidth_attr)):
+            if mode == "live":
+                in_specs.append(_StructFieldSpec(attr, wp.float32, n))
+        self._input_specs = _merge_field_specs(in_specs)
+        self._input_type = _build_struct_type("ControllerDifferentialKinematicsInput", list(self._input_specs.keys()))
+
+        self._output_specs = _merge_field_specs(
+            [
+                _StructFieldSpec(self._target_q_attr, wp.float32, _idx_max(self._target_q_idx)),
+                _StructFieldSpec(self._target_qd_attr, wp.float32, _idx_max(self._target_qd_idx)),
+            ]
+        )
+        self._output_type = _build_struct_type(
+            "ControllerDifferentialKinematicsOutput", list(self._output_specs.keys())
+        )
+
+    @property
+    def num_robots(self) -> int:
+        return self._num_robots
+
+    @property
+    def dofs_per_robot(self) -> int:
+        return self._dofs_per_robot
+
+    @property
+    def num_outputs(self) -> int:
+        return self._num_outputs
+
+    @property
+    def device(self):
+        return self._device
+
+    @property
+    def requires_grad(self) -> bool:
+        return self._requires_grad
 
     def is_stateful(self) -> bool:
         return False
@@ -461,46 +446,54 @@ class ControlLawDifferentialIK(ControlLaw):
     def is_graphable(self) -> bool:
         return True
 
-    def outputs(self) -> list[tuple[str, wp.array[wp.uint32]]]:
-        return [
-            (self._output_qd_attr, self._output_qd_port_indices),
-            (self._output_q_attr, self._output_q_port_indices),
-        ]
+    def state(self) -> None:
+        return None
+
+    def input_struct(self):
+        return _allocate_struct(self._input_type, self._input_specs, self._device, self._requires_grad)
+
+    def output_struct(self):
+        return _allocate_struct(self._output_type, self._output_specs, self._device, self._requires_grad)
 
     def compute(
         self,
-        input: Any,
-        output: Any,
-        state: ControlLaw.State | None,
-        next_state: ControlLaw.State | None,
-        dt: float,
+        input_struct: Any,
+        output_struct: Any,
+        controller_state_now: None,
+        controller_state_next: None,
+        time_step: float,
     ) -> None:
-        meas = _resolve_input_array(input, self._measurement_attr, name="measurement")
-        meas_rate = _resolve_input_array(input, self._measurement_rate_attr, name="measurement_rate")
-        target_pos = _resolve_per_robot_array(input, self._target_pos_attr, wp.vec3, name="target_pos")
-        target_quat = _resolve_per_robot_array(input, self._target_quat_attr, wp.quat, name="target_quat")
-        damping = _resolve_per_robot_array(input, self._damping_attr, wp.float32, name="damping")
-        gain = _resolve_per_robot_array(input, self._gain_attr, wp.float32, name="gain")
-        out_qd = _resolve_input_array(output, self._output_qd_attr, name="output_qd")
-        out_q = _resolve_input_array(output, self._output_q_attr, name="output_q")
+        meas = _resolve_input_array(input_struct, self._meas_attr, name="joint_measurement")
+        meas_rate = _resolve_input_array(input_struct, self._meas_rate_attr, name="joint_measurement_rate")
+        target_pos = _resolve_typed_array(input_struct, self._target_pos_attr, wp.vec3, name="target_pos")
+        target_quat = _resolve_typed_array(input_struct, self._target_quat_attr, wp.quat, name="target_quat")
+        damping = self._resolve_gain(
+            input_struct, "solver_damping", self._damping_mode, self._damping_attr, self._damping_baked
+        )
+        bandwidth = self._resolve_gain(
+            input_struct, "bandwidth", self._bandwidth_mode, self._bandwidth_attr, self._bandwidth_baked
+        )
+        out_q = _resolve_input_array(output_struct, self._target_q_attr, name="joint_target_q")
+        out_qd = _resolve_input_array(output_struct, self._target_qd_attr, name="joint_target_qd")
 
         wp.launch(
             _gather_local_kernel,
             dim=self._num_outputs,
-            inputs=[meas, self._measurement_port_indices],
+            inputs=[meas, self._meas_idx],
             outputs=[self._model_state.joint_q],
+            device=self._device,
         )
         wp.launch(
             _gather_local_kernel,
             dim=self._num_outputs,
-            inputs=[meas_rate, self._measurement_rate_port_indices],
+            inputs=[meas_rate, self._meas_rate_idx],
             outputs=[self._model_state.joint_qd],
+            device=self._device,
         )
 
         eval_fk(self._model, self._model_state.joint_q, self._model_state.joint_qd, self._model_state)
         eval_jacobian(self._model, self._model_state, J=self._jacobian)
 
-        # 1. Site-frame Jacobian + task-space error.
         wp.launch(
             _build_site_jacobian_kernel,
             dim=self._num_robots,
@@ -509,54 +502,60 @@ class ControlLawDifferentialIK(ControlLaw):
                 self._model_state.body_q,
                 self._model.body_com,
                 target_pos,
-                self._target_pos_indices,
+                self._target_pos_idx,
                 target_quat,
-                self._target_quat_indices,
+                self._target_quat_idx,
                 self._ee_body_per_robot,
                 self._ee_link_per_robot,
                 self._site_xform_per_robot,
                 self._dofs_per_robot,
             ],
             outputs=[self._j_site, self._e_buffer],
+            device=self._device,
         )
-
-        # 2. Build A = J J^T + lambda^2 I.
         wp.launch(
             _build_dls_matrix_kernel,
             dim=(self._num_robots, 6, 6),
-            inputs=[self._j_site, damping, self._damping_indices, self._dofs_per_robot],
+            inputs=[self._j_site, damping, self._dofs_per_robot],
             outputs=[self._A],
+            device=self._device,
         )
-
-        # 3. Tile Cholesky solve: y = A^{-1} e. Block-cooperative (one warp
-        # per robot). This is the only step using tile primitives.
         wp.launch_tiled(
             _cholesky_solve_kernel,
             dim=[self._num_robots],
             inputs=[self._A, self._e_buffer],
             outputs=[self._y],
             block_dim=32,
+            device=self._device,
         )
-
-        # 4. q_dot = gain * J_site^T y.
         wp.launch(
             _qd_from_y_kernel,
             dim=(self._num_robots, self._dofs_per_robot),
-            inputs=[self._j_site, self._y, gain, self._gain_indices],
+            inputs=[self._j_site, self._y, bandwidth],
             outputs=[self._qd_target_local],
+            device=self._device,
         )
-
-        # 5. Accumulate into global output arrays + integrate q.
         wp.launch(
-            _accumulate_outputs_kernel,
+            _write_outputs_kernel,
             dim=(self._num_robots, self._dofs_per_robot),
             inputs=[
                 self._qd_target_local,
                 self._model_state.joint_q,
-                dt,
+                time_step,
                 self._dofs_per_robot,
-                self._output_qd_port_indices,
-                self._output_q_port_indices,
+                self._target_qd_idx,
+                self._target_q_idx,
             ],
             outputs=[out_qd, out_q],
+            device=self._device,
         )
+
+    @staticmethod
+    def _resolve_gain(input_struct, name, mode, attr, baked):
+        if mode == "baked":
+            return baked
+        return _resolve_typed_array(input_struct, attr, wp.float32, name=name)
+
+
+def _idx_max(idx: wp.array) -> int:
+    return int(np.max(idx.numpy())) + 1
