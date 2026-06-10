@@ -213,9 +213,7 @@ def create_kernel(
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 texture_ids_index = wp.int32(closest_hit.shape_index)
                 if shape_texture_ids_per_world:
-                    texture_ids_index = (
-                        world_index * shape_texture_ids_shape_count + wp.int32(closest_hit.shape_index)
-                    )
+                    texture_ids_index = world_index * shape_texture_ids_shape_count + wp.int32(closest_hit.shape_index)
                 texture_index = shape_texture_ids[texture_ids_index]
                 if texture_index > -1:
                     tex_color = textures.sample_texture(
