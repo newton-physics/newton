@@ -27,11 +27,11 @@ The module exposes a single abstract base class — `Controller(ABC)` — that e
 - `is_graphable() -> bool` — CUDA-graph compatibility predicate.
 - `is_stateful() -> bool` — whether the law carries state between steps.
 - `state()` — allocate a fresh per-step `State` (subclass-specific `@dataclass`), or `None` for stateless laws.
-- `input_struct()` — allocate a fresh, auto-generated dataclass holding one `wp.array` field per *live* read port. Baked gain arrays are stored on the controller and **do not** appear here.
+- `input_struct()` — allocate a fresh, auto-generated dataclass holding one `wp.array` field per input port.
 - `output_struct()` — same idea for write ports.
 - `compute(input_struct, output_struct, controller_state_now, controller_state_next, time_step) -> None`.
 
-Compute writes are **slot-replacing** (`arr[idx[i]] = value`, not `+=`). Slots outside the declared port indices are untouched. Users compose laws by calling them sequentially against the same output struct; if a use case requires accumulation it is the user's job to zero first.
+Users compose laws by simply instantiating many `Controller`s and composing the outputs in whatever way they desire.
 
 ---
 
@@ -48,14 +48,14 @@ For data that comes from the simulation each step (joint positions, target poses
 
 The pattern lets a controller view an arbitrary slice of a larger sim-side array: a per-DOF index of `[5, 7]` writes only those two slots and leaves the others alone.
 
-### Gain ports (`wp.array | str`)
+### Parameter ports (`wp.array | str`)
 
 For configuration knobs (PID gains, DLS damping, IK bandwidth) the user can pick:
 
 - Pass a `wp.array` — *baked*: the controller takes a copy at construction. Mutating the user's original later has no effect. Must have length `num_outputs` (per-DOF) or `num_robots` (per-robot) and dtype `wp.float32`.
 - Pass a `str` — *live*: at step time the controller resolves `getattr(input_struct, value)` and reads that array. Same length/dtype requirement.
 
-Gain ports are always read in natural order (`arr[i]`) — no `_idx` override. The user's "leave them in order" choice keeps the constructor surface flat and matches how gain arrays are typically authored.
+Parameter ports are always read in natural order (`arr[i]`) — no `_idx` override. The user's "leave them in order" choice keeps the constructor surface flat and matches how gain arrays are typically authored.
 
 ---
 
@@ -76,7 +76,7 @@ Stateless laws (DiffIK) return `None` from `state()` and accept `None` for both 
 
 ## Struct factories
 
-`input_struct()` and `output_struct()` allocate auto-generated `@dataclass` instances with one `wp.zeros` field per live port the user declared. Field names match the user's `*_attr` strings (and live-gain strings). Baked gains are absent (they live on the controller). Each field is sized minimally for the controller's view — `max(idx)+1` for ports with an explicit `_idx`, otherwise the natural-order length (`num_outputs` / `num_robots`).
+`input_struct()` and `output_struct()` allocate auto-generated `@dataclass` instances with one `wp.zeros` field per live port the user declared. Field names match the user's `*_attr` strings (and live-gain strings). Baked parameters are absent (they live on the controller). Each field is sized minimally for the controller's view — `max(idx)+1` for ports with an explicit `_idx`, otherwise the natural-order length (`num_outputs` / `num_robots`).
 
 Users can:
 
@@ -140,15 +140,3 @@ output_q = q_current + q_dot * dt
 **Tape-safe forward, zero-grad through the solve.** Every kernel except `_cholesky_solve_kernel` is autograd-able by default; the solve uses `wp.tile_cholesky` / `wp.tile_cholesky_solve` whose registered adjoints return zero gradients in Warp 1.14.0, so that one kernel is marked `enable_backward=False`. Revisit when upstream tile-Cholesky backward lands.
 
 Stateless (`state()` returns `None`).
-
----
-
-## Why no composer
-
-Earlier iterations included a `Controller(list[ControlLaw])` composer that orchestrated the step, zeroed declared output slots, and accumulated `+=` from each law. That design has been removed:
-
-- The framework gave up no real expressive power by handling composition itself — the user can call each law's `compute()` in sequence with the same effect.
-- Removing the composer also removes the `label` discipline, the cross-law `num_outputs` invariant, the shared-spec validation surface (`HardwareSpec` / `ControlSignal` were even-more-elaborate variants), and the upfront output-zero pass. None of those carry their weight when "compose with another law" is just two Python statements.
-- Slot-replacing writes (`=`) match the simpler mental model. Multi-source accumulation is rare; when needed, the user does it explicitly.
-
-The cost is two extra concepts the user has to keep straight: which struct each port lives on, and whether a gain is baked or live. Both are visible in the constructor signature and have hopefully clear failure modes (`AttributeError: source object has no attribute 'kp'` if a live gain isn't on the input struct).
