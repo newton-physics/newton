@@ -39,11 +39,11 @@ from newton.examples.vbd._viewer import set_viewer_camera
 
 @wp.kernel
 def _set_kinematic_targets_kernel(
-    body_indices: wp.array(dtype=wp.int32),
-    positions: wp.array(dtype=wp.vec3),
-    rotations: wp.array(dtype=wp.quat),
-    body_q0: wp.array(dtype=wp.transform),
-    body_q1: wp.array(dtype=wp.transform),
+    body_indices: wp.array[wp.int32],
+    positions: wp.array[wp.vec3],
+    rotations: wp.array[wp.quat],
+    body_q0: wp.array[wp.transform],
+    body_q1: wp.array[wp.transform],
 ):
     tid = wp.tid()
     body = body_indices[tid]

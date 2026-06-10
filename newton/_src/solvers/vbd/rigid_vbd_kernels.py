@@ -461,9 +461,7 @@ def _transported_twist_angle_derivative_from_measure(
     dm0_transport = wp.vec3(0.0)
     if raw_len > _SMALL_LENGTH_EPS:
         inv_len = 1.0 / raw_len
-        dm0_transport = inv_len * (
-            dm0_transport_raw - m0_transport * wp.dot(m0_transport, dm0_transport_raw)
-        )
+        dm0_transport = inv_len * (dm0_transport_raw - m0_transport * wp.dot(m0_transport, dm0_transport_raw))
 
     sin_theta = wp.dot(t1, wp.cross(m0_transport, m1))
     cos_theta = wp.dot(m0_transport, m1)
@@ -855,9 +853,7 @@ def evaluate_cable_bend_twist_force_hessian_z(
     inv_dt = 1.0 / dt
 
     measure = _measure_cable_bend_twist_z(q_wp, q_wc)
-    kappa_now_vec = _assemble_geometric_cable_kappa_z(
-        q_wp, measure.kb_world, measure.twist, kb_rest_local, twist_rest
-    )
+    kappa_now_vec = _assemble_geometric_cable_kappa_z(q_wp, measure.kb_world, measure.twist, kb_rest_local, twist_rest)
 
     # Bend and twist decouple in the material basis: the angular energy is a sum
     # of independent quadratics in [bend_x, bend_y, twist_z], so elastic stiffness
@@ -1637,12 +1633,7 @@ def evaluate_joint_force_hessian(
         total_H_al = wp.mat33(0.0)
         total_H_aa = wp.mat33(0.0)
 
-        if (
-            k_bend > 0.0
-            or k_twist > 0.0
-            or joint_is_hard[bend_idx] == 1
-            or joint_is_hard[twist_idx] == 1
-        ):
+        if k_bend > 0.0 or k_twist > 0.0 or joint_is_hard[bend_idx] == 1 or joint_is_hard[twist_idx] == 1:
             K_elastic_diag = wp.vec3(k_bend, k_bend, k_twist)
             K_damp_diag = wp.vec3(kd_bend * k_bend, kd_bend * k_bend, kd_twist * k_twist)
             damping_active = (kd_bend > 0.0 and k_bend > 0.0) or (kd_twist > 0.0 and k_twist > 0.0)
@@ -1695,12 +1686,7 @@ def evaluate_joint_force_hessian(
             total_torque = total_torque + cable_torque
             total_H_aa = total_H_aa + cable_H_aa
 
-        if (
-            k_stretch > 0.0
-            or k_shear > 0.0
-            or joint_is_hard[stretch_idx] == 1
-            or joint_is_hard[shear_idx] == 1
-        ):
+        if k_stretch > 0.0 or k_shear > 0.0 or joint_is_hard[stretch_idx] == 1 or joint_is_hard[shear_idx] == 1:
             t_world = _quat_rotate_local_z(q_wp)
             P_stretch = wp.outer(t_world, t_world)
             I = wp.identity(3, float)

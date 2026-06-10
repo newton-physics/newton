@@ -64,10 +64,10 @@ from .rigid_vbd_kernels import (
     compute_cable_dahl_parameters,
     compute_rigid_contact_forces,
     forward_step_rigid_bodies,
-    init_cable_rest_bend_twist,
     init_body_body_contact_materials,
     init_body_body_contacts_avbd,
     init_body_particle_contacts,
+    init_cable_rest_bend_twist,
     snapshot_body_body_contact_history,
     solve_rigid_body,
     step_body_body_contact_C0_lambda,
@@ -1024,9 +1024,7 @@ class SolverVBD(SolverBase):
                     joint_k_max_np[bend_slot] = ke_bend
                     joint_k_max_np[twist_slot] = ke_twist
 
-                    joint_k_init_np[stretch_slot] = (
-                        ke_stretch if lin_k_start is None else min(lin_k_start, ke_stretch)
-                    )
+                    joint_k_init_np[stretch_slot] = ke_stretch if lin_k_start is None else min(lin_k_start, ke_stretch)
                     joint_k_init_np[shear_slot] = ke_shear if lin_k_start is None else min(lin_k_start, ke_shear)
                     joint_k_init_np[bend_slot] = ke_bend if ang_k_start is None else min(ang_k_start, ke_bend)
                     joint_k_init_np[twist_slot] = ke_twist if ang_k_start is None else min(ang_k_start, ke_twist)

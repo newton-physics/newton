@@ -42,9 +42,9 @@ def _drive_endpoints_kernel(
     tip_pos: wp.vec3,
     root_rest_rot: wp.quat,
     tip_rest_rot: wp.quat,
-    twist_angle: wp.array(dtype=wp.float32),
-    body_q0: wp.array(dtype=wp.transform),
-    body_q1: wp.array(dtype=wp.transform),
+    twist_angle: wp.array[wp.float32],
+    body_q0: wp.array[wp.transform],
+    body_q1: wp.array[wp.transform],
 ):
     # Counter-twist: split the total end-to-end twist symmetrically. The angle
     # lives in a device array so the simulate() loop can be captured into a

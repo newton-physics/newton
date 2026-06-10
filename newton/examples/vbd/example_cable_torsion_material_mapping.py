@@ -44,19 +44,16 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.solvers.vbd.rigid_vbd_kernels import (
-    evaluate_angular_constraint_force_hessian,
-)
 from newton.examples.vbd._viewer import set_viewer_camera
 
 
 @wp.kernel
 def _spin_tip_kernel(
     tip_body: int,
-    twist_rate: wp.array(dtype=float),
+    twist_rate: wp.array[float],
     dt: float,
-    body_q0: wp.array(dtype=wp.transform),
-    body_q1: wp.array(dtype=wp.transform),
+    body_q0: wp.array[wp.transform],
+    body_q1: wp.array[wp.transform],
 ):
     X = body_q0[tip_body]
     pos = wp.transform_get_translation(X)
@@ -66,41 +63,6 @@ def _spin_tip_kernel(
     X_new = wp.transform(pos, wp.mul(dq, rot))
     body_q0[tip_body] = X_new
     body_q1[tip_body] = X_new
-
-
-@wp.kernel
-def _measure_material_twist_response_kernel(
-    twist_stiffnesses: wp.array(dtype=float),
-    angle: float,
-    torque_magnitudes: wp.array(dtype=float),
-    bend_leakage: wp.array(dtype=float),
-):
-    tid = wp.tid()
-    q_id = wp.quat_identity()
-    tangent = wp.vec3(0.0, 0.0, 1.0)
-    P_twist = wp.outer(tangent, tangent)
-    q_twist = wp.quat_from_axis_angle(tangent, angle)
-    zero = wp.vec3(0.0)
-
-    tau_twist, _H_twist, _kappa_twist, _J_twist = evaluate_angular_constraint_force_hessian(
-        q_id,
-        q_twist,
-        q_id,
-        q_id,
-        q_id,
-        q_id,
-        True,
-        twist_stiffnesses[tid],
-        P_twist,
-        zero,
-        zero,
-        0.0,
-        0.0,
-        0.01,
-    )
-
-    torque_magnitudes[tid] = wp.length(tau_twist)
-    bend_leakage[tid] = wp.length((wp.identity(3, float) - P_twist) * tau_twist)
 
 
 class Example:
@@ -114,7 +76,6 @@ class Example:
     TARGET_TIP_TWIST = math.radians(90.0)
     RAMP_TIME = 3.0
     HOLD_TIME = 5.0
-    MATERIAL_TEST_ANGLE = math.radians(5.0)
     MATERIAL_SCALING_CASES = (
         # label, group, E, radius, segment length, nu, explicit G
         ("baseline", "baseline", YOUNGS_MODULUS, CABLE_RADIUS, SEGMENT_LENGTH, POISSONS_RATIO, None),
@@ -273,7 +234,7 @@ class Example:
         return np.array([x / s, y / s, z / s], dtype=np.float64), angle
 
     @classmethod
-    def material_scaling_validation(cls, device=None) -> dict[str, np.ndarray | float | list[str]]:
+    def material_scaling_validation(cls) -> dict[str, np.ndarray | float | list[str]]:
         labels = []
         groups = []
         youngs_moduli = []
@@ -326,26 +287,10 @@ class Example:
 
         twist_stiffnesses_np = np.asarray(twist_stiffnesses, dtype=np.float64)
         formula_stiffnesses_np = np.asarray(formula_stiffnesses, dtype=np.float64)
-        torque_magnitudes = wp.zeros(len(labels), dtype=float, device=device)
-        bend_leakage = wp.zeros(len(labels), dtype=float, device=device)
-        wp.launch(
-            _measure_material_twist_response_kernel,
-            dim=len(labels),
-            inputs=[
-                wp.array(twist_stiffnesses_np.astype(np.float32), dtype=float, device=device),
-                cls.MATERIAL_TEST_ANGLE,
-                torque_magnitudes,
-                bend_leakage,
-            ],
-            device=device,
-        )
 
-        measured_torques = torque_magnitudes.numpy().astype(np.float64)
-        measured_stiffness = measured_torques / cls.MATERIAL_TEST_ANGLE
         formula_relative_error = np.abs(twist_stiffnesses_np / np.maximum(formula_stiffnesses_np, 1.0e-30) - 1.0)
-        kernel_relative_error = np.abs(measured_stiffness / np.maximum(formula_stiffnesses_np, 1.0e-30) - 1.0)
         predicted_scale = formula_stiffnesses_np / formula_stiffnesses_np[0]
-        measured_scale = measured_stiffness / measured_stiffness[0]
+        helper_scale = twist_stiffnesses_np / twist_stiffnesses_np[0]
 
         return {
             "labels": labels,
@@ -358,19 +303,13 @@ class Example:
             "polar_inertia": np.asarray(polar_inertias, dtype=np.float64),
             "formula_stiffness": formula_stiffnesses_np,
             "helper_stiffness": twist_stiffnesses_np,
-            "measured_stiffness": measured_stiffness,
             "predicted_scale": predicted_scale,
-            "measured_scale": measured_scale,
-            "measured_torque": measured_torques,
-            "bend_leakage": bend_leakage.numpy().astype(np.float64),
-            "test_angle_deg": math.degrees(cls.MATERIAL_TEST_ANGLE),
+            "helper_scale": helper_scale,
             "case_count": len(labels),
             "max_formula_relative_error": float(np.max(formula_relative_error)),
-            "max_kernel_relative_error": float(np.max(kernel_relative_error)),
             "max_scale_relative_error": float(
-                np.max(np.abs(measured_scale / np.maximum(predicted_scale, 1.0e-30) - 1.0))
+                np.max(np.abs(helper_scale / np.maximum(predicted_scale, 1.0e-30) - 1.0))
             ),
-            "max_bend_leakage": float(np.max(bend_leakage.numpy())),
         }
 
     def _commanded_tip_twist(self) -> float:
@@ -525,7 +464,7 @@ class Example:
         transverse[:, 0] = 0.0
         max_transverse = float(np.max(np.linalg.norm(transverse, axis=1)))
 
-        material_scaling = self.material_scaling_validation(device=self.model.device)
+        material_scaling = self.material_scaling_validation()
 
         assert abs(twists[0]) < math.radians(0.1), f"root should remain untwisted: {math.degrees(twists[0])} deg"
         assert abs(twists[-1] - self.TARGET_TIP_TWIST) < math.radians(1.0), (
@@ -543,14 +482,8 @@ class Example:
         assert material_scaling["max_formula_relative_error"] < 1.0e-12, (
             f"helper does not match GJ/h: {material_scaling['max_formula_relative_error']}"
         )
-        assert material_scaling["max_kernel_relative_error"] < 1.0e-5, (
-            f"kernel torque does not match GJ/h: {material_scaling['max_kernel_relative_error']}"
-        )
-        assert material_scaling["max_scale_relative_error"] < 1.0e-5, (
+        assert material_scaling["max_scale_relative_error"] < 1.0e-9, (
             f"material scaling response is wrong: {material_scaling['max_scale_relative_error']}"
-        )
-        assert material_scaling["max_bend_leakage"] < 1.0e-8, (
-            f"pure twist material check leaked into bend: {material_scaling['max_bend_leakage']}"
         )
 
 

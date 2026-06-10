@@ -4469,8 +4469,7 @@ class ModelBuilder:
             twist_kd = 0.0 if twist_damping is None else twist_damping
         if stretch_ke < 0.0 or shear_ke < 0.0 or bend_ke < 0.0 or twist_ke < 0.0:
             raise ValueError(
-                "add_joint_cable: stretch_stiffness, shear_stiffness, bend_stiffness, and twist_stiffness "
-                "must be >= 0"
+                "add_joint_cable: stretch_stiffness, shear_stiffness, bend_stiffness, and twist_stiffness must be >= 0"
             )
         twist_axis = ModelBuilder.JointDofConfig(target_ke=twist_ke, target_kd=twist_kd)
 

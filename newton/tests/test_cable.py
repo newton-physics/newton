@@ -4140,13 +4140,17 @@ def _build_cable_stretch_shear_projectors(q_wp: wp.quat, tangent_axis: wp.vec3) 
 
 
 @wp.func
-def _cable_parent_to_material_basis(v: wp.vec3, bend_axis0: wp.vec3, bend_axis1: wp.vec3, twist_axis: wp.vec3) -> wp.vec3:
+def _cable_parent_to_material_basis(
+    v: wp.vec3, bend_axis0: wp.vec3, bend_axis1: wp.vec3, twist_axis: wp.vec3
+) -> wp.vec3:
     """Resolve a parent-frame vector into the test reference cable basis."""
     return wp.vec3(wp.dot(v, bend_axis0), wp.dot(v, bend_axis1), wp.dot(v, twist_axis))
 
 
 @wp.func
-def _cable_material_basis_to_parent(v: wp.vec3, bend_axis0: wp.vec3, bend_axis1: wp.vec3, twist_axis: wp.vec3) -> wp.vec3:
+def _cable_material_basis_to_parent(
+    v: wp.vec3, bend_axis0: wp.vec3, bend_axis1: wp.vec3, twist_axis: wp.vec3
+) -> wp.vec3:
     """Resolve a test reference cable-basis vector into the parent frame."""
     return v[0] * bend_axis0 + v[1] * bend_axis1 + v[2] * twist_axis
 
@@ -4156,8 +4160,10 @@ def _cable_material_basis_hessian_to_parent(
     c: wp.vec3, bend_axis0: wp.vec3, bend_axis1: wp.vec3, twist_axis: wp.vec3
 ) -> wp.mat33:
     """Resolve diagonal test reference cable-basis tangents into parent frame."""
-    return c[0] * wp.outer(bend_axis0, bend_axis0) + c[1] * wp.outer(bend_axis1, bend_axis1) + c[2] * wp.outer(
-        twist_axis, twist_axis
+    return (
+        c[0] * wp.outer(bend_axis0, bend_axis0)
+        + c[1] * wp.outer(bend_axis1, bend_axis1)
+        + c[2] * wp.outer(twist_axis, twist_axis)
     )
 
 
@@ -4677,7 +4683,7 @@ def _eval_split_cable_angular_hessian_finite_difference_kernel(errors: wp.array[
 
     tangent = wp.normalize(wp.vec3(0.3, -0.4, 0.8660254))
     P_bend, P_twist = _build_cable_bend_twist_projectors(tangent)
-    bend0, bend1, _twist = _build_cable_material_basis(tangent)
+    bend0, _bend1, _twist = _build_cable_material_basis(tangent)
     P = P_bend
     free_axis = tangent
     stiffness = 23.0
@@ -4708,13 +4714,16 @@ def _eval_split_cable_angular_hessian_finite_difference_kernel(errors: wp.array[
     err2 = wp.length(fd2 - H * e2)
     max_fd_error = wp.max(err0, wp.max(err1, err2)) / stiffness
 
-    sym_error = wp.max(
-        wp.abs(wp.dot(e0, H * e1) - wp.dot(e1, H * e0)),
+    sym_error = (
         wp.max(
-            wp.abs(wp.dot(e0, H * e2) - wp.dot(e2, H * e0)),
-            wp.abs(wp.dot(e1, H * e2) - wp.dot(e2, H * e1)),
-        ),
-    ) / stiffness
+            wp.abs(wp.dot(e0, H * e1) - wp.dot(e1, H * e0)),
+            wp.max(
+                wp.abs(wp.dot(e0, H * e2) - wp.dot(e2, H * e0)),
+                wp.abs(wp.dot(e1, H * e2) - wp.dot(e2, H * e1)),
+            ),
+        )
+        / stiffness
+    )
 
     null_error = wp.length(H * free_axis) / stiffness
     errors[tid] = wp.vec3(max_fd_error, sym_error, null_error)
@@ -4777,7 +4786,7 @@ def _eval_geometric_cable_force_hessian_finite_difference_kernel(errors: wp.arra
     tid = wp.tid()
 
     tangent = wp.normalize(wp.vec3(0.2, -0.35, 0.915))
-    bend0, _bend1, twist = _build_cable_material_basis(tangent)
+    _bend0, _bend1, _twist = _build_cable_material_basis(tangent)
     P_bend, P_twist = _build_cable_bend_twist_projectors(tangent)
 
     P = P_bend
@@ -4915,13 +4924,16 @@ def _eval_geometric_cable_force_hessian_finite_difference_kernel(errors: wp.arra
     h_err2 = wp.length(h_fd2 + H0 * e2)
     hessian_fd_error = wp.max(h_err0, wp.max(h_err1, h_err2)) / stiffness
 
-    sym_error = wp.max(
-        wp.abs(wp.dot(e0, H0 * e1) - wp.dot(e1, H0 * e0)),
+    sym_error = (
         wp.max(
-            wp.abs(wp.dot(e0, H0 * e2) - wp.dot(e2, H0 * e0)),
-            wp.abs(wp.dot(e1, H0 * e2) - wp.dot(e2, H0 * e1)),
-        ),
-    ) / stiffness
+            wp.abs(wp.dot(e0, H0 * e1) - wp.dot(e1, H0 * e0)),
+            wp.max(
+                wp.abs(wp.dot(e0, H0 * e2) - wp.dot(e2, H0 * e0)),
+                wp.abs(wp.dot(e1, H0 * e2) - wp.dot(e2, H0 * e1)),
+            ),
+        )
+        / stiffness
+    )
 
     # tau0 should be zero at the rest pose.
     rest_force_error = wp.length(tau0) / stiffness
@@ -5141,12 +5153,12 @@ def _cable_stiffness_helper_returns_physical_twist(test, device):
     inertia = 0.25 * np.pi * radius**4
     polar_inertia = 0.5 * np.pi * radius**4
     G = E / (2.0 * (1.0 + 0.25))
-    np.testing.assert_allclose([stretch, bend, twist], [E * area / length, E * inertia / length, G * polar_inertia / length])
+    np.testing.assert_allclose(
+        [stretch, bend, twist], [E * area / length, E * inertia / length, G * polar_inertia / length]
+    )
 
     with test.assertRaisesRegex(ValueError, "mutually exclusive"):
-        newton.utils.create_cable_stiffness_from_elastic_moduli(
-            E, radius, length, poissons_ratio=0.25, shear_modulus=G
-        )
+        newton.utils.create_cable_stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.25, shear_modulus=G)
     with test.assertRaisesRegex(ValueError, "poissons_ratio"):
         newton.utils.create_cable_stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.5)
 
@@ -5383,12 +5395,8 @@ def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     np.testing.assert_array_equal(model.joint_dof_dim.numpy()[joint], [2, 2])
     test.assertEqual(int(solver.joint_constraint_dim.numpy()[joint]), 4)
     start = int(solver.joint_constraint_start.numpy()[joint])
-    np.testing.assert_allclose(
-        solver.joint_penalty_k_max.numpy()[start : start + 4], [100.0, 40.0, 10.0, 3.0]
-    )
-    np.testing.assert_allclose(
-        solver.joint_penalty_kd.numpy()[start : start + 4], [0.2, 0.7, 0.5, 0.25]
-    )
+    np.testing.assert_allclose(solver.joint_penalty_k_max.numpy()[start : start + 4], [100.0, 40.0, 10.0, 3.0])
+    np.testing.assert_allclose(solver.joint_penalty_kd.numpy()[start : start + 4], [0.2, 0.7, 0.5, 0.25])
 
 
 def _split_cable_angular_stiffness_isolated_by_projector(test, device):
@@ -5503,12 +5511,7 @@ def _split_cable_discrete_cantilever_moment_law_matches_beam_limit(test, device)
     expected_angles = expected_moments / bend_stiffness
     discrete_tip_deflection = float(np.dot(lever_arms_np, expected_angles))
     closed_form_deflection = (
-        tip_force
-        * segment_length**2
-        * joint_count
-        * (joint_count + 1)
-        * (2 * joint_count + 1)
-        / (6.0 * bend_stiffness)
+        tip_force * segment_length**2 * joint_count * (joint_count + 1) * (2 * joint_count + 1) / (6.0 * bend_stiffness)
     )
     np.testing.assert_allclose(discrete_tip_deflection, closed_form_deflection, rtol=1.0e-7, atol=1.0e-10)
 

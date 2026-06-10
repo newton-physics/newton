@@ -42,10 +42,10 @@ def _drive_tip_twist_kernel(
     root_pose: wp.transform,
     tip_pos: wp.vec3,
     tip_rest_rot: wp.quat,
-    twist_angles: wp.array(dtype=wp.float32),
+    twist_angles: wp.array[wp.float32],
     twist_index: int,
-    body_q0: wp.array(dtype=wp.transform),
-    body_q1: wp.array(dtype=wp.transform),
+    body_q0: wp.array[wp.transform],
+    body_q1: wp.array[wp.transform],
 ):
     twist_angle = twist_angles[twist_index]
     axis_world = wp.quat_rotate(tip_rest_rot, wp.vec3(0.0, 0.0, 1.0))

@@ -40,11 +40,11 @@ from newton.examples.vbd._viewer import set_viewer_camera
 
 @wp.kernel
 def _spin_roots_kernel(
-    body_indices: wp.array(dtype=wp.int32),
-    twist_rate: wp.array(dtype=float),
+    body_indices: wp.array[wp.int32],
+    twist_rate: wp.array[float],
     dt: float,
-    body_q0: wp.array(dtype=wp.transform),
-    body_q1: wp.array(dtype=wp.transform),
+    body_q0: wp.array[wp.transform],
+    body_q1: wp.array[wp.transform],
 ):
     tid = wp.tid()
     body_id = body_indices[tid]
