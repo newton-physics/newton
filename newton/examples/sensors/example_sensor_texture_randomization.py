@@ -201,7 +201,7 @@ def _look_at_camera_transform(
 
 
 def _camera_transforms(device) -> wp.array2d[wp.transformf]:
-    camera = _look_at_camera_transform((1.9, -2.3, 1.35), (0.2, 0.02, TABLE_HEIGHT + 0.12))
+    camera = _look_at_camera_transform((1.7, -1.45, 1.3), (0.3, 0.05, TABLE_HEIGHT + 0.18))
     return wp.array([[camera] * WORLD_COUNT], dtype=wp.transformf, device=device)
 
 
@@ -242,6 +242,7 @@ class Example:
         self.model, self.table_shape_index = _build_model()
         self.state = self.model.state()
         _set_fr3_ready_pose(self.model, self.state)
+        self.model.bvh_refit_shapes(self.state)
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "set_camera"):
             self.viewer.set_camera(wp.vec3(2.25, -2.65, 1.95), -25.0, 140.0)
@@ -260,7 +261,7 @@ class Example:
         self.sensor.set_shape_texture_ids(texture_ids, per_world=True)
 
         self.camera_transforms = _camera_transforms(self.model.device)
-        self.camera_rays = self.sensor.utils.compute_pinhole_camera_rays(IMAGE_SIZE, IMAGE_SIZE, math.radians(38.0))
+        self.camera_rays = self.sensor.utils.compute_pinhole_camera_rays(IMAGE_SIZE, IMAGE_SIZE, math.radians(45.0))
         self.color_image = self.sensor.utils.create_color_image_output(IMAGE_SIZE, IMAGE_SIZE)
         self.albedo_image = self.sensor.utils.create_albedo_image_output(IMAGE_SIZE, IMAGE_SIZE)
         self.shape_index_image = self.sensor.utils.create_shape_index_image_output(IMAGE_SIZE, IMAGE_SIZE)
@@ -282,6 +283,7 @@ class Example:
             self.preview_saved = True
 
     def render_sensors(self) -> wp.array3d[wp.uint8]:
+        self.model.bvh_refit_shapes(self.state)
         self.sensor.update(
             self.state,
             self.camera_transforms,
