@@ -5,7 +5,7 @@
 # Example Cable Twist
 #
 # Demonstrates twist propagation along cables with dynamic spinning.
-# Shows 3 cables side-by-side with zigzag paths and increasing twist stiffness.
+# Shows 3 cables side-by-side with zigzag paths and increasing isotropic angular stiffness.
 # The first segment of each cable continuously spins, propagating twist along the cable.
 # The zigzag routing introduces multiple 90-degree turns, demonstrating how twist
 # is transported through cable joints and across bends.

@@ -351,7 +351,15 @@ class Example:
     # Test
     # ------------------------------------------------------------------
     def test_final(self):
-        pass
+        body_q = self.state_0.body_q.numpy()
+        body_qd = self.state_0.body_qd.numpy()
+        pts = self.current_points()
+
+        assert np.isfinite(body_q).all(), "non-finite body transforms"
+        assert np.isfinite(body_qd).all(), "non-finite body velocities"
+        assert np.isfinite(pts).all(), "non-finite cable centerline"
+        assert np.max(np.abs(body_q[:, :3])) < 10.0, "body positions blew up"
+        assert np.max(np.abs(body_qd)) < 1.0e3, "body velocities blew up"
 
 
 if __name__ == "__main__":

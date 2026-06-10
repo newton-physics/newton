@@ -14,7 +14,7 @@ def set_viewer_camera(
     joint_scale: float | None = None,
 ) -> None:
     """Set an example camera and optional joint-axis visualization."""
-    if show_joints is not None:
+    if show_joints is not None and hasattr(viewer, "show_joints"):
         viewer.show_joints = show_joints
 
     if hasattr(viewer, "set_camera"):

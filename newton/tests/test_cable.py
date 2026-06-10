@@ -5646,6 +5646,7 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
     )
 
     for body_idx in (int(rod_bodies[0]), int(rod_bodies[-1])):
+        builder.body_flags[body_idx] = int(newton.BodyFlags.KINEMATIC)
         builder.body_mass[body_idx] = 0.0
         builder.body_inv_mass[body_idx] = 0.0
         builder.body_inertia[body_idx] = wp.mat33(0.0)
@@ -5913,6 +5914,7 @@ def _split_cable_dahl_full_step_state_stays_in_active_subspace(test, device):
     bend_body = builder.add_link(xform=wp.transform_identity())
     twist_body = builder.add_link(xform=wp.transform_identity())
     for body in (bend_body, twist_body):
+        builder.body_flags[body] = int(newton.BodyFlags.KINEMATIC)
         builder.body_mass[body] = 0.0
         builder.body_inv_mass[body] = 0.0
         builder.body_inertia[body] = wp.mat33(0.0)
