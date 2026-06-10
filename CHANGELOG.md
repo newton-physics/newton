@@ -61,6 +61,7 @@
 - Make the `ViewerGL` left control panel movable (drag the title bar) and resizable (drag the bottom-right corner); a vertical scrollbar appears automatically when contents overflow and is operable with the mouse wheel or two-finger trackpad gestures. The initial dock-on-left position is unchanged. (#2926)
 - Remove the `cbor2` `<6` dependency ceiling after updating recorder deserialization to accept mapping-like decoded containers
 - Users configuring Warp logging should use Newton's `--quiet` flag or `--warp-config log_level=...` instead of legacy Warp `verbose` or `quiet` config keys. Newton now requires Warp 1.14 and configures Warp logging through `warp.config.log_level`. (#2900, #3046)
+- Rename `SensorContact` sensing-object API names: `sensing_obj_idx` to `sensing_indices`, `sensing_obj_type` to `sensing_type`, `sensing_obj_transforms` to `sensing_transforms`, `sensing_obj_bodies` to `sensing_bodies`, and `sensing_obj_shapes` to `sensing_shapes`; the old names remain deprecated aliases for compatibility.
 - Bump `newton-usd-schemas` to `>=0.3.1`
 
 ### Deprecated
