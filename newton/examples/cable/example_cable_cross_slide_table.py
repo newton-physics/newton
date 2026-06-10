@@ -32,11 +32,8 @@ TABLE_RECT_HALF_Y = 0.060
 TABLE_RECT_PERIOD = 16.0
 TABLE_TRACKING_MAX_ERROR_TOLERANCE = 0.005
 TABLE_TRACKING_RMS_ERROR_TOLERANCE = 0.0025
-CABLE_Z_BOUNDS = (0.04, 0.055)
 CABLE_XY_ABS_BOUND = 0.30
 JOINT_LIMIT_TOLERANCE = 0.003
-SLIDE_Z_BOUNDS = (0.010, 0.018)
-TABLE_Z_BOUNDS = (0.018, 0.026)
 START_RAMP_DURATION = 1.2
 
 
@@ -442,9 +439,13 @@ class Example:
         # The mechanism is flattened onto the XY plane and layered in Z only
         # enough to keep the base, slide, table, and pulleys visually distinct.
         base_z = 0.006
-        slide_z = 0.014
-        table_z = 0.022
-        pulley_z = 0.046
+        self.slide_z = 0.014
+        self.table_z = 0.022
+        self.pulley_z = 0.046
+        z_bound_pad = JOINT_LIMIT_TOLERANCE
+        self.cable_z_bounds = (self.pulley_z - z_bound_pad, self.pulley_z + z_bound_pad)
+        self.slide_z_bounds = (self.slide_z - z_bound_pad, self.slide_z + z_bound_pad)
+        self.table_z_bounds = (self.table_z - z_bound_pad, self.table_z + z_bound_pad)
 
         # Build the table frame and assign stiff, frictional contact material
         # so the cable remains guided by the pulley grooves.
@@ -455,8 +456,8 @@ class Example:
         builder.default_shape_cfg.mu = 1.0
 
         base_origin = wp.vec3(0.0, 0.0, base_z)
-        slide_origin = wp.vec3(0.0, 0.0, slide_z)
-        table_origin = wp.vec3(0.0, 0.0, table_z)
+        slide_origin = wp.vec3(0.0, 0.0, self.slide_z)
+        table_origin = wp.vec3(0.0, 0.0, self.table_z)
 
         # Fixed blue base.
         add_visual_bar(
@@ -555,7 +556,7 @@ class Example:
                 "green_lower_left",
                 self.slide_body,
                 green,
-                wp.vec3(-0.045, -0.045, pulley_z),
+                wp.vec3(-0.045, -0.045, self.pulley_z),
                 green_sheave_radius,
                 passive_sheave_mu,
             ),
@@ -563,7 +564,7 @@ class Example:
                 "blue_input_left",
                 None,
                 blue,
-                wp.vec3(-0.19, 0.0, pulley_z),
+                wp.vec3(-0.19, 0.0, self.pulley_z),
                 self.input_pulley_radius,
                 input_sheave_mu,
             ),
@@ -571,7 +572,7 @@ class Example:
                 "green_upper_left",
                 self.slide_body,
                 green,
-                wp.vec3(-0.045, 0.045, pulley_z),
+                wp.vec3(-0.045, 0.045, self.pulley_z),
                 green_sheave_radius,
                 passive_sheave_mu,
             ),
@@ -579,7 +580,7 @@ class Example:
                 "beige_top",
                 self.table_body,
                 beige,
-                wp.vec3(0.0, 0.19, pulley_z),
+                wp.vec3(0.0, 0.19, self.pulley_z),
                 beige_sheave_radius,
                 passive_sheave_mu,
             ),
@@ -587,7 +588,7 @@ class Example:
                 "green_upper_right",
                 self.slide_body,
                 green,
-                wp.vec3(0.045, 0.045, pulley_z),
+                wp.vec3(0.045, 0.045, self.pulley_z),
                 green_sheave_radius,
                 passive_sheave_mu,
             ),
@@ -595,7 +596,7 @@ class Example:
                 "blue_input_right",
                 None,
                 blue,
-                wp.vec3(0.19, 0.0, pulley_z),
+                wp.vec3(0.19, 0.0, self.pulley_z),
                 self.input_pulley_radius,
                 input_sheave_mu,
             ),
@@ -603,7 +604,7 @@ class Example:
                 "green_lower_right",
                 self.slide_body,
                 green,
-                wp.vec3(0.045, -0.045, pulley_z),
+                wp.vec3(0.045, -0.045, self.pulley_z),
                 green_sheave_radius,
                 passive_sheave_mu,
             ),
@@ -632,8 +633,8 @@ class Example:
             self.pulley_bodies.append(pulley_body)
 
         # The cable loop starts and ends on the bottom of the beige table.
-        self.left_anchor_local = wp.vec3(-0.028, -0.21, pulley_z - table_z)
-        self.right_anchor_local = wp.vec3(0.028, -0.21, pulley_z - table_z)
+        self.left_anchor_local = wp.vec3(-0.028, -0.21, self.pulley_z - self.table_z)
+        self.right_anchor_local = wp.vec3(0.028, -0.21, self.pulley_z - self.table_z)
         left_anchor_world = table_origin + self.left_anchor_local
         right_anchor_world = table_origin + self.right_anchor_local
 
@@ -655,8 +656,7 @@ class Example:
                 label=label,
             )
 
-        # Create the wrapped route around the pulley grooves, then nudge the
-        # requested length so every cable segment is the same length.
+        # Adjust the cable length so every segment is equal.
         cable_points, cable_segment_length = create_xy_table_cable_points(
             start=left_anchor_world,
             pulley_centers=pulley_centers,
@@ -897,8 +897,8 @@ class Example:
     def _check_cable_bounds(self, body_q: np.ndarray):
         """Validate that the cable has not escaped the table workspace."""
         cable_pos = body_q[[int(body) for body in self.cable_bodies], 0:3]
-        _check_range("Cable minimum Z", float(np.min(cable_pos[:, 2])), CABLE_Z_BOUNDS)
-        _check_range("Cable maximum Z", float(np.max(cable_pos[:, 2])), CABLE_Z_BOUNDS)
+        _check_range("Cable minimum Z", float(np.min(cable_pos[:, 2])), self.cable_z_bounds)
+        _check_range("Cable maximum Z", float(np.max(cable_pos[:, 2])), self.cable_z_bounds)
         _check_abs_bound("Cable maximum XY displacement", float(np.max(np.abs(cable_pos[:, 0:2]))), CABLE_XY_ABS_BOUND)
 
     def _check_table_stage_bounds(self, body_q: np.ndarray):
@@ -910,8 +910,8 @@ class Example:
 
         _check_range("Horizontal green carriage X", float(slide_pos[0]), slide_x_bounds)
         _check_range("Vertical beige carriage Y", float(table_pos[1]), table_y_bounds)
-        _check_range("Horizontal green carriage Z", float(slide_pos[2]), SLIDE_Z_BOUNDS)
-        _check_range("Vertical beige carriage Z", float(table_pos[2]), TABLE_Z_BOUNDS)
+        _check_range("Horizontal green carriage Z", float(slide_pos[2]), self.slide_z_bounds)
+        _check_range("Vertical beige carriage Z", float(table_pos[2]), self.table_z_bounds)
 
     def test_post_step(self):
         """Catch instability as soon as a rendered frame completes."""
