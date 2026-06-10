@@ -13,13 +13,10 @@ import warp as wp
 
 from ..controller import Controller
 from ..utils import (
-    _allocate_struct,
-    _build_struct_type,
-    _merge_field_specs,
+    _allocate_namespace,
     _normalize_gain_port,
     _normalize_live_port,
     _resolve_input_array,
-    _StructFieldSpec,
 )
 
 
@@ -116,11 +113,11 @@ class ControllerPID(Controller):
 
     def __init__(
         self,
-        kp: wp.array | str,
-        kd: wp.array | str,
-        ki: wp.array | str,
-        integral_max: wp.array | str,
         default_dof_indices: wp.array,
+        kp: wp.array | str | None = None,
+        kd: wp.array | str | None = None,
+        ki: wp.array | str | None = None,
+        integral_max: wp.array | str | None = None,
         joint_measured_attr: str = "joint_q",
         joint_measured_idx: wp.array | None = None,
         joint_measured_rate_attr: str = "joint_qd",
@@ -136,6 +133,7 @@ class ControllerPID(Controller):
     ):
         if not isinstance(default_dof_indices, wp.array):
             raise TypeError(f"default_dof_indices must be wp.array[uint32], got {type(default_dof_indices).__name__}.")
+
         self._device = device if device is not None else wp.get_device()
         self._requires_grad = requires_grad
         self._default_dof_indices = default_dof_indices
@@ -165,41 +163,33 @@ class ControllerPID(Controller):
         )
 
         # Gain ports (wp.array | str).
-        self._kp_mode, self._kp_attr, self._kp_baked = _normalize_gain_port(
+        self._kp_attr, self._kp_baked = _normalize_gain_port(
             kp, self._num_outputs, wp.float32, self._device, requires_grad, name="kp"
         )
-        self._kd_mode, self._kd_attr, self._kd_baked = _normalize_gain_port(
+        self._kd_attr, self._kd_baked = _normalize_gain_port(
             kd, self._num_outputs, wp.float32, self._device, requires_grad, name="kd"
         )
-        self._ki_mode, self._ki_attr, self._ki_baked = _normalize_gain_port(
+        self._ki_attr, self._ki_baked = _normalize_gain_port(
             ki, self._num_outputs, wp.float32, self._device, requires_grad, name="ki"
         )
-        self._imax_mode, self._imax_attr, self._imax_baked = _normalize_gain_port(
+        self._imax_attr, self._imax_baked = _normalize_gain_port(
             integral_max, self._num_outputs, wp.float32, self._device, requires_grad, name="integral_max"
         )
 
-        # Input/output struct field specs. Only live ports contribute fields.
-        in_specs: list[_StructFieldSpec] = [
-            _StructFieldSpec(self._measurement_attr, wp.float32, _idx_max(self._measurement_idx)),
-            _StructFieldSpec(self._measurement_rate_attr, wp.float32, _idx_max(self._measurement_rate_idx)),
-            _StructFieldSpec(self._target_attr, wp.float32, _idx_max(self._target_idx)),
-            _StructFieldSpec(self._target_rate_attr, wp.float32, _idx_max(self._target_rate_idx)),
+        # Live read ports + any live gain ports → fields on input_struct().
+        self._input_specs: list[tuple[str, Any, int]] = [
+            (self._measurement_attr, wp.float32, _idx_max(self._measurement_idx)),
+            (self._measurement_rate_attr, wp.float32, _idx_max(self._measurement_rate_idx)),
+            (self._target_attr, wp.float32, _idx_max(self._target_idx)),
+            (self._target_rate_attr, wp.float32, _idx_max(self._target_rate_idx)),
         ]
-        for mode, attr in (
-            (self._kp_mode, self._kp_attr),
-            (self._kd_mode, self._kd_attr),
-            (self._ki_mode, self._ki_attr),
-            (self._imax_mode, self._imax_attr),
-        ):
-            if mode == "live":
-                in_specs.append(_StructFieldSpec(attr, wp.float32, self._num_outputs))
-        self._input_specs = _merge_field_specs(in_specs)
-        self._input_type = _build_struct_type("ControllerPIDInput", list(self._input_specs.keys()))
+        for attr in (self._kp_attr, self._kd_attr, self._ki_attr, self._imax_attr):
+            if attr is not None:
+                self._input_specs.append((attr, wp.float32, self._num_outputs))
 
-        self._output_specs = _merge_field_specs(
-            [_StructFieldSpec(self._output_attr, wp.float32, _idx_max(self._output_idx))]
-        )
-        self._output_type = _build_struct_type("ControllerPIDOutput", list(self._output_specs.keys()))
+        self._output_specs: list[tuple[str, Any, int]] = [
+            (self._output_attr, wp.float32, _idx_max(self._output_idx)),
+        ]
 
     @property
     def num_outputs(self) -> int:
@@ -227,10 +217,10 @@ class ControllerPID(Controller):
         )
 
     def input_struct(self):
-        return _allocate_struct(self._input_type, self._input_specs, self._device, self._requires_grad)
+        return _allocate_namespace(self._input_specs, self._device, self._requires_grad)
 
     def output_struct(self):
-        return _allocate_struct(self._output_type, self._output_specs, self._device, self._requires_grad)
+        return _allocate_namespace(self._output_specs, self._device, self._requires_grad)
 
     def compute(
         self,
@@ -244,10 +234,10 @@ class ControllerPID(Controller):
         meas_rate = _resolve_input_array(input_struct, self._measurement_rate_attr, name="joint_measured_rate")
         target = _resolve_input_array(input_struct, self._target_attr, name="joint_target")
         target_rate = _resolve_input_array(input_struct, self._target_rate_attr, name="joint_target_rate")
-        kp = self._resolve_gain(input_struct, "kp", self._kp_mode, self._kp_attr, self._kp_baked)
-        kd = self._resolve_gain(input_struct, "kd", self._kd_mode, self._kd_attr, self._kd_baked)
-        ki = self._resolve_gain(input_struct, "ki", self._ki_mode, self._ki_attr, self._ki_baked)
-        imax = self._resolve_gain(input_struct, "integral_max", self._imax_mode, self._imax_attr, self._imax_baked)
+        kp = self._resolve_gain(input_struct, "kp", self._kp_attr, self._kp_baked)
+        kd = self._resolve_gain(input_struct, "kd", self._kd_attr, self._kd_baked)
+        ki = self._resolve_gain(input_struct, "ki", self._ki_attr, self._ki_baked)
+        imax = self._resolve_gain(input_struct, "integral_max", self._imax_attr, self._imax_baked)
         out = _resolve_input_array(output_struct, self._output_attr, name="output")
         wp.launch(
             _pid_kernel,
@@ -274,8 +264,8 @@ class ControllerPID(Controller):
         )
 
     @staticmethod
-    def _resolve_gain(input_struct, name, mode, attr, baked):
-        if mode == "baked":
+    def _resolve_gain(input_struct, name, attr, baked):
+        if baked is not None:
             return baked
         return _resolve_input_array(input_struct, attr, name=name)
 

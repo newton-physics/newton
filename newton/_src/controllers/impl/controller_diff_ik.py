@@ -28,14 +28,11 @@ from ...sim.articulation import eval_fk, eval_jacobian
 from ...sim.builder import ModelBuilder
 from ..controller import Controller
 from ..utils import (
-    _allocate_struct,
-    _build_struct_type,
-    _merge_field_specs,
+    _allocate_namespace,
     _normalize_gain_port,
     _normalize_live_port,
     _resolve_input_array,
     _resolve_typed_array,
-    _StructFieldSpec,
 )
 
 
@@ -365,10 +362,10 @@ class ControllerDifferentialKinematics(Controller):
         )
 
         # Per-robot gain ports.
-        self._damping_mode, self._damping_attr, self._damping_baked = _normalize_gain_port(
+        self._damping_attr, self._damping_baked = _normalize_gain_port(
             solver_damping, n, wp.float32, self._device, requires_grad, name="solver_damping"
         )
-        self._bandwidth_mode, self._bandwidth_attr, self._bandwidth_baked = _normalize_gain_port(
+        self._bandwidth_attr, self._bandwidth_baked = _normalize_gain_port(
             bandwidth, n, wp.float32, self._device, requires_grad, name="bandwidth"
         )
 
@@ -397,28 +394,21 @@ class ControllerDifferentialKinematics(Controller):
             (n, self._dofs_per_robot), dtype=wp.float32, device=self._device, requires_grad=requires_grad
         )
 
-        # Input/output struct field specs.
-        in_specs: list[_StructFieldSpec] = [
-            _StructFieldSpec(self._meas_attr, wp.float32, _idx_max(self._meas_idx)),
-            _StructFieldSpec(self._meas_rate_attr, wp.float32, _idx_max(self._meas_rate_idx)),
-            _StructFieldSpec(self._target_pos_attr, wp.vec3, _idx_max(self._target_pos_idx)),
-            _StructFieldSpec(self._target_quat_attr, wp.quat, _idx_max(self._target_quat_idx)),
+        # Live read ports + any live gain ports → fields on input_struct().
+        self._input_specs: list[tuple[str, Any, int]] = [
+            (self._meas_attr, wp.float32, _idx_max(self._meas_idx)),
+            (self._meas_rate_attr, wp.float32, _idx_max(self._meas_rate_idx)),
+            (self._target_pos_attr, wp.vec3, _idx_max(self._target_pos_idx)),
+            (self._target_quat_attr, wp.quat, _idx_max(self._target_quat_idx)),
         ]
-        for mode, attr in ((self._damping_mode, self._damping_attr), (self._bandwidth_mode, self._bandwidth_attr)):
-            if mode == "live":
-                in_specs.append(_StructFieldSpec(attr, wp.float32, n))
-        self._input_specs = _merge_field_specs(in_specs)
-        self._input_type = _build_struct_type("ControllerDifferentialKinematicsInput", list(self._input_specs.keys()))
+        for attr in (self._damping_attr, self._bandwidth_attr):
+            if attr is not None:
+                self._input_specs.append((attr, wp.float32, n))
 
-        self._output_specs = _merge_field_specs(
-            [
-                _StructFieldSpec(self._target_q_attr, wp.float32, _idx_max(self._target_q_idx)),
-                _StructFieldSpec(self._target_qd_attr, wp.float32, _idx_max(self._target_qd_idx)),
-            ]
-        )
-        self._output_type = _build_struct_type(
-            "ControllerDifferentialKinematicsOutput", list(self._output_specs.keys())
-        )
+        self._output_specs: list[tuple[str, Any, int]] = [
+            (self._target_q_attr, wp.float32, _idx_max(self._target_q_idx)),
+            (self._target_qd_attr, wp.float32, _idx_max(self._target_qd_idx)),
+        ]
 
     @property
     def num_robots(self) -> int:
@@ -450,10 +440,10 @@ class ControllerDifferentialKinematics(Controller):
         return None
 
     def input_struct(self):
-        return _allocate_struct(self._input_type, self._input_specs, self._device, self._requires_grad)
+        return _allocate_namespace(self._input_specs, self._device, self._requires_grad)
 
     def output_struct(self):
-        return _allocate_struct(self._output_type, self._output_specs, self._device, self._requires_grad)
+        return _allocate_namespace(self._output_specs, self._device, self._requires_grad)
 
     def compute(
         self,
@@ -467,12 +457,8 @@ class ControllerDifferentialKinematics(Controller):
         meas_rate = _resolve_input_array(input_struct, self._meas_rate_attr, name="joint_measurement_rate")
         target_pos = _resolve_typed_array(input_struct, self._target_pos_attr, wp.vec3, name="target_pos")
         target_quat = _resolve_typed_array(input_struct, self._target_quat_attr, wp.quat, name="target_quat")
-        damping = self._resolve_gain(
-            input_struct, "solver_damping", self._damping_mode, self._damping_attr, self._damping_baked
-        )
-        bandwidth = self._resolve_gain(
-            input_struct, "bandwidth", self._bandwidth_mode, self._bandwidth_attr, self._bandwidth_baked
-        )
+        damping = self._resolve_gain(input_struct, "solver_damping", self._damping_attr, self._damping_baked)
+        bandwidth = self._resolve_gain(input_struct, "bandwidth", self._bandwidth_attr, self._bandwidth_baked)
         out_q = _resolve_input_array(output_struct, self._target_q_attr, name="joint_target_q")
         out_qd = _resolve_input_array(output_struct, self._target_qd_attr, name="joint_target_qd")
 
@@ -551,8 +537,8 @@ class ControllerDifferentialKinematics(Controller):
         )
 
     @staticmethod
-    def _resolve_gain(input_struct, name, mode, attr, baked):
-        if mode == "baked":
+    def _resolve_gain(input_struct, name, attr, baked):
+        if baked is not None:
             return baked
         return _resolve_typed_array(input_struct, attr, wp.float32, name=name)
 
