@@ -75,6 +75,8 @@ def create_kernel(
         shape_transforms: wp.array[wp.transformf],
         shape_source_ptr: wp.array[wp.uint64],
         shape_texture_ids: wp.array[wp.int32],
+        shape_texture_ids_per_world: wp.bool,
+        shape_texture_ids_shape_count: wp.int32,
         shape_mesh_data_ids: wp.array[wp.int32],
         # Particle BVH
         bvh_particles_size: wp.int32,
@@ -209,7 +211,12 @@ def create_kernel(
                 albedo_color = srgb_to_linear_wp(shape_colors[closest_hit.shape_index])
 
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
-                texture_index = shape_texture_ids[closest_hit.shape_index]
+                texture_ids_index = wp.int32(closest_hit.shape_index)
+                if shape_texture_ids_per_world:
+                    texture_ids_index = (
+                        world_index * shape_texture_ids_shape_count + wp.int32(closest_hit.shape_index)
+                    )
+                texture_index = shape_texture_ids[texture_ids_index]
                 if texture_index > -1:
                     tex_color = textures.sample_texture(
                         shape_types[closest_hit.shape_index],

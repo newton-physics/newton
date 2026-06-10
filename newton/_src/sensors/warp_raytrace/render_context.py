@@ -67,6 +67,7 @@ class RenderContext:
         self.shape_colors: wp.array[wp.vec3f] | None = None
         self.shape_source_ptr: wp.array[wp.uint64] | None = None
         self.shape_texture_ids: wp.array[wp.int32] | None = None
+        self.shape_texture_ids_per_world: bool = False
         self.shape_mesh_data_ids: wp.array[wp.int32] | None = None
         self.shape_render_type: wp.array[wp.int32] | None = None
 
@@ -325,6 +326,8 @@ class RenderContext:
                     model.bvh_shape_world_transforms,
                     self.shape_source_ptr,
                     self.shape_texture_ids,
+                    self.shape_texture_ids_per_world,
+                    self.shape_count_total,
                     self.shape_mesh_data_ids,
                     # Particle BVH
                     particle_count,
@@ -421,6 +424,52 @@ class RenderContext:
         else:
             self.state.num_gaussians = gaussians_data.shape[0]
 
+    def set_shape_texture_ids(self, texture_ids, *, per_world: bool = False) -> wp.array[wp.int32]:
+        """Set the shape-to-texture lookup table used by textured rendering.
+
+        Args:
+            texture_ids: Texture indices into :attr:`texture_data`. Pass a
+                one-dimensional array of shape ``(shape_count_total,)`` for
+                static per-shape lookup, or either ``(world_count,
+                shape_count_total)`` or flattened ``(world_count *
+                shape_count_total,)`` when *per_world* is ``True``. Use ``-1``
+                for shapes without a texture.
+            per_world: Interpret *texture_ids* as a per-render-world table
+                indexed by ``(world_index, shape_index)``.
+
+        Returns:
+            The internal flattened Warp array. If the existing table has the
+            requested size, it is updated in place so callers can change IDs at
+            reset time without reallocating this buffer.
+        """
+        if isinstance(texture_ids, wp.array):
+            if texture_ids.dtype != wp.int32:
+                raise TypeError(f"texture_ids Warp array must have dtype wp.int32, got {texture_ids.dtype}")
+            source = texture_ids
+            source_shape = tuple(texture_ids.shape)
+        else:
+            source = np.asarray(texture_ids, dtype=np.int32)
+            source_shape = tuple(source.shape)
+
+        if per_world:
+            expected_size = self.world_count * self.shape_count_total
+            expected_shapes = ((self.world_count, self.shape_count_total), (expected_size,))
+        else:
+            expected_size = self.shape_count_total
+            expected_shapes = ((expected_size,),)
+
+        if source_shape not in expected_shapes:
+            shape_description = " or ".join(str(shape) for shape in expected_shapes)
+            raise ValueError(f"texture_ids must have shape {shape_description}, got {source_shape}")
+
+        source = source.reshape(expected_size)
+        if self.shape_texture_ids is None or self.shape_texture_ids.shape != (expected_size,):
+            self.shape_texture_ids = wp.empty(expected_size, dtype=wp.int32, device=self.device)
+
+        self.shape_texture_ids.assign(source)
+        self.shape_texture_ids_per_world = per_world
+        return self.shape_texture_ids
+
     def __load_texture_and_mesh_data(self, model: Model, load_textures: bool):
         """Load mesh UV/normal data and textures from *model*.
 
@@ -493,7 +542,7 @@ class RenderContext:
                 mesh_data_ids.append(-1)
 
         self.texture_data = wp.array(self.__texture_data, dtype=TextureData, device=self.device)
-        self.shape_texture_ids = wp.array(texture_data_ids, dtype=wp.int32, device=self.device)
+        self.set_shape_texture_ids(texture_data_ids, per_world=False)
 
         self.mesh_data = wp.array(self.__mesh_data, dtype=MeshData, device=self.device)
         self.shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)

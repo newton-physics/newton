@@ -891,9 +891,7 @@ class Utils:
         self.__render_context.texture_data = wp.array(
             [self.__checkerboard_data], dtype=TextureData, device=self.__render_context.device
         )
-        self.__render_context.shape_texture_ids = wp.array(
-            texture_ids, dtype=wp.int32, device=self.__render_context.device
-        )
+        self.__render_context.set_shape_texture_ids(texture_ids, per_world=False)
 
     def __reshape_buffer_for_flatten(
         self,

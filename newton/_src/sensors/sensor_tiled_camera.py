@@ -191,6 +191,23 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         """
         self.__render_context.update(self.model, state)
 
+    def set_shape_texture_ids(self, texture_ids, *, per_world: bool = False) -> wp.array[wp.int32]:
+        """Set texture IDs used by textured shape rendering.
+
+        Args:
+            texture_ids: Texture indices into the render context's texture
+                data. Pass shape ``(shape_count,)`` for static per-shape
+                lookup, or ``(world_count, shape_count)`` / flattened
+                ``(world_count * shape_count,)`` when *per_world* is ``True``.
+                Use ``-1`` for shapes without a texture.
+            per_world: Index texture IDs by ``(world_index, shape_index)``
+                during batched rendering instead of by ``shape_index`` only.
+
+        Returns:
+            The internal flattened Warp texture-ID array.
+        """
+        return self.__render_context.set_shape_texture_ids(texture_ids, per_world=per_world)
+
     def update(
         self,
         state: State | None = None,
