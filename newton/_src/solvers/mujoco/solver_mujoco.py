@@ -4873,16 +4873,26 @@ class SolverMuJoCo(SolverBase):
         # Split joints into tree joints and loop joints. Joints outside an
         # articulation normally become equality constraints, except fixed roots:
         # those can be exported as MuJoCo bodies without adding any joint DOFs.
-        joints_fixed_root = selected_joints[
+        joints_tree = selected_joints[joint_articulation[selected_joints] >= 0]
+        joints_fixed_root_candidates = selected_joints[
             (joint_articulation[selected_joints] == -1)
             & (joint_parent[selected_joints] == -1)
             & (joint_type[selected_joints] == JointType.FIXED)
         ]
+        tree_children = {int(joint_child[j]) for j in joints_tree}
+        fixed_root_children = set()
+        joints_fixed_root = []
+        for j in joints_fixed_root_candidates:
+            child = int(joint_child[j])
+            if child in tree_children or child in fixed_root_children:
+                continue
+            joints_fixed_root.append(j)
+            fixed_root_children.add(child)
+        joints_fixed_root = np.array(joints_fixed_root, dtype=selected_joints.dtype)
         joints_loop = selected_joints[
-            (joint_articulation[selected_joints] == -1)
-            & ~((joint_parent[selected_joints] == -1) & (joint_type[selected_joints] == JointType.FIXED))
+            (joint_articulation[selected_joints] == -1) & ~np.isin(selected_joints, joints_fixed_root)
         ]
-        joints_non_loop = np.concatenate((selected_joints[joint_articulation[selected_joints] >= 0], joints_fixed_root))
+        joints_non_loop = np.concatenate((joints_tree, joints_fixed_root))
         # sort joints topologically depth-first since this is the order that will also be used
         # for placing bodies in the MuJoCo model
         joints_simple = [(joint_parent[i], joint_child[i]) for i in joints_non_loop]
