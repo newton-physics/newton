@@ -14,9 +14,8 @@ import warp as wp
 from ..controller import Controller
 from ..utils import (
     _allocate_namespace,
-    _normalize_gain_port,
-    _normalize_live_port,
-    _resolve_input_array,
+    _normalize_indices,
+    _normalize_parameter_port,
 )
 
 
@@ -139,44 +138,39 @@ class ControllerPID(Controller):
         self._default_dof_indices = default_dof_indices
         self._num_outputs = int(default_dof_indices.size)
 
-        # Live-data ports.
-        self._measurement_attr, self._measurement_idx = _normalize_live_port(
-            joint_measured_attr, joint_measured_idx, default_dof_indices, name="joint_measured"
-        )
-        self._measurement_rate_attr, self._measurement_rate_idx = _normalize_live_port(
-            joint_measured_rate_attr,
-            joint_measured_rate_idx,
-            default_dof_indices,
-            name="joint_measured_rate",
-        )
-        self._target_attr, self._target_idx = _normalize_live_port(
-            joint_target_attr, joint_target_idx, default_dof_indices, name="joint_target"
-        )
-        self._target_rate_attr, self._target_rate_idx = _normalize_live_port(
-            joint_target_rate_attr,
-            joint_target_rate_idx,
-            default_dof_indices,
-            name="joint_target_rate",
-        )
-        self._output_attr, self._output_idx = _normalize_live_port(
-            output_attr, output_idx, default_dof_indices, name="output"
+        # I/O-data ports.
+        self._measurement_attr = joint_measured_attr
+        self._measurement_idx = _normalize_indices(joint_measured_idx, default_dof_indices, name="joint_measured")
+
+        self._measurement_rate_attr = joint_measured_rate_attr
+        self._measurement_rate_idx = _normalize_indices(
+            joint_measured_rate_idx, default_dof_indices, name="joint_measured_rate"
         )
 
+        self._target_attr = joint_target_attr
+        self._target_idx = _normalize_indices(joint_target_idx, default_dof_indices, name="joint_target")
+
+        self._target_rate_attr = joint_target_rate_attr
+        self._target_rate_idx = _normalize_indices(joint_target_rate_idx, default_dof_indices, name="joint_target_rate")
+
+        self._output_attr = output_attr
+        self._output_idx = _normalize_indices(output_idx, default_dof_indices, name="output")
+
         # Gain ports (wp.array | str).
-        self._kp_attr, self._kp_baked = _normalize_gain_port(
+        self._kp_attr, self._kp_baked = _normalize_parameter_port(
             kp, self._num_outputs, wp.float32, self._device, requires_grad, name="kp"
         )
-        self._kd_attr, self._kd_baked = _normalize_gain_port(
+        self._kd_attr, self._kd_baked = _normalize_parameter_port(
             kd, self._num_outputs, wp.float32, self._device, requires_grad, name="kd"
         )
-        self._ki_attr, self._ki_baked = _normalize_gain_port(
+        self._ki_attr, self._ki_baked = _normalize_parameter_port(
             ki, self._num_outputs, wp.float32, self._device, requires_grad, name="ki"
         )
-        self._imax_attr, self._imax_baked = _normalize_gain_port(
+        self._imax_attr, self._imax_baked = _normalize_parameter_port(
             integral_max, self._num_outputs, wp.float32, self._device, requires_grad, name="integral_max"
         )
 
-        # Live read ports + any live gain ports → fields on input_struct().
+        # Live read ports + any live gain ports --> fields on input_struct().
         self._input_specs: list[tuple[str, Any, int]] = [
             (self._measurement_attr, wp.float32, _idx_max(self._measurement_idx)),
             (self._measurement_rate_attr, wp.float32, _idx_max(self._measurement_rate_idx)),
@@ -230,15 +224,17 @@ class ControllerPID(Controller):
         controller_state_next: ControllerPID.State,
         time_step: float,
     ) -> None:
-        meas = _resolve_input_array(input_struct, self._measurement_attr, name="joint_measured")
-        meas_rate = _resolve_input_array(input_struct, self._measurement_rate_attr, name="joint_measured_rate")
-        target = _resolve_input_array(input_struct, self._target_attr, name="joint_target")
-        target_rate = _resolve_input_array(input_struct, self._target_rate_attr, name="joint_target_rate")
-        kp = self._resolve_gain(input_struct, "kp", self._kp_attr, self._kp_baked)
-        kd = self._resolve_gain(input_struct, "kd", self._kd_attr, self._kd_baked)
-        ki = self._resolve_gain(input_struct, "ki", self._ki_attr, self._ki_baked)
-        imax = self._resolve_gain(input_struct, "integral_max", self._imax_attr, self._imax_baked)
-        out = _resolve_input_array(output_struct, self._output_attr, name="output")
+        meas = getattr(input_struct, self._measurement_attr)
+        meas_rate = getattr(input_struct, self._measurement_rate_attr)
+        target = getattr(input_struct, self._target_attr)
+        target_rate = getattr(input_struct, self._target_rate_attr)
+        out = getattr(output_struct, self._output_attr)
+
+        kp = self._kp_baked or getattr(input_struct, self._kp_attr)
+        kd = self._kd_baked or getattr(input_struct, self._kd_attr)
+        ki = self._ki_baked or getattr(input_struct, self._ki_attr)
+        imax = self._imax_baked or getattr(input_struct, self._imax_attr)
+
         wp.launch(
             _pid_kernel,
             dim=self._num_outputs,
@@ -262,12 +258,6 @@ class ControllerPID(Controller):
             outputs=[out, controller_state_next.integral],
             device=self._device,
         )
-
-    @staticmethod
-    def _resolve_gain(input_struct, name, attr, baked):
-        if baked is not None:
-            return baked
-        return _resolve_input_array(input_struct, attr, name=name)
 
 
 def _idx_max(idx: wp.array) -> int:

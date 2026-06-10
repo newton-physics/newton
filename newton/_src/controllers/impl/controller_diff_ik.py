@@ -29,10 +29,8 @@ from ...sim.builder import ModelBuilder
 from ..controller import Controller
 from ..utils import (
     _allocate_namespace,
-    _normalize_gain_port,
-    _normalize_live_port,
-    _resolve_input_array,
-    _resolve_typed_array,
+    _normalize_indices,
+    _normalize_parameter_port,
 )
 
 
@@ -335,37 +333,34 @@ class ControllerDifferentialKinematics(Controller):
         site_xform_per_robot = [site_for_robot[r][1] for r in range(n)]
 
         # Per-DOF live ports.
-        self._meas_attr, self._meas_idx = _normalize_live_port(
-            joint_measurement_attr, joint_measurement_idx, default_dof_indices, name="joint_measurement"
-        )
-        self._meas_rate_attr, self._meas_rate_idx = _normalize_live_port(
-            joint_measurement_rate_attr,
+        self._meas_attr = joint_measurement_attr
+        self._meas_idx = _normalize_indices(joint_measurement_idx, default_dof_indices, name="joint_measurement")
+
+        self._meas_rate_attr = joint_measurement_rate_attr
+        self._meas_rate_idx = _normalize_indices(
             joint_measurement_rate_idx,
             default_dof_indices,
             name="joint_measurement_rate",
         )
-        self._target_q_attr, self._target_q_idx = _normalize_live_port(
-            joint_target_q_attr, joint_target_q_idx, default_dof_indices, name="joint_target_q"
-        )
-        self._target_qd_attr, self._target_qd_idx = _normalize_live_port(
-            joint_target_qd_attr, joint_target_qd_idx, default_dof_indices, name="joint_target_qd"
-        )
+
+        self._target_q_attr = joint_target_q_attr
+        self._target_q_idx = _normalize_indices(joint_target_q_idx, default_dof_indices, name="joint_target_q")
+        self._target_qd_attr = joint_target_qd_attr
+        self._target_qd_idx = _normalize_indices(joint_target_qd_idx, default_dof_indices, name="joint_target_qd")
 
         # Per-robot live ports. Default natural-order = wp.arange(num_robots).
         default_robot_idx = wp.array(np.arange(n, dtype=np.uint32), device=self._device)
         self._default_robot_idx = default_robot_idx
-        self._target_pos_attr, self._target_pos_idx = _normalize_live_port(
-            target_pos_attr, target_pos_idx, default_robot_idx, name="target_pos"
-        )
-        self._target_quat_attr, self._target_quat_idx = _normalize_live_port(
-            target_quat_attr, target_quat_idx, default_robot_idx, name="target_quat"
-        )
+        self._target_pos_attr = target_pos_attr
+        self._target_pos_idx = _normalize_indices(target_pos_idx, default_robot_idx, name="target_pos")
+        self._target_quat_attr = target_quat_attr
+        self._target_quat_idx = _normalize_indices(target_quat_idx, default_robot_idx, name="target_quat")
 
         # Per-robot gain ports.
-        self._damping_attr, self._damping_baked = _normalize_gain_port(
+        self._damping_attr, self._damping_baked = _normalize_parameter_port(
             solver_damping, n, wp.float32, self._device, requires_grad, name="solver_damping"
         )
-        self._bandwidth_attr, self._bandwidth_baked = _normalize_gain_port(
+        self._bandwidth_attr, self._bandwidth_baked = _normalize_parameter_port(
             bandwidth, n, wp.float32, self._device, requires_grad, name="bandwidth"
         )
 
@@ -453,14 +448,14 @@ class ControllerDifferentialKinematics(Controller):
         controller_state_next: None,
         time_step: float,
     ) -> None:
-        meas = _resolve_input_array(input_struct, self._meas_attr, name="joint_measurement")
-        meas_rate = _resolve_input_array(input_struct, self._meas_rate_attr, name="joint_measurement_rate")
-        target_pos = _resolve_typed_array(input_struct, self._target_pos_attr, wp.vec3, name="target_pos")
-        target_quat = _resolve_typed_array(input_struct, self._target_quat_attr, wp.quat, name="target_quat")
-        damping = self._resolve_gain(input_struct, "solver_damping", self._damping_attr, self._damping_baked)
-        bandwidth = self._resolve_gain(input_struct, "bandwidth", self._bandwidth_attr, self._bandwidth_baked)
-        out_q = _resolve_input_array(output_struct, self._target_q_attr, name="joint_target_q")
-        out_qd = _resolve_input_array(output_struct, self._target_qd_attr, name="joint_target_qd")
+        meas = getattr(input_struct, self._meas_attr)
+        meas_rate = getattr(input_struct, self._meas_rate_attr)
+        target_pos = getattr(input_struct, self._target_pos_attr)
+        target_quat = getattr(input_struct, self._target_quat_attr)
+        damping = self._damping_baked or getattr(input_struct, self._damping_attr)
+        bandwidth = self._bandwidth_baked or getattr(input_struct, self._bandwidth_attr)
+        out_q = getattr(output_struct, self._target_q_attr)
+        out_qd = getattr(output_struct, self._target_qd_attr)
 
         wp.launch(
             _gather_local_kernel,
@@ -535,12 +530,6 @@ class ControllerDifferentialKinematics(Controller):
             outputs=[out_qd, out_q],
             device=self._device,
         )
-
-    @staticmethod
-    def _resolve_gain(input_struct, name, attr, baked):
-        if baked is not None:
-            return baked
-        return _resolve_typed_array(input_struct, attr, wp.float32, name=name)
 
 
 def _idx_max(idx: wp.array) -> int:
