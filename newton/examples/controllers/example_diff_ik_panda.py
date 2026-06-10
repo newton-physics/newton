@@ -15,8 +15,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import numpy as np
 import warp as wp
 
@@ -147,16 +145,6 @@ class Example:
         # ------------------------------------------------------------------
         total_dofs = ROBOT_COUNT * DOFS_PER_ROBOT
         dof_indices = wp.array(np.arange(total_dofs, dtype=np.uint32), device=self.device)
-        robot_indices = wp.array(np.arange(ROBOT_COUNT, dtype=np.uint32), device=self.device)
-
-        # Controller writes to its own intermediate buffers; we then scatter
-        # only the arm DOFs into control.joint_target_q each substep. Finger
-        # entries of joint_target_q are seeded to home below and never moved,
-        # so MuJoCo's PD holds the fingers open regardless of what DiffIK
-        # produces for those columns (which is near-zero anyway, since the
-        # finger Jacobian columns w.r.t. the EE site are zero).
-        self._q_buffer = wp.zeros(total_dofs, dtype=wp.float32, device=self.device)
-        self._qd_buffer = wp.zeros(total_dofs, dtype=wp.float32, device=self.device)
 
         # DiffIK's internal model is built from ``diffik_template`` — all
         # robots at world origin. The scene's replicate spaces robots out
@@ -191,37 +179,32 @@ class Example:
             ]
             target_quat_init[r] = [site_quat[0], site_quat[1], site_quat[2], site_quat[3]]
 
+        # Every constructor knob below the structural args defaults to the
+        # canonical Newton attr name, so the user only declares
+        # what *isn't* default. Gains stored by value (baked); per-robot
+        # target ports and per-DOF I/O ports read/write via the default
+        # `joint_q`, `joint_qd`, `site_target_position`,
+        # `site_target_quaternion`, `joint_target_q`, `joint_target_qd`
+        # attribute names on the structs below.
         self.controller = ControllerDifferentialKinematics(
             model_builder=diffik_template,
             site="ee",
             default_dof_indices=dof_indices,
             solver_damping=wp.full(ROBOT_COUNT, 0.05, dtype=wp.float32, device=self.device),
             bandwidth=wp.full(ROBOT_COUNT, 20.0, dtype=wp.float32, device=self.device),
-            target_pos_attr="target_pos",
-            target_pos_idx=robot_indices,
-            target_quat_attr="target_quat",
-            target_quat_idx=robot_indices,
-            joint_measurement_attr="joint_q",
-            joint_measurement_rate_attr="joint_qd",
-            joint_target_q_attr="output_q",
-            joint_target_qd_attr="output_qd",
             device=self.device,
         )
 
-        # The user-facing input/output containers. Read ports live on
-        # ``self._input``; write ports on ``self._output``. We rebind
-        # joint_q / joint_qd each step so the controller sees whichever
-        # state buffer the substep swap leaves at ``self.state_0``.
-        self._input = SimpleNamespace(
-            joint_q=self.state_0.joint_q,
-            joint_qd=self.state_0.joint_qd,
-            target_pos=wp.array(target_pos_init, dtype=wp.vec3, device=self.device),
-            target_quat=wp.array(target_quat_init, dtype=wp.quat, device=self.device),
-        )
-        self._output = SimpleNamespace(
-            output_qd=self._qd_buffer,
-            output_q=self._q_buffer,
-        )
+        # input_struct() / output_struct() return fresh dataclasses with one
+        # wp.zeros field per live port. We seed the per-robot target fields
+        # with the home TCPs, then reassign joint_q / joint_qd each frame to
+        # point at the current sim state.
+        self._input = self.controller.input_struct()
+        self._input.joint_q = self.state_0.joint_q
+        self._input.joint_qd = self.state_0.joint_qd
+        self._input.site_target_position.assign(target_pos_init)
+        self._input.site_target_quaternion.assign(target_quat_init)
+        self._output = self.controller.output_struct()
 
         # Seed control.joint_target_q with the home pose for every robot.
         # The arm slots get overwritten every substep by the scatter; the
@@ -271,14 +254,14 @@ class Example:
             offset = self._base_offsets_np[r]
             pos[r] = [p[0] - offset[0], p[1] - offset[1], p[2] - offset[2]]
             quat[r] = [q[0], q[1], q[2], q[3]]
-        self._input.target_pos.assign(pos)
-        self._input.target_quat.assign(quat)
+        self._input.site_target_position.assign(pos)
+        self._input.site_target_quaternion.assign(quat)
 
     def _scatter_arm_targets(self) -> None:
         wp.launch(
             _scatter_kernel,
             dim=len(self._arm_indices),
-            inputs=[self._q_buffer, self._arm_indices],
+            inputs=[self._output.joint_target_q, self._arm_indices],
             outputs=[self.control.joint_target_q],
             device=self.device,
         )
