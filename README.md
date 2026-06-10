@@ -288,6 +288,9 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_plectoneme.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_plectoneme.jpg" alt="Cable Plectoneme">
+      </a>
     </td>
   </tr>
   <tr>
@@ -298,6 +301,7 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       <code>python -m newton.examples cable_cross_slide_table</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples cable_plectoneme</code>
     </td>
   </tr>
   <tr>

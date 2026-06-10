@@ -10,6 +10,12 @@
 # The zigzag routing introduces multiple 90-degree turns, demonstrating how twist
 # is transported through cable joints and across bends.
 #
+# Run interactively:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_twist
+#
+# Run as a test:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_twist --test --viewer null
+#
 ###########################################################################
 
 import numpy as np
@@ -210,11 +216,6 @@ class Example:
         self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(0.75, -10.0, 5.4), pitch=0.0, yaw=0.0)
-            if hasattr(self.viewer, "camera"):
-                self.viewer.camera.look_at(wp.vec3(0.75, 0.0, 0.25))
-                self.viewer.camera.fov = 44.0
 
         # Twist rates for first segments (radians per second)
         twist_rates = np.full(len(kinematic_body_indices), 0.5, dtype=np.float32)
@@ -310,7 +311,8 @@ class Example:
                     expected_distance = segment_length
                     joint_tolerance = expected_distance * 0.1  # Allow 10% stretch max
                     assert distance < expected_distance + joint_tolerance, (
-                        f"Cable {cable_idx} segments {segment}-{segment + 1} too far apart: {distance:.3f} > {expected_distance + joint_tolerance:.3f}"
+                        f"Cable {cable_idx} segments {segment}-{segment + 1} too far apart: "
+                        f"{distance:.3f} > {expected_distance + joint_tolerance:.3f}"
                     )
 
             # Test 3: Check ground interaction

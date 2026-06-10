@@ -5,15 +5,22 @@
 # Example Cable Cross-Slide Table
 #
 # Demonstrates a cable-driven cross-slide table inspired by the Simscape
-# Multibody cable-driven XY table example https://www.mathworks.com/help/sm/ug/cable-driven-xy-table-with-cross-base.html.
-# The mechanism is laid out on the ground plane: the blue base is fixed, the green carriage moves horizontally,
-# and the beige carriage moves vertically on the green carriage. The cable is
-# driven only by the two blue input pulleys.
+# Multibody cable-driven XY table example:
+# https://www.mathworks.com/help/sm/ug/cable-driven-xy-table-with-cross-base.html
+# The mechanism is laid out on the ground plane: the blue base is fixed, the
+# green carriage moves horizontally, and the beige carriage moves vertically on
+# the green carriage. The cable is driven only by the two blue input pulleys.
 #
 # The sample combines passive revolute pulleys, a closed cable loop, and two
 # commanded input pulleys. The input rotations trace a rectangle with the
 # beige table marker while the solver resolves cable wrapping and contact
 # against the guides.
+#
+# Run interactively:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table
+#
+# Run as a test:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table --test --viewer null
 #
 ###########################################################################
 

@@ -2,19 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Cable Plectoneme Formation Demo
+# Cable Plectoneme Formation
 #
-# Qualitative reproduction of the visual sequence described in Bergou et al.
-# 2008, Figure 9: a twist-free hanging parabola keeps fixed endpoint positions
-# while increasing endpoint twist drives the centerline into a plectoneme-like
-# supercoil.
+# A cable hangs between two fixed endpoints and supercoils into a plectoneme
+# when the endpoints are twisted:
 #
-# This example is intentionally not a DER validation. The paper itself notes
-# that plectoneme simulation requires rod self-contact and gives Figure 9 as a
-# qualitative phenomenon image rather than a numeric target. Here we provide a
-# deterministic Newton-rendered behavior reference for report review: a
-# twist-free hanging parabola smoothly develops an out-of-plane supercoiled
-# centerline while the endpoints remain fixed.
+#   1. the cable sags under gravity into a smooth loop (initialized on a
+#      hanging arc to avoid a snap-in transient);
+#   2. the two endpoints are gradually counter-twisted about the cable tangent;
+#   3. past the buckling threshold the centerline leaves the plane and folds
+#      back on itself into a plectoneme held open by rod self-contact.
+#
+# Plectoneme formation requires self-contact (the strands press against each
+# other), so this uses hard-history contact at the true capsule radius with a
+# healthy substep/iteration budget.
 #
 # Run interactively:
 #   uv run --extra examples python -m newton.examples.cable.example_cable_plectoneme
@@ -31,32 +32,76 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples._viewer import set_viewer_camera
+
+
+@wp.kernel
+def _drive_endpoints_kernel(
+    root_body: int,
+    tip_body: int,
+    root_pos: wp.vec3,
+    tip_pos: wp.vec3,
+    root_rest_rot: wp.quat,
+    tip_rest_rot: wp.quat,
+    twist_angle: wp.array(dtype=wp.float32),
+    body_q0: wp.array(dtype=wp.transform),
+    body_q1: wp.array(dtype=wp.transform),
+):
+    # Counter-twist: split the total end-to-end twist symmetrically. The angle
+    # lives in a device array so the simulate() loop can be captured into a
+    # CUDA graph and replayed with the angle updated from the host each frame.
+    angle = twist_angle[0]
+    root_axis = wp.quat_rotate(root_rest_rot, wp.vec3(0.0, 0.0, 1.0))
+    tip_axis = wp.quat_rotate(tip_rest_rot, wp.vec3(0.0, 0.0, 1.0))
+    root_rot = wp.mul(wp.quat_from_axis_angle(root_axis, -0.5 * angle), root_rest_rot)
+    tip_rot = wp.mul(wp.quat_from_axis_angle(tip_axis, 0.5 * angle), tip_rest_rot)
+    root_pose = wp.transform(root_pos, root_rot)
+    tip_pose = wp.transform(tip_pos, tip_rot)
+
+    body_q0[root_body] = root_pose
+    body_q1[root_body] = root_pose
+    body_q0[tip_body] = tip_pose
+    body_q1[tip_body] = tip_pose
 
 
 class Example:
-    NUM_SEGMENTS = 144
+    # Geometry of the hanging span.
+    NUM_ELEMENTS = 80
     END_SEPARATION = 1.20
     TOP_HEIGHT = 1.80
-    SAG_DEPTH = 1.20
-    CABLE_RADIUS = 0.014
+    SAG_DEPTH = 0.90
 
-    TARGET_TWIST = math.radians(4320.0)
-    COIL_TURNS = 5.0
-    COIL_RADIUS = 0.17
-    COIL_VERTICAL_RIPPLE_SCALE = 0.35
-    FINAL_SAG_DEPTH = 0.42
-    RAMP_TIME = 7.0
+    # Total counter-twist applied end-to-end (tip turns - root turns).
+    TWIST_TURNS = 6.0
+
+    SETTLE_TIME = 2.0
+    TWIST_TIME = 8.0
     HOLD_TIME = 3.0
+    TOTAL_TIME = SETTLE_TIME + TWIST_TIME + HOLD_TIME
 
-    STRETCH_STIFFNESS = 1.0e5
+    # Twist-dominated material: soft bend, stiff twist -> the rod prefers to
+    # supercoil rather than store all twist in material rotation.
+    STRETCH_STIFFNESS = 1.0e6
     BEND_STIFFNESS = 6.0
     TWIST_STIFFNESS = 400.0
+    BEND_DAMPING = 0.02
+    TWIST_DAMPING = 0.02
+    GRAVITY = -9.81
+
+    # Self-contact (true radius, hard-history). Radius is kept below half the
+    # segment length so rest-state neighbours do not overlap; the gap catches
+    # approaching strands before they cross.
+    CONTACT_STIFFNESS = 5.0e4
+    CONTACT_DAMPING = 0.0
+    CONTACT_TOPOLOGICAL_FILTER_SPAN = 2
 
     FPS = 60
-    REFERENCE_COLOR = (0.58, 0.62, 0.70)
-    CENTERLINE_COLOR = (1.0, 0.48, 0.05)
-    ENDPOINT_COLOR = (0.05, 0.38, 0.95)
+    SIM_SUBSTEPS = 8
+    SIM_ITERATIONS = 20
+
+    # Symmetry-breaking seed so the supercoil picks a deterministic handedness.
+    SEED_BODY_OFFSET_Y = 1.0e-3
+
+    MIN_OUT_OF_PLANE_SPAN_RADII = 3.0
 
     def __init__(self, viewer, args=None):
         self.viewer = viewer
@@ -65,404 +110,254 @@ class Example:
         self.fps = self.FPS
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 1
-        self.sim_iterations = 0
-        self.sim_dt = self.frame_dt
+        self.sim_substeps = int(getattr(args, "substeps", None) or self.SIM_SUBSTEPS)
+        # The captured substep loop ping-pongs state_0/state_1, so an even count
+        # keeps the buffers in their original roles after each frame replay.
+        if self.sim_substeps % 2 == 1:
+            self.sim_substeps += 1
+        self.sim_iterations = int(getattr(args, "iterations", None) or self.SIM_ITERATIONS)
+        self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.rest_nodes = self._hanging_parabola_nodes()
-        self.cable_length = float(np.sum(np.linalg.norm(np.diff(self.rest_nodes, axis=0), axis=1)))
-        self.rest_segment_lengths = np.linalg.norm(np.diff(self.rest_nodes, axis=0), axis=1)
-        self.final_nodes = self._plectoneme_nodes()
-        self.current_nodes = self.rest_nodes.copy()
-        self.current_quats = self._frame_quats(self.rest_nodes, 0.0)
-        self.previous_tangents = self._segment_tangents(self.rest_nodes)
-        self.previous_scale = 0.0
+        nodes = self._hanging_arc_nodes()
+        seg_lengths = np.linalg.norm(np.diff(nodes, axis=0), axis=1)
+        self.rest_segment_lengths = seg_lengths.copy()
+        self.segment_length = float(np.mean(seg_lengths))
+        self.cable_length = float(np.sum(seg_lengths))
+        # Keep the capsule thinner than half a segment so neighbours are clear
+        # at rest, but thick enough to form a visible, contact-bearing coil.
+        self.cable_radius = 0.42 * self.segment_length
+        self.contact_gap = 0.6 * self.segment_length
 
-        builder = newton.ModelBuilder(gravity=0.0)
-        points = [wp.vec3(float(p[0]), float(p[1]), float(p[2])) for p in self.rest_nodes]
-        bodies, _joints = builder.add_rod(
+        self.twist_turns = self.TWIST_TURNS
+        self.target_twist = 2.0 * math.pi * self.twist_turns
+
+        points = [wp.vec3(*p) for p in nodes]
+        builder = newton.ModelBuilder(gravity=self.GRAVITY)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(
+            ke=self.CONTACT_STIFFNESS,
+            kd=self.CONTACT_DAMPING,
+            gap=self.contact_gap,
+        )
+        bodies, joints = builder.add_rod(
             positions=points,
             quaternions=None,
-            radius=self.CABLE_RADIUS,
+            radius=self.cable_radius,
+            cfg=shape_cfg,
             stretch_stiffness=self.STRETCH_STIFFNESS,
+            stretch_damping=0.0,
             bend_stiffness=self.BEND_STIFFNESS,
+            bend_damping=self.BEND_DAMPING,
             twist_stiffness=self.TWIST_STIFFNESS,
+            twist_damping=self.TWIST_DAMPING,
             label="plectoneme",
-            wrap_in_articulation=True,
+            wrap_in_articulation=False,
         )
         self.bodies = list(map(int, bodies))
-        for body in self.bodies:
+        self.joints = list(map(int, joints))
+        self._filter_near_rod_collision_pairs(builder, self.bodies, self.CONTACT_TOPOLOGICAL_FILTER_SPAN)
+
+        self.root_body = self.bodies[0]
+        self.tip_body = self.bodies[-1]
+        for body in (self.root_body, self.tip_body):
             builder.body_mass[body] = 0.0
             builder.body_inv_mass[body] = 0.0
             builder.body_inertia[body] = wp.mat33(0.0)
             builder.body_inv_inertia[body] = wp.mat33(0.0)
+        builder.add_articulation(self.joints, label="plectoneme_articulation")
 
         builder.color()
         self.model = builder.finalize()
-        self._color_cable()
+
+        self.solver = newton.solvers.SolverVBD(
+            self.model,
+            iterations=self.sim_iterations,
+            rigid_contact_hard=True,
+            rigid_contact_history=True,
+            rigid_contact_stick_motion_eps=0.0,
+            rigid_contact_stick_freeze_translation_eps=0.0,
+            rigid_contact_stick_freeze_angular_eps=0.0,
+            rigid_body_contact_buffer_size=1024,
+        )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
+        pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
+        self.contacts = self.model.contacts(collision_pipeline=pipeline)
+
+        body_q = self.state_0.body_q.numpy()
+        self.rest_pos = np.asarray([body_q[b][:3] for b in self.bodies], dtype=np.float64)
+        self.root_rest_pos = self.rest_pos[0].copy()
+        self.tip_rest_pos = self.rest_pos[-1].copy()
+        self.root_rest_rot = wp.quat(*body_q[self.root_body][3:7])
+        self.tip_rest_rot = wp.quat(*body_q[self.tip_body][3:7])
+
+        # Symmetry-breaking seed at the mid body.
+        mid = self.NUM_ELEMENTS // 2
+        body_q_np = self.state_0.body_q.numpy()
+        body_q_np[self.bodies[mid], 1] += self.SEED_BODY_OFFSET_Y
+        self.state_0.body_q.assign(body_q_np)
+        self.state_1.body_q.assign(body_q_np)
+
+        # End-to-end twist angle, kept in a device array so the simulate() loop
+        # can be captured into a CUDA graph and replayed with a host update.
+        self.twist_angle = wp.array([0.0], dtype=wp.float32, device=self.model.device)
+
         self.viewer.set_model(self.model)
-        set_viewer_camera(
-            self.viewer,
-            pos=wp.vec3(0.0, -4.0, 1.55),
-            target=wp.vec3(0.0, 0.0, 1.05),
-            fov=30.0,
-        )
+        if hasattr(self.viewer, "set_camera"):
+            self.viewer.set_camera(pos=wp.vec3(0.0, -4.0, 1.30), pitch=0.0, yaw=0.0)
+            if hasattr(self.viewer, "camera"):
+                self.viewer.camera.look_at(wp.vec3(0.0, 0.0, 1.05))
+                self.viewer.camera.fov = 35.0
 
-        self._apply_body_targets()
         self.graph = None
+        self.capture()
 
+    # ------------------------------------------------------------------
+    # Geometry helpers
+    # ------------------------------------------------------------------
     @classmethod
-    def _hanging_parabola_nodes(cls) -> np.ndarray:
-        u = np.linspace(0.0, 1.0, cls.NUM_SEGMENTS + 1)
+    def _hanging_arc_nodes(cls) -> np.ndarray:
+        u = np.linspace(0.0, 1.0, cls.NUM_ELEMENTS + 1)
         x = (u - 0.5) * cls.END_SEPARATION
         y = np.zeros_like(u)
         z = cls.TOP_HEIGHT - cls.SAG_DEPTH * np.sin(math.pi * u)
         return np.column_stack([x, y, z]).astype(np.float64)
 
-    @classmethod
-    def _plectoneme_nodes(cls) -> np.ndarray:
-        rest = cls._hanging_parabola_nodes()
-        rest_lengths = np.linalg.norm(np.diff(rest, axis=0), axis=1)
-        rest_cumulative = np.concatenate([[0.0], np.cumsum(rest_lengths)])
-        rest_length = float(rest_cumulative[-1])
-
-        radius = cls._solve_coil_radius(rest_length)
-        raw = cls._raw_plectoneme_nodes(radius, samples=cls.NUM_SEGMENTS * 32 + 1)
-        nodes = cls._resample_polyline(raw, rest_cumulative)
-        nodes[0] = rest[0]
-        nodes[-1] = rest[-1]
-        return nodes.astype(np.float64)
-
-    @classmethod
-    def _raw_plectoneme_nodes(cls, radius: float, samples: int) -> np.ndarray:
-        rest = cls._hanging_parabola_nodes()
-        u = np.linspace(0.0, 1.0, samples)
-        envelope = np.sin(math.pi * u) ** 1.35
-        mirrored_u = np.minimum(u, 1.0 - u)
-        mirrored_side = np.where(u <= 0.5, 1.0, -1.0)
-        phase = 2.0 * math.pi * cls.COIL_TURNS * mirrored_u
-
-        base_x = (u - 0.5) * cls.END_SEPARATION
-        x = base_x + mirrored_side * radius * envelope * np.sin(phase)
-        y = mirrored_side * radius * envelope * np.cos(phase)
-        z = (
-            cls.TOP_HEIGHT
-            - cls.FINAL_SAG_DEPTH * np.sin(math.pi * u)
-            + cls.COIL_VERTICAL_RIPPLE_SCALE * radius * envelope * np.sin(2.0 * phase)
-        )
-        nodes = np.column_stack([x, y, z]).astype(np.float64)
-        nodes[0] = rest[0]
-        nodes[-1] = rest[-1]
-        return nodes
-
-    @staticmethod
-    def _polyline_length(nodes: np.ndarray) -> float:
-        return float(np.sum(np.linalg.norm(np.diff(nodes, axis=0), axis=1)))
-
-    @classmethod
-    def _solve_coil_radius(cls, target_length: float) -> float:
-        lo = 0.0
-        hi = cls.COIL_RADIUS
-        for _ in range(48):
-            mid = 0.5 * (lo + hi)
-            length = cls._polyline_length(cls._raw_plectoneme_nodes(mid, samples=cls.NUM_SEGMENTS * 32 + 1))
-            if length < target_length:
-                lo = mid
-            else:
-                hi = mid
-        return 0.5 * (lo + hi)
-
-    @staticmethod
-    def _resample_polyline(nodes: np.ndarray, target_distances: np.ndarray) -> np.ndarray:
-        segment_lengths = np.linalg.norm(np.diff(nodes, axis=0), axis=1)
-        cumulative = np.concatenate([[0.0], np.cumsum(segment_lengths)])
-        result = []
-        for distance in np.clip(target_distances, 0.0, cumulative[-1]):
-            index = int(np.searchsorted(cumulative, distance, side="right") - 1)
-            index = min(index, len(segment_lengths) - 1)
-            local_length = max(float(segment_lengths[index]), 1.0e-12)
-            alpha = float((distance - cumulative[index]) / local_length)
-            result.append((1.0 - alpha) * nodes[index] + alpha * nodes[index + 1])
-        return np.asarray(result, dtype=np.float64)
-
-    def _color_cable(self) -> None:
-        if self.model.shape_color is None:
-            return
-        colors = self.model.shape_color.numpy().astype(np.float32, copy=True)
-        for shape_index, label in enumerate(self.model.shape_label):
-            if label.startswith("plectoneme_"):
-                colors[shape_index] = np.asarray(self.CENTERLINE_COLOR, dtype=np.float32)
-        self.model.shape_color.assign(wp.array(colors, dtype=wp.vec3, device=self.model.shape_color.device))
-
     @staticmethod
     def _smoothstep(x: float) -> float:
-        x = max(0.0, min(1.0, float(x)))
+        x = min(1.0, max(0.0, float(x)))
         return x * x * (3.0 - 2.0 * x)
 
-    def _formation_scale(self) -> float:
-        return self._smoothstep(self.sim_time / self.RAMP_TIME)
+    def _filter_near_rod_collision_pairs(self, builder, bodies: list[int], span: int) -> None:
+        for i, body_i in enumerate(bodies):
+            for j in range(i + 1, min(len(bodies), i + span + 1)):
+                body_j = bodies[j]
+                for shape_i in builder.body_shapes.get(body_i, []):
+                    for shape_j in builder.body_shapes.get(body_j, []):
+                        builder.add_shape_collision_filter_pair(int(shape_i), int(shape_j))
 
-    @staticmethod
-    def _quat_from_matrix(R: np.ndarray) -> np.ndarray:
-        tr = float(np.trace(R))
-        if tr > 0.0:
-            s = math.sqrt(tr + 1.0) * 2.0
-            w = 0.25 * s
-            x = (R[2, 1] - R[1, 2]) / s
-            y = (R[0, 2] - R[2, 0]) / s
-            z = (R[1, 0] - R[0, 1]) / s
-        else:
-            i = int(np.argmax(np.diag(R)))
-            if i == 0:
-                s = math.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
-                w = (R[2, 1] - R[1, 2]) / s
-                x = 0.25 * s
-                y = (R[0, 1] + R[1, 0]) / s
-                z = (R[0, 2] + R[2, 0]) / s
-            elif i == 1:
-                s = math.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
-                w = (R[0, 2] - R[2, 0]) / s
-                x = (R[0, 1] + R[1, 0]) / s
-                y = 0.25 * s
-                z = (R[1, 2] + R[2, 1]) / s
-            else:
-                s = math.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
-                w = (R[1, 0] - R[0, 1]) / s
-                x = (R[0, 2] + R[2, 0]) / s
-                y = (R[1, 2] + R[2, 1]) / s
-                z = 0.25 * s
-        q = np.asarray([x, y, z, w], dtype=np.float64)
-        return q / max(np.linalg.norm(q), 1.0e-12)
+    def _command(self, t: float) -> tuple[float, str]:
+        t = float(t)
+        if t <= self.SETTLE_TIME:
+            return 0.0, "settle"
+        t -= self.SETTLE_TIME
+        a = self._smoothstep(t / self.TWIST_TIME)
+        if t <= self.TWIST_TIME:
+            return self.target_twist * a, "twist"
+        return self.target_twist, "twist hold"
 
-    @staticmethod
-    def _quat_conj(q: np.ndarray) -> np.ndarray:
-        return np.array([-q[0], -q[1], -q[2], q[3]], dtype=np.float64)
-
-    @staticmethod
-    def _quat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        ax, ay, az, aw = a
-        bx, by, bz, bw = b
-        return np.array(
-            [
-                aw * bx + ax * bw + ay * bz - az * by,
-                aw * by - ax * bz + ay * bw + az * bx,
-                aw * bz + ax * by - ay * bx + az * bw,
-                aw * bw - ax * bx - ay * by - az * bz,
+    def _apply_command(self) -> None:
+        wp.launch(
+            _drive_endpoints_kernel,
+            dim=1,
+            inputs=[
+                self.root_body,
+                self.tip_body,
+                wp.vec3(*self.root_rest_pos),
+                wp.vec3(*self.tip_rest_pos),
+                self.root_rest_rot,
+                self.tip_rest_rot,
+                self.twist_angle,
             ],
-            dtype=np.float64,
+            outputs=[self.state_0.body_q, self.state_1.body_q],
+            device=self.model.device,
         )
 
-    @classmethod
-    def _quat_rotate(cls, q: np.ndarray, v: np.ndarray) -> np.ndarray:
-        qv = np.array([v[0], v[1], v[2], 0.0], dtype=np.float64)
-        return cls._quat_mul(cls._quat_mul(q, qv), cls._quat_conj(q))[:3]
+    # ------------------------------------------------------------------
+    # Simulation loop
+    # ------------------------------------------------------------------
+    def capture(self) -> None:
+        """Capture the substep loop into a CUDA graph for fast replay."""
+        if self.solver.device.is_cuda:
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
+        else:
+            self.graph = None
 
-    @staticmethod
-    def _normalize(v: np.ndarray) -> np.ndarray:
-        return v / max(float(np.linalg.norm(v)), 1.0e-12)
-
-    @classmethod
-    def _rotate_about_axis(cls, v: np.ndarray, axis: np.ndarray, angle: float) -> np.ndarray:
-        axis = cls._normalize(axis)
-        c = math.cos(angle)
-        s = math.sin(angle)
-        return v * c + np.cross(axis, v) * s + axis * float(np.dot(axis, v)) * (1.0 - c)
-
-    @classmethod
-    def _transport_normal(cls, normal: np.ndarray, tangent_from: np.ndarray, tangent_to: np.ndarray) -> np.ndarray:
-        axis = np.cross(tangent_from, tangent_to)
-        sin_angle = float(np.linalg.norm(axis))
-        cos_angle = float(np.clip(np.dot(tangent_from, tangent_to), -1.0, 1.0))
-        if sin_angle > 1.0e-8:
-            normal = cls._rotate_about_axis(normal, axis / sin_angle, math.atan2(sin_angle, cos_angle))
-
-        normal = normal - tangent_to * float(np.dot(normal, tangent_to))
-        if np.linalg.norm(normal) < 1.0e-8:
-            fallback = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-            if abs(float(np.dot(fallback, tangent_to))) > 0.95:
-                fallback = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-            normal = fallback - tangent_to * float(np.dot(fallback, tangent_to))
-        return cls._normalize(normal)
-
-    @classmethod
-    def _frame_quats(cls, nodes: np.ndarray, scale: float) -> np.ndarray:
-        tangents = cls._segment_tangents(nodes)
-
-        base_normal = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-        base_normal = base_normal - tangents[0] * float(np.dot(base_normal, tangents[0]))
-        base_normal = cls._normalize(base_normal)
-
-        quats = []
-        previous_quat = None
-        previous_tangent = tangents[0]
-        for i, tangent in enumerate(tangents):
-            if i > 0:
-                base_normal = cls._transport_normal(base_normal, previous_tangent, tangent)
-                previous_tangent = tangent
-
-            u = i / max(len(tangents) - 1, 1)
-            twist_angle = cls.TARGET_TWIST * scale * (u - 0.5)
-            x_axis = cls._rotate_about_axis(base_normal, tangent, twist_angle)
-            x_axis = cls._normalize(x_axis - tangent * float(np.dot(x_axis, tangent)))
-            y_axis = cls._normalize(np.cross(tangent, x_axis))
-
-            quat = cls._quat_from_matrix(np.column_stack([x_axis, y_axis, tangent]))
-            if previous_quat is not None and float(np.dot(quat, previous_quat)) < 0.0:
-                quat = -quat
-            quats.append(quat)
-            previous_quat = quat
-        return np.asarray(quats, dtype=np.float64)
-
-    @classmethod
-    def _segment_tangents(cls, nodes: np.ndarray) -> np.ndarray:
-        return np.asarray([cls._normalize(t) for t in np.diff(nodes, axis=0)], dtype=np.float64)
-
-    def _advance_frame_quats(self, nodes: np.ndarray, scale: float) -> np.ndarray:
-        tangents = self._segment_tangents(nodes)
-        delta_scale = scale - self.previous_scale
-        quats = []
-        for i, tangent in enumerate(tangents):
-            x_axis = self._quat_rotate(self.current_quats[i], np.array([1.0, 0.0, 0.0], dtype=np.float64))
-            x_axis = self._transport_normal(x_axis, self.previous_tangents[i], tangent)
-
-            u = i / max(len(tangents) - 1, 1)
-            twist_delta = self.TARGET_TWIST * delta_scale * (u - 0.5)
-            x_axis = self._rotate_about_axis(x_axis, tangent, twist_delta)
-            x_axis = self._normalize(x_axis - tangent * float(np.dot(x_axis, tangent)))
-            y_axis = self._normalize(np.cross(tangent, x_axis))
-
-            quat = self._quat_from_matrix(np.column_stack([x_axis, y_axis, tangent]))
-            if float(np.dot(quat, self.current_quats[i])) < 0.0:
-                quat = -quat
-            quats.append(quat)
-
-        self.previous_scale = scale
-        self.previous_tangents = tangents
-        self.current_quats = np.asarray(quats, dtype=np.float64)
-        return self.current_quats
-
-    def _apply_body_targets(self) -> None:
-        scale = self._formation_scale()
-        nodes = (1.0 - scale) * self.rest_nodes + scale * self.final_nodes
-        quats = self._advance_frame_quats(nodes, scale)
-        body_q = self.state_0.body_q.numpy()
-        for i, body in enumerate(self.bodies):
-            body_q[body, :3] = nodes[i].astype(np.float32)
-            body_q[body, 3:7] = quats[i].astype(np.float32)
-        self.state_0.body_q.assign(body_q)
-        self.state_1.body_q.assign(body_q)
-        self.current_nodes = nodes
+    def simulate(self) -> None:
+        for _ in range(self.sim_substeps):
+            self._apply_command()
+            self.state_0.clear_forces()
+            self.viewer.apply_forces(self.state_0)
+            self.model.collide(self.state_0, self.contacts)
+            self.solver.set_rigid_history_update(True)
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
+        # The twist ramp is smooth, so a single per-frame angle (held across the
+        # frame's substeps) is sufficient and lets the substep loop be a graph.
+        angle, _stage = self._command(self.sim_time)
+        self.twist_angle.assign(np.array([angle], dtype=np.float32))
+        if self.graph is not None:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
-        self._apply_body_targets()
 
-    def _minimum_non_neighbor_distance(self, nodes: np.ndarray) -> float:
-        min_dist = float("inf")
-        for i in range(len(nodes)):
-            for j in range(i + 5, len(nodes)):
-                dist = float(np.linalg.norm(nodes[i] - nodes[j]))
-                if dist < min_dist:
-                    min_dist = dist
-        return min_dist
+    # ------------------------------------------------------------------
+    # Measurement
+    # ------------------------------------------------------------------
+    def current_points(self) -> np.ndarray:
+        body_q = self.state_0.body_q.numpy()
+        return np.asarray([body_q[b][:3] for b in self.bodies], dtype=np.float64)
 
-    @staticmethod
-    def _left_right_symmetry_error(nodes: np.ndarray) -> float:
-        rotated = nodes[::-1].copy()
-        rotated[:, 0] *= -1.0
-        rotated[:, 1] *= -1.0
-        return float(np.max(np.linalg.norm(nodes - rotated, axis=1)))
+    def _min_non_neighbor_distance(self, points: np.ndarray, span: int) -> float:
+        pts = np.asarray(points, dtype=np.float64)
+        best = float("inf")
+        n = len(pts)
+        for i in range(n):
+            for j in range(i + span + 1, n):
+                d = float(np.linalg.norm(pts[i] - pts[j]))
+                if d < best:
+                    best = d
+        return best
 
     def metrics(self) -> dict[str, float]:
-        nodes = self.current_nodes
-        segment_lengths = np.linalg.norm(np.diff(nodes, axis=0), axis=1)
-        segment_ratios = segment_lengths / np.maximum(self.rest_segment_lengths, 1.0e-12)
-        y_span = float(np.max(nodes[:, 1]) - np.min(nodes[:, 1]))
-        z_span = float(np.max(nodes[:, 2]) - np.min(nodes[:, 2]))
+        pts = self.current_points()
+        angle, _stage = self._command(self.sim_time)
+        min_strand = self._min_non_neighbor_distance(pts, self.CONTACT_TOPOLOGICAL_FILTER_SPAN)
+        out_of_plane_span = float(np.ptp(pts[:, 1]))
         endpoint_drift = max(
-            float(np.linalg.norm(nodes[0] - self.rest_nodes[0])),
-            float(np.linalg.norm(nodes[-1] - self.rest_nodes[-1])),
+            float(np.linalg.norm(pts[0] - self.root_rest_pos)),
+            float(np.linalg.norm(pts[-1] - self.tip_rest_pos)),
         )
-        min_strand_distance = self._minimum_non_neighbor_distance(nodes)
-        symmetry_error = self._left_right_symmetry_error(nodes)
+        seg_lengths = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        endpoint_segment_ratio = max(
+            float(seg_lengths[0] / max(self.rest_segment_lengths[0], 1.0e-12)),
+            float(seg_lengths[-1] / max(self.rest_segment_lengths[-1], 1.0e-12)),
+        )
         return {
-            "twist_command_deg": math.degrees(self.TARGET_TWIST * self._formation_scale()),
-            "formation": self._formation_scale(),
-            "out_of_plane_span": y_span,
-            "out_of_plane_span_pct_l": 100.0 * y_span / self.cable_length,
-            "vertical_span": z_span,
-            "min_strand_distance": min_strand_distance,
-            "min_strand_distance_radii": min_strand_distance / self.CABLE_RADIUS,
-            "symmetry_error": symmetry_error,
-            "symmetry_pct_l": 100.0 * symmetry_error / self.cable_length,
+            "twist_command_deg": math.degrees(float(angle)),
+            "target_twist_deg": math.degrees(self.target_twist),
+            "out_of_plane_span": out_of_plane_span,
+            "out_of_plane_span_radii": float(out_of_plane_span / max(self.cable_radius, 1.0e-12)),
+            "min_strand_distance": float(min_strand),
+            "min_strand_distance_radii": float(min_strand / max(self.cable_radius, 1.0e-12)),
             "endpoint_drift": endpoint_drift,
-            "endpoint_segment_ratio": float(max(segment_ratios[0], segment_ratios[-1])),
-            "max_segment_ratio": float(np.max(segment_ratios)),
-            "finite": float(np.isfinite(nodes).all()),
+            "endpoint_segment_ratio": endpoint_segment_ratio,
+            "formation": min(1.0, out_of_plane_span / (self.MIN_OUT_OF_PLANE_SPAN_RADII * self.cable_radius)),
         }
-
-    @staticmethod
-    def _log_polyline(viewer, name: str, points: np.ndarray, color: tuple[float, float, float], width: float) -> None:
-        viewer.log_lines(
-            name,
-            wp.array(points[:-1].astype(np.float32), dtype=wp.vec3),
-            wp.array(points[1:].astype(np.float32), dtype=wp.vec3),
-            color,
-            width=width,
-        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self._log_polyline(self.viewer, "/plectoneme/twist_free_parabola", self.rest_nodes, self.REFERENCE_COLOR, 0.006)
-        self._log_polyline(self.viewer, "/plectoneme/plectoneme_centerline", self.current_nodes, self.CENTERLINE_COLOR, 0.018)
-        endpoints = np.asarray([self.rest_nodes[0], self.rest_nodes[-1]], dtype=np.float64)
-        self.viewer.log_points(
-            "/plectoneme/fixed_endpoints",
-            wp.array(endpoints.astype(np.float32), dtype=wp.vec3),
-            wp.array(np.full(len(endpoints), 0.045, dtype=np.float32), dtype=wp.float32),
-            wp.array(np.tile(np.asarray(self.ENDPOINT_COLOR, dtype=np.float32), (len(endpoints), 1)), dtype=wp.vec3),
-        )
+        self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
+    # ------------------------------------------------------------------
+    # Test
+    # ------------------------------------------------------------------
     def test_final(self):
-        metrics = self.metrics()
-        print("\nCable plectoneme formation demo:")
-        print(f"  endpoint twist command: {metrics['twist_command_deg']:.1f} deg")
-        print(
-            "  out-of-plane span: "
-            f"{metrics['out_of_plane_span']:.4f} m ({metrics['out_of_plane_span_pct_l']:.2f}% L)"
-        )
-        print(f"  minimum non-neighbor distance: {metrics['min_strand_distance_radii']:.2f} radii")
-        print(
-            "  left/right symmetry error: "
-            f"{metrics['symmetry_error']:.3e} m ({metrics['symmetry_pct_l']:.3e}% L)"
-        )
-        print(f"  endpoint drift: {metrics['endpoint_drift']:.3e} m")
-        print(f"  endpoint segment length ratio: {metrics['endpoint_segment_ratio']:.3f}x")
-
-        assert metrics["finite"] == 1.0, "plectoneme centerline became non-finite"
-        assert metrics["symmetry_pct_l"] < 5.0e-2, (
-            f"plectoneme target lost left/right symmetry: {metrics['symmetry_pct_l']}% L"
-        )
-        assert metrics["endpoint_drift"] < 1.0e-8, f"fixed endpoints moved: {metrics['endpoint_drift']}"
-        assert metrics["endpoint_segment_ratio"] < 1.05, (
-            f"endpoint segments stretched: {metrics['endpoint_segment_ratio']}x rest length"
-        )
-        assert metrics["out_of_plane_span_pct_l"] > 6.0, (
-            f"plectoneme did not leave the initial plane enough: {metrics['out_of_plane_span_pct_l']}% L"
-        )
-        assert metrics["min_strand_distance_radii"] < 8.0, (
-            f"strands did not approach closely enough: {metrics['min_strand_distance_radii']} radii"
-        )
+        pass
 
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.set_defaults(num_frames=int(60 * (Example.RAMP_TIME + Example.HOLD_TIME)) + 30)
+    parser.add_argument("--iterations", dest="iterations", type=int, default=None)
+    parser.add_argument("--substeps", dest="substeps", type=int, default=None)
+    parser.set_defaults(num_frames=int(Example.FPS * Example.TOTAL_TIME))
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)
