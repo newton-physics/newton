@@ -1639,7 +1639,9 @@ def evaluate_joint_force_hessian(
         total_H_al = wp.mat33(0.0)
         total_H_aa = wp.mat33(0.0)
 
-        if k_bend > 0.0 or k_twist > 0.0 or joint_is_hard[bend_idx] == 1 or joint_is_hard[twist_idx] == 1:
+        bend_active = k_bend > 0.0
+        twist_active = k_twist > 0.0
+        if bend_active or twist_active:
             K_elastic_diag = wp.vec3(k_bend, k_bend, k_twist)
             K_damp_diag = wp.vec3(kd_bend * k_bend, kd_bend * k_bend, kd_twist * k_twist)
             damping_active = (kd_bend > 0.0 and k_bend > 0.0) or (kd_twist > 0.0 and k_twist > 0.0)
@@ -1650,8 +1652,8 @@ def evaluate_joint_force_hessian(
             C0_force = wp.vec3(0.0)
             dahl_sigma = joint_sigma_start[joint_index]
             dahl_fric = joint_C_fric[joint_index]
-            bend_hard = joint_is_hard[bend_idx] == 1
-            twist_hard = joint_is_hard[twist_idx] == 1
+            bend_hard = bend_active and joint_is_hard[bend_idx] == 1
+            twist_hard = twist_active and joint_is_hard[twist_idx] == 1
             lambda_ang = wp.vec3(0.0)
             C0_ang = wp.vec3(0.0)
             if bend_hard or twist_hard:
@@ -1661,14 +1663,14 @@ def evaluate_joint_force_hessian(
             if bend_hard:
                 lambda_projected = lambda_projected + wp.vec3(lambda_ang[0], lambda_ang[1], 0.0)
                 C0_force = C0_force + (k_bend * avbd_alpha) * wp.vec3(C0_ang[0], C0_ang[1], 0.0)
-            elif k_bend > 0.0:
+            elif bend_active:
                 sigma = sigma + wp.vec3(dahl_sigma[0], dahl_sigma[1], 0.0)
                 H_fric_diag = H_fric_diag + wp.vec3(dahl_fric[0], dahl_fric[1], 0.0)
 
             if twist_hard:
                 lambda_projected = lambda_projected + wp.vec3(0.0, 0.0, lambda_ang[2])
                 C0_force = C0_force + (k_twist * avbd_alpha) * wp.vec3(0.0, 0.0, C0_ang[2])
-            elif k_twist > 0.0:
+            elif twist_active:
                 sigma = sigma + wp.vec3(0.0, 0.0, dahl_sigma[2])
                 H_fric_diag = H_fric_diag + wp.vec3(0.0, 0.0, dahl_fric[2])
 
@@ -1692,7 +1694,9 @@ def evaluate_joint_force_hessian(
             total_torque = total_torque + cable_torque
             total_H_aa = total_H_aa + cable_H_aa
 
-        if k_stretch > 0.0 or k_shear > 0.0 or joint_is_hard[stretch_idx] == 1 or joint_is_hard[shear_idx] == 1:
+        stretch_active = k_stretch > 0.0
+        shear_active = k_shear > 0.0
+        if stretch_active or shear_active:
             t_world = _quat_rotate_local_z(q_wp)
             P_stretch = wp.outer(t_world, t_world)
             I = wp.identity(3, float)
@@ -1706,8 +1710,8 @@ def evaluate_joint_force_hessian(
 
             lambda_projected = wp.vec3(0.0)
             C0_force = wp.vec3(0.0)
-            stretch_hard = joint_is_hard[stretch_idx] == 1
-            shear_hard = joint_is_hard[shear_idx] == 1
+            stretch_hard = stretch_active and joint_is_hard[stretch_idx] == 1
+            shear_hard = shear_active and joint_is_hard[shear_idx] == 1
             if stretch_hard or shear_hard:
                 lambda_lin = joint_lambda_lin[joint_index]
                 C0_lin = joint_C0_lin[joint_index]
