@@ -57,11 +57,11 @@
 - Mark the actuator API as experimental in its docstring. (#3067)
 - Mark the `"sticky"` contact-matching mode as experimental in its docstring. (#3067)
 - `SensorTiledCamera` users who relied on previous linear-byte packed `color` and `albedo` outputs should pass `RenderConfig(output_color_space=ColorSpace.LINEAR)`. Packed `color` and `albedo` now default to sRGB-encoded bytes so authored display colors render at the expected display brightness. (#2411)
-- Auto-scale `ViewerGL` contact arrows, joint axes, and COM markers by `Viewer.scene_scale`; to approximate the previous fixed sizes after `set_model()`, set `viewer.renderer.arrow_length_scale = 0.1 / viewer.scene_scale`, `viewer.renderer.joint_scale = 0.1 / viewer.scene_scale`, and `viewer.renderer.com_scale = 0.1 / viewer.scene_scale`
+- Auto-scale `ViewerGL` contact arrows, joint axes, and COM markers by `Viewer.scene_scale`; to approximate the previous fixed sizes after `set_model()`, set `viewer.renderer.arrow_length_scale = 0.1 / viewer.scene_scale`, `viewer.renderer.joint_scale = 0.1 / viewer.scene_scale`, and `viewer.renderer.com_scale = 0.1 / viewer.scene_scale`. (#2856)
 - Make the `ViewerGL` left control panel movable (drag the title bar) and resizable (drag the bottom-right corner); a vertical scrollbar appears automatically when contents overflow and is operable with the mouse wheel or two-finger trackpad gestures. The initial dock-on-left position is unchanged. (#2926)
 - Remove the `cbor2` `<6` dependency ceiling after updating recorder deserialization to accept mapping-like decoded containers
 - Users configuring Warp logging should use Newton's `--quiet` flag or `--warp-config log_level=...` instead of legacy Warp `verbose` or `quiet` config keys. Newton now requires Warp 1.14 and configures Warp logging through `warp.config.log_level`. (#2900, #3046)
-- Rename `SensorContact` sensing-object API names: `sensing_obj_idx` to `sensing_indices`, `sensing_obj_type` to `sensing_type`, `sensing_obj_transforms` to `sensing_transforms`, `sensing_obj_bodies` to `sensing_bodies`, and `sensing_obj_shapes` to `sensing_shapes`; the old names remain deprecated aliases for compatibility.
+- Rename `SensorContact` sensing-object API names: `sensing_obj_idx` to `sensing_indices`, `sensing_obj_type` to `sensing_type`, `sensing_obj_transforms` to `sensing_transforms`, `sensing_obj_bodies` to `sensing_bodies`, and `sensing_obj_shapes` to `sensing_shapes`; the old names remain deprecated aliases for compatibility. (#3120)
 - Bump `newton-usd-schemas` to `>=0.3.1`
 
 ### Deprecated
@@ -84,10 +84,10 @@
 
 - Remove `SensorContact.net_force` (deprecated in 1.1.0); use `SensorContact.total_force` and `SensorContact.force_matrix` instead. (#2945)
 - Remove `SensorContact(include_total=...)` (deprecated in 1.1.0); use `SensorContact(measure_total=...)` instead. (#2945)
-- Remove `SensorContact.sensing_objs` (deprecated in 1.1.0); use `SensorContact.sensing_obj_idx` and `SensorContact.sensing_obj_type` instead. (#2945)
+- Remove `SensorContact.sensing_objs` (deprecated in 1.1.0); use `SensorContact.sensing_indices` and `SensorContact.sensing_type` instead. (#2945)
 - Remove `SensorContact.counterparts` and `SensorContact.reading_indices` (deprecated in 1.1.0); use `SensorContact.counterpart_indices` and `SensorContact.counterpart_type` instead. (#2945)
 - Remove `SensorContact.shape` (deprecated in 1.1.0); use `total_force.shape` / `force_matrix.shape` instead. (#2945)
-- Remove `SensorContact.ObjectType` enum (deprecated in 1.1.0); use the `sensing_obj_type` and `counterpart_type` attributes instead. (#2945)
+- Remove `SensorContact.ObjectType` enum (deprecated in 1.1.0); use the `sensing_type` and `counterpart_type` attributes instead. (#2945)
 - Remove internal `raycast_kernel_no_hfield`; raycast code now uses `raycast_kernel` with heightfield raycasting routed through the mesh BVH path. (#2971)
 - Remove the examples helper `newton.examples.compute_world_offsets`; use `ModelBuilder.replicate()` when duplicating a model, or `newton.utils.compute_world_offsets(world_count, spacing, up_axis=...)` if you only need placement offsets. (#3075)
 
