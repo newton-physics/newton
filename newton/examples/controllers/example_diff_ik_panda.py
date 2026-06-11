@@ -188,7 +188,7 @@ class Example:
         # attribute names on the structs below.
         self.controller = ControllerDifferentialKinematics(
             model_builder=diffik_template,
-            site="ee",
+            controlled_site_label="ee",
             default_dof_indices=dof_indices,
             solver_damping=wp.full(ROBOT_COUNT, 0.05, dtype=wp.float32, device=self.device),
             bandwidth=wp.full(ROBOT_COUNT, 20.0, dtype=wp.float32, device=self.device),

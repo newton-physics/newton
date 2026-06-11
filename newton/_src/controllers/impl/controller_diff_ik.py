@@ -53,16 +53,24 @@ def _build_site_jacobian_kernel(
     target_pos_indices: wp.array[wp.uint32],
     target_quat: wp.array[wp.quat],
     target_quat_indices: wp.array[wp.uint32],
-    ee_body_per_robot: wp.array[int],
-    ee_link_per_robot: wp.array[int],
+    # ``global_ee_body_per_robot`` indexes the flat full-model body arrays
+    # (body_q / body_com), which concatenate every articulation's bodies.
+    # ``local_ee_body`` is the per-articulation link index used as a row
+    # offset into the per-robot Jacobian slab — the jacobian array's first
+    # axis already separates robots, so this index stays local. The
+    # consistency check in __init__ guarantees this value is identical
+    # across all articulations, so it's passed as a scalar.
+    global_ee_body_per_robot: wp.array[int],
+    local_ee_body: int,
     site_xform_per_robot: wp.array[wp.transform],
     dofs_per_robot: int,
     j_site: wp.array3d[float],  # (num_robots, 6, dofs_per_robot)
     e_buffer: wp.array2d[float],  # (num_robots, 6)
 ):
     r = wp.tid()
-    ee_body = ee_body_per_robot[r]
-    j_row = ee_link_per_robot[r] * 6
+
+    ee_body = global_ee_body_per_robot[r]
+    j_row = local_ee_body * 6
     site_xform = site_xform_per_robot[r]
 
     t_body = body_q[ee_body]
@@ -250,7 +258,7 @@ class ControllerDifferentialKinematics(Controller):
     def __init__(
         self,
         model_builder: ModelBuilder,
-        site: str,
+        controlled_site_label: str,
         default_dof_indices: wp.array,
         solver_damping: wp.array | str,
         bandwidth: wp.array | str,
@@ -271,27 +279,27 @@ class ControllerDifferentialKinematics(Controller):
     ):
         if not isinstance(model_builder, ModelBuilder):
             raise TypeError(f"model_builder must be a newton.ModelBuilder, got {type(model_builder).__name__}.")
-        if not isinstance(default_dof_indices, wp.array):
-            raise TypeError(f"default_dof_indices must be wp.array[uint32], got {type(default_dof_indices).__name__}.")
-        n = model_builder.articulation_count
-        if n < 1:
+        if not isinstance(default_dof_indices, wp.array) or default_dof_indices.dtype != wp.uint32:
+            raise TypeError("default_dof_indices must be wp.array[uint32]")
+        articulation_count = model_builder.articulation_count
+        if articulation_count < 1:
             raise ValueError("model_builder has no articulations.")
-        if model_builder.joint_dof_count % n != 0:
+        if model_builder.joint_dof_count % articulation_count != 0:
             raise ValueError(
                 f"model_builder.joint_dof_count={model_builder.joint_dof_count} is not divisible by "
-                f"articulation_count={n}; the N articulations must share DOF count."
+                f"articulation_count={articulation_count}; the N articulations must share DOF count."
             )
         body_count = len(model_builder.body_q)
-        if body_count % n != 0:
+        if body_count % articulation_count != 0:
             raise ValueError(
-                f"template body_count={body_count} is not divisible by articulation_count={n}; "
+                f"template body_count={body_count} is not divisible by articulation_count={articulation_count}; "
                 f"the N articulations must share body count."
             )
 
         self._template = model_builder
-        self._num_robots = n
-        self._dofs_per_robot = model_builder.joint_dof_count // n
-        self._bodies_per_robot = body_count // n
+        self._num_robots = articulation_count
+        self._dofs_per_robot = model_builder.joint_dof_count // articulation_count
+        self._bodies_per_robot = body_count // articulation_count
         self._num_outputs = self._num_robots * self._dofs_per_robot
         self._device = device if device is not None else wp.get_device()
         self._requires_grad = requires_grad
@@ -306,33 +314,53 @@ class ControllerDifferentialKinematics(Controller):
         # Per-articulation site lookup. Bodies are assumed grouped by
         # articulation in builder order (the natural pattern when
         # articulations are added one at a time, or via replicate()).
-        all_site_idxs = [i for i, lbl in enumerate(model_builder.shape_label) if lbl == site]
-        if len(all_site_idxs) != n:
+        all_site_idxs = [i for i, lbl in enumerate(model_builder.shape_label) if lbl == controlled_site_label]
+        if len(all_site_idxs) != articulation_count:
             raise ValueError(
-                f"expected exactly {n} shapes with label '{site}' (one per articulation), "
+                f"expected exactly {articulation_count} shapes with label '{controlled_site_label}' (one per articulation), "
                 f"found {len(all_site_idxs)} in model_builder; "
                 f"available labels: {model_builder.shape_label}."
             )
-        site_for_robot: dict[int, tuple[int, wp.transform]] = {}
+
+        # Each robot can carry a different site transform (the body the site
+        # rides on must be topologically identical — same per-articulation
+        # link index — but its body-local pose can differ).
+        # ``local_ee_body`` is that per-articulation link index, captured
+        # from the first site we see and consistency-checked against the
+        # rest. ``global_*`` names index into the flat full-template arrays
+        # (body_q, body_com); ``local_*`` names index within a single
+        # articulation.
+        site_xform_per_robot_dict: dict[int, wp.transform] = {}
+        local_ee_body: int | None = None
         for shape_idx in all_site_idxs:
-            body_global = int(model_builder.shape_body[shape_idx])
-            r = body_global // self._bodies_per_robot
-            within_robot = body_global % self._bodies_per_robot
-            if r in site_for_robot:
+            global_body = int(model_builder.shape_body[shape_idx])
+            # Bodies are assumed grouped by articulation in builder order.
+            articulation_i = global_body // self._bodies_per_robot
+            local_body_i = global_body % self._bodies_per_robot
+
+            if articulation_i in site_xform_per_robot_dict:
                 raise ValueError(
-                    f"multiple shapes labeled '{site}' resolved to articulation {r}; "
+                    f"multiple shapes labeled '{controlled_site_label}' resolved to articulation {articulation_i}; "
                     f"each articulation must contribute exactly one site with this label."
                 )
-            site_for_robot[r] = (within_robot, model_builder.shape_transform[shape_idx])
-        for r in range(n):
-            if r not in site_for_robot:
-                raise ValueError(f"articulation {r} has no shape labeled '{site}'.")
+            if local_ee_body is None:
+                local_ee_body = local_body_i
+            elif local_body_i != local_ee_body:
+                raise ValueError(
+                    f"articulation {articulation_i} has site '{controlled_site_label}' attached at a different "
+                    f"per-articulation body (local index {local_body_i}) than previous articulations "
+                    f"(local index {local_ee_body}); robots must be topologically identical."
+                )
+            site_xform_per_robot_dict[articulation_i] = model_builder.shape_transform[shape_idx]
 
-        ee_link_per_robot = [site_for_robot[r][0] for r in range(n)]
-        ee_body_per_robot = [r * self._bodies_per_robot + ee_link_per_robot[r] for r in range(n)]
-        site_xform_per_robot = [site_for_robot[r][1] for r in range(n)]
+        for r in range(articulation_count):
+            if r not in site_xform_per_robot_dict:
+                raise ValueError(f"articulation {r} has no shape labeled '{controlled_site_label}'.")
 
-        # Per-DOF live ports.
+        global_ee_body_per_robot = [r * self._bodies_per_robot + local_ee_body for r in range(articulation_count)]
+        site_xform_per_robot = [site_xform_per_robot_dict[r] for r in range(articulation_count)]
+
+        # Resolve all of the custom/default indices:
         self._meas_attr = joint_measurement_attr
         self._meas_idx = _normalize_indices(joint_measurement_idx, default_dof_indices, name="joint_measurement")
 
@@ -349,7 +377,7 @@ class ControllerDifferentialKinematics(Controller):
         self._target_qd_idx = _normalize_indices(joint_target_qd_idx, default_dof_indices, name="joint_target_qd")
 
         # Per-robot live ports. Default natural-order = wp.arange(num_robots).
-        default_robot_idx = wp.array(np.arange(n, dtype=np.uint32), device=self._device)
+        default_robot_idx = wp.array(np.arange(articulation_count, dtype=np.uint32), device=self._device)
         self._default_robot_idx = default_robot_idx
         self._target_pos_attr = target_pos_attr
         self._target_pos_idx = _normalize_indices(target_pos_idx, default_robot_idx, name="target_pos")
@@ -358,38 +386,45 @@ class ControllerDifferentialKinematics(Controller):
 
         # Per-robot gain ports.
         self._damping_attr, self._damping_baked = _normalize_parameter_port(
-            solver_damping, n, wp.float32, self._device, requires_grad, name="solver_damping"
+            solver_damping, articulation_count, wp.float32, self._device, requires_grad, name="solver_damping"
         )
         self._bandwidth_attr, self._bandwidth_baked = _normalize_parameter_port(
-            bandwidth, n, wp.float32, self._device, requires_grad, name="bandwidth"
+            bandwidth, articulation_count, wp.float32, self._device, requires_grad, name="bandwidth"
         )
 
         # Allocate compute-side scratch + build the internal model.
         self._model = self._template.finalize(device=self._device, requires_grad=requires_grad)
         self._model_state = self._model.state()
-        self._ee_body_per_robot = wp.array(ee_body_per_robot, dtype=int, device=self._device)
-        self._ee_link_per_robot = wp.array(ee_link_per_robot, dtype=int, device=self._device)
+        self._global_ee_body_per_robot = wp.array(global_ee_body_per_robot, dtype=int, device=self._device)
+        self._local_ee_body = local_ee_body
         self._site_xform_per_robot = wp.array(site_xform_per_robot, dtype=wp.transform, device=self._device)
         self._jacobian = wp.zeros(
-            (n, self._model.max_joints_per_articulation * 6, self._model.max_dofs_per_articulation),
+            (articulation_count, self._model.max_joints_per_articulation * 6, self._model.max_dofs_per_articulation),
             dtype=wp.float32,
             device=self._device,
             requires_grad=requires_grad,
         )
         self._j_site = wp.zeros(
-            (n, 6, self._dofs_per_robot),
+            (articulation_count, 6, self._dofs_per_robot),
             dtype=wp.float32,
             device=self._device,
             requires_grad=requires_grad,
         )
-        self._e_buffer = wp.zeros((n, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad)
-        self._A = wp.zeros((n, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad)
-        self._y = wp.zeros((n, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+        self._e_buffer = wp.zeros(
+            (articulation_count, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+        )
+        self._A = wp.zeros(
+            (articulation_count, 6, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+        )
+        self._y = wp.zeros((articulation_count, 6), dtype=wp.float32, device=self._device, requires_grad=requires_grad)
         self._qd_target_local = wp.zeros(
-            (n, self._dofs_per_robot), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            (articulation_count, self._dofs_per_robot),
+            dtype=wp.float32,
+            device=self._device,
+            requires_grad=requires_grad,
         )
 
-        # Live read ports + any live gain ports → fields on input_struct().
+        # Input ports + any live gain ports --> fields on input_struct().
         self._input_specs: list[tuple[str, Any, int]] = [
             (self._meas_attr, wp.float32, _idx_max(self._meas_idx)),
             (self._meas_rate_attr, wp.float32, _idx_max(self._meas_rate_idx)),
@@ -398,7 +433,7 @@ class ControllerDifferentialKinematics(Controller):
         ]
         for attr in (self._damping_attr, self._bandwidth_attr):
             if attr is not None:
-                self._input_specs.append((attr, wp.float32, n))
+                self._input_specs.append((attr, wp.float32, articulation_count))
 
         self._output_specs: list[tuple[str, Any, int]] = [
             (self._target_q_attr, wp.float32, _idx_max(self._target_q_idx)),
@@ -486,8 +521,8 @@ class ControllerDifferentialKinematics(Controller):
                 self._target_pos_idx,
                 target_quat,
                 self._target_quat_idx,
-                self._ee_body_per_robot,
-                self._ee_link_per_robot,
+                self._global_ee_body_per_robot,
+                self._local_ee_body,
                 self._site_xform_per_robot,
                 self._dofs_per_robot,
             ],

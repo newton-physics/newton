@@ -362,7 +362,7 @@ class TestControllerDifferentialKinematics(unittest.TestCase):
 
         diffik = ControllerDifferentialKinematics(
             model_builder=builder,
-            site="tip",
+            controlled_site_label="tip",
             default_dof_indices=default_idx,
             solver_damping=wp.array([0.05], dtype=wp.float32, device=device),
             bandwidth=wp.array([1.0], dtype=wp.float32, device=device),
@@ -388,7 +388,7 @@ class TestControllerDifferentialKinematics(unittest.TestCase):
         out_qd = wp.zeros(2, dtype=wp.float32, device=device)
         diffik = ControllerDifferentialKinematics(
             model_builder=builder,
-            site="tip",
+            controlled_site_label="tip",
             default_dof_indices=default_idx,
             solver_damping=wp.array([0.05], dtype=wp.float32, device=device),
             bandwidth=wp.array([1.0], dtype=wp.float32, device=device),
@@ -414,7 +414,7 @@ class TestControllerDifferentialKinematics(unittest.TestCase):
         out_qd = wp.zeros(2, dtype=wp.float32, device=device)
         diffik = ControllerDifferentialKinematics(
             model_builder=builder,
-            site="tip",
+            controlled_site_label="tip",
             default_dof_indices=default_idx,
             solver_damping=wp.array([0.05], dtype=wp.float32, device=device),
             bandwidth=wp.array([1.0], dtype=wp.float32, device=device),
@@ -444,7 +444,7 @@ class TestControllerDifferentialKinematics(unittest.TestCase):
         out_qd = wp.zeros(1, dtype=wp.float32, device=device)
         diffik = ControllerDifferentialKinematics(
             model_builder=builder,
-            site="tool",
+            controlled_site_label="tool",
             default_dof_indices=default_idx,
             solver_damping=wp.array([LAMBDA], dtype=wp.float32, device=device),
             bandwidth=wp.array([BAND], dtype=wp.float32, device=device),
@@ -474,7 +474,7 @@ class TestControllerDifferentialKinematics(unittest.TestCase):
 
         diffik = ControllerDifferentialKinematics(
             model_builder=builder,
-            site="tool",
+            controlled_site_label="tool",
             default_dof_indices=default_idx,
             solver_damping=wp.array([LAMBDA], dtype=wp.float32, device=device),
             bandwidth=wp.array([BAND], dtype=wp.float32, device=device),
@@ -515,7 +515,7 @@ class TestControllerDifferentialKinematics(unittest.TestCase):
 
         diffik = ControllerDifferentialKinematics(
             model_builder=builder,
-            site="tool",
+            controlled_site_label="tool",
             default_dof_indices=default_idx,
             solver_damping=wp.array([LAMBDA] * N, dtype=wp.float32, device=device),
             bandwidth=wp.array([BAND] * N, dtype=wp.float32, device=device),
@@ -546,7 +546,7 @@ class TestControllerDifferentialKinematics(unittest.TestCase):
         out_qd = wp.zeros(sim_n_dofs, dtype=wp.float32, device=device)
         diffik = ControllerDifferentialKinematics(
             model_builder=builder,
-            site="tool",
+            controlled_site_label="tool",
             default_dof_indices=default_idx,
             solver_damping=wp.array([LAMBDA], dtype=wp.float32, device=device),
             bandwidth=wp.array([BAND], dtype=wp.float32, device=device),
@@ -600,7 +600,7 @@ class TestControllerDifferentialKinematics(unittest.TestCase):
         out_qd = wp.zeros(2, dtype=wp.float32, device=device)
         diffik = ControllerDifferentialKinematics(
             model_builder=builder,
-            site="tool",
+            controlled_site_label="tool",
             default_dof_indices=default_idx,
             solver_damping=wp.array([LAMBDA, LAMBDA], dtype=wp.float32, device=device),
             bandwidth=wp.array([BAND, BAND], dtype=wp.float32, device=device),
@@ -645,7 +645,7 @@ class TestControllerDifferentialKinematics(unittest.TestCase):
 
         diffik = ControllerDifferentialKinematics(
             model_builder=builder,
-            site="tool",
+            controlled_site_label="tool",
             default_dof_indices=default_idx,
             solver_damping=wp.array([LAMBDA] * N, dtype=wp.float32, device=device),
             bandwidth=wp.array([BAND] * N, dtype=wp.float32, device=device),
@@ -671,7 +671,7 @@ class TestControllerDifferentialKinematics(unittest.TestCase):
         default_idx = _iota(1, device)
         diffik = ControllerDifferentialKinematics(
             model_builder=builder,
-            site="tool",
+            controlled_site_label="tool",
             default_dof_indices=default_idx,
             solver_damping=wp.array([0.05], dtype=wp.float32, device=device),
             bandwidth="my_band",  # live
