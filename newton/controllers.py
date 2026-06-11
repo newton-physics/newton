@@ -4,7 +4,7 @@
 """Control blocks for Newton.
 
 A :class:`Controller` is a single self-contained control law (PID,
-differential IK, gravity compensation, …). There is no framework-level
+differential IK, differential drive, …). There is no framework-level
 composition: callers wanting to combine multiple control laws invoke each
 one's :meth:`Controller.compute` in sequence themselves. Controllers
 typically run *before* actuators in a simulation step — a controller
@@ -14,12 +14,14 @@ actuators turn that target into effort.
 
 from ._src.controllers import (
     Controller,
+    ControllerDifferentialDrive,
     ControllerDifferentialKinematics,
     ControllerPID,
 )
 
 __all__ = [
     "Controller",
+    "ControllerDifferentialDrive",
     "ControllerDifferentialKinematics",
     "ControllerPID",
 ]

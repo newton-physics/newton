@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .controller import Controller
-from .impl import ControllerDifferentialKinematics, ControllerPID
+from .impl import ControllerDifferentialDrive, ControllerDifferentialKinematics, ControllerPID
 
 __all__ = [
     "Controller",
+    "ControllerDifferentialDrive",
     "ControllerDifferentialKinematics",
     "ControllerPID",
 ]
