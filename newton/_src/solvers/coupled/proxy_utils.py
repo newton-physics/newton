@@ -136,8 +136,7 @@ def smooth_proxy_teleportation_kernel(
 @wp.kernel(enable_backward=False)
 def subtract_proxy_forces_kernel(
     dt: float,
-    gravity: wp.array[wp.vec3],
-    body_world: wp.array[wp.int32],
+    body_gravity_acceleration: wp.array[wp.vec3],
     dst_body_q: wp.array[wp.transform],
     dst_body_f: wp.array[wp.spatial_vector],
     coupling_forces: wp.array[wp.spatial_vector],
@@ -158,8 +157,8 @@ def subtract_proxy_forces_kernel(
 
     Args:
         dt: Substep time step [s].
-        gravity: Per-world gravity vectors.
-        body_world: Per-body world index in the destination model.
+        body_gravity_acceleration: Per-body acceleration applied internally by
+            the destination solver's gravity-like forces [m/s^2].
         dst_body_q: Destination body transforms (for rotating inertia).
         dst_body_f: Destination body force inputs.
         coupling_forces: Spatial forces previously applied to the driving solver,
@@ -184,9 +183,8 @@ def subtract_proxy_forces_kernel(
     delta_v = dt * inv_m * wp.spatial_top(f)
     delta_w = dt * wp.quat_rotate(r, inv_I * wp.quat_rotate_inv(r, wp.spatial_bottom(f)))
 
-    # Subtract gravity (driving solver already applied it)
-    world_idx = body_world[local_id]
-    g = gravity[wp.max(world_idx, 0)]
+    # Subtract solver-applied gravity-like acceleration (driving solver already applied it).
+    g = body_gravity_acceleration[local_id]
     delta_v_grav = wp.vec3(0.0, 0.0, 0.0)
     if inv_m > 0.0:
         delta_v_grav = dt * g
@@ -197,8 +195,7 @@ def subtract_proxy_forces_kernel(
 @wp.kernel(enable_backward=False)
 def subtract_proxy_particle_forces_kernel(
     dt: float,
-    gravity: wp.array[wp.vec3],
-    particle_world: wp.array[wp.int32],
+    particle_gravity_acceleration: wp.array[wp.vec3],
     dst_particle_f: wp.array[wp.vec3],
     coupling_forces: wp.array[wp.vec3],
     particle_local_to_proxy_global: wp.array[int],
@@ -214,8 +211,7 @@ def subtract_proxy_particle_forces_kernel(
     inv_m = dst_particle_inv_mass[local_id]
     delta_v = dt * inv_m * (coupling_forces[global_id] + dst_particle_f[local_id])
 
-    world_idx = particle_world[local_id]
-    g = gravity[wp.max(world_idx, 0)]
+    g = particle_gravity_acceleration[local_id]
     delta_v_grav = wp.vec3(0.0, 0.0, 0.0)
     if inv_m > 0.0:
         delta_v_grav = dt * g
@@ -238,8 +234,7 @@ def harvest_proxy_momentum_forces_kernel(
     body_mass: wp.array[float],
     body_inertia: wp.array[wp.mat33],
     body_q: wp.array[wp.transform],
-    gravity: wp.array[wp.vec3],
-    body_world: wp.array[wp.int32],
+    body_gravity_acceleration: wp.array[wp.vec3],
     out_coupling_forces: wp.array[wp.spatial_vector],
 ):
     """Estimate proxy feedback force from destination velocity change."""
@@ -255,8 +250,7 @@ def harvest_proxy_momentum_forces_kernel(
     I_body = body_inertia[local_id]
     r = wp.transform_get_rotation(body_q[local_id])
 
-    world_idx = body_world[local_id]
-    g = gravity[wp.max(world_idx, 0)]
+    g = body_gravity_acceleration[local_id]
 
     f_ext = wp.spatial_vector(wp.vec3(0.0), wp.vec3(0.0))
     if body_f:
@@ -276,8 +270,7 @@ def harvest_proxy_particle_momentum_forces_kernel(
     qd_after: wp.array[wp.vec3],
     particle_f: wp.array[wp.vec3],
     particle_mass: wp.array[float],
-    gravity: wp.array[wp.vec3],
-    particle_world: wp.array[wp.int32],
+    particle_gravity_acceleration: wp.array[wp.vec3],
     out_coupling_forces: wp.array[wp.vec3],
 ):
     """Estimate proxy particle feedback force from destination velocity change."""
@@ -289,8 +282,7 @@ def harvest_proxy_particle_momentum_forces_kernel(
     dv = qd_after[local_id] - qd_before[local_id]
     m = particle_mass[local_id]
 
-    world_idx = particle_world[local_id]
-    g = gravity[wp.max(world_idx, 0)]
+    g = particle_gravity_acceleration[local_id]
     f_ext = wp.vec3(0.0, 0.0, 0.0)
     if particle_f:
         f_ext = particle_f[local_id]

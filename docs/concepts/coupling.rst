@@ -116,6 +116,11 @@ The protocol currently covers these concepts:
   arrays were changed by the coupler. VBD uses this to realign private
   previous-pose state after proxy synchronization or ADMM iteration restarts.
   MPM uses it to keep collider caches consistent.
+- ``coupling_eval_gravity_acceleration()`` lets a solver report the body and
+  particle acceleration that it applies internally for gravity-like forces.
+  Proxy and ADMM couplers pass these acceleration arrays explicitly to rewind
+  and harvest hooks so solvers that scale or compensate gravity can avoid
+  double-applying it.
 - ``coupling_rewind_proxy_body_velocity()`` and
   ``coupling_rewind_proxy_particle_velocity()`` let a
   destination solver prepare proxy velocities before a lagged proxy pass.

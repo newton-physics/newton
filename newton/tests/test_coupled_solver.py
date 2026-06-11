@@ -341,15 +341,17 @@ class _ProxyParticleHookSolver(SolverBase, CouplingInterface):
         particle_local_to_proxy_global,
         state,
         coupling_forces,
+        particle_gravity_acceleration,
         dt,
     ):
-        del particle_local_to_proxy_global, state, coupling_forces, dt
+        del particle_local_to_proxy_global, state, coupling_forces, particle_gravity_acceleration, dt
         self.rewind_calls += 1
 
     def coupling_harvest_proxy_particle_forces(
         self,
         particle_local_to_proxy_global,
         out_particle_f,
+        particle_gravity_acceleration,
         *,
         particle_qd_before=None,
         state=None,
@@ -357,7 +359,7 @@ class _ProxyParticleHookSolver(SolverBase, CouplingInterface):
         contacts=None,
         dt=0.0,
     ):
-        del particle_qd_before, state, state_out, contacts, dt
+        del particle_gravity_acceleration, particle_qd_before, state, state_out, contacts, dt
         self.harvest_calls += 1
         wp.launch(
             _write_proxy_particle_force_kernel,
@@ -389,6 +391,7 @@ class _ParticleHarvestStateRecordingSolver(SolverBase, CouplingInterface):
         self,
         particle_local_to_proxy_global,
         out_particle_f,
+        particle_gravity_acceleration,
         *,
         particle_qd_before=None,
         state=None,
@@ -396,7 +399,7 @@ class _ParticleHarvestStateRecordingSolver(SolverBase, CouplingInterface):
         contacts=None,
         dt=0.0,
     ):
-        del particle_local_to_proxy_global, out_particle_f, dt
+        del particle_local_to_proxy_global, out_particle_f, particle_gravity_acceleration, dt
         self.harvest_particle_qd = state.particle_qd.numpy().copy()
         self.harvest_particle_qd_before = particle_qd_before.numpy().copy()
         self.harvest_particle_qd_out = state_out.particle_qd.numpy().copy()
@@ -424,6 +427,7 @@ class _BodyHarvestStateRecordingSolver(SolverBase, CouplingInterface):
         self,
         body_local_to_proxy_global,
         out_body_f,
+        body_gravity_acceleration,
         *,
         body_qd_before=None,
         state=None,
@@ -431,7 +435,7 @@ class _BodyHarvestStateRecordingSolver(SolverBase, CouplingInterface):
         contacts=None,
         dt=0.0,
     ):
-        del body_local_to_proxy_global, out_body_f, state_out, contacts, dt
+        del body_local_to_proxy_global, out_body_f, body_gravity_acceleration, state_out, contacts, dt
         self.harvest_body_qd = state.body_qd.numpy().copy()
         self.harvest_body_qd_before = body_qd_before.numpy().copy()
 
@@ -461,6 +465,7 @@ class _ProxyBodyHookSolver(SolverBase, CouplingInterface):
         self,
         body_local_to_proxy_global,
         out_body_f,
+        body_gravity_acceleration,
         *,
         body_qd_before=None,
         state=None,
@@ -468,7 +473,7 @@ class _ProxyBodyHookSolver(SolverBase, CouplingInterface):
         contacts=None,
         dt=0.0,
     ):
-        del body_qd_before, state, state_out, contacts, dt
+        del body_gravity_acceleration, body_qd_before, state, state_out, contacts, dt
         self.harvest_calls += 1
         wp.launch(
             _write_proxy_body_wrench_kernel,
@@ -508,6 +513,25 @@ class _StepCountingCopySolver(SolverBase, CouplingInterface):
         if state_in.particle_q is not None and state_out.particle_q is not None:
             wp.copy(state_out.particle_q, state_in.particle_q)
             wp.copy(state_out.particle_qd, state_in.particle_qd)
+
+
+class _GravityCountingCopySolver(_StepCountingCopySolver):
+    """Copy solver that records gravity-acceleration cache requests."""
+
+    instances: ClassVar[dict[str, "_GravityCountingCopySolver"]] = {}
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.gravity_requests = []
+
+    def coupling_eval_gravity_acceleration(self, out_body_acceleration, out_particle_acceleration) -> None:
+        self.gravity_requests.append(
+            (
+                None if out_body_acceleration is None else int(out_body_acceleration.shape[0]),
+                None if out_particle_acceleration is None else int(out_particle_acceleration.shape[0]),
+            )
+        )
+        CouplingInterface.coupling_eval_gravity_acceleration(self, out_body_acceleration, out_particle_acceleration)
 
 
 class _ResetRecordingSolver(_StepCountingCopySolver):
@@ -569,6 +593,7 @@ class _ContactRecordingBodyHarvestSolver(_ContactRecordingCopySolver):
         self,
         body_local_to_proxy_global,
         out_body_f,
+        body_gravity_acceleration,
         *,
         body_qd_before=None,
         state=None,
@@ -576,7 +601,7 @@ class _ContactRecordingBodyHarvestSolver(_ContactRecordingCopySolver):
         contacts=None,
         dt=0.0,
     ):
-        del body_local_to_proxy_global, out_body_f, body_qd_before, state, state_out, dt
+        del body_local_to_proxy_global, out_body_f, body_gravity_acceleration, body_qd_before, state, state_out, dt
         self.harvest_contacts.append(contacts)
 
 
@@ -997,6 +1022,44 @@ class TestSolverCoupledBasic(unittest.TestCase):
         view_b_inv_mass = coupled.view("B").body_inv_mass.numpy()
         np.testing.assert_allclose(view_a_inv_mass, [0.25])
         np.testing.assert_allclose(view_b_inv_mass, [0.125])
+
+    def test_gravity_acceleration_cache_scope_matches_coupler_kind(self):
+        """Proxy only needs destination gravity caches; ADMM needs all entries."""
+        _GravityCountingCopySolver.instances.clear()
+        proxy = SolverCoupledProxy(
+            model=self.model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=_GravityCountingCopySolver, bodies=[0]),
+                SolverCoupled.Entry(name="dst", solver=_GravityCountingCopySolver, bodies=[1]),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(source="src", destination="dst", bodies=[0]),
+                ],
+            ),
+        )
+
+        proxy_src = _GravityCountingCopySolver.instances["src"]
+        proxy_dst = _GravityCountingCopySolver.instances["dst"]
+        self.assertEqual(proxy_src.gravity_requests, [])
+        self.assertEqual(len(proxy_dst.gravity_requests), 1)
+        self.assertIsNone(proxy._entries["src"].body_gravity_acceleration)
+        self.assertIsNotNone(proxy._entries["dst"].body_gravity_acceleration)
+
+        _GravityCountingCopySolver.instances.clear()
+        admm = SolverCoupledADMM(
+            model=self.model,
+            entries=[
+                SolverCoupled.Entry(name="A", solver=_GravityCountingCopySolver, bodies=[0]),
+                SolverCoupled.Entry(name="B", solver=_GravityCountingCopySolver, bodies=[1]),
+            ],
+            coupling=SolverCoupledADMM.Config(iterations=1),
+        )
+
+        self.assertEqual(len(_GravityCountingCopySolver.instances["A"].gravity_requests), 1)
+        self.assertEqual(len(_GravityCountingCopySolver.instances["B"].gravity_requests), 1)
+        self.assertIsNotNone(admm._entries["A"].body_gravity_acceleration)
+        self.assertIsNotNone(admm._entries["B"].body_gravity_acceleration)
 
     def test_admm_notify_model_changed_reapplies_proximal_body_scaling(self):
         """ADMM proximal body mass scaling should refresh from parent inertia."""
@@ -1752,6 +1815,63 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertEqual(len(solver.input_qd), 2)
         np.testing.assert_allclose(solver.input_qd[0], np.zeros(6))
         np.testing.assert_allclose(solver.input_qd[1], np.zeros(6))
+
+
+class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
+    """MuJoCo-specific coupling hook behavior."""
+
+    def test_gravity_acceleration_hook_uses_body_gravcomp(self):
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError as exc:
+            self.skipTest(str(exc))
+
+        builder = newton.ModelBuilder(gravity=-10.0, up_axis=newton.Axis.Z)
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        body0 = builder.add_link(
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3)),
+            custom_attributes={"mujoco:gravcomp": 0.0},
+        )
+        body1 = builder.add_link(
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3)),
+            custom_attributes={"mujoco:gravcomp": 0.5},
+        )
+        body2 = builder.add_link(
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3)),
+            custom_attributes={"mujoco:gravcomp": 1.0},
+        )
+        builder.add_shape_box(body=body0, hx=0.05, hy=0.05, hz=0.05)
+        builder.add_shape_box(body=body1, hx=0.05, hy=0.05, hz=0.05)
+        builder.add_shape_box(body=body2, hx=0.05, hy=0.05, hz=0.05)
+        joint0 = builder.add_joint_revolute(parent=-1, child=body0, axis=(0.0, 0.0, 1.0))
+        joint1 = builder.add_joint_revolute(parent=body0, child=body1, axis=(0.0, 1.0, 0.0))
+        joint2 = builder.add_joint_revolute(parent=body1, child=body2, axis=(1.0, 0.0, 0.0))
+        builder.add_articulation([joint0, joint1, joint2])
+        model = builder.finalize(device="cpu")
+
+        solver = SolverMuJoCo(model=model, iterations=1, disable_contacts=True)
+        body_acceleration = wp.empty(model.body_count, dtype=wp.vec3, device=model.device)
+        solver.coupling_eval_gravity_acceleration(body_acceleration, None)
+
+        np.testing.assert_allclose(
+            body_acceleration.numpy(),
+            np.array([[0.0, 0.0, -10.0], [0.0, 0.0, -5.0], [0.0, 0.0, 0.0]], dtype=np.float32),
+            atol=1.0e-6,
+        )
+
+        model.mujoco.gravcomp.assign(np.array([0.25, 0.5, 0.75], dtype=np.float32))
+        solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+        solver.coupling_eval_gravity_acceleration(body_acceleration, None)
+
+        np.testing.assert_allclose(
+            body_acceleration.numpy(),
+            np.array([[0.0, 0.0, -7.5], [0.0, 0.0, -5.0], [0.0, 0.0, -2.5]], dtype=np.float32),
+            atol=1.0e-6,
+        )
 
 
 class TestSolverCoupledMuJoCoVBDMultiEnv(unittest.TestCase):
@@ -3423,8 +3543,7 @@ class TestDefaultProxyMomentumHarvest(unittest.TestCase):
             device=dev,
         )
         body_q = wp.array([wp.transform(wp.vec3(0.0), wp.quat_identity())], dtype=wp.transform, device=dev)
-        gravity = wp.array([wp.vec3(0.0, -9.8, 0.0)], dtype=wp.vec3, device=dev)
-        body_world = wp.array([0], dtype=wp.int32, device=dev)
+        body_gravity_acceleration = wp.array([wp.vec3(0.0, -9.8, 0.0)], dtype=wp.vec3, device=dev)
         out = wp.zeros(1, dtype=wp.spatial_vector, device=dev)
 
         wp.launch(
@@ -3439,8 +3558,7 @@ class TestDefaultProxyMomentumHarvest(unittest.TestCase):
                 body_mass,
                 body_inertia,
                 body_q,
-                gravity,
-                body_world,
+                body_gravity_acceleration,
                 out,
             ],
             device=dev,
@@ -3457,8 +3575,7 @@ class TestDefaultProxyMomentumHarvest(unittest.TestCase):
         qd_after = wp.array([wp.vec3(1.0, 2.0, 3.0)], dtype=wp.vec3, device=dev)
         particle_f = wp.array([wp.vec3(1.0, 2.0, 3.0)], dtype=wp.vec3, device=dev)
         particle_mass = wp.array([2.0], dtype=float, device=dev)
-        gravity = wp.array([wp.vec3(0.0, -10.0, 0.0)], dtype=wp.vec3, device=dev)
-        particle_world = wp.array([0], dtype=wp.int32, device=dev)
+        particle_gravity_acceleration = wp.array([wp.vec3(0.0, -10.0, 0.0)], dtype=wp.vec3, device=dev)
         out = wp.zeros(1, dtype=wp.vec3, device=dev)
 
         wp.launch(
@@ -3471,8 +3588,7 @@ class TestDefaultProxyMomentumHarvest(unittest.TestCase):
                 qd_after,
                 particle_f,
                 particle_mass,
-                gravity,
-                particle_world,
+                particle_gravity_acceleration,
                 out,
             ],
             device=dev,
@@ -3487,8 +3603,7 @@ class TestProxyVelocityRewind(unittest.TestCase):
     def test_body_rewind_subtracts_coupling_external_force_and_gravity(self):
         dev = "cpu"
         dt = 0.25
-        gravity = wp.array([wp.vec3(0.0, -9.8, 0.0)], dtype=wp.vec3, device=dev)
-        body_world = wp.array([0], dtype=wp.int32, device=dev)
+        body_gravity_acceleration = wp.array([wp.vec3(0.0, -9.8, 0.0)], dtype=wp.vec3, device=dev)
         body_q = wp.array([wp.transform([0.0, 0.0, 0.0], wp.quat_identity())], dtype=wp.transform, device=dev)
         body_f = wp.array(
             [wp.spatial_vector(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)],
@@ -3518,8 +3633,7 @@ class TestProxyVelocityRewind(unittest.TestCase):
             dim=1,
             inputs=[
                 dt,
-                gravity,
-                body_world,
+                body_gravity_acceleration,
                 body_q,
                 body_f,
                 coupling_f,
@@ -3550,8 +3664,16 @@ class TestProxyVelocityRewind(unittest.TestCase):
             device=model.device,
         )
         body_local_to_proxy_global = wp.array([0], dtype=int, device=model.device)
+        body_gravity_acceleration = wp.empty(model.body_count, dtype=wp.vec3, device=model.device)
+        solver.coupling_eval_gravity_acceleration(body_gravity_acceleration, None)
 
-        solver.coupling_rewind_proxy_body_velocity(body_local_to_proxy_global, state, coupling_f, dt=0.25)
+        solver.coupling_rewind_proxy_body_velocity(
+            body_local_to_proxy_global,
+            state,
+            coupling_f,
+            body_gravity_acceleration,
+            dt=0.25,
+        )
 
         expected = np.array([9.875, 13.2, 11.625, 12.75, 13.75, 14.75])
         np.testing.assert_allclose(state.body_qd.numpy()[0], expected, rtol=1.0e-6, atol=1.0e-6)
@@ -3559,8 +3681,7 @@ class TestProxyVelocityRewind(unittest.TestCase):
     def test_particle_rewind_subtracts_coupling_external_force_and_gravity(self):
         dev = "cpu"
         dt = 0.5
-        gravity = wp.array([wp.vec3(0.0, -10.0, 0.0)], dtype=wp.vec3, device=dev)
-        particle_world = wp.array([0], dtype=wp.int32, device=dev)
+        particle_gravity_acceleration = wp.array([wp.vec3(0.0, -10.0, 0.0)], dtype=wp.vec3, device=dev)
         particle_f = wp.array([wp.vec3(1.0, 0.0, -1.0)], dtype=wp.vec3, device=dev)
         coupling_f = wp.array([wp.vec3(3.0, 4.0, 5.0)], dtype=wp.vec3, device=dev)
         particle_local_to_proxy_global = wp.array([0], dtype=int, device=dev)
@@ -3572,8 +3693,7 @@ class TestProxyVelocityRewind(unittest.TestCase):
             dim=1,
             inputs=[
                 dt,
-                gravity,
-                particle_world,
+                particle_gravity_acceleration,
                 particle_f,
                 coupling_f,
                 particle_local_to_proxy_global,
@@ -3635,9 +3755,12 @@ class TestVBDProxyParticleHarvest(unittest.TestCase):
         contacts.soft_contact_normal.assign(np.array([[1.0, 0.0, 0.0]], dtype=np.float32))
 
         out_particle_f = wp.zeros(1, dtype=wp.vec3, device=model.device)
+        particle_gravity_acceleration = wp.empty(model.particle_count, dtype=wp.vec3, device=model.device)
+        solver.coupling_eval_gravity_acceleration(None, particle_gravity_acceleration)
         solver.coupling_harvest_proxy_particle_forces(
             wp.array([0], dtype=int, device=model.device),
             out_particle_f,
+            particle_gravity_acceleration,
             state=state,
             state_out=state_out,
             contacts=contacts,

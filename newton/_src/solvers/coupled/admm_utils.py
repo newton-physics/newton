@@ -177,25 +177,21 @@ def body_gravity_compensation_kernel(
     gamma: float,
     body_mass: wp.array[float],
     body_inv_mass: wp.array[float],
-    body_world: wp.array[wp.int32],
-    gravity: wp.array[wp.vec3],
-    body_gravcomp: wp.array[float],
+    body_gravity_acceleration: wp.array[wp.vec3],
     body_f: wp.array[wp.spatial_vector],
 ):
     """Cancel gravity force introduced by ADMM proximal mass scaling.
 
-    A sub-solver that compensates gravity (e.g. MuJoCo body ``gravcomp``) applies
-    only ``(1 - gravcomp)`` of the gravity on the proximally-scaled mass, so the
-    artifact to cancel is scaled by the same factor to avoid double-compensation.
+    ``body_gravity_acceleration`` is evaluated by the sub-solver's coupling
+    hook and therefore already includes solver-specific gravity scaling.
     """
     i = wp.tid()
     if body_inv_mass[i] <= 0.0:
         return
 
     mass = body_mass[i] / (1.0 + gamma)
-    g = gravity[wp.max(body_world[i], 0)]
-    applied = 1.0 - body_gravcomp[i]
-    wp.atomic_add(body_f, i, wp.spatial_vector(-gamma * mass * applied * g, wp.vec3(0.0, 0.0, 0.0)))
+    g = body_gravity_acceleration[i]
+    wp.atomic_add(body_f, i, wp.spatial_vector(-gamma * mass * g, wp.vec3(0.0, 0.0, 0.0)))
 
 
 @wp.kernel(enable_backward=False)
@@ -204,8 +200,7 @@ def particle_gravity_compensation_kernel(
     particle_mass: wp.array[float],
     particle_inv_mass: wp.array[float],
     particle_flags: wp.array[wp.int32],
-    particle_world: wp.array[wp.int32],
-    gravity: wp.array[wp.vec3],
+    particle_gravity_acceleration: wp.array[wp.vec3],
     particle_f: wp.array[wp.vec3],
 ):
     """Cancel gravity force introduced by ADMM proximal mass scaling."""
@@ -214,7 +209,7 @@ def particle_gravity_compensation_kernel(
         return
 
     mass = particle_mass[i] / (1.0 + gamma)
-    g = gravity[wp.max(particle_world[i], 0)]
+    g = particle_gravity_acceleration[i]
     wp.atomic_add(particle_f, i, -gamma * mass * g)
 
 

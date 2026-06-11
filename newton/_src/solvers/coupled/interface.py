@@ -41,15 +41,20 @@ Supported hook signatures are:
     def coupling_notify_input_state_update(state, flags, *, iteration_restart=False, dt=0.0) -> None: ...
 
 
-    def coupling_rewind_proxy_body_velocity(body_local_to_proxy_global, state, coupling_forces, dt) -> None: ...
+    def coupling_rewind_proxy_body_velocity(
+        body_local_to_proxy_global, state, coupling_forces, body_gravity_acceleration, dt
+    ) -> None: ...
 
 
-    def coupling_rewind_proxy_particle_velocity(particle_local_to_proxy_global, state, coupling_forces, dt) -> None: ...
+    def coupling_rewind_proxy_particle_velocity(
+        particle_local_to_proxy_global, state, coupling_forces, particle_gravity_acceleration, dt
+    ) -> None: ...
 
 
     def coupling_harvest_proxy_wrenches(
         body_local_to_proxy_global,
         out_body_f,
+        body_gravity_acceleration,
         *,
         body_qd_before=None,
         state=None,
@@ -62,6 +67,7 @@ Supported hook signatures are:
     def coupling_harvest_proxy_particle_forces(
         particle_local_to_proxy_global,
         out_particle_f,
+        particle_gravity_acceleration,
         *,
         particle_qd_before=None,
         state=None,
@@ -245,11 +251,46 @@ class CouplingInterface:
         """React to coupler-produced input state updates."""
         del state, flags, iteration_restart, dt
 
+    def coupling_eval_gravity_acceleration(
+        self,
+        out_body_acceleration: wp.array[wp.vec3] | None,
+        out_particle_acceleration: wp.array[wp.vec3] | None,
+    ) -> None:
+        """Evaluate solver-applied gravity-like acceleration for all local entities.
+
+        The coupled solvers cache these arrays at initialization and refresh
+        them on relevant model changes. Solvers that apply scaled or compensated
+        gravity should override this hook so proxy and ADMM coupling can remove
+        exactly the acceleration the sub-solver will apply internally.
+
+        Args:
+            out_body_acceleration: Optional output per local body [m/s^2].
+            out_particle_acceleration: Optional output per local particle [m/s^2].
+        """
+        model = self.model
+        if out_body_acceleration is not None and out_body_acceleration.shape[0] > 0:
+            wp.launch(
+                _coupling_eval_body_gravity_acceleration_kernel,
+                dim=out_body_acceleration.shape[0],
+                inputs=[model.gravity, model.body_world],
+                outputs=[out_body_acceleration],
+                device=model.device,
+            )
+        if out_particle_acceleration is not None and out_particle_acceleration.shape[0] > 0:
+            wp.launch(
+                _coupling_eval_particle_gravity_acceleration_kernel,
+                dim=out_particle_acceleration.shape[0],
+                inputs=[model.gravity, model.particle_world],
+                outputs=[out_particle_acceleration],
+                device=model.device,
+            )
+
     def coupling_rewind_proxy_body_velocity(
         self,
         body_local_to_proxy_global: wp.array[int],
         state: State,
         coupling_forces: wp.array[wp.spatial_vector],
+        body_gravity_acceleration: wp.array[wp.vec3],
         dt: float,
     ) -> None:
         """Remove velocity-level feedback, public forces, and gravity from proxy velocities.
@@ -269,8 +310,7 @@ class CouplingInterface:
             dim=body_local_to_proxy_global.shape[0],
             inputs=[
                 float(dt),
-                model.gravity,
-                model.body_world,
+                body_gravity_acceleration,
                 state.body_q,
                 state.body_f,
                 coupling_forces,
@@ -287,6 +327,7 @@ class CouplingInterface:
         particle_local_to_proxy_global: wp.array[int],
         state: State,
         coupling_forces: wp.array[wp.vec3],
+        particle_gravity_acceleration: wp.array[wp.vec3],
         dt: float,
     ) -> None:
         """Remove velocity-level feedback, public forces, and gravity from proxy velocities.
@@ -306,8 +347,7 @@ class CouplingInterface:
             dim=particle_local_to_proxy_global.shape[0],
             inputs=[
                 float(dt),
-                model.gravity,
-                model.particle_world,
+                particle_gravity_acceleration,
                 state.particle_f,
                 coupling_forces,
                 particle_local_to_proxy_global,
@@ -321,6 +361,7 @@ class CouplingInterface:
         self,
         body_local_to_proxy_global: wp.array[int],
         out_body_f: wp.array[wp.spatial_vector],
+        body_gravity_acceleration: wp.array[wp.vec3],
         *,
         body_qd_before: wp.array[wp.spatial_vector] | None = None,
         state: State | None = None,
@@ -350,8 +391,7 @@ class CouplingInterface:
                 model.body_mass,
                 model.body_inertia,
                 state_out.body_q,
-                model.gravity,
-                model.body_world,
+                body_gravity_acceleration,
                 out_body_f,
             ],
             device=model.device,
@@ -361,6 +401,7 @@ class CouplingInterface:
         self,
         particle_local_to_proxy_global: wp.array[int],
         out_particle_f: wp.array[wp.vec3],
+        particle_gravity_acceleration: wp.array[wp.vec3],
         *,
         particle_qd_before: wp.array[wp.vec3] | None = None,
         state: State | None = None,
@@ -388,8 +429,7 @@ class CouplingInterface:
                 state_out.particle_qd,
                 state.particle_f if state is not None else None,
                 model.particle_mass,
-                model.gravity,
-                model.particle_world,
+                particle_gravity_acceleration,
                 out_particle_f,
             ],
             device=model.device,
@@ -429,6 +469,26 @@ class CouplingInterface:
             device=model.device,
         )
         return contacts
+
+
+@wp.kernel(enable_backward=False)
+def _coupling_eval_body_gravity_acceleration_kernel(
+    gravity: wp.array[wp.vec3],
+    body_world: wp.array[wp.int32],
+    out: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    out[i] = gravity[wp.max(body_world[i], 0)]
+
+
+@wp.kernel(enable_backward=False)
+def _coupling_eval_particle_gravity_acceleration_kernel(
+    gravity: wp.array[wp.vec3],
+    particle_world: wp.array[wp.int32],
+    out: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    out[i] = gravity[wp.max(particle_world[i], 0)]
 
 
 @wp.func

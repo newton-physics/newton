@@ -68,6 +68,7 @@ from .kernels import (
     eval_articulation_fk,
     eval_mujoco_coupling_effective_mass_block_kernel,
     eval_mujoco_coupling_effective_mass_kernel,
+    eval_mujoco_coupling_gravity_acceleration_kernel,
     recompute_jnt_eq_anchor1_kernel,
     repeat_array_kernel,
     reset_joint_state_kernel,
@@ -3633,6 +3634,37 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._last_nacon_count.zero_()
 
     @override
+    def coupling_eval_gravity_acceleration(
+        self,
+        out_body_acceleration: wp.array[wp.vec3] | None,
+        out_particle_acceleration: wp.array[wp.vec3] | None,
+    ) -> None:
+        """Evaluate MuJoCo's internally applied gravity acceleration for coupling."""
+        if out_particle_acceleration is not None:
+            super().coupling_eval_gravity_acceleration(None, out_particle_acceleration)
+
+        if out_body_acceleration is None or out_body_acceleration.shape[0] == 0:
+            return
+
+        body_gravcomp = getattr(self.mjw_model, "body_gravcomp", None) if self.mjw_model is not None else None
+        if body_gravcomp is None or self.mjc_body_to_newton is None or self.model.body_world is None:
+            super().coupling_eval_gravity_acceleration(out_body_acceleration, None)
+            return
+
+        wp.launch(
+            eval_mujoco_coupling_gravity_acceleration_kernel,
+            dim=out_body_acceleration.shape[0],
+            inputs=[
+                self.model.gravity,
+                self.model.body_world,
+                self.mjc_body_to_newton,
+                body_gravcomp,
+            ],
+            outputs=[out_body_acceleration],
+            device=self.model.device,
+        )
+
+    @override
     def coupling_eval_effective_mass(
         self,
         endpoint_kind: wp.array[int],
@@ -3726,6 +3758,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self,
         body_local_to_proxy_global: wp.array[int],
         out_body_f: wp.array[wp.spatial_vector],
+        body_gravity_acceleration: wp.array[wp.vec3],
         *,
         body_qd_before: wp.array[wp.spatial_vector] | None = None,
         state: State | None = None,
@@ -3734,7 +3767,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         dt: float = 0.0,
     ) -> None:
         """Reject proxy-body feedback harvesting."""
-        del body_local_to_proxy_global, out_body_f, body_qd_before, state, state_out, contacts, dt
+        del body_local_to_proxy_global, out_body_f, body_gravity_acceleration
+        del body_qd_before, state, state_out, contacts, dt
         raise NotImplementedError("MuJoCo does not support proxy body harvest")
 
     @override
@@ -3742,6 +3776,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self,
         particle_local_to_proxy_global: wp.array[int],
         out_particle_f: wp.array[wp.vec3],
+        particle_gravity_acceleration: wp.array[wp.vec3],
         *,
         particle_qd_before: wp.array[wp.vec3] | None = None,
         state: State | None = None,
@@ -3750,7 +3785,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         dt: float = 0.0,
     ) -> None:
         """Reject proxy-particle feedback harvesting."""
-        del particle_local_to_proxy_global, out_particle_f, particle_qd_before, state, state_out, contacts, dt
+        del particle_local_to_proxy_global, out_particle_f, particle_gravity_acceleration
+        del particle_qd_before, state, state_out, contacts, dt
         raise NotImplementedError("MuJoCo does not support proxy particle harvest")
 
     def _convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):

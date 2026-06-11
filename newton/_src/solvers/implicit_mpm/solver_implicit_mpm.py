@@ -1098,6 +1098,18 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if flags & ModelFlags.MODEL_PROPERTIES:
             self._mpm_model.notify_particle_material_changed()
 
+    @override
+    def coupling_eval_gravity_acceleration(
+        self,
+        out_body_acceleration: wp.array[wp.vec3] | None,
+        out_particle_acceleration: wp.array[wp.vec3] | None,
+    ) -> None:
+        """Evaluate gravity acceleration applied internally by the MPM solver."""
+        if out_body_acceleration is not None:
+            out_body_acceleration.zero_()
+        if out_particle_acceleration is not None:
+            super().coupling_eval_gravity_acceleration(None, out_particle_acceleration)
+
     def coupling_notify_input_state_update(
         self,
         state: newton.State,
@@ -1162,9 +1174,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         body_local_to_proxy_global: wp.array[int],
         state: newton.State,
         coupling_forces: wp.array[wp.spatial_vector],
+        body_gravity_acceleration: wp.array[wp.vec3],
         dt: float,
     ) -> None:
         """Remove lagged velocity-level proxy wrenches from collider velocities."""
+        del body_gravity_acceleration
         if state.body_q is None or state.body_qd is None or body_local_to_proxy_global.shape[0] == 0:
             return
 
@@ -1187,6 +1201,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self,
         body_local_to_proxy_global: wp.array[int],
         out_body_f: wp.array[wp.spatial_vector],
+        body_gravity_acceleration: wp.array[wp.vec3],
         *,
         body_qd_before: wp.array[wp.spatial_vector] | None = None,
         state: newton.State | None = None,
@@ -1195,7 +1210,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         dt: float = 0.0,
     ) -> None:
         """Convert MPM collider grid impulses to proxy-body wrenches."""
-        del body_qd_before, state_out, contacts
+        del body_gravity_acceleration, body_qd_before, state_out, contacts
         if dt <= 0.0:
             raise ValueError("MPM proxy wrench harvesting requires a positive dt")
 
@@ -1228,6 +1243,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         particle_local_to_proxy_global: wp.array[int],
         state: newton.State,
         coupling_forces: wp.array[wp.vec3],
+        particle_gravity_acceleration: wp.array[wp.vec3],
         dt: float,
     ) -> None:
         """Remove lagged velocity-level proxy forces from proxy particle velocities."""
@@ -1244,8 +1260,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 int(newton.ParticleFlags.ACTIVE),
                 self.model.particle_flags,
                 self._mpm_model.particle_flags,
-                self.model.gravity,
-                self.model.particle_world,
+                particle_gravity_acceleration,
                 coupling_forces,
                 self.model.particle_inv_mass,
                 state.particle_qd,
@@ -1263,6 +1278,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self,
         particle_local_to_proxy_global: wp.array[int],
         out_particle_f: wp.array[wp.vec3],
+        particle_gravity_acceleration: wp.array[wp.vec3],
         *,
         particle_qd_before: wp.array[wp.vec3] | None = None,
         state: newton.State | None = None,
@@ -1295,8 +1311,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     qd_before,
                     state_out.particle_qd,
                     self.model.particle_mass,
-                    self.model.gravity,
-                    self.model.particle_world,
+                    particle_gravity_acceleration,
                     out_particle_f,
                 ],
                 device=self.model.device,
@@ -2845,8 +2860,7 @@ def _rewind_mpm_proxy_particles_kernel(
     active_flag: int,
     particle_flags: wp.array[wp.int32],
     transfer_flags: wp.array[wp.int32],
-    gravity: wp.array[wp.vec3],
-    particle_world: wp.array[wp.int32],
+    particle_gravity_acceleration: wp.array[wp.vec3],
     coupling_forces: wp.array[wp.vec3],
     particle_inv_mass: wp.array[float],
     particle_qd: wp.array[wp.vec3],
@@ -2858,8 +2872,7 @@ def _rewind_mpm_proxy_particles_kernel(
 
     delta_v = dt * particle_inv_mass[local_particle] * coupling_forces[proxy_global]
     if (transfer_flags[local_particle] & active_flag) != 0:
-        world_idx = particle_world[local_particle]
-        delta_v = delta_v + dt * gravity[wp.max(world_idx, 0)]
+        delta_v = delta_v + dt * particle_gravity_acceleration[local_particle]
 
     particle_qd[local_particle] = particle_qd[local_particle] - delta_v
 
@@ -2875,8 +2888,7 @@ def _harvest_mpm_transfer_proxy_particle_forces_kernel(
     qd_before: wp.array[wp.vec3],
     qd_after: wp.array[wp.vec3],
     particle_mass: wp.array[float],
-    gravity: wp.array[wp.vec3],
-    particle_world: wp.array[wp.int32],
+    particle_gravity_acceleration: wp.array[wp.vec3],
     out_particle_f: wp.array[wp.vec3],
 ):
     local_particle = wp.tid()
@@ -2890,8 +2902,7 @@ def _harvest_mpm_transfer_proxy_particle_forces_kernel(
     if mass <= 0.0:
         return
 
-    world_idx = particle_world[local_particle]
-    g = gravity[wp.max(world_idx, 0)]
+    g = particle_gravity_acceleration[local_particle]
     force = mass * (qd_after[local_particle] - qd_before[local_particle]) / dt - mass * g
     wp.atomic_add(out_particle_f, proxy_global, force)
 

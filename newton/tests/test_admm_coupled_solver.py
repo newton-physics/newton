@@ -609,18 +609,17 @@ class TestAdmmComReference(unittest.TestCase):
     def test_gamma_gravity_compensation_uses_pre_scaled_mass(self):
         device = "cpu"
         gamma = 2.0
-        gravity = wp.array([wp.vec3(0.0, 0.0, -9.81)], dtype=wp.vec3, device=device)
 
         body_mass = wp.array([6.0, 12.0], dtype=float, device=device)
         body_inv_mass = wp.array([1.0 / 6.0, 0.0], dtype=float, device=device)
-        body_world = wp.array([0, 0], dtype=wp.int32, device=device)
-        # No gravcomp: the sub-solver applies full gravity, so the full artifact is cancelled.
-        body_gravcomp = wp.zeros(2, dtype=float, device=device)
+        body_gravity_acceleration = wp.array(
+            [wp.vec3(0.0, 0.0, -9.81), wp.vec3(0.0, 0.0, -9.81)], dtype=wp.vec3, device=device
+        )
         body_f = wp.zeros(2, dtype=wp.spatial_vector, device=device)
         wp.launch(
             body_gravity_compensation_kernel,
             dim=2,
-            inputs=[gamma, body_mass, body_inv_mass, body_world, gravity, body_gravcomp],
+            inputs=[gamma, body_mass, body_inv_mass, body_gravity_acceleration],
             outputs=[body_f],
             device=device,
         )
@@ -628,17 +627,17 @@ class TestAdmmComReference(unittest.TestCase):
         np.testing.assert_allclose(body_f.numpy()[0], np.array([0.0, 0.0, 39.24, 0.0, 0.0, 0.0]), atol=1.0e-6)
         np.testing.assert_allclose(body_f.numpy()[1], np.zeros(6), atol=1.0e-6)
 
-        # Gravcomp scales the compensation by (1 - gravcomp): a sub-solver that already
-        # compensates gravity (e.g. MuJoCo body gravcomp) needs proportionally less cancelled.
-        # gravcomp=1.0 -> the sub-solver fully floats the body, so no extra cancellation;
-        # gravcomp=0.5 -> half the no-gravcomp force.
-        body_gravcomp = wp.array([1.0, 0.5], dtype=float, device=device)
+        # A sub-solver hook can return scaled gravity-like acceleration, e.g.
+        # gravcomp=1.0 -> zero acceleration and gravcomp=0.5 -> half gravity.
+        body_gravity_acceleration = wp.array(
+            [wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, -4.905)], dtype=wp.vec3, device=device
+        )
         body_inv_mass = wp.array([1.0 / 6.0, 1.0 / 12.0], dtype=float, device=device)
         body_f = wp.zeros(2, dtype=wp.spatial_vector, device=device)
         wp.launch(
             body_gravity_compensation_kernel,
             dim=2,
-            inputs=[gamma, body_mass, body_inv_mass, body_world, gravity, body_gravcomp],
+            inputs=[gamma, body_mass, body_inv_mass, body_gravity_acceleration],
             outputs=[body_f],
             device=device,
         )
@@ -653,12 +652,16 @@ class TestAdmmComReference(unittest.TestCase):
             dtype=wp.int32,
             device=device,
         )
-        particle_world = wp.array([0, 0, 0], dtype=wp.int32, device=device)
+        particle_gravity_acceleration = wp.array(
+            [wp.vec3(0.0, 0.0, -9.81), wp.vec3(0.0, 0.0, -9.81), wp.vec3(0.0, 0.0, -9.81)],
+            dtype=wp.vec3,
+            device=device,
+        )
         particle_f = wp.zeros(3, dtype=wp.vec3, device=device)
         wp.launch(
             particle_gravity_compensation_kernel,
             dim=3,
-            inputs=[gamma, particle_mass, particle_inv_mass, particle_flags, particle_world, gravity],
+            inputs=[gamma, particle_mass, particle_inv_mass, particle_flags, particle_gravity_acceleration],
             outputs=[particle_f],
             device=device,
         )

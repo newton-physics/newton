@@ -551,6 +551,7 @@ class SolverCoupledProxy(SolverCoupled):
                 config.collide_counter = int(collide_counter)
 
     def _after_entry_states_created(self) -> None:
+        super()._after_entry_states_created()
         model = self.model
         device = model.device
         for mapping in self._proxy_mappings:
@@ -559,6 +560,11 @@ class SolverCoupledProxy(SolverCoupled):
         for mapping in self._proxy_particle_mappings:
             mapping.coupling_forces = wp.zeros(model.particle_count, dtype=wp.vec3, device=device)
             mapping.proxy_qd_before = wp.zeros(model.particle_count, dtype=wp.vec3, device=device)
+
+    def _entry_needs_gravity_acceleration(self, entry) -> bool:
+        return any(mapping.dst_name == entry.name for mapping in self._proxy_mappings) or any(
+            mapping.dst_name == entry.name for mapping in self._proxy_particle_mappings
+        )
 
     def _reset_coupling_state(
         self,
@@ -764,6 +770,7 @@ class SolverCoupledProxy(SolverCoupled):
                     proxy.destination_local_to_proxy_global,
                     dst.state_0,
                     proxy.coupling_forces,
+                    dst.body_gravity_acceleration,
                     dt,
                 )
                 self._notify_input_state_update(dst, CouplingInputStateFlags.BODY_QD, dt=dt)
@@ -798,6 +805,7 @@ class SolverCoupledProxy(SolverCoupled):
                     proxy.destination_local_to_proxy_global,
                     dst.state_0,
                     proxy.coupling_forces,
+                    dst.particle_gravity_acceleration,
                     dt,
                 )
                 self._notify_input_state_update(dst, CouplingInputStateFlags.PARTICLE_QD, dt=dt)
@@ -860,6 +868,7 @@ class SolverCoupledProxy(SolverCoupled):
                 dst.solver.coupling_harvest_proxy_wrenches(
                     proxy.destination_local_to_proxy_global,
                     proxy.coupling_forces,
+                    dst.body_gravity_acceleration,
                     body_qd_before=proxy.proxy_qd_before,
                     state=dst.state_0,
                     state_out=dst.state_1,
@@ -872,6 +881,7 @@ class SolverCoupledProxy(SolverCoupled):
                 dst.solver.coupling_harvest_proxy_particle_forces(
                     proxy.destination_local_to_proxy_global,
                     proxy.coupling_forces,
+                    dst.particle_gravity_acceleration,
                     particle_qd_before=proxy.proxy_qd_before,
                     state=dst.state_0,
                     state_out=dst.state_1,
