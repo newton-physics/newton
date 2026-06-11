@@ -4,36 +4,72 @@
 from __future__ import annotations
 
 import math
+import numbers
 from typing import Any
 
 import numpy as np
 import warp as wp
 
-_USD_CAMERA_MODEL_PINHOLE = 0
-_USD_CAMERA_MODEL_OPENCV_FISHEYE = 1
-_USD_CAMERA_MODEL_FTHETA = 2
-_USD_CAMERA_MODEL_KANNALA_BRANDT_K3 = 3
 
-_USD_CAMERA_PARAM_COUNT = 18
-_USD_CAMERA_PARAM_H_APERTURE = 0
-_USD_CAMERA_PARAM_V_APERTURE = 1
-_USD_CAMERA_PARAM_H_OFFSET = 2
-_USD_CAMERA_PARAM_V_OFFSET = 3
-_USD_CAMERA_PARAM_FOCAL_LENGTH = 4
-_USD_CAMERA_PARAM_FX = 5
-_USD_CAMERA_PARAM_FY = 6
-_USD_CAMERA_PARAM_CX = 7
-_USD_CAMERA_PARAM_CY = 8
-_USD_CAMERA_PARAM_IMAGE_WIDTH = 9
-_USD_CAMERA_PARAM_IMAGE_HEIGHT = 10
-_USD_CAMERA_PARAM_K0 = 11
-_USD_CAMERA_PARAM_K1 = 12
-_USD_CAMERA_PARAM_K2 = 13
-_USD_CAMERA_PARAM_K3 = 14
-_USD_CAMERA_PARAM_K4 = 15
-_USD_CAMERA_PARAM_MAX_THETA = 16
+def _camera_param_count(param: Any) -> int:
+    if isinstance(param, numbers.Real):
+        return 1
+    if isinstance(param, list | tuple | np.ndarray):
+        return int(np.asarray(param).size)
+    return int(param.size)
 
-_PI = wp.float32(math.pi)
+
+def _camera_param_array(
+    name: str,
+    param: Any,
+    camera_count: int,
+    device: wp.Device,
+) -> wp.array[wp.float32]:
+    if isinstance(param, numbers.Real):
+        return wp.full((camera_count,), value=float(param), dtype=wp.float32, device=device)
+
+    if isinstance(param, list | tuple | np.ndarray):
+        values = np.asarray(param, dtype=np.float32).reshape(-1)
+        if values.size == camera_count:
+            return wp.array(values, dtype=wp.float32, device=device)
+        if values.size == 1:
+            return wp.full((camera_count,), value=float(values[0]), dtype=wp.float32, device=device)
+        raise ValueError(f"{name} must have length 1 or {camera_count}.")
+
+    if param.size != camera_count:
+        raise ValueError(f"{name} must have length {camera_count}.")
+    if param.dtype != wp.float32 or param.device != device:
+        return wp.array(param.numpy().reshape(-1).astype(np.float32), dtype=wp.float32, device=device)
+    return param
+
+
+def _validate_camera_ray_output(
+    width: int,
+    height: int,
+    camera_count: int,
+    out_rays: wp.array4d[wp.vec3f] | None,
+    camera_index: int,
+    device: wp.Device,
+) -> tuple[wp.array4d[wp.vec3f], int]:
+    if width <= 0 or height <= 0:
+        raise ValueError("width and height must be positive.")
+
+    camera_index = int(camera_index)
+    if camera_index < 0:
+        raise ValueError("camera_index must be non-negative.")
+
+    if out_rays is None:
+        out_rays = wp.empty((camera_count, height, width, 2), dtype=wp.vec3f, device=device)
+        camera_index = 0
+    elif (
+        out_rays.shape[0] < camera_index + camera_count
+        or out_rays.shape[1] != height
+        or out_rays.shape[2] != width
+        or out_rays.shape[3] != 2
+    ):
+        raise ValueError("out_rays must have shape (out_camera_count, height, width, 2) with enough camera slots.")
+
+    return out_rays, camera_index
 
 
 def _coerce_usd_time(time: Any) -> Any:
@@ -73,253 +109,63 @@ def _normalize_usd_cameras(cameras: Any) -> list[Any]:
             raise TypeError("Expected a UsdGeom.Camera or Usd.Prim.")
 
         prim = usd_camera.GetPrim()
-        if not prim or not prim.IsValid() or not prim.IsA(UsdGeom.Camera):
-            raise TypeError(f"Expected a UsdGeom.Camera prim, got {prim.GetPath() if prim else camera!r}.")
+        if not prim.IsValid() or not prim.IsA(UsdGeom.Camera):
+            raise TypeError(f"Expected a UsdGeom.Camera prim, got {prim.GetPath()!r}.")
         usd_cameras.append(usd_camera)
 
     return usd_cameras
 
 
-def _get_usd_attr(prim: Any, name: str, default: Any, time_code: Any) -> Any:
-    attr = prim.GetAttribute(name)
-    if not attr or not attr.IsValid():
-        return default
-    value = attr.Get(time_code)
-    return default if value is None else value
-
-
-def _get_usd_float_attr(prim: Any, name: str, default: float, time_code: Any) -> float:
-    value = _get_usd_attr(prim, name, default, time_code)
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return default
-    return value if math.isfinite(value) else default
-
-
-def _get_usd_vec2_attr(prim: Any, name: str, default: tuple[float, float], time_code: Any) -> tuple[float, float]:
-    value = _get_usd_attr(prim, name, default, time_code)
-    try:
-        arr = np.asarray(value, dtype=np.float32).reshape(-1)
-    except (TypeError, ValueError):
-        return default
-    if arr.size < 2 or not np.isfinite(arr[:2]).all():
-        return default
-    return (float(arr[0]), float(arr[1]))
-
-
-def _get_applied_api_schemas(prim: Any) -> list[str]:
-    schemas = list(prim.GetAppliedSchemas())
-    if schemas:
-        return schemas
-
-    listop = prim.GetMetadata("apiSchemas")
-    if listop is None:
-        return []
-    return (
-        list(getattr(listop, "prependedItems", []))
-        + list(getattr(listop, "appendedItems", []))
-        + list(getattr(listop, "explicitItems", []))
-    )
-
-
-def _has_authored_usd_attr(prim: Any, name: str) -> bool:
-    attr = prim.GetAttribute(name)
-    return bool(attr and attr.IsValid() and attr.HasAuthoredValue())
-
-
-def _has_any_authored_usd_attr(prim: Any, names: tuple[str, ...]) -> bool:
-    return any(_has_authored_usd_attr(prim, name) for name in names)
-
-
-def _max_theta_from_fov(max_fov_degrees: float) -> float:
-    if max_fov_degrees <= 0.0 or not math.isfinite(max_fov_degrees):
-        return math.pi
-    return min(math.radians(max_fov_degrees) * 0.5, math.pi)
-
-
-def extract_usd_camera_ray_params(
+def compute_usd_pinhole_camera_rays(
     width: int,
     height: int,
     cameras: Any | list[Any] | tuple[Any, ...],
     *,
+    device: wp.Device,
     time: Any | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+    out_rays: wp.array4d[wp.vec3f] | None = None,
+    camera_index: int = 0,
+) -> wp.array4d[wp.vec3f]:
     time_code = _coerce_usd_time(time)
     usd_cameras = _normalize_usd_cameras(cameras)
+    camera_count = len(usd_cameras)
+    out_rays, camera_index = _validate_camera_ray_output(width, height, camera_count, out_rays, camera_index, device)
 
-    model_ids = np.empty(len(usd_cameras), dtype=np.int32)
-    params = np.zeros((len(usd_cameras), _USD_CAMERA_PARAM_COUNT), dtype=np.float32)
-
-    for camera_index, usd_camera in enumerate(usd_cameras):
-        prim = usd_camera.GetPrim()
-        lens_model = str(_get_usd_attr(prim, "omni:lensdistortion:model", "", time_code))
-
-        is_opencv_fisheye = lens_model == "opencvFisheye"
-        is_ftheta = lens_model == "ftheta"
-        is_kannala_brandt = lens_model == "kannalaBrandtK3"
-
-        if not is_opencv_fisheye and not is_ftheta and not is_kannala_brandt:
-            applied_schemas = set(_get_applied_api_schemas(prim))
-            if "OmniLensDistortionOpenCvFisheyeAPI" in applied_schemas or _has_any_authored_usd_attr(
-                prim,
-                (
-                    "omni:lensdistortion:opencvFisheye:fx",
-                    "omni:lensdistortion:opencvFisheye:fy",
-                    "omni:lensdistortion:opencvFisheye:k1",
-                ),
-            ):
-                is_opencv_fisheye = True
-            elif "OmniLensDistortionFthetaAPI" in applied_schemas or _has_any_authored_usd_attr(
-                prim,
-                ("omni:lensdistortion:ftheta:k0", "omni:lensdistortion:ftheta:k1", "omni:lensdistortion:ftheta:maxFov"),
-            ):
-                is_ftheta = True
-            elif "OmniLensDistortionKannalaBrandtK3API" in applied_schemas or _has_any_authored_usd_attr(
-                prim,
-                (
-                    "omni:lensdistortion:kannalaBrandtK3:k0",
-                    "omni:lensdistortion:kannalaBrandtK3:k1",
-                    "omni:lensdistortion:kannalaBrandtK3:maxFov",
-                ),
-            ):
-                is_kannala_brandt = True
-
-        if is_opencv_fisheye:
-            image_size = _get_usd_vec2_attr(
-                prim, "omni:lensdistortion:opencvFisheye:imageSize", (2048.0, 1024.0), time_code
-            )
-            fx = _get_usd_float_attr(prim, "omni:lensdistortion:opencvFisheye:fx", 900.0, time_code)
-            fy = _get_usd_float_attr(prim, "omni:lensdistortion:opencvFisheye:fy", 800.0, time_code)
-            if fx <= 0.0 or fy <= 0.0 or image_size[0] <= 0.0 or image_size[1] <= 0.0:
-                raise ValueError(f"USD camera {prim.GetPath()} has invalid OpenCV fisheye calibration.")
-
-            model_ids[camera_index] = _USD_CAMERA_MODEL_OPENCV_FISHEYE
-            params[camera_index, _USD_CAMERA_PARAM_FX] = fx
-            params[camera_index, _USD_CAMERA_PARAM_FY] = fy
-            params[camera_index, _USD_CAMERA_PARAM_CX] = _get_usd_float_attr(
-                prim, "omni:lensdistortion:opencvFisheye:cx", 1024.0, time_code
-            )
-            params[camera_index, _USD_CAMERA_PARAM_CY] = _get_usd_float_attr(
-                prim, "omni:lensdistortion:opencvFisheye:cy", 512.0, time_code
-            )
-            params[camera_index, _USD_CAMERA_PARAM_IMAGE_WIDTH] = image_size[0]
-            params[camera_index, _USD_CAMERA_PARAM_IMAGE_HEIGHT] = image_size[1]
-            params[camera_index, _USD_CAMERA_PARAM_K0] = _get_usd_float_attr(
-                prim, "omni:lensdistortion:opencvFisheye:k1", 0.00245, time_code
-            )
-            params[camera_index, _USD_CAMERA_PARAM_K1] = _get_usd_float_attr(
-                prim, "omni:lensdistortion:opencvFisheye:k2", 0.0, time_code
-            )
-            params[camera_index, _USD_CAMERA_PARAM_K2] = _get_usd_float_attr(
-                prim, "omni:lensdistortion:opencvFisheye:k3", 0.0, time_code
-            )
-            params[camera_index, _USD_CAMERA_PARAM_K3] = _get_usd_float_attr(
-                prim, "omni:lensdistortion:opencvFisheye:k4", 0.0, time_code
-            )
-            continue
-
-        if is_ftheta:
-            nominal_width = _get_usd_float_attr(
-                prim, "omni:lensdistortion:ftheta:nominalWidth", float(width), time_code
-            )
-            nominal_height = _get_usd_float_attr(
-                prim, "omni:lensdistortion:ftheta:nominalHeight", float(height), time_code
-            )
-            if nominal_width <= 0.0 or nominal_height <= 0.0:
-                raise ValueError(f"USD camera {prim.GetPath()} has invalid F-theta calibration dimensions.")
-            optical_center = _get_usd_vec2_attr(
-                prim,
-                "omni:lensdistortion:ftheta:opticalCenter",
-                (nominal_width * 0.5, nominal_height * 0.5),
-                time_code,
-            )
-
-            model_ids[camera_index] = _USD_CAMERA_MODEL_FTHETA
-            params[camera_index, _USD_CAMERA_PARAM_IMAGE_WIDTH] = nominal_width
-            params[camera_index, _USD_CAMERA_PARAM_IMAGE_HEIGHT] = nominal_height
-            params[camera_index, _USD_CAMERA_PARAM_CX] = optical_center[0]
-            params[camera_index, _USD_CAMERA_PARAM_CY] = optical_center[1]
-            params[camera_index, _USD_CAMERA_PARAM_K0] = _get_usd_float_attr(
-                prim, "omni:lensdistortion:ftheta:k0", 0.0, time_code
-            )
-            params[camera_index, _USD_CAMERA_PARAM_K1] = _get_usd_float_attr(
-                prim, "omni:lensdistortion:ftheta:k1", 1.0, time_code
-            )
-            params[camera_index, _USD_CAMERA_PARAM_K2] = _get_usd_float_attr(
-                prim, "omni:lensdistortion:ftheta:k2", 0.0, time_code
-            )
-            params[camera_index, _USD_CAMERA_PARAM_K3] = _get_usd_float_attr(
-                prim, "omni:lensdistortion:ftheta:k3", 0.0, time_code
-            )
-            params[camera_index, _USD_CAMERA_PARAM_K4] = _get_usd_float_attr(
-                prim, "omni:lensdistortion:ftheta:k4", 0.0, time_code
-            )
-            params[camera_index, _USD_CAMERA_PARAM_MAX_THETA] = _max_theta_from_fov(
-                _get_usd_float_attr(prim, "omni:lensdistortion:ftheta:maxFov", 0.0, time_code)
-            )
-            continue
-
-        if is_kannala_brandt:
-            nominal_width = _get_usd_float_attr(
-                prim, "omni:lensdistortion:kannalaBrandtK3:nominalWidth", float(width), time_code
-            )
-            nominal_height = _get_usd_float_attr(
-                prim, "omni:lensdistortion:kannalaBrandtK3:nominalHeight", float(height), time_code
-            )
-            if nominal_width <= 0.0 or nominal_height <= 0.0:
-                raise ValueError(f"USD camera {prim.GetPath()} has invalid Kannala-Brandt K3 dimensions.")
-            optical_center = _get_usd_vec2_attr(
-                prim,
-                "omni:lensdistortion:kannalaBrandtK3:opticalCenter",
-                (nominal_width * 0.5, nominal_height * 0.5),
-                time_code,
-            )
-
-            model_ids[camera_index] = _USD_CAMERA_MODEL_KANNALA_BRANDT_K3
-            params[camera_index, _USD_CAMERA_PARAM_IMAGE_WIDTH] = nominal_width
-            params[camera_index, _USD_CAMERA_PARAM_IMAGE_HEIGHT] = nominal_height
-            params[camera_index, _USD_CAMERA_PARAM_CX] = optical_center[0]
-            params[camera_index, _USD_CAMERA_PARAM_CY] = optical_center[1]
-            params[camera_index, _USD_CAMERA_PARAM_K0] = _get_usd_float_attr(
-                prim, "omni:lensdistortion:kannalaBrandtK3:k0", 1.0, time_code
-            )
-            params[camera_index, _USD_CAMERA_PARAM_K1] = _get_usd_float_attr(
-                prim, "omni:lensdistortion:kannalaBrandtK3:k1", 0.0, time_code
-            )
-            params[camera_index, _USD_CAMERA_PARAM_K2] = _get_usd_float_attr(
-                prim, "omni:lensdistortion:kannalaBrandtK3:k2", 0.0, time_code
-            )
-            params[camera_index, _USD_CAMERA_PARAM_K3] = _get_usd_float_attr(
-                prim, "omni:lensdistortion:kannalaBrandtK3:k3", 0.0, time_code
-            )
-            params[camera_index, _USD_CAMERA_PARAM_MAX_THETA] = _max_theta_from_fov(
-                _get_usd_float_attr(prim, "omni:lensdistortion:kannalaBrandtK3:maxFov", 0.0, time_code)
-            )
-            continue
-
+    focal_lengths = []
+    horizontal_apertures = []
+    vertical_apertures = []
+    horizontal_aperture_offsets = []
+    vertical_aperture_offsets = []
+    for usd_camera in usd_cameras:
         projection = str(usd_camera.GetProjectionAttr().Get(time_code))
         if projection != "perspective":
+            prim = usd_camera.GetPrim()
             raise NotImplementedError(f"USD camera {prim.GetPath()} uses unsupported projection {projection!r}.")
 
-        h_aperture = float(usd_camera.GetHorizontalApertureAttr().Get(time_code))
-        v_aperture = float(usd_camera.GetVerticalApertureAttr().Get(time_code))
-        focal_length = float(usd_camera.GetFocalLengthAttr().Get(time_code))
-        if h_aperture <= 0.0 or v_aperture <= 0.0 or focal_length <= 0.0:
-            raise ValueError(f"USD camera {prim.GetPath()} has invalid pinhole aperture or focal length.")
+        focal_lengths.append(float(usd_camera.GetFocalLengthAttr().Get(time_code)))
+        horizontal_apertures.append(float(usd_camera.GetHorizontalApertureAttr().Get(time_code)))
+        vertical_apertures.append(float(usd_camera.GetVerticalApertureAttr().Get(time_code)))
+        horizontal_aperture_offsets.append(float(usd_camera.GetHorizontalApertureOffsetAttr().Get(time_code)))
+        vertical_aperture_offsets.append(float(usd_camera.GetVerticalApertureOffsetAttr().Get(time_code)))
 
-        model_ids[camera_index] = _USD_CAMERA_MODEL_PINHOLE
-        params[camera_index, _USD_CAMERA_PARAM_H_APERTURE] = h_aperture
-        params[camera_index, _USD_CAMERA_PARAM_V_APERTURE] = v_aperture
-        params[camera_index, _USD_CAMERA_PARAM_H_OFFSET] = float(
-            usd_camera.GetHorizontalApertureOffsetAttr().Get(time_code)
-        )
-        params[camera_index, _USD_CAMERA_PARAM_V_OFFSET] = float(
-            usd_camera.GetVerticalApertureOffsetAttr().Get(time_code)
-        )
-        params[camera_index, _USD_CAMERA_PARAM_FOCAL_LENGTH] = focal_length
+    wp.launch(
+        kernel=compute_pinhole_camera_rays_from_aperture_kernel,
+        dim=(camera_count, height, width),
+        inputs=[
+            width,
+            height,
+            wp.array(focal_lengths, dtype=wp.float32, device=device),
+            wp.array(horizontal_apertures, dtype=wp.float32, device=device),
+            wp.array(vertical_apertures, dtype=wp.float32, device=device),
+            wp.array(horizontal_aperture_offsets, dtype=wp.float32, device=device),
+            wp.array(vertical_aperture_offsets, dtype=wp.float32, device=device),
+            camera_index,
+            out_rays,
+        ],
+        device=device,
+    )
 
-    return model_ids, params
+    return out_rays
 
 
 def compute_usd_camera_transforms(
@@ -437,7 +283,7 @@ def _solve_opencv_fisheye_theta(
 
     lo = wp.float32(0.0)
     hi = max_theta
-    for _i in range(32):
+    for _i in range(24):
         mid = (lo + hi) * 0.5
         if _opencv_fisheye_radius(mid, k0, k1, k2, k3) < radius:
             lo = mid
@@ -459,6 +305,8 @@ def _solve_ftheta_theta(
     if radius <= 1.0e-7:
         return wp.float32(0.0)
 
+    # When k0 != 0 the polynomial has a nonzero floor at theta=0 (r(0) = k0).
+    # Pixels inside that central circle are undefined by the model; return theta=0 (forward).
     min_radius = _ftheta_radius(0.0, k0, k1, k2, k3, k4)
     if radius <= min_radius:
         return wp.float32(0.0)
@@ -469,7 +317,7 @@ def _solve_ftheta_theta(
 
     lo = wp.float32(0.0)
     hi = max_theta
-    for _i in range(32):
+    for _i in range(24):
         mid = (lo + hi) * 0.5
         if _ftheta_radius(mid, k0, k1, k2, k3, k4) < radius:
             lo = mid
@@ -496,7 +344,7 @@ def _solve_kannala_brandt_k3_theta(
 
     lo = wp.float32(0.0)
     hi = max_theta
-    for _i in range(32):
+    for _i in range(24):
         mid = (lo + hi) * 0.5
         if _kannala_brandt_k3_radius(mid, k0, k1, k2, k3) < radius:
             lo = mid
@@ -517,96 +365,157 @@ def _fisheye_direction_from_theta(x: wp.float32, y: wp.float32, radius: wp.float
 
 
 @wp.kernel(enable_backward=False)
-def compute_usd_camera_rays_kernel(
+def compute_pinhole_camera_rays(
     width: int,
     height: int,
-    camera_model_ids: wp.array[wp.int32],
-    camera_params: wp.array2d[wp.float32],
+    camera_fovs: wp.array[wp.float32],
+    camera_index_start: int,
     out_rays: wp.array4d[wp.vec3f],
 ):
     camera_index, py, px = wp.tid()
-    model_id = camera_model_ids[camera_index]
+    output_camera_index = camera_index_start + camera_index
+    aspect_ratio = float(width) / float(height)
+    u = (float(px) + 0.5) / float(width) - 0.5
+    v = (float(py) + 0.5) / float(height) - 0.5
+    h = wp.tan(camera_fovs[camera_index] / 2.0)
+    ray_direction_camera_space = wp.vec3f(u * 2.0 * h * aspect_ratio, -v * 2.0 * h, -1.0)
+    out_rays[output_camera_index, py, px, 0] = wp.vec3f(0.0)
+    out_rays[output_camera_index, py, px, 1] = wp.normalize(ray_direction_camera_space)
 
-    ray_direction_camera_space = wp.vec3f(0.0)
 
-    if model_id == _USD_CAMERA_MODEL_PINHOLE:
-        h_aperture = camera_params[camera_index, _USD_CAMERA_PARAM_H_APERTURE]
-        v_aperture = camera_params[camera_index, _USD_CAMERA_PARAM_V_APERTURE]
-        h_offset = camera_params[camera_index, _USD_CAMERA_PARAM_H_OFFSET]
-        v_offset = camera_params[camera_index, _USD_CAMERA_PARAM_V_OFFSET]
-        focal_length = camera_params[camera_index, _USD_CAMERA_PARAM_FOCAL_LENGTH]
+@wp.kernel(enable_backward=False)
+def compute_pinhole_camera_rays_from_aperture_kernel(
+    width: int,
+    height: int,
+    focal_lengths: wp.array[wp.float32],
+    horizontal_apertures: wp.array[wp.float32],
+    vertical_apertures: wp.array[wp.float32],
+    horizontal_aperture_offsets: wp.array[wp.float32],
+    vertical_aperture_offsets: wp.array[wp.float32],
+    camera_index_start: int,
+    out_rays: wp.array4d[wp.vec3f],
+):
+    camera_index, py, px = wp.tid()
+    output_camera_index = camera_index_start + camera_index
+    u = (float(px) + 0.5) / float(width)
+    v = (float(py) + 0.5) / float(height)
+    film_x = (u - 0.5) * horizontal_apertures[camera_index] + horizontal_aperture_offsets[camera_index]
+    film_y = (0.5 - v) * vertical_apertures[camera_index] + vertical_aperture_offsets[camera_index]
+    focal_length = focal_lengths[camera_index]
+    ray_direction_camera_space = wp.vec3f(film_x / focal_length, film_y / focal_length, -1.0)
+    out_rays[output_camera_index, py, px, 0] = wp.vec3f(0.0)
+    out_rays[output_camera_index, py, px, 1] = wp.normalize(ray_direction_camera_space)
 
-        u = (float(px) + 0.5) / float(width)
-        v = (float(py) + 0.5) / float(height)
-        film_x = (u - 0.5) * h_aperture + h_offset
-        film_y = (0.5 - v) * v_aperture + v_offset
-        ray_direction_camera_space = wp.normalize(wp.vec3f(film_x / focal_length, film_y / focal_length, -1.0))
 
-    elif model_id == _USD_CAMERA_MODEL_OPENCV_FISHEYE:
-        fx = camera_params[camera_index, _USD_CAMERA_PARAM_FX]
-        fy = camera_params[camera_index, _USD_CAMERA_PARAM_FY]
-        cx = camera_params[camera_index, _USD_CAMERA_PARAM_CX]
-        cy = camera_params[camera_index, _USD_CAMERA_PARAM_CY]
-        image_width = camera_params[camera_index, _USD_CAMERA_PARAM_IMAGE_WIDTH]
-        image_height = camera_params[camera_index, _USD_CAMERA_PARAM_IMAGE_HEIGHT]
+@wp.kernel(enable_backward=False)
+def compute_fisheye_camera_rays_opencv_kernel(
+    width: int,
+    height: int,
+    image_width: wp.float32,
+    image_height: wp.float32,
+    fx: wp.float32,
+    fy: wp.float32,
+    cx: wp.float32,
+    cy: wp.float32,
+    k1: wp.float32,
+    k2: wp.float32,
+    k3: wp.float32,
+    k4: wp.float32,
+    max_fov: wp.float32,
+    camera_index: int,
+    out_rays: wp.array4d[wp.vec3f],
+):
+    py, px = wp.tid()
+    u = ((float(px) + 0.5) / float(width)) * image_width
+    v = ((float(py) + 0.5) / float(height)) * image_height
+    x = (u - cx) / fx
+    y = -(v - cy) / fy
+    radius = wp.sqrt(x * x + y * y)
+    theta = _solve_opencv_fisheye_theta(
+        radius,
+        k1,
+        k2,
+        k3,
+        k4,
+        wp.min(max_fov * wp.float32(0.5), wp.float32(math.pi)),
+    )
+    ray_direction_camera_space = _fisheye_direction_from_theta(x, y, radius, theta)
 
-        u = ((float(px) + 0.5) / float(width)) * image_width
-        v = ((float(py) + 0.5) / float(height)) * image_height
-        x = (u - cx) / fx
-        y = -(v - cy) / fy
-        radius = wp.sqrt(x * x + y * y)
-        theta = _solve_opencv_fisheye_theta(
-            radius,
-            camera_params[camera_index, _USD_CAMERA_PARAM_K0],
-            camera_params[camera_index, _USD_CAMERA_PARAM_K1],
-            camera_params[camera_index, _USD_CAMERA_PARAM_K2],
-            camera_params[camera_index, _USD_CAMERA_PARAM_K3],
-            wp.float32(_PI),
-        )
-        ray_direction_camera_space = _fisheye_direction_from_theta(x, y, radius, theta)
+    out_rays[camera_index, py, px, 0] = wp.vec3f(0.0)
+    out_rays[camera_index, py, px, 1] = ray_direction_camera_space
 
-    elif model_id == _USD_CAMERA_MODEL_FTHETA:
-        image_width = camera_params[camera_index, _USD_CAMERA_PARAM_IMAGE_WIDTH]
-        image_height = camera_params[camera_index, _USD_CAMERA_PARAM_IMAGE_HEIGHT]
-        cx = camera_params[camera_index, _USD_CAMERA_PARAM_CX]
-        cy = camera_params[camera_index, _USD_CAMERA_PARAM_CY]
 
-        u = ((float(px) + 0.5) / float(width)) * image_width
-        v = ((float(py) + 0.5) / float(height)) * image_height
-        x = u - cx
-        y = -(v - cy)
-        radius = wp.sqrt(x * x + y * y)
-        theta = _solve_ftheta_theta(
-            radius,
-            camera_params[camera_index, _USD_CAMERA_PARAM_K0],
-            camera_params[camera_index, _USD_CAMERA_PARAM_K1],
-            camera_params[camera_index, _USD_CAMERA_PARAM_K2],
-            camera_params[camera_index, _USD_CAMERA_PARAM_K3],
-            camera_params[camera_index, _USD_CAMERA_PARAM_K4],
-            camera_params[camera_index, _USD_CAMERA_PARAM_MAX_THETA],
-        )
-        ray_direction_camera_space = _fisheye_direction_from_theta(x, y, radius, theta)
+@wp.kernel(enable_backward=False)
+def compute_fisheye_camera_rays_ftheta_kernel(
+    width: int,
+    height: int,
+    nominal_width: wp.float32,
+    nominal_height: wp.float32,
+    optical_center_x: wp.float32,
+    optical_center_y: wp.float32,
+    k0: wp.float32,
+    k1: wp.float32,
+    k2: wp.float32,
+    k3: wp.float32,
+    k4: wp.float32,
+    max_fov: wp.float32,
+    camera_index: int,
+    out_rays: wp.array4d[wp.vec3f],
+):
+    py, px = wp.tid()
+    u = ((float(px) + 0.5) / float(width)) * nominal_width
+    v = ((float(py) + 0.5) / float(height)) * nominal_height
+    x = u - optical_center_x
+    y = -(v - optical_center_y)
+    radius = wp.sqrt(x * x + y * y)
+    max_theta = wp.min(max_fov * 0.5, wp.float32(math.pi))
+    theta = _solve_ftheta_theta(
+        radius,
+        k0,
+        k1,
+        k2,
+        k3,
+        k4,
+        max_theta,
+    )
+    ray_direction_camera_space = _fisheye_direction_from_theta(x, y, radius, theta)
 
-    elif model_id == _USD_CAMERA_MODEL_KANNALA_BRANDT_K3:
-        image_width = camera_params[camera_index, _USD_CAMERA_PARAM_IMAGE_WIDTH]
-        image_height = camera_params[camera_index, _USD_CAMERA_PARAM_IMAGE_HEIGHT]
-        cx = camera_params[camera_index, _USD_CAMERA_PARAM_CX]
-        cy = camera_params[camera_index, _USD_CAMERA_PARAM_CY]
+    out_rays[camera_index, py, px, 0] = wp.vec3f(0.0)
+    out_rays[camera_index, py, px, 1] = ray_direction_camera_space
 
-        u = ((float(px) + 0.5) / float(width)) * image_width
-        v = ((float(py) + 0.5) / float(height)) * image_height
-        x = u - cx
-        y = -(v - cy)
-        radius = wp.sqrt(x * x + y * y)
-        theta = _solve_kannala_brandt_k3_theta(
-            radius,
-            camera_params[camera_index, _USD_CAMERA_PARAM_K0],
-            camera_params[camera_index, _USD_CAMERA_PARAM_K1],
-            camera_params[camera_index, _USD_CAMERA_PARAM_K2],
-            camera_params[camera_index, _USD_CAMERA_PARAM_K3],
-            camera_params[camera_index, _USD_CAMERA_PARAM_MAX_THETA],
-        )
-        ray_direction_camera_space = _fisheye_direction_from_theta(x, y, radius, theta)
+
+@wp.kernel(enable_backward=False)
+def compute_fisheye_camera_rays_kannala_brandt_kernel(
+    width: int,
+    height: int,
+    nominal_width: wp.float32,
+    nominal_height: wp.float32,
+    optical_center_x: wp.float32,
+    optical_center_y: wp.float32,
+    k0: wp.float32,
+    k1: wp.float32,
+    k2: wp.float32,
+    k3: wp.float32,
+    max_fov: wp.float32,
+    camera_index: int,
+    out_rays: wp.array4d[wp.vec3f],
+):
+    py, px = wp.tid()
+    u = ((float(px) + 0.5) / float(width)) * nominal_width
+    v = ((float(py) + 0.5) / float(height)) * nominal_height
+    x = u - optical_center_x
+    y = -(v - optical_center_y)
+    radius = wp.sqrt(x * x + y * y)
+    max_theta = wp.min(max_fov * 0.5, wp.float32(math.pi))
+    theta = _solve_kannala_brandt_k3_theta(
+        radius,
+        k0,
+        k1,
+        k2,
+        k3,
+        max_theta,
+    )
+    ray_direction_camera_space = _fisheye_direction_from_theta(x, y, radius, theta)
 
     out_rays[camera_index, py, px, 0] = wp.vec3f(0.0)
     out_rays[camera_index, py, px, 1] = ray_direction_camera_space

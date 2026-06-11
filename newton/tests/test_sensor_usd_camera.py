@@ -12,10 +12,9 @@ import newton
 from newton.sensors import SensorTiledCamera
 
 try:
-    from pxr import Gf, Sdf, Usd, UsdGeom
+    from pxr import Gf, Usd, UsdGeom
 except ImportError:
     Gf = None
-    Sdf = None
     Usd = None
     UsdGeom = None
 
@@ -33,48 +32,12 @@ def _make_camera():
     return stage, camera
 
 
-def _set_attr(prim, name: str, type_name, value) -> None:
-    prim.CreateAttribute(name, type_name, custom=True).Set(value)
-
-
 def _direction(theta: float, x_sign: float = 1.0) -> np.ndarray:
     return np.array([x_sign * math.sin(theta), 0.0, -math.cos(theta)], dtype=np.float32)
 
 
-@unittest.skipIf(Usd is None, "Requires USD Python bindings")
-class TestSensorUsdCameraRays(unittest.TestCase):
-    def test_usd_pinhole_matches_fov_helper(self):
-        utils = _make_utils()
-        width, height = 5, 3
-        fov = math.radians(60.0)
-        vertical_aperture = 2.0 * math.tan(fov * 0.5)
-        horizontal_aperture = vertical_aperture * (width / height)
-
-        _stage, camera = _make_camera()
-        camera.GetFocalLengthAttr().Set(1.0)
-        camera.GetHorizontalApertureAttr().Set(horizontal_aperture)
-        camera.GetVerticalApertureAttr().Set(vertical_aperture)
-
-        got = utils.compute_usd_camera_rays(width, height, camera).numpy()
-        expected = utils.compute_pinhole_camera_rays(width, height, fov).numpy()
-
-        np.testing.assert_allclose(got, expected, atol=1e-6)
-
-    def test_usd_pinhole_aperture_offsets_shift_principal_ray(self):
-        utils = _make_utils()
-        _stage, camera = _make_camera()
-        camera.GetFocalLengthAttr().Set(1.0)
-        camera.GetHorizontalApertureAttr().Set(1.0)
-        camera.GetVerticalApertureAttr().Set(1.0)
-        camera.GetHorizontalApertureOffsetAttr().Set(0.1)
-        camera.GetVerticalApertureOffsetAttr().Set(0.2)
-
-        got = utils.compute_usd_camera_rays(1, 1, camera).numpy()[0, 0, 0, 1]
-        expected = np.array([0.1, 0.2, -1.0], dtype=np.float32)
-        expected /= np.linalg.norm(expected)
-
-        np.testing.assert_allclose(got, expected, atol=1e-6)
-
+class TestSensorCameraRays(unittest.TestCase):
+    @unittest.skipIf(Usd is None, "Requires USD Python bindings")
     def test_usd_camera_transform_matches_model_up_axis(self):
         from newton.math import quat_between_axes  # noqa: PLC0415
 
@@ -98,41 +61,101 @@ class TestSensorUsdCameraRays(unittest.TestCase):
 
     def test_opencv_fisheye_zero_distortion(self):
         utils = _make_utils()
-        _stage, camera = _make_camera()
-        prim = camera.GetPrim()
-        _set_attr(prim, "omni:lensdistortion:model", Sdf.ValueTypeNames.Token, "opencvFisheye")
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:imageSize", Sdf.ValueTypeNames.Int2, Gf.Vec2i(3, 3))
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:fx", Sdf.ValueTypeNames.Float, 1.0)
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:fy", Sdf.ValueTypeNames.Float, 1.0)
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:cx", Sdf.ValueTypeNames.Float, 1.5)
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:cy", Sdf.ValueTypeNames.Float, 1.5)
-        for coeff in ("k1", "k2", "k3", "k4"):
-            _set_attr(prim, f"omni:lensdistortion:opencvFisheye:{coeff}", Sdf.ValueTypeNames.Float, 0.0)
 
-        got = utils.compute_usd_camera_rays(3, 3, camera).numpy()[0, 1, 2, 1]
+        got = utils.compute_fisheye_camera_rays_opencv(3, 3, fx=1.0, fy=1.0, cx=1.5, cy=1.5).numpy()[0, 1, 2, 1]
         expected = _direction(1.0)
 
         np.testing.assert_allclose(got, expected, atol=1e-6)
+
+    def test_pinhole_rays_write_preallocated_camera_index(self):
+        utils = _make_utils()
+        width, height = 3, 3
+        fov = math.radians(45.0)
+        expected = utils.compute_pinhole_camera_rays(width, height, fov).numpy()[0]
+        out_rays = wp.zeros((2, height, width, 2), dtype=wp.vec3f, device="cpu")
+
+        got = utils.compute_pinhole_camera_rays(width, height, fov, out_rays=out_rays, camera_index=1).numpy()
+
+        np.testing.assert_array_equal(got[0], np.zeros_like(got[0]))
+        np.testing.assert_allclose(got[1], expected, atol=1e-6)
+
+    def test_pinhole_aperture_matches_fov_helper(self):
+        utils = _make_utils()
+        width, height = 5, 3
+        fov = math.radians(60.0)
+        vertical_aperture = 2.0 * math.tan(fov * 0.5)
+        horizontal_aperture = vertical_aperture * (width / height)
+
+        got = utils.compute_pinhole_camera_rays(
+            width,
+            height,
+            focal_length=1.0,
+            horizontal_aperture=horizontal_aperture,
+            vertical_aperture=vertical_aperture,
+        ).numpy()
+        expected = utils.compute_pinhole_camera_rays(width, height, fov).numpy()
+
+        np.testing.assert_allclose(got, expected, atol=1e-6)
+
+    def test_pinhole_aperture_offsets_shift_principal_ray(self):
+        utils = _make_utils()
+
+        got = utils.compute_pinhole_camera_rays(
+            1,
+            1,
+            focal_length=1.0,
+            horizontal_aperture=1.0,
+            vertical_aperture=1.0,
+            horizontal_aperture_offset=0.1,
+            vertical_aperture_offset=0.2,
+        ).numpy()[0, 0, 0, 1]
+        expected = np.array([0.1, 0.2, -1.0], dtype=np.float32)
+        expected /= np.linalg.norm(expected)
+
+        np.testing.assert_allclose(got, expected, atol=1e-6)
+
+    @unittest.skipIf(Usd is None, "Requires USD Python bindings")
+    def test_usd_pinhole_camera_rays_accepts_prim_and_camera(self):
+        utils = _make_utils()
+        width, height = 5, 3
+        _stage, camera = _make_camera()
+        camera.GetProjectionAttr().Set(UsdGeom.Tokens.perspective)
+        camera.GetFocalLengthAttr().Set(1.5)
+        camera.GetHorizontalApertureAttr().Set(2.0)
+        camera.GetVerticalApertureAttr().Set(1.0)
+        camera.GetHorizontalApertureOffsetAttr().Set(0.1)
+        camera.GetVerticalApertureOffsetAttr().Set(0.2)
+        expected = utils.compute_pinhole_camera_rays(
+            width,
+            height,
+            focal_length=1.5,
+            horizontal_aperture=2.0,
+            vertical_aperture=1.0,
+            horizontal_aperture_offset=0.1,
+            vertical_aperture_offset=0.2,
+        ).numpy()
+
+        got_prim = utils.compute_usd_pinhole_camera_rays(width, height, camera.GetPrim()).numpy()
+        got_camera = utils.compute_usd_pinhole_camera_rays(width, height, camera).numpy()
+
+        np.testing.assert_allclose(got_prim, expected, atol=1e-6)
+        np.testing.assert_allclose(got_camera, expected, atol=1e-6)
 
     def test_opencv_fisheye_distortion_solves_theta(self):
         utils = _make_utils()
         theta = 0.5
         k1 = 0.25
         radius = theta * (1.0 + k1 * theta * theta)
-        _stage, camera = _make_camera()
-        prim = camera.GetPrim()
-        _set_attr(prim, "omni:lensdistortion:model", Sdf.ValueTypeNames.Token, "opencvFisheye")
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:imageSize", Sdf.ValueTypeNames.Int2, Gf.Vec2i(1, 1))
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:fx", Sdf.ValueTypeNames.Float, 1.0)
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:fy", Sdf.ValueTypeNames.Float, 1.0)
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:cx", Sdf.ValueTypeNames.Float, 0.5 - radius)
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:cy", Sdf.ValueTypeNames.Float, 0.5)
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:k1", Sdf.ValueTypeNames.Float, k1)
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:k2", Sdf.ValueTypeNames.Float, 0.0)
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:k3", Sdf.ValueTypeNames.Float, 0.0)
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:k4", Sdf.ValueTypeNames.Float, 0.0)
 
-        got = utils.compute_usd_camera_rays(1, 1, camera).numpy()[0, 0, 0, 1]
+        got = utils.compute_fisheye_camera_rays_opencv(
+            1,
+            1,
+            fx=1.0,
+            fy=1.0,
+            cx=0.5 - radius,
+            cy=0.5,
+            k1=k1,
+        ).numpy()[0, 0, 0, 1]
 
         np.testing.assert_allclose(got, _direction(theta), atol=1e-6)
 
@@ -140,100 +163,73 @@ class TestSensorUsdCameraRays(unittest.TestCase):
         utils = _make_utils()
         theta = 0.4
         radius = 2.0 * theta
-        _stage, camera = _make_camera()
-        prim = camera.GetPrim()
-        _set_attr(prim, "omni:lensdistortion:model", Sdf.ValueTypeNames.Token, "ftheta")
-        _set_attr(prim, "omni:lensdistortion:ftheta:nominalWidth", Sdf.ValueTypeNames.Float, 1.0)
-        _set_attr(prim, "omni:lensdistortion:ftheta:nominalHeight", Sdf.ValueTypeNames.Float, 1.0)
-        _set_attr(
-            prim,
-            "omni:lensdistortion:ftheta:opticalCenter",
-            Sdf.ValueTypeNames.Float2,
-            Gf.Vec2f(0.5 - radius, 0.5),
-        )
-        _set_attr(prim, "omni:lensdistortion:ftheta:k0", Sdf.ValueTypeNames.Float, 0.0)
-        _set_attr(prim, "omni:lensdistortion:ftheta:k1", Sdf.ValueTypeNames.Float, 2.0)
-        _set_attr(prim, "omni:lensdistortion:ftheta:k2", Sdf.ValueTypeNames.Float, 0.0)
-        _set_attr(prim, "omni:lensdistortion:ftheta:k3", Sdf.ValueTypeNames.Float, 0.0)
-        _set_attr(prim, "omni:lensdistortion:ftheta:k4", Sdf.ValueTypeNames.Float, 0.0)
-        _set_attr(prim, "omni:lensdistortion:ftheta:maxFov", Sdf.ValueTypeNames.Float, 180.0)
 
-        got = utils.compute_usd_camera_rays(1, 1, camera).numpy()[0, 0, 0, 1]
+        got = utils.compute_fisheye_camera_rays_ftheta(
+            1,
+            1,
+            optical_center_x=0.5 - radius,
+            optical_center_y=0.5,
+            k1=2.0,
+            max_fov=math.pi,
+        ).numpy()[0, 0, 0, 1]
 
         np.testing.assert_allclose(got, _direction(theta), atol=1e-6)
 
-    def test_explicit_lens_model_ignores_stale_fisheye_attrs(self):
+    def test_fisheye_rays_write_preallocated_camera_index(self):
         utils = _make_utils()
         theta = 0.4
         radius = 2.0 * theta
-        _stage, camera = _make_camera()
-        prim = camera.GetPrim()
-        _set_attr(prim, "omni:lensdistortion:model", Sdf.ValueTypeNames.Token, "ftheta")
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:imageSize", Sdf.ValueTypeNames.Int2, Gf.Vec2i(1, 1))
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:fx", Sdf.ValueTypeNames.Float, 1.0)
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:fy", Sdf.ValueTypeNames.Float, 1.0)
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:cx", Sdf.ValueTypeNames.Float, 0.5)
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:cy", Sdf.ValueTypeNames.Float, 0.5)
-        _set_attr(prim, "omni:lensdistortion:opencvFisheye:k1", Sdf.ValueTypeNames.Float, 0.0)
-        _set_attr(prim, "omni:lensdistortion:ftheta:nominalWidth", Sdf.ValueTypeNames.Float, 1.0)
-        _set_attr(prim, "omni:lensdistortion:ftheta:nominalHeight", Sdf.ValueTypeNames.Float, 1.0)
-        _set_attr(
-            prim,
-            "omni:lensdistortion:ftheta:opticalCenter",
-            Sdf.ValueTypeNames.Float2,
-            Gf.Vec2f(0.5 - radius, 0.5),
-        )
-        _set_attr(prim, "omni:lensdistortion:ftheta:k0", Sdf.ValueTypeNames.Float, 0.0)
-        _set_attr(prim, "omni:lensdistortion:ftheta:k1", Sdf.ValueTypeNames.Float, 2.0)
-        _set_attr(prim, "omni:lensdistortion:ftheta:maxFov", Sdf.ValueTypeNames.Float, 180.0)
+        expected = utils.compute_fisheye_camera_rays_ftheta(
+            1,
+            1,
+            optical_center_x=0.5 - radius,
+            optical_center_y=0.5,
+            k1=2.0,
+            max_fov=math.pi,
+        ).numpy()[0]
+        out_rays = wp.zeros((2, 1, 1, 2), dtype=wp.vec3f, device="cpu")
 
-        got = utils.compute_usd_camera_rays(1, 1, camera).numpy()[0, 0, 0, 1]
+        got = utils.compute_fisheye_camera_rays_ftheta(
+            1,
+            1,
+            optical_center_x=0.5 - radius,
+            optical_center_y=0.5,
+            k1=2.0,
+            max_fov=math.pi,
+            out_rays=out_rays,
+            camera_index=1,
+        ).numpy()
 
-        np.testing.assert_allclose(got, _direction(theta), atol=1e-6)
+        np.testing.assert_array_equal(got[0], np.zeros_like(got[0]))
+        np.testing.assert_allclose(got[1], expected, atol=1e-6)
 
     def test_kannala_brandt_k3_solves_known_angle(self):
         utils = _make_utils()
         theta = 0.3
         radius = 2.0 * theta
-        _stage, camera = _make_camera()
-        prim = camera.GetPrim()
-        _set_attr(prim, "omni:lensdistortion:model", Sdf.ValueTypeNames.Token, "kannalaBrandtK3")
-        _set_attr(prim, "omni:lensdistortion:kannalaBrandtK3:nominalWidth", Sdf.ValueTypeNames.Float, 1.0)
-        _set_attr(prim, "omni:lensdistortion:kannalaBrandtK3:nominalHeight", Sdf.ValueTypeNames.Float, 1.0)
-        _set_attr(
-            prim,
-            "omni:lensdistortion:kannalaBrandtK3:opticalCenter",
-            Sdf.ValueTypeNames.Float2,
-            Gf.Vec2f(0.5 - radius, 0.5),
-        )
-        _set_attr(prim, "omni:lensdistortion:kannalaBrandtK3:k0", Sdf.ValueTypeNames.Float, 2.0)
-        _set_attr(prim, "omni:lensdistortion:kannalaBrandtK3:k1", Sdf.ValueTypeNames.Float, 0.0)
-        _set_attr(prim, "omni:lensdistortion:kannalaBrandtK3:k2", Sdf.ValueTypeNames.Float, 0.0)
-        _set_attr(prim, "omni:lensdistortion:kannalaBrandtK3:k3", Sdf.ValueTypeNames.Float, 0.0)
-        _set_attr(prim, "omni:lensdistortion:kannalaBrandtK3:maxFov", Sdf.ValueTypeNames.Float, 180.0)
 
-        got = utils.compute_usd_camera_rays(1, 1, camera).numpy()[0, 0, 0, 1]
+        got = utils.compute_fisheye_camera_rays_kannala_brandt(
+            1,
+            1,
+            optical_center_x=0.5 - radius,
+            optical_center_y=0.5,
+            k0=2.0,
+            max_fov=math.pi,
+        ).numpy()[0, 0, 0, 1]
 
         np.testing.assert_allclose(got, _direction(theta), atol=1e-6)
 
     def test_fisheye_max_fov_masks_invalid_ray(self):
         utils = _make_utils()
-        _stage, camera = _make_camera()
-        prim = camera.GetPrim()
-        _set_attr(prim, "omni:lensdistortion:model", Sdf.ValueTypeNames.Token, "ftheta")
-        _set_attr(prim, "omni:lensdistortion:ftheta:nominalWidth", Sdf.ValueTypeNames.Float, 1.0)
-        _set_attr(prim, "omni:lensdistortion:ftheta:nominalHeight", Sdf.ValueTypeNames.Float, 1.0)
-        _set_attr(
-            prim,
-            "omni:lensdistortion:ftheta:opticalCenter",
-            Sdf.ValueTypeNames.Float2,
-            Gf.Vec2f(-0.5, 0.5),
-        )
-        _set_attr(prim, "omni:lensdistortion:ftheta:k0", Sdf.ValueTypeNames.Float, 0.0)
-        _set_attr(prim, "omni:lensdistortion:ftheta:k1", Sdf.ValueTypeNames.Float, 1.0)
-        _set_attr(prim, "omni:lensdistortion:ftheta:maxFov", Sdf.ValueTypeNames.Float, 60.0)
 
-        got = utils.compute_usd_camera_rays(1, 1, camera).numpy()[0, 0, 0, 1]
+        got = utils.compute_fisheye_camera_rays_ftheta(
+            1,
+            1,
+            optical_center_x=-0.5,
+            optical_center_y=0.5,
+            k1=1.0,
+            max_fov=math.radians(60.0),
+        ).numpy()[0, 0, 0, 1]
 
         np.testing.assert_array_equal(got, np.zeros(3, dtype=np.float32))
 

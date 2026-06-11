@@ -107,11 +107,11 @@ attributes, and usage examples.
   :class:`~newton.sensors.SensorTiledCamera` instead.
 * :class:`~newton.sensors.SensorTiledCamera` -- raytraced color and depth rendering across multiple worlds.
 
-USD Cameras
------------
+Camera Rays from USD Data
+-------------------------
 
-``SensorTiledCamera`` can derive render inputs directly from USD camera prims. The helper supports standard
-perspective ``UsdGeom.Camera`` pinhole parameters and OmniLens analytic fisheye camera attributes:
+``SensorTiledCamera`` can build standard USD pinhole camera rays directly. For lens models without standard USD
+attributes, read the attributes you use in your pipeline and pass the numeric values into the matching helper:
 
 .. code-block:: python
 
@@ -123,7 +123,7 @@ perspective ``UsdGeom.Camera`` pinhole parameters and OmniLens analytic fisheye 
    usd_camera = stage.GetPrimAtPath("/World/Camera")
 
    sensor = SensorTiledCamera(model)
-   camera_rays = sensor.utils.compute_usd_camera_rays(640, 480, usd_camera)
+   camera_rays = sensor.utils.compute_usd_pinhole_camera_rays(640, 480, usd_camera)
    camera_transforms = sensor.utils.compute_usd_camera_transforms(usd_camera)
 
    color = sensor.utils.create_color_image_output(640, 480)
@@ -133,6 +133,11 @@ perspective ``UsdGeom.Camera`` pinhole parameters and OmniLens analytic fisheye 
        camera_rays,
        color_image=color,
    )
+
+For fisheye cameras, extract the calibration values from your chosen USD attributes and call one of
+``compute_fisheye_camera_rays_opencv()``, ``compute_fisheye_camera_rays_ftheta()``, or
+``compute_fisheye_camera_rays_kannala_brandt()``. Each fisheye helper builds rays for one camera; pass
+``out_rays`` and ``camera_index`` to fill a shared ray buffer.
 
 Extended Attributes
 -------------------

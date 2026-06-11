@@ -7,10 +7,8 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.sensors.warp_raytrace.utils import (
-    compute_pinhole_camera_rays,
-    convert_ray_depth_to_forward_depth_kernel,
-)
+from newton._src.sensors.warp_raytrace.camera_utils import compute_pinhole_camera_rays
+from newton._src.sensors.warp_raytrace.utils import convert_ray_depth_to_forward_depth_kernel
 
 
 class TestConvertRayDepthToForwardDepth(unittest.TestCase):
@@ -30,7 +28,7 @@ class TestConvertRayDepthToForwardDepth(unittest.TestCase):
         wp.launch(
             kernel=compute_pinhole_camera_rays,
             dim=(camera_count, height, width),
-            inputs=[width, height, camera_fovs, camera_rays],
+            inputs=[width, height, camera_fovs, 0, camera_rays],
             device=self.device,
         )
         return camera_rays
