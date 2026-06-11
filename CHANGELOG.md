@@ -12,6 +12,8 @@
 - Fix MJCF `euler` producing wrong orientations for multi-component angles by treating angles as intrinsic rotations. (#3030)
 - Fix MJCF parsing so attributes from multiple `<compiler>` elements, including `<include>`-expanded children, are merged in document order. (#3030)
 - Fix MJCF worldbody static geoms bypassing the visual/collider class filter, so `parse_visuals=False` drops visual-class geoms attached directly to `<worldbody>` too. (#3030)
+- Fix USD import of body-to-world fixed joints without `PhysicsArticulationRootAPI` creating partial articulation metadata. Rootless USD mechanisms now remain consistently rootless instead of assigning only the world fixed joint to articulation 0.
+- Fix USD import auto-inserted root joints creating one-joint articulations for rootless jointed mechanisms with no `PhysicsArticulationRootAPI`.
 
 ## [1.3.0] - 2026-06-11
 
@@ -121,17 +123,6 @@
 - Fix `SolverMuJoCo` returning `State.joint_qd` in world frame for root `FREE` joints with non-identity `parent_xform`, violating the documented parent-frame contract and corrupting derived `body_qd`. (#2871)
 - Fix MJCF joint `damping` attribute being ignored by `SolverFeatherstone`
 - Fix `SolverMuJoCo` generated MuJoCo joint names for multi-axis D6 joints to avoid duplicate names
-- Fix USD import of revolute and D6-angular joint `limit_ke` / `limit_kd` from `mjc:solreflimit` being over-scaled by ~57x
-- Fix `ViewerGL` GUI rendering at half size on HiDPI / Retina displays by scaling the ImGui style, fonts, sidebar width, and `log_image` window/tile/spacing constants with pyglet's `window.scale` (with framebuffer-to-window ratio as a fallback). DPI changes are tracked at runtime via the pyglet `on_scale` event so the GUI follows the window across displays with different scaling
-- Fix USD import losing authored negative scales on shape and parent xforms, so mirrored primitives and meshes are now imported with the correct signed scale
-- Fix USD import of body-to-world fixed joints without `PhysicsArticulationRootAPI` creating partial articulation metadata. Rootless USD mechanisms now remain consistently rootless instead of assigning only the world fixed joint to articulation 0.
-- Fix USD import auto-inserted root joints creating one-joint articulations for rootless jointed mechanisms with no `PhysicsArticulationRootAPI`.
-- Fix rigid-rigid friction in `SolverVBD` for contacts with nonzero `rigid_contact_offset0/rigid_contact_offset1`.
-- Respect USD color-space metadata for scalar material colors and convert linear-authored USD color textures to display space when loading them
-- Fix USD import of orphaned body-to-world fixed joints not accounting for ancestor xform offsets, so pinned bodies now FK to the correct world pose (env origin + spawn xform)
-- Fix `SolverXPBD` tetrahedral constraints reading static model activations instead of runtime control activations
-- Fix `SolverXPBD` tetrahedral constraints ignoring FEM material stiffness and damping
-- Fix `SolverMuJoCo` joint-limit `jnt_solref` so the effective stiffness/damping at a joint limit matches the user-configured force-space `joint_limit_ke`/`joint_limit_kd` (`N·m/rad`, `N·m·s/rad`) instead of MuJoCo's acceleration-space default
 - Fix `SolverMuJoCo` ball-joint frame conversion: `joint_q` and position-target quaternions were applied in the wrong basis when `child_xform` had a non-identity rotation, and `joint_qd` / velocity targets / applied / actuator torques were applied and read back in the wrong basis whenever the ball was away from its rest pose. (#2981)
 - Fix `SolverMuJoCo` to preserve authored zero-valued USD `mjc:solreflimit` values as raw MuJoCo data and avoid writing limit `solref` values to unlimited joints in saved MJCF
 - Honor authored `mujoco.solreflimit_mode` even when a non-zero `mujoco.solreflimit` is also present, so the explicit mode (force-space or raw) is authoritative
