@@ -213,13 +213,12 @@ Shape-material contact gains follow the same force-space contract as
 :attr:`~newton.Model.shape_material_kd` are force-space stiffness and
 damping (``N/m`` and ``N·s/m``). For the Newton-contacts path
 (``SolverMuJoCo(..., use_mujoco_contacts=False)``, the default),
-:class:`~newton.solvers.SolverMuJoCo` writes a per-contact
-``solref = (-ke * factor, -kd * factor)`` with
-``factor = (body_invweight0[A] + body_invweight0[B]) * (1 - dmax)``,
-where ``A`` and ``B`` are the two contacting bodies and
-``dmax = solimp[1]``. The two-body inverse-mass sum makes the contact
-stiffness independent of either body's mass, so :attr:`~newton.Model.shape_material_ke`
-behaves as a true force-space gain.
+:class:`~newton.solvers.SolverMuJoCo` scales the stiffness/damping pair by
+``factor = (body_invweight0[A] + body_invweight0[B]) * (1 - dmax)`` (where
+``A`` and ``B`` are the two contacting bodies and ``dmax = solimp[1]``) and
+writes the resulting per-contact ``solref``. The two-body inverse-mass sum
+makes the contact stiffness independent of either body's mass, so
+:attr:`~newton.Model.shape_material_ke` behaves as a true force-space gain.
 
 ``model.mujoco.solref_mode`` (per shape) controls how
 ``shape_material_ke`` / ``shape_material_kd`` and ``mujoco.solref``
