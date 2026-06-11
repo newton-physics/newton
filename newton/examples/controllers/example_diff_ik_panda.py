@@ -22,9 +22,7 @@ import newton
 import newton.examples
 import newton.solvers
 import newton.utils
-from newton import JointTargetMode
 from newton.controllers import ControllerDifferentialKinematics
-from newton.utils import compute_world_offsets
 
 ROBOT_COUNT = 4
 ROBOT_SPACING_Y = 1.2
@@ -69,8 +67,8 @@ class Example:
         # ------------------------------------------------------------------
         # Template — one Franka with MuJoCo PD attrs + a TCP site
         # ------------------------------------------------------------------
+        
         template = newton.ModelBuilder()
-
         urdf_path = newton.utils.download_asset("franka_emika_panda") / "urdf" / "fr3_franka_hand.urdf"
         template.add_urdf(
             str(urdf_path),
@@ -91,13 +89,18 @@ class Example:
             scale=(0.02, 0.02, 0.02),
         )
 
-        # Reasonable home pose: arm folded forward-up, gripper fingers open.
+        # Reasonable initial pose: arm folded forward-up, gripper fingers open.
         home_q = np.array(
             [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785, 0.04, 0.04],
             dtype=np.float32,
         )
         template.joint_q = home_q.tolist()
         self.home_q_per_robot = home_q
+
+        for i in range(len(template.joint_target_ke)):
+            template.joint_target_ke[i] = 3000.0
+            template.joint_target_kd[i] = 100.0
+
 
         # ------------------------------------------------------------------
         # Scene — replicate 4, add ground plane.
@@ -125,47 +128,20 @@ class Example:
         total_dofs = ROBOT_COUNT * DOFS_PER_ROBOT
         dof_indices = wp.array(np.arange(total_dofs, dtype=np.uint32), device=self.device)
 
-        # DiffIK's internal model is built from ``diffik_template`` — all
-        # robots at world origin. The scene's replicate spaces robots out
-        # *and centers the grid* (for 4 robots along Y at spacing 1.2 the
-        # bases sit at y = -1.8, -0.6, 0.6, 1.8). Mirror that offset
-        # computation here so a scene-world gizmo translates into the
-        # right DiffIK-internal target by subtracting the base offset.
-        self._base_offsets_np = compute_world_offsets(
-            ROBOT_COUNT, (0.0, ROBOT_SPACING_Y, 0.0), up_axis=self.model.up_axis
-        )
-
         bodies_per_robot = self.model.body_count // ROBOT_COUNT
         self._bodies_per_robot = bodies_per_robot
         body_q_np = self.state_0.body_q.numpy()
 
-        # Initialize gizmos at each robot's home TCP pose in world coords.
-        self.gizmo_tfs: list[wp.transform] = []
-        target_pos_init = np.zeros((ROBOT_COUNT, 3), dtype=np.float32)
-        target_quat_init = np.zeros((ROBOT_COUNT, 4), dtype=np.float32)
+        target_frames_init: list[wp.transform] = []
         for r in range(ROBOT_COUNT):
             ee_scene_idx = r * bodies_per_robot + ee_body_in_template
             ee_world = wp.transform(*body_q_np[ee_scene_idx])
-            site_world = ee_world * wp.transform(p=TCP_OFFSET, q=wp.quat_identity())
-            site_pos = wp.transform_get_translation(site_world)
-            site_quat = wp.transform_get_rotation(site_world)
-            self.gizmo_tfs.append(wp.transform(p=site_pos, q=site_quat))
-            offset = self._base_offsets_np[r]
-
-            # Initialize the targets to exactly where the target-site starts:
-            target_pos_init[r] = [
-                site_pos[0] - offset[0],
-                site_pos[1] - offset[1],
-                site_pos[2] - offset[2],
-            ]
-            target_quat_init[r] = [site_quat[0], site_quat[1], site_quat[2], site_quat[3]]
+            target_frames_init.append(ee_world * wp.transform(p=TCP_OFFSET, q=wp.quat_identity()))
 
         # ------------------------------------------------------------------
-        # DiffIK template — a separate N-articulation builder with no
-        # ground plane and no physical spacing. The controller finalizes
-        # this independently and runs eval_fk / eval_jacobian on it; the
-        # all-at-origin layout means the user's per-robot target_pos lives
-        # in the same frame as the scene minus each robot's base offset.
+        # DiffIK template — N articulations at the origin (no ground plane).
+        # Target poses live in each robot's own base frame; viewer offsets
+        # only affect gizmo display via _target_frames_to_gizmos().
         # ------------------------------------------------------------------
         diffik_template = newton.ModelBuilder()
         diffik_template.replicate(template, ROBOT_COUNT)
@@ -186,8 +162,7 @@ class Example:
         self._input = self.controller.input_struct()
         self._input.joint_q = self.state_0.joint_q
         self._input.joint_qd = self.state_0.joint_qd
-        self._input.site_target_position.assign(target_pos_init)
-        self._input.site_target_quaternion.assign(target_quat_init)
+        self._assign_target_frames(target_frames_init)
         self._output = self.controller.output_struct()
 
         # Seed control.joint_target_q with the home pose for every robot.
@@ -211,6 +186,8 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets((0.0, ROBOT_SPACING_Y, 0.0))
+        self._visual_offsets = self.viewer.world_offsets.numpy()
+        self.gizmo_tfs = self._target_frames_to_gizmos(target_frames_init)
         self.viewer.set_camera(
             pos=wp.vec3(2.5, 0.0, 1.3),
             pitch=-15.0,
@@ -221,21 +198,19 @@ class Example:
         # Python side each frame to follow gizmo drags, which isn't capturable.
         self.graph = None
 
-    def _push_gizmos(self) -> None:
-        """Read the four gizmos' world transforms, translate each into the
-        corresponding robot's DiffIK frame (base offset removed), and update
-        the controller's per-robot target arrays.
-        """
+    def _assign_target_frames(self, frames: list[wp.transform]) -> None:
         pos = np.zeros((ROBOT_COUNT, 3), dtype=np.float32)
         quat = np.zeros((ROBOT_COUNT, 4), dtype=np.float32)
-        for r, tf in enumerate(self.gizmo_tfs):
+        for r, tf in enumerate(frames):
             p = wp.transform_get_translation(tf)
             q = wp.transform_get_rotation(tf)
-            offset = self._base_offsets_np[r]
-            pos[r] = [p[0] - offset[0], p[1] - offset[1], p[2] - offset[2]]
+            pos[r] = [p[0], p[1], p[2]]
             quat[r] = [q[0], q[1], q[2], q[3]]
         self._input.site_target_position.assign(pos)
         self._input.site_target_quaternion.assign(quat)
+
+    def _push_gizmos(self) -> None:
+        self._assign_target_frames(self._gizmos_to_target_frames(self.gizmo_tfs))
 
     def _scatter_arm_targets(self) -> None:
         wp.launch(
@@ -245,6 +220,26 @@ class Example:
             outputs=[self.control.joint_target_q],
             device=self.device,
         )
+
+    def _gizmos_to_target_frames(self, frames: list[wp.transform]) -> list[wp.transform]:
+        """Gizmo (viewer) frame → per-robot target frame (strip visual offsets)."""
+        return [
+            wp.transform(
+                p=wp.transform_get_translation(tf) - wp.vec3(*self._visual_offsets[r]),
+                q=wp.transform_get_rotation(tf),
+            )
+            for r, tf in enumerate(frames)
+        ]
+
+    def _target_frames_to_gizmos(self, frames: list[wp.transform]) -> list[wp.transform]:
+        """Per-robot target frame → gizmo (viewer) frame (apply visual offsets)."""
+        return [
+            wp.transform(
+                p=wp.transform_get_translation(tf) + wp.vec3(*self._visual_offsets[r]),
+                q=wp.transform_get_rotation(tf),
+            )
+            for r, tf in enumerate(frames)
+        ]
 
     def step(self) -> None:
         self._push_gizmos()
@@ -272,14 +267,15 @@ class Example:
     def render(self) -> None:
         self.viewer.begin_frame(self.sim_time)
 
-        # Log each gizmo with snap_to set to the current TCP pose so a
-        # released gizmo jumps back to the arm's actual tip.
         body_q_np = self.state_0.body_q.numpy()
-        for r, tf in enumerate(self.gizmo_tfs):
+        target_frames = []
+        for r in range(ROBOT_COUNT):
             ee_scene_idx = r * self._bodies_per_robot + self._ee_body_in_template
             ee_world = wp.transform(*body_q_np[ee_scene_idx])
-            site_world = ee_world * wp.transform(p=TCP_OFFSET, q=wp.quat_identity())
-            self.viewer.log_gizmo(f"target_{r}", tf, snap_to=site_world)
+            target_frames.append(ee_world * wp.transform(p=TCP_OFFSET, q=wp.quat_identity()))
+        snap_gizmos = self._target_frames_to_gizmos(target_frames)
+        for r, tf in enumerate(self.gizmo_tfs):
+            self.viewer.log_gizmo(f"target_{r}", tf, snap_to=snap_gizmos[r])
 
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
