@@ -70,9 +70,6 @@ class Example:
         # Template — one Franka with MuJoCo PD attrs + a TCP site
         # ------------------------------------------------------------------
         template = newton.ModelBuilder()
-        # Registers the per-joint actuator attributes (joint_target_ke etc.)
-        # that SolverMuJoCo wires into its position actuators below.
-        newton.solvers.SolverMuJoCo.register_custom_attributes(template)
 
         urdf_path = newton.utils.download_asset("franka_emika_panda") / "urdf" / "fr3_franka_hand.urdf"
         template.add_urdf(
@@ -94,14 +91,6 @@ class Example:
             scale=(0.02, 0.02, 0.02),
         )
 
-        # MuJoCo's joint-position PD: kp/kd per DOF; POSITION mode means the
-        # actuator's bias is `-kp * q + -kd * qdot`, target tracked via the
-        # joint_target_q array we update each step.
-        for i in range(len(template.joint_target_ke)):
-            template.joint_target_ke[i] = 3000.0
-            template.joint_target_kd[i] = 100.0
-            template.joint_target_mode[i] = int(JointTargetMode.POSITION)
-
         # Reasonable home pose: arm folded forward-up, gripper fingers open.
         home_q = np.array(
             [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785, 0.04, 0.04],
@@ -117,16 +106,6 @@ class Example:
         scene.replicate(template, ROBOT_COUNT, spacing=(0.0, ROBOT_SPACING_Y, 0.0))
         scene.add_ground_plane()
         self.model = scene.finalize()
-
-        # ------------------------------------------------------------------
-        # DiffIK template — a separate N-articulation builder with no
-        # ground plane and no physical spacing. The controller finalizes
-        # this independently and runs eval_fk / eval_jacobian on it; the
-        # all-at-origin layout means the user's per-robot target_pos lives
-        # in the same frame as the scene minus each robot's base offset.
-        # ------------------------------------------------------------------
-        diffik_template = newton.ModelBuilder()
-        diffik_template.replicate(template, ROBOT_COUNT)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -172,6 +151,8 @@ class Example:
             site_quat = wp.transform_get_rotation(site_world)
             self.gizmo_tfs.append(wp.transform(p=site_pos, q=site_quat))
             offset = self._base_offsets_np[r]
+
+            # Initialize the targets to exactly where the target-site starts:
             target_pos_init[r] = [
                 site_pos[0] - offset[0],
                 site_pos[1] - offset[1],
@@ -179,13 +160,16 @@ class Example:
             ]
             target_quat_init[r] = [site_quat[0], site_quat[1], site_quat[2], site_quat[3]]
 
-        # Every constructor knob below the structural args defaults to the
-        # canonical Newton attr name, so the user only declares
-        # what *isn't* default. Gains stored by value (baked); per-robot
-        # target ports and per-DOF I/O ports read/write via the default
-        # `joint_q`, `joint_qd`, `site_target_position`,
-        # `site_target_quaternion`, `joint_target_q`, `joint_target_qd`
-        # attribute names on the structs below.
+        # ------------------------------------------------------------------
+        # DiffIK template — a separate N-articulation builder with no
+        # ground plane and no physical spacing. The controller finalizes
+        # this independently and runs eval_fk / eval_jacobian on it; the
+        # all-at-origin layout means the user's per-robot target_pos lives
+        # in the same frame as the scene minus each robot's base offset.
+        # ------------------------------------------------------------------
+        diffik_template = newton.ModelBuilder()
+        diffik_template.replicate(template, ROBOT_COUNT)
+
         self.controller = ControllerDifferentialKinematics(
             model_builder=diffik_template,
             controlled_site_label="ee",
