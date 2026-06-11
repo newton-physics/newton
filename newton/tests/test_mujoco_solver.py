@@ -11054,8 +11054,8 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
 
     Tests use ``use_mujoco_contacts=False`` explicitly so the
     Newton-contacts kernel (where the override lives) runs. They read
-    ``mjw_data.contact.solref`` back directly and compare to the positive
-    ``(timeconst, dampratio)`` conversion of ``(ke·factor, kd·factor)`` —
+    ``mjw_data.contact.solref`` back directly and compare to the
+    ``convert_solref`` conversion of ``(ke·factor, kd·factor)`` —
     mirroring the joint-limit suite
     pattern (:meth:`TestMuJoCoSolverInvweightScaledSolref
     .test_joint_limit_solref_uses_dof_invweight0`). ``use_mujoco_contacts
@@ -11118,9 +11118,8 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         return float(solref[0]), float(solref[1])
 
     def test_force_space_contact_solref_uses_invweight0_and_dmax(self):
-        """Per-contact ``solref`` must equal the positive ``(timeconst, dampratio)``
-        conversion of ``(ke·factor, kd·factor)`` with
-        ``factor = (invw_a + invw_b) * (1 - dmax)``."""
+        """Per-contact ``solref`` must equal the ``convert_solref`` conversion of
+        ``(ke·factor, kd·factor)`` with ``factor = (invw_a + invw_b) * (1 - dmax)``."""
         ke, kd, mass = 1.0e4, 100.0, 5.0
         model, _ = self._build_box_on_plane(mass=mass, ke=ke, kd=kd)
         solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
@@ -11212,7 +11211,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         actual_solref = solver.mjw_data.contact.solref.numpy()[0]
         rel_tol = 1.0e-4
         self.assertAlmostEqual(float(actual_solref[0]), updated_solref_ref, delta=abs(updated_solref_ref) * rel_tol)
-        # Heavier body → smaller factor → larger timeconst (2 / (kd * factor)).
+        # Heavier body → smaller factor → larger solref[0] (2 / (kd * factor)).
         self.assertGreater(updated_solref_ref, initial_solref_ref)
 
     def test_force_space_contact_mixed_mode_falls_through_to_geom_solref(self):
@@ -11251,8 +11250,8 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
         self._run_to_first_contact(model, solver)
         actual_solref = solver.mjw_data.contact.solref.numpy()[0]
-        # dmax=1 zeroes the factor → override skipped; a sub-1.0 timeconst (not
-        # the clamped ~2/MJ_MINVAL) proves the guard fired.
+        # dmax=1 zeroes the factor → override skipped; solref[0] stays sub-1.0
+        # instead of the ~2/MJ_MINVAL a fired override would produce.
         self.assertLess(float(actual_solref[0]), 1.0)
 
     def test_force_space_with_mujoco_contacts_emits_startup_warning(self):
@@ -11310,15 +11309,15 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         actual_solref = solver.mjw_data.contact.solref.numpy()[0]
         # Per MuJoCo's solmix rule with equal priority and unit solmix on both
         # shapes, ``mix == 0.5`` exactly. Recover the mixed ke/kd, then assert
-        # ``contact.solref`` equals the positive ``(timeconst, dampratio)``
-        # conversion of the blended pair.
+        # ``contact.solref`` equals the ``convert_solref`` conversion of the
+        # blended pair.
         mix_ke = 0.5 * ke_a + 0.5 * ke_b
         mix_kd = 0.5 * kd_a + 0.5 * kd_b
         rel_tol = 1.0e-3
         expected_ref, expected_damp = self._expected_force_space_solref(solver, 0, ke=mix_ke, kd=mix_kd)
         self.assertAlmostEqual(float(actual_solref[0]), expected_ref, delta=abs(expected_ref) * rel_tol)
         self.assertAlmostEqual(float(actual_solref[1]), expected_damp, delta=abs(expected_damp) * rel_tol)
-        # Sanity: the blended timeconst (which tracks ``kd``) lies strictly
+        # Sanity: the blended solref[0] (which tracks ``kd``) lies strictly
         # between the single-material endpoints, the smoke test for ``mix``
         # actually being used.
         ref_a, _ = self._expected_force_space_solref(solver, 0, ke=ke_a, kd=kd_a)

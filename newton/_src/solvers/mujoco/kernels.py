@@ -405,9 +405,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
         )
 
         # FORCE_SPACE per-contact override: bypass contact_params' per-geom
-        # solref averaging and write the two-body factor directly, in MuJoCo's
-        # positive ``(timeconst, dampratio)`` convention so refsafe stays active.
-        # See docs/integrations/mujoco.rst > "Shape-material contact stiffness
+        # solref averaging and write the two-body factor directly. See
+        # docs/integrations/mujoco.rst > "Shape-material contact stiffness
         # and damping" for the mechanism.
         if shape_mjc_solref_mode:
             mode_a = shape_mjc_solref_mode[shape_a]

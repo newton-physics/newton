@@ -128,7 +128,7 @@
 - Honor authored `mujoco.solreflimit_mode` even when a non-zero `mujoco.solreflimit` is also present, so the explicit mode (force-space or raw) is authoritative
 - Fix `SolverMuJoCo` CPU backend overwriting `mj_model.body_iquat` with Newton's eigendecomposition result on every `BODY_INERTIAL_PROPERTIES` notify; the compiled principal-axes basis is now preserved, fixing single-contact box equilibrium (incorrect normal force) and stiff WELD-loop instabilities (`Nan, Inf or huge value in QACC`) caused by basis ambiguity on repeated eigenvalues
 - Fix `SolverMuJoCo` CPU backend dynamics for asymmetric MJCF `diaginertia` models whose principal moments are reordered during Newton/MJWarp synchronization
-- Fix `SolverMuJoCo` honoring force-space `shape_material_ke` / `shape_material_kd` for contacts (`use_mujoco_contacts=False`) using MuJoCo's positive solref convention so timestep safety clamping stays active; authored `mjc:solref` is preserved via new `mujoco.solref` / `mujoco.solref_mode` per-shape custom attributes. Force-space scaling is unsupported on `use_mujoco_contacts=True` and the MuJoCo CPU backend.
+- Fix `SolverMuJoCo` honoring force-space `shape_material_ke` / `shape_material_kd` for contacts (`use_mujoco_contacts=False`); authored `mjc:solref` is preserved via new `mujoco.solref` / `mujoco.solref_mode` per-shape custom attributes. Force-space scaling is unsupported on `use_mujoco_contacts=True` and the MuJoCo CPU backend.
 - Fix MJCF importer rejecting MuJoCo's one-value `solreflimit`/`solref` shorthand emitted by `mujoco.MjSpec.to_xml()` for default-valued joints, which broke `SolverMuJoCo(save_to_mjcf=...)` round-trips
 - Fix ground grid clipping in the Viser renderer
 
