@@ -9540,42 +9540,6 @@ class ModelBuilder:
             # FIXED joint (floating=False or floating=None with parent body)
             return self.add_joint_fixed(parent, child, parent_xform, child_xform, label=label)
 
-    def _add_base_joints_to_floating_bodies(
-        self,
-        new_bodies: Iterable[int] | None = None,
-        floating: bool | None = None,
-        base_joint: dict | None = None,
-    ):
-        """
-        Adds joints and single-joint articulations to every rigid body that is not a child in any joint
-        and has positive mass.
-
-        Args:
-            new_bodies: The set of body indices to consider for adding joints.
-            floating: If True or None (default), floating bodies receive a free joint.
-                If False, floating bodies receive a fixed joint.
-            base_joint: Dict with joint parameters passed to :meth:`add_joint`.
-                When specified, this takes precedence over the ``floating`` parameter.
-
-        Note:
-            - Bodies that are already a child in any joint will be skipped.
-            - Only bodies with strictly positive mass will receive a joint.
-            - Each joint is added to its own single-joint articulation.
-            - This is useful for ensuring that all floating (unconnected) bodies are properly articulated.
-        """
-        if new_bodies is None:
-            return
-
-        # set(self.joint_child) is connected_bodies
-        floating_bodies = set(new_bodies) - set(self.joint_child)
-        for body_id in floating_bodies:
-            if self.body_mass[body_id] <= 0:
-                continue
-
-            joint = self._add_base_joint(body_id, floating=floating, base_joint=base_joint)
-            # Use body label as articulation label for single-body articulations
-            self.add_articulation([joint], label=self.body_label[body_id])
-
     def request_contact_attributes(self, *attributes: str) -> None:
         """
         Request that specific contact attributes be allocated when creating a Contacts object from the finalized Model.
@@ -9843,10 +9807,10 @@ class ModelBuilder:
                 if art < 0:  # Joint is not in an articulation
                     parent = self.joint_parent[i]
                     child = self.joint_child[i]
-                    if parent == -1 and self.joint_type[i] == JointType.FIXED:
-                        # A body-to-world fixed joint pins the child without
-                        # adding generalized coordinates, so it does not need
-                        # reduced-coordinate articulation metadata.
+                    if parent == -1:
+                        # A root joint attaches the child directly to world.
+                        # Maximal-coordinate solvers can consume that joint
+                        # without reduced-coordinate articulation metadata.
                         continue
                     if child not in articulated_bodies:
                         # This is a true orphan - the child body has no articulated path
