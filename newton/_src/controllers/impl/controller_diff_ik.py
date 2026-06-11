@@ -283,7 +283,7 @@ class ControllerDifferentialKinematics(Controller):
         DAMPED_LEAST_SQUARES = 0
         TRANSPOSE = 1
 
-    DEFAULT_SOLVER_DAMPING: float = 0.01
+    DEFAULT_SOLVER_DAMPING: float = 0.05
 
     def __init__(
         self,
