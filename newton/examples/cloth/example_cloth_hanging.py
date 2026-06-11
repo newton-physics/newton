@@ -113,7 +113,7 @@ class Example:
 
         self.model = builder.finalize()
         self.model.soft_contact_ke = 1.0e2
-        self.model.soft_contact_kd = 1.0e2 if self.solver_type == "vbd" else 1.0e0
+        self.model.soft_contact_kd = 1.0e2 if self.solver_type in ("style3d", "vbd") else 1.0e0
         self.model.soft_contact_mu = 1.0
 
         if self.solver_type == "semi_implicit":
