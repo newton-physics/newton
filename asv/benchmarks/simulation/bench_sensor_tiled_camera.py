@@ -10,6 +10,7 @@ wp.config.log_level = wp.LOG_WARNING
 import math
 
 import newton
+from newton import ShapeFlags
 from newton.sensors import SensorTiledCamera
 
 NICE_NAMES = {}
@@ -46,6 +47,9 @@ class FastSensorTiledCamera:
             newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf",
             floating=False,
         )
+        COLLIDE = int(ShapeFlags.COLLIDE_SHAPES) | int(ShapeFlags.COLLIDE_PARTICLES)
+        franka.shape_flags = [int(f) & ~COLLIDE for f in franka.shape_flags]
+        franka.shape_collision_filter_pairs = []
 
         scene = newton.ModelBuilder()
         scene.replicate(franka, world_count)
