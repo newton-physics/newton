@@ -100,10 +100,10 @@ class Example:
         self.home_q_per_robot = home_q
 
         # ------------------------------------------------------------------
-        # Scene — replicate 4 robots along +Y, add ground plane.
+        # Scene — replicate 4, add ground plane.
         # ------------------------------------------------------------------
         scene = newton.ModelBuilder()
-        scene.replicate(template, ROBOT_COUNT, spacing=(0.0, ROBOT_SPACING_Y, 0.0))
+        scene.replicate(template, ROBOT_COUNT)
         scene.add_ground_plane()
         self.model = scene.finalize()
 
@@ -210,11 +210,7 @@ class Example:
         self._arm_indices = wp.array(arm_indices, dtype=wp.int32, device=self.device)
 
         self.viewer.set_model(self.model)
-        # The robots are already spaced apart in physics; without this the
-        # viewer would auto-add a *visual* world offset on top of that (its
-        # default for multi-world scenes), which leaves the gizmos — logged
-        # in world coords — drifting off the rendered TCPs.
-        self.viewer.set_world_offsets((0.0, 0.0, 0.0))
+        self.viewer.set_world_offsets((0.0, ROBOT_SPACING_Y, 0.0))
         self.viewer.set_camera(
             pos=wp.vec3(2.5, 0.0, 1.3),
             pitch=-15.0,
