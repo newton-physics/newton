@@ -135,15 +135,16 @@ MuJoCo geometry model. They are only available through Newton's
 collision pipeline (see `Collision pipeline`_ below).
 
 
+.. _joint-limit-stiffness-and-damping:
+
 Joint-limit stiffness and damping
 ---------------------------------
 
 :attr:`~newton.Model.joint_limit_ke` and
 :attr:`~newton.Model.joint_limit_kd` are force-space gains (for example,
-``N·m/rad`` and ``N·m·s/rad`` for revolute joints). MuJoCo's negative
-``solreflimit`` convention stores stiffness and damping values, but the
-limit solver then converts them to an effective response using the owning
-DOF's ``dof_invweight0`` and the limit impedance parameter
+``N·m/rad`` and ``N·m·s/rad`` for revolute joints). MuJoCo converts
+``solreflimit`` to an effective limit response using the owning DOF's
+``dof_invweight0`` and the limit impedance parameter
 ``dmax = solimplimit[1]``:
 
 .. math::
@@ -152,12 +153,26 @@ DOF's ``dof_invweight0`` and the limit impedance parameter
    (\mathrm{dof\_invweight0} \cdot (1 - dmax))
 
 To keep Newton's force-space meaning,
-:class:`~newton.solvers.SolverMuJoCo` writes
-``solreflimit = (-ke * factor, -kd * factor)`` with
-``factor = dof_invweight0 * (1 - dmax)``. This update runs after MuJoCo has
-compiled or refreshed ``dof_invweight0``. If ``joint_limit_ke <= 0`` or
-``joint_limit_kd <= 0``, the solver restores MuJoCo's default
-``solreflimit`` value ``(0.02, 1.0)``.
+:class:`~newton.solvers.SolverMuJoCo` first scales the direct
+stiffness/damping pair by ``factor = dof_invweight0 * (1 - dmax)`` and then
+converts that pair to MuJoCo's positive ``(timeconst, dampratio)`` convention:
+
+.. math::
+
+   \begin{aligned}
+   k_\mathrm{stored} &= ke \cdot factor \\
+   b_\mathrm{stored} &= kd \cdot factor \\
+   \mathrm{timeconst} &= 2 / b_\mathrm{stored} \\
+   \mathrm{dampratio} &= b_\mathrm{stored} /
+      (2 \sqrt{k_\mathrm{stored}})
+   \end{aligned}
+
+The positive convention preserves the same unclamped force-space response as
+the equivalent direct stiffness/damping pair while allowing MuJoCo's
+``refsafe`` timestep clamp to soften limits that are too stiff for the step
+size. This update runs after MuJoCo has compiled or refreshed
+``dof_invweight0``. If ``joint_limit_ke <= 0`` or ``joint_limit_kd <= 0``, the
+solver restores MuJoCo's default ``solreflimit`` value ``(0.02, 1.0)``.
 
 MJCF- or USD-authored ``solreflimit`` values are already native MuJoCo
 parameters, so they are preserved verbatim through the
@@ -181,11 +196,52 @@ authored native value such as ``solreflimit="0 0"`` or USD
    ``solreflimit``; it has no field for "use Newton force-space
    scaling with these gains". The exporter therefore only writes
    ``solreflimit`` for ``SOLREF_MODE_RAW`` joints (where the authored
-   value carries the full intent). Re-importing the saved file
-   recovers the same MuJoCo dynamics, but ``joint_limit_ke`` /
+   value carries the full intent). ``joint_limit_ke`` /
    ``joint_limit_kd`` from the original ``SOLREF_MODE_FORCE_SPACE`` /
-   ``SOLREF_MODE_MJCF_DEFAULT`` joints will not be preserved — reapply
-   them on the rebuilt model if you need them.
+   ``SOLREF_MODE_MJCF_DEFAULT`` joints will not be preserved; reapply
+   them on the rebuilt model if you need those force-space gains.
+
+
+.. _shape-material-contact-stiffness-and-damping:
+
+Shape-material contact stiffness and damping
+--------------------------------------------
+
+Shape-material contact gains follow the same force-space contract as
+:ref:`joint limits <joint-limit-stiffness-and-damping>` (issue #2009).
+:attr:`~newton.Model.shape_material_ke` and
+:attr:`~newton.Model.shape_material_kd` are force-space stiffness and
+damping (``N/m`` and ``N·s/m``). For the Newton-contacts path
+(``SolverMuJoCo(..., use_mujoco_contacts=False)``, the default),
+:class:`~newton.solvers.SolverMuJoCo` scales the stiffness/damping pair by
+``factor = (body_invweight0[A] + body_invweight0[B]) * (1 - dmax)`` (where
+``A`` and ``B`` are the two contacting bodies and ``dmax = solimp[1]``) and
+writes the resulting per-contact ``solref``. The two-body inverse-mass sum
+makes the contact stiffness independent of either body's mass, so
+:attr:`~newton.Model.shape_material_ke` behaves as a true force-space gain.
+
+``model.mujoco.solref_mode`` (per shape) controls how
+``shape_material_ke`` / ``shape_material_kd`` and ``mujoco.solref``
+combine, with the same three states as joint limits:
+
+* ``SOLREF_MODE_FORCE_SPACE`` — Newton force-space gains; the per-contact
+  factor above applies.
+* ``SOLREF_MODE_RAW`` — forward the authored ``mujoco.solref`` (e.g.
+  from an MJCF/USD import) unchanged.
+* ``SOLREF_MODE_MJCF_DEFAULT`` — registered default; preserves MuJoCo's
+  compile-time contact dynamics and the legacy
+  ``convert_solref(ke, kd, 1, 1)`` round-trip in ``geom_solref``. Opt
+  in to force-space scaling by setting
+  ``model.mujoco.solref_mode[shape] = SOLREF_MODE_FORCE_SPACE``.
+
+.. note::
+
+   ``use_mujoco_contacts=True`` and the MuJoCo CPU backend do not
+   apply the per-contact two-body factor — MuJoCo's internal
+   ``contact_params`` averages per-geom ``solref``, which cannot
+   reproduce the inverse-mass sum. ``SOLREF_MODE_FORCE_SPACE`` shapes
+   fall back to the legacy ``convert_solref(ke, kd, 1, 1)``
+   approximation on those paths.
 
 
 Actuators
@@ -254,6 +310,12 @@ array; slot layout depends on the constraint type.
        :attr:`~newton.JointType.REVOLUTE` and
        :attr:`~newton.JointType.PRISMATIC` joints are supported.
 
+Newton's core API does not expose equality constraints as a dedicated
+builder call. Construct them through the MuJoCo
+:ref:`custom-attribute namespace <mujoco-custom-attributes>` with
+:meth:`~newton.ModelBuilder.add_custom_values` using the
+``mujoco:equality_constraint_*`` keys, then read or update finalized
+fields via ``model.mujoco.equality_constraint_*``.
 
 .. _mujoco-loop-closures:
 
@@ -453,6 +515,10 @@ handles this inline (:github:`newton/_src/utils/import_mjcf.py`); USD
 goes through :class:`~newton.usd.SchemaResolverMjc`
 (:github:`newton/_src/usd/schemas.py`).
 
+MuJoCo joint ``damping`` maps to :attr:`~newton.Model.joint_damping`.
+The old ``model.mujoco.dof_passive_damping`` custom attribute remains
+a deprecated alias and emits a ``DeprecationWarning`` when accessed.
+
 
 Unsupported MuJoCo features
 ---------------------------
@@ -583,7 +649,7 @@ by joint type:
 If you edit :attr:`~newton.Model.joint_X_p` or :attr:`~newton.Model.joint_X_c`
 for a fixed-root articulation after constructing the solver, call
 :meth:`~newton.solvers.SolverBase.notify_model_changed` with the
-:attr:`~newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES` flag to
+:attr:`~newton.ModelFlags.JOINT_PROPERTIES` flag to
 synchronize the updated fixed-root poses into MuJoCo.
 
 

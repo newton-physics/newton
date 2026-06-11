@@ -41,7 +41,7 @@ def test_runtime_gravity_particles(test, device, solver_fn):
 
     # Step 2: Change gravity to zero at runtime
     model.set_gravity((0.0, 0.0, 0.0))
-    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES)
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
 
     # Simulate with zero gravity
     for _ in range(10):
@@ -55,7 +55,7 @@ def test_runtime_gravity_particles(test, device, solver_fn):
 
     # Step 3: Change gravity to positive (upward)
     model.set_gravity((0.0, 0.0, 9.81))
-    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES)
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
 
     # Simulate with upward gravity
     for _ in range(20):
@@ -97,7 +97,7 @@ def test_runtime_gravity_bodies(test, device, solver_fn):
 
     # Step 2: Change gravity to horizontal
     model.set_gravity((9.81, 0.0, 0.0))
-    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES)
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
 
     # Simulate with horizontal gravity
     for _ in range(20):
@@ -239,7 +239,7 @@ def test_per_world_gravity_bodies(test, device, solver_fn):
     model.set_gravity((0.0, 0.0, 0.0), world=0)
     model.set_gravity((0.0, 0.0, -4.905), world=1)
     model.set_gravity((0.0, 0.0, -9.81), world=2)
-    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES)
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
 
     # Simulate
     for _ in range(10):
@@ -307,7 +307,7 @@ def test_per_world_gravity_bodies_mujoco_warp(test, device):
     model.set_gravity((0.0, 0.0, -1.0), world=0)
     model.set_gravity((0.0, 0.0, -2.0), world=1)
     model.set_gravity((0.0, 0.0, -3.0), world=2)
-    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES)
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
 
     # Verify new values propagated to MuJoCo Warp model
     mj_gravity = solver.mjw_model.opt.gravity.numpy()
@@ -337,7 +337,7 @@ def test_set_gravity_per_world(test, device):
 
     # Set different gravity for world 0 only
     model.set_gravity((0.0, 0.0, 0.0), world=0)
-    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES)
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
 
     # Verify gravity was updated correctly
     gravity_np = model.gravity.numpy()
@@ -384,7 +384,7 @@ def test_set_gravity_array(test, device):
     gravities = np.array([[0.0, 0.0, g * -9.81] for g in np.linspace(0.0, 1.0, world_count)], dtype=np.float32)
 
     model.set_gravity(gravities)
-    solver.notify_model_changed(newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES)
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
 
     # Verify gravity was set correctly
     gravity_np = model.gravity.numpy()

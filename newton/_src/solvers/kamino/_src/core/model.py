@@ -14,10 +14,9 @@ import warp as wp
 from .....sim import Model
 
 # Kamino imports
-from .bodies import RigidBodiesData, RigidBodiesModel, convert_geom_offset_origin_to_com
+from .bodies import RigidBodiesData, RigidBodiesModel
 from .control import ControlKamino
 from .conversions import (
-    convert_entity_local_transforms,
     convert_geometries,
     convert_joints,
     convert_rigid_bodies,
@@ -492,6 +491,20 @@ class ModelKamino:
         """Whether the model was finalized (see :meth:`ModelBuilder.finalize`) with gradient computation enabled."""
         return self._requires_grad
 
+    @property
+    def use_coord_layout_targets(self) -> bool:
+        """Target-layout snapshot. Returns the wrapped
+        :class:`newton.Model`'s snapshot when this ``ModelKamino`` was built
+        via :meth:`from_newton`; falls back to the live module global
+        :data:`newton.use_coord_layout_targets` for native Kamino models built
+        through :class:`ModelBuilderKamino` (no wrapped Newton model).
+        """
+        if self._model is not None:
+            return self._model.use_coord_layout_targets
+        import newton  # noqa: PLC0415
+
+        return newton.use_coord_layout_targets
+
     ###
     # Factories
     ###
@@ -674,6 +687,10 @@ class ModelKamino:
     def from_newton(model: Model) -> ModelKamino:
         """
         Finalizes the :class:`ModelKamino` from an existing instance of :class:`newton.Model`.
+
+        Args:
+            model:
+                The source :class:`newton.Model` instance to be converted.
         """
 
         # Ensure the base model is valid
@@ -702,42 +719,6 @@ class ModelKamino:
                     arr_start_np[-2] = arr_start_np[-1]
                     arr_start.assign(arr_start_np)
 
-        # ---------------------------------------------------------------------------
-        # Pre-processing: absorb non-identity joint_X_c rotations into child body
-        # frames so that Kamino sees aligned joint frames on both sides.
-        #
-        # Kamino's constraint system assumes a single joint frame X_j valid for both
-        # the base (parent) and follower (child) bodies.  At q = 0 it requires
-        #   q_base^{-1} * q_follower = identity
-        # Newton, however, allows different parent / child joint-frame orientations
-        # via joint_X_p and joint_X_c.  At q = 0 Newton's FK gives:
-        #   q_follower = q_parent * q_pj * inv(q_cj)
-        # so q_base^{-1} * q_follower = q_pj * inv(q_cj) which is generally not
-        # identity.
-        #
-        # To fix this we apply a per-body correction rotation q_corr = q_cj * inv(q_pj)
-        # (applied on the right) to each child body's frame:
-        #   q_body_new = q_body_old * q_corr
-        # This makes q_base^{-1} * q_follower_new = identity at q = 0, and the joint
-        # rotation axis R(q_pj) * axis is preserved.
-        #
-        # All body-local quantities (CoM, inertia, shapes) are re-expressed in the
-        # rotated frame, and downstream joint_X_p transforms are updated to account
-        # for the parent body's frame change.
-        # ---------------------------------------------------------------------------
-        converted = convert_entity_local_transforms(model)
-        # ----------------------------------------------------------------------------
-
-        # Unpack converted quantities
-        body_q = converted["body_q"]
-        body_qd = converted["body_qd"]
-        body_com = converted["body_com"]
-        body_inertia = converted["body_inertia"]
-        body_inv_inertia = converted["body_inv_inertia"]
-        shape_transform = converted["shape_transform"]
-        joint_X_p = converted["joint_X_p"]
-        joint_X_c = converted["joint_X_c"]
-
         # Initialize materials manager
         materials_manager = MaterialManager()
 
@@ -763,40 +744,22 @@ class ModelKamino:
             model_gravity = GravityModel.from_newton(model)
 
             # Bodies
-            model_bodies = convert_rigid_bodies(
-                model, model_size, model_info, body_com, body_q, body_qd, body_inertia, body_inv_inertia
-            )
+            model_bodies = convert_rigid_bodies(model, model_size, model_info)
 
             # Joints
-            model_joints = convert_joints(model, model_size, model_info, body_com, joint_X_p, joint_X_c)
+            model_joints = convert_joints(model, model_size, model_info)
 
             # Geometries
-            model_geoms = convert_geometries(model, model_size, materials_manager, shape_transform)
+            model_geoms = convert_geometries(
+                model=model,
+                model_size=model_size,
+                model_bodies=model_bodies,
+                materials_manager=materials_manager,
+            )
 
             # Materials
             model_materials = materials_manager.make_materials_model()
             model_material_pairs = materials_manager.make_material_pairs_model()
-
-        ###
-        # Post-processing
-        ###
-
-        # Modify the model's body COM and shape transform properties in-place to convert from body-frame-relative
-        # NOTE: These are modified only so that the visualizer correctly
-        # shows the shape poses, joints frames and body inertial properties
-        wp.copy(model.body_com, body_com)
-        wp.copy(model.body_inertia, body_inertia)
-        wp.copy(model.shape_transform, shape_transform)
-        wp.copy(model.joint_X_p, joint_X_p)
-        wp.copy(model.joint_X_c, joint_X_c)
-
-        # Convert shape offsets from body-frame-relative to COM-relative
-        convert_geom_offset_origin_to_com(
-            model_bodies.i_r_com_i,
-            model.shape_body,
-            shape_transform,
-            model_geoms.offset,
-        )
 
         # Construct and return the new ModelKamino instance
         return ModelKamino(

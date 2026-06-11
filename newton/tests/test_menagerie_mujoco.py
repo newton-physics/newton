@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import os
 import unittest
+import warnings
 from abc import abstractmethod
 from collections import defaultdict
 from pathlib import Path
@@ -289,8 +290,8 @@ class StepResponseControlStrategy(ControlStrategy):
             and getattr(newton_solver, "mjc_actuator_ctrl_source", None) is not None
             and getattr(newton_solver, "mjc_actuator_to_newton_idx", None) is not None
         ):
-            self._joint_target_pos = newton_control.joint_target_pos
-            self._joint_target_vel = newton_control.joint_target_vel
+            self._joint_target_pos = newton_control.joint_target_q
+            self._joint_target_vel = newton_control.joint_target_qd
             self._mjc_actuator_ctrl_source = newton_solver.mjc_actuator_ctrl_source
             self._mjc_actuator_to_newton_idx = newton_solver.mjc_actuator_to_newton_idx
             self._dofs_per_world = self._joint_target_pos.shape[0] // num_worlds
@@ -1669,7 +1670,13 @@ class TestMenagerieBase(unittest.TestCase):
         if self.solver_integrator is not None:
             solver_kwargs["integrator"] = self.solver_integrator
 
-        cls._newton_solver = SolverMuJoCo(cls._newton_model, **solver_kwargs)
+        # Some real MJCFs (e.g. Apollo, Go2) author geom or contact-pair
+        # margins that the native-CCD path zeroes (#2106); the field comparison
+        # below already mirrors that zeroing, so tolerate the advisory rather
+        # than failing under strict warnings. Other warnings still surface.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=r"(Geom|Pair).* zeroed for NATIVECCD")
+            cls._newton_solver = SolverMuJoCo(cls._newton_model, **solver_kwargs)
 
         cls._mj_model, cls._mj_data_native, cls._native_mjw_model, cls._native_mjw_data = (
             self._create_native_mujoco_warp()
@@ -2178,12 +2185,16 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
     """ALOHA bimanual system."""
 
     robot_folder = "aloha"
-    # Dynamics and FK disabled: multiple MJCF import issues (#2492)
-    num_steps = 0
-    fk_enabled = False  # FK fails (xpos diff 0.14) due to import bugs (#2492)
-    # TODO(#2492): dof_damping, jnt_range, eq_, ngeom differ
-    # jnt_ is broad but needed: compare_jnt_range runs outside model_skip_fields
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"dof_damping", "eq_", "neq", "ngeom", "jnt_"}
+    num_steps = 20
+    fk_enabled = True
+    # Aloha's MJCF doesn't author `<option integrator=...>`, so sync native
+    # to Newton's auto-selected IMPLICITFAST (same pattern as FR3v2/Cassie).
+    # 15-trial native-vs-native qvel diff is bit-exact (0); newton-vs-native
+    # max 1.43e-6 (float32 noise). Tolerance set ~7x for headroom.
+    dynamics_tolerance = 1e-5
+
+    def _align_models(self, newton_solver, native_mjw_model, mj_model):
+        native_mjw_model.opt.integrator = newton_solver.mjw_model.opt.integrator
 
 
 class TestMenagerie_GoogleRobot(TestMenagerieMJCF):

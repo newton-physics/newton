@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import functools
 import math
 import os
 import tempfile
@@ -23,6 +24,46 @@ from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
 
 devices = get_test_devices()
+
+
+_INVALID_ARTICULATION_DESC = "Warning: Invalid ArticulationDesc descriptor"
+
+
+def _expect_jointless_articulation_warning(test):
+    """Require the benign jointless-articulation warning on OpenUSD < 26.0.
+
+    ``UsdPhysics.LoadUsdPhysicsFromRange`` in OpenUSD < 26.0 (e.g. the
+    ``usd-exchange`` build resolved on ``aarch64``) reports an articulation root
+    that has no joints as an invalid ``ArticulationDesc``, which
+    :func:`~newton.utils.parse_usd` surfaces as a ``UserWarning``; usd-core
+    >= 26.0 treats it as valid. The fixtures wrapped here intentionally import
+    single-body (jointless) articulations -- a shape Newton parses identically
+    either way. On the USD versions that emit it, assert exactly that warning
+    while leaving every other warning subject to the ambient policy, so an
+    unexpected ``newton.*`` warning here still fails under ``--strict-warnings``.
+    """
+
+    @functools.wraps(test)
+    def wrapper(self, *args, **kwargs):
+        from pxr import Usd
+
+        if Usd.GetVersion() >= (0, 26, 0):
+            return test(self, *args, **kwargs)
+        with warnings.catch_warnings(record=True) as caught:
+            # Record (do not escalate) only the expected warning; the inherited
+            # "error" filter still applies to everything else under strict mode.
+            warnings.filterwarnings("always", message=_INVALID_ARTICULATION_DESC, category=UserWarning)
+            result = test(self, *args, **kwargs)
+        self.assertTrue(
+            any(
+                issubclass(w.category, UserWarning) and str(w.message).startswith(_INVALID_ARTICULATION_DESC)
+                for w in caught
+            ),
+            f"expected a {_INVALID_ARTICULATION_DESC!r} warning on OpenUSD < 26.0",
+        )
+        return result
+
+    return wrapper
 
 
 class TestImportUsdArticulation(unittest.TestCase):
@@ -456,6 +497,7 @@ def Xform "Root" (
         self.assertIn("/World/RevJoint2", builder.joint_label)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @_expect_jointless_articulation_warning
     def test_import_articulation_parent_offset(self):
         from pxr import Usd
 
@@ -4230,7 +4272,6 @@ def Xform "NotPSD" (
         body1_path = "/Body1"
         prim1 = stage.DefinePrim(body1_path, "Xform")
         UsdPhysics.RigidBodyAPI.Apply(prim1)
-        UsdPhysics.MassAPI.Apply(prim1)
         attr1 = prim1.CreateAttribute("mjc:gravcomp", Sdf.ValueTypeNames.Float)
         attr1.Set(0.5)
 
@@ -4238,7 +4279,6 @@ def Xform "NotPSD" (
         body2_path = "/Body2"
         prim2 = stage.DefinePrim(body2_path, "Xform")
         UsdPhysics.RigidBodyAPI.Apply(prim2)
-        UsdPhysics.MassAPI.Apply(prim2)
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
@@ -4380,12 +4420,11 @@ def Xform "Articulation" (
 
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "dof_passive_stiffness"))
-        self.assertTrue(hasattr(model.mujoco, "dof_passive_damping"))
 
         joint_names = model.joint_label
         joint_qd_start = model.joint_qd_start.numpy()
         joint_stiffness = model.mujoco.dof_passive_stiffness.numpy()
-        joint_damping = model.mujoco.dof_passive_damping.numpy()
+        joint_damping = model.joint_damping.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
 
@@ -4917,9 +4956,7 @@ def Xform "World"
         float mjc:option:impratio = 99.0
     }
 
-    def Xform "Articulation" (
-        prepend apiSchemas = ["PhysicsArticulationRootAPI"]
-    )
+    def Xform "Articulation"
     {
         def Xform "Body1" (
             prepend apiSchemas = ["PhysicsRigidBodyAPI"]
@@ -5126,9 +5163,8 @@ def Xform "Articulation" (
         material_prim.GetAttribute("newton:torsionalFriction").Set(0.15)
         material_prim.GetAttribute("newton:rollingFriction").Set(0.08)
 
-        # Create an articulation with a body and collider
-        articulation = UsdGeom.Xform.Define(stage, "/Articulation")
-        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+        # Create a free-floating body with a collider (no joints, so no articulation)
+        UsdGeom.Xform.Define(stage, "/Articulation")
 
         body = UsdGeom.Xform.Define(stage, "/Articulation/Body")
         body_prim = body.GetPrim()
@@ -5790,8 +5826,7 @@ def Xform "Articulation" (
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
-        articulation = UsdGeom.Xform.Define(stage, "/Articulation")
-        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+        UsdGeom.Xform.Define(stage, "/Articulation")
         body = UsdGeom.Xform.Define(stage, "/Articulation/Body")
         UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
 
@@ -5827,8 +5862,7 @@ def Xform "Articulation" (
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
-        articulation = UsdGeom.Xform.Define(stage, "/Articulation")
-        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+        UsdGeom.Xform.Define(stage, "/Articulation")
         body = UsdGeom.Xform.Define(stage, "/Articulation/Body")
         UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
 
@@ -5853,6 +5887,267 @@ def Xform "Articulation" (
         shape2_idx = result["path_shape_map"]["/Articulation/Body/Collider2"]
         self.assertAlmostEqual(model.shape_gap.numpy()[shape1_idx], 0.02, places=4)
         self.assertAlmostEqual(model.shape_gap.numpy()[shape2_idx], 0.01, places=4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_contact_response_parsing(self):
+        """Test ke/kd/kf/ka parsed from NewtonMaterialAPI on bound material."""
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Material with all contact response attrs authored
+        mat_all = UsdShade.Material.Define(stage, "/Materials/AllAuthored")
+        mat_all_prim = mat_all.GetPrim()
+        mat_all_prim.ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(mat_all_prim)
+        mat_all_prim.GetAttribute("newton:contactStiffness").Set(5000.0)
+        mat_all_prim.GetAttribute("newton:contactDamping").Set(200.0)
+        mat_all_prim.GetAttribute("newton:contactFrictionGain").Set(800.0)
+        mat_all_prim.GetAttribute("newton:contactAdhesion").Set(0.01)
+
+        # Material with only ke/kd authored (kf/ka use builder defaults)
+        mat_partial = UsdShade.Material.Define(stage, "/Materials/PartialAuthored")
+        mat_partial_prim = mat_partial.GetPrim()
+        mat_partial_prim.ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(mat_partial_prim)
+        mat_partial_prim.GetAttribute("newton:contactStiffness").Set(3000.0)
+        mat_partial_prim.GetAttribute("newton:contactDamping").Set(150.0)
+
+        UsdGeom.Xform.Define(stage, "/Articulation")
+        body = UsdGeom.Xform.Define(stage, "/Articulation/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        # Shape bound to full material
+        col1 = UsdGeom.Cube.Define(stage, "/Articulation/Body/ColAll")
+        col1_prim = col1.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col1_prim)
+        UsdShade.MaterialBindingAPI.Apply(col1_prim).Bind(mat_all, "physics")
+
+        # Shape bound to partial material
+        col2 = UsdGeom.Cube.Define(stage, "/Articulation/Body/ColPartial")
+        col2_prim = col2.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col2_prim)
+        UsdShade.MaterialBindingAPI.Apply(col2_prim).Bind(mat_partial, "physics")
+
+        # Shape with no material binding
+        col3 = UsdGeom.Cube.Define(stage, "/Articulation/Body/ColNone")
+        col3_prim = col3.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col3_prim)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        model = builder.finalize()
+
+        idx_all = result["path_shape_map"]["/Articulation/Body/ColAll"]
+        idx_partial = result["path_shape_map"]["/Articulation/Body/ColPartial"]
+        idx_none = result["path_shape_map"]["/Articulation/Body/ColNone"]
+
+        # Full material: all four attrs from material
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[idx_all], 5000.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[idx_all], 200.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[idx_all], 800.0, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[idx_all], 0.01, places=4)
+
+        # Partial material: ke/kd from material, kf/ka from builder defaults
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[idx_partial], 3000.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[idx_partial], 150.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[idx_partial], builder.default_shape_cfg.kf, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[idx_partial], builder.default_shape_cfg.ka, places=4)
+
+        # No material: all from builder defaults
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[idx_none], builder.default_shape_cfg.ke, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[idx_none], builder.default_shape_cfg.kd, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[idx_none], builder.default_shape_cfg.kf, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[idx_none], builder.default_shape_cfg.ka, places=4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_contact_response_inf_sentinel(self):
+        """Test that -inf authored on material attrs yields builder defaults."""
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        mat = UsdShade.Material.Define(stage, "/Materials/InfMat")
+        mat_prim = mat.GetPrim()
+        mat_prim.ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(mat_prim)
+        mat_prim.GetAttribute("newton:contactStiffness").Set(float("-inf"))
+        mat_prim.GetAttribute("newton:contactDamping").Set(float("-inf"))
+        mat_prim.GetAttribute("newton:contactFrictionGain").Set(float("-inf"))
+        mat_prim.GetAttribute("newton:contactAdhesion").Set(float("-inf"))
+
+        UsdGeom.Xform.Define(stage, "/Articulation")
+        body = UsdGeom.Xform.Define(stage, "/Articulation/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        col = UsdGeom.Cube.Define(stage, "/Articulation/Body/Col")
+        col_prim = col.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col_prim)
+        UsdShade.MaterialBindingAPI.Apply(col_prim).Bind(mat, "physics")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        model = builder.finalize()
+
+        idx = result["path_shape_map"]["/Articulation/Body/Col"]
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[idx], builder.default_shape_cfg.ke, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[idx], builder.default_shape_cfg.kd, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[idx], builder.default_shape_cfg.kf, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[idx], builder.default_shape_cfg.ka, places=4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_contact_response_legacy_shape_fallback(self):
+        """Test deprecated newton:contact_ke/kd/kf/ka on shape prim with exact warnings."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Material with NO contact response attrs
+        mat_plain = UsdShade.Material.Define(stage, "/Materials/PlainMat")
+        mat_plain_prim = mat_plain.GetPrim()
+        mat_plain_prim.ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(mat_plain_prim)
+
+        # Material WITH all contact attrs authored
+        mat_authored = UsdShade.Material.Define(stage, "/Materials/AuthoredMat")
+        mat_authored_prim = mat_authored.GetPrim()
+        mat_authored_prim.ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(mat_authored_prim)
+        mat_authored_prim.GetAttribute("newton:contactStiffness").Set(4000.0)
+        mat_authored_prim.GetAttribute("newton:contactDamping").Set(100.0)
+        mat_authored_prim.GetAttribute("newton:contactFrictionGain").Set(600.0)
+        mat_authored_prim.GetAttribute("newton:contactAdhesion").Set(0.02)
+
+        UsdGeom.Xform.Define(stage, "/Articulation")
+        body = UsdGeom.Xform.Define(stage, "/Articulation/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        # Legacy ke/kd/kf/ka on shape, plain material -> legacy used as fallback
+        col_legacy = UsdGeom.Cube.Define(stage, "/Articulation/Body/ColLegacy")
+        col_legacy_prim = col_legacy.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col_legacy_prim)
+        UsdShade.MaterialBindingAPI.Apply(col_legacy_prim).Bind(mat_plain, "physics")
+        col_legacy_prim.CreateAttribute("newton:contact_ke", Sdf.ValueTypeNames.Float).Set(9999.0)
+        col_legacy_prim.CreateAttribute("newton:contact_kd", Sdf.ValueTypeNames.Float).Set(777.0)
+        col_legacy_prim.CreateAttribute("newton:contact_kf", Sdf.ValueTypeNames.Float).Set(500.0)
+        col_legacy_prim.CreateAttribute("newton:contact_ka", Sdf.ValueTypeNames.Float).Set(0.05)
+
+        # Legacy on shape AND material authored -> material wins over legacy
+        col_both = UsdGeom.Cube.Define(stage, "/Articulation/Body/ColBoth")
+        col_both_prim = col_both.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col_both_prim)
+        UsdShade.MaterialBindingAPI.Apply(col_both_prim).Bind(mat_authored, "physics")
+        col_both_prim.CreateAttribute("newton:contact_ke", Sdf.ValueTypeNames.Float).Set(1111.0)
+        col_both_prim.CreateAttribute("newton:contact_kd", Sdf.ValueTypeNames.Float).Set(222.0)
+        col_both_prim.CreateAttribute("newton:contact_kf", Sdf.ValueTypeNames.Float).Set(333.0)
+        col_both_prim.CreateAttribute("newton:contact_ka", Sdf.ValueTypeNames.Float).Set(0.09)
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as w:
+            # Record only the deprecation warnings this test asserts on; leave every
+            # other warning subject to the ambient policy so --strict-warnings still
+            # fails on an unexpected newton.* warning here.
+            warnings.filterwarnings("always", category=DeprecationWarning)
+            result = builder.add_usd(stage)
+            dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            dep_msgs = [str(x.message) for x in dep_warnings]
+
+        model = builder.finalize()
+
+        idx_legacy = result["path_shape_map"]["/Articulation/Body/ColLegacy"]
+        idx_both = result["path_shape_map"]["/Articulation/Body/ColBoth"]
+
+        # Legacy fallback used when material has no contact attrs
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[idx_legacy], 9999.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[idx_legacy], 777.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[idx_legacy], 500.0, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[idx_legacy], 0.05, places=4)
+
+        # Material value wins over legacy attr
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[idx_both], 4000.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[idx_both], 100.0, places=1)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[idx_both], 600.0, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[idx_both], 0.02, places=4)
+
+        # Each legacy attr emits an exact migration message naming its replacement;
+        # both shapes author all four, so each message must appear exactly twice.
+        legacy_to_material = {
+            "newton:contact_ke": "newton:contactStiffness",
+            "newton:contact_kd": "newton:contactDamping",
+            "newton:contact_kf": "newton:contactFrictionGain",
+            "newton:contact_ka": "newton:contactAdhesion",
+        }
+        for legacy_attr, material_attr in legacy_to_material.items():
+            expected_msg = (
+                f"'{legacy_attr}' on shape prim is deprecated; "
+                f"author '{material_attr}' on the bound NewtonMaterialAPI material instead."
+            )
+            self.assertEqual(
+                dep_msgs.count(expected_msg), 2, f"expected exactly two {legacy_attr!r} deprecation warnings"
+            )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_contact_response_solref_over_material(self):
+        """Test MuJoCo per-geom solref wins over material when MuJoCo resolver has priority."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        mat = UsdShade.Material.Define(stage, "/Materials/Mat")
+        mat_prim = mat.GetPrim()
+        mat_prim.ApplyAPI("NewtonMaterialAPI")
+        UsdPhysics.MaterialAPI.Apply(mat_prim)
+        mat_prim.GetAttribute("newton:contactStiffness").Set(4000.0)
+        mat_prim.GetAttribute("newton:contactDamping").Set(100.0)
+
+        UsdGeom.Xform.Define(stage, "/Articulation")
+        body = UsdGeom.Xform.Define(stage, "/Articulation/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        col = UsdGeom.Cube.Define(stage, "/Articulation/Body/Col")
+        col_prim = col.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(col_prim)
+        UsdShade.MaterialBindingAPI.Apply(col_prim).Bind(mat, "physics")
+        col_prim.CreateAttribute("mjc:solref", Sdf.ValueTypeNames.DoubleArray).Set([0.01, 0.5])
+
+        # MuJoCo resolver first -> solref wins over material ke/kd
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        result = builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()])
+        model = builder.finalize()
+        idx = result["path_shape_map"]["/Articulation/Body/Col"]
+
+        expected_ke = 1.0 / (0.01**2 * 0.5**2)
+        expected_kd = 2.0 / 0.01
+        self.assertAlmostEqual(model.shape_material_ke.numpy()[idx], expected_ke, places=1)
+        self.assertAlmostEqual(model.shape_material_kd.numpy()[idx], expected_kd, places=1)
+        # kf/ka fall through to material (no MuJoCo per-shape kf/ka)
+        self.assertAlmostEqual(model.shape_material_kf.numpy()[idx], builder.default_shape_cfg.kf, places=1)
+        self.assertAlmostEqual(model.shape_material_ka.numpy()[idx], builder.default_shape_cfg.ka, places=4)
+
+        # Newton resolver first -> material wins over solref
+        builder2 = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder2)
+        result2 = builder2.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
+        model2 = builder2.finalize()
+        idx2 = result2["path_shape_map"]["/Articulation/Body/Col"]
+
+        self.assertAlmostEqual(model2.shape_material_ke.numpy()[idx2], 4000.0, places=1)
+        self.assertAlmostEqual(model2.shape_material_kd.numpy()[idx2], 100.0, places=1)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_constraint_parsing(self):
@@ -5982,24 +6277,24 @@ def Xform "Articulation" (
         result = builder.add_usd(stage, convert_mjc_equality_constraints=False)
         model = builder.finalize()
 
-        self.assertEqual(model.equality_constraint_count, 2)
-        eq_by_label = {label: i for i, label in enumerate(model.equality_constraint_label)}
+        self.assertEqual(model.mujoco.equality_constraint_count, 2)
+        eq_by_label = {label: i for i, label in enumerate(model.mujoco.equality_constraint_label)}
         joint1_eq = eq_by_label["/World/Articulation/Joint1"]
         joint2_eq = eq_by_label["/World/Articulation/Joint2"]
         joint1_idx = result["path_joint_map"]["/World/Articulation/Joint1"]
         joint2_idx = result["path_joint_map"]["/World/Articulation/Joint2"]
-        self.assertEqual(model.equality_constraint_joint1.numpy()[joint1_eq], joint1_idx)
-        self.assertEqual(model.equality_constraint_joint2.numpy()[joint1_eq], joint2_idx)
-        self.assertEqual(model.equality_constraint_joint1.numpy()[joint2_eq], joint2_idx)
-        self.assertEqual(model.equality_constraint_joint2.numpy()[joint2_eq], joint1_idx)
+        self.assertEqual(model.mujoco.equality_constraint_joint1.numpy()[joint1_eq], joint1_idx)
+        self.assertEqual(model.mujoco.equality_constraint_joint2.numpy()[joint1_eq], joint2_idx)
+        self.assertEqual(model.mujoco.equality_constraint_joint1.numpy()[joint2_eq], joint2_idx)
+        self.assertEqual(model.mujoco.equality_constraint_joint2.numpy()[joint2_eq], joint1_idx)
         np.testing.assert_allclose(
-            model.equality_constraint_polycoef.numpy()[joint1_eq],
+            model.mujoco.equality_constraint_polycoef.numpy()[joint1_eq],
             np.array([0.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float32),
             rtol=1e-6,
             atol=1e-6,
         )
         np.testing.assert_allclose(
-            model.equality_constraint_polycoef.numpy()[joint2_eq],
+            model.mujoco.equality_constraint_polycoef.numpy()[joint2_eq],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
             rtol=1e-6,
             atol=1e-6,
@@ -6087,19 +6382,19 @@ def Xform "Articulation" (
         self.assertEqual(model.joint_count, 2)
         self.assertEqual(model.joint_dof_count, 12)
         self.assertEqual(model.joint_coord_count, 14)
-        self.assertEqual(model.equality_constraint_count, 2)
-        eq_by_label = {label: i for i, label in enumerate(model.equality_constraint_label)}
+        self.assertEqual(model.mujoco.equality_constraint_count, 2)
+        eq_by_label = {label: i for i, label in enumerate(model.mujoco.equality_constraint_label)}
         site_eq = eq_by_label["/World/EqualityConnect"]
         world_eq = eq_by_label["/World/EqualityConnectBodyToWorld"]
         body0_idx = result["path_body_map"]["/World/Body0"]
         body1_idx = result["path_body_map"]["/World/Body1"]
-        self.assertEqual(model.equality_constraint_body1.numpy()[site_eq], body0_idx)
-        self.assertEqual(model.equality_constraint_body2.numpy()[site_eq], body1_idx)
-        np.testing.assert_allclose(model.equality_constraint_anchor.numpy()[site_eq], np.array([0.1, 0.0, 0.0]))
-        self.assertEqual(model.equality_constraint_body1.numpy()[world_eq], body0_idx)
-        self.assertEqual(model.equality_constraint_body2.numpy()[world_eq], -1)
+        self.assertEqual(model.mujoco.equality_constraint_body1.numpy()[site_eq], body0_idx)
+        self.assertEqual(model.mujoco.equality_constraint_body2.numpy()[site_eq], body1_idx)
+        np.testing.assert_allclose(model.mujoco.equality_constraint_anchor.numpy()[site_eq], np.array([0.1, 0.0, 0.0]))
+        self.assertEqual(model.mujoco.equality_constraint_body1.numpy()[world_eq], body0_idx)
+        self.assertEqual(model.mujoco.equality_constraint_body2.numpy()[world_eq], -1)
         np.testing.assert_allclose(
-            model.equality_constraint_anchor.numpy()[world_eq],
+            model.mujoco.equality_constraint_anchor.numpy()[world_eq],
             np.array([0.25, -0.1, 0.3], dtype=np.float32),
             rtol=1e-6,
             atol=1e-6,
@@ -6146,15 +6441,15 @@ def Xform "Articulation" (
         builder.add_usd(stage, convert_mjc_equality_constraints=False)
         model = builder.finalize()
 
-        self.assertEqual(model.equality_constraint_count, 0)
+        self.assertEqual(model.mujoco.equality_constraint_count, 0)
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage, only_load_enabled_joints=False, convert_mjc_equality_constraints=False)
         model = builder.finalize()
 
-        self.assertEqual(model.equality_constraint_count, 1)
-        self.assertFalse(bool(model.equality_constraint_enabled.numpy()[0]))
+        self.assertEqual(model.mujoco.equality_constraint_count, 1)
+        self.assertFalse(bool(model.mujoco.equality_constraint_enabled.numpy()[0]))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_weld_parsing(self):
@@ -6215,26 +6510,26 @@ def Xform "Articulation" (
         self.assertEqual(model.joint_count, 2)
         self.assertEqual(model.joint_dof_count, 12)
         self.assertEqual(model.joint_coord_count, 14)
-        self.assertEqual(model.equality_constraint_count, 1)
-        weld_eq = model.equality_constraint_label.index("/World/EqualityWeld")
+        self.assertEqual(model.mujoco.equality_constraint_count, 1)
+        weld_eq = model.mujoco.equality_constraint_label.index("/World/EqualityWeld")
         body0_idx = result["path_body_map"]["/World/Body0"]
         body1_idx = result["path_body_map"]["/World/Body1"]
-        self.assertEqual(model.equality_constraint_body1.numpy()[weld_eq], body0_idx)
-        self.assertEqual(model.equality_constraint_body2.numpy()[weld_eq], body1_idx)
+        self.assertEqual(model.mujoco.equality_constraint_body1.numpy()[weld_eq], body0_idx)
+        self.assertEqual(model.mujoco.equality_constraint_body2.numpy()[weld_eq], body1_idx)
         np.testing.assert_allclose(
-            model.equality_constraint_anchor.numpy()[weld_eq],
+            model.mujoco.equality_constraint_anchor.numpy()[weld_eq],
             np.array([0.2, -0.1, 0.3], dtype=np.float32),
             rtol=1e-6,
             atol=1e-6,
         )
         np.testing.assert_allclose(
-            model.equality_constraint_relpose.numpy()[weld_eq],
+            model.mujoco.equality_constraint_relpose.numpy()[weld_eq],
             np.array([0.45, -0.5, 0.0, 0.0, 0.0, sqrt_half, sqrt_half], dtype=np.float32),
             rtol=1e-6,
             atol=1e-6,
         )
         np.testing.assert_allclose(
-            model.equality_constraint_torquescale.numpy()[weld_eq], np.array(2.5), rtol=1e-6, atol=1e-6
+            model.mujoco.equality_constraint_torquescale.numpy()[weld_eq], np.array(2.5), rtol=1e-6, atol=1e-6
         )
         np.testing.assert_allclose(model.mujoco.eq_solref.numpy()[weld_eq], np.array([0.02, 1.0], dtype=np.float32))
         np.testing.assert_allclose(
@@ -6352,9 +6647,9 @@ def Xform "Articulation" (
         converted_model = converted_builder.finalize()
         converted_solver = SolverMuJoCo(converted_model)
 
-        self.assertEqual(converted_model.equality_constraint_count, 3)
+        self.assertEqual(converted_model.mujoco.equality_constraint_count, 3)
         self.assertEqual(converted_model.constraint_mimic_count, 1)
-        eq_types = converted_model.equality_constraint_type.numpy()
+        eq_types = converted_model.mujoco.equality_constraint_type.numpy()
         target_kinds = converted_model.mujoco.equality_constraint_target_kind.numpy()
         self.assertEqual(eq_types.tolist().count(int(newton.EqType.CONNECT)), 1)
         self.assertEqual(eq_types.tolist().count(int(newton.EqType.WELD)), 1)
@@ -6364,7 +6659,7 @@ def Xform "Articulation" (
         joint_eq = int(np.flatnonzero(eq_types == int(newton.EqType.JOINT))[0])
         self.assertEqual(target_kinds[joint_eq], int(MjcEqualityTargetKind.MIMIC))
         np.testing.assert_allclose(
-            converted_model.equality_constraint_polycoef.numpy()[joint_eq],
+            converted_model.mujoco.equality_constraint_polycoef.numpy()[joint_eq],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
         )
 
@@ -7113,6 +7408,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertTrue(quat_match, f"Body orientation should include import xform. Got {actual_quat}")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @_expect_jointless_articulation_warning
     def test_parent_body_attaches_to_existing_body(self):
         """Test that parent_body attaches the USD root to an existing body."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7190,6 +7486,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(robot_articulation, gripper_articulation)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @_expect_jointless_articulation_warning
     def test_parent_body_with_base_joint_creates_d6(self):
         """Test that parent_body with base_joint creates a D6 joint to parent."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7242,6 +7539,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(model.joint_parent.numpy()[1], robot_body_idx)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @_expect_jointless_articulation_warning
     def test_parent_body_creates_joint_to_parent(self):
         """Test that parent_body creates a joint connecting to the parent body."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7288,6 +7586,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(joint_articulation[0], joint_articulation[initial_joint_count])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @_expect_jointless_articulation_warning
     def test_floating_true_with_parent_body_raises_error(self):
         """Test that floating=True with parent_body raises an error."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7328,6 +7627,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertIn("parent_body", str(cm.exception))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @_expect_jointless_articulation_warning
     def test_floating_false_with_parent_body_succeeds(self):
         """Test that floating=False with parent_body is explicitly allowed."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7370,6 +7670,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)  # Single articulation
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @_expect_jointless_articulation_warning
     def test_non_sequential_articulation_attachment(self):
         """Test that attaching to a non-sequential articulation raises an error."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -7432,6 +7733,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertIn("not part of any articulation", str(cm.exception))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @_expect_jointless_articulation_warning
     def test_three_level_hierarchical_composition(self):
         """Test attaching multiple levels: arm → gripper → sensor."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics

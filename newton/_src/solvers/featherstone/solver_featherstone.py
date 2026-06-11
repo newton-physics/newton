@@ -5,8 +5,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...sim import BodyFlags, Contacts, Control, JointType, Model, State
-from ..flags import SolverNotifyFlags
+from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
     eval_particle_body_contact_forces,
@@ -87,6 +86,10 @@ class SolverFeatherstone(SolverBase):
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and :attr:`~newton.Control.joint_f`
           are supported.
+        - Position/velocity target tracking (:attr:`~newton.Control.joint_target_q`/
+          :attr:`~newton.Control.joint_target_qd`) is applied only to PRISMATIC, REVOLUTE,
+          and D6 joints. For BALL, FREE, and DISTANCE joints the target arrays are read
+          but no drive force is applied.
         - :attr:`~newton.Model.joint_friction`, :attr:`~newton.Model.joint_effort_limit`,
           :attr:`~newton.Model.joint_velocity_limit`, :attr:`~newton.Model.joint_enabled`,
           and :attr:`~newton.Model.joint_target_mode` are not supported.
@@ -241,8 +244,8 @@ class SolverFeatherstone(SolverBase):
                     self.joint_armature_effective = wp.array(joint_armature, dtype=float, device=model.device)
 
     @override
-    def notify_model_changed(self, flags: int) -> None:
-        if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.JOINT_DOF_PROPERTIES):
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
             self._update_kinematic_state()
             self._mass_matrix_dirty = True
 
@@ -638,9 +641,10 @@ class SolverFeatherstone(SolverBase):
                             model.joint_child,
                             model.joint_q_start,
                             model.joint_qd_start,
+                            model.joint_target_q_start,
                             model.joint_dof_dim,
-                            control.joint_target_pos,
-                            control.joint_target_vel,
+                            control.joint_target_q,
+                            control.joint_target_qd,
                             state_in.joint_q,
                             state_aug.joint_qd_internal_in,
                             state_aug.joint_f_internal,
@@ -650,6 +654,7 @@ class SolverFeatherstone(SolverBase):
                             model.joint_limit_upper,
                             model.joint_limit_ke,
                             model.joint_limit_kd,
+                            model.joint_damping,
                             state_aug.joint_S_s,
                             state_aug.body_f_s,
                             body_f,

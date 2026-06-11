@@ -513,6 +513,54 @@ def test_sensor_raycast_ellipsoid(test: unittest.TestCase, device: str):
     test.assertAlmostEqual(float(depth[0, 0]), 4.2, delta=1e-3)
 
 
+def test_sensor_raycast_heightfield(test: unittest.TestCase, device: str):
+    """SensorRaycast must see HFIELD shapes (regression for #2560).
+
+    Heightfields raycast through their wp.Mesh BVH via shape_source_ptr, a
+    path with no dedicated test until now -- the prior heightfield coverage
+    moved to SensorTiledCamera when the sensor was removed. A flat terrain
+    seen from directly above must register hits at the expected depth.
+    """
+    # Flat heightfield at z=1 spanning [-2, 2]^2.
+    data = np.full((3, 3), 1.0, dtype=np.float32)
+    hf = newton.Heightfield(data=data, nrow=3, ncol=3, hx=2.0, hy=2.0, min_z=1.0, max_z=1.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    builder.add_shape_heightfield(heightfield=hf)
+
+    with wp.ScopedDevice(device):
+        model = builder.finalize()
+
+    state = model.state()
+
+    # Camera 5m above origin looking straight down. At depth ~4 the footprint
+    # half-extent is 4*tan(0.25)=1.02 < 2, so every ray lands on the terrain.
+    width, height = 16, 16
+    sensor = create_sensor_raycast(
+        model=model,
+        camera_position=(0.0, 0.0, 5.0),
+        camera_direction=(0.0, 0.0, -1.0),
+        camera_up=(0.0, 1.0, 0.0),
+        fov_radians=0.5,
+        width=width,
+        height=height,
+        max_distance=100.0,
+    )
+
+    sensor.update(state)
+    depth = sensor.get_depth_image_numpy()
+
+    # The footprint lies entirely within the terrain, so every ray hits.
+    test.assertTrue(
+        np.all(depth > 0.0),
+        msg=f"every ray should hit the heightfield; {int(np.count_nonzero(depth <= 0.0))} pixels missed",
+    )
+    # Flat surface at z=1 seen from z=5: slant depth ~4.0 at the center, growing
+    # to ~4.22 at the corners as the ray angle increases.
+    test.assertGreater(float(depth.min()), 3.9)
+    test.assertLess(float(depth.max()), 4.3)
+    test.assertAlmostEqual(float(depth[height // 2, width // 2]), 4.0, delta=0.05)
+
+
 class TestSensorRaycast(unittest.TestCase):
     def test_sensor_raycast_warns_deprecated(self):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -599,6 +647,12 @@ add_function_test(
     TestSensorRaycast,
     "test_sensor_raycast_finite_plane_boundary",
     test_sensor_raycast_finite_plane_boundary,
+    devices=devices,
+)
+add_function_test(
+    TestSensorRaycast,
+    "test_sensor_raycast_heightfield",
+    test_sensor_raycast_heightfield,
     devices=devices,
 )
 
