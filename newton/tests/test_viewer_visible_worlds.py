@@ -177,7 +177,7 @@ def test_visible_worlds_transforms(test: TestViewerVisibleWorlds, device):
 
     viewer.begin_frame(0.0)
     for shapes in viewer._shape_instances.values():
-        shapes.update(state, world_offsets=viewer.world_offsets)
+        shapes.update(state, world_offsets=viewer.world_offsets, layer_xform=viewer.layer.xform)
 
     world_xforms = []
     for shapes in viewer._shape_instances.values():

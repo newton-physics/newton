@@ -188,10 +188,24 @@ class ViewerViser(ViewerBase):
     @override
     def clear_model(self):
         """Reset model-dependent state, including scalar plot buffers."""
+        owns = self._is_layer_owned_path
         for plane_name in list(self._plane_handles.keys()):
-            self._remove_plane_handles(plane_name)
-        self._plane_handles.clear()
-        self._plane_meshes.clear()
+            if owns(plane_name):
+                self._remove_plane_handles(plane_name)
+        self._plane_meshes = {name: value for name, value in self._plane_meshes.items() if not owns(name)}
+
+        for name, handle in list(getattr(self, "_scene_handles", {}).items()):
+            if not owns(name):
+                continue
+            try:
+                handle.remove()
+            except Exception:
+                pass
+            self._scene_handles.pop(name, None)
+            self._instances.pop(name, None)
+            self._meshes.pop(name, None)
+            self._line_segment_counts.pop(name, None)
+            self._line_versions.pop(name, None)
 
         # Remove plot handles from the GUI.
         for handle in self._plot_handles.values():
@@ -606,6 +620,8 @@ class ViewerViser(ViewerBase):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
         """
+        name = self._qualify(name)
+
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
 
@@ -799,6 +815,9 @@ class ViewerViser(ViewerBase):
             materials: Instance materials.
             hidden: Whether the instances are hidden.
         """
+        name = self._qualify(name)
+        mesh = self._qualify(mesh)
+
         if mesh in self._plane_meshes:
             self._log_plane_instances(name, self._plane_meshes[mesh], xforms, scales, hidden=hidden)
             return
@@ -1081,6 +1100,7 @@ class ViewerViser(ViewerBase):
             width: Line width.
             hidden: Whether the lines are hidden.
         """
+        name = self._qualify(name)
 
         def remove_existing_line(reset_version: bool = True):
             handle = self._scene_handles.pop(name, None)
@@ -1190,6 +1210,8 @@ class ViewerViser(ViewerBase):
             geo_src: Optional source geometry for mesh-backed types.
             hidden: Whether the resulting geometry is hidden.
         """
+        name = self._qualify(name)
+
         if geo_type == newton.GeoType.PLANE:
             # Handle "infinite" planes encoded with non-positive scales
             if geo_scale[0] == 0.0 or geo_scale[1] == 0.0:
@@ -1229,6 +1251,8 @@ class ViewerViser(ViewerBase):
             colors: Point colors (can be a wp.array or a numpy array).
             hidden: Whether the points are hidden.
         """
+        name = self._qualify(name)
+
         # Remove existing points if present
         if name in self._scene_handles:
             try:
@@ -1319,6 +1343,7 @@ class ViewerViser(ViewerBase):
         """
         if smoothing < 1:
             raise ValueError("smoothing must be >= 1")
+        name = self._qualify(name)
         val = float(value.item() if hasattr(value, "item") else value)
         buf = self._scalar_buffers.get(name)
         if buf is None:

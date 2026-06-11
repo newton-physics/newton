@@ -6,6 +6,7 @@
 
 - Add `newton.use_coord_layout_targets` opt-in flag exposing `Model.joint_target_q` / `Control.joint_target_q` shaped `(joint_coord_count,)` (matching `joint_q`) and `joint_target_qd` shaped `(joint_dof_count,)` (matching `joint_qd`); solvers, the actuator library, and `ModelBuilder.finalize()` honor the flag. Defaults to `False` for backwards compatibility; will flip in a future release.
 - Add opt-in `validate_mesh` parameter to `ModelBuilder.add_cloth_mesh()`, `ModelBuilder.add_soft_mesh()`, and `style3d.add_cloth_mesh()` that warns on degenerate geometry; add public `newton.utils.validate_triangle_mesh()` and `newton.utils.validate_tet_mesh()` utilities
+- Add viewer layer system to overlay multiple solvers/models in supported rendering viewers; call `Viewer.activate(layer_id)` to route subsequent `set_model` / `log_state` / `log_*` calls into a named layer, and `Viewer.set_layer_visible()` to toggle layers independently. See `example_basic_multi_solver_overlay.py`
 - Warn from `SolverMuJoCo` when a `JointType.FREE` joint has a non-world parent; MuJoCo requires free joints to attach directly to the world.
 - Document loop closure in the articulations concept page, covering the omit-from-`add_articulation` pattern and USD `excludeFromArticulation` with per-solver caveats
 - Add `ViewerGL.show_loading_splash()` / `ViewerGL.hide_loading_splash()` displaying a stylized Newton's-cradle overlay while the GL viewer waits on Warp kernel compilation; raised automatically by `newton.examples.init()` for visible GL viewers

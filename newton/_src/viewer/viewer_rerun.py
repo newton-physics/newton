@@ -245,6 +245,8 @@ class ViewerRerun(ViewerBase):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
         """
+        name = self._qualify(name)
+
         if not hidden:
             assert isinstance(points, wp.array)
             assert isinstance(indices, wp.array)
@@ -345,6 +347,9 @@ class ViewerRerun(ViewerBase):
             materials: Instance materials.
             hidden: Whether the instances are hidden.
         """
+        name = self._qualify(name)
+        mesh = self._qualify(mesh)
+
         if hidden:
             if name in self._instances:
                 rr.log(name, rr.Clear(recursive=False))
@@ -520,11 +525,14 @@ class ViewerRerun(ViewerBase):
             width: Line width.
             hidden: Whether the lines are hidden.
         """
+        name = self._qualify(name)
 
         if hidden:
+            rr.log(name, rr.Clear(recursive=False))
             return  # Do not log hidden lines
 
         if starts is None or ends is None:
+            rr.log(name, rr.Clear(recursive=False))
             return  # Nothing to log
 
         # Convert inputs to numpy for rerun API compatibility
@@ -567,6 +575,8 @@ class ViewerRerun(ViewerBase):
             name: Name of the array.
             array: The array data (can be a wp.array or a numpy array).
         """
+        name = self._qualify(name)
+
         if array is None:
             return
         array_np = self._to_numpy(array)
@@ -584,6 +594,7 @@ class ViewerRerun(ViewerBase):
         # Basic scalar logging for rerun: log as a 'Scalar' component (if present)
         if name is None:
             return
+        name = self._qualify(name)
 
         # Only support standard Python/numpy scalars, not generic objects for now
         if hasattr(value, "item"):
@@ -663,11 +674,15 @@ class ViewerRerun(ViewerBase):
             colors: Point colors (can be a wp.array or a numpy array).
             hidden: Whether the points are hidden.
         """
+        name = self._qualify(name)
+
         if hidden:
             # Optionally, skip logging hidden points
+            rr.log(name, rr.Clear(recursive=False))
             return
 
         if points is None:
+            rr.log(name, rr.Clear(recursive=False))
             return
 
         pts = self._to_numpy(points)
