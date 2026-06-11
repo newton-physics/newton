@@ -1014,9 +1014,10 @@ def test_cloth_bending_consistent_angle_computation(test, device, solver):
 
 def test_cloth_bending_with_complex_rest_angles(test, device, solver):
     example = ClothSim(device, solver, use_cuda_graph=True)
-    tri_kd = 1e1 if solver == "vbd" else 1e-2
+    tri_kd = 0.0 if solver == "vbd" else 1e-2
+    edge_kd = 1e0 if solver == "vbd" else 0.0
     example.set_up_complex_rest_angle_bending_experiment(
-        tri_ke=1e3, tri_kd=tri_kd, edge_ke=1e3, edge_kd=0.0, fixed_particles=[1], use_gravity=True
+        tri_ke=1e3, tri_kd=tri_kd, edge_ke=1e3, edge_kd=edge_kd, fixed_particles=[1], use_gravity=True
     )
 
     # Store rest angles for comparison
