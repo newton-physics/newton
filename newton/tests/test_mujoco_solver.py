@@ -11254,6 +11254,52 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         # instead of the ~2/MJ_MINVAL a fired override would produce.
         self.assertLess(float(actual_solref[0]), 1.0)
 
+    def test_force_space_contact_stiff_contact_stays_finite(self):
+        """A very stiff force-space contact must stay finite — the contact
+        analogue of #3109, where a too-stiff constraint diverged."""
+        # Low mass + very stiff ke make the contact too stiff for the step, so
+        # the written timeconst falls below 2*dt and refsafe must engage.
+        ke, kd, mass = 1.0e7, 1.0e3, 0.05
+        sim_dt = 1.0 / 60.0
+        model, _ = self._build_box_on_plane(mass=mass, ke=ke, kd=kd)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
+
+        contacts = model.contacts()
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+        contacted = False
+        for _ in range(120):
+            state_in.clear_forces()
+            model.collide(state_in, contacts)
+            solver.step(state_in, state_out, control, contacts, sim_dt)
+            state_in, state_out = state_out, state_in
+            if int(solver.mjw_data.nacon.numpy()[0]) > 0:
+                contacted = True
+                break
+        self.assertTrue(contacted, "box never contacted the plane")
+
+        # Written (unclamped) timeconst < 2*dt: the regime where the old negative
+        # direct-mode solref bypassed refsafe and diverged.
+        timeconst = float(solver.mjw_data.contact.solref.numpy()[0][0])
+        self.assertLess(timeconst, 2.0 * sim_dt)
+
+        # Step through the stiff contact; it must stay finite and bounded
+        # (the #3109 joint analogue went non-finite around step 98).
+        for _ in range(200):
+            state_in.clear_forces()
+            model.collide(state_in, contacts)
+            solver.step(state_in, state_out, control, contacts, sim_dt)
+            state_in, state_out = state_out, state_in
+
+        qvel = solver.mjw_data.qvel.numpy()
+        qfrc = solver.mjw_data.qfrc_constraint.numpy()
+        body_qd = state_in.body_qd.numpy()
+        self.assertTrue(np.all(np.isfinite(qvel)), "qvel went non-finite")
+        self.assertTrue(np.all(np.isfinite(qfrc)), "qfrc_constraint went non-finite")
+        self.assertTrue(np.all(np.isfinite(body_qd)), "body_qd went non-finite")
+        self.assertLess(float(np.max(np.abs(body_qd))), 1.0e3, "contact response blew up")
+
     def test_force_space_with_mujoco_contacts_emits_startup_warning(self):
         """Opting into FORCE_SPACE while running ``use_mujoco_contacts=True`` must warn at startup.
 
