@@ -411,6 +411,31 @@ def _eval_spring_damping_kernel(
 
 
 @wp.kernel
+def _eval_bending_degenerate_anchor_kernel(
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_angle: wp.array[float],
+    edge_rest_length: wp.array[float],
+    force_norms: wp.array[float],
+):
+    v_order = wp.tid()
+    force, hessian = evaluate_dihedral_angle_based_bending_force_hessian(
+        0,
+        v_order,
+        pos,
+        pos_anchor,
+        edge_indices,
+        edge_rest_angle,
+        edge_rest_length,
+        0.0,
+        20.0,
+        0.1,
+    )
+    force_norms[v_order] = wp.length(force) + wp.length(hessian[0]) + wp.length(hessian[1]) + wp.length(hessian[2])
+
+
+@wp.kernel
 def _eval_elastic_damping_rigid_motion_kernel(
     pos: wp.array[wp.vec3],
     pos_anchor: wp.array[wp.vec3],
@@ -1284,6 +1309,39 @@ def _spring_damping_is_axial(test, device):
         )
 
 
+def _bending_damping_handles_degenerate_anchor(test, device):
+    """Bending damping skips collapsed previous-step geometry."""
+    with wp.ScopedDevice(device):
+        pos = wp.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.1],
+            ],
+            dtype=wp.vec3,
+            device=device,
+        )
+        pos_anchor = wp.zeros(4, dtype=wp.vec3, device=device)
+        edge_indices = wp.array([[0, 1, 2, 3]], dtype=wp.int32, ndim=2, device=device)
+        edge_rest_angle = wp.array([0.0], dtype=float, device=device)
+        edge_rest_length = wp.array([1.0], dtype=float, device=device)
+        force_norms = wp.zeros(4, dtype=float, device=device)
+
+        wp.launch(
+            _eval_bending_degenerate_anchor_kernel,
+            dim=4,
+            inputs=[pos, pos_anchor, edge_indices, edge_rest_angle, edge_rest_length],
+            outputs=[force_norms],
+            device=device,
+        )
+
+        force_norms_np = force_norms.numpy()
+
+    test.assertTrue(np.all(np.isfinite(force_norms_np)))
+    np.testing.assert_allclose(force_norms_np, np.zeros(4), rtol=0.0, atol=1.0e-6)
+
+
 def _elastic_damping_ignores_rigid_motion(test, device):
     """Elastic damping should not produce force under fixed-seed rigid rotations."""
     sample_count = 100
@@ -1914,6 +1972,12 @@ add_function_test(
     TestSolverVBD,
     "test_spring_damping_is_axial",
     _spring_damping_is_axial,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_bending_damping_handles_degenerate_anchor",
+    _bending_damping_handles_degenerate_anchor,
     devices=devices,
 )
 add_function_test(

@@ -1047,9 +1047,17 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
         x12_prev = x_prev2 - x_prev1
         e_prev = x_prev3 - x_prev2
 
-        n1_prev = wp.normalize(wp.cross(x02_prev, x03_prev))
-        n2_prev = wp.normalize(wp.cross(x13_prev, x12_prev))
-        e_hat_prev = wp.normalize(e_prev)
+        n1_prev_raw = wp.cross(x02_prev, x03_prev)
+        n2_prev_raw = wp.cross(x13_prev, x12_prev)
+        n1_prev_norm = wp.length(n1_prev_raw)
+        n2_prev_norm = wp.length(n2_prev_raw)
+        e_prev_norm = wp.length(e_prev)
+        if n1_prev_norm < eps or n2_prev_norm < eps or e_prev_norm < eps:
+            return bending_force, bending_hessian
+
+        n1_prev = n1_prev_raw / n1_prev_norm
+        n2_prev = n2_prev_raw / n2_prev_norm
+        e_hat_prev = e_prev / e_prev_norm
 
         sin_theta_prev = wp.dot(wp.cross(n1_prev, n2_prev), e_hat_prev)
         cos_theta_prev = wp.dot(n1_prev, n2_prev)
