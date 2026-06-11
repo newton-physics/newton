@@ -88,6 +88,9 @@ __all__ = ["SolverVBD"]
 class SolverVBD(SolverBase):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
+    .. experimental::
+        SolverVBD's public API and behavior may change without prior notice.
+
     This unified solver supports:
         - Particle simulation (cloth, soft bodies) using the VBD algorithm
         - Rigid body simulation (joints, contacts) using the AVBD algorithm

@@ -8,7 +8,6 @@ import warp as wp
 
 import newton
 from newton import GeoType, Heightfield
-from newton._src.geometry.bvh import build_bvh_shape
 from newton._src.geometry.raycast import (
     ray_intersect_geom,
     ray_intersect_mesh,
@@ -607,10 +606,7 @@ def _make_intersection_model(device: str):
     builder.add_shape_box(body=box_body, hx=0.5, hy=0.5, hz=0.5)
     builder.end_world()
 
-    model = builder.finalize(device=device)
-    state = model.state()
-    build_bvh_shape(model, state)
-    return model
+    return builder.finalize(device=device)
 
 
 def test_intersect_ray(test: TestRaycast, device: str):
@@ -689,10 +685,7 @@ def _make_global_world_model(device: str):
     sphere1 = builder.add_shape_sphere(body=body1, radius=0.5)
     builder.end_world()
 
-    model = builder.finalize(device=device)
-    state = model.state()
-    build_bvh_shape(model, state)
-    return model, global_box, sphere0, sphere1
+    return builder.finalize(device=device), global_box, sphere0, sphere1
 
 
 def test_intersect_ray_global_world(test: TestRaycast, device: str):
@@ -740,6 +733,33 @@ def test_intersect_ray_global_world(test: TestRaycast, device: str):
     )
 
 
+def test_intersect_ray_heightfield_uses_finalize_bvh(test: TestRaycast, device: str):
+    builder = newton.ModelBuilder()
+    heightfield = Heightfield(data=np.zeros((2, 2), dtype=np.float32), nrow=2, ncol=2, hx=1.0, hy=1.0)
+    shape_id = builder.add_shape_heightfield(heightfield=heightfield)
+    model = builder.finalize(device=device)
+
+    test.assertEqual(model.bvh_shape_count_enabled, 1)
+
+    origins = wp.array(np.array([[0.0, 0.0, 2.0]], dtype=np.float32), dtype=wp.vec3, device=device)
+    directions = wp.array(np.array([[0.0, 0.0, -1.0]], dtype=np.float32), dtype=wp.vec3, device=device)
+    worlds = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
+    out_dist = wp.empty(shape=1, dtype=float, device=device)
+    out_shape_id = wp.empty(shape=1, dtype=wp.int32, device=device)
+
+    newton.intersect_ray(
+        model,
+        ray_origins=origins,
+        ray_directions=directions,
+        ray_worlds=worlds,
+        out_dist=out_dist,
+        out_shape_id=out_shape_id,
+    )
+
+    np.testing.assert_allclose(out_dist.numpy(), np.array([2.0], dtype=np.float32), atol=1e-5)
+    np.testing.assert_array_equal(out_shape_id.numpy(), np.array([shape_id], dtype=np.int32))
+
+
 devices = get_test_devices()
 add_function_test(TestRaycast, "test_ray_intersect_plane", test_ray_intersect_plane, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_sphere", test_ray_intersect_sphere, devices=devices)
@@ -773,6 +793,12 @@ add_function_test(
 )
 add_function_test(TestRaycast, "test_intersect_ray", test_intersect_ray, devices=devices)
 add_function_test(TestRaycast, "test_intersect_ray_global_world", test_intersect_ray_global_world, devices=devices)
+add_function_test(
+    TestRaycast,
+    "test_intersect_ray_heightfield_uses_finalize_bvh",
+    test_intersect_ray_heightfield_uses_finalize_bvh,
+    devices=devices,
+)
 
 
 if __name__ == "__main__":

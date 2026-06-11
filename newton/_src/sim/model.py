@@ -27,6 +27,12 @@ if TYPE_CHECKING:
     from .collide import CollisionPipeline
 
 
+_HAS_HEIGHTFIELDS_DEPRECATION_MSG = (
+    "Model.has_heightfields is deprecated; use Model.heightfield_count, "
+    "or model.heightfield_count > 0 for boolean checks, instead."
+)
+
+
 class Model:
     """
     Represents the static (non-time-varying) definition of a simulation model in Newton.
@@ -327,7 +333,7 @@ class Model:
 
         # Shape and particle BVH structures and related fields
         self.bvh_shapes: wp.Bvh | None = None
-        """BVH over visible shapes, indexed by ``bvh_shape_enabled``. ``None`` until first refit."""
+        """BVH over visible shapes, indexed by ``bvh_shape_enabled``. Built by :meth:`ModelBuilder.finalize`."""
         self.bvh_shapes_group_roots: wp.array[wp.int32] | None = None
         """Per-world BVH group roots for shapes, shape ``[world_count + 1]`` (last slot is global)."""
         self.bvh_shape_enabled: wp.array[wp.uint32] | None = None
@@ -337,16 +343,16 @@ class Model:
         self.bvh_shape_bounds: wp.array2d[wp.vec3f] | None = None
         """Local-space AABB per shape (min/max) for mesh and gaussian shapes, shape ``[shape_count, 2]`` [m]."""
         self.bvh_shape_world_transforms: wp.array[wp.transformf] | None = None
-        """World-space shape transforms computed during shape BVH refit, shape ``[shape_count]`` [m, unitless quaternion]."""
+        """World-space shape transforms computed during shape BVH build/refit, shape ``[shape_count]`` [m, unitless quaternion]."""
 
         self.bvh_particles: wp.Bvh | None = None
-        """BVH over particles. ``None`` until first refit."""
+        """BVH over particles. Built by :meth:`ModelBuilder.finalize` when particles are present."""
         self.bvh_particles_group_roots: wp.array[wp.int32] | None = None
         """Per-world BVH group roots for particles, shape ``[world_count + 1]`` (last slot is global)."""
 
         # Heightfield collision data (compact table + per-shape index indirection)
-        self.has_heightfields: bool = False
-        """True iff the model contains at least one ``GeoType.HFIELD`` shape."""
+        self.heightfield_count: int = 0
+        """Number of ``GeoType.HFIELD`` shapes in the model."""
         self.shape_heightfield_index: wp.array[wp.int32] | None = None
         """Per-shape heightfield index, shape [shape_count]. -1 means shape has no heightfield."""
         self.heightfield_data: wp.array[HeightfieldData] | None = None
@@ -1294,6 +1300,26 @@ class Model:
         self._sdf_index2blocks_cache = index2blocks
 
     @property
+    def has_heightfields(self) -> bool:
+        """Deprecated boolean alias for :attr:`heightfield_count`.
+
+        .. deprecated:: 1.3
+            Use :attr:`heightfield_count`, or ``heightfield_count > 0`` for
+            boolean checks, instead.
+        """
+        import warnings  # noqa: PLC0415
+
+        warnings.warn(_HAS_HEIGHTFIELDS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self.heightfield_count > 0
+
+    @has_heightfields.setter
+    def has_heightfields(self, value: bool) -> None:
+        import warnings  # noqa: PLC0415
+
+        warnings.warn(_HAS_HEIGHTFIELDS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        self.heightfield_count = 1 if value else 0
+
+    @property
     def joint_target_q_start(self) -> wp.array | None:
         """Per-joint start index into :attr:`joint_target_q`, shape
         ``(joint_count + 1,)``. Aliases :attr:`joint_q_start` under coord
@@ -1375,6 +1401,177 @@ class Model:
             stacklevel=2,
         )
         self.joint_target_qd = value
+
+    def bvh_build_shapes(self, state: State, *, bvh_constructor: str | None = None) -> None:
+        """Build or rebuild the shape BVH stored on this model.
+
+        Allocates :attr:`bvh_shapes` and related fields from the current
+        shape data and *state*. :meth:`ModelBuilder.finalize` calls this for
+        the initial model state. Call it again to rebuild with a custom
+        ``bvh_constructor`` or after structural changes. For ordinary state
+        changes, use :meth:`bvh_refit_shapes`.
+
+        Args:
+            state: Current simulation state with body transforms.
+            bvh_constructor: Warp BVH construction algorithm. Valid choices
+                are ``"sah"``, ``"median"``, ``"lbvh"``, or ``None`` to use
+                Warp's device-dependent default.
+        """
+        from ..geometry.bvh import (  # noqa: PLC0415
+            compute_bvh_group_roots,
+            compute_enabled_shapes,
+            compute_shape_bvh_bounds_launch,
+            compute_shape_local_bounds,
+            compute_shape_world_transforms_launch,
+        )
+
+        if self.shape_count == 0:
+            return
+
+        device = self.device
+        shape_count = self.shape_count
+        world_count_total = self.world_count + 1
+
+        self.bvh_shape_bounds = wp.empty((shape_count, 2), dtype=wp.vec3f, ndim=2, device=device)
+        wp.launch(
+            kernel=compute_shape_local_bounds,
+            dim=shape_count,
+            inputs=[
+                self.shape_type,
+                self.shape_source_ptr,
+                self.gaussians_data,
+                self.bvh_shape_bounds,
+            ],
+            device=device,
+        )
+
+        self.bvh_shape_enabled = wp.empty(shape_count, dtype=wp.uint32, device=device)
+        num_enabled = wp.zeros(1, dtype=wp.int32, device=device)
+        wp.launch(
+            kernel=compute_enabled_shapes,
+            dim=shape_count,
+            inputs=[
+                self.shape_type,
+                self.shape_flags,
+                self.bvh_shape_enabled,
+                num_enabled,
+            ],
+            device=device,
+        )
+        self.bvh_shape_count_enabled = int(num_enabled.numpy()[0])
+        self.bvh_shape_world_transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
+
+        if self.bvh_shape_count_enabled == 0:
+            return
+
+        compute_shape_world_transforms_launch(self, state)
+
+        lowers = wp.zeros(self.bvh_shape_count_enabled, dtype=wp.vec3f, device=device)
+        uppers = wp.zeros(self.bvh_shape_count_enabled, dtype=wp.vec3f, device=device)
+        groups = wp.zeros(self.bvh_shape_count_enabled, dtype=wp.int32, device=device)
+        compute_shape_bvh_bounds_launch(self, lowers, uppers, groups)
+        self.bvh_shapes = wp.Bvh(lowers, uppers, constructor=bvh_constructor, groups=groups)
+
+        self.bvh_shapes_group_roots = wp.zeros(world_count_total, dtype=wp.int32, device=device)
+        wp.launch(
+            kernel=compute_bvh_group_roots,
+            dim=world_count_total,
+            inputs=[self.bvh_shapes.id, self.bvh_shapes_group_roots],
+            device=device,
+        )
+
+    def bvh_refit_shapes(self, state: State) -> None:
+        """Refit the shape BVH stored on this model for the current state.
+
+        The shape BVH is built automatically by :meth:`ModelBuilder.finalize`.
+        Manually populated models must call :meth:`bvh_build_shapes` first.
+        Updates world-space shape transforms from ``state.body_q`` and refits
+        the BVH in place.
+
+        Args:
+            state: Current simulation state with body transforms.
+        """
+        from ..geometry.bvh import (  # noqa: PLC0415
+            compute_shape_bvh_bounds_launch,
+            compute_shape_world_transforms_launch,
+        )
+
+        if self.shape_count == 0:
+            return
+        if self.bvh_shape_enabled is None:
+            raise RuntimeError("Model.bvh_refit_shapes() requires Model.bvh_build_shapes() to have been called first.")
+        if self.bvh_shape_count_enabled == 0:
+            return
+        if self.bvh_shapes is None:
+            raise RuntimeError("Model.bvh_refit_shapes() requires Model.bvh_build_shapes() to have been called first.")
+
+        compute_shape_world_transforms_launch(self, state)
+        compute_shape_bvh_bounds_launch(self, self.bvh_shapes.lowers, self.bvh_shapes.uppers, self.bvh_shapes.groups)
+        self.bvh_shapes.refit()
+
+    def bvh_build_particles(self, state: State, *, bvh_constructor: str | None = None) -> None:
+        """Build or rebuild the particle BVH stored on this model.
+
+        Allocates :attr:`bvh_particles` and related fields from particle data
+        in *state*. :meth:`ModelBuilder.finalize` calls this for the initial
+        model state when particles are present. Call it again to rebuild with
+        a custom ``bvh_constructor``. For ordinary state changes, use
+        :meth:`bvh_refit_particles`.
+
+        Args:
+            state: Current simulation state with particle positions.
+            bvh_constructor: Warp BVH construction algorithm. Valid choices
+                are ``"sah"``, ``"median"``, ``"lbvh"``, or ``None`` to use
+                Warp's device-dependent default.
+        """
+        from ..geometry.bvh import compute_bvh_group_roots, compute_particle_bvh_bounds_launch  # noqa: PLC0415
+
+        if state.particle_q is None or state.particle_count == 0:
+            return
+
+        device = self.device
+        world_count_total = self.world_count + 1
+        num_particles = state.particle_count
+
+        lowers = wp.zeros(num_particles, dtype=wp.vec3f, device=device)
+        uppers = wp.zeros(num_particles, dtype=wp.vec3f, device=device)
+        groups = wp.zeros(num_particles, dtype=wp.int32, device=device)
+        compute_particle_bvh_bounds_launch(self, state, lowers, uppers, groups)
+        self.bvh_particles = wp.Bvh(lowers, uppers, constructor=bvh_constructor, groups=groups)
+
+        self.bvh_particles_group_roots = wp.zeros(world_count_total, dtype=wp.int32, device=device)
+        wp.launch(
+            kernel=compute_bvh_group_roots,
+            dim=world_count_total,
+            inputs=[self.bvh_particles.id, self.bvh_particles_group_roots],
+            device=device,
+        )
+
+    def bvh_refit_particles(self, state: State) -> None:
+        """Refit the particle BVH stored on this model for the current state.
+
+        The particle BVH is built automatically by :meth:`ModelBuilder.finalize`
+        when particles are present. Manually populated models must call
+        :meth:`bvh_build_particles` first.
+        Recomputes particle bounds from ``state.particle_q`` and refits the
+        BVH in place.
+
+        Args:
+            state: Current simulation state with particle positions.
+        """
+        from ..geometry.bvh import compute_particle_bvh_bounds_launch  # noqa: PLC0415
+
+        if state.particle_q is None or state.particle_count == 0:
+            return
+        if self.bvh_particles is None:
+            raise RuntimeError(
+                "Model.bvh_refit_particles() requires Model.bvh_build_particles() to have been called first."
+            )
+
+        compute_particle_bvh_bounds_launch(
+            self, state, self.bvh_particles.lowers, self.bvh_particles.uppers, self.bvh_particles.groups
+        )
+        self.bvh_particles.refit()
 
     def state(self, requires_grad: bool | None = None) -> State:
         """
