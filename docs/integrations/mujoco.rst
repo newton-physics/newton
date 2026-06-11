@@ -142,10 +142,9 @@ Joint-limit stiffness and damping
 
 :attr:`~newton.Model.joint_limit_ke` and
 :attr:`~newton.Model.joint_limit_kd` are force-space gains (for example,
-``N·m/rad`` and ``N·m·s/rad`` for revolute joints). MuJoCo's negative
-``solreflimit`` convention stores stiffness and damping values, but the
-limit solver then converts them to an effective response using the owning
-DOF's ``dof_invweight0`` and the limit impedance parameter
+``N·m/rad`` and ``N·m·s/rad`` for revolute joints). MuJoCo converts
+``solreflimit`` to an effective limit response using the owning DOF's
+``dof_invweight0`` and the limit impedance parameter
 ``dmax = solimplimit[1]``:
 
 .. math::
@@ -154,12 +153,26 @@ DOF's ``dof_invweight0`` and the limit impedance parameter
    (\mathrm{dof\_invweight0} \cdot (1 - dmax))
 
 To keep Newton's force-space meaning,
-:class:`~newton.solvers.SolverMuJoCo` writes
-``solreflimit = (-ke * factor, -kd * factor)`` with
-``factor = dof_invweight0 * (1 - dmax)``. This update runs after MuJoCo has
-compiled or refreshed ``dof_invweight0``. If ``joint_limit_ke <= 0`` or
-``joint_limit_kd <= 0``, the solver restores MuJoCo's default
-``solreflimit`` value ``(0.02, 1.0)``.
+:class:`~newton.solvers.SolverMuJoCo` first scales the direct
+stiffness/damping pair by ``factor = dof_invweight0 * (1 - dmax)`` and then
+converts that pair to MuJoCo's positive ``(timeconst, dampratio)`` convention:
+
+.. math::
+
+   \begin{aligned}
+   k_\mathrm{stored} &= ke \cdot factor \\
+   b_\mathrm{stored} &= kd \cdot factor \\
+   \mathrm{timeconst} &= 2 / b_\mathrm{stored} \\
+   \mathrm{dampratio} &= b_\mathrm{stored} /
+      (2 \sqrt{k_\mathrm{stored}})
+   \end{aligned}
+
+The positive convention preserves the same unclamped force-space response as
+the equivalent direct stiffness/damping pair while allowing MuJoCo's
+``refsafe`` timestep clamp to soften limits that are too stiff for the step
+size. This update runs after MuJoCo has compiled or refreshed
+``dof_invweight0``. If ``joint_limit_ke <= 0`` or ``joint_limit_kd <= 0``, the
+solver restores MuJoCo's default ``solreflimit`` value ``(0.02, 1.0)``.
 
 MJCF- or USD-authored ``solreflimit`` values are already native MuJoCo
 parameters, so they are preserved verbatim through the
@@ -183,11 +196,10 @@ authored native value such as ``solreflimit="0 0"`` or USD
    ``solreflimit``; it has no field for "use Newton force-space
    scaling with these gains". The exporter therefore only writes
    ``solreflimit`` for ``SOLREF_MODE_RAW`` joints (where the authored
-   value carries the full intent). Re-importing the saved file
-   recovers the same MuJoCo dynamics, but ``joint_limit_ke`` /
+   value carries the full intent). ``joint_limit_ke`` /
    ``joint_limit_kd`` from the original ``SOLREF_MODE_FORCE_SPACE`` /
-   ``SOLREF_MODE_MJCF_DEFAULT`` joints will not be preserved — reapply
-   them on the rebuilt model if you need them.
+   ``SOLREF_MODE_MJCF_DEFAULT`` joints will not be preserved; reapply
+   them on the rebuilt model if you need those force-space gains.
 
 
 .. _shape-material-contact-stiffness-and-damping:
