@@ -653,6 +653,14 @@ add_example_test(
 
 add_example_test(
     TestSensorExamples,
+    name="sensors.example_sensor_texture_randomization",
+    devices=test_devices,
+    test_options={"num-frames": 1},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestSensorExamples,
     name="sensors.example_sensor_imu",
     devices=test_devices,
     test_options={"num-frames": 200},  # allow cubes to settle

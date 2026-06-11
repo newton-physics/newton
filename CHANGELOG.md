@@ -31,6 +31,7 @@
 - Add edge overlay toggle (`renderer.draw_edges`) for wireframe visualization on top of solid geometry
 - Add functional `newton.intersect_ray()` shape query helper for composing custom raycast sensors
 - Support negative (mirrored) scale on mesh, convex hull, and SDF shapes, so a single `Mesh` instance can be shared across shapes with different signed scales without re-baking
+- Add `SensorTiledCamera.set_shape_texture_ids()` and a `sensor_texture_randomization` example for assigning textured rendering IDs per shape or per render world, enabling batched camera domain randomization without rebuilding the render context.
 - Add `Model.bvh_build_shapes()`, `Model.bvh_refit_shapes()`, `Model.bvh_build_particles()`, and `Model.bvh_refit_particles()` for managing model BVHs, with optional `bvh_constructor` selection on the build methods
 - Add `newton.utils.ColorSpace`, `color_srgb_to_linear()`, `color_linear_to_srgb()`, and `SensorTiledCamera.RenderConfig.output_color_space` for color-space boundaries
 - Add USD parsing for `NewtonMassAPI`: shell mass model (`newton:massModel`), shell thickness (`newton:shellThickness`), and compact inertia tensor (`newton:inertia`)
