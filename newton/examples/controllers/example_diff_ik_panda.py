@@ -51,6 +51,17 @@ def _scatter_kernel(
 
 
 class Example:
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.add_argument(
+            "--transpose-solver",
+            type=bool,
+            default=False,
+            help="Use Jacobian-transpose solver instead of damped-least-squares solver.",
+        )
+        return parser
+
     def __init__(self, viewer, args):
         # joint_target_q / joint_target_qd are the canonical coord-layout
         # arrays MuJoCo's joint-target PD reads from.
@@ -146,13 +157,17 @@ class Example:
         diffik_template = newton.ModelBuilder()
         diffik_template.replicate(template, ROBOT_COUNT)
 
+        ik_method = ControllerDifferentialKinematics.IkMethod.DAMPED_LEAST_SQUARES
+        if args.transpose_solver:
+            ik_method = ControllerDifferentialKinematics.IkMethod.TRANSPOSE
+
         self.controller = ControllerDifferentialKinematics(
             model_builder=diffik_template,
             controlled_site_label="ee",
             default_dof_indices=dof_indices,
-            solver_damping=wp.full(ROBOT_COUNT, 0.05, dtype=wp.float32, device=self.device),
             bandwidth=wp.full(ROBOT_COUNT, 20.0, dtype=wp.float32, device=self.device),
             device=self.device,
+            ik_method=ik_method,
         )
 
         # input_struct() / output_struct() return fresh dataclasses with one
@@ -295,5 +310,6 @@ class Example:
 
 
 if __name__ == "__main__":
-    viewer, args = newton.examples.init()
+    parser = Example.create_parser()
+    viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

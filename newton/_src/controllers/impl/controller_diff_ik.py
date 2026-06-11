@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""ControllerDifferentialKinematics — one-step damped-least-squares
-differential IK.
+"""ControllerDifferentialKinematics — one-step differential IK.
 
 Stateless. For each robot in the batch, computes a joint-velocity command
 that drives a user-defined site pose (position + orientation) toward a
-target, using a damped pseudoinverse of the per-robot spatial Jacobian.
+target via damped least squares or Jacobian transpose on the per-robot
+spatial Jacobian.
 
 The DLS solve is split across four kernels so that the autograd-able tile
 primitives (``wp.tile_cholesky``, ``wp.tile_cholesky_solve``) only see pure
@@ -19,6 +19,7 @@ autograd-friendly by construction.
 
 from __future__ import annotations
 
+from enum import IntEnum
 from typing import Any
 
 import numpy as np
@@ -156,6 +157,21 @@ def _qd_from_y_kernel(
 
 
 @wp.kernel
+def _qd_from_jte_kernel(
+    j_site: wp.array3d[float],
+    e_buffer: wp.array2d[float],
+    bandwidth: wp.array[float],
+    qd_target_local: wp.array2d[float],
+):
+    r, j = wp.tid()
+    g = bandwidth[r]
+    val = float(0.0)
+    for i in range(6):
+        val += j_site[r, i, j] * e_buffer[r, i]
+    qd_target_local[r, j] = g * val
+
+
+@wp.kernel
 def _write_outputs_kernel(
     qd_target_local: wp.array2d[float],
     joint_q_local: wp.array[float],
@@ -174,8 +190,7 @@ def _write_outputs_kernel(
 
 
 class ControllerDifferentialKinematics(Controller):
-    """One-step damped-least-squares differential IK for a single
-    end-effector per robot.
+    """One-step differential IK for a single end-effector per robot.
 
     Coupled per-robot: each robot's joint-velocity solution depends on its
     full configuration ``q``. Stateless. Drives the **site** pose in world
@@ -188,13 +203,18 @@ class ControllerDifferentialKinematics(Controller):
     backward path returns zero gradients in Warp 1.14.0, so that one
     kernel is marked ``enable_backward=False``.
 
-    Solve form (per robot, ``J_site`` is the 6xN site-frame Jacobian)::
+    With :attr:`IkMethod.DAMPED_LEAST_SQUARES` (default), per robot
+    (``J_site`` is the 6xN site-frame Jacobian)::
 
         e        = [target_pos - site_pos ;  2 * sign(q_err.w) * q_err.xyz]
         A        = J_site J_site^T + lambda^2 * I_6                              (6x6 SPD)
         L L^T    = A                                                            (Cholesky)
         L L^T y  = e                                                            (solve)
         q_dot    = bandwidth * J_site^T y
+
+    With :attr:`IkMethod.TRANSPOSE`::
+
+        q_dot    = bandwidth * J_site^T e
 
     where ``q_err = target_quat * conj(site_quat)``. The joint_target_q
     output is written as ``q_current + q_dot * dt``.
@@ -228,8 +248,10 @@ class ControllerDifferentialKinematics(Controller):
             port whose ``*_idx`` is ``None``. Length
             ``num_robots * dofs_per_robot``, laid out
             ``[r0_d0, r0_d1, ..., r1_d0, ...]``.
-        solver_damping: DLS lambda per robot.
-        bandwidth: Scalar multiplier on the DLS-solve output (per robot).
+        bandwidth: Scalar multiplier on the IK output (per robot).
+        ik_method: Jacobian inverse strategy.
+        solver_damping: DLS lambda per robot. Defaults to
+            :attr:`DEFAULT_SOLVER_DAMPING` when ``None``.
         target_pos_attr: Live read port — site position target in world
             frame. Dtype :class:`wp.vec3`.
         target_pos_idx: Override per-robot indices for ``target_pos_attr``,
@@ -255,13 +277,22 @@ class ControllerDifferentialKinematics(Controller):
             created with gradient support.
     """
 
+    class IkMethod(IntEnum):
+        """Jacobian inverse strategy."""
+
+        DAMPED_LEAST_SQUARES = 0
+        TRANSPOSE = 1
+
+    DEFAULT_SOLVER_DAMPING: float = 0.01
+
     def __init__(
         self,
         model_builder: ModelBuilder,
         controlled_site_label: str,
         default_dof_indices: wp.array,
-        solver_damping: wp.array | str,
         bandwidth: wp.array | str,
+        solver_damping: wp.array | str | None = None,
+        ik_method: IkMethod = IkMethod.DAMPED_LEAST_SQUARES,
         target_pos_attr: str = "site_target_position",
         target_pos_idx: wp.array | None = None,
         target_quat_attr: str = "site_target_quaternion",
@@ -303,6 +334,11 @@ class ControllerDifferentialKinematics(Controller):
         self._num_outputs = self._num_robots * self._dofs_per_robot
         self._device = device if device is not None else wp.get_device()
         self._requires_grad = requires_grad
+        if not isinstance(ik_method, ControllerDifferentialKinematics.IkMethod):
+            raise TypeError(
+                f"ik_method must be ControllerDifferentialKinematics.IkMethod, got {type(ik_method).__name__}."
+            )
+        self._ik_method = ik_method
 
         if int(default_dof_indices.size) != self._num_outputs:
             raise ValueError(
@@ -385,6 +421,13 @@ class ControllerDifferentialKinematics(Controller):
         self._target_quat_idx = _normalize_indices(target_quat_idx, default_robot_idx, name="target_quat")
 
         # Per-robot gain ports.
+        if solver_damping is None:
+            solver_damping = wp.full(
+                articulation_count,
+                self.DEFAULT_SOLVER_DAMPING,
+                dtype=wp.float32,
+                device=self._device,
+            )
         self._damping_attr, self._damping_baked = _normalize_parameter_port(
             solver_damping, articulation_count, wp.float32, self._device, requires_grad, name="solver_damping"
         )
@@ -529,28 +572,37 @@ class ControllerDifferentialKinematics(Controller):
             outputs=[self._j_site, self._e_buffer],
             device=self._device,
         )
-        wp.launch(
-            _build_dls_matrix_kernel,
-            dim=(self._num_robots, 6, 6),
-            inputs=[self._j_site, damping, self._dofs_per_robot],
-            outputs=[self._A],
-            device=self._device,
-        )
-        wp.launch_tiled(
-            _cholesky_solve_kernel,
-            dim=[self._num_robots],
-            inputs=[self._A, self._e_buffer],
-            outputs=[self._y],
-            block_dim=32,
-            device=self._device,
-        )
-        wp.launch(
-            _qd_from_y_kernel,
-            dim=(self._num_robots, self._dofs_per_robot),
-            inputs=[self._j_site, self._y, bandwidth],
-            outputs=[self._qd_target_local],
-            device=self._device,
-        )
+        if self._ik_method == ControllerDifferentialKinematics.IkMethod.TRANSPOSE:
+            wp.launch(
+                _qd_from_jte_kernel,
+                dim=(self._num_robots, self._dofs_per_robot),
+                inputs=[self._j_site, self._e_buffer, bandwidth],
+                outputs=[self._qd_target_local],
+                device=self._device,
+            )
+        else:
+            wp.launch(
+                _build_dls_matrix_kernel,
+                dim=(self._num_robots, 6, 6),
+                inputs=[self._j_site, damping, self._dofs_per_robot],
+                outputs=[self._A],
+                device=self._device,
+            )
+            wp.launch_tiled(
+                _cholesky_solve_kernel,
+                dim=[self._num_robots],
+                inputs=[self._A, self._e_buffer],
+                outputs=[self._y],
+                block_dim=32,
+                device=self._device,
+            )
+            wp.launch(
+                _qd_from_y_kernel,
+                dim=(self._num_robots, self._dofs_per_robot),
+                inputs=[self._j_site, self._y, bandwidth],
+                outputs=[self._qd_target_local],
+                device=self._device,
+            )
         wp.launch(
             _write_outputs_kernel,
             dim=(self._num_robots, self._dofs_per_robot),

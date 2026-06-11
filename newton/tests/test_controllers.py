@@ -343,9 +343,8 @@ def _build_planar_arm_two_link():
 def _make_diffik(builder, site, default_idx, device, **overrides):
     return ControllerDifferentialKinematics(
         model_builder=builder,
-        site=site,
+        controlled_site_label=site,
         default_dof_indices=default_idx,
-        solver_damping=wp.array([0.05], dtype=wp.float32, device=device),
         bandwidth=wp.array([1.0], dtype=wp.float32, device=device),
         device=device,
         **overrides,
@@ -364,7 +363,6 @@ class TestControllerDifferentialKinematics(unittest.TestCase):
             model_builder=builder,
             controlled_site_label="tip",
             default_dof_indices=default_idx,
-            solver_damping=wp.array([0.05], dtype=wp.float32, device=device),
             bandwidth=wp.array([1.0], dtype=wp.float32, device=device),
             device=device,
         )
@@ -390,7 +388,6 @@ class TestControllerDifferentialKinematics(unittest.TestCase):
             model_builder=builder,
             controlled_site_label="tip",
             default_dof_indices=default_idx,
-            solver_damping=wp.array([0.05], dtype=wp.float32, device=device),
             bandwidth=wp.array([1.0], dtype=wp.float32, device=device),
             device=device,
         )
@@ -416,7 +413,6 @@ class TestControllerDifferentialKinematics(unittest.TestCase):
             model_builder=builder,
             controlled_site_label="tip",
             default_dof_indices=default_idx,
-            solver_damping=wp.array([0.05], dtype=wp.float32, device=device),
             bandwidth=wp.array([1.0], dtype=wp.float32, device=device),
             device=device,
         )
@@ -461,6 +457,50 @@ class TestControllerDifferentialKinematics(unittest.TestCase):
 
         expected_qd = BAND * ERR_Y / (2.0 + LAMBDA**2)
         self.assertAlmostEqual(float(out_qd.numpy()[0]), expected_qd, places=5)
+
+    def test_one_dof_matches_analytical_transpose(self):
+        device = wp.get_device()
+        ERR_Y = 0.1
+        BAND = 2.0
+        builder = _build_planar_arm_one_link()
+        default_idx = _iota(1, device)
+        out_q = wp.zeros(1, dtype=wp.float32, device=device)
+        out_qd = wp.zeros(1, dtype=wp.float32, device=device)
+        diffik = ControllerDifferentialKinematics(
+            model_builder=builder,
+            controlled_site_label="tool",
+            default_dof_indices=default_idx,
+            bandwidth=wp.array([BAND], dtype=wp.float32, device=device),
+            ik_method=ControllerDifferentialKinematics.IkMethod.TRANSPOSE,
+            device=device,
+        )
+        input_struct = SimpleNamespace(
+            joint_q=wp.zeros(1, dtype=wp.float32, device=device),
+            joint_qd=wp.zeros(1, dtype=wp.float32, device=device),
+            site_target_position=wp.array([wp.vec3(1.0, ERR_Y, 0.0)], dtype=wp.vec3, device=device),
+            site_target_quaternion=wp.array([wp.quat(0.0, 0.0, 0.0, 1.0)], dtype=wp.quat, device=device),
+        )
+        output_struct = SimpleNamespace(joint_target_q=out_q, joint_target_qd=out_qd)
+        diffik.compute(input_struct, output_struct, None, None, time_step=0.01)
+
+        expected_qd = BAND * ERR_Y
+        self.assertAlmostEqual(float(out_qd.numpy()[0]), expected_qd, places=5)
+
+    def test_default_solver_damping(self):
+        device = wp.get_device()
+        builder = _build_planar_arm_one_link()
+        default_idx = _iota(1, device)
+        diffik = ControllerDifferentialKinematics(
+            model_builder=builder,
+            controlled_site_label="tool",
+            default_dof_indices=default_idx,
+            bandwidth=wp.array([1.0], dtype=wp.float32, device=device),
+            device=device,
+        )
+        self.assertAlmostEqual(
+            float(diffik._damping_baked.numpy()[0]),
+            ControllerDifferentialKinematics.DEFAULT_SOLVER_DAMPING,
+        )
 
     def test_runs_inside_wp_tape_without_crashing(self):
         device = wp.get_device()
@@ -673,7 +713,6 @@ class TestControllerDifferentialKinematics(unittest.TestCase):
             model_builder=builder,
             controlled_site_label="tool",
             default_dof_indices=default_idx,
-            solver_damping=wp.array([0.05], dtype=wp.float32, device=device),
             bandwidth="my_band",  # live
             device=device,
         )
