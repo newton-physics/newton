@@ -238,6 +238,34 @@ def find_mujoco_body_from_newton_body(
 
 
 @wp.kernel
+def eval_mujoco_coupling_gravity_acceleration_kernel(
+    gravity: wp.array[wp.vec3],
+    body_world: wp.array[wp.int32],
+    mjc_body_to_newton: wp.array2d[wp.int32],
+    body_gravcomp: wp.array2d[float],
+    out: wp.array[wp.vec3],
+):
+    body = wp.tid()
+    world = int(0)
+    if body_gravcomp.shape[0] > 1:
+        if body < body_world.shape[0]:
+            world = body_world[body]
+        else:
+            world = int(-1)
+
+    g = wp.vec3(0.0, 0.0, 0.0)
+    if world >= 0 and world < gravity.shape[0]:
+        g = gravity[world]
+
+    gravcomp = float(0.0)
+    mjc_body = find_mujoco_body_from_newton_body(world, body, mjc_body_to_newton)
+    if world >= 0 and world < body_gravcomp.shape[0] and mjc_body >= 0 and mjc_body < body_gravcomp.shape[1]:
+        gravcomp = body_gravcomp[world, mjc_body]
+
+    out[body] = (1.0 - gravcomp) * g
+
+
+@wp.kernel
 def eval_mujoco_coupling_effective_mass_kernel(
     endpoint_kind: wp.array[int],
     endpoint_index: wp.array[int],

@@ -118,6 +118,8 @@ class SolverEntry:
     control: Control | None = None
     has_body_force_input: bool = False
     has_particle_force_input: bool = False
+    body_gravity_acceleration: wp.array[wp.vec3] | None = None
+    particle_gravity_acceleration: wp.array[wp.vec3] | None = None
 
 
 class SolverCoupled(SolverBase, CouplingInterface):
@@ -1572,6 +1574,48 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
     def _after_entry_states_created(self) -> None:
         """Hook called after per-entry states and scratch buffers are allocated."""
+        self._refresh_gravity_accelerations()
+
+    def _entry_needs_gravity_acceleration(self, entry: SolverEntry) -> bool:
+        del entry
+        return False
+
+    def _gravity_acceleration_refresh_flags(self) -> int:
+        return int(ModelFlags.MODEL_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+    def _refresh_gravity_accelerations(self) -> None:
+        for entry in self._entries.values():
+            self._refresh_entry_gravity_acceleration(entry)
+
+    def _refresh_entry_gravity_acceleration(self, entry: SolverEntry) -> None:
+        if not self._entry_needs_gravity_acceleration(entry):
+            entry.body_gravity_acceleration = None
+            entry.particle_gravity_acceleration = None
+            return
+
+        body_count = int(entry.view.body_count)
+        particle_count = int(entry.view.particle_count)
+        device = self.model.device
+
+        if body_count > 0:
+            if entry.body_gravity_acceleration is None or entry.body_gravity_acceleration.shape[0] != body_count:
+                entry.body_gravity_acceleration = wp.empty(body_count, dtype=wp.vec3, device=device)
+        else:
+            entry.body_gravity_acceleration = None
+
+        if particle_count > 0:
+            if (
+                entry.particle_gravity_acceleration is None
+                or entry.particle_gravity_acceleration.shape[0] != particle_count
+            ):
+                entry.particle_gravity_acceleration = wp.empty(particle_count, dtype=wp.vec3, device=device)
+        else:
+            entry.particle_gravity_acceleration = None
+
+        entry.solver.coupling_eval_gravity_acceleration(
+            entry.body_gravity_acceleration,
+            entry.particle_gravity_acceleration,
+        )
 
     def _eval_effective_masses(
         self,
@@ -2410,6 +2454,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self._refresh_model_view_overrides(flags)
         for entry in self._entries.values():
             entry.solver.notify_model_changed(flags)
+        if int(flags) & self._gravity_acceleration_refresh_flags():
+            self._refresh_gravity_accelerations()
 
 
 def _entry_control(view: ModelView) -> Control:

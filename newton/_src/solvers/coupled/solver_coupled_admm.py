@@ -108,7 +108,6 @@ class _AdmmBuffers:
     joint_qd_k: wp.array = field(default=None)
     body_f: wp.array = field(default=None)
     particle_f: wp.array = field(default=None)
-    body_gravcomp: wp.array = field(default=None)
     body_effective_mass: wp.array = field(default=None)
     body_effective_inertia_scalar: wp.array = field(default=None)
     particle_effective_mass: wp.array = field(default=None)
@@ -803,6 +802,10 @@ class SolverCoupledADMM(SolverCoupled):
         self._refresh_admm_joint_proxy_view_maps()
         self._apply_admm_joint_proxy_effective_masses()
 
+    def _entry_needs_gravity_acceleration(self, entry: SolverEntry) -> bool:
+        del entry
+        return True
+
     def _refresh_admm_joint_proxy_view_maps(self) -> None:
         for mapping in self._admm_joint_proxy_mappings:
             if mapping.body_ids_global is None:
@@ -922,21 +925,6 @@ class SolverCoupledADMM(SolverCoupled):
                 self._body_indices_to_local_array(entry, entry.body_dynamics_disabled_indices)
             )
 
-    def _entry_body_gravcomp(self, entry: SolverEntry) -> wp.array:
-        """Entry-local gravcomp factor per body (0 where unset).
-
-        Mirrors the MuJoCo body ``gravcomp`` attribute so the proximal gravity
-        compensation can avoid double-cancelling gravity the sub-solver already
-        compensates.
-        """
-        body_count = int(entry.body_local_to_global.shape[0])
-        mujoco_attrs = getattr(self.model, "mujoco", None)
-        gravcomp_attr = getattr(mujoco_attrs, "gravcomp", None) if mujoco_attrs is not None else None
-        if gravcomp_attr is None or body_count == 0:
-            return wp.zeros(body_count, dtype=float, device=self.model.device)
-        local = gravcomp_attr.numpy()[entry.body_local_to_global.numpy()].astype(np.float32, copy=False)
-        return wp.array(local, dtype=float, device=self.model.device)
-
     def _setup_admm(self, coupling: SolverCoupledADMM.Config) -> None:
         for entry in self._entries.values():
             buf = _AdmmBuffers()
@@ -947,7 +935,6 @@ class SolverCoupledADMM(SolverCoupled):
                 buf.body_qd_k = wp.empty_like(s0.body_qd)
             if s0.body_f is not None:
                 buf.body_f = wp.empty_like(s0.body_f)
-                buf.body_gravcomp = self._entry_body_gravcomp(entry)
             if s0.particle_q is not None:
                 buf.particle_q_n = wp.empty_like(s0.particle_q)
                 buf.particle_qd_n = wp.empty_like(s0.particle_qd)
@@ -3035,9 +3022,7 @@ class SolverCoupledADMM(SolverCoupled):
                         gamma,
                         entry.view.body_mass,
                         entry.view.body_inv_mass,
-                        entry.view.body_world,
-                        entry.view.gravity,
-                        buf.body_gravcomp,
+                        entry.body_gravity_acceleration,
                     ],
                     outputs=[buf.body_f],
                     device=self.model.device,
@@ -3061,8 +3046,7 @@ class SolverCoupledADMM(SolverCoupled):
                         entry.view.particle_mass,
                         entry.view.particle_inv_mass,
                         entry.view.particle_flags,
-                        entry.view.particle_world,
-                        entry.view.gravity,
+                        entry.particle_gravity_acceleration,
                     ],
                     outputs=[buf.particle_f],
                     device=self.model.device,
