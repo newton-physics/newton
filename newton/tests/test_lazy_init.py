@@ -8,11 +8,11 @@ import subprocess
 import sys
 import unittest
 
+import newton.tests.unittest_utils
+
 
 class TestLazyInit(unittest.TestCase):
     def test_import_newton_does_not_init_warp(self):
-        import newton.tests.unittest_utils  # noqa: PLC0415
-
         env = os.environ.copy()
         # Escalate import-time deprecations only when the runner opted in
         # (--strict-warnings); otherwise keep the import lenient so a dependency
