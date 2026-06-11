@@ -4180,6 +4180,7 @@ class ModelBuilder:
         joint_type: JointType,
         parent: int,
         child: int,
+        *,
         linear_axes: list[JointDofConfig] | None = None,
         angular_axes: list[JointDofConfig] | None = None,
         label: str | None = None,
@@ -4387,6 +4388,7 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
+        *,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         axis: AxisType | Vec3 | JointDofConfig | None = None,
@@ -4483,6 +4485,7 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
+        *,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         axis: AxisType | Vec3 | JointDofConfig = Axis.X,
@@ -4577,6 +4580,7 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
+        *,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         armature: float | None = None,
@@ -4650,6 +4654,7 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
+        *,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         label: str | None = None,
@@ -4695,6 +4700,7 @@ class ModelBuilder:
     def add_joint_free(
         self,
         child: int,
+        *,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         parent: int = -1,
@@ -4752,6 +4758,7 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
+        *,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         min_distance: float = -1.0,
@@ -4811,6 +4818,7 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
+        *,
         linear_axes: Sequence[JointDofConfig] | None = None,
         angular_axes: Sequence[JointDofConfig] | None = None,
         label: str | None = None,
@@ -4864,6 +4872,7 @@ class ModelBuilder:
         self,
         parent: int,
         child: int,
+        *,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         stretch_stiffness: float | None = None,
@@ -6278,6 +6287,7 @@ class ModelBuilder:
     def add_shape_plane(
         self,
         plane: Vec4 | None = (0.0, 0.0, 1.0, 0.0),
+        *,
         xform: Transform | None = None,
         width: float = 10.0,
         length: float = 10.0,
@@ -6370,6 +6380,7 @@ class ModelBuilder:
     def add_shape_sphere(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         radius: float = 1.0,
         cfg: ShapeConfig | None = None,
@@ -6414,6 +6425,7 @@ class ModelBuilder:
     def add_shape_ellipsoid(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         rx: float = 1.0,
         ry: float = 0.75,
@@ -6513,6 +6525,7 @@ class ModelBuilder:
     def add_shape_box(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         hx: float = 0.5,
         hy: float = 0.5,
@@ -6563,6 +6576,7 @@ class ModelBuilder:
     def add_shape_capsule(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
@@ -6616,6 +6630,7 @@ class ModelBuilder:
     def add_shape_cylinder(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
@@ -6669,6 +6684,7 @@ class ModelBuilder:
     def add_shape_cone(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
@@ -6723,6 +6739,7 @@ class ModelBuilder:
     def add_shape_mesh(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         mesh: Mesh | None = None,
         scale: Vec3 | None = None,
@@ -6764,6 +6781,7 @@ class ModelBuilder:
     def add_shape_convex_hull(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         mesh: Mesh | None = None,
         scale: Vec3 | None = None,
@@ -6804,6 +6822,7 @@ class ModelBuilder:
 
     def add_shape_heightfield(
         self,
+        *,
         xform: Transform | None = None,
         heightfield: Heightfield | None = None,
         scale: Vec3 | None = None,
@@ -6956,6 +6975,7 @@ class ModelBuilder:
     def add_site(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         type: int = GeoType.SPHERE,
         scale: Vec3 = (0.01, 0.01, 0.01),
@@ -7331,6 +7351,7 @@ class ModelBuilder:
     def add_rod(
         self,
         positions: list[Vec3],
+        *,
         quaternions: list[Quat] | None = None,
         radius: float = 0.1,
         cfg: ShapeConfig | None = None,
@@ -7509,6 +7530,7 @@ class ModelBuilder:
         self,
         node_positions: list[Vec3],
         edges: list[tuple[int, int]],
+        *,
         radius: float = 0.1,
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
@@ -8020,6 +8042,7 @@ class ModelBuilder:
         i: int,
         j: int,
         k: int,
+        *,
         tri_ke: float | None = None,
         tri_ka: float | None = None,
         tri_kd: float | None = None,
@@ -8103,6 +8126,7 @@ class ModelBuilder:
         i: list[int] | np.ndarray,
         j: list[int] | np.ndarray,
         k: list[int] | np.ndarray,
+        *,
         tri_ke: list[float] | None = None,
         tri_ka: list[float] | None = None,
         tri_kd: list[float] | None = None,
@@ -8284,6 +8308,7 @@ class ModelBuilder:
         j: int,
         k: int,
         l: int,
+        *,
         rest: float | None = None,
         edge_ke: float | None = None,
         edge_kd: float | None = None,
@@ -8355,6 +8380,7 @@ class ModelBuilder:
         j: list[int],
         k: list[int],
         l: list[int],
+        *,
         rest: list[float] | None = None,
         edge_ke: list[float] | None = None,
         edge_kd: list[float] | None = None,
@@ -8448,6 +8474,7 @@ class ModelBuilder:
 
     def add_cloth_grid(
         self,
+        *,
         pos: Vec3,
         rot: Quat,
         vel: Vec3,
@@ -8573,6 +8600,7 @@ class ModelBuilder:
 
     def add_cloth_mesh(
         self,
+        *,
         pos: Vec3,
         rot: Quat,
         scale: float,
@@ -8678,11 +8706,11 @@ class ModelBuilder:
             inds[:, 0],
             inds[:, 1],
             inds[:, 2],
-            [tri_ke] * num_tris,
-            [tri_ka] * num_tris,
-            [tri_kd] * num_tris,
-            [tri_drag] * num_tris,
-            [tri_lift] * num_tris,
+            tri_ke=[tri_ke] * num_tris,
+            tri_ka=[tri_ka] * num_tris,
+            tri_kd=[tri_kd] * num_tris,
+            tri_drag=[tri_drag] * num_tris,
+            tri_lift=[tri_lift] * num_tris,
             custom_attributes=custom_attributes_triangles,
         )
         for t in range(num_tris):
@@ -8728,6 +8756,7 @@ class ModelBuilder:
 
     def add_particle_grid(
         self,
+        *,
         pos: Vec3,
         rot: Quat,
         vel: Vec3,
@@ -8830,6 +8859,7 @@ class ModelBuilder:
 
     def add_soft_grid(
         self,
+        *,
         pos: Vec3,
         rot: Quat,
         vel: Vec3,
@@ -8981,7 +9011,16 @@ class ModelBuilder:
         # add surface triangles
         start_tri = len(self.tri_indices)
         for _k, v in faces.items():
-            self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+            self.add_triangle(
+                v[0],
+                v[1],
+                v[2],
+                tri_ke=tri_ke,
+                tri_ka=tri_ka,
+                tri_kd=tri_kd,
+                tri_drag=tri_drag,
+                tri_lift=tri_lift,
+            )
         end_tri = len(self.tri_indices)
 
         if add_surface_mesh_edges:
@@ -8995,10 +9034,11 @@ class ModelBuilder:
                 if len(edge_indices) > 0:
                     # Add edges with specified stiffness/damping (for collision)
                     for o1, o2, v1, v2 in edge_indices:
-                        self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
+                        self.add_edge(o1, o2, v1, v2, rest=None, edge_ke=edge_ke, edge_kd=edge_kd)
 
     def add_soft_mesh(
         self,
+        *,
         pos: Vec3,
         rot: Quat,
         scale: float,
@@ -9200,11 +9240,11 @@ class ModelBuilder:
                 start_vertex + int(tri[0]),
                 start_vertex + int(tri[1]),
                 start_vertex + int(tri[2]),
-                tri_ke,
-                tri_ka,
-                tri_kd,
-                tri_drag,
-                tri_lift,
+                tri_ke=tri_ke,
+                tri_ka=tri_ka,
+                tri_kd=tri_kd,
+                tri_drag=tri_drag,
+                tri_lift=tri_lift,
                 custom_attributes=tr_custom,
             )
         end_tri = len(self.tri_indices)
@@ -9220,7 +9260,7 @@ class ModelBuilder:
                 if len(edge_indices) > 0:
                     # Add edges with specified stiffness/damping (for collision)
                     for o1, o2, v1, v2 in edge_indices:
-                        self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
+                        self.add_edge(o1, o2, v1, v2, rest=None, edge_ke=edge_ke, edge_kd=edge_kd)
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
@@ -9607,7 +9647,7 @@ class ModelBuilder:
             return self.add_joint_free(child, label=label)
         else:
             # FIXED joint (floating=False or floating=None with parent body)
-            return self.add_joint_fixed(parent, child, parent_xform, child_xform, label=label)
+            return self.add_joint_fixed(parent, child, parent_xform=parent_xform, child_xform=child_xform, label=label)
 
     def _add_base_joints_to_floating_bodies(
         self,

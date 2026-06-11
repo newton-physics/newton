@@ -81,7 +81,7 @@ class Example:
         table_pos = wp.vec3(0.0, -0.5, 0.1)
         self.scene.add_shape_box(
             -1,
-            wp.transform(table_pos, wp.quat_identity()),
+            xform=wp.transform(table_pos, wp.quat_identity()),
             hx=table_hx,
             hy=table_hy,
             hz=table_hz,
