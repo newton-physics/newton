@@ -157,15 +157,48 @@ class ControllerPID(Controller):
         self._output_idx = _normalize_indices(output_idx, default_dof_indices, name="output")
 
         # Gain ports (wp.array | str).
+        if not kp:
+            kp = wp.zeros(
+                shape=self._num_outputs, 
+                dtype=float, 
+                device=self.device, 
+                requires_grad=self.requires_grad
+            )
         self._kp_attr, self._kp_baked = _normalize_parameter_port(
             kp, self._num_outputs, wp.float32, self._device, requires_grad, name="kp"
         )
+
+        if not kd:
+            kd = wp.zeros(
+                shape=self._num_outputs, 
+                dtype=float, 
+                device=self.device, 
+                requires_grad=self.requires_grad
+            )
         self._kd_attr, self._kd_baked = _normalize_parameter_port(
             kd, self._num_outputs, wp.float32, self._device, requires_grad, name="kd"
         )
+
+        if not ki:
+            ki = wp.zeros(
+                shape=self._num_outputs, 
+                dtype=float, 
+                device=self.device, 
+                requires_grad=self.requires_grad
+            )
         self._ki_attr, self._ki_baked = _normalize_parameter_port(
             ki, self._num_outputs, wp.float32, self._device, requires_grad, name="ki"
         )
+
+        if not integral_max:
+            # default to no max:
+            integral_max = wp.full(
+                shape=self._num_outputs,
+                value=wp.inf,
+                dtype=float, 
+                device=self.device, 
+                requires_grad=self.requires_grad
+            )
         self._imax_attr, self._imax_baked = _normalize_parameter_port(
             integral_max, self._num_outputs, wp.float32, self._device, requires_grad, name="integral_max"
         )

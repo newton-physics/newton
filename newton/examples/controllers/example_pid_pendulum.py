@@ -19,6 +19,23 @@ from newton.controllers import ControllerPID
 
 
 class Example:
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        parser.add_argument(
+            "--j1-target",
+            type=float,
+            default=0.6,
+            help="Target angle for joint 1 [rad].",
+        )
+        parser.add_argument(
+            "--j2-target",
+            type=float,
+            default=-1.2,
+            help="Target angle for joint 2 [rad].",
+        )
+        return parser
+
     def __init__(self, viewer, args):
         self.fps = 200
         self.frame_dt = 1.0 / self.fps
@@ -64,10 +81,8 @@ class Example:
         # output struct. Gains baked in as wp.arrays.
         default_dof_indices = wp.array([0, 1], dtype=wp.uint32, device=self.device)
         self.controller = ControllerPID(
-            kp=wp.array([900.0, 300.0], dtype=wp.float32, device=self.device),
-            kd=wp.array([80.0, 80.0], dtype=wp.float32, device=self.device),
-            ki=wp.zeros(2, dtype=wp.float32, device=self.device),
-            integral_max=wp.full(2, float("inf"), dtype=wp.float32, device=self.device),
+            kp=wp.array([1800.0, 600.0], dtype=wp.float32, device=self.device),
+            kd=wp.array([160.0, 80.0], dtype=wp.float32, device=self.device),
             default_dof_indices=default_dof_indices,
             device=self.device,
         )
@@ -76,7 +91,10 @@ class Example:
         # fields default to wp.zeros; we rebind joint_q/qd each frame to the
         # current sim state, and seed the setpoint once.
         self._input = self.controller.input_struct()
-        self._input.joint_target_q.assign([-wp.pi/2, 0.0])  # target angles [rad]
+        self.j1_target = args.j1_target
+        self.j2_target = args.j2_target
+
+        self._input.joint_target_q.assign([self.j1_target, self.j2_target])  # target angles [rad]
 
         # The output struct's joint_f field is what the solver consumes — wire it
         # straight into control.joint_f so the PID writes directly into the
@@ -122,10 +140,11 @@ class Example:
     def test_final(self):
         # After enough sim time the PID should hold the joints near the targets.
         joint_q = self.state_0.joint_q.numpy()
-        assert abs(joint_q[0] - 0.6) < 0.1, f"joint 0 = {joint_q[0]:.3f}, expected ~0.6"
-        assert abs(joint_q[1] - -1.2) < 0.1, f"joint 1 = {joint_q[1]:.3f}, expected ~-1.2"
+        assert abs(joint_q[0] - self.j1_target) < 0.1, f"joint 0 = {joint_q[0]:.3f}, expected ~{self.j1_target}"
+        assert abs(joint_q[1] - self.j2_target) < 0.1, f"joint 1 = {joint_q[1]:.3f}, expected ~{self.j2_target}"
 
 
 if __name__ == "__main__":
-    viewer, args = newton.examples.init()
+    parser = Example.create_parser()
+    viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)
