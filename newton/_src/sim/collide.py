@@ -461,6 +461,79 @@ def _infer_broad_phase_mode_from_instance(broad_phase: BroadPhaseAllPairs | Broa
     )
 
 
+def _to_numpy_int_array(array) -> np.ndarray | None:
+    if array is None:
+        return None
+    if hasattr(array, "numpy"):
+        return array.numpy().astype(np.int32, copy=False)
+    return np.asarray(array, dtype=np.int32)
+
+
+def _entity_world_slices(
+    world: wp.array | None,
+    world_start: wp.array | None,
+    count: int,
+    world_count: int,
+) -> tuple[list[list[int]], list[int]]:
+    starts = _to_numpy_int_array(world_start)
+    if starts is not None and starts.size == world_count + 2:
+        local = [list(range(int(starts[w]), int(starts[w + 1]))) for w in range(world_count)]
+        global_indices = list(range(0, int(starts[0]))) + list(range(int(starts[world_count]), count))
+        return local, global_indices
+
+    worlds = _to_numpy_int_array(world)
+    if worlds is None or worlds.size != count:
+        default_world = -1 if world_count == 0 else 0
+        worlds = np.full(count, default_world, dtype=np.int32)
+
+    local = [np.flatnonzero(worlds == w).astype(np.int32).tolist() for w in range(world_count)]
+    global_indices = np.flatnonzero(worlds == -1).astype(np.int32).tolist()
+    return local, global_indices
+
+
+def _build_soft_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
+    particle_count = int(getattr(model, "particle_count", 0) or 0)
+    shape_count = int(getattr(model, "shape_count", 0) or 0)
+    device = model.device
+
+    if particle_count == 0 or shape_count == 0:
+        return wp.array(np.empty((0, 2), dtype=np.int32), dtype=wp.vec2i, device=device)
+
+    world_count = int(getattr(model, "world_count", 0) or 0)
+    particle_local, particle_global = _entity_world_slices(
+        getattr(model, "particle_world", None),
+        getattr(model, "particle_world_start", None),
+        particle_count,
+        world_count,
+    )
+    shape_local, shape_global = _entity_world_slices(
+        getattr(model, "shape_world", None),
+        getattr(model, "shape_world_start", None),
+        shape_count,
+        world_count,
+    )
+
+    pairs: list[tuple[int, int]] = []
+    for world_index in range(world_count):
+        world_shapes = shape_local[world_index]
+        for particle_index in particle_local[world_index]:
+            for shape_index in world_shapes:
+                pairs.append((particle_index, shape_index))
+            for shape_index in shape_global:
+                pairs.append((particle_index, shape_index))
+
+    all_shapes = range(shape_count)
+    for particle_index in particle_global:
+        for shape_index in all_shapes:
+            pairs.append((particle_index, shape_index))
+
+    if not pairs:
+        pair_array = np.empty((0, 2), dtype=np.int32)
+    else:
+        pair_array = np.asarray(pairs, dtype=np.int32)
+    return wp.array(pair_array, dtype=wp.vec2i, device=device)
+
+
 class CollisionPipeline:
     """
     Full-featured collision pipeline with GJK/MPR narrow phase and pluggable broad phase.
@@ -628,7 +701,6 @@ class CollisionPipeline:
                 broad_phase_instance = broad_phase
 
         shape_count = model.shape_count
-        particle_count = model.particle_count
         device = model.device
 
         # Resolve rigid contact capacity with explicit > model > estimated precedence.
@@ -828,8 +900,10 @@ class CollisionPipeline:
                 f"(expected {shape_count}, got {self.narrow_phase.shape_aabb_upper.shape[0]})"
             )
 
+        self.soft_contact_pairs = _build_soft_contact_pairs(model)
+        self._soft_contact_pair_count = len(self.soft_contact_pairs)
         if soft_contact_max is None:
-            soft_contact_max = shape_count * particle_count
+            soft_contact_max = self.soft_contact_pair_count
         self.soft_contact_margin = soft_contact_margin
         self._soft_contact_max = soft_contact_max
         self.requires_grad = requires_grad
@@ -871,6 +945,11 @@ class CollisionPipeline:
     def soft_contact_max(self) -> int:
         """Maximum soft contact buffer capacity used by this pipeline."""
         return self._soft_contact_max
+
+    @property
+    def soft_contact_pair_count(self) -> int:
+        """Number of precomputed particle-shape pairs launched for soft contacts."""
+        return self._soft_contact_pair_count
 
     def contacts(self) -> Contacts:
         """
@@ -1212,12 +1291,12 @@ class CollisionPipeline:
             )
 
         # Generate soft contacts for particles and shapes
-        particle_count = len(state.particle_q) if state.particle_q else 0
-        if state.particle_q and model.shape_count > 0:
+        if state.particle_q and self.soft_contact_pair_count > 0:
             wp.launch(
                 kernel=create_soft_contacts,
-                dim=particle_count * model.shape_count,
+                dim=self.soft_contact_pair_count,
                 inputs=[
+                    self.soft_contact_pairs,
                     state.particle_q,
                     model.particle_radius,
                     model.particle_flags,
@@ -1231,7 +1310,6 @@ class CollisionPipeline:
                     model.shape_world,
                     soft_contact_margin,
                     self.soft_contact_max,
-                    model.shape_count,
                     model.shape_flags,
                     model.shape_heightfield_index,
                     model.heightfield_data,
