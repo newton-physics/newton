@@ -491,7 +491,7 @@ class Example:
                 print(f"[contact overflow] body {label} (idx={i}): {counts[i]} contacts (buffer={buf})")
 
         # Snap gizmo to the plug when the user isn't dragging it.
-        gizmo_active = self.viewer.gizmo_is_using
+        gizmo_active = getattr(self.viewer, "gizmo_is_using", False)
         if not gizmo_active:
             plug_tf = self.state_0.body_q.numpy()[self._plug_body]
             if picked_body >= 0:
