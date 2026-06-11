@@ -325,38 +325,47 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
         v2_prev = pos_prev[tet_indices[tet_id, 2]]
         v3_prev = pos_prev[tet_indices[tet_id, 3]]
 
-        Ds_dot = (
-            wp.matrix_from_cols(
-                (v1 - v1_prev) - (v0 - v0_prev),
-                (v2 - v2_prev) - (v0 - v0_prev),
-                (v3 - v3_prev) - (v0 - v0_prev),
-            )
-            * inv_dt
-        )
-        F_dot = Ds_dot * Dm_inv
+        Ds_prev = wp.matrix_from_cols(v1_prev - v0_prev, v2_prev - v0_prev, v3_prev - v0_prev)
+        F_prev = Ds_prev * Dm_inv
 
-        f_dot = vec9(
-            F_dot[0, 0],
-            F_dot[1, 0],
-            F_dot[2, 0],
-            F_dot[0, 1],
-            F_dot[1, 1],
-            F_dot[2, 1],
-            F_dot[0, 2],
-            F_dot[1, 2],
-            F_dot[2, 2],
-        )
+        f0 = wp.vec3(F[0, 0], F[1, 0], F[2, 0])
+        f1 = wp.vec3(F[0, 1], F[1, 1], F[2, 1])
+        f2 = wp.vec3(F[0, 2], F[1, 2], F[2, 2])
+        f0_prev = wp.vec3(F_prev[0, 0], F_prev[1, 0], F_prev[2, 0])
+        f1_prev = wp.vec3(F_prev[0, 1], F_prev[1, 1], F_prev[2, 1])
+        f2_prev = wp.vec3(F_prev[0, 2], F_prev[1, 2], F_prev[2, 2])
 
-        P_damp = rest_volume * damping * f_dot
+        c00_rate = (wp.dot(f0, f0) - wp.dot(f0_prev, f0_prev)) * inv_dt
+        c01_rate = (wp.dot(f0, f1) - wp.dot(f0_prev, f1_prev)) * inv_dt
+        c02_rate = (wp.dot(f0, f2) - wp.dot(f0_prev, f2_prev)) * inv_dt
+        c11_rate = (wp.dot(f1, f1) - wp.dot(f1_prev, f1_prev)) * inv_dt
+        c12_rate = (wp.dot(f1, f2) - wp.dot(f1_prev, f2_prev)) * inv_dt
+        c22_rate = (wp.dot(f2, f2) - wp.dot(f2_prev, f2_prev)) * inv_dt
 
-        f_damp = wp.vec3(
-            -(P_damp[0] * m[0] + P_damp[3] * m[1] + P_damp[6] * m[2]),
-            -(P_damp[1] * m[0] + P_damp[4] * m[1] + P_damp[7] * m[2]),
-            -(P_damp[2] * m[0] + P_damp[5] * m[1] + P_damp[8] * m[2]),
+        dc00_dx = 2.0 * m[0] * f0
+        dc01_dx = m[0] * f1 + m[1] * f0
+        dc02_dx = m[0] * f2 + m[2] * f0
+        dc11_dx = 2.0 * m[1] * f1
+        dc12_dx = m[1] * f2 + m[2] * f1
+        dc22_dx = 2.0 * m[2] * f2
+
+        f_damp = (
+            c00_rate * dc00_dx
+            + 2.0 * c01_rate * dc01_dx
+            + 2.0 * c02_rate * dc02_dx
+            + c11_rate * dc11_dx
+            + 2.0 * c12_rate * dc12_dx
+            + c22_rate * dc22_dx
         )
-        force = force + f_damp
-        m_sq = m[0] * m[0] + m[1] * m[1] + m[2] * m[2]
-        hessian = hessian + (rest_volume * damping * inv_dt * m_sq) * wp.identity(3, float)
+        force = force - rest_volume * damping * f_damp
+        hessian = hessian + rest_volume * damping * inv_dt * (
+            wp.outer(dc00_dx, dc00_dx)
+            + 2.0 * wp.outer(dc01_dx, dc01_dx)
+            + 2.0 * wp.outer(dc02_dx, dc02_dx)
+            + wp.outer(dc11_dx, dc11_dx)
+            + 2.0 * wp.outer(dc12_dx, dc12_dx)
+            + wp.outer(dc22_dx, dc22_dx)
+        )
 
     return force, hessian
 
@@ -853,7 +862,7 @@ def evaluate_neo_hookean_membrane_force_hessian(
     I33 = wp.identity(n=3, dtype=float)
     hessian = I_coeff * I33 + c1 * wp.outer(dJ_dx, dJ_dx) - r * wp.outer(w, w)
 
-    # Absolute damping (Newtonian viscosity: P_damp = damping * F_dot).
+    # Objective damping based on the metric C = F^T F, so rigid rotations do not damp.
     if damping > 0.0:
         inv_dt = 1.0 / dt
 
@@ -861,16 +870,25 @@ def evaluate_neo_hookean_membrane_force_hessian(
         x01_prev = pos_anchor[v1] - x0_prev
         x02_prev = pos_anchor[v2] - x0_prev
 
-        vel_x01 = (x01 - x01_prev) * inv_dt
-        vel_x02 = (x02 - x02_prev) * inv_dt
+        f0_prev = x01_prev * DmInv00 + x02_prev * DmInv10
+        f1_prev = x01_prev * DmInv01 + x02_prev * DmInv11
 
-        df0_dt = vel_x01 * DmInv00 + vel_x02 * DmInv10
-        df1_dt = vel_x01 * DmInv01 + vel_x02 * DmInv11
+        c00_rate = (f0_dot_f0 - wp.dot(f0_prev, f0_prev)) * inv_dt
+        c01_rate = (f0_dot_f1 - wp.dot(f0_prev, f1_prev)) * inv_dt
+        c11_rate = (f1_dot_f1 - wp.dot(f1_prev, f1_prev)) * inv_dt
 
-        f_damp = damping * (df0_dt * df0_dx + df1_dt * df1_dx)
-        force += -f_damp
+        dc00_dx = 2.0 * df0_dx * f0
+        dc01_dx = df0_dx * f1 + df1_dx * f0
+        dc11_dx = 2.0 * df1_dx * f1
 
-        hessian += damping * inv_dt * (df0_dx_sq + df1_dx_sq) * I33
+        f_damp = c00_rate * dc00_dx + 2.0 * c01_rate * dc01_dx + c11_rate * dc11_dx
+        force += -damping * f_damp
+
+        hessian += (
+            damping
+            * inv_dt
+            * (wp.outer(dc00_dx, dc00_dx) + 2.0 * wp.outer(dc01_dx, dc01_dx) + wp.outer(dc11_dx, dc11_dx))
+        )
 
     # Apply area scaling
     force *= area
@@ -1023,16 +1041,27 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
         x_prev2 = pos_anchor[vi2]
         x_prev3 = pos_anchor[vi3]
 
-        # Compute displacement vectors
-        dx0 = x0 - x_prev0
-        dx1 = x1 - x_prev1
-        dx2 = x2 - x_prev2
-        dx3 = x3 - x_prev3
+        x02_prev = x_prev2 - x_prev0
+        x03_prev = x_prev3 - x_prev0
+        x13_prev = x_prev3 - x_prev1
+        x12_prev = x_prev2 - x_prev1
+        e_prev = x_prev3 - x_prev2
 
-        # Compute angular velocity using all derivatives
-        dtheta_dt = (
-            wp.dot(dtheta_dx0, dx0) + wp.dot(dtheta_dx1, dx1) + wp.dot(dtheta_dx2, dx2) + wp.dot(dtheta_dx3, dx3)
-        ) * inv_dt
+        n1_prev = wp.normalize(wp.cross(x02_prev, x03_prev))
+        n2_prev = wp.normalize(wp.cross(x13_prev, x12_prev))
+        e_hat_prev = wp.normalize(e_prev)
+
+        sin_theta_prev = wp.dot(wp.cross(n1_prev, n2_prev), e_hat_prev)
+        cos_theta_prev = wp.dot(n1_prev, n2_prev)
+        theta_prev = wp.atan2(sin_theta_prev, cos_theta_prev)
+
+        dtheta = theta - theta_prev
+        if dtheta > 3.141592653589793:
+            dtheta = dtheta - 6.283185307179586
+        elif dtheta < -3.141592653589793:
+            dtheta = dtheta + 6.283185307179586
+
+        dtheta_dt = dtheta * inv_dt
 
         rest_len = edge_rest_length[bending_index]
         damping_force = -damping * rest_len * dtheta_dt * dtheta_dx
@@ -2080,10 +2109,12 @@ def evaluate_spring_force_and_hessian(
     )
     spring_hessian = spring_stiffness[spring_idx] * structural
 
-    h_d = structural * (spring_damping[spring_idx] / dt)
-    other_idx = v1 if particle_idx == v0 else v0
-    dx_rel = (pos[particle_idx] - pos_anchor[particle_idx]) - (pos[other_idx] - pos_anchor[other_idx])
-    f_d = -h_d * dx_rel
+    spring_direction = diff / spring_length
+    diff_anchor = pos_anchor[v0] - pos_anchor[v1]
+    spring_length_anchor = wp.max(wp.length(diff_anchor), 1e-8)
+    length_change = spring_length - spring_length_anchor
+    h_d = wp.outer(spring_direction, spring_direction) * (spring_damping[spring_idx] / dt)
+    f_d = -force_sign * spring_direction * (spring_damping[spring_idx] / dt * length_change)
 
     spring_force = spring_force + f_d
     spring_hessian = spring_hessian + h_d
@@ -2123,10 +2154,13 @@ def evaluate_spring_force_and_hessian_both_vertices(
     )
     spring_hessian = spring_stiffness[spring_idx] * structural
 
-    h_d = structural * (spring_damping[spring_idx] / dt)
-    dx_rel = (pos[v0] - pos_anchor[v0]) - (pos[v1] - pos_anchor[v1])
-    f_d_v0 = -h_d * dx_rel
-    f_d_v1 = h_d * dx_rel
+    spring_direction = diff / spring_length
+    diff_anchor = pos_anchor[v0] - pos_anchor[v1]
+    spring_length_anchor = wp.max(wp.length(diff_anchor), 1e-8)
+    length_change = spring_length - spring_length_anchor
+    h_d = wp.outer(spring_direction, spring_direction) * (spring_damping[spring_idx] / dt)
+    f_d_v0 = -spring_direction * (spring_damping[spring_idx] / dt * length_change)
+    f_d_v1 = spring_direction * (spring_damping[spring_idx] / dt * length_change)
 
     # Total force and hessian for each vertex
     force_v0 = base_force + f_d_v0
