@@ -91,6 +91,7 @@
 - Remove `SensorContact.ObjectType` enum (deprecated in 1.1.0); use the `sensing_type` and `counterpart_type` attributes instead
 - Remove `raycast_kernel_no_hfield`; use `raycast_kernel` instead
 - Remove the deprecated `newton.examples.compute_world_offsets` helper; use `ModelBuilder.replicate()` instead
+- Remove the deprecated Style3D `CollisionHandler`; use `Collision` instead
 
 ### Fixed
 
