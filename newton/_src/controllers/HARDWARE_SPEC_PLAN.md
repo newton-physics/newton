@@ -27,33 +27,59 @@ A `ControlLaw` is wired against signals (canonically by default; overridable per
 ## User sketch (target API shape)
 
 ```python
-# --- Newton ships a small set of canonical signals (joint-level only for now) ---
-JOINT_Q         = ControlSignal(dtype=wp.float32, ndim=1, description="joint positions [m or rad]")
-JOINT_QD        = ControlSignal(dtype=wp.float32, ndim=1, description="joint velocities")
-JOINT_TARGET_Q  = ControlSignal(dtype=wp.float32, ndim=1, description="commanded joint positions")
-JOINT_TARGET_QD = ControlSignal(dtype=wp.float32, ndim=1, description="commanded joint velocities")
-JOINT_F         = ControlSignal(dtype=wp.float32, ndim=1, description="joint efforts [N or N·m]")
-
-# --- Other signals are demonstrated in tests/examples/docs, not shipped ---
+# Newton ships canonical signals as module-level constants. Each carries
+# dtype + ndim + description; NO attribute name (the name is per-deployment).
+JOINT_Q  = ControlSignal(dtype=wp.float32, ndim=1, description="joint positions [m or rad]")
+JOINT_QD = ControlSignal(dtype=wp.float32, ndim=1, description="joint velocities")
+JOINT_F  = ControlSignal(dtype=wp.float32, ndim=1, description="joint efforts [N or N·m]")
 SETPOINT = ControlSignal(dtype=wp.float32, ndim=1, description="PID setpoint")
-KP       = ControlSignal(dtype=wp.float32, ndim=1, description="proportional gain")
-KI       = ControlSignal(dtype=wp.float32, ndim=1, description="integral gain")
-KD       = ControlSignal(dtype=wp.float32, ndim=1, description="derivative gain")
+SETPOINT_RATE = ControlSignal(dtype=wp.float32, ndim=1, description="PID setpoint rate")
+KP = ControlSignal(dtype=wp.float32, ndim=1, description="proportional gain")
+KI = ControlSignal(dtype=wp.float32, ndim=1, description="integral gain")
+KD = ControlSignal(dtype=wp.float32, ndim=1, description="derivative gain")
 INTEGRAL_MAX = ControlSignal(dtype=wp.float32, ndim=1, description="anti-windup clamp")
 # ...
 
-# Control laws take full (signal, indices) tuples at every port (no bare-indices
-# shortcut in the initial version):
+# A control-law subclass declares its canonical signal per port at the
+# class level:
+class ControlLawPID(ControlLaw):
+    CANONICAL_INPUTS = {
+        "measurement":      JOINT_Q,
+        "measurement_rate": JOINT_QD,
+        "setpoint":         SETPOINT,
+        "setpoint_rate":    SETPOINT_RATE,
+        "kp": KP, "ki": KI, "kd": KD,
+        "integral_max":     INTEGRAL_MAX,
+    }
+    CANONICAL_OUTPUTS = {"output": JOINT_F}
+
+    def __init__(
+        self,
+        *,
+        # Each kwarg accepts:
+        #   - wp.array[wp.uint32] (bare port_indices; signal defaults to canonical)
+        #   - (ControlSignal, wp.array[wp.uint32]) (explicit signal override)
+        measurement, measurement_rate, setpoint, setpoint_rate,
+        kp, ki, kd, integral_max,
+        output,
+    ): ...
+
+# Common case — user provides just indices; signals default to canonical:
 pid = ControlLawPID(
-    measurement      = (JOINT_Q,        idx),
-    measurement_rate = (JOINT_QD,       idx),
-    setpoint         = (SETPOINT,       idx),
-    setpoint_rate    = (SETPOINT_RATE,  idx),
-    kp               = (KP,             idx),
-    ki               = (KI,             idx),
-    kd               = (KD,             idx),
-    integral_max     = (INTEGRAL_MAX,   idx),
-    output           = (JOINT_F,        idx),
+    measurement=idx, measurement_rate=idx,
+    setpoint=idx, setpoint_rate=idx,
+    kp=idx, ki=idx, kd=idx, integral_max=idx,
+    output=idx,
+)
+
+# Override case — user binds a non-canonical signal at one port (e.g., a
+# user-defined filtered-joint-position signal):
+MY_FILTERED_Q = ControlSignal(dtype=wp.float32, ndim=1, description="low-pass filtered joint positions")
+pid_with_filter = ControlLawPID(
+    measurement=(MY_FILTERED_Q, idx),   # explicit override
+    measurement_rate=idx,
+    # ... rest default ...
+    output=idx,
 )
 
 # The HardwareInterface is the user's per-system wiring. It maps each
@@ -71,9 +97,9 @@ hw = HardwareInterface(
 
 controller = Controller(hw, control_laws=[pid, ...])
 
-# At step time the user supplies whatever input / output structs they like.
-# Each law has pre-resolved each port to (attr_name, port_indices) via the
-# Controller's hw at construction; compute() just does getattr(input, attr_name).
+# At step time the Controller (or the law via the hw passed through it)
+# resolves each port's signal → attribute name via `hw`, then does
+# getattr(input, name) for the live array.
 controller.step(input, output, cs0, cs1, dt)
 ```
 
@@ -89,15 +115,14 @@ controller.step(input, output, cs0, cs1, dt)
 
 - **Vocabulary unit:** `ControlSignal`, the slot type. Carries only `(dtype, ndim, description)` — no attribute name. Module-level constants are canonical; identity-equal (two same-field constructions are different signals).
 - **`HardwareInterface`:** Per-deployment wiring. Two `dict[ControlSignal, str]`s, `inputs` and `outputs`, mapping each signal to its attribute name on the runtime input/output object.
-- **Signal direction:** A signal may appear in either or both of `interface.inputs` and `interface.outputs`. If `JOINT_TARGET_Q` is written by DiffIK and also read by a downstream PID, the user lists it in both dicts; the attribute name may match (one underlying array) or differ (different fields on the input vs output struct).
-- **Construction signatures (initial):** Maximally simple. Every port kwarg requires the full `(signal, port_indices)` tuple. No bare-indices shortcut, no defaulted-canonical-signal form. (Revisit later — the user wants shorter signatures, but that's a follow-up once the base design is in.)
-- **Step-time access:** Each law records, per port, the *resolved* attribute name when the Controller is constructed (the Controller hands the law its `HardwareInterface` once, the law walks its ports and stashes `attr_name = hw.inputs[signal]` per input port, `attr_name = hw.outputs[signal]` per output). At step time `compute()` does plain `getattr(input, attr_name)[port_indices[i]]` — no per-step interface lookup in the hot path.
-- **Indices:** Per-port at the control law's constructor. `(signal, port_indices)`.
-- **Law's signal tracking:** Each law records the set of signals it received per port. The Controller validates `law._used_inputs ⊆ hw.inputs.keys()` and `law._used_outputs ⊆ hw.outputs.keys()` at construction.
+- **Signal direction:** Exclusive. A signal lives in `interface.inputs` or `interface.outputs`, not both. If a signal flows both ways in some application (e.g., joint targets that DiffIK writes and a downstream PID reads), Newton ships two distinct signal constants for the two directions.
+- **Canonical wiring on a `ControlLaw`:** Each subclass declares `CANONICAL_INPUTS` / `CANONICAL_OUTPUTS` class attributes mapping each port name to a default `ControlSignal`. The constructor's port kwargs accept either a bare `port_indices` (canonical signal used) or a `(signal, port_indices)` tuple (explicit override). This makes `ControlLawPID` portable: it knows JOINT_Q is its canonical measurement signal but not what attribute name a given user puts JOINT_Q at.
+- **Step-time access:** Per-law `compute()` resolves each port via the Controller's `HardwareInterface`: `name = hw.inputs[signal]; arr = getattr(input, name)`. The interface is the only place where signal-to-name resolution happens.
+- **Indices:** Per-port at the control law's constructor. Either bare `port_indices` (canonical signal) or `(signal, port_indices)`.
+- **Law's signal tracking:** Each law records the set of signals it actually uses (after canonical defaults are filled in). The Controller validates `law._used_inputs ⊆ hw.inputs.keys()` and `law._used_outputs ⊆ hw.outputs.keys()` at construction.
 - **Controller composition:** `+=` accumulation. Controller resolves the union of declared output signals' attribute names via the interface, zeros those slots, then each law `+=` writes into the resolved arrays. Two laws binding the same output signal sum into the same slot.
-- **Dtype validation:** No construction-time dtype check in the initial cut (the `PORT_DTYPES` concept is dropped). Kernel-launch errors surface dtype mismatches loudly. A later refinement can validate dtype at construction by reading the bound signal's `dtype` against an expectation declared on the law's class, but that's deferred to keep the initial code minimal.
-- **Newton's canonical signal set:** Newton publishes a short, joint-level vocabulary of canonical `ControlSignal`s as module-level constants. Day-one list: `JOINT_Q`, `JOINT_QD`, `JOINT_TARGET_Q`, `JOINT_TARGET_QD`, `JOINT_F`. No `_IN` / `_OUT` direction duals — `JOINT_TARGET_Q` is a single signal, listed in whichever direction(s) a given user's `HardwareInterface` needs. Body-level signals (`BODY_Q`, `BODY_QD`) and PID/DiffIK-specific concepts (`SETPOINT`, `SETPOINT_RATE`, `KP`, `KI`, `KD`, `INTEGRAL_MAX`, `TARGET_POS`, `TARGET_QUAT`, `DAMPING`, `GAIN`) are **not** shipped as canonical — they're demonstrated in tests / examples / docs as the natural pattern for user-defined signals.
-- **Direction exclusivity, revised:** A given `ControlSignal` may appear in *both* `hw.inputs` and `hw.outputs` of a `HardwareInterface` (different uses on different laws). The earlier "ship two distinct constants for the two directions" rule is dropped, since Newton no longer ships per-direction duals.
+- **Per-law dtype validation:** Each `ControlLaw` subclass validates `signal.dtype` (and `ndim`) against the per-port expected dtype at `__init__`. PID's `measurement` rejects a `wp.vec3` signal at construction with a clear error. The canonical signals already match their ports' expected dtypes; overrides get checked.
+- **Newton's standard signal set:** Newton publishes a vocabulary of canonical `ControlSignal`s as module-level constants — `JOINT_Q`, `JOINT_QD`, `JOINT_F`, plus the input/output duals of `JOINT_TARGET_Q` / `JOINT_TARGET_QD`, plus PID staples (`SETPOINT`, `SETPOINT_RATE`, `KP`, `KI`, `KD`, `INTEGRAL_MAX`) and DiffIK staples (`TARGET_POS`, `TARGET_QUAT`, `DAMPING`, `GAIN`). No pre-built `HardwareInterface`; every user assembles their own.
 - **Input/output factories:** `controller.input()` / `controller.output()` allocate fresh objects whose attributes match the interface's name strings, with `wp.zeros(<size>, dtype=signal.dtype)` per used signal. Mirrors `controller.state()`. User mutates fields to share arrays with sim.
 - **`num_outputs` on per-DOF laws:** Derived from the output port's `port_indices` length. Every other per-port `port_indices` is cross-checked against it at `__init__`.
 - **Signal aliasing within a law:** Allowed. Two ports on one law can bind the same signal with different `port_indices`.
@@ -131,25 +156,20 @@ The `ControlLaw` base class records its signal usage:
 
 ```python
 class ControlLaw:
-    # Subclasses declare which port-name kwargs are inputs vs outputs.
-    INPUT_PORTS:  ClassVar[frozenset[str]]
-    OUTPUT_PORTS: ClassVar[frozenset[str]]
+    # Subclass class attributes — canonical signal per port:
+    CANONICAL_INPUTS:  dict[str, ControlSignal]  # port_name -> signal
+    CANONICAL_OUTPUTS: dict[str, ControlSignal]
 
-    _used_inputs:  frozenset[ControlSignal]   # populated at __init__
+    _used_inputs:  frozenset[ControlSignal]
     _used_outputs: frozenset[ControlSignal]
+    # Per port, the law stashes (signal, port_indices) after construction.
 
     def __init__(self, **port_bindings):
-        # Each port kwarg is a (ControlSignal, wp.array[uint32]) tuple.
-        # Validate the kwarg names against INPUT_PORTS ∪ OUTPUT_PORTS,
-        # record _used_inputs / _used_outputs, stash (signal, port_indices)
-        # keyed by port name. Per-DOF length cross-checks happen in subclasses.
-        ...
-
-    def _resolve(self, hw: HardwareInterface) -> None:
-        # Called by Controller.__init__. For every port the subclass
-        # registered, look up its attribute name via hw and stash it on
-        # the law instance for fast getattr at step time. Raise if any
-        # used signal is not in the right direction of hw.
+        # Each port kwarg is either:
+        #   - wp.array[uint32] (bare port_indices; signal = CANONICAL_*[name])
+        #   - (ControlSignal, wp.array[uint32]) (explicit override)
+        # Normalize, validate dtype against the law's per-port expectation,
+        # cross-check per-DOF lengths, record _used_inputs / _used_outputs.
         ...
 ```
 
@@ -163,11 +183,8 @@ class Controller:
                 raise ValueError(...)
             if not hw.covers_outputs(law._used_outputs):
                 raise ValueError(...)
-            law._resolve(hw)   # stash attr_name per port on the law
         self._hw = hw
         self._laws = control_laws
-        # ... record per-output (attr_name, port_indices) pairs for the
-        # upfront zero pass at step time ...
 
     def input(self) -> SimpleNamespace:
         used = frozenset().union(*(law._used_inputs for law in self._laws))
@@ -180,11 +197,9 @@ class Controller:
     def state(self)  -> Controller.State: ...
 
     def step(self, input, output, current_state, next_state, dt):
-        # 1. For every (attr_name, port_indices) output binding collected
-        #    at __init__, zero output[attr_name][port_indices].
-        # 2. For each law in registration order, call
-        #      law.compute(input, output, cur, nxt, dt)
-        #    which += writes into its outputs.
+        # Resolve every output signal -> attribute name via self._hw,
+        # zero the declared slots, then call each law's compute() passing
+        # the interface (or pre-resolved arrays) through.
         ...
 ```
 
@@ -192,49 +207,57 @@ class Controller:
 
 ```python
 class ControlLawPID(ControlLaw):
-    # Declare which kwargs are read ports and which are write ports.
-    # No canonical signal defaults yet (full-tuple-everywhere); revisit
-    # when we add a bare-indices shortcut.
-    INPUT_PORTS  = {"measurement", "measurement_rate",
-                    "setpoint", "setpoint_rate",
-                    "kp", "ki", "kd", "integral_max"}
-    OUTPUT_PORTS = {"output"}
+    # Canonical signals — used as the default for each port when the user
+    # passes only port_indices.
+    CANONICAL_INPUTS = {
+        "measurement":      JOINT_Q,
+        "measurement_rate": JOINT_QD,
+        "setpoint":         SETPOINT,
+        "setpoint_rate":    SETPOINT_RATE,
+        "kp":               KP,
+        "ki":               KI,
+        "kd":               KD,
+        "integral_max":     INTEGRAL_MAX,
+    }
+    CANONICAL_OUTPUTS = {"output": JOINT_F}
+
+    # Per-port expected dtype/ndim — used to validate signal overrides at
+    # __init__. (Could be folded into CANONICAL_*; tentatively separate.)
+    PORT_DTYPES = {p: wp.float32 for p in CANONICAL_INPUTS} | {"output": wp.float32}
 
     def __init__(
         self,
         *,
-        # Every kwarg is the explicit form: (ControlSignal, wp.array[wp.uint32]).
+        # Each kwarg accepts:
+        #   - wp.array[wp.uint32]                 (bare indices; canonical signal used)
+        #   - (ControlSignal, wp.array[wp.uint32]) (explicit signal override)
         measurement, measurement_rate, setpoint, setpoint_rate,
         kp, ki, kd, integral_max,
         output,
     ):
-        # For each port:
-        #   signal, port_indices = kwarg_value
-        #   record into _used_inputs or _used_outputs (per INPUT_PORTS/OUTPUT_PORTS).
-        #   stash (signal, port_indices) keyed by port name for later.
-        # num_outputs derived from output's port_indices length;
-        # other per-DOF ports cross-check against it.
-        # No dtype validation at construction (initial cut). Kernel-launch
-        # errors surface dtype mismatches if a user binds the wrong-typed
-        # signal.
+        # Per port (let `m` stand in for the kwarg value):
+        #   if isinstance(m, wp.array):
+        #       signal = CANONICAL_INPUTS["measurement"]
+        #       port_indices = m
+        #   else:
+        #       signal, port_indices = m
+        #   assert signal.dtype == PORT_DTYPES["measurement"]
+        # The output port's port_indices defines num_outputs; all other
+        # ports' port_indices lengths cross-check against it.
+        # Record _used_inputs / _used_outputs.
+        # Stash (signal, port_indices) per port for compute().
 ```
 
-At construction the base class records `_used_inputs` / `_used_outputs` from the kwargs. When the law is handed to a `Controller`, the Controller calls a `law._resolve(hw)` step that:
-
-- checks every used input signal is in `hw.inputs` (raise if not),
-- checks every used output signal is in `hw.outputs` (raise if not),
-- stashes the resolved `attr_name` per port on the law (`self._measurement_attr = hw.inputs[meas_signal]`, etc.).
-
-After that, `compute()` is the same shape as today's string-port API:
+At step time, the law's `compute()` resolves each port through the Controller's `HardwareInterface`:
 
 ```python
-def compute(self, input, output, cur_state, nxt_state, dt):
-    meas = getattr(input, self._measurement_attr)
-    out  = getattr(output, self._output_attr)
+def compute(self, hw, input, output, cur_state, nxt_state, dt):
+    meas_signal, meas_idx = self._measurement
+    meas_array = getattr(input, hw.inputs[meas_signal])
     # ... and so on for every port; then launch kernels.
 ```
 
-The HardwareInterface is only consulted at construction / `Controller.__init__`. The hot path is plain attribute access, identical to today.
+(The Controller either passes `hw` to each `compute()` directly, or pre-resolves every law's port to `(array, port_indices)` once per step and hands those pre-resolved bindings to the law. The latter avoids per-law `getattr` overhead in the hot loop; tentative choice is "pre-resolve in `Controller.step`.")
 
 ## Open details (tentative answers; revisit at implementation time)
 
@@ -250,14 +273,14 @@ The HardwareInterface is only consulted at construction / `Controller.__init__`.
 
 This is a substantial refactor; rough scope:
 
-- `newton/_src/controllers/utils.py` — add `ControlSignal`, `HardwareInterface`. Replace string-name port normalizers with signal-based normalizers that take `(ControlSignal, wp.array[uint32])` tuples.
-- `newton/_src/controllers/standard_signals.py` (new) — joint-level canonical `ControlSignal` module-level constants only: `JOINT_Q`, `JOINT_QD`, `JOINT_TARGET_Q`, `JOINT_TARGET_QD`, `JOINT_F`. Nothing body-level, nothing PID/DiffIK-specific. No pre-built `HardwareInterface`.
-- `newton/_src/controllers/control_law.py` — `ControlLaw` base records `_used_inputs`, `_used_outputs`. Adds a `_resolve(hw)` hook the `Controller` calls at composition time to stash per-port `attr_name` on the law. Subclasses declare `INPUT_PORTS` / `OUTPUT_PORTS` (sets of port-name strings) — no canonical-signal defaults yet, no `PORT_DTYPES`.
-- `newton/_src/controllers/controller.py` — `Controller` takes `hw: HardwareInterface` and `control_laws=`; validates that every law's used signals are covered by `hw` in the right direction; calls `law._resolve(hw)` on each; records output `(attr_name, port_indices)` for the upfront zero pass; passes `input`/`output` straight to each `compute()`.
-- `newton/_src/controllers/impl/controller_pid.py` — declare `INPUT_PORTS` / `OUTPUT_PORTS`. Every kwarg accepts only `(signal, indices)`. Derive `num_outputs` from the output port. Track `_used_inputs` / `_used_outputs`. No construction-time dtype validation (kernel-launch handles it).
-- `newton/_src/controllers/impl/controller_diff_ik.py` — same per-port pattern; keep `model_builder`, `num_robots`, `dofs_per_robot` on the law's constructor.
-- `newton/tests/test_controllers.py` — every test rewritten to: define the signals it needs (Newton's canonical + locally-defined), construct a `HardwareInterface`, bind ports as `(signal, indices)`, assert behaviour. Hard cut-over; no string-port form supported.
-- `newton/examples/controllers/*.py` — same. PID example demonstrates user-defined SETPOINT / KP / KI / KD / INTEGRAL_MAX signals; DiffIK example demonstrates user-defined TARGET_POS / TARGET_QUAT / DAMPING / GAIN.
+- `newton/_src/controllers/utils.py` — add `ControlSignal`, `HardwareInterface`. Replace string-name port normalizers with signal-based normalizers that accept bare indices (using class-canonical signal) or `(signal, indices)` tuples.
+- `newton/_src/controllers/standard_signals.py` (new) — canonical `ControlSignal` module-level constants: `JOINT_Q`, `JOINT_QD`, `JOINT_F`, input/output duals of `JOINT_TARGET_Q` / `JOINT_TARGET_QD`, plus PID staples (`SETPOINT`, `SETPOINT_RATE`, `KP`, `KI`, `KD`, `INTEGRAL_MAX`) and DiffIK staples (`TARGET_POS`, `TARGET_QUAT`, `DAMPING`, `GAIN`). No pre-built `HardwareInterface`.
+- `newton/_src/controllers/control_law.py` — `ControlLaw` base records `_used_inputs`, `_used_outputs`. Subclasses declare `CANONICAL_INPUTS` / `CANONICAL_OUTPUTS` / `PORT_DTYPES` class attributes.
+- `newton/_src/controllers/controller.py` — `Controller` takes `hw: HardwareInterface` and `control_laws=`; validates that every law's used signal set is covered by `hw`; pre-resolves each port to `(array, port_indices)` once per `step()` via the interface and passes resolved bindings down to each law's compute.
+- `newton/_src/controllers/impl/controller_pid.py` — declare `CANONICAL_INPUTS` / `CANONICAL_OUTPUTS` / `PORT_DTYPES`. Each kwarg accepts bare `wp.array[uint32]` (canonical default) or `(signal, indices)`. Derive `num_outputs` from the output port. Validate dtype per port. Track `_used_inputs` / `_used_outputs`.
+- `newton/_src/controllers/impl/controller_diff_ik.py` — same canonical-port pattern; keep `model_builder`, `num_robots`, `dofs_per_robot` on the law's constructor.
+- `newton/tests/test_controllers.py` — every test rewritten to construct a `HardwareInterface`, bind ports either canonically or with explicit signals, and assert behaviour. Hard cut-over; no string-port form supported.
+- `newton/examples/controllers/*.py` — same.
 - `newton/_src/controllers/DESIGN_DOC.md` — rewrite for the signal + interface model.
 
 ## Next step

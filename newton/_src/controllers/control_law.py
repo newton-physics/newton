@@ -1,73 +1,63 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Base class for Newton control laws."""
+"""Base class for Newton controllers."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any
 
 import warp as wp
-
-from .utils import ControlSignal, HardwareInterface
 
 
 class ControlLaw:
     """Abstract base for a single control law.
 
-    A `ControlLaw` is bound to :class:`ControlSignal`s at construction —
-    it knows *what kind* of array each of its ports needs, but nothing
-    about attribute names. The composing :class:`Controller` provides a
-    :class:`HardwareInterface` which resolves each signal to the
-    attribute name on the runtime ``input`` / ``output`` object via
-    :meth:`_resolve`, and the law stashes the resolved name per port so
-    its :meth:`compute` can do plain ``getattr(input, attr_name)``.
+    Subclasses implement :meth:`compute`, declare which output arrays they
+    write to via :meth:`outputs`, and expose a nested :class:`State`
+    dataclass holding their internal buffers.
 
-    Subclasses declare:
-
-    - :attr:`INPUT_PORTS` — the set of constructor kwargs that are read
-      ports.
-    - :attr:`OUTPUT_PORTS` — the set of constructor kwargs that are
-      write ports.
-
-    Every constructor kwarg listed in these sets accepts a
-    ``(ControlSignal, wp.array[wp.uint32])`` tuple. Subclasses are free
-    to take additional kwargs that aren't ports (e.g.,
-    :class:`ControlLawDifferentialIK` takes ``model_builder``).
+    Every ``ControlLaw`` carries a unique-within-its-:class:`Controller`
+    ``label`` set at construction; the composing :class:`Controller` uses
+    that label as the key into its composed state's
+    ``control_law_states`` dict.
     """
-
-    INPUT_PORTS: ClassVar[frozenset[str]] = frozenset()
-    OUTPUT_PORTS: ClassVar[frozenset[str]] = frozenset()
 
     @dataclass
     class State:
         """Pure data container. Subclasses declare their fields."""
 
-    # Populated by subclasses as they normalize their port kwargs.
-    _used_inputs: frozenset[ControlSignal]
-    _used_outputs: frozenset[ControlSignal]
+    label: str
+    """Unique-within-Controller string identifier. Set by subclasses in ``__init__``."""
 
-    def finalize(self, device: wp.Device, requires_grad: bool = False) -> None:
+    def finalize(self, device: wp.Device, num_outputs: int, requires_grad: bool = False) -> None:
         """Allocate device-side private buffers.
 
-        Called by :class:`Controller` after construction and after
-        :meth:`_resolve`. The law's signal-to-attribute-name resolution is
-        already in place by this point, so ``finalize`` can size internal
-        buffers using ``num_outputs`` derived from the output port's
-        ``port_indices``.
+        Called by :class:`Controller` after construction.
 
         Args:
             device: Warp device to allocate on.
-            requires_grad: Propagated from :class:`Controller`. When
-                ``True``, internal buffers are allocated with gradient
-                support so the law's kernels are transparent to
-                :class:`wp.Tape`.
+            num_outputs: The shared outer length of every binding returned
+                by :meth:`outputs` — derived by the law from its output
+                port indices at ``__init__``.
+            requires_grad: Propagated from :class:`Controller`. If True, all
+                internal buffers are allocated with gradient support so the
+                controller is transparent to :class:`wp.Tape` — Isaac Lab
+                and other autograd consumers can differentiate through
+                ``compute()`` end-to-end. Kernels are autograd-able by
+                default; this flag only controls allocations.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement finalize().")
 
-    def state(self, device: wp.Device, requires_grad: bool = False) -> ControlLaw.State | None:
-        """Allocate a fresh state, or return ``None`` if stateless."""
+    def state(self, num_outputs: int, device: wp.Device, requires_grad: bool = False) -> ControlLaw.State | None:
+        """Allocate a fresh state, or return ``None`` if stateless.
+
+        Args:
+            num_outputs: The law's ``num_outputs``.
+            device: Warp device for allocation.
+            requires_grad: If True, allocate ``State`` fields with gradient support.
+        """
         return None
 
     def is_stateful(self) -> bool:
@@ -76,40 +66,16 @@ class ControlLaw:
     def is_graphable(self) -> bool:
         raise NotImplementedError(f"{type(self).__name__} must implement is_graphable().")
 
-    def inputs(self) -> list[tuple[str, wp.array[wp.uint32]]]:
-        """Return the resolved read-port bindings as
-        ``(attr_name, port_indices)`` pairs.
-
-        Called by :class:`Controller` after :meth:`_resolve` has filled
-        in the attribute names. The Controller uses these to size its
-        ``input()`` factory; otherwise read ports just appear in
-        :meth:`compute` via ``getattr(input, self._<port>_attr)``.
-        """
-        raise NotImplementedError(f"{type(self).__name__} must implement inputs().")
-
     def outputs(self) -> list[tuple[str, wp.array[wp.uint32]]]:
-        """Return the resolved write-port bindings as
-        ``(attr_name, port_indices)`` pairs.
+        """Return ``(output_attr_name, output_port_indices)`` bindings.
 
-        Called by :class:`Controller` after :meth:`_resolve` has filled
-        in the attribute names. The Controller uses these to zero the
-        declared output slots at the start of each :meth:`Controller.step`
-        call.
+        :class:`Controller` collects these from every control law, resolves
+        each ``output_attr_name`` against the ``output`` object passed to
+        :meth:`Controller.step` once per step, and zeros the listed slots
+        before any law's :meth:`compute` runs. Most laws return a single
+        binding; multi-output laws return more than one.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement outputs().")
-
-    def _resolve(self, hw: HardwareInterface) -> None:
-        """Convert the law's stashed ``(signal, port_indices)`` bindings
-        into ``(attr_name, port_indices)`` pairs using ``hw``.
-
-        Called once by :class:`Controller` at composition time. The law
-        is expected to look up every read-port signal in ``hw.inputs``
-        and every write-port signal in ``hw.outputs`` and stash the
-        resolved attribute names on ``self`` for fast access in
-        :meth:`compute`. Raises if any signal is not present in the
-        appropriate direction of ``hw``.
-        """
-        raise NotImplementedError(f"{type(self).__name__} must implement _resolve().")
 
     def compute(
         self,
@@ -119,21 +85,22 @@ class ControlLaw:
         next_state: ControlLaw.State | None,
         dt: float,
     ) -> None:
-        """Run the per-step compute.
+        """Fetch port arrays from ``input``/``output``, then run kernels.
 
-        By the time this is called, :meth:`_resolve` has been invoked, so
-        the law can fetch each port's live array via
-        ``getattr(input, self._<port>_attr)`` /
-        ``getattr(output, self._<port>_attr)``.
+        Called by :meth:`Controller.step`. The device is fixed at
+        :meth:`finalize` time, so this method does not take one. Every port
+        is resolved here via ``getattr(input, attr_name)`` /
+        ``getattr(output, attr_name)`` — nothing is bound at construction.
 
         Args:
-            input: User-supplied object whose attributes hold the read
-                ports' live arrays.
-            output: User-supplied object whose attributes hold the write
-                ports' live arrays.
-            state: Current law state (``None`` if stateless).
-            next_state: Next-step state to populate (``None`` if
-                stateless).
+            input: User-supplied object holding the read ports declared at
+                ``__init__`` (e.g. ``input.joint_q``, ``input.kp``). Can be
+                any duck-typed object — ``SimpleNamespace``, a dataclass,
+                a :class:`newton.State` if its fields happen to match, etc.
+            output: User-supplied object holding the write ports. Same
+                duck-typed contract as ``input``.
+            state: Current controller state (``None`` if stateless).
+            next_state: Next-step state to populate (``None`` if stateless).
             dt: Timestep [s].
         """
         raise NotImplementedError(f"{type(self).__name__} must implement compute().")

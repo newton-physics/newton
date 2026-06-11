@@ -1,119 +1,49 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Signal vocabulary, hardware-interface wiring, and per-port helpers for
-:mod:`newton.controllers`."""
+"""Internal helpers for :mod:`newton.controllers`."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
-from types import MappingProxyType
 from typing import Any
 
 import warp as wp
 
 
-@dataclass(frozen=True, eq=False)  # identity equality — module-level constants are canonical
-class ControlSignal:
-    """A slot type — what *kind* of array fills this slot.
+def _normalize_port(spec: Any, *, name: str) -> tuple[str, wp.array[wp.uint32]]:
+    """Normalize a port spec at :meth:`ControlLaw.__init__` time.
 
-    Carries metadata only (dtype, ndim, description). Has no attribute
-    name; the attribute name on the runtime ``input`` / ``output`` object
-    is supplied per-deployment by a :class:`HardwareInterface`.
+    Every port spec is a 2-tuple ``(attr_name, port_indices)``:
 
-    Equality is by identity. The canonical signals are the module-level
-    constants Newton (and user code) defines once and imports everywhere.
+    - ``attr_name``: the attribute name on the user-supplied ``input`` or
+      ``output`` object where the live array lives at step time. Resolved
+      via ``getattr(source, attr_name)`` inside the law's ``compute()``.
+    - ``port_indices``: a ``wp.array[wp.uint32]`` giving the inner lookup
+      used to index into the live array — ``arr[port_indices[i]]`` for
+      per-DOF ports, ``arr[port_indices[r]]`` for per-robot ports.
 
-    Args:
-        dtype: Warp element dtype of the array that fills this slot
-            (``wp.float32``, ``wp.vec3``, ``wp.quat``, …).
-        ndim: Rank of the array. 1 for the common case.
-        description: Human-readable description; surfaces in error
-            messages and docstrings.
-    """
-
-    dtype: type
-    ndim: int
-    description: str
-
-
-@dataclass(frozen=True)
-class HardwareInterface:
-    """Per-deployment wiring: which attribute on the runtime ``input`` /
-    ``output`` object holds each signal's live array.
-
-    A :class:`HardwareInterface` is a flat record of two mappings,
-    ``inputs`` and ``outputs``, each from :class:`ControlSignal` to the
-    attribute-name string. A signal may appear in either or both
-    directions if the deployment legitimately reads and writes it.
-
-    Newton ships a small set of canonical signals as module-level
-    constants but does **not** ship a pre-built interface; every user
-    assembles their own from Newton's signals plus their own.
-    """
-
-    inputs: Mapping[ControlSignal, str] = field(default_factory=dict)
-    outputs: Mapping[ControlSignal, str] = field(default_factory=dict)
-
-    def __post_init__(self):
-        # Freeze the mappings so callers can't mutate them after the
-        # Controller has validated coverage. MappingProxyType is the
-        # standard immutable-dict wrapper.
-        object.__setattr__(self, "inputs", MappingProxyType(dict(self.inputs)))
-        object.__setattr__(self, "outputs", MappingProxyType(dict(self.outputs)))
-
-        # Two signals colliding on the same attribute name in the same
-        # direction would silently mean "writes from law A and law B land
-        # on the same backing array under different signal identities" —
-        # almost never what the user wants. Raise.
-        for direction, mapping in (("inputs", self.inputs), ("outputs", self.outputs)):
-            seen: dict[str, ControlSignal] = {}
-            for signal, attr in mapping.items():
-                if attr in seen and seen[attr] is not signal:
-                    raise ValueError(
-                        f"HardwareInterface.{direction}: two distinct signals map to attribute "
-                        f"'{attr}' (descriptions: '{seen[attr].description}' and '{signal.description}')."
-                    )
-                seen[attr] = signal
-
-    def covers_inputs(self, signals: set[ControlSignal]) -> bool:
-        return signals <= self.inputs.keys()
-
-    def covers_outputs(self, signals: set[ControlSignal]) -> bool:
-        return signals <= self.outputs.keys()
-
-
-def _normalize_port(
-    spec: Any,
-    *,
-    name: str,
-) -> tuple[ControlSignal, wp.array[wp.uint32]]:
-    """Validate a port spec at :meth:`ControlLaw.__init__` time.
-
-    Every port spec is a 2-tuple ``(signal, port_indices)``:
-
-    - ``signal`` (:class:`ControlSignal`): the slot type. Identifies
-      which hardware-interface entry this port reads from / writes to.
-    - ``port_indices`` (``wp.array[wp.uint32]``): per-element kernel
-      lookup; ``arr[port_indices[i]]`` for per-DOF ports,
-      ``arr[port_indices[r]]`` for per-robot ports.
+    The caller is responsible for cross-checking ``port_indices.shape``
+    against either ``num_outputs`` (per-DOF ports) or ``num_robots``
+    (per-robot ports). This helper only validates the structural shape
+    of the spec itself.
 
     Args:
-        spec: ``(ControlSignal, wp.array[wp.uint32])``.
+        spec: A 2-tuple ``(str, wp.array[wp.uint32])``.
         name: Port name used in error messages.
 
     Returns:
-        ``(signal, port_indices)`` ready to stash on the ControlLaw.
+        ``(attr_name, port_indices)``.
     """
     if not isinstance(spec, tuple) or len(spec) != 2:
-        raise TypeError(f"Port '{name}': expected a 2-tuple (ControlSignal, port_indices), got {type(spec).__name__}.")
-    signal, port_indices = spec
-    if not isinstance(signal, ControlSignal):
-        raise TypeError(f"Port '{name}': first tuple element must be a ControlSignal, got {type(signal).__name__}.")
+        raise TypeError(f"Port '{name}': expected a 2-tuple (attr_name, port_indices), got {type(spec).__name__}.")
+    attr_name, port_indices = spec
+    if not isinstance(attr_name, str):
+        raise TypeError(
+            f"Port '{name}': first tuple element must be str (attribute name), got {type(attr_name).__name__}."
+        )
     if not isinstance(port_indices, wp.array):
         raise TypeError(f"Port '{name}': second tuple element must be wp.array, got {type(port_indices).__name__}.")
-    return signal, port_indices
+    return attr_name, port_indices
 
 
 def _resolve_input_array(
@@ -125,11 +55,9 @@ def _resolve_input_array(
     """Step-time: fetch a port array from ``source`` (an ``input`` or
     ``output`` object) and validate it's a :class:`wp.array`.
 
-    The attribute name is the one the law stashed via
-    :meth:`ControlLaw._resolve` against the Controller's
-    :class:`HardwareInterface`. No dtype/shape validation here — kernel
-    launches surface mismatches with precise Warp diagnostics. The cheap
-    type check catches typos (``input.joint_q = some_list``) early.
+    Shape/dtype are not validated here — Warp will raise on a kernel-launch
+    mismatch with a precise message. The cheap type check catches typos
+    early (e.g. ``input.joint_q = some_list``).
     """
     try:
         arr = getattr(source, attr_name)
@@ -137,4 +65,25 @@ def _resolve_input_array(
         raise AttributeError(f"Port '{name}': source object has no attribute '{attr_name}'.") from e
     if not isinstance(arr, wp.array):
         raise TypeError(f"Port '{name}': source.{attr_name} must be wp.array, got {type(arr).__name__}.")
+    return arr
+
+
+def _resolve_per_robot_array(
+    source: Any,
+    attr_name: str,
+    dtype: Any,
+    *,
+    name: str,
+) -> wp.array:
+    """Step-time resolver for per-robot ports. Adds a dtype check on top of
+    :func:`_resolve_input_array` — the dtype is part of the port's
+    documented contract (``wp.vec3`` / ``wp.quat`` / ``wp.float32``).
+
+    Shape is no longer enforced here: with custom per-robot indices the
+    source array may be any length as long as every index is in bounds,
+    and bounds violations surface at the kernel launch.
+    """
+    arr = _resolve_input_array(source, attr_name, name=name)
+    if arr.dtype != dtype:
+        raise TypeError(f"Port '{name}': source.{attr_name} dtype must be {dtype}, got {arr.dtype}.")
     return arr

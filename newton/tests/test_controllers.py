@@ -10,16 +10,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.controllers import (
-    JOINT_F,
-    JOINT_Q,
-    JOINT_QD,
-    ControlLawDifferentialIK,
-    ControlLawPID,
-    Controller,
-    ControlSignal,
-    HardwareInterface,
-)
+from newton.controllers import ControlLawDifferentialIK, ControlLawPID, Controller
 
 
 # Tape-aware scalar sum (wp.utils.array_sum calls a native C reducer, so it
@@ -36,91 +27,6 @@ def _idx(values, device):
 
 def _iota(n, device):
     return wp.array(np.arange(n, dtype=np.uint32), device=device)
-
-
-# ----------------------------------------------------------------------------
-# Test-only signals. Newton's canonical set is joint-level only; PID/DiffIK
-# concepts live in user code, which for these tests means here.
-# ----------------------------------------------------------------------------
-
-_SETPOINT = ControlSignal(dtype=wp.float32, ndim=1, description="PID setpoint")
-_SETPOINT_RATE = ControlSignal(dtype=wp.float32, ndim=1, description="PID setpoint rate")
-_KP = ControlSignal(dtype=wp.float32, ndim=1, description="proportional gain")
-_KI = ControlSignal(dtype=wp.float32, ndim=1, description="integral gain")
-_KD = ControlSignal(dtype=wp.float32, ndim=1, description="derivative gain")
-_INTEGRAL_MAX = ControlSignal(dtype=wp.float32, ndim=1, description="anti-windup clamp")
-
-_TARGET_POS = ControlSignal(dtype=wp.vec3, ndim=1, description="site position target")
-_TARGET_QUAT = ControlSignal(dtype=wp.quat, ndim=1, description="site orientation target")
-_DAMPING = ControlSignal(dtype=wp.float32, ndim=1, description="DLS damping lambda")
-_GAIN = ControlSignal(dtype=wp.float32, ndim=1, description="DLS output gain")
-_OUTPUT_QD = ControlSignal(dtype=wp.float32, ndim=1, description="commanded joint velocity")
-_OUTPUT_Q = ControlSignal(dtype=wp.float32, ndim=1, description="commanded joint position")
-
-
-def _pid_hw() -> HardwareInterface:
-    """Standard wiring for the PID tests below."""
-    return HardwareInterface(
-        inputs={
-            JOINT_Q: "measurement",
-            JOINT_QD: "measurement_rate",
-            _SETPOINT: "setpoint",
-            _SETPOINT_RATE: "setpoint_rate",
-            _KP: "kp",
-            _KI: "ki",
-            _KD: "kd",
-            _INTEGRAL_MAX: "integral_max",
-        },
-        outputs={JOINT_F: "output"},
-    )
-
-
-def _diffik_hw() -> HardwareInterface:
-    """Standard wiring for the DiffIK tests below."""
-    return HardwareInterface(
-        inputs={
-            JOINT_Q: "measurement",
-            JOINT_QD: "measurement_rate",
-            _TARGET_POS: "target_pos",
-            _TARGET_QUAT: "target_quat",
-            _DAMPING: "damping",
-            _GAIN: "gain",
-        },
-        outputs={
-            _OUTPUT_QD: "output_qd",
-            _OUTPUT_Q: "output_q",
-        },
-    )
-
-
-def _build_pid(*, indices, output_indices=None) -> ControlLawPID:
-    out_idx = output_indices if output_indices is not None else indices
-    return ControlLawPID(
-        measurement=(JOINT_Q, indices),
-        measurement_rate=(JOINT_QD, indices),
-        setpoint=(_SETPOINT, indices),
-        setpoint_rate=(_SETPOINT_RATE, indices),
-        kp=(_KP, indices),
-        ki=(_KI, indices),
-        kd=(_KD, indices),
-        integral_max=(_INTEGRAL_MAX, indices),
-        output=(JOINT_F, out_idx),
-    )
-
-
-def _build_diffik(*, model_builder, site, dof_indices, robot_indices) -> ControlLawDifferentialIK:
-    return ControlLawDifferentialIK(
-        model_builder=model_builder,
-        site=site,
-        measurement=(JOINT_Q, dof_indices),
-        measurement_rate=(JOINT_QD, dof_indices),
-        target_pos=(_TARGET_POS, robot_indices),
-        target_quat=(_TARGET_QUAT, robot_indices),
-        damping=(_DAMPING, robot_indices),
-        gain=(_GAIN, robot_indices),
-        output_qd=(_OUTPUT_QD, dof_indices),
-        output_q=(_OUTPUT_Q, dof_indices),
-    )
 
 
 # ----------------------------------------------------------------------------
@@ -147,7 +53,20 @@ class TestControlLawPID(unittest.TestCase):
         )
         output = SimpleNamespace(output=output_arr)
 
-        group = Controller(_pid_hw(), [_build_pid(indices=indices)])
+        pid = ControlLawPID(
+            label="pid",
+            measurement=("measurement", indices),
+            measurement_rate=("measurement_rate", indices),
+            setpoint=("setpoint", indices),
+            setpoint_rate=("setpoint_rate", indices),
+            kp=("kp", indices),
+            ki=("ki", indices),
+            kd=("kd", indices),
+            integral_max=("integral_max", indices),
+            output=("output", indices),
+        )
+        group = Controller([pid])
+
         s0, s1 = group.state(), group.state()
         group.step(input, output, s0, s1, dt=0.01)
 
@@ -171,7 +90,20 @@ class TestControlLawPID(unittest.TestCase):
         )
         output = SimpleNamespace(output=output_arr)
 
-        group = Controller(_pid_hw(), [_build_pid(indices=indices)])
+        pid = ControlLawPID(
+            label="pid",
+            measurement=("measurement", indices),
+            measurement_rate=("measurement_rate", indices),
+            setpoint=("setpoint", indices),
+            setpoint_rate=("setpoint_rate", indices),
+            kp=("kp", indices),
+            ki=("ki", indices),
+            kd=("kd", indices),
+            integral_max=("integral_max", indices),
+            output=("output", indices),
+        )
+        group = Controller([pid])
+
         s0, s1 = group.state(), group.state()
         dt = 0.1
         running_integral = 0.0
@@ -204,7 +136,20 @@ class TestControlLawPID(unittest.TestCase):
         )
         output = SimpleNamespace(output=output_arr)
 
-        group = Controller(_pid_hw(), [_build_pid(indices=indices)])
+        pid = ControlLawPID(
+            label="pid",
+            measurement=("measurement", indices),
+            measurement_rate=("measurement_rate", indices),
+            setpoint=("setpoint", indices),
+            setpoint_rate=("setpoint_rate", indices),
+            kp=("kp", indices),
+            ki=("ki", indices),
+            kd=("kd", indices),
+            integral_max=("integral_max", indices),
+            output=("output", indices),
+        )
+        group = Controller([pid])
+
         s0, s1 = group.state(), group.state()
         # Without clamping the integral would reach 2.0 after 20 steps.
         for _ in range(21):
@@ -212,7 +157,7 @@ class TestControlLawPID(unittest.TestCase):
             s0, s1 = s1, s0
 
         self.assertAlmostEqual(float(output_arr.numpy()[0]), 0.3, places=5)
-        self.assertAlmostEqual(float(s0.control_law_states[0].integral.numpy()[0]), 0.3, places=5)
+        self.assertAlmostEqual(float(s0.control_law_states["pid"].integral.numpy()[0]), 0.3, places=5)
 
     def test_gradient_flows_with_requires_grad(self):
         """With Controller(..., requires_grad=True), gradients from a loss on
@@ -220,6 +165,7 @@ class TestControlLawPID(unittest.TestCase):
         device = wp.get_device()
         indices = _iota(3, device)
         output_arr = wp.zeros(3, dtype=wp.float32, device=device, requires_grad=True)
+        # Setpoint carries the gradient we want to recover.
         setpoint = wp.array([1.0, 2.0, -1.0], dtype=wp.float32, device=device, requires_grad=True)
 
         input = SimpleNamespace(
@@ -234,7 +180,20 @@ class TestControlLawPID(unittest.TestCase):
         )
         output = SimpleNamespace(output=output_arr)
 
-        group = Controller(_pid_hw(), [_build_pid(indices=indices)], requires_grad=True)
+        pid = ControlLawPID(
+            label="pid",
+            measurement=("measurement", indices),
+            measurement_rate=("measurement_rate", indices),
+            setpoint=("setpoint", indices),
+            setpoint_rate=("setpoint_rate", indices),
+            kp=("kp", indices),
+            ki=("ki", indices),
+            kd=("kd", indices),
+            integral_max=("integral_max", indices),
+            output=("output", indices),
+        )
+        group = Controller([pid], requires_grad=True)
+
         s0, s1 = group.state(), group.state()
         loss = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
         tape = wp.Tape()
@@ -257,10 +216,12 @@ class TestControlLawPID(unittest.TestCase):
         """
         device = wp.get_device()
         output_idx = _idx([5, 7], device)
+        # Output has slots 5 and 7 populated; others must remain 0.
         output_arr = wp.zeros(10, dtype=wp.float32, device=device)
         kp_arr = wp.array([99.0, 3.0, 4.0], dtype=wp.float32, device=device)
         kp_idx = _idx([1, 2], device)
 
+        # Setpoint laid out at indices 5 and 7 (same layout as output).
         setpoint_np = np.zeros(10, dtype=np.float32)
         setpoint_np[5] = 1.0
         setpoint_np[7] = 1.0
@@ -278,21 +239,24 @@ class TestControlLawPID(unittest.TestCase):
         )
         output = SimpleNamespace(output=output_arr)
 
+        # Inputs whose array layout matches the output's get output_idx;
+        # kp uses its own custom port_indices.
         ki_idx = _idx([0, 1], device)
         kd_idx = _idx([0, 1], device)
         imax_idx = _idx([0, 1], device)
         pid = ControlLawPID(
-            measurement=(JOINT_Q, output_idx),
-            measurement_rate=(JOINT_QD, output_idx),
-            setpoint=(_SETPOINT, output_idx),
-            setpoint_rate=(_SETPOINT_RATE, output_idx),
-            kp=(_KP, kp_idx),
-            ki=(_KI, ki_idx),
-            kd=(_KD, kd_idx),
-            integral_max=(_INTEGRAL_MAX, imax_idx),
-            output=(JOINT_F, output_idx),
+            label="pid",
+            measurement=("measurement", output_idx),
+            measurement_rate=("measurement_rate", output_idx),
+            setpoint=("setpoint", output_idx),
+            setpoint_rate=("setpoint_rate", output_idx),
+            kp=("kp", kp_idx),
+            ki=("ki", ki_idx),
+            kd=("kd", kd_idx),
+            integral_max=("integral_max", imax_idx),
+            output=("output", output_idx),
         )
-        group = Controller(_pid_hw(), [pid])
+        group = Controller([pid])
         s0, s1 = group.state(), group.state()
         group.step(input, output, s0, s1, dt=0.01)
 
@@ -368,8 +332,20 @@ class TestControlLawDifferentialIK(unittest.TestCase):
             gain=wp.array([1.0], dtype=wp.float32, device=device),
         )
         output = SimpleNamespace(output_qd=output_qd, output_q=output_q)
-        diffik = _build_diffik(model_builder=builder, site="tip", dof_indices=dof_idx, robot_indices=robot_idx)
-        group = Controller(_diffik_hw(), [diffik])
+        diffik = ControlLawDifferentialIK(
+            label="ik",
+            model_builder=builder,
+            site="tip",
+            measurement=("measurement", dof_idx),
+            measurement_rate=("measurement_rate", dof_idx),
+            target_pos=("target_pos", robot_idx),
+            target_quat=("target_quat", robot_idx),
+            damping=("damping", robot_idx),
+            gain=("gain", robot_idx),
+            output_qd=("output_qd", dof_idx),
+            output_q=("output_q", dof_idx),
+        )
+        group = Controller([diffik])
 
         s0, s1 = group.state(), group.state()
         group.step(input, output, s0, s1, dt=0.01)
@@ -395,12 +371,25 @@ class TestControlLawDifferentialIK(unittest.TestCase):
             gain=wp.array([1.0], dtype=wp.float32, device=device),
         )
         output = SimpleNamespace(output_qd=output_qd, output_q=output_q)
-        diffik = _build_diffik(model_builder=builder, site="tip", dof_indices=dof_idx, robot_indices=robot_idx)
-        group = Controller(_diffik_hw(), [diffik])
+        diffik = ControlLawDifferentialIK(
+            label="ik",
+            model_builder=builder,
+            site="tip",
+            measurement=("measurement", dof_idx),
+            measurement_rate=("measurement_rate", dof_idx),
+            target_pos=("target_pos", robot_idx),
+            target_quat=("target_quat", robot_idx),
+            damping=("damping", robot_idx),
+            gain=("gain", robot_idx),
+            output_qd=("output_qd", dof_idx),
+            output_q=("output_q", dof_idx),
+        )
+        group = Controller([diffik])
 
         s0, s1 = group.state(), group.state()
         group.step(input, output, s0, s1, dt=0.01)
 
+        # Positive q0 rotation moves the site in +y direction at q=[0,0].
         self.assertGreater(float(output_qd.numpy()[0]), 0.0)
 
     def test_output_q_equals_current_q_plus_qdot_dt(self):
@@ -422,8 +411,20 @@ class TestControlLawDifferentialIK(unittest.TestCase):
             gain=wp.array([1.0], dtype=wp.float32, device=device),
         )
         output = SimpleNamespace(output_qd=output_qd, output_q=output_q)
-        diffik = _build_diffik(model_builder=builder, site="tip", dof_indices=dof_idx, robot_indices=robot_idx)
-        group = Controller(_diffik_hw(), [diffik])
+        diffik = ControlLawDifferentialIK(
+            label="ik",
+            model_builder=builder,
+            site="tip",
+            measurement=("measurement", dof_idx),
+            measurement_rate=("measurement_rate", dof_idx),
+            target_pos=("target_pos", robot_idx),
+            target_quat=("target_quat", robot_idx),
+            damping=("damping", robot_idx),
+            gain=("gain", robot_idx),
+            output_qd=("output_qd", dof_idx),
+            output_q=("output_q", dof_idx),
+        )
+        group = Controller([diffik])
 
         s0, s1 = group.state(), group.state()
         dt = 0.02
@@ -433,9 +434,11 @@ class TestControlLawDifferentialIK(unittest.TestCase):
         np.testing.assert_allclose(output_q.numpy(), expected_q, atol=1e-5)
 
     def test_one_dof_matches_analytical_dls(self):
-        """Closed-form 1-DOF DLS check:
-        q_dot = GAIN * J_site^T e / (J_site^T J_site + lambda^2)
-              = GAIN * ERR_Y / (2 + lambda^2)
+        """End-to-end check against a hand-derived DLS solution.
+
+        Closed-form 1-DOF DLS:
+            q_dot = GAIN * J_site^T e / (J_site^T J_site + lambda^2)
+                  = GAIN * ERR_Y / (2 + lambda^2)
         """
         device = wp.get_device()
         ERR_Y = 0.1
@@ -456,8 +459,20 @@ class TestControlLawDifferentialIK(unittest.TestCase):
             gain=wp.array([GAIN], dtype=wp.float32, device=device),
         )
         output = SimpleNamespace(output_qd=output_qd, output_q=output_q)
-        diffik = _build_diffik(model_builder=builder, site="tool", dof_indices=dof_idx, robot_indices=robot_idx)
-        group = Controller(_diffik_hw(), [diffik])
+        diffik = ControlLawDifferentialIK(
+            label="ik",
+            model_builder=builder,
+            site="tool",
+            measurement=("measurement", dof_idx),
+            measurement_rate=("measurement_rate", dof_idx),
+            target_pos=("target_pos", robot_idx),
+            target_quat=("target_quat", robot_idx),
+            damping=("damping", robot_idx),
+            gain=("gain", robot_idx),
+            output_qd=("output_qd", dof_idx),
+            output_q=("output_q", dof_idx),
+        )
+        group = Controller([diffik])
 
         s0, s1 = group.state(), group.state()
         group.step(input, output, s0, s1, dt=0.01)
@@ -487,8 +502,20 @@ class TestControlLawDifferentialIK(unittest.TestCase):
             gain=wp.array([GAIN], dtype=wp.float32, device=device),
         )
         output = SimpleNamespace(output_qd=output_qd, output_q=output_q)
-        diffik = _build_diffik(model_builder=builder, site="tool", dof_indices=dof_idx, robot_indices=robot_idx)
-        group = Controller(_diffik_hw(), [diffik], requires_grad=True)
+        diffik = ControlLawDifferentialIK(
+            label="ik",
+            model_builder=builder,
+            site="tool",
+            measurement=("measurement", dof_idx),
+            measurement_rate=("measurement_rate", dof_idx),
+            target_pos=("target_pos", robot_idx),
+            target_quat=("target_quat", robot_idx),
+            damping=("damping", robot_idx),
+            gain=("gain", robot_idx),
+            output_qd=("output_qd", dof_idx),
+            output_q=("output_q", dof_idx),
+        )
+        group = Controller([diffik], requires_grad=True)
 
         s0, s1 = group.state(), group.state()
         loss = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
@@ -503,7 +530,12 @@ class TestControlLawDifferentialIK(unittest.TestCase):
         np.testing.assert_allclose(target_pos.grad.numpy()[0], [0.0, 0.0, 0.0], atol=1e-7)
 
     def test_parallel_robots(self):
-        """N=4 identical arms, each with a different target_pos.y."""
+        """N=4 identical arms, each with a different target_pos.y.
+
+        The user builds the 4-articulation template via
+        ModelBuilder.replicate before passing to the controller (the
+        controller does no replication of its own).
+        """
         device = wp.get_device()
         LAMBDA = 0.5
         GAIN = 1.0
@@ -528,8 +560,20 @@ class TestControlLawDifferentialIK(unittest.TestCase):
             gain=wp.array([GAIN] * N, dtype=wp.float32, device=device),
         )
         output = SimpleNamespace(output_qd=output_qd, output_q=output_q)
-        diffik = _build_diffik(model_builder=builder, site="tool", dof_indices=dof_idx, robot_indices=robot_idx)
-        controller = Controller(_diffik_hw(), [diffik])
+        diffik = ControlLawDifferentialIK(
+            label="ik",
+            model_builder=builder,
+            site="tool",
+            measurement=("measurement", dof_idx),
+            measurement_rate=("measurement_rate", dof_idx),
+            target_pos=("target_pos", robot_idx),
+            target_quat=("target_quat", robot_idx),
+            damping=("damping", robot_idx),
+            gain=("gain", robot_idx),
+            output_qd=("output_qd", dof_idx),
+            output_q=("output_q", dof_idx),
+        )
+        controller = Controller([diffik])
 
         s0, s1 = controller.state(), controller.state()
         controller.step(input, output, s0, s1, dt=0.01)
@@ -538,15 +582,15 @@ class TestControlLawDifferentialIK(unittest.TestCase):
         np.testing.assert_allclose(output_qd.numpy(), expected_qd, atol=1e-5)
 
     def test_robot_is_subset_of_scene(self):
-        """The DiffIK's model is a single arm; the sim is a wider scene whose
-        joint layout includes one pendulum after the arm. The controller
-        writes only to DOF index 0; the pendulum slot stays 0.
+        """The DiffIK's model contains a single arm; the sim is a wider
+        scene whose joint layout includes one pendulum after the arm. The
+        controller writes only to DOF index 0; the pendulum slot stays 0.
         """
         device = wp.get_device()
         LAMBDA = 0.5
         GAIN = 1.5
         ERR_Y = 0.1
-        sim_n_dofs = 2
+        sim_n_dofs = 2  # arm dof 0 + pendulum dof 1
 
         builder = _build_planar_arm_one_link()
         dof_idx = _idx([0], device)
@@ -562,8 +606,20 @@ class TestControlLawDifferentialIK(unittest.TestCase):
             gain=wp.array([GAIN], dtype=wp.float32, device=device),
         )
         output = SimpleNamespace(output_qd=output_qd, output_q=output_q)
-        diffik = _build_diffik(model_builder=builder, site="tool", dof_indices=dof_idx, robot_indices=robot_idx)
-        controller = Controller(_diffik_hw(), [diffik])
+        diffik = ControlLawDifferentialIK(
+            label="ik",
+            model_builder=builder,
+            site="tool",
+            measurement=("measurement", dof_idx),
+            measurement_rate=("measurement_rate", dof_idx),
+            target_pos=("target_pos", robot_idx),
+            target_quat=("target_quat", robot_idx),
+            damping=("damping", robot_idx),
+            gain=("gain", robot_idx),
+            output_qd=("output_qd", dof_idx),
+            output_q=("output_q", dof_idx),
+        )
+        controller = Controller([diffik])
 
         s0, s1 = controller.state(), controller.state()
         dt = 0.01
@@ -574,12 +630,14 @@ class TestControlLawDifferentialIK(unittest.TestCase):
         np.testing.assert_allclose(output_q.numpy(), [expected_qd_arm * dt, 0.0], atol=1e-5)
 
     def test_two_articulations_different_kinematics(self):
-        """N=2 articulations with different kinematics (effective link
-        lengths via different child_xform).
+        """Builder has N=2 articulations with different kinematics
+        (effective link lengths via different child_xform).
 
-        Articulation 0: identity child_xform → site world (1,0,0).
+        Articulation 0: joint at origin, identity child_xform -> site
+                        world (1, 0, 0). q_dot = ERR_Y / (2 + lambda^2).
         Articulation 1: child_xform p=(-1,0,0) shifts the body to world
-                        (1,0,0) → site world (2,0,0). Twice the reach.
+                        (1, 0, 0) -> site world (2, 0, 0). Twice the reach.
+                        q_dot = 2 * ERR_Y / (5 + lambda^2).
         """
         device = wp.get_device()
         LAMBDA = 0.5
@@ -587,6 +645,7 @@ class TestControlLawDifferentialIK(unittest.TestCase):
         ERR_Y = 0.1
 
         builder = newton.ModelBuilder()
+
         short_link = builder.add_link()
         short_joint = builder.add_joint_revolute(
             parent=-1,
@@ -626,8 +685,20 @@ class TestControlLawDifferentialIK(unittest.TestCase):
             gain=wp.array([GAIN, GAIN], dtype=wp.float32, device=device),
         )
         output = SimpleNamespace(output_qd=output_qd, output_q=output_q)
-        diffik = _build_diffik(model_builder=builder, site="tool", dof_indices=dof_idx, robot_indices=robot_idx)
-        controller = Controller(_diffik_hw(), [diffik])
+        diffik = ControlLawDifferentialIK(
+            label="ik",
+            model_builder=builder,
+            site="tool",
+            measurement=("measurement", dof_idx),
+            measurement_rate=("measurement_rate", dof_idx),
+            target_pos=("target_pos", robot_idx),
+            target_quat=("target_quat", robot_idx),
+            damping=("damping", robot_idx),
+            gain=("gain", robot_idx),
+            output_qd=("output_qd", dof_idx),
+            output_q=("output_q", dof_idx),
+        )
+        controller = Controller([diffik])
         s0, s1 = controller.state(), controller.state()
         controller.step(input, output, s0, s1, dt=0.01)
 
@@ -649,6 +720,7 @@ class TestControlLawDifferentialIK(unittest.TestCase):
         ERR_Y = 0.1
 
         builder = newton.ModelBuilder()
+
         v0_link = builder.add_link()
         v0_joint = builder.add_joint_revolute(
             parent=-1,
@@ -688,8 +760,20 @@ class TestControlLawDifferentialIK(unittest.TestCase):
             gain=wp.array([GAIN, GAIN], dtype=wp.float32, device=device),
         )
         output = SimpleNamespace(output_qd=output_qd, output_q=output_q)
-        diffik = _build_diffik(model_builder=builder, site="tool", dof_indices=dof_idx, robot_indices=robot_idx)
-        controller = Controller(_diffik_hw(), [diffik])
+        diffik = ControlLawDifferentialIK(
+            label="ik",
+            model_builder=builder,
+            site="tool",
+            measurement=("measurement", dof_idx),
+            measurement_rate=("measurement_rate", dof_idx),
+            target_pos=("target_pos", robot_idx),
+            target_quat=("target_quat", robot_idx),
+            damping=("damping", robot_idx),
+            gain=("gain", robot_idx),
+            output_qd=("output_qd", dof_idx),
+            output_q=("output_q", dof_idx),
+        )
+        controller = Controller([diffik])
         s0, s1 = controller.state(), controller.state()
         controller.step(input, output, s0, s1, dt=0.01)
 
@@ -715,6 +799,7 @@ class TestControlLawDifferentialIK(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.replicate(template, world_count=N)
 
+        # Arm DOFs are the first N of 2N total.
         dof_idx = _idx(list(range(N)), device)
         robot_idx = _iota(N, device)
         target_ys = [0.10, 0.20, 0.05, -0.15]
@@ -730,8 +815,20 @@ class TestControlLawDifferentialIK(unittest.TestCase):
             gain=wp.array([GAIN] * N, dtype=wp.float32, device=device),
         )
         output = SimpleNamespace(output_qd=output_qd, output_q=output_q)
-        diffik = _build_diffik(model_builder=builder, site="tool", dof_indices=dof_idx, robot_indices=robot_idx)
-        controller = Controller(_diffik_hw(), [diffik])
+        diffik = ControlLawDifferentialIK(
+            label="ik",
+            model_builder=builder,
+            site="tool",
+            measurement=("measurement", dof_idx),
+            measurement_rate=("measurement_rate", dof_idx),
+            target_pos=("target_pos", robot_idx),
+            target_quat=("target_quat", robot_idx),
+            damping=("damping", robot_idx),
+            gain=("gain", robot_idx),
+            output_qd=("output_qd", dof_idx),
+            output_q=("output_q", dof_idx),
+        )
+        controller = Controller([diffik])
 
         s0, s1 = controller.state(), controller.state()
         controller.step(input, output, s0, s1, dt=0.01)
@@ -758,6 +855,7 @@ class TestControlLawDifferentialIK(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.replicate(template, world_count=N)
 
+        # Two distinct targets, shared across pairs of robots.
         target_pos_short = wp.array(
             [wp.vec3(1.0, 0.10, 0.0), wp.vec3(1.0, 0.20, 0.0)],
             dtype=wp.vec3,
@@ -778,20 +876,20 @@ class TestControlLawDifferentialIK(unittest.TestCase):
             gain=wp.array([GAIN] * N, dtype=wp.float32, device=device),
         )
         output = SimpleNamespace(output_qd=output_qd, output_q=output_q)
-        # Custom port_indices on target_pos only (other per-robot ports stay arange).
         diffik = ControlLawDifferentialIK(
+            label="ik",
             model_builder=builder,
             site="tool",
-            measurement=(JOINT_Q, dof_idx),
-            measurement_rate=(JOINT_QD, dof_idx),
-            target_pos=(_TARGET_POS, target_pos_idx),
-            target_quat=(_TARGET_QUAT, robot_idx),
-            damping=(_DAMPING, robot_idx),
-            gain=(_GAIN, robot_idx),
-            output_qd=(_OUTPUT_QD, dof_idx),
-            output_q=(_OUTPUT_Q, dof_idx),
+            measurement=("measurement", dof_idx),
+            measurement_rate=("measurement_rate", dof_idx),
+            target_pos=("target_pos", target_pos_idx),
+            target_quat=("target_quat", robot_idx),
+            damping=("damping", robot_idx),
+            gain=("gain", robot_idx),
+            output_qd=("output_qd", dof_idx),
+            output_q=("output_q", dof_idx),
         )
-        controller = Controller(_diffik_hw(), [diffik])
+        controller = Controller([diffik])
         s0, s1 = controller.state(), controller.state()
         controller.step(input, output, s0, s1, dt=0.01)
 
@@ -801,45 +899,32 @@ class TestControlLawDifferentialIK(unittest.TestCase):
 
 
 # ----------------------------------------------------------------------------
-# Controller-level validation
+# Controller framework
 # ----------------------------------------------------------------------------
 
 
 class TestController(unittest.TestCase):
-    def test_missing_input_signal_in_hw_raises(self):
-        """If a law reads a signal not present in hw.inputs, Controller raises."""
+    def test_duplicate_labels_raise(self):
+        """Two ControlLawPIDs sharing a label cannot compose into one Controller."""
         device = wp.get_device()
         indices = _iota(1, device)
-        pid = _build_pid(indices=indices)
-        # hw is missing _KP from inputs.
-        broken_hw = HardwareInterface(
-            inputs={
-                JOINT_Q: "measurement",
-                JOINT_QD: "measurement_rate",
-                _SETPOINT: "setpoint",
-                _SETPOINT_RATE: "setpoint_rate",
-                # _KP intentionally omitted
-                _KI: "ki",
-                _KD: "kd",
-                _INTEGRAL_MAX: "integral_max",
-            },
-            outputs={JOINT_F: "output"},
-        )
-        with self.assertRaises(ValueError):
-            Controller(broken_hw, [pid])
 
-    def test_missing_output_signal_in_hw_raises(self):
-        """If a law writes a signal not present in hw.outputs, Controller raises."""
-        device = wp.get_device()
-        indices = _iota(1, device)
-        pid = _build_pid(indices=indices)
-        # hw is missing JOINT_F from outputs.
-        broken_hw = HardwareInterface(
-            inputs=_pid_hw().inputs,
-            outputs={},
-        )
+        def make_pid(label):
+            return ControlLawPID(
+                label=label,
+                measurement=("measurement", indices),
+                measurement_rate=("measurement_rate", indices),
+                setpoint=("setpoint", indices),
+                setpoint_rate=("setpoint_rate", indices),
+                kp=("kp", indices),
+                ki=("ki", indices),
+                kd=("kd", indices),
+                integral_max=("integral_max", indices),
+                output=("output", indices),
+            )
+
         with self.assertRaises(ValueError):
-            Controller(broken_hw, [pid])
+            Controller([make_pid("dup"), make_pid("dup")])
 
 
 if __name__ == "__main__":
