@@ -8,6 +8,20 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.vbd.rigid_vbd_kernels import (
+    CableBendTwistMeasure,
+    _bishop_transport_quat,
+    _cable_bend_twist_directional_derivatives_from_measure,
+    _finite_curvature_binormal,
+    _finite_curvature_binormal_derivative,
+    _normalize_with_fallback,
+    _project_perp,
+    _transported_twist_angle_derivative_from_measure,
+    _transported_twist_angle_from_material_axes,
+    compute_cable_dahl_parameters,
+    evaluate_angular_constraint_force_hessian,
+    evaluate_cable_bend_twist_force_hessian_z,
+)
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 devices = get_test_devices()
@@ -4137,6 +4151,1811 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
     test.assertTrue(np.isfinite(final_q).all(), "Non-finite body transforms in kinematic tracking test")
 
 
+# -----------------------------------------------------------------------------
+# Split cable bend/twist verification helpers
+# -----------------------------------------------------------------------------
+
+
+@wp.func
+def _build_cable_material_basis(tangent_axis: wp.vec3) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
+    """Test reference basis for arbitrary tangent axes."""
+    twist_axis = tangent_axis
+    t_len = wp.length(twist_axis)
+    if t_len <= 1.0e-8:
+        twist_axis = wp.vec3(0.0, 0.0, 1.0)
+    else:
+        twist_axis = twist_axis / t_len
+
+    if twist_axis[2] < -0.9999999:
+        bend_axis0 = wp.vec3(1.0, 0.0, 0.0)
+        bend_axis1 = wp.vec3(0.0, -1.0, 0.0)
+    else:
+        inv = 1.0 / (1.0 + twist_axis[2])
+        xy = -twist_axis[0] * twist_axis[1] * inv
+        bend_axis0 = wp.vec3(1.0 - twist_axis[0] * twist_axis[0] * inv, xy, -twist_axis[0])
+        bend_axis1 = wp.vec3(xy, 1.0 - twist_axis[1] * twist_axis[1] * inv, -twist_axis[1])
+    return bend_axis0, bend_axis1, twist_axis
+
+
+@wp.func
+def _build_cable_bend_twist_projectors(tangent_axis: wp.vec3) -> tuple[wp.mat33, wp.mat33]:
+    """Test reference bend/twist projectors for arbitrary tangent axes."""
+    _bend0, _bend1, twist_axis = _build_cable_material_basis(tangent_axis)
+    P_twist = wp.outer(twist_axis, twist_axis)
+    return wp.identity(3, float) - P_twist, P_twist
+
+
+@wp.func
+def _build_cable_stretch_shear_projectors(q_wp: wp.quat, tangent_axis: wp.vec3) -> tuple[wp.mat33, wp.mat33]:
+    """Test reference stretch/shear projectors for arbitrary tangent axes."""
+    _bend0, _bend1, twist_axis = _build_cable_material_basis(tangent_axis)
+    t_world = wp.quat_rotate(q_wp, twist_axis)
+    t_world = _normalize_with_fallback(t_world, wp.vec3(0.0, 0.0, 1.0))
+    P_stretch = wp.outer(t_world, t_world)
+    return P_stretch, wp.identity(3, float) - P_stretch
+
+
+@wp.func
+def _cable_parent_to_material_basis(
+    v: wp.vec3, bend_axis0: wp.vec3, bend_axis1: wp.vec3, twist_axis: wp.vec3
+) -> wp.vec3:
+    """Resolve a parent-frame vector into the test reference cable basis."""
+    return wp.vec3(wp.dot(v, bend_axis0), wp.dot(v, bend_axis1), wp.dot(v, twist_axis))
+
+
+@wp.func
+def _cable_material_basis_to_parent(
+    v: wp.vec3, bend_axis0: wp.vec3, bend_axis1: wp.vec3, twist_axis: wp.vec3
+) -> wp.vec3:
+    """Resolve a test reference cable-basis vector into the parent frame."""
+    return v[0] * bend_axis0 + v[1] * bend_axis1 + v[2] * twist_axis
+
+
+@wp.func
+def _cable_material_basis_hessian_to_parent(
+    c: wp.vec3, bend_axis0: wp.vec3, bend_axis1: wp.vec3, twist_axis: wp.vec3
+) -> wp.mat33:
+    """Resolve diagonal test reference cable-basis tangents into parent frame."""
+    return (
+        c[0] * wp.outer(bend_axis0, bend_axis0)
+        + c[1] * wp.outer(bend_axis1, bend_axis1)
+        + c[2] * wp.outer(twist_axis, twist_axis)
+    )
+
+
+@wp.func
+def _measure_cable_bend_twist_with_basis(
+    q_wp: wp.quat,
+    q_wc: wp.quat,
+    bend_axis0: wp.vec3,
+    bend_axis1: wp.vec3,
+    twist_axis: wp.vec3,
+) -> CableBendTwistMeasure:
+    """Test reference arbitrary-axis bend/twist measurement."""
+    t0 = _normalize_with_fallback(wp.quat_rotate(q_wp, twist_axis), wp.vec3(0.0, 0.0, 1.0))
+    t1 = _normalize_with_fallback(wp.quat_rotate(q_wc, twist_axis), t0)
+    m0 = _normalize_with_fallback(
+        _project_perp(wp.quat_rotate(q_wp, bend_axis0), t0),
+        wp.quat_rotate(q_wp, bend_axis1),
+    )
+    m1 = _normalize_with_fallback(
+        _project_perp(wp.quat_rotate(q_wc, bend_axis0), t1),
+        wp.quat_rotate(q_wc, bend_axis1),
+    )
+
+    measure = CableBendTwistMeasure()
+    measure.t0 = t0
+    measure.t1 = t1
+    measure.m0 = m0
+    measure.m1 = m1
+    measure.twist = _transported_twist_angle_from_material_axes(t0, t1, m0, m1, m0)
+    measure.kb_world = _finite_curvature_binormal(t0, t1, m0)
+    return measure
+
+
+@wp.func
+def _measure_cable_bend_twist(q_wp: wp.quat, q_wc: wp.quat, tangent_axis: wp.vec3) -> CableBendTwistMeasure:
+    """Test reference arbitrary-axis bend/twist measurement."""
+    bend_axis0, bend_axis1, twist_axis = _build_cable_material_basis(tangent_axis)
+    return _measure_cable_bend_twist_with_basis(q_wp, q_wc, bend_axis0, bend_axis1, twist_axis)
+
+
+@wp.func
+def _geometric_cable_strain_directional_derivative_from_measure(
+    q_wp: wp.quat,
+    P_bend: wp.mat33,
+    twist_axis: wp.vec3,
+    measure: CableBendTwistMeasure,
+    omega_world: wp.vec3,
+    is_parent: bool,
+) -> wp.vec3:
+    """Test reference derivative of [bend0, bend1, twist]."""
+    d_bend_local, d_twist = _cable_bend_twist_directional_derivatives_from_measure(
+        q_wp, measure, omega_world, is_parent
+    )
+    return P_bend * d_bend_local + d_twist * twist_axis
+
+
+@wp.func
+def _cable_bend_twist_jacobian_from_measure(
+    q_wp: wp.quat,
+    P_bend: wp.mat33,
+    twist_axis: wp.vec3,
+    measure: CableBendTwistMeasure,
+    is_parent: bool,
+) -> wp.mat33:
+    """Test reference Jacobian of arbitrary-axis bend/twist strain."""
+    e0 = wp.vec3(1.0, 0.0, 0.0)
+    e1 = wp.vec3(0.0, 1.0, 0.0)
+    e2 = wp.vec3(0.0, 0.0, 1.0)
+    j0 = _geometric_cable_strain_directional_derivative_from_measure(q_wp, P_bend, twist_axis, measure, e0, is_parent)
+    j1 = _geometric_cable_strain_directional_derivative_from_measure(q_wp, P_bend, twist_axis, measure, e1, is_parent)
+    j2 = _geometric_cable_strain_directional_derivative_from_measure(q_wp, P_bend, twist_axis, measure, e2, is_parent)
+    return wp.outer(j0, e0) + wp.outer(j1, e1) + wp.outer(j2, e2)
+
+
+@wp.func
+def _compute_geometric_cable_kb_twist(q_wp: wp.quat, q_wc: wp.quat, tangent_axis: wp.vec3) -> tuple[wp.vec3, float]:
+    measure = _measure_cable_bend_twist(q_wp, q_wc, tangent_axis)
+    return measure.kb_world, measure.twist
+
+
+@wp.func
+def _assemble_geometric_cable_kappa(
+    q_wp: wp.quat,
+    tangent_axis: wp.vec3,
+    kb_now_world: wp.vec3,
+    twist_now: float,
+    kb_rest_local: wp.vec3,
+    twist_rest: float,
+) -> wp.vec3:
+    """Test reference arbitrary-axis [bend0, bend1, twist] residual."""
+    bend_now_local = wp.quat_rotate(wp.quat_inverse(q_wp), kb_now_world)
+    _bend0, _bend1, twist_axis = _build_cable_material_basis(tangent_axis)
+    P_bend, _P_twist = _build_cable_bend_twist_projectors(tangent_axis)
+    return P_bend * (bend_now_local - kb_rest_local) + (twist_now - twist_rest) * twist_axis
+
+
+@wp.func
+def _compute_geometric_cable_kappa(
+    q_wp: wp.quat,
+    q_wc: wp.quat,
+    q_wp_rest: wp.quat,
+    q_wc_rest: wp.quat,
+    tangent_axis: wp.vec3,
+) -> wp.vec3:
+    """Test reference arbitrary-axis geometric cable strain residual."""
+    kb_now_world, twist_now = _compute_geometric_cable_kb_twist(q_wp, q_wc, tangent_axis)
+    kb_rest_world, twist_rest = _compute_geometric_cable_kb_twist(q_wp_rest, q_wc_rest, tangent_axis)
+    kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), kb_rest_world)
+    return _assemble_geometric_cable_kappa(q_wp, tangent_axis, kb_now_world, twist_now, kb_rest_local, twist_rest)
+
+
+@wp.func
+def _reference_cable_bend_twist_force_hessian(
+    q_wp: wp.quat,
+    q_wc: wp.quat,
+    q_wp_rest: wp.quat,
+    q_wc_rest: wp.quat,
+    q_wp_prev: wp.quat,
+    q_wc_prev: wp.quat,
+    is_parent: bool,
+    tangent_axis: wp.vec3,
+    penalty_k: float,
+    P: wp.mat33,
+    lambda_ang: wp.vec3,
+    C0_ang: wp.vec3,
+    alpha: float,
+    damping: float,
+    dt: float,
+):
+    """Test reference arbitrary-axis bend/twist force and Hessian."""
+    inv_dt = 1.0 / dt
+    kb_rest_world, twist_rest = _compute_geometric_cable_kb_twist(q_wp_rest, q_wc_rest, tangent_axis)
+    kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), kb_rest_world)
+    measure = _measure_cable_bend_twist(q_wp, q_wc, tangent_axis)
+    kappa_now_vec = _assemble_geometric_cable_kappa(
+        q_wp, tangent_axis, measure.kb_world, measure.twist, kb_rest_local, twist_rest
+    )
+
+    f_local = penalty_k * (P * kappa_now_vec) - (penalty_k * alpha) * (P * C0_ang) + P * lambda_ang
+    H_local = penalty_k * P
+
+    if damping > 0.0:
+        kb_prev_world, twist_prev = _compute_geometric_cable_kb_twist(q_wp_prev, q_wc_prev, tangent_axis)
+        kappa_prev_vec = _assemble_geometric_cable_kappa(
+            q_wp_prev, tangent_axis, kb_prev_world, twist_prev, kb_rest_local, twist_rest
+        )
+        dkappa_dt = (kappa_now_vec - kappa_prev_vec) * inv_dt
+        f_local = f_local + (damping * penalty_k) * (P * dkappa_dt)
+        H_local = H_local + (damping * penalty_k * inv_dt) * P
+
+    _bend0, _bend1, twist_axis = _build_cable_material_basis(tangent_axis)
+    P_bend = wp.identity(3, float) - wp.outer(twist_axis, twist_axis)
+    J_body = _cable_bend_twist_jacobian_from_measure(q_wp, P_bend, twist_axis, measure, is_parent)
+    H_aa = wp.transpose(J_body) * (H_local * J_body)
+    tau_world = -(wp.transpose(J_body) * f_local)
+    return tau_world, H_aa, kappa_now_vec, J_body
+
+
+@wp.kernel
+def _eval_cable_material_basis_invariants_kernel(
+    tangents: wp.array[wp.vec3],
+    basis_lengths: wp.array[wp.vec3],
+    basis_dots: wp.array[wp.vec3],
+    roundtrip_errors: wp.array[wp.vec3],
+    hessian_errors: wp.array[wp.vec3],
+    projector_errors: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+    bend0, bend1, twist = _build_cable_material_basis(tangents[tid])
+
+    basis_lengths[tid] = wp.vec3(wp.length(bend0), wp.length(bend1), wp.length(twist))
+    basis_dots[tid] = wp.vec3(wp.dot(bend0, bend1), wp.dot(bend0, twist), wp.dot(bend1, twist))
+
+    v_parent = wp.vec3(0.37, -0.29, 0.61)
+    v_basis = _cable_parent_to_material_basis(v_parent, bend0, bend1, twist)
+    v_parent_rt = _cable_material_basis_to_parent(v_basis, bend0, bend1, twist)
+
+    c_basis = wp.vec3(1.25, -0.5, 0.75)
+    c_parent = _cable_material_basis_to_parent(c_basis, bend0, bend1, twist)
+    c_basis_rt = _cable_parent_to_material_basis(c_parent, bend0, bend1, twist)
+
+    tangent = tangents[tid]
+    tangent_len = wp.length(tangent)
+    expected_twist = wp.vec3(0.0, 0.0, 1.0)
+    if tangent_len > 0.0:
+        expected_twist = tangent / tangent_len
+    roundtrip_errors[tid] = wp.vec3(
+        wp.length(v_parent_rt - v_parent),
+        wp.length(c_basis_rt - c_basis),
+        wp.length(twist - expected_twist),
+    )
+
+    h_diag = wp.vec3(2.0, 3.0, 5.0)
+    H_parent = _cable_material_basis_hessian_to_parent(h_diag, bend0, bend1, twist)
+    hessian_errors[tid] = wp.vec3(
+        wp.length(H_parent * bend0 - h_diag[0] * bend0),
+        wp.length(H_parent * bend1 - h_diag[1] * bend1),
+        wp.length(H_parent * twist - h_diag[2] * twist),
+    )
+
+    P_bend, P_twist = _build_cable_bend_twist_projectors(tangents[tid])
+    bend_v = P_bend * v_parent
+    twist_v = P_twist * v_parent
+    projector_errors[tid] = wp.vec3(
+        wp.length(bend_v + twist_v - v_parent),
+        wp.abs(wp.dot(bend_v, twist_v)),
+        wp.length(twist_v - wp.dot(v_parent, twist) * twist),
+    )
+
+
+@wp.kernel
+def _eval_cable_material_basis_continuity_kernel(
+    tangents: wp.array[wp.vec3],
+    basis_dots: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+    bend0_a, bend1_a, twist_a = _build_cable_material_basis(tangents[tid])
+    bend0_b, bend1_b, twist_b = _build_cable_material_basis(tangents[tid + 1])
+    basis_dots[tid] = wp.vec3(
+        wp.dot(bend0_a, bend0_b),
+        wp.dot(bend1_a, bend1_b),
+        wp.dot(twist_a, twist_b),
+    )
+
+
+@wp.kernel
+def _eval_split_cable_bend_twist_mode_leakage_kernel(
+    tangents: wp.array[wp.vec3],
+    signals: wp.array[wp.vec3],
+    leaks: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+    bend0, _bend1, twist = _build_cable_material_basis(tangents[tid])
+    P_bend, P_twist = _build_cable_bend_twist_projectors(tangents[tid])
+
+    q_id = wp.quat_identity()
+    angle = 0.2
+    q_bend = wp.quat_from_axis_angle(bend0, angle)
+    q_twist = wp.quat_from_axis_angle(twist, angle)
+
+    _torque_bend, _H_bend, kappa_bend, _J_bend = evaluate_angular_constraint_force_hessian(
+        q_id,
+        q_bend,
+        q_id,
+        q_id,
+        q_id,
+        q_id,
+        True,
+        1.0,
+        P_bend,
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        0.0,
+        0.0,
+        0.01,
+    )
+    _torque_twist, _H_twist, kappa_twist, _J_twist = evaluate_angular_constraint_force_hessian(
+        q_id,
+        q_twist,
+        q_id,
+        q_id,
+        q_id,
+        q_id,
+        True,
+        1.0,
+        P_twist,
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        0.0,
+        0.0,
+        0.01,
+    )
+
+    bend_signal = wp.length(P_bend * kappa_bend)
+    twist_signal = wp.length(P_twist * kappa_twist)
+    bend_leak = wp.length(P_twist * kappa_bend)
+    twist_leak = wp.length(P_bend * kappa_twist)
+
+    signals[tid] = wp.vec3(bend_signal, twist_signal, 0.0)
+    leaks[tid] = wp.vec3(bend_leak, twist_leak, 0.0)
+
+
+@wp.kernel
+def _eval_split_cable_stretch_shear_mode_leakage_kernel(
+    tangents: wp.array[wp.vec3],
+    signals: wp.array[wp.vec3],
+    leaks: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+    t = wp.normalize(tangents[tid])
+    P_stretch, P_shear = _build_cable_stretch_shear_projectors(wp.quat_identity(), t)
+
+    # Axial probe lies along the tangent (pure stretch); transverse probe is the
+    # part of an arbitrary vector perpendicular to the tangent (pure shear).
+    axial = t * 0.37
+    probe = wp.vec3(0.19, -0.83, 0.51)
+    transverse = probe - wp.dot(probe, t) * t
+
+    stretch_signal = wp.length(P_stretch * axial)
+    shear_signal = wp.length(P_shear * transverse)
+    stretch_leak = wp.length(P_shear * axial)
+    shear_leak = wp.length(P_stretch * transverse)
+
+    # Completeness: the two projectors must sum to the identity.
+    recon_residual = wp.length((P_stretch + P_shear) * probe - probe)
+
+    signals[tid] = wp.vec3(stretch_signal, shear_signal, 0.0)
+    leaks[tid] = wp.vec3(stretch_leak, shear_leak, recon_residual)
+
+
+@wp.func
+def _eval_projected_angular_torque_and_residual(
+    q_child: wp.quat,
+    stiffness: float,
+    projector: wp.mat33,
+) -> tuple[wp.vec3, wp.vec3]:
+    zero = wp.vec3(0.0)
+    tau, _H, kappa, _J = evaluate_angular_constraint_force_hessian(
+        wp.quat_identity(),
+        q_child,
+        wp.quat_identity(),
+        wp.quat_identity(),
+        wp.quat_identity(),
+        wp.quat_identity(),
+        True,
+        stiffness,
+        projector,
+        zero,
+        zero,
+        0.0,
+        0.0,
+        0.01,
+    )
+    return tau, kappa
+
+
+@wp.kernel
+def _eval_split_cable_projector_stiffness_isolation_kernel(
+    tangents: wp.array[wp.vec3],
+    isolation_errors: wp.array[wp.vec3],
+    scaling_errors: wp.array[wp.vec3],
+    residual_errors: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+    bend0, _bend1, twist = _build_cable_material_basis(tangents[tid])
+    P_bend, P_twist = _build_cable_bend_twist_projectors(tangents[tid])
+
+    angle = 0.17
+    q_bend = wp.quat_from_axis_angle(bend0, angle)
+    q_twist = wp.quat_from_axis_angle(twist, angle)
+
+    tau_bend_2, kappa_bend = _eval_projected_angular_torque_and_residual(q_bend, 2.0, P_bend)
+    tau_bend_11, _kappa_b11 = _eval_projected_angular_torque_and_residual(q_bend, 11.0, P_bend)
+    tau_bend_twist_3, _kappa_bt3 = _eval_projected_angular_torque_and_residual(q_bend, 3.0, P_twist)
+    tau_bend_twist_29, _kappa_bt29 = _eval_projected_angular_torque_and_residual(q_bend, 29.0, P_twist)
+
+    tau_twist_3, kappa_twist = _eval_projected_angular_torque_and_residual(q_twist, 3.0, P_twist)
+    tau_twist_29, _kappa_t29 = _eval_projected_angular_torque_and_residual(q_twist, 29.0, P_twist)
+    tau_twist_bend_2, _kappa_tb2 = _eval_projected_angular_torque_and_residual(q_twist, 2.0, P_bend)
+    tau_twist_bend_11, _kappa_tb11 = _eval_projected_angular_torque_and_residual(q_twist, 11.0, P_bend)
+
+    bend_norm = wp.max(wp.length(tau_bend_2), 1.0e-8)
+    twist_norm = wp.max(wp.length(tau_twist_3), 1.0e-8)
+
+    bend_isolation = wp.length(tau_bend_twist_29 - tau_bend_twist_3) / bend_norm
+    twist_isolation = wp.length(tau_twist_bend_11 - tau_twist_bend_2) / twist_norm
+    leak_rel = wp.max(wp.length(tau_bend_twist_29) / bend_norm, wp.length(tau_twist_bend_11) / twist_norm)
+
+    bend_scale = wp.length(tau_bend_11 - 5.5 * tau_bend_2) / wp.max(wp.length(tau_bend_11), 1.0e-8)
+    twist_scale = wp.length(tau_twist_29 - (29.0 / 3.0) * tau_twist_3) / wp.max(wp.length(tau_twist_29), 1.0e-8)
+
+    bend_angle_err = wp.abs(wp.length(P_bend * kappa_bend) - angle) / angle
+    twist_angle_err = wp.abs(wp.length(P_twist * kappa_twist) - angle) / angle
+
+    isolation_errors[tid] = wp.vec3(bend_isolation, twist_isolation, leak_rel)
+    scaling_errors[tid] = wp.vec3(bend_scale, twist_scale, 0.0)
+    residual_errors[tid] = wp.vec3(bend_angle_err, twist_angle_err, 0.0)
+
+
+@wp.kernel
+def _eval_split_cable_material_force_law_kernel(
+    bend_stiffness: float,
+    twist_stiffness: float,
+    angle: float,
+    torque_magnitudes: wp.array[float],
+    leakage_errors: wp.array[float],
+):
+    q_id = wp.quat_identity()
+    tangent = wp.vec3(0.0, 0.0, 1.0)
+    P_bend, P_twist = _build_cable_bend_twist_projectors(tangent)
+    zero = wp.vec3(0.0)
+
+    q_bend = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), angle)
+    q_twist = wp.quat_from_axis_angle(tangent, angle)
+
+    tau_bend, _H_bend, kappa_bend, _J_bend = evaluate_cable_bend_twist_force_hessian_z(
+        q_id,
+        q_bend,
+        zero,
+        0.0,
+        q_id,
+        q_id,
+        True,
+        wp.vec3(bend_stiffness, bend_stiffness, 0.0),
+        zero,
+        zero,
+        zero,
+        zero,
+        zero,
+        False,
+        0.01,
+    )
+    tau_twist, _H_twist, kappa_twist, _J_twist = evaluate_cable_bend_twist_force_hessian_z(
+        q_id,
+        q_twist,
+        zero,
+        0.0,
+        q_id,
+        q_id,
+        True,
+        wp.vec3(0.0, 0.0, twist_stiffness),
+        zero,
+        zero,
+        zero,
+        zero,
+        zero,
+        False,
+        0.01,
+    )
+
+    torque_magnitudes[0] = wp.length(tau_bend)
+    torque_magnitudes[1] = wp.length(tau_twist)
+    leakage_errors[0] = wp.length(P_twist * tau_bend)
+    leakage_errors[1] = wp.length(P_bend * tau_twist)
+    leakage_errors[2] = wp.abs(wp.length(P_bend * kappa_bend) - 2.0 * wp.tan(0.5 * angle))
+    leakage_errors[3] = wp.abs(wp.length(P_twist * kappa_twist) - angle)
+
+
+@wp.kernel
+def _eval_split_cable_cantilever_moment_law_kernel(
+    lever_arms: wp.array[float],
+    bend_stiffness: float,
+    tip_force: float,
+    errors: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+
+    q_id = wp.quat_identity()
+    tangent = wp.vec3(0.0, 0.0, 1.0)
+    bend_axis = wp.vec3(1.0, 0.0, 0.0)
+    P_bend, P_twist = _build_cable_bend_twist_projectors(tangent)
+    zero = wp.vec3(0.0)
+
+    expected_moment = tip_force * lever_arms[tid]
+    expected_strain = expected_moment / bend_stiffness
+    theta = 2.0 * wp.atan(0.5 * expected_strain)
+    q_bend = wp.quat_from_axis_angle(bend_axis, theta)
+
+    tau_bend, _H_bend, kappa_bend, _J_bend = evaluate_cable_bend_twist_force_hessian_z(
+        q_id,
+        q_bend,
+        zero,
+        0.0,
+        q_id,
+        q_id,
+        True,
+        wp.vec3(bend_stiffness, bend_stiffness, 0.0),
+        zero,
+        zero,
+        zero,
+        zero,
+        zero,
+        False,
+        0.01,
+    )
+
+    measured_moment = wp.length(tau_bend)
+    measured_strain = wp.length(P_bend * kappa_bend)
+
+    errors[tid] = wp.vec3(
+        wp.abs(measured_moment - expected_moment),
+        wp.length(P_twist * tau_bend),
+        wp.abs(measured_strain - expected_strain),
+    )
+
+
+@wp.func
+def _eval_split_cable_fd_torque(
+    q_wc: wp.quat,
+    stiffness: float,
+    P: wp.mat33,
+) -> tuple[wp.vec3, wp.mat33]:
+    q_id = wp.quat_identity()
+    zero = wp.vec3(0.0)
+    tau, H, _kappa, _J = evaluate_angular_constraint_force_hessian(
+        q_id,
+        q_wc,
+        q_id,
+        q_id,
+        q_id,
+        q_id,
+        True,
+        stiffness,
+        P,
+        zero,
+        zero,
+        0.0,
+        0.0,
+        0.01,
+    )
+    return tau, H
+
+
+@wp.kernel
+def _eval_split_cable_angular_hessian_finite_difference_kernel(errors: wp.array[wp.vec3]):
+    tid = wp.tid()
+
+    tangent = wp.normalize(wp.vec3(0.3, -0.4, 0.8660254))
+    P_bend, P_twist = _build_cable_bend_twist_projectors(tangent)
+    bend0, _bend1, _twist = _build_cable_material_basis(tangent)
+    P = P_bend
+    free_axis = tangent
+    stiffness = 23.0
+    if tid == 1:
+        P = P_twist
+        free_axis = bend0
+
+    eps = 1.0e-3
+    _tau0, H = _eval_split_cable_fd_torque(wp.quat_identity(), stiffness, P)
+
+    e0 = wp.vec3(1.0, 0.0, 0.0)
+    e1 = wp.vec3(0.0, 1.0, 0.0)
+    e2 = wp.vec3(0.0, 0.0, 1.0)
+
+    tau_p0, _H_p0 = _eval_split_cable_fd_torque(wp.quat_from_axis_angle(e0, eps), stiffness, P)
+    tau_m0, _H_m0 = _eval_split_cable_fd_torque(wp.quat_from_axis_angle(e0, -eps), stiffness, P)
+    tau_p1, _H_p1 = _eval_split_cable_fd_torque(wp.quat_from_axis_angle(e1, eps), stiffness, P)
+    tau_m1, _H_m1 = _eval_split_cable_fd_torque(wp.quat_from_axis_angle(e1, -eps), stiffness, P)
+    tau_p2, _H_p2 = _eval_split_cable_fd_torque(wp.quat_from_axis_angle(e2, eps), stiffness, P)
+    tau_m2, _H_m2 = _eval_split_cable_fd_torque(wp.quat_from_axis_angle(e2, -eps), stiffness, P)
+
+    fd0 = (tau_p0 - tau_m0) / (2.0 * eps)
+    fd1 = (tau_p1 - tau_m1) / (2.0 * eps)
+    fd2 = (tau_p2 - tau_m2) / (2.0 * eps)
+
+    err0 = wp.length(fd0 - H * e0)
+    err1 = wp.length(fd1 - H * e1)
+    err2 = wp.length(fd2 - H * e2)
+    max_fd_error = wp.max(err0, wp.max(err1, err2)) / stiffness
+
+    sym_error = (
+        wp.max(
+            wp.abs(wp.dot(e0, H * e1) - wp.dot(e1, H * e0)),
+            wp.max(
+                wp.abs(wp.dot(e0, H * e2) - wp.dot(e2, H * e0)),
+                wp.abs(wp.dot(e1, H * e2) - wp.dot(e2, H * e1)),
+            ),
+        )
+        / stiffness
+    )
+
+    null_error = wp.length(H * free_axis) / stiffness
+    errors[tid] = wp.vec3(max_fd_error, sym_error, null_error)
+
+
+@wp.func
+def _quat_perturb_world(q: wp.quat, axis: wp.vec3, angle: float) -> wp.quat:
+    return wp.normalize(wp.quat_from_axis_angle(axis, angle) * q)
+
+
+@wp.func
+def _geometric_cable_test_energy(
+    q_wp: wp.quat,
+    q_wc: wp.quat,
+    q_wp_rest: wp.quat,
+    q_wc_rest: wp.quat,
+    stiffness: float,
+    P: wp.mat33,
+    tangent_axis: wp.vec3,
+) -> float:
+    residual = _compute_geometric_cable_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest, tangent_axis)
+    projected = P * residual
+    return 0.5 * stiffness * wp.dot(projected, projected)
+
+
+@wp.func
+def _eval_geometric_cable_test_force_hessian(
+    q_wp: wp.quat,
+    q_wc: wp.quat,
+    q_wp_rest: wp.quat,
+    q_wc_rest: wp.quat,
+    is_parent: bool,
+    stiffness: float,
+    P: wp.mat33,
+    tangent_axis: wp.vec3,
+) -> tuple[wp.vec3, wp.mat33]:
+    zero = wp.vec3(0.0)
+    tau, H, _kappa, _J = _reference_cable_bend_twist_force_hessian(
+        q_wp,
+        q_wc,
+        q_wp_rest,
+        q_wc_rest,
+        q_wp,
+        q_wc,
+        is_parent,
+        tangent_axis,
+        stiffness,
+        P,
+        zero,
+        zero,
+        0.0,
+        0.0,
+        0.01,
+    )
+    return tau, H
+
+
+@wp.kernel
+def _eval_geometric_cable_force_hessian_finite_difference_kernel(errors: wp.array[wp.vec3]):
+    tid = wp.tid()
+
+    tangent = wp.normalize(wp.vec3(0.2, -0.35, 0.915))
+    _bend0, _bend1, _twist = _build_cable_material_basis(tangent)
+    P_bend, P_twist = _build_cable_bend_twist_projectors(tangent)
+
+    P = P_bend
+    stiffness = 17.0
+    if tid >= 2:
+        P = P_twist
+        stiffness = 29.0
+
+    is_parent = tid == 0 or tid == 2
+
+    q_wp = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.7, -0.2)), 0.31)
+    q_wc = wp.quat_from_axis_angle(wp.normalize(wp.vec3(-0.6, 0.2, 0.4)), 0.58) * q_wp
+    q_wp_rest = wp.quat_identity()
+    q_wc_rest = wp.quat_identity()
+
+    tau, _H = _eval_geometric_cable_test_force_hessian(
+        q_wp, q_wc, q_wp_rest, q_wc_rest, is_parent, stiffness, P, tangent
+    )
+
+    eps = 1.0e-3
+    e0 = wp.vec3(1.0, 0.0, 0.0)
+    e1 = wp.vec3(0.0, 1.0, 0.0)
+    e2 = wp.vec3(0.0, 0.0, 1.0)
+
+    q_wp_p = q_wp
+    q_wp_m = q_wp
+    q_wc_p = q_wc
+    q_wc_m = q_wc
+    if is_parent:
+        q_wp_p = _quat_perturb_world(q_wp, e0, eps)
+        q_wp_m = _quat_perturb_world(q_wp, e0, -eps)
+    else:
+        q_wc_p = _quat_perturb_world(q_wc, e0, eps)
+        q_wc_m = _quat_perturb_world(q_wc, e0, -eps)
+    fd0 = -(
+        _geometric_cable_test_energy(q_wp_p, q_wc_p, q_wp_rest, q_wc_rest, stiffness, P, tangent)
+        - _geometric_cable_test_energy(q_wp_m, q_wc_m, q_wp_rest, q_wc_rest, stiffness, P, tangent)
+    ) / (2.0 * eps)
+
+    q_wp_p = q_wp
+    q_wp_m = q_wp
+    q_wc_p = q_wc
+    q_wc_m = q_wc
+    if is_parent:
+        q_wp_p = _quat_perturb_world(q_wp, e1, eps)
+        q_wp_m = _quat_perturb_world(q_wp, e1, -eps)
+    else:
+        q_wc_p = _quat_perturb_world(q_wc, e1, eps)
+        q_wc_m = _quat_perturb_world(q_wc, e1, -eps)
+    fd1 = -(
+        _geometric_cable_test_energy(q_wp_p, q_wc_p, q_wp_rest, q_wc_rest, stiffness, P, tangent)
+        - _geometric_cable_test_energy(q_wp_m, q_wc_m, q_wp_rest, q_wc_rest, stiffness, P, tangent)
+    ) / (2.0 * eps)
+
+    q_wp_p = q_wp
+    q_wp_m = q_wp
+    q_wc_p = q_wc
+    q_wc_m = q_wc
+    if is_parent:
+        q_wp_p = _quat_perturb_world(q_wp, e2, eps)
+        q_wp_m = _quat_perturb_world(q_wp, e2, -eps)
+    else:
+        q_wc_p = _quat_perturb_world(q_wc, e2, eps)
+        q_wc_m = _quat_perturb_world(q_wc, e2, -eps)
+    fd2 = -(
+        _geometric_cable_test_energy(q_wp_p, q_wc_p, q_wp_rest, q_wc_rest, stiffness, P, tangent)
+        - _geometric_cable_test_energy(q_wp_m, q_wc_m, q_wp_rest, q_wc_rest, stiffness, P, tangent)
+    ) / (2.0 * eps)
+
+    force_fd_error = wp.length(tau - wp.vec3(fd0, fd1, fd2)) / stiffness
+
+    # Validate the local Gauss-Newton Hessian at finite geometry but zero residual.
+    q_wp_rest = q_wp
+    q_wc_rest = q_wc
+    tau0, H0 = _eval_geometric_cable_test_force_hessian(
+        q_wp, q_wc, q_wp_rest, q_wc_rest, is_parent, stiffness, P, tangent
+    )
+
+    q_wp_p = q_wp
+    q_wp_m = q_wp
+    q_wc_p = q_wc
+    q_wc_m = q_wc
+    if is_parent:
+        q_wp_p = _quat_perturb_world(q_wp, e0, eps)
+        q_wp_m = _quat_perturb_world(q_wp, e0, -eps)
+    else:
+        q_wc_p = _quat_perturb_world(q_wc, e0, eps)
+        q_wc_m = _quat_perturb_world(q_wc, e0, -eps)
+    tau_p, _Hp = _eval_geometric_cable_test_force_hessian(
+        q_wp_p, q_wc_p, q_wp_rest, q_wc_rest, is_parent, stiffness, P, tangent
+    )
+    tau_m, _Hm = _eval_geometric_cable_test_force_hessian(
+        q_wp_m, q_wc_m, q_wp_rest, q_wc_rest, is_parent, stiffness, P, tangent
+    )
+    h_fd0 = (tau_p - tau_m) / (2.0 * eps)
+
+    q_wp_p = q_wp
+    q_wp_m = q_wp
+    q_wc_p = q_wc
+    q_wc_m = q_wc
+    if is_parent:
+        q_wp_p = _quat_perturb_world(q_wp, e1, eps)
+        q_wp_m = _quat_perturb_world(q_wp, e1, -eps)
+    else:
+        q_wc_p = _quat_perturb_world(q_wc, e1, eps)
+        q_wc_m = _quat_perturb_world(q_wc, e1, -eps)
+    tau_p, _Hp = _eval_geometric_cable_test_force_hessian(
+        q_wp_p, q_wc_p, q_wp_rest, q_wc_rest, is_parent, stiffness, P, tangent
+    )
+    tau_m, _Hm = _eval_geometric_cable_test_force_hessian(
+        q_wp_m, q_wc_m, q_wp_rest, q_wc_rest, is_parent, stiffness, P, tangent
+    )
+    h_fd1 = (tau_p - tau_m) / (2.0 * eps)
+
+    q_wp_p = q_wp
+    q_wp_m = q_wp
+    q_wc_p = q_wc
+    q_wc_m = q_wc
+    if is_parent:
+        q_wp_p = _quat_perturb_world(q_wp, e2, eps)
+        q_wp_m = _quat_perturb_world(q_wp, e2, -eps)
+    else:
+        q_wc_p = _quat_perturb_world(q_wc, e2, eps)
+        q_wc_m = _quat_perturb_world(q_wc, e2, -eps)
+    tau_p, _Hp = _eval_geometric_cable_test_force_hessian(
+        q_wp_p, q_wc_p, q_wp_rest, q_wc_rest, is_parent, stiffness, P, tangent
+    )
+    tau_m, _Hm = _eval_geometric_cable_test_force_hessian(
+        q_wp_m, q_wc_m, q_wp_rest, q_wc_rest, is_parent, stiffness, P, tangent
+    )
+    h_fd2 = (tau_p - tau_m) / (2.0 * eps)
+
+    h_err0 = wp.length(h_fd0 + H0 * e0)
+    h_err1 = wp.length(h_fd1 + H0 * e1)
+    h_err2 = wp.length(h_fd2 + H0 * e2)
+    hessian_fd_error = wp.max(h_err0, wp.max(h_err1, h_err2)) / stiffness
+
+    sym_error = (
+        wp.max(
+            wp.abs(wp.dot(e0, H0 * e1) - wp.dot(e1, H0 * e0)),
+            wp.max(
+                wp.abs(wp.dot(e0, H0 * e2) - wp.dot(e2, H0 * e0)),
+                wp.abs(wp.dot(e1, H0 * e2) - wp.dot(e2, H0 * e1)),
+            ),
+        )
+        / stiffness
+    )
+
+    # tau0 should be zero at the rest pose.
+    rest_force_error = wp.length(tau0) / stiffness
+    errors[tid] = wp.vec3(
+        wp.max(force_fd_error, rest_force_error),
+        hessian_fd_error,
+        sym_error,
+    )
+
+
+@wp.kernel
+def _eval_bishop_transport_antiparallel_fallback_kernel(errors: wp.array[wp.vec3]):
+    t0 = wp.vec3(1.0, 0.0, 0.0)
+    t1 = wp.vec3(-1.0, 0.0, 0.0)
+    fallback_parallel_to_t0 = wp.vec3(1.0, 0.0, 0.0)
+
+    q = _bishop_transport_quat(t0, t1, fallback_parallel_to_t0)
+    mapped = wp.quat_rotate(q, t0)
+    errors[0] = wp.vec3(wp.length(mapped - t1), wp.abs(wp.dot(mapped, t0) + 1.0), wp.length(mapped))
+
+
+@wp.func
+def _rotate_tangent_for_fd(t: wp.vec3, omega: wp.vec3, h: float) -> wp.vec3:
+    omega_len = wp.length(omega)
+    if omega_len <= 1.0e-12:
+        return t
+    q = wp.quat_from_axis_angle(omega / omega_len, h * omega_len)
+    return wp.quat_rotate(q, t)
+
+
+@wp.func
+def _curvature_binormal_derivative_fd_error(t0: wp.vec3, t1: wp.vec3, fallback: wp.vec3, h: float) -> wp.vec3:
+    omega0 = wp.vec3(0.31, -0.27, 0.19)
+    omega1 = wp.vec3(-0.17, 0.23, 0.29)
+    dt0 = wp.cross(omega0, t0)
+    dt1 = wp.cross(omega1, t1)
+
+    analytic = _finite_curvature_binormal_derivative(t0, t1, dt0, dt1)
+    t0_p = _rotate_tangent_for_fd(t0, omega0, h)
+    t1_p = _rotate_tangent_for_fd(t1, omega1, h)
+    t0_m = _rotate_tangent_for_fd(t0, omega0, -h)
+    t1_m = _rotate_tangent_for_fd(t1, omega1, -h)
+    fd = (_finite_curvature_binormal(t0_p, t1_p, fallback) - _finite_curvature_binormal(t0_m, t1_m, fallback)) / (
+        2.0 * h
+    )
+
+    kb = _finite_curvature_binormal(t0, t1, fallback)
+    cap_tangent_error = wp.abs(wp.dot(kb, analytic))
+    if wp.length(kb) > 1.0e-8:
+        cap_tangent_error = cap_tangent_error / wp.length(kb)
+    return wp.vec3(wp.length(analytic - fd), wp.length(analytic), cap_tangent_error)
+
+
+@wp.kernel
+def _eval_geometric_curvature_binormal_derivative_kernel(errors: wp.array[wp.vec3]):
+    t0 = wp.vec3(0.0, 0.0, 1.0)
+    fallback = wp.vec3(0.0, 1.0, 0.0)
+
+    t1_regular = wp.normalize(wp.vec3(0.25, -0.12, 0.96))
+    regular = _curvature_binormal_derivative_fd_error(t0, t1_regular, fallback, 1.0e-3)
+
+    q_hairpin = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 3.05)
+    t1_capped = wp.quat_rotate(q_hairpin, t0)
+    capped = _curvature_binormal_derivative_fd_error(t0, t1_capped, fallback, 1.0e-3)
+
+    errors[0] = wp.vec3(regular[0], capped[0], capped[2])
+
+
+@wp.func
+def _transported_twist_angle_derivative_fd_error(
+    q_wp: wp.quat,
+    q_wc: wp.quat,
+    tangent: wp.vec3,
+    omega: wp.vec3,
+    is_parent: bool,
+    h: float,
+) -> wp.vec3:
+    measure = _measure_cable_bend_twist(q_wp, q_wc, tangent)
+    analytic = _transported_twist_angle_derivative_from_measure(measure, omega, is_parent)
+    q_wp_p = q_wp
+    q_wp_m = q_wp
+    q_wc_p = q_wc
+    q_wc_m = q_wc
+    omega_len = wp.length(omega)
+    axis = omega / omega_len
+    if is_parent:
+        q_wp_p = _quat_perturb_world(q_wp, axis, h * omega_len)
+        q_wp_m = _quat_perturb_world(q_wp, axis, -h * omega_len)
+    else:
+        q_wc_p = _quat_perturb_world(q_wc, axis, h * omega_len)
+        q_wc_m = _quat_perturb_world(q_wc, axis, -h * omega_len)
+
+    twist_p = _measure_cable_bend_twist(q_wp_p, q_wc_p, tangent).twist
+    twist_m = _measure_cable_bend_twist(q_wp_m, q_wc_m, tangent).twist
+    fd = (twist_p - twist_m) / (2.0 * h)
+    return wp.vec3(wp.abs(analytic - fd), wp.abs(analytic), wp.abs(fd))
+
+
+@wp.kernel
+def _eval_transported_twist_angle_derivative_kernel(errors: wp.array[wp.vec3]):
+    tid = wp.tid()
+    is_parent = tid == 0 or tid == 2
+    omega = wp.vec3(0.19, -0.31, 0.23)
+    if not is_parent:
+        omega = wp.vec3(-0.17, 0.29, 0.21)
+
+    tangent = wp.normalize(wp.vec3(0.2, -0.35, 0.915))
+    q_wp = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.7, -0.2)), 0.31)
+    q_wc = wp.quat_from_axis_angle(wp.normalize(wp.vec3(-0.6, 0.2, 0.4)), 0.42) * q_wp
+
+    if tid >= 2:
+        tangent = wp.vec3(0.0, 0.0, 1.0)
+        q_wp = wp.quat_identity()
+        q_bend = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.55)
+        child_tangent = wp.quat_rotate(q_bend, tangent)
+        q_wc = wp.quat_from_axis_angle(child_tangent, 0.41) * q_bend
+
+    errors[tid] = _transported_twist_angle_derivative_fd_error(q_wp, q_wc, tangent, omega, is_parent, 1.0e-3)
+
+
+@wp.kernel
+def _eval_geometric_precurved_twist_is_pure_twist_kernel(errors: wp.array[wp.vec3]):
+    tangent = wp.vec3(0.0, 0.0, 1.0)
+    P_bend, P_twist = _build_cable_bend_twist_projectors(tangent)
+
+    bend_angle = 0.55
+    twist_angle = 0.41
+    q_wp_rest = wp.quat_identity()
+    q_wc_rest = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), bend_angle)
+
+    child_tangent_world = wp.quat_rotate(q_wc_rest, tangent)
+    q_wp = q_wp_rest
+    q_wc = wp.quat_from_axis_angle(child_tangent_world, twist_angle) * q_wc_rest
+
+    kappa = _compute_geometric_cable_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest, tangent)
+    bend_leak = wp.length(P_bend * kappa)
+    twist_err = wp.abs(wp.length(P_twist * kappa) - twist_angle)
+    errors[0] = wp.vec3(bend_leak, twist_err, wp.length(kappa))
+
+
+@wp.kernel
+def _eval_geometric_global_rotation_preserves_rest_strain_kernel(errors: wp.array[wp.vec3]):
+    tangent = wp.vec3(0.0, 0.0, 1.0)
+
+    q_wp_rest = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, -0.2, 0.5)), 0.37)
+    bend_axis_world = wp.quat_rotate(q_wp_rest, wp.vec3(0.0, 1.0, 0.0))
+    q_bend = wp.quat_from_axis_angle(bend_axis_world, 0.61)
+    q_wc_rest = q_bend * q_wp_rest
+
+    child_tangent_world = wp.quat_rotate(q_wc_rest, tangent)
+    q_wc_rest = wp.quat_from_axis_angle(child_tangent_world, 0.43) * q_wc_rest
+
+    q_global = wp.quat_from_axis_angle(wp.normalize(wp.vec3(-0.4, 0.6, 0.2)), 0.79)
+    q_wp = q_global * q_wp_rest
+    q_wc = q_global * q_wc_rest
+
+    kappa = _compute_geometric_cable_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest, tangent)
+    errors[0] = wp.vec3(wp.length(kappa), wp.length(kappa), wp.length(kappa))
+
+
+@wp.kernel
+def _eval_geometric_curvature_binormal_cap_kernel(errors: wp.array[wp.vec3]):
+    tangent = wp.vec3(0.0, 0.0, 1.0)
+    q_wp = wp.quat_identity()
+    q_wc = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 3.05)
+    q_rest = wp.quat_identity()
+
+    kappa = _compute_geometric_cable_kappa(q_wp, q_wc, q_rest, q_rest, tangent)
+    cap_error = wp.abs(wp.length(kappa) - 20.0)
+    errors[0] = wp.vec3(cap_error, 0.0, wp.length(kappa))
+
+
+def _split_cable_angular_slot_layout(test, device):
+    """Twist stiffness/damping is routed or defaulted into the split angular slots, and negative stiffness is rejected."""
+    # (extra add_joint_cable kwargs, expected penalty_k_max, expected penalty_kd) for the four-slot layout.
+    cases = [
+        # Explicit twist stiffness + damping is routed straight to the twist slot.
+        ({"twist_stiffness": 3.0, "twist_damping": 0.25}, [100.0, 100.0, 10.0, 3.0], [0.0, 0.0, 0.0, 0.25]),
+        # Omitting both twist params defaults twist to bend (isotropic angular energy).
+        ({"bend_damping": 0.5}, [100.0, 100.0, 10.0, 10.0], [0.0, 0.0, 0.5, 0.5]),
+        # Explicit twist stiffness with omitted twist damping keeps twist damping at zero.
+        ({"bend_damping": 0.5, "twist_stiffness": 3.0}, [100.0, 100.0, 10.0, 3.0], [0.0, 0.0, 0.5, 0.0]),
+    ]
+    for kwargs, expected_k, expected_kd in cases:
+        with test.subTest(kwargs=kwargs):
+            builder = newton.ModelBuilder(gravity=0.0)
+            body = builder.add_link()
+            joint = builder.add_joint_cable(-1, body, stretch_stiffness=100.0, bend_stiffness=10.0, **kwargs)
+            builder.add_articulation([joint])
+            builder.color()
+            model = builder.finalize(device=device)
+            solver = newton.solvers.SolverVBD(model)
+
+            np.testing.assert_array_equal(model.joint_dof_dim.numpy()[joint], [2, 2])
+            test.assertEqual(int(solver.joint_constraint_dim.numpy()[joint]), 4)
+            start = int(solver.joint_constraint_start.numpy()[joint])
+            np.testing.assert_allclose(solver.joint_penalty_k_max.numpy()[start : start + 4], expected_k)
+            np.testing.assert_allclose(solver.joint_penalty_kd.numpy()[start : start + 4], expected_kd)
+
+    # Negative stiffness must be rejected before reaching the solver.
+    builder = newton.ModelBuilder(gravity=0.0)
+    body = builder.add_link()
+    with test.assertRaisesRegex(ValueError, "stretch_stiffness, shear_stiffness, bend_stiffness, and twist_stiffness"):
+        builder.add_joint_cable(-1, body, bend_stiffness=10.0, twist_stiffness=-1.0)
+
+
+def _cable_stiffness_helper_returns_physical_twist(test, device):
+    """Elastic-moduli helper should return GJ/L when a shear modulus source is provided."""
+    E = 200.0
+    radius = 0.5
+    length = 2.0
+    stretch, bend, twist = newton.utils.create_cable_stiffness_from_elastic_moduli(
+        E, radius, length, poissons_ratio=0.25
+    )
+
+    area = np.pi * radius * radius
+    inertia = 0.25 * np.pi * radius**4
+    polar_inertia = 0.5 * np.pi * radius**4
+    G = E / (2.0 * (1.0 + 0.25))
+    np.testing.assert_allclose(
+        [stretch, bend, twist], [E * area / length, E * inertia / length, G * polar_inertia / length]
+    )
+
+    with test.assertRaisesRegex(ValueError, "mutually exclusive"):
+        newton.utils.create_cable_stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.25, shear_modulus=G)
+    with test.assertRaisesRegex(ValueError, "poissons_ratio"):
+        newton.utils.create_cable_stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.5)
+
+
+def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
+    """Shared Dahl eps/tau is split across bend and twist with slot-specific stiffness."""
+    with wp.ScopedDevice(device):
+        joint_type = wp.array(
+            [int(newton.JointType.CABLE), int(newton.JointType.CABLE)],
+            dtype=wp.int32,
+            device=device,
+        )
+        joint_enabled = wp.array([True, True], dtype=bool, device=device)
+        joint_parent = wp.array([-1, -1], dtype=wp.int32, device=device)
+        joint_child = wp.array([0, 1], dtype=wp.int32, device=device)
+        joint_x = wp.array(
+            [wp.transform_identity(), wp.transform_identity()],
+            dtype=wp.transform,
+            device=device,
+        )
+        joint_constraint_start = wp.array([0, 4], dtype=wp.int32, device=device)
+        joint_penalty_k = wp.array([0.0, 0.0, 10.0, 2.0, 0.0, 0.0, 10.0, 2.0], dtype=float, device=device)
+        joint_is_hard = wp.array([0, 0, 0, 0, 0, 0, 0, 0], dtype=wp.int32, device=device)
+        joint_cable_kb_rest_local = wp.zeros(2, dtype=wp.vec3, device=device)
+        joint_cable_twist_rest = wp.zeros(2, dtype=float, device=device)
+
+        q_bend = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.1)
+        q_twist = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.1)
+        body_q = wp.array(
+            [
+                wp.transform(wp.vec3(0.0), q_bend),
+                wp.transform(wp.vec3(0.0), q_twist),
+            ],
+            dtype=wp.transform,
+            device=device,
+        )
+        zero_vec3 = wp.zeros(2, dtype=wp.vec3, device=device)
+        eps_max = wp.array([0.2, 0.2], dtype=float, device=device)
+        tau = wp.array([0.2, 0.2], dtype=float, device=device)
+        sigma_start = wp.zeros(2, dtype=wp.vec3, device=device)
+        C_fric = wp.zeros(2, dtype=wp.vec3, device=device)
+
+        wp.launch(
+            compute_cable_dahl_parameters,
+            dim=2,
+            inputs=[
+                joint_type,
+                joint_enabled,
+                joint_parent,
+                joint_child,
+                joint_x,
+                joint_x,
+                joint_constraint_start,
+                joint_penalty_k,
+                joint_is_hard,
+                joint_cable_kb_rest_local,
+                joint_cable_twist_rest,
+                body_q,
+                zero_vec3,
+                zero_vec3,
+                zero_vec3,
+                eps_max,
+                tau,
+            ],
+            outputs=[sigma_start, C_fric],
+            device=device,
+        )
+
+        sigma = np.abs(sigma_start.numpy())
+        c_fric = C_fric.numpy()
+        # Geometric cable bend uses the finite curvature binormal
+        # |kb| = 2*tan(theta/2), not the small-angle log-map theta.
+        expected_bend_strain = 2.0 * np.tan(0.5 * 0.1)
+        expected_bend_sigma = 10.0 * 0.2 * (1.0 - np.exp(-expected_bend_strain / 0.2))
+        expected_twist_sigma = 2.0 * 0.2 * (1.0 - np.exp(-0.1 / 0.2))
+
+        np.testing.assert_allclose(sigma[0, 0], expected_bend_sigma, rtol=1.0e-5, atol=1.0e-6)
+        np.testing.assert_allclose(sigma[1, 2], expected_twist_sigma, rtol=1.0e-5, atol=1.0e-6)
+        test.assertGreater(c_fric[0, 0], 0.0)
+        test.assertGreater(c_fric[1, 2], 0.0)
+        test.assertLessEqual(c_fric[0, 0], 10.0 + 1.0e-6)
+        test.assertLessEqual(c_fric[1, 2], 2.0 + 1.0e-6)
+        test.assertGreater(c_fric[0, 0], c_fric[1, 2])
+        np.testing.assert_allclose(sigma[0, 1:], [0.0, 0.0], atol=1.0e-6)
+        np.testing.assert_allclose(sigma[1, :2], [0.0, 0.0], atol=1.0e-6)
+        test.assertGreater(sigma[0, 0], sigma[1, 2])
+
+
+def _split_cable_material_basis_invariants(test, device):
+    """cable material basis must be orthonormal and invert parent/basis transforms."""
+    with wp.ScopedDevice(device):
+        inv_sqrt2 = float(1.0 / np.sqrt(2.0))
+        tangents = wp.array(
+            [
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0],
+                [inv_sqrt2, inv_sqrt2, 0.0],
+                [0.2, -0.4, 0.9],
+                [0.0, 0.0, 0.0],
+            ],
+            dtype=wp.vec3,
+            device=device,
+        )
+        basis_lengths = wp.zeros(5, dtype=wp.vec3, device=device)
+        basis_dots = wp.zeros(5, dtype=wp.vec3, device=device)
+        roundtrip_errors = wp.zeros(5, dtype=wp.vec3, device=device)
+        hessian_errors = wp.zeros(5, dtype=wp.vec3, device=device)
+        projector_errors = wp.zeros(5, dtype=wp.vec3, device=device)
+
+        wp.launch(
+            _eval_cable_material_basis_invariants_kernel,
+            dim=5,
+            inputs=[tangents],
+            outputs=[basis_lengths, basis_dots, roundtrip_errors, hessian_errors, projector_errors],
+            device=device,
+        )
+
+        np.testing.assert_allclose(basis_lengths.numpy(), np.ones((5, 3)), rtol=1.0e-6, atol=1.0e-6)
+        np.testing.assert_allclose(basis_dots.numpy(), np.zeros((5, 3)), atol=1.0e-6)
+        np.testing.assert_allclose(roundtrip_errors.numpy(), np.zeros((5, 3)), atol=1.0e-6)
+        np.testing.assert_allclose(hessian_errors.numpy(), np.zeros((5, 3)), atol=1.0e-6)
+        np.testing.assert_allclose(projector_errors.numpy(), np.zeros((5, 3)), atol=1.0e-6)
+
+
+def _split_cable_material_basis_is_continuous_near_axis_cutoff(test, device):
+    """Cable material bend axes should not jump near axis-selection cutoffs."""
+    with wp.ScopedDevice(device):
+        xs = np.asarray([0.895, 0.899, 0.900, 0.901, 0.905], dtype=np.float64)
+        tangents_np = np.stack([xs, np.zeros_like(xs), np.sqrt(1.0 - xs * xs)], axis=1)
+        tangents = wp.array(tangents_np, dtype=wp.vec3, device=device)
+        basis_dots = wp.zeros(len(xs) - 1, dtype=wp.vec3, device=device)
+
+        wp.launch(
+            _eval_cable_material_basis_continuity_kernel,
+            dim=len(xs) - 1,
+            inputs=[tangents],
+            outputs=[basis_dots],
+            device=device,
+        )
+
+        dots = basis_dots.numpy()
+        test.assertGreater(
+            float(np.min(dots)),
+            0.999,
+            f"cable material basis jumped near an axis-selection cutoff: dots={dots}",
+        )
+
+
+def _split_cable_bend_twist_projectors_have_no_pure_mode_leakage(test, device):
+    """Pure bend/twist rotations should project cleanly for +Z and tilted tangent axes."""
+    with wp.ScopedDevice(device):
+        inv_sqrt2 = float(1.0 / np.sqrt(2.0))
+        tangents = wp.array(
+            [
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0],
+                [inv_sqrt2, inv_sqrt2, 0.0],
+                [0.2, -0.4, 0.9],
+            ],
+            dtype=wp.vec3,
+            device=device,
+        )
+        signals = wp.zeros(4, dtype=wp.vec3, device=device)
+        leaks = wp.zeros(4, dtype=wp.vec3, device=device)
+
+        wp.launch(
+            _eval_split_cable_bend_twist_mode_leakage_kernel,
+            dim=4,
+            inputs=[tangents],
+            outputs=[signals, leaks],
+            device=device,
+        )
+
+        signal = signals.numpy()[:, :2]
+        leak = leaks.numpy()[:, :2]
+        test.assertTrue(np.all(signal > 1.0e-3), f"pure-mode signals unexpectedly small: {signal}")
+        np.testing.assert_allclose(leak, np.zeros_like(leak), atol=1.0e-6)
+        test.assertLess(float(np.max(leak / np.maximum(signal, 1.0e-12))), 1.0e-6)
+
+
+def _split_cable_stretch_shear_projectors_have_no_pure_mode_leakage(test, device):
+    """Axial/transverse displacements should project cleanly and P_stretch+P_shear=I."""
+    with wp.ScopedDevice(device):
+        inv_sqrt2 = float(1.0 / np.sqrt(2.0))
+        tangents = wp.array(
+            [
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0],
+                [inv_sqrt2, inv_sqrt2, 0.0],
+                [0.2, -0.4, 0.9],
+            ],
+            dtype=wp.vec3,
+            device=device,
+        )
+        signals = wp.zeros(4, dtype=wp.vec3, device=device)
+        leaks = wp.zeros(4, dtype=wp.vec3, device=device)
+
+        wp.launch(
+            _eval_split_cable_stretch_shear_mode_leakage_kernel,
+            dim=4,
+            inputs=[tangents],
+            outputs=[signals, leaks],
+            device=device,
+        )
+
+        signal = signals.numpy()[:, :2]
+        leak = leaks.numpy()
+        test.assertTrue(np.all(signal > 1.0e-3), f"pure-mode signals unexpectedly small: {signal}")
+        # leak columns: [stretch->shear, shear->stretch, completeness residual]
+        np.testing.assert_allclose(leak, np.zeros_like(leak), atol=1.0e-6)
+
+
+def _split_cable_routes_explicit_shear_to_second_slot(test, device):
+    """Explicit shear stiffness/damping must land in the split shear slot."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    body = builder.add_link()
+    joint = builder.add_joint_cable(
+        -1,
+        body,
+        stretch_stiffness=100.0,
+        stretch_damping=0.2,
+        shear_stiffness=40.0,
+        shear_damping=0.7,
+        bend_stiffness=10.0,
+        bend_damping=0.5,
+        twist_stiffness=3.0,
+        twist_damping=0.25,
+    )
+    builder.add_articulation([joint])
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model)
+
+    np.testing.assert_array_equal(model.joint_dof_dim.numpy()[joint], [2, 2])
+    test.assertEqual(int(solver.joint_constraint_dim.numpy()[joint]), 4)
+    start = int(solver.joint_constraint_start.numpy()[joint])
+    np.testing.assert_allclose(solver.joint_penalty_k_max.numpy()[start : start + 4], [100.0, 40.0, 10.0, 3.0])
+    np.testing.assert_allclose(solver.joint_penalty_kd.numpy()[start : start + 4], [0.2, 0.7, 0.5, 0.25])
+
+
+def _split_cable_angular_stiffness_isolated_by_projector(test, device):
+    """Bend/twist stiffness should scale only its projected angular mode."""
+    with wp.ScopedDevice(device):
+        inv_sqrt2 = float(1.0 / np.sqrt(2.0))
+        tangents = wp.array(
+            [
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0],
+                [inv_sqrt2, inv_sqrt2, 0.0],
+                [0.2, -0.4, 0.9],
+            ],
+            dtype=wp.vec3,
+            device=device,
+        )
+        isolation_errors = wp.zeros(4, dtype=wp.vec3, device=device)
+        scaling_errors = wp.zeros(4, dtype=wp.vec3, device=device)
+        residual_errors = wp.zeros(4, dtype=wp.vec3, device=device)
+
+        wp.launch(
+            _eval_split_cable_projector_stiffness_isolation_kernel,
+            dim=4,
+            inputs=[tangents],
+            outputs=[isolation_errors, scaling_errors, residual_errors],
+            device=device,
+        )
+
+        max_isolation = float(np.max(isolation_errors.numpy()))
+        max_scaling = float(np.max(scaling_errors.numpy()))
+        max_residual = float(np.max(residual_errors.numpy()))
+        test.assertLess(max_isolation, 1.0e-5, f"bend/twist stiffness isolation failed: {isolation_errors.numpy()}")
+        test.assertLess(max_scaling, 1.0e-5, f"bend/twist force scaling failed: {scaling_errors.numpy()}")
+        test.assertLess(max_residual, 1.0e-5, f"projected residual angle accuracy failed: {residual_errors.numpy()}")
+
+
+def _split_cable_material_force_law_matches_ei_gj(test, device):
+    """Per-joint bend/twist torques should match EI/h and GJ/h stiffness inputs."""
+    segment_length = 0.08
+    radius = 0.012
+    youngs_modulus = 2.0e6
+    poissons_ratio = 0.25
+    angle = 0.031
+    joint_count = 7
+
+    _stretch, bend_stiffness, twist_stiffness = newton.utils.create_cable_stiffness_from_elastic_moduli(
+        youngs_modulus,
+        radius,
+        segment_length,
+        poissons_ratio=poissons_ratio,
+    )
+
+    torque_magnitudes = wp.zeros(2, dtype=float, device=device)
+    leakage_errors = wp.zeros(4, dtype=float, device=device)
+    wp.launch(
+        _eval_split_cable_material_force_law_kernel,
+        dim=1,
+        inputs=[bend_stiffness, twist_stiffness, angle, torque_magnitudes, leakage_errors],
+        device=device,
+    )
+
+    measured_bend, measured_twist = torque_magnitudes.numpy()
+    leak_bend_to_twist, leak_twist_to_bend, bend_strain_error, twist_strain_error = leakage_errors.numpy()
+    bend_strain = 2.0 * np.tan(0.5 * angle)
+    bend_jacobian = 1.0 + (0.5 * bend_strain) ** 2
+    expected_bend = bend_stiffness * bend_strain * bend_jacobian
+    expected_twist = twist_stiffness * angle
+
+    np.testing.assert_allclose(measured_bend, expected_bend, rtol=1.0e-5, atol=1.0e-8)
+    np.testing.assert_allclose(measured_twist, expected_twist, rtol=1.0e-5, atol=1.0e-8)
+    test.assertLess(leak_bend_to_twist, max(1.0e-8, 1.0e-6 * expected_bend))
+    test.assertLess(leak_twist_to_bend, max(1.0e-8, 1.0e-6 * expected_twist))
+    test.assertLess(bend_strain_error, 1.0e-8)
+    test.assertLess(twist_strain_error, 1.0e-8)
+
+    total_twist = angle * joint_count
+    effective_length = segment_length * joint_count
+    polar_inertia = 0.5 * np.pi * radius**4
+    shear_modulus = youngs_modulus / (2.0 * (1.0 + poissons_ratio))
+    expected_chain_torque = shear_modulus * polar_inertia * total_twist / effective_length
+    np.testing.assert_allclose(measured_twist, expected_chain_torque, rtol=1.0e-5, atol=1.0e-8)
+
+
+def _split_cable_discrete_cantilever_moment_law_matches_beam_limit(test, device):
+    """Small-angle cantilever moments should match the Euler-Bernoulli discrete limit."""
+    segment_length = 0.08
+    joint_count = 14
+    tip_force = 0.2
+    bend_stiffness = 37.0
+
+    lever_arms_np = segment_length * np.arange(joint_count, 0, -1, dtype=np.float32)
+    lever_arms = wp.array(lever_arms_np, dtype=float, device=device)
+    errors = wp.zeros(joint_count, dtype=wp.vec3, device=device)
+
+    wp.launch(
+        _eval_split_cable_cantilever_moment_law_kernel,
+        dim=joint_count,
+        inputs=[lever_arms, bend_stiffness, tip_force, errors],
+        device=device,
+    )
+
+    errors_np = errors.numpy()
+    max_moment_error, max_twist_leakage, max_strain_error = np.max(errors_np, axis=0)
+    max_moment = tip_force * float(lever_arms_np[0])
+    max_strain = max_moment / bend_stiffness
+
+    test.assertLess(max_moment_error, max(1.0e-7, 1.0e-5 * max_moment))
+    test.assertLess(max_twist_leakage, max(1.0e-8, 1.0e-6 * max_moment))
+    test.assertLess(max_strain_error, max(1.0e-8, 1.0e-5 * max_strain))
+
+    expected_moments = tip_force * lever_arms_np.astype(np.float64)
+    expected_angles = expected_moments / bend_stiffness
+    discrete_tip_deflection = float(np.dot(lever_arms_np, expected_angles))
+    closed_form_deflection = (
+        tip_force * segment_length**2 * joint_count * (joint_count + 1) * (2 * joint_count + 1) / (6.0 * bend_stiffness)
+    )
+    np.testing.assert_allclose(discrete_tip_deflection, closed_form_deflection, rtol=1.0e-7, atol=1.0e-10)
+
+    # With k_bend = EI/h, the discrete spring-chain compliance converges to
+    # the Euler-Bernoulli cantilever tip compliance F L^3 / (3 EI).
+    def discrete_to_eb_ratio(n: int) -> float:
+        length = n * segment_length
+        ei = bend_stiffness * segment_length
+        discrete = tip_force * segment_length**2 * n * (n + 1) * (2 * n + 1) / (6.0 * bend_stiffness)
+        eb = tip_force * length**3 / (3.0 * ei)
+        return discrete / eb
+
+    coarse_ratio = discrete_to_eb_ratio(joint_count)
+    fine_ratio = discrete_to_eb_ratio(4 * joint_count)
+    test.assertLess(abs(fine_ratio - 1.0), abs(coarse_ratio - 1.0))
+    test.assertLess(abs(fine_ratio - 1.0), 0.03)
+
+
+def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
+    """Kinematically-driven cantilever should settle to a uniform-curvature arc.
+
+    Clamp the root and place the tip on an analytic discrete arc. The
+    minimum-energy equilibrium is uniform per-joint bend and zero twist.
+    """
+    segment_length = 0.10
+    num_segments = 14
+    num_joints = num_segments - 1
+    cable_length = num_segments * segment_length
+    bend_stiffness = 400.0
+    target_tip_angle = np.deg2rad(60.0)
+    delta_theta = target_tip_angle / num_joints
+
+    # Twist >> bend amplifies any bend energy that leaks into the twist subspace.
+    twist_stiffness = 1000.0
+
+    def _quat_mul(a, b):
+        ax, ay, az, aw = a
+        bx, by, bz, bw = b
+        return np.array(
+            [
+                aw * bx + ax * bw + ay * bz - az * by,
+                aw * by - ax * bz + ay * bw + az * bx,
+                aw * bz + ax * by - ay * bx + az * bw,
+                aw * bw - ax * bx - ay * by - az * bz,
+            ],
+            dtype=np.float64,
+        )
+
+    def _quat_distance(a, b):
+        a = np.asarray(a, dtype=np.float64)
+        b = np.asarray(b, dtype=np.float64)
+        a /= max(float(np.linalg.norm(a)), 1.0e-12)
+        b /= max(float(np.linalg.norm(b)), 1.0e-12)
+        return float(min(np.linalg.norm(a - b), np.linalg.norm(a + b)))
+
+    builder = newton.ModelBuilder(gravity=0.0)
+    newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+
+    points = newton.utils.create_straight_cable_points(
+        start=wp.vec3(0.0, 0.0, 0.0),
+        direction=wp.vec3(1.0, 0.0, 0.0),
+        length=cable_length,
+        num_segments=num_segments,
+    )
+    quats = newton.utils.create_parallel_transport_cable_quaternions(points)
+    rod_bodies, _rod_joints = builder.add_rod(
+        positions=points,
+        quaternions=quats,
+        radius=0.010,
+        stretch_stiffness=1.0e6,
+        bend_stiffness=bend_stiffness,
+        bend_damping=1.0,
+        twist_stiffness=twist_stiffness,
+        twist_damping=1.0,
+        label="kinematic_arc",
+    )
+
+    for body_idx in (int(rod_bodies[0]), int(rod_bodies[-1])):
+        builder.body_flags[body_idx] = int(newton.BodyFlags.KINEMATIC)
+        builder.body_mass[body_idx] = 0.0
+        builder.body_inv_mass[body_idx] = 0.0
+        builder.body_inertia[body_idx] = wp.mat33(0.0)
+        builder.body_inv_inertia[body_idx] = wp.mat33(0.0)
+
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, iterations=30)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+
+    tip_body = int(rod_bodies[-1])
+    body_indices = np.asarray(rod_bodies, dtype=np.int64)
+    dynamic_body_indices = body_indices[1:-1]
+
+    analytic_points = np.zeros((num_segments + 1, 3), dtype=np.float64)
+    for i in range(1, num_segments + 1):
+        theta = (i - 1) * delta_theta
+        analytic_points[i] = analytic_points[i - 1] + segment_length * np.array(
+            [np.cos(theta), 0.0, -np.sin(theta)], dtype=np.float64
+        )
+
+    tip_target_pos = analytic_points[num_segments - 1]
+    tip_angle = (num_segments - 1) * delta_theta
+    half = 0.5 * tip_angle
+    tip_target_quat = np.array([0.0, np.sin(half), 0.0, np.cos(half)], dtype=np.float64)
+
+    rest_body_q = state_0.body_q.numpy().astype(np.float64)
+    rest_tip_quat = rest_body_q[tip_body, 3:7].copy()
+    rest_tip_pos = rest_body_q[tip_body, :3].copy()
+    tip_final_quat = _quat_mul(tip_target_quat, rest_tip_quat)
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 10
+    sim_dt = frame_dt / sim_substeps
+    ramp_frames = 120
+    min_hold_frames = 30
+    max_hold_frames = 240
+    settle_speed = 5.0e-5
+
+    def _set_tip(scale):
+        tip_pos_now = (1.0 - scale) * rest_tip_pos + scale * tip_target_pos
+        half_now = 0.5 * tip_angle * scale
+        delta_quat = np.array([0.0, np.sin(half_now), 0.0, np.cos(half_now)], dtype=np.float64)
+        tip_quat_now = _quat_mul(delta_quat, rest_tip_quat)
+
+        body_q = state_0.body_q.numpy()
+        body_q[tip_body, :3] = tip_pos_now.astype(np.float32)
+        body_q[tip_body, 3:7] = tip_quat_now.astype(np.float32)
+        state_0.body_q.assign(body_q)
+        state_1.body_q.assign(body_q)
+
+    def _step_frame(scale):
+        nonlocal state_0, state_1
+        _set_tip(scale)
+        for _ in range(sim_substeps):
+            solver.step(state_0, state_1, control, None, sim_dt)
+            state_0, state_1 = state_1, state_0
+
+    def _max_dynamic_speed():
+        body_qd = state_0.body_qd.numpy().astype(np.float64)
+        linear = float(np.max(np.linalg.norm(body_qd[dynamic_body_indices, :3], axis=1)))
+        angular = float(np.max(np.linalg.norm(body_qd[dynamic_body_indices, 3:6], axis=1)))
+        return linear, angular
+
+    for frame in range(ramp_frames):
+        _step_frame((frame + 1) / ramp_frames)
+
+    for frame in range(max_hold_frames):
+        _step_frame(1.0)
+        max_lin_speed, max_ang_speed = _max_dynamic_speed()
+        if frame + 1 >= min_hold_frames and max(max_lin_speed, max_ang_speed) < settle_speed:
+            break
+
+    body_q = state_0.body_q.numpy().astype(np.float64)
+    centerline = body_q[body_indices, :3]
+    edges = np.diff(centerline, axis=0)
+    edge_norms = np.linalg.norm(edges, axis=1)
+    edges_unit = edges / edge_norms[:, None]
+    cos_per_joint = np.clip(np.einsum("ij,ij->i", edges_unit[:-1], edges_unit[1:]), -1.0, 1.0)
+    angles_per_joint = np.arccos(cos_per_joint)
+
+    angle_rms_deg = float(np.rad2deg(np.sqrt(np.mean((angles_per_joint - delta_theta) ** 2))))
+    max_angle_err_deg = float(np.rad2deg(np.max(np.abs(angles_per_joint - delta_theta))))
+    shape_err = np.linalg.norm(centerline - analytic_points[:num_segments], axis=1)
+    shape_rms_rel = float(np.sqrt(np.mean(shape_err**2)) / cable_length)
+    y_drift_rel = float(np.max(np.abs(centerline[:, 1] - centerline[0, 1])) / cable_length)
+    max_stretch_rel = float(np.max(np.abs(edge_norms - segment_length) / segment_length))
+    max_lin_speed, max_ang_speed = _max_dynamic_speed()
+    tip_pos_err = float(np.linalg.norm(body_q[tip_body, :3] - tip_target_pos))
+    tip_quat_err = _quat_distance(body_q[tip_body, 3:7], tip_final_quat)
+
+    max_measured_bend = float(np.max(np.abs(angles_per_joint)))
+
+    diag = {
+        "angle_rms_deg": angle_rms_deg,
+        "max_angle_err_deg": max_angle_err_deg,
+        "shape_rms_rel": shape_rms_rel,
+        "y_drift_rel": y_drift_rel,
+        "max_stretch_rel": max_stretch_rel,
+        "max_lin_speed": max_lin_speed,
+        "max_ang_speed": max_ang_speed,
+        "max_measured_bend": max_measured_bend,
+    }
+
+    test.assertTrue(np.isfinite(centerline).all(), f"non-finite cable state after settle: {diag}")
+    test.assertGreater(float(np.min(edge_norms)), 0.5 * segment_length, f"segment collapsed: {diag}")
+    test.assertLess(tip_pos_err, 1.0e-5, f"kinematic tip position drifted: {diag}")
+    test.assertLess(tip_quat_err, 1.0e-5, f"kinematic tip orientation drifted: {diag}")
+    test.assertLess(max_lin_speed, 1.0e-4, f"arc did not settle translationally: {diag}")
+    test.assertLess(max_ang_speed, 2.5e-4, f"arc did not settle rotationally: {diag}")
+    test.assertLess(y_drift_rel, 1.0e-4, f"pure bend produced out-of-plane drift: {diag}")
+    test.assertLess(max_stretch_rel, 1.0e-3, f"segment lengths changed under pure bend: {diag}")
+    test.assertLess(angle_rms_deg, 0.12, f"non-uniform per-joint bend: {diag}")
+    test.assertLess(max_angle_err_deg, 0.22, f"localized bend angle error too high: {diag}")
+    test.assertLess(shape_rms_rel, 1.0e-3, f"centerline drifted from analytic arc: {diag}")
+    test.assertGreater(max_measured_bend, 0.5 * delta_theta, f"bend motion was not active: {diag}")
+
+
+def _split_cable_angular_hessian_matches_finite_difference(test, device):
+    """Projected bend/twist angular Hessians should match centered finite differences."""
+    errors = wp.zeros(2, dtype=wp.vec3, device=device)
+    wp.launch(
+        _eval_split_cable_angular_hessian_finite_difference_kernel,
+        dim=2,
+        outputs=[errors],
+        device=device,
+    )
+
+    errors_np = errors.numpy()
+    max_fd = float(np.max(errors_np[:, 0]))
+    max_sym = float(np.max(errors_np[:, 1]))
+    max_null = float(np.max(errors_np[:, 2]))
+
+    test.assertLess(max_fd, 2.0e-4, f"angular Hessian finite-difference mismatch: {errors_np}")
+    test.assertLess(max_sym, 1.0e-6, f"angular Hessian symmetry mismatch: {errors_np}")
+    test.assertLess(max_null, 1.0e-6, f"angular Hessian projected null-space mismatch: {errors_np}")
+
+
+def _split_cable_geometric_force_hessian_matches_finite_difference(test, device):
+    """Geometric cable force should be the gradient of its geometric strain energy."""
+    errors = wp.zeros(4, dtype=wp.vec3, device=device)
+    wp.launch(
+        _eval_geometric_cable_force_hessian_finite_difference_kernel,
+        dim=4,
+        outputs=[errors],
+        device=device,
+    )
+
+    errors_np = errors.numpy()
+    max_force = float(np.max(errors_np[:, 0]))
+    max_hessian = float(np.max(errors_np[:, 1]))
+    max_sym = float(np.max(errors_np[:, 2]))
+
+    test.assertLess(max_force, 5.0e-4, f"geometric force finite-difference mismatch: {errors_np}")
+    test.assertLess(max_hessian, 5.0e-3, f"geometric Hessian finite-difference mismatch: {errors_np}")
+    test.assertLess(max_sym, 1.0e-5, f"geometric Hessian symmetry mismatch: {errors_np}")
+
+
+def _split_cable_geometric_precurved_twist_does_not_leak_to_bend(test, device):
+    """Pure material twist on a pre-curved rest joint should not create bend strain."""
+    errors = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(
+        _eval_geometric_precurved_twist_is_pure_twist_kernel,
+        dim=1,
+        outputs=[errors],
+        device=device,
+    )
+
+    errors_np = errors.numpy()
+    bend_leak, twist_err, twist_mag = errors_np[0]
+    test.assertLess(bend_leak, 1.0e-6, f"pre-curved pure twist leaked into bend: {errors_np}")
+    test.assertLess(twist_err, 1.0e-6, f"pre-curved pure twist magnitude changed: {errors_np}")
+    test.assertGreater(twist_mag, 0.1, f"twist regression test is vacuous: {errors_np}")
+
+
+def _split_cable_geometric_rest_strain_is_global_rotation_invariant(test, device):
+    """A rigid global rotation of the authored rest shape should not create cable strain."""
+    errors = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(
+        _eval_geometric_global_rotation_preserves_rest_strain_kernel,
+        dim=1,
+        outputs=[errors],
+        device=device,
+    )
+
+    errors_np = errors.numpy()
+    strain_mag = errors_np[0, 0]
+    test.assertLess(strain_mag, 1.0e-6, f"global rotation changed geometric rest strain: {errors_np}")
+
+
+def _split_cable_bishop_transport_handles_antiparallel_fallback(test, device):
+    """Antiparallel tangents still need a transport axis perpendicular to the tangent."""
+    errors = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(
+        _eval_bishop_transport_antiparallel_fallback_kernel,
+        dim=1,
+        outputs=[errors],
+        device=device,
+    )
+
+    errors_np = errors.numpy()
+    map_error, antiparallel_error, mapped_len = errors_np[0]
+    test.assertLess(map_error, 1.0e-6, f"Bishop fallback did not map t0 to -t0: {errors_np}")
+    test.assertLess(antiparallel_error, 1.0e-6, f"Bishop fallback result was not antiparallel: {errors_np}")
+    test.assertGreater(mapped_len, 0.9, f"Bishop fallback produced a degenerate vector: {errors_np}")
+
+
+def _split_cable_curvature_binormal_derivative_matches_finite_difference(test, device):
+    """Curvature-binormal derivative should match the exact capped value function."""
+    errors = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(
+        _eval_geometric_curvature_binormal_derivative_kernel,
+        dim=1,
+        outputs=[errors],
+        device=device,
+    )
+
+    errors_np = errors.numpy()
+    regular_error, capped_error, capped_tangent_error = errors_np[0]
+    test.assertLess(regular_error, 5.0e-4, f"regular curvature derivative finite-difference mismatch: {errors_np}")
+    test.assertLess(capped_error, 5.0e-3, f"capped curvature derivative finite-difference mismatch: {errors_np}")
+    test.assertLess(capped_tangent_error, 1.0e-5, f"capped derivative changed capped magnitude: {errors_np}")
+
+
+def _split_cable_transported_twist_derivative_matches_finite_difference(test, device):
+    """Transported twist derivative should match finite differences for parent and child rotations."""
+    errors = wp.zeros(4, dtype=wp.vec3, device=device)
+    wp.launch(
+        _eval_transported_twist_angle_derivative_kernel,
+        dim=4,
+        outputs=[errors],
+        device=device,
+    )
+
+    errors_np = errors.numpy()
+    max_error = float(np.max(errors_np[:, 0]))
+    max_signal = float(np.max(errors_np[:, 1:]))
+    test.assertLess(max_error, 5.0e-4, f"transported twist derivative finite-difference mismatch: {errors_np}")
+    test.assertGreater(max_signal, 0.05, f"transported twist derivative test is vacuous: {errors_np}")
+
+
+def _split_cable_geometric_curvature_binormal_is_capped(test, device):
+    """Near-fold bend should stay finite under the VBD curvature-binormal cap."""
+    errors = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(
+        _eval_geometric_curvature_binormal_cap_kernel,
+        dim=1,
+        outputs=[errors],
+        device=device,
+    )
+
+    errors_np = errors.numpy()
+    cap_error, _finite_placeholder, kappa_mag = errors_np[0]
+    test.assertLess(cap_error, 1.0e-5, f"near-fold curvature was not capped at 20: {errors_np}")
+    test.assertGreater(kappa_mag, 19.9, f"cap regression test is vacuous: {errors_np}")
+
+
+def _split_cable_dahl_full_step_state_stays_in_active_subspace(test, device):
+    """A solver step with Dahl enabled should not leak pure bend history into twist, or vice versa."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+
+    bend_body = builder.add_link(xform=wp.transform_identity())
+    twist_body = builder.add_link(xform=wp.transform_identity())
+    for body in (bend_body, twist_body):
+        builder.body_flags[body] = int(newton.BodyFlags.KINEMATIC)
+        builder.body_mass[body] = 0.0
+        builder.body_inv_mass[body] = 0.0
+        builder.body_inertia[body] = wp.mat33(0.0)
+        builder.body_inv_inertia[body] = wp.mat33(0.0)
+
+    bend_joint = builder.add_joint_cable(-1, bend_body, bend_stiffness=10.0, twist_stiffness=2.0)
+    twist_joint = builder.add_joint_cable(-1, twist_body, bend_stiffness=10.0, twist_stiffness=2.0)
+    builder.add_articulation([bend_joint])
+    builder.add_articulation([twist_joint])
+    builder.color()
+    model = builder.finalize(device=device)
+    model.vbd.dahl_eps_max.fill_(0.2)
+    model.vbd.dahl_tau.fill_(0.2)
+
+    solver = newton.solvers.SolverVBD(model, iterations=1)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+
+    body_q = state_0.body_q.numpy()
+    body_q[bend_body] = [0.0, 0.0, 0.0, *wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.1)]
+    body_q[twist_body] = [0.0, 0.0, 0.0, *wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.1)]
+    state_0.body_q.assign(body_q)
+    state_1.body_q.assign(body_q)
+
+    solver.step(state_0, state_1, control, None, 1.0 / 60.0)
+
+    sigma = solver.joint_sigma_prev.numpy()
+    kappa = solver.joint_kappa_prev.numpy()
+    d_kappa = solver.joint_dkappa_prev.numpy()
+
+    test.assertGreater(np.linalg.norm(sigma[bend_joint, :2]), 1.0e-4)
+    test.assertGreater(abs(float(sigma[twist_joint, 2])), 1.0e-4)
+    np.testing.assert_allclose(sigma[bend_joint, 2], 0.0, atol=1.0e-6)
+    np.testing.assert_allclose(sigma[twist_joint, :2], [0.0, 0.0], atol=1.0e-6)
+    np.testing.assert_allclose(kappa[bend_joint, 2], 0.0, atol=1.0e-6)
+    np.testing.assert_allclose(kappa[twist_joint, :2], [0.0, 0.0], atol=1.0e-6)
+    np.testing.assert_allclose(d_kappa[bend_joint, 2], 0.0, atol=1.0e-6)
+    np.testing.assert_allclose(d_kappa[twist_joint, :2], [0.0, 0.0], atol=1.0e-6)
+
+
 class TestCable(unittest.TestCase):
     pass
 
@@ -4313,6 +6132,132 @@ add_function_test(
     TestCable,
     "test_cable_world_joint_attaches_rod_endpoint",
     _cable_world_joint_attaches_rod_endpoint_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_angular_slot_layout",
+    _split_cable_angular_slot_layout,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_stiffness_helper_returns_physical_twist",
+    _cable_stiffness_helper_returns_physical_twist,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_dahl_uses_bend_and_twist_envelopes",
+    _split_cable_dahl_uses_bend_and_twist_envelopes,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_material_basis_invariants",
+    _split_cable_material_basis_invariants,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_material_basis_is_continuous_near_axis_cutoff",
+    _split_cable_material_basis_is_continuous_near_axis_cutoff,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_bend_twist_projectors_have_no_pure_mode_leakage",
+    _split_cable_bend_twist_projectors_have_no_pure_mode_leakage,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_stretch_shear_projectors_have_no_pure_mode_leakage",
+    _split_cable_stretch_shear_projectors_have_no_pure_mode_leakage,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_routes_explicit_shear_to_second_slot",
+    _split_cable_routes_explicit_shear_to_second_slot,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_angular_stiffness_isolated_by_projector",
+    _split_cable_angular_stiffness_isolated_by_projector,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_material_force_law_matches_ei_gj",
+    _split_cable_material_force_law_matches_ei_gj,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_discrete_cantilever_moment_law_matches_beam_limit",
+    _split_cable_discrete_cantilever_moment_law_matches_beam_limit,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_kinematic_arc_yields_uniform_curvature",
+    _split_cable_kinematic_arc_yields_uniform_curvature,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_angular_hessian_matches_finite_difference",
+    _split_cable_angular_hessian_matches_finite_difference,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_geometric_force_hessian_matches_finite_difference",
+    _split_cable_geometric_force_hessian_matches_finite_difference,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_geometric_precurved_twist_does_not_leak_to_bend",
+    _split_cable_geometric_precurved_twist_does_not_leak_to_bend,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_geometric_rest_strain_is_global_rotation_invariant",
+    _split_cable_geometric_rest_strain_is_global_rotation_invariant,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_bishop_transport_handles_antiparallel_fallback",
+    _split_cable_bishop_transport_handles_antiparallel_fallback,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_curvature_binormal_derivative_matches_finite_difference",
+    _split_cable_curvature_binormal_derivative_matches_finite_difference,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_transported_twist_derivative_matches_finite_difference",
+    _split_cable_transported_twist_derivative_matches_finite_difference,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_geometric_curvature_binormal_is_capped",
+    _split_cable_geometric_curvature_binormal_is_capped,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_dahl_full_step_state_stays_in_active_subspace",
+    _split_cable_dahl_full_step_state_stays_in_active_subspace,
     devices=devices,
 )
 

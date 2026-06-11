@@ -4868,42 +4868,71 @@ class ModelBuilder:
         child_xform: Transform | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
         bend_stiffness: float | None = None,
         bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
         label: str | None = None,
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
         **kwargs,
     ) -> int:
-        """Adds a cable joint to the model. It has two degrees of freedom: one linear (stretch)
-        that constrains the distance between the attachment points, and one angular (bend/twist)
-        that penalizes the relative rotation of the attachment frames.
+        """Adds a cable joint to the model.
+
+        Cable joints have split linear stretch/shear DoFs plus separate angular
+        bend and twist DoFs. When both ``shear_stiffness`` and
+        ``shear_damping`` are omitted, shear uses the stretch stiffness /
+        damping, reproducing the isotropic linear energy while using the
+        split layout. When both ``twist_stiffness`` and ``twist_damping`` are
+        omitted, twist uses the bend stiffness / damping, reproducing the
+        isotropic angular energy while using the split layout.
 
         .. note::
 
-            Cable joints are represented in the joint data model, but their two entries
-            are VBD stretch and bend/twist constraint slots rather than
-            ``joint_q`` coordinates. Cable body transforms are integrated directly by
-            :class:`newton.solvers.SolverVBD`; they are not reconstructed by
-            :func:`newton.eval_fk`.
+            Cable joints are supported by :class:`newton.solvers.SolverVBD`, which uses an
+            AVBD backend for rigid bodies. Split cables are represented in the
+            joint data model as VBD stretch, shear, bend, and twist constraint
+            slots rather than ``joint_q`` coordinates. Cable body transforms are
+            integrated directly by :class:`newton.solvers.SolverVBD`; they are
+            not reconstructed by :func:`newton.eval_fk`.
+
+            Split cables use each anchor frame's local ``+Z`` as the material
+            tangent axis for separating axial stretch from shear and twist from
+            bend. For a body-to-body cable span, the parent anchor ``+Z`` should
+            point from the parent attachment toward the child attachment.
+            :meth:`add_rod` and :meth:`add_rod_graph` satisfy the tangent
+            convention automatically.
 
         Args:
             parent: The index of the parent body.
             child: The index of the child body.
             parent_xform: The transform from the parent body frame to the joint parent anchor frame; its
-                translation is the attachment point.
+                translation is the attachment point and its local ``+Z`` axis is the parent-side material
+                tangent.
             child_xform: The transform from the child body frame to the joint child anchor frame; its
-                translation is the attachment point.
+                translation is the attachment point and its local ``+Z`` axis is the child-side material
+                tangent.
             stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e5.
             stretch_damping: Cable stretch damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
                 this is a dimensionless (Rayleigh-style) coefficient. If None,
                 defaults to 0.0.
-            bend_stiffness: Cable bend/twist stiffness (stored as ``target_ke``) [N*m] (torque per radian). If None,
+            shear_stiffness: Optional transverse shear stiffness [N/m]. If None,
+                defaults to ``stretch_stiffness``.
+            shear_damping: Optional transverse shear damping. If None, defaults to
+                ``stretch_damping`` only when both shear parameters are omitted. Otherwise
                 defaults to 0.0.
-            bend_damping: Cable bend/twist damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
-                this is a dimensionless (Rayleigh-style) coefficient. If None,
-                defaults to 0.0.
+            bend_stiffness: Cable bend stiffness (stored as ``target_ke``) [N*m]
+                (torque per radian). If None, defaults to 0.0.
+            bend_damping: Cable bend damping (stored as ``target_kd``). In
+                :class:`newton.solvers.SolverVBD` this is a dimensionless
+                (Rayleigh-style) coefficient. If None, defaults to 0.0.
+            twist_stiffness: Optional twist stiffness [N*m] (torque per radian). If None,
+                defaults to ``bend_stiffness``.
+            twist_damping: Optional twist damping. If None, defaults to ``bend_damping`` only when
+                both twist parameters are omitted. Otherwise defaults to 0.0.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
@@ -4914,15 +4943,35 @@ class ModelBuilder:
             The index of the added joint.
 
         """
-        # Linear DOF (stretch)
-        se_ke = 1.0e5 if stretch_stiffness is None else stretch_stiffness
-        se_kd = 0.0 if stretch_damping is None else stretch_damping
-        ax_lin = ModelBuilder.JointDofConfig(target_ke=se_ke, target_kd=se_kd)
+        # Linear DOFs (stretch and shear). Default shear to stretch so omitted
+        # shear reproduces the isotropic linear anchor energy in the split layout.
+        stretch_ke = 1.0e5 if stretch_stiffness is None else stretch_stiffness
+        stretch_kd = 0.0 if stretch_damping is None else stretch_damping
+        stretch_axis = ModelBuilder.JointDofConfig(target_ke=stretch_ke, target_kd=stretch_kd)
+        if shear_stiffness is None and shear_damping is None:
+            shear_ke = stretch_ke
+            shear_kd = stretch_kd
+        else:
+            shear_ke = stretch_ke if shear_stiffness is None else shear_stiffness
+            shear_kd = 0.0 if shear_damping is None else shear_damping
+        shear_axis = ModelBuilder.JointDofConfig(target_ke=shear_ke, target_kd=shear_kd)
 
-        # Angular DOF (bend/twist)
+        # Angular DOFs (bend and twist). Default twist to bend so omitted twist
+        # reproduces the isotropic angular energy in the split layout.
         bend_ke = 0.0 if bend_stiffness is None else bend_stiffness
         bend_kd = 0.0 if bend_damping is None else bend_damping
-        ax_ang = ModelBuilder.JointDofConfig(target_ke=bend_ke, target_kd=bend_kd)
+        bend_axis = ModelBuilder.JointDofConfig(target_ke=bend_ke, target_kd=bend_kd)
+        if twist_stiffness is None and twist_damping is None:
+            twist_ke = bend_ke
+            twist_kd = bend_kd
+        else:
+            twist_ke = bend_ke if twist_stiffness is None else twist_stiffness
+            twist_kd = 0.0 if twist_damping is None else twist_damping
+        if stretch_ke < 0.0 or shear_ke < 0.0 or bend_ke < 0.0 or twist_ke < 0.0:
+            raise ValueError(
+                "add_joint_cable: stretch_stiffness, shear_stiffness, bend_stiffness, and twist_stiffness must be >= 0"
+            )
+        twist_axis = ModelBuilder.JointDofConfig(target_ke=twist_ke, target_kd=twist_kd)
 
         return self.add_joint(
             JointType.CABLE,
@@ -4930,8 +4979,8 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_axes=[ax_lin],
-            angular_axes=[ax_ang],
+            linear_axes=[stretch_axis, shear_axis],
+            angular_axes=[bend_axis, twist_axis],
             label=label,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
@@ -7336,8 +7385,12 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
         bend_stiffness: float | None = None,
         bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
         closed: bool = False,
         label: str | None = None,
         wrap_in_articulation: bool = True,
@@ -7346,8 +7399,8 @@ class ModelBuilder:
 
         Constructs a chain of capsule bodies from the given centerline points and orientations.
         Each segment is a capsule aligned by the corresponding quaternion, and adjacent capsules
-        are connected by cable joints providing one linear (stretch) and one angular (bend/twist)
-        degree of freedom.
+        are connected by cable joints providing split linear stretch/shear and split angular
+        bend/twist degrees of freedom.
 
         Args:
             positions: Centerline node positions (segment endpoints) in world space. These are the
@@ -7363,10 +7416,18 @@ class ModelBuilder:
                 If None, defaults to 1.0e5.
             stretch_damping: Stretch damping for the cable joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
-            bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke`` [N*m]
+            shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
+                ``stretch_stiffness``.
+            shear_damping: Optional per-joint transverse shear damping. If None, defaults to
+                ``stretch_damping`` only when both shear parameters are omitted. Otherwise defaults to 0.0.
+            bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N*m]
                 (torque per radian). If None, defaults to 0.0.
-            bend_damping: Bend/twist damping for the cable joints (applied per-joint; not length-normalized). If None,
+            bend_damping: Bend damping for the cable joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
+            twist_stiffness: Optional per-joint cable twist stiffness [N*m]. If None, defaults to
+                ``bend_stiffness``.
+            twist_damping: Optional per-joint cable twist damping. If None, defaults to ``bend_damping``
+                only when both twist parameters are omitted. Otherwise defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
             label: Optional label prefix for bodies, shapes, and joints.
@@ -7391,7 +7452,7 @@ class ModelBuilder:
         Note:
             - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e5;
               pass a larger value when neighboring capsules should remain nearly inextensible.
-            - Stretch, bend, and damping values are passed through as provided per joint.
+            - Stretch, shear, bend, twist, and damping values are passed through as provided per joint.
             - Each segment is implemented as a capsule primitive. The segment's body transform is
               placed at the start point ``positions[i]`` with a local center-of-mass offset of
               ``(0, 0, half_height)`` so that the COM lies at the segment midpoint. The capsule shape
@@ -7412,6 +7473,10 @@ class ModelBuilder:
         # Input validation
         if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
             raise ValueError("add_rod: stretch_stiffness and bend_stiffness must be >= 0")
+        if shear_stiffness is not None and shear_stiffness < 0.0:
+            raise ValueError("add_rod: shear_stiffness must be >= 0")
+        if twist_stiffness is not None and twist_stiffness < 0.0:
+            raise ValueError("add_rod: twist_stiffness must be >= 0")
 
         num_segments = len(positions) - 1
         if num_segments < 1:
@@ -7450,8 +7515,12 @@ class ModelBuilder:
             cfg=cfg,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=stretch_damping,
+            shear_stiffness=shear_stiffness,
+            shear_damping=shear_damping,
             bend_stiffness=bend_stiffness,
             bend_damping=bend_damping,
+            twist_stiffness=twist_stiffness,
+            twist_damping=twist_damping,
             label=label,
             wrap_in_articulation=False,
             quaternions=quaternions,
@@ -7495,8 +7564,12 @@ class ModelBuilder:
                     child_xform=child_xform,
                     bend_stiffness=bend_stiffness,
                     bend_damping=bend_damping,
+                    twist_stiffness=twist_stiffness,
+                    twist_damping=twist_damping,
                     stretch_stiffness=stretch_stiffness,
                     stretch_damping=stretch_damping,
+                    shear_stiffness=shear_stiffness,
+                    shear_damping=shear_damping,
                     label=loop_joint_label,
                     collision_filter_parent=True,
                     enabled=True,
@@ -7513,8 +7586,12 @@ class ModelBuilder:
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
+        shear_stiffness: float | None = None,
+        shear_damping: float | None = None,
         bend_stiffness: float | None = None,
         bend_damping: float | None = None,
+        twist_stiffness: float | None = None,
+        twist_damping: float | None = None,
         label: str | None = None,
         wrap_in_articulation: bool = True,
         quaternions: list[Quat] | None = None,
@@ -7553,9 +7630,17 @@ class ModelBuilder:
             stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
                 Defaults to 1.0e5.
             stretch_damping: Stretch damping (per joint). Defaults to 0.0.
-            bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke`` [N*m].
+            shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
+                ``stretch_stiffness``.
+            shear_damping: Optional per-joint transverse shear damping. If None, defaults to
+                ``stretch_damping`` only when both shear parameters are omitted. Otherwise defaults to 0.0.
+            bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N*m].
                 Defaults to 0.0.
-            bend_damping: Bend/twist damping (per joint). Defaults to 0.0.
+            bend_damping: Bend damping (per joint). Defaults to 0.0.
+            twist_stiffness: Optional per-joint cable twist stiffness [N*m]. If None, defaults to
+                ``bend_stiffness``.
+            twist_damping: Optional per-joint cable twist damping. If None, defaults to ``bend_damping``
+                only when both twist parameters are omitted. Otherwise defaults to 0.0.
             label: Optional label prefix for bodies, shapes, joints, and articulations.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
                 per connected component.
@@ -7585,6 +7670,10 @@ class ModelBuilder:
 
         if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
             raise ValueError("add_rod_graph: stretch_stiffness and bend_stiffness must be >= 0")
+        if shear_stiffness is not None and shear_stiffness < 0.0:
+            raise ValueError("add_rod_graph: shear_stiffness must be >= 0")
+        if twist_stiffness is not None and twist_stiffness < 0.0:
+            raise ValueError("add_rod_graph: twist_stiffness must be >= 0")
         if len(node_positions) < 2:
             raise ValueError("add_rod_graph: node_positions must contain at least 2 nodes")
         if len(edges) < 1:
@@ -7738,8 +7827,12 @@ class ModelBuilder:
                         child_xform=child_xform,
                         bend_stiffness=bend_stiffness,
                         bend_damping=bend_damping,
+                        twist_stiffness=twist_stiffness,
+                        twist_damping=twist_damping,
                         stretch_stiffness=stretch_stiffness,
                         stretch_damping=stretch_damping,
+                        shear_stiffness=shear_stiffness,
+                        shear_damping=shear_damping,
                         label=joint_label,
                         collision_filter_parent=True,
                         enabled=True,
@@ -7793,8 +7886,12 @@ class ModelBuilder:
                                 child_xform=child_xform,
                                 bend_stiffness=bend_stiffness,
                                 bend_damping=bend_damping,
+                                twist_stiffness=twist_stiffness,
+                                twist_damping=twist_damping,
                                 stretch_stiffness=stretch_stiffness,
                                 stretch_damping=stretch_damping,
+                                shear_stiffness=shear_stiffness,
+                                shear_damping=shear_damping,
                                 label=joint_label,
                                 collision_filter_parent=True,
                                 enabled=True,

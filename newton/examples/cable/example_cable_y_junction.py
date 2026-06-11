@@ -7,6 +7,12 @@
 # This example shows how to simulate a Y-junction using `builder.add_rod_graph(...)`
 # with a shared junction node.
 #
+# Run interactively:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction
+#
+# Run as a test:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction --test --viewer null
+#
 ###########################################################################
 
 from __future__ import annotations
