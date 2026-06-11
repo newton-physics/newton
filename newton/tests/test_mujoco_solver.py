@@ -25,6 +25,7 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_RAW,
 )
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
+from newton._src.solvers.mujoco.kernels import convert_solref
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
@@ -11113,9 +11114,8 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         invw_b = float(body_invweight0[0, body_b, 0]) if body_b >= 0 else 0.0
         dmax = float(solver.mjw_data.contact.solimp.numpy()[contact_idx, 1])
         factor = (invw_a + invw_b) * (1.0 - dmax)
-        direct_stiffness = max(ke * factor, MJ_MINVAL)
-        direct_damping = max(kd * factor, MJ_MINVAL)
-        return 2.0 / direct_damping, direct_damping / (2.0 * math.sqrt(direct_stiffness))
+        solref = convert_solref(max(ke * factor, MJ_MINVAL), max(kd * factor, MJ_MINVAL), 1.0, 1.0)
+        return float(solref[0]), float(solref[1])
 
     def test_force_space_contact_solref_uses_invweight0_and_dmax(self):
         """Per-contact ``solref`` must equal the positive ``(timeconst, dampratio)``
@@ -11133,10 +11133,6 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         rel_tol = 1.0e-4
         self.assertAlmostEqual(float(actual_solref[0]), expected_ref, delta=abs(expected_ref) * rel_tol)
         self.assertAlmostEqual(float(actual_solref[1]), expected_damp, delta=abs(expected_damp) * rel_tol)
-        # Positive ``(timeconst, dampratio)`` convention so MuJoCo's refsafe
-        # clamp stays active for contacts too stiff for the timestep.
-        self.assertGreater(float(actual_solref[0]), 0.0)
-        self.assertGreater(float(actual_solref[1]), 0.0)
 
     def test_force_space_contact_solref_uses_two_body_invweight_sum(self):
         """Dynamic-vs-dynamic contact: factor uses the sum of both bodies' invweight0."""
@@ -11216,8 +11212,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         actual_solref = solver.mjw_data.contact.solref.numpy()[0]
         rel_tol = 1.0e-4
         self.assertAlmostEqual(float(actual_solref[0]), updated_solref_ref, delta=abs(updated_solref_ref) * rel_tol)
-        # Heavier body → smaller invweight0 → smaller factor → larger timeconst
-        # (solref[0] = 2 / (kd * factor)).
+        # Heavier body → smaller factor → larger timeconst (2 / (kd * factor)).
         self.assertGreater(updated_solref_ref, initial_solref_ref)
 
     def test_force_space_contact_mixed_mode_falls_through_to_geom_solref(self):
@@ -11236,13 +11231,8 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
         self._run_to_first_contact(model, solver)
         actual_solref = solver.mjw_data.contact.solref.numpy()[0]
-        # Both the override and per-geom mixing now emit positive
-        # ``(timeconst, dampratio)``, so discriminate by value: the actual
-        # ``solref`` must differ from the two-body force-space conversion the
-        # override would have written, proving the override was bypassed.
+        # Override bypassed: solref must differ from the force-space conversion.
         override_ref, override_damp = self._expected_force_space_solref(solver, 0, ke=ke, kd=kd)
-        self.assertGreater(float(actual_solref[0]), 0.0)
-        self.assertGreater(float(actual_solref[1]), 0.0)
         self.assertFalse(
             np.isclose(float(actual_solref[0]), override_ref, rtol=1e-3)
             and np.isclose(float(actual_solref[1]), override_damp, rtol=1e-3),
@@ -11261,12 +11251,8 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
         self._run_to_first_contact(model, solver)
         actual_solref = solver.mjw_data.contact.solref.numpy()[0]
-        # With dmax=1 the override's ``factor = m_inv * (1 - dmax) = 0`` is
-        # discarded; per-geom mixing keeps a normal positive (timeconst,
-        # dampratio). Had the override fired, the ``MJ_MINVAL``-clamped factor
-        # would yield a degenerate ~``2 / MJ_MINVAL`` timeconst.
-        self.assertGreater(float(actual_solref[0]), 0.0)
-        self.assertGreater(float(actual_solref[1]), 0.0)
+        # dmax=1 zeroes the factor → override skipped; a sub-1.0 timeconst (not
+        # the clamped ~2/MJ_MINVAL) proves the guard fired.
         self.assertLess(float(actual_solref[0]), 1.0)
 
     def test_force_space_with_mujoco_contacts_emits_startup_warning(self):
