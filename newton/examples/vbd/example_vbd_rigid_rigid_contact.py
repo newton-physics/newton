@@ -268,11 +268,12 @@ class Example:
         body_q = self.state_0.body_q.numpy()
         body_indices = self.info["body_indices"]
         elev = self.params["box_elevation"]
+        box_height = self.params["shape_size"] * self.params["box_height_scale"]
 
         settled = 0
         for bi in body_indices:
             z = body_q[bi][2]
-            if not np.isnan(z) and z > elev and z < elev + self.params["box_height"]:
+            if not np.isnan(z) and z > elev and z < elev + box_height:
                 settled += 1
 
         assert settled >= len(body_indices) - 1, (
