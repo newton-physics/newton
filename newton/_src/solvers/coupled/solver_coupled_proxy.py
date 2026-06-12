@@ -18,7 +18,11 @@ from .interface import (
     CouplingEndpointKind,
 )
 from .proxy_utils import (
+    blend_proxy_body_forces_kernel,
+    blend_proxy_particle_forces_kernel,
     restore_filtered_proxy_rigid_contacts_kernel,
+    stash_proxy_body_forces_kernel,
+    stash_proxy_particle_forces_kernel,
     sync_proxy_particles_kernel,
     sync_proxy_states_kernel,
 )
@@ -47,9 +51,11 @@ class _ProxyBodyMapping:
     source_local_to_proxy_global: wp.array = field(default=None)
     destination_local_to_proxy_global: wp.array = field(default=None)
     coupling_forces: wp.array = field(default=None)
+    coupling_forces_previous: wp.array = field(default=None)
     proxy_qd_before: wp.array = field(default=None)
     mass_scale: float = 1.0
     mode: int = 0
+    proxy_relaxation: float = 1.0
 
 
 @dataclass
@@ -70,9 +76,11 @@ class _ProxyParticleMapping:
     source_local_to_proxy_global: wp.array = field(default=None)
     destination_local_to_proxy_global: wp.array = field(default=None)
     coupling_forces: wp.array = field(default=None)
+    coupling_forces_previous: wp.array = field(default=None)
     proxy_qd_before: wp.array = field(default=None)
     mass_scale: float = 1.0
     mode: int = 0
+    proxy_relaxation: float = 1.0
 
 
 @dataclass
@@ -119,6 +127,11 @@ class SolverCoupledProxy(SolverCoupled):
                 prepares proxies to avoid double-counting lagged feedback.
                 ``"staggered"`` syncs source end poses and end velocities
                 directly.
+            proxy_relaxation: Nonnegative relaxation factor used when
+                updating lagged proxy feedback after the destination solve:
+                ``proxy_relaxation * coupling_forces_new + (1 - proxy_relaxation) * coupling_forces_old``.
+                Values below ``1`` underrelax the update, ``1`` keeps the
+                harvested force unchanged, and values above ``1`` overrelax it.
             particles: Source particle ids to map into destination proxies.
             proxy_particles: Optional destination particle ids. Defaults to
                 ``particles``.
@@ -139,6 +152,7 @@ class SolverCoupledProxy(SolverCoupled):
         proxy_bodies: Sequence[int] | None = None
         mass_scale: float = 1.0
         mode: str = "lagged"
+        proxy_relaxation: float = 1.0
         particles: Sequence[int] = ()
         proxy_particles: Sequence[int] | None = None
         collision_pipeline: Callable[[ModelView], object | None] | None = None
@@ -184,6 +198,13 @@ class SolverCoupledProxy(SolverCoupled):
             return int(_PROXY_MODE_BY_NAME[mode.lower()])
         except (AttributeError, KeyError) as err:
             raise ValueError(f"Unknown proxy coupling mode {mode!r}; expected 'lagged' or 'staggered'") from err
+
+    @staticmethod
+    def _proxy_relaxation_value(proxy_relaxation: float) -> float:
+        relaxation = float(proxy_relaxation)
+        if not np.isfinite(relaxation) or relaxation < 0.0:
+            raise ValueError(f"Proxy proxy_relaxation must be finite and >= 0, got {proxy_relaxation!r}")
+        return relaxation
 
     @staticmethod
     def _validate_proxy_ids(label: str, ids: Sequence[int], count: int) -> None:
@@ -237,6 +258,7 @@ class SolverCoupledProxy(SolverCoupled):
         mappings = []
         device = model.device
         for proxy in coupling.proxies:
+            proxy_relaxation = self._proxy_relaxation_value(proxy.proxy_relaxation)
             src_ids = [int(i) for i in proxy.bodies]
             if not src_ids:
                 continue
@@ -278,6 +300,7 @@ class SolverCoupledProxy(SolverCoupled):
                     ),
                     mass_scale=float(proxy.mass_scale),
                     mode=self._proxy_mode_value(proxy.mode),
+                    proxy_relaxation=proxy_relaxation,
                 )
             )
         return mappings
@@ -323,6 +346,7 @@ class SolverCoupledProxy(SolverCoupled):
         mappings = []
         device = model.device
         for proxy in coupling.proxies:
+            proxy_relaxation = self._proxy_relaxation_value(proxy.proxy_relaxation)
             src_ids = [int(i) for i in proxy.particles]
             if not src_ids:
                 continue
@@ -365,6 +389,7 @@ class SolverCoupledProxy(SolverCoupled):
                     ),
                     mass_scale=float(proxy.mass_scale),
                     mode=self._proxy_mode_value(proxy.mode),
+                    proxy_relaxation=proxy_relaxation,
                 )
             )
         return mappings
@@ -555,9 +580,21 @@ class SolverCoupledProxy(SolverCoupled):
         device = model.device
         for mapping in self._proxy_mappings:
             mapping.coupling_forces = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
+            if mapping.proxy_relaxation != 1.0:
+                mapping.coupling_forces_previous = wp.zeros(
+                    mapping.proxy_body_ids_global.shape[0],
+                    dtype=wp.spatial_vector,
+                    device=device,
+                )
             mapping.proxy_qd_before = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
         for mapping in self._proxy_particle_mappings:
             mapping.coupling_forces = wp.zeros(model.particle_count, dtype=wp.vec3, device=device)
+            if mapping.proxy_relaxation != 1.0:
+                mapping.coupling_forces_previous = wp.zeros(
+                    mapping.proxy_particle_ids_global.shape[0],
+                    dtype=wp.vec3,
+                    device=device,
+                )
             mapping.proxy_qd_before = wp.zeros(model.particle_count, dtype=wp.vec3, device=device)
 
     def _entry_needs_gravity_acceleration(self, entry) -> bool:
@@ -577,17 +614,79 @@ class SolverCoupledProxy(SolverCoupled):
         for mapping in self._proxy_mappings:
             if mapping.coupling_forces is not None:
                 mapping.coupling_forces.zero_()
+            if mapping.coupling_forces_previous is not None:
+                mapping.coupling_forces_previous.zero_()
             if mapping.proxy_qd_before is not None:
                 mapping.proxy_qd_before.zero_()
         for mapping in self._proxy_particle_mappings:
             if mapping.coupling_forces is not None:
                 mapping.coupling_forces.zero_()
+            if mapping.coupling_forces_previous is not None:
+                mapping.coupling_forces_previous.zero_()
             if mapping.proxy_qd_before is not None:
                 mapping.proxy_qd_before.zero_()
         for config in self._proxy_collision_configs.values():
             config.collide_counter = 0
             if config.contacts is not None:
                 config.contacts.clear(bump_generation=True)
+
+    def _stash_proxy_body_feedback(self, proxy: _ProxyBodyMapping) -> None:
+        if proxy.coupling_forces_previous is None:
+            return
+        wp.launch(
+            stash_proxy_body_forces_kernel,
+            dim=proxy.proxy_body_ids_global.shape[0],
+            inputs=[
+                proxy.proxy_body_ids_global,
+                proxy.coupling_forces,
+                proxy.coupling_forces_previous,
+            ],
+            device=self.model.device,
+        )
+
+    def _stash_proxy_particle_feedback(self, proxy: _ProxyParticleMapping) -> None:
+        if proxy.coupling_forces_previous is None:
+            return
+        wp.launch(
+            stash_proxy_particle_forces_kernel,
+            dim=proxy.proxy_particle_ids_global.shape[0],
+            inputs=[
+                proxy.proxy_particle_ids_global,
+                proxy.coupling_forces,
+                proxy.coupling_forces_previous,
+            ],
+            device=self.model.device,
+        )
+
+    def _blend_proxy_body_feedback(self, proxy: _ProxyBodyMapping) -> None:
+        if proxy.coupling_forces_previous is None:
+            return
+        wp.launch(
+            blend_proxy_body_forces_kernel,
+            dim=proxy.proxy_body_ids_global.shape[0],
+            inputs=[
+                float(proxy.proxy_relaxation),
+                proxy.proxy_body_ids_global,
+                proxy.coupling_forces_previous,
+                proxy.coupling_forces,
+            ],
+            device=self.model.device,
+        )
+
+    def _blend_proxy_particle_feedback(self, proxy: _ProxyParticleMapping) -> None:
+        if proxy.coupling_forces_previous is None:
+            return
+        wp.launch(
+            blend_proxy_particle_forces_kernel,
+            dim=proxy.proxy_particle_ids_global.shape[0],
+            inputs=[
+                float(proxy.proxy_relaxation),
+                proxy.proxy_particle_ids_global,
+                proxy.coupling_forces_previous,
+                proxy.coupling_forces,
+            ],
+            device=self.model.device,
+        )
 
     def _entry_has_body_proxy_overrides(self, name: str) -> bool:
         for proxy in self._proxy_mappings:
@@ -714,6 +813,11 @@ class SolverCoupledProxy(SolverCoupled):
             particle_proxies = group["particles"]
             src = self._entries[src_name]
             dst = self._entries[dst_name]
+
+            for proxy in body_proxies:
+                self._stash_proxy_body_feedback(proxy)
+            for proxy in particle_proxies:
+                self._stash_proxy_particle_feedback(proxy)
 
             if src.has_body_force_input and (src.body_indices.shape[0] > 0 or body_proxies):
                 self._clear_body_force_input(src)
@@ -871,6 +975,7 @@ class SolverCoupledProxy(SolverCoupled):
                     contacts=dst_contacts_used,
                     dt=dt,
                 )
+                self._blend_proxy_body_feedback(proxy)
 
             for proxy in particle_proxies:
                 dst.solver.coupling_harvest_proxy_particle_forces(
@@ -882,3 +987,4 @@ class SolverCoupledProxy(SolverCoupled):
                     contacts=dst_contacts_used,
                     dt=dt,
                 )
+                self._blend_proxy_particle_feedback(proxy)

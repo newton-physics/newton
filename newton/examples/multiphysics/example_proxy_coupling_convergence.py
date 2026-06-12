@@ -5,14 +5,15 @@
 # Example Proxy Coupling Convergence
 #
 # A synthetic one-dimensional virtual-inertia problem that exercises
-# SolverCoupledProxy.Config.iterations in lagged mode. The source solver owns
-# one interface particle and maps the previous feedback force to an end
-# velocity. The destination solver sees that particle as a proxy with scaled
-# virtual inertia, lets the generic lagged prepare step subtract the previously
-# applied force through that proxy mass, then returns the scalar KKT response
-# force with Delassus denominator ``1/Mhat + 1/Mb``.
+# SolverCoupledProxy.Config.iterations and SolverCoupledProxy.Proxy.
+# proxy_relaxation in lagged mode. The source solver owns one interface
+# particle and maps the previous feedback force to an end velocity. The
+# destination solver sees that particle as a proxy with scaled virtual inertia,
+# lets the generic lagged prepare step subtract the previously applied force
+# through that proxy mass, then returns the scalar KKT response force with
+# Delassus denominator ``1/Mhat + 1/Mb``.
 #
-# Sweeping Config.iterations gives a compact convergence plot for the
+# Sweeping Config.iterations gives a compact convergence plot for the relaxed
 # fixed-point error described by the proxy / virtual-inertia section of the
 # ADMM coupling note.
 #
@@ -31,6 +32,9 @@ from newton.solvers.experimental.coupled import CouplingInterface, SolverCoupled
 import newton
 import newton.examples
 from newton.solvers import SolverBase
+
+_UNDERRELAXED_PROXY_RELAXATION = 0.5
+_OVERRELAXED_PROXY_RELAXATION = 1.5
 
 
 @wp.kernel(enable_backward=False)
@@ -192,6 +196,12 @@ def _proxy_fixed_point_factor(mass_scale, mass_ratio):
     return (1.0 / mass_scale - 1.0) / (1.0 / mass_scale + mass_ratio)
 
 
+def _proxy_relaxed_fixed_point_factor(mass_scale, mass_ratio, proxy_relaxation):
+    """Scalar proxy fixed-point factor after relaxation blending."""
+    factor = _proxy_fixed_point_factor(mass_scale, mass_ratio)
+    return (1.0 - proxy_relaxation) + proxy_relaxation * factor
+
+
 class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
@@ -207,6 +217,15 @@ class Example:
         self.response_mass = args.response_mass
         self.drive_velocity = args.drive_velocity
         self.response_target_velocity = args.response_target_velocity
+        self.proxy_relaxation = args.proxy_relaxation
+        self.factor_map_relaxations = np.array(
+            [
+                _UNDERRELAXED_PROXY_RELAXATION,
+                1.0,
+                _OVERRELAXED_PROXY_RELAXATION,
+            ],
+            dtype=np.float64,
+        )
 
         if self.max_coupling_iterations < 1:
             raise ValueError("--max-coupling-iterations must be >= 1")
@@ -218,6 +237,8 @@ class Example:
             raise ValueError("--proxy-mass-scale must include at least one value")
         if any(value <= 0.0 for value in args.proxy_mass_scale):
             raise ValueError("--proxy-mass-scale values must be > 0")
+        if not np.isfinite(self.proxy_relaxation) or self.proxy_relaxation < 0.0:
+            raise ValueError("--proxy-relaxation must be finite and >= 0")
 
         builder = newton.ModelBuilder(gravity=0.0)
         self.source_particle = builder.add_particle(
@@ -254,7 +275,7 @@ class Example:
 
     def _sweep_mass_scale(self, mass_scale: float) -> _SweepResult:
         mass_ratio = self.source_mass / self.response_mass
-        contraction = abs(_proxy_fixed_point_factor(mass_scale, mass_ratio))
+        contraction = abs(_proxy_relaxed_fixed_point_factor(mass_scale, mass_ratio, self.proxy_relaxation))
 
         velocity_gap = self.drive_velocity - self.response_target_velocity
         fixed_force = -velocity_gap / (self.frame_dt * (1.0 / self.source_mass + 1.0 / self.response_mass))
@@ -312,6 +333,7 @@ class Example:
                         particles=[self.source_particle],
                         mass_scale=mass_scale,
                         mode="lagged",
+                        proxy_relaxation=self.proxy_relaxation,
                     ),
                 ],
                 iterations=iterations,
@@ -379,7 +401,7 @@ class Example:
 
         _fig, ax = plt.subplots(figsize=(4.0, 4.0))
         for result in self.results:
-            label = f"mhat/m={result.mass_scale:g}, |r|={result.contraction:.2f}"
+            label = f"mhat/m={result.mass_scale:g}, |r_w|={result.contraction:.2f}"
             ax.semilogy(
                 self.iteration_counts,
                 np.maximum(result.errors, 1.0e-12),
@@ -390,7 +412,7 @@ class Example:
 
         ax.set_xlabel("Proxy iterations")
         ax.set_ylabel("Interface velocity error [m/s]")
-        ax.set_title("Virtual Inertia Proxy Convergence")
+        ax.set_title(f"Virtual Inertia Proxy Convergence (w={self.proxy_relaxation:g})")
         ax.grid(True, which="both", alpha=0.35)
         ax.legend(fontsize=7)
         plt.tight_layout()
@@ -401,42 +423,45 @@ class Example:
         mass_scale = np.geomspace(0.02, 10.0, 360)
         mass_ratio = np.geomspace(0.02, 50.0, 360)
         scale_grid, ratio_grid = np.meshgrid(mass_scale, mass_ratio)
-        factor = _proxy_fixed_point_factor(scale_grid, ratio_grid)
 
-        _fig, ax = plt.subplots(figsize=(5.8, 4.2))
-        clipped_factor = np.clip(factor, -1.5, 1.5)
-        image = ax.pcolormesh(
-            scale_grid,
-            ratio_grid,
-            clipped_factor,
-            shading="auto",
-            cmap="coolwarm",
-            norm=TwoSlopeNorm(vcenter=0.0, vmin=-1.5, vmax=1.5),
-        )
-        ax.contour(scale_grid, ratio_grid, np.abs(factor), levels=[1.0], colors="black", linewidths=1.4)
-        ax.contour(scale_grid, ratio_grid, factor, levels=[0.0], colors="white", linewidths=1.2)
-        ax.set_xscale("log")
-        ax.set_yscale("log")
-        ax.set_xlabel("virtual inertia scale s = Mhat / Ma")
-        ax.set_ylabel("mass ratio Ma / Mb")
-        ax.set_title("Scalar Proxy Fixed-Point Factor")
-        cbar = plt.colorbar(image, ax=ax)
+        fig, axes = plt.subplots(1, 3, figsize=(13.2, 4.2), sharex=True, sharey=True, constrained_layout=True)
+        image = None
+        for ax, proxy_relaxation in zip(axes, self.factor_map_relaxations, strict=True):
+            factor = _proxy_relaxed_fixed_point_factor(scale_grid, ratio_grid, proxy_relaxation)
+            clipped_factor = np.clip(factor, -1.5, 1.5)
+            image = ax.pcolormesh(
+                scale_grid,
+                ratio_grid,
+                clipped_factor,
+                shading="auto",
+                cmap="coolwarm",
+                norm=TwoSlopeNorm(vcenter=0.0, vmin=-1.5, vmax=1.5),
+            )
+            ax.contour(scale_grid, ratio_grid, np.abs(factor), levels=[1.0], colors="black", linewidths=1.4)
+            ax.contour(scale_grid, ratio_grid, factor, levels=[0.0], colors="white", linewidths=1.2)
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+            ax.set_xlabel("virtual inertia scale s = Mhat / Ma")
+            ax.set_title(f"w={proxy_relaxation:g}")
+
+        axes[0].set_ylabel("mass ratio Ma / Mb")
+        cbar = plt.colorbar(image, ax=axes)
         cbar.set_label("signed r")
-        ax.text(
+        axes[0].text(
             0.03,
             0.03,
             "black: |r| = 1\nwhite: r = 0",
-            transform=ax.transAxes,
+            transform=axes[0].transAxes,
             fontsize=8,
             bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none"},
         )
-        plt.tight_layout()
+        fig.suptitle("Scalar Proxy Fixed-Point Factor with Relaxation")
         plt.savefig(self.factor_map_path, dpi=self.plot_dpi)
         plt.close()
         print(f"Proxy fixed-point factor map saved to {self.factor_map_path}")
 
     def _print_summary(self):
-        print("\nProxy convergence summary:")
+        print(f"\nProxy convergence summary (w={self.proxy_relaxation:g}):")
         for result in self.results:
             print(f"  mhat/m={result.mass_scale:g}, |r|={result.contraction:.4f}, final_error={result.errors[-1]:.4e}")
 
@@ -479,6 +504,12 @@ class Example:
             type=float,
             default=1.0,
             help="Destination-side scalar mass Mb [kg].",
+        )
+        parser.add_argument(
+            "--proxy-relaxation",
+            type=float,
+            default=1.0,
+            help="Nonnegative proxy feedback relaxation factor used in the lagged force update.",
         )
         parser.add_argument(
             "--plot-path",

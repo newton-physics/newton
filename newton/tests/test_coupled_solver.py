@@ -368,6 +368,32 @@ class _ProxyParticleHookSolver(SolverBase, CouplingInterface):
         wp.copy(state_out.particle_qd, state_in.particle_qd)
 
 
+class _ZeroingProxyParticleHookSolver(_ProxyParticleHookSolver):
+    """Destination test solver that clears proxy particle feedback before writing."""
+
+    def coupling_harvest_proxy_particle_forces(
+        self,
+        particle_local_to_proxy_global,
+        out_particle_f,
+        *,
+        particle_qd_before,
+        state,
+        state_out,
+        contacts,
+        dt,
+    ):
+        out_particle_f.zero_()
+        super().coupling_harvest_proxy_particle_forces(
+            particle_local_to_proxy_global,
+            out_particle_f,
+            particle_qd_before=particle_qd_before,
+            state=state,
+            state_out=state_out,
+            contacts=contacts,
+            dt=dt,
+        )
+
+
 class _ParticleHarvestStateRecordingSolver(SolverBase, CouplingInterface):
     """Destination solver that records which states are passed to custom harvest."""
 
@@ -2472,6 +2498,46 @@ class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
         self.assertEqual(src_solver.input_body_f[1].shape[0], 1)
         np.testing.assert_allclose(src_solver.input_body_f[1][0], expected, atol=1.0e-6)
 
+    def test_body_proxy_feedback_relaxation_blends_next_step_force_input(self):
+        _BodyForceRecordingSolver.instances.clear()
+        _ProxyBodyHookSolver.instances.clear()
+
+        builder = newton.ModelBuilder(gravity=0.0)
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupledProxy(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=_BodyForceRecordingSolver, bodies=[0]),
+                SolverCoupled.Entry(name="dst", solver=_ProxyBodyHookSolver, bodies=[1]),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(
+                        source="src",
+                        destination="dst",
+                        bodies=[0],
+                        proxy_bodies=[2],
+                        proxy_relaxation=0.25,
+                    ),
+                ],
+            ),
+        )
+
+        state_0 = model.state()
+        state_1 = model.state()
+        dt = 0.5
+
+        coupled.step(state_0, state_1, control=None, contacts=None, dt=dt)
+        coupled.step(state_1, state_0, control=None, contacts=None, dt=dt)
+
+        src_solver = _BodyForceRecordingSolver.instances[-1]
+        expected = 0.25 * np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        np.testing.assert_allclose(src_solver.input_body_f[1][0], expected, atol=1.0e-6)
+
     def test_proxy_body_diagonal_effective_mass_scales_source_inertia(self):
         _CustomEffectiveMassBodySolver.instances.clear()
         builder = newton.ModelBuilder(gravity=0.0)
@@ -2939,6 +3005,96 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         self.assertEqual(len(solver.input_particle_f), 2)
         np.testing.assert_allclose(solver.input_particle_f[0][0], np.zeros(3), atol=1.0e-6)
         np.testing.assert_allclose(solver.input_particle_f[1][0], np.array([0.0, 4.0, 0.0]), atol=1.0e-6)
+
+    def test_particle_proxy_feedback_relaxation_handles_zeroing_custom_harvest(self):
+        _ParticleForceRecordingSolver.instances.clear()
+        _ProxyParticleHookSolver.instances.clear()
+
+        coupled = SolverCoupledProxy(
+            model=self.model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=_ParticleForceRecordingSolver, particles=[0]),
+                SolverCoupled.Entry(name="dst", solver=_ZeroingProxyParticleHookSolver, particles=[1]),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(
+                        source="src",
+                        destination="dst",
+                        particles=[0],
+                        mass_scale=0.5,
+                        proxy_relaxation=0.25,
+                    ),
+                ],
+            ),
+        )
+
+        state_0 = self.model.state()
+        state_1 = self.model.state()
+        dt = 0.5
+
+        coupled.step(state_0, state_1, control=None, contacts=None, dt=dt)
+        coupled.step(state_1, state_0, control=None, contacts=None, dt=dt)
+
+        solver = _ParticleForceRecordingSolver.instances[-1]
+        self.assertEqual(len(solver.input_particle_f), 2)
+        np.testing.assert_allclose(solver.input_particle_f[0][0], np.zeros(3), atol=1.0e-6)
+        np.testing.assert_allclose(solver.input_particle_f[1][0], np.array([0.0, 1.75, 0.0]), atol=1.0e-6)
+
+    def test_particle_proxy_feedback_overrelaxation_is_applied_on_next_step(self):
+        _ParticleForceRecordingSolver.instances.clear()
+        _ProxyParticleHookSolver.instances.clear()
+
+        coupled = SolverCoupledProxy(
+            model=self.model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=_ParticleForceRecordingSolver, particles=[0]),
+                SolverCoupled.Entry(name="dst", solver=_ZeroingProxyParticleHookSolver, particles=[1]),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(
+                        source="src",
+                        destination="dst",
+                        particles=[0],
+                        mass_scale=0.5,
+                        proxy_relaxation=1.5,
+                    ),
+                ],
+            ),
+        )
+
+        state_0 = self.model.state()
+        state_1 = self.model.state()
+        dt = 0.5
+
+        coupled.step(state_0, state_1, control=None, contacts=None, dt=dt)
+        coupled.step(state_1, state_0, control=None, contacts=None, dt=dt)
+
+        solver = _ParticleForceRecordingSolver.instances[-1]
+        self.assertEqual(len(solver.input_particle_f), 2)
+        np.testing.assert_allclose(solver.input_particle_f[0][0], np.zeros(3), atol=1.0e-6)
+        np.testing.assert_allclose(solver.input_particle_f[1][0], np.array([0.0, 10.5, 0.0]), atol=1.0e-6)
+
+    def test_negative_proxy_relaxation_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "proxy_relaxation"):
+            SolverCoupledProxy(
+                model=self.model,
+                entries=[
+                    SolverCoupled.Entry(name="src", solver=_ParticleForceRecordingSolver, particles=[0]),
+                    SolverCoupled.Entry(name="dst", solver=_ProxyParticleKickSolver, particles=[1]),
+                ],
+                coupling=SolverCoupledProxy.Config(
+                    proxies=[
+                        SolverCoupledProxy.Proxy(
+                            source="src",
+                            destination="dst",
+                            particles=[0],
+                            proxy_relaxation=-0.1,
+                        ),
+                    ],
+                ),
+            )
 
     def test_particle_proxy_uses_default_force_input_and_notifies(self):
         _ParticleForceNotifySolver.instances.clear()

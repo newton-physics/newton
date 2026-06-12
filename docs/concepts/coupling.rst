@@ -173,6 +173,7 @@ A proxy pair is declared with
                    proxy_particles=(),
                    mass_scale=0.25,
                    mode="lagged",
+                   proxy_relaxation=0.5,
                )
            ],
            iterations=4,
@@ -184,6 +185,10 @@ source endpoints. ``proxy_bodies`` and ``proxy_particles`` name the
 corresponding destination endpoints. If a proxy list is ``None``, the source
 indices are reused in the destination view. ``mass_scale`` scales proxy body
 mass/inertia and proxy particle mass in that destination view.
+``proxy_relaxation`` blends harvested feedback with the previously lagged
+feedback buffer after each destination solve. Values below ``1`` underrelax the
+update, ``1`` keeps the harvested feedback unchanged, and values above ``1``
+overrelax it.
 
 Two proxy modes are available through the ``mode`` string:
 

@@ -281,6 +281,58 @@ def harvest_proxy_particle_momentum_forces_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def stash_proxy_body_forces_kernel(
+    proxy_body_ids_global: wp.array[int],
+    coupling_forces: wp.array[wp.spatial_vector],
+    out_previous_coupling_forces: wp.array[wp.spatial_vector],
+):
+    """Save the current proxy-body feedback for a later relaxation blend."""
+    i = wp.tid()
+    out_previous_coupling_forces[i] = coupling_forces[proxy_body_ids_global[i]]
+
+
+@wp.kernel(enable_backward=False)
+def stash_proxy_particle_forces_kernel(
+    proxy_particle_ids_global: wp.array[int],
+    coupling_forces: wp.array[wp.vec3],
+    out_previous_coupling_forces: wp.array[wp.vec3],
+):
+    """Save the current proxy-particle feedback for a later relaxation blend."""
+    i = wp.tid()
+    out_previous_coupling_forces[i] = coupling_forces[proxy_particle_ids_global[i]]
+
+
+@wp.kernel(enable_backward=False)
+def blend_proxy_body_forces_kernel(
+    proxy_relaxation: float,
+    proxy_body_ids_global: wp.array[int],
+    previous_coupling_forces: wp.array[wp.spatial_vector],
+    coupling_forces: wp.array[wp.spatial_vector],
+):
+    """Blend harvested proxy-body feedback with the saved lagged value."""
+    i = wp.tid()
+    global_id = proxy_body_ids_global[i]
+    coupling_forces[global_id] = (
+        proxy_relaxation * coupling_forces[global_id] + (1.0 - proxy_relaxation) * previous_coupling_forces[i]
+    )
+
+
+@wp.kernel(enable_backward=False)
+def blend_proxy_particle_forces_kernel(
+    proxy_relaxation: float,
+    proxy_particle_ids_global: wp.array[int],
+    previous_coupling_forces: wp.array[wp.vec3],
+    coupling_forces: wp.array[wp.vec3],
+):
+    """Blend harvested proxy-particle feedback with the saved lagged value."""
+    i = wp.tid()
+    global_id = proxy_particle_ids_global[i]
+    coupling_forces[global_id] = (
+        proxy_relaxation * coupling_forces[global_id] + (1.0 - proxy_relaxation) * previous_coupling_forces[i]
+    )
+
+
+@wp.kernel(enable_backward=False)
 def filter_proxy_rigid_contacts_kernel(
     rigid_contact_count: wp.array[int],
     rigid_contact_shape0: wp.array[wp.int32],
