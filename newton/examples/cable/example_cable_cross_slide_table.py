@@ -47,6 +47,8 @@ TABLE_RECT_POINTS = (
 TABLE_RECT_HIT_TOLERANCE = 0.1
 TABLE_RECT_TEST_FRAMES = 2100
 START_RAMP_DURATION = 1.2
+MOUSE_PICK_STIFFNESS = 0.01
+MOUSE_PICK_DAMPING = 0.001
 
 
 @wp.kernel
@@ -873,18 +875,24 @@ class Example:
             bend_damping=1.0e-2,
             wrap_in_articulation=False,
             label="xy_table_cable",
+            body_frame_origin="com",
         )
-        initial_cable_xforms = [wp.transform(cable_points[i], cable_quats[i]) for i in range(len(self.cable_bodies))]
+        initial_cable_xforms = [
+            wp.transform(cable_points[i] + (cable_points[i + 1] - cable_points[i]) * 0.5, cable_quats[i])
+            for i in range(len(self.cable_bodies))
+        ]
         filter_body_group_collisions(builder, self.cable_bodies)
 
         # Ball joints close the cable loop at the table anchors.
         first_cable_body = self.cable_bodies[0]
         last_cable_body = self.cable_bodies[-1]
         last_segment_length = cable_segment_length
+        first_endpoint_local = wp.vec3(0.0, 0.0, -0.5 * cable_segment_length)
+        last_endpoint_local = wp.vec3(0.0, 0.0, 0.5 * last_segment_length)
         for i, (body, xform) in enumerate(
             (
-                (first_cable_body, wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())),
-                (last_cable_body, wp.transform(wp.vec3(0.0, 0.0, last_segment_length), wp.quat_identity())),
+                (first_cable_body, wp.transform(first_endpoint_local, wp.quat_identity())),
+                (last_cable_body, wp.transform(last_endpoint_local, wp.quat_identity())),
             )
         ):
             builder.add_shape_sphere(
@@ -900,7 +908,7 @@ class Example:
             parent=self.table_body,
             child=first_cable_body,
             parent_xform=wp.transform(self.left_anchor_local, wp.quat_identity()),
-            child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(first_endpoint_local, wp.quat_identity()),
             armature=1.0e-5,
             friction=0.0,
             label="left_bottom_cable_fix",
@@ -909,7 +917,7 @@ class Example:
             parent=self.table_body,
             child=last_cable_body,
             parent_xform=wp.transform(self.right_anchor_local, wp.quat_identity()),
-            child_xform=wp.transform(wp.vec3(0.0, 0.0, last_segment_length), wp.quat_identity()),
+            child_xform=wp.transform(last_endpoint_local, wp.quat_identity()),
             armature=1.0e-5,
             friction=0.0,
             label="right_bottom_cable_fix_loop",
@@ -992,6 +1000,15 @@ class Example:
 
         # Viewer setup.
         self.viewer.set_model(self.model)
+        picking = getattr(self.viewer, "picking", None)
+        if picking is not None:
+            pick_state = picking.pick_state.numpy()
+            pick_state[0]["pick_stiffness"] = MOUSE_PICK_STIFFNESS
+            pick_state[0]["pick_damping"] = MOUSE_PICK_DAMPING
+            picking.pick_stiffness = float(pick_state[0]["pick_stiffness"])
+            picking.pick_damping = float(pick_state[0]["pick_damping"])
+            picking.pick_state.assign(pick_state)
+
         self.viewer.set_camera(
             pos=wp.vec3(0.0, 0.0, 0.8),
             pitch=-90.0,
