@@ -37,10 +37,7 @@ from newton._src.solvers.coupled.admm_utils import (
     particle_gravity_compensation_kernel,
     u_update_quadratic_kernel,
 )
-from newton._src.solvers.coupled.interface import (
-    CouplingInputStateFlags,
-    CouplingInterface,
-)
+from newton._src.solvers.coupled.interface import CouplingInterface
 from newton.solvers import (
     SolverBase,
     SolverMuJoCo,
@@ -118,10 +115,10 @@ class _AdmmParticleForceNotifySolver(_CustomAdmmParticleCopySolver):
 
     def coupling_notify_input_state_update(self, state, flags, *, iteration_restart=False, dt=0.0):
         del dt
-        flags = CouplingInputStateFlags(flags)
+        flags = newton.StateFlags(flags)
         self.notified_flags.append(flags)
         self.notified_iteration_restart.append(bool(iteration_restart))
-        if flags & CouplingInputStateFlags.PARTICLE_F:
+        if flags & newton.StateFlags.PARTICLE_F:
             self.notified_particle_f.append(state.particle_f.numpy().copy())
 
 
@@ -140,10 +137,10 @@ class _CustomAdmmInputStateUpdateSolver(_CustomAdmmParticleCopySolver):
 
     def coupling_notify_input_state_update(self, state, flags, *, iteration_restart=False, dt=0.0):
         del dt
-        flags = CouplingInputStateFlags(flags)
+        flags = newton.StateFlags(flags)
         self.update_calls.append(flags)
         self.update_iteration_restart.append(bool(iteration_restart))
-        if flags == CouplingInputStateFlags.PARTICLE_QD:
+        if flags == newton.StateFlags.PARTICLE_QD:
             self.proximal_shift_calls += 1
             self.input_particle_qd = state.particle_qd.numpy().copy()
             wp.launch(_set_admm_particle_qd_kernel, dim=1, inputs=[state.particle_qd], device=self.model.device)
@@ -1349,7 +1346,7 @@ class TestAdmmCouplingHooks(unittest.TestCase):
         solver.step(state_0, state_1, model.control(), contacts=None, dt=1.0 / 60.0)
 
         custom_solver = _AdmmParticleForceNotifySolver.instances[-1]
-        self.assertTrue(any(flags & CouplingInputStateFlags.PARTICLE_F for flags in custom_solver.notified_flags))
+        self.assertTrue(any(flags & newton.StateFlags.PARTICLE_F for flags in custom_solver.notified_flags))
         np.testing.assert_allclose(custom_solver.notified_particle_f[-1][0], np.array([2.0, 3.0, 4.0]), atol=1.0e-6)
         np.testing.assert_allclose(
             solver._entries["p"].state_0.particle_f.numpy()[0],
@@ -1377,7 +1374,7 @@ class TestAdmmCouplingHooks(unittest.TestCase):
         custom_solver = _CustomAdmmInputStateUpdateSolver.instances[-1]
         self.assertTrue(
             any(
-                (flags & CouplingInputStateFlags.PARTICLE) == CouplingInputStateFlags.PARTICLE
+                (flags & newton.StateFlags.PARTICLE) == newton.StateFlags.PARTICLE
                 for flags in custom_solver.update_calls
             )
         )
@@ -1405,7 +1402,7 @@ class TestAdmmCouplingHooks(unittest.TestCase):
         custom_solver = _CustomAdmmInputStateUpdateSolver.instances[-1]
         self.assertTrue(
             any(
-                iteration_restart and bool(flags & CouplingInputStateFlags.PARTICLE)
+                iteration_restart and bool(flags & newton.StateFlags.PARTICLE)
                 for flags, iteration_restart in zip(
                     custom_solver.update_calls, custom_solver.update_iteration_restart, strict=True
                 )

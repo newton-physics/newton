@@ -20,9 +20,10 @@ from ...sim import (
     ModelBuilder,
     ModelFlags,
     State,
+    StateFlags,
 )
 from ...utils.deprecation import deprecate_nonkeyword_arguments
-from ..coupled.interface import CouplingInputStateFlags, CouplingInterface
+from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..xpbd.kernels import apply_joint_forces
 from .particle_vbd_kernels import (
@@ -787,16 +788,16 @@ class SolverVBD(SolverBase, CouplingInterface):
     def coupling_notify_input_state_update(
         self,
         state: State,
-        flags: CouplingInputStateFlags | int,
+        flags: StateFlags | int,
         *,
         iteration_restart: bool = False,
         dt: float = 0.0,
     ) -> None:
         """Convert input body pose updates into VBD-compatible history updates."""
-        flags = CouplingInputStateFlags(flags)
+        flags = StateFlags(flags)
         if (
             dt <= 0.0
-            or not (flags & CouplingInputStateFlags.BODY_Q)
+            or not (flags & StateFlags.BODY_Q)
             or state.body_q is None
             or state.body_qd is None
             or not self._coupling_has_rigid_avbd_state

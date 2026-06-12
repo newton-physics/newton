@@ -17,9 +17,9 @@ import warp.sparse as wps
 import newton
 
 from ...core.types import override
-from ...sim import ModelFlags
+from ...sim import ModelFlags, StateFlags
 from ...utils.deprecation import deprecate_nonkeyword_arguments
-from ..coupled.interface import CouplingInputStateFlags, CouplingInterface
+from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
 from .rasterized_collisions import (
@@ -1094,16 +1094,16 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     def coupling_notify_input_state_update(
         self,
         state: newton.State,
-        flags: CouplingInputStateFlags | int,
+        flags: StateFlags | int,
         *,
         iteration_restart: bool = False,
         dt: float = 0.0,
     ) -> None:
         """Synchronize deformable collider meshes after particle input-state updates."""
         del dt
-        flags = CouplingInputStateFlags(flags)
-        update_points = bool(flags & CouplingInputStateFlags.PARTICLE_Q)
-        update_velocities = bool(flags & CouplingInputStateFlags.PARTICLE_QD)
+        flags = StateFlags(flags)
+        update_points = bool(flags & StateFlags.PARTICLE_Q)
+        update_velocities = bool(flags & StateFlags.PARTICLE_QD)
         if not (update_points or update_velocities) or not self._mpm_model.deformable_collider_vertex_ranges:
             return
 

@@ -75,7 +75,6 @@ from .admm_utils import (
 )
 from .interface import (
     CouplingEndpointKind,
-    CouplingInputStateFlags,
 )
 from .model_view import ModelView
 from .solver_coupled import (
@@ -2944,7 +2943,7 @@ class SolverCoupledADMM(SolverCoupled):
         dt: float,
     ) -> None:
         device = self.model.device
-        flags = CouplingInputStateFlags(0)
+        flags = StateFlags.NONE
         if buf.body_qd_n is not None:
             wp.launch(
                 velocity_proximal_shift_body_kernel,
@@ -2952,7 +2951,7 @@ class SolverCoupledADMM(SolverCoupled):
                 inputs=[buf.body_qd_n, buf.body_qd_k, gamma, entry.state_0.body_qd],
                 device=device,
             )
-            flags |= CouplingInputStateFlags.BODY_QD
+            flags |= StateFlags.BODY_QD
         if buf.particle_qd_n is not None:
             wp.launch(
                 velocity_proximal_shift_particle_kernel,
@@ -2960,7 +2959,7 @@ class SolverCoupledADMM(SolverCoupled):
                 inputs=[buf.particle_qd_n, buf.particle_qd_k, gamma, entry.state_0.particle_qd],
                 device=device,
             )
-            flags |= CouplingInputStateFlags.PARTICLE_QD
+            flags |= StateFlags.PARTICLE_QD
         if buf.joint_qd_n is not None and buf.joint_qd_n.shape[0] > 0:
             wp.launch(
                 velocity_proximal_shift_joint_kernel,
@@ -2968,7 +2967,7 @@ class SolverCoupledADMM(SolverCoupled):
                 inputs=[buf.joint_qd_n, buf.joint_qd_k, gamma, entry.state_0.joint_qd],
                 device=device,
             )
-            flags |= CouplingInputStateFlags.JOINT_QD
+            flags |= StateFlags.JOINT_QD
         self._notify_input_state_update(entry, flags, dt=dt)
 
     def _prepare_admm_iteration_state(
@@ -2982,22 +2981,22 @@ class SolverCoupledADMM(SolverCoupled):
     ) -> None:
         gamma = float(self._coupling.gamma)
         apply_proximal = gamma > 0.0
-        flags = CouplingInputStateFlags(0)
+        flags = StateFlags.NONE
 
         if buf.body_q_n is not None:
             wp.copy(entry.state_0.body_q, buf.body_q_n)
             wp.copy(entry.state_0.body_qd, buf.body_qd_n)
-            flags |= CouplingInputStateFlags.BODY
+            flags |= StateFlags.BODY
 
         if buf.particle_q_n is not None:
             wp.copy(entry.state_0.particle_q, buf.particle_q_n)
             wp.copy(entry.state_0.particle_qd, buf.particle_qd_n)
-            flags |= CouplingInputStateFlags.PARTICLE
+            flags |= StateFlags.PARTICLE
 
         if buf.joint_q_n is not None:
             wp.copy(entry.state_0.joint_q, buf.joint_q_n)
             wp.copy(entry.state_0.joint_qd, buf.joint_qd_n)
-            flags |= CouplingInputStateFlags.JOINT
+            flags |= StateFlags.JOINT
 
         self._notify_input_state_update(entry, flags, dt=dt, iteration_restart=bool(iteration_restart) and bool(flags))
 

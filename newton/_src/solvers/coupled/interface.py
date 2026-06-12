@@ -80,13 +80,13 @@ Supported hook signatures are:
 
 from __future__ import annotations
 
-from enum import IntEnum, IntFlag
+from enum import IntEnum
 from typing import TYPE_CHECKING
 
 import warp as wp
 
 from ...geometry import ParticleFlags
-from ...sim import BodyFlags
+from ...sim import BodyFlags, StateFlags
 from .proxy_utils import (
     filter_proxy_rigid_contacts_kernel,
     harvest_proxy_momentum_forces_kernel,
@@ -111,8 +111,8 @@ class CouplingInterface:
     - Override a hook and raise :class:`NotImplementedError` when no generic
       default can produce a meaningful result for the solver.
 
-    The nested ``InputStateFlags`` and ``EndpointKind`` enums keep the public
-    coupling namespace compact.
+    ``EndpointKind`` stays nested because it is coupling-specific. Input update
+    notifications reuse :class:`newton.StateFlags`.
     """
 
     class EndpointKind(IntEnum):
@@ -120,25 +120,6 @@ class CouplingInterface:
 
         BODY = 0
         PARTICLE = 1
-
-    class InputStateFlags(IntFlag):
-        """Input state arrays the coupler updated on a sub-solver's state."""
-
-        BODY_Q = 1 << 0
-        BODY_QD = 1 << 1
-        PARTICLE_Q = 1 << 2
-        PARTICLE_QD = 1 << 3
-        JOINT_Q = 1 << 4
-        JOINT_QD = 1 << 5
-        BODY_F = 1 << 6
-        PARTICLE_F = 1 << 7
-        JOINT_F = 1 << 8
-
-        BODY = BODY_Q | BODY_QD
-        PARTICLE = PARTICLE_Q | PARTICLE_QD
-        JOINT = JOINT_Q | JOINT_QD
-        FORCE = BODY_F | PARTICLE_F | JOINT_F
-        ALL = BODY | PARTICLE | JOINT | FORCE
 
     def coupling_eval_effective_mass(
         self,
@@ -242,12 +223,16 @@ class CouplingInterface:
     def coupling_notify_input_state_update(
         self,
         state: State,
-        flags: InputStateFlags | int,
+        flags: StateFlags | int,
         *,
         iteration_restart: bool = False,
         dt: float = 0.0,
     ) -> None:
-        """React to coupler-produced input state updates."""
+        """React to coupler-produced public input updates.
+
+        ``flags`` uses :class:`~newton.StateFlags` bits for both kinematic
+        state arrays and public force-input buffers.
+        """
         del state, flags, iteration_restart, dt
 
     def coupling_eval_gravity_acceleration(
@@ -583,4 +568,3 @@ def _coupling_zero_inertia_kernel(out_inertia: wp.array[wp.mat33]):
 
 
 CouplingEndpointKind = CouplingInterface.EndpointKind
-CouplingInputStateFlags = CouplingInterface.InputStateFlags

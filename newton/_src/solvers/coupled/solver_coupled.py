@@ -17,7 +17,6 @@ from ...sim import ModelFlags, StateFlags
 from ..solver import SolverBase
 from .interface import (
     CouplingEndpointKind,
-    CouplingInputStateFlags,
     CouplingInterface,
 )
 from .model_view import ModelView
@@ -2067,7 +2066,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             body_local_to_global = entry.body_local_to_global
         self._add_body_force_input(entry, body_local_to_global, body_f)
         if entry.state_0.body_f is not None:
-            self._notify_input_state_update(entry, CouplingInputStateFlags.BODY_F, dt=dt)
+            self._notify_input_state_update(entry, StateFlags.BODY_F, dt=dt)
 
     def _set_local_body_force_input(
         self,
@@ -2082,7 +2081,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry.state_0.body_f.zero_()
         else:
             _copy_prefix(entry.state_0.body_f, body_f, "body_f")
-        self._notify_input_state_update(entry, CouplingInputStateFlags.BODY_F, dt=dt)
+        self._notify_input_state_update(entry, StateFlags.BODY_F, dt=dt)
 
     def _clear_particle_force_input(self, entry: SolverEntry) -> None:
         """Clear an entry's public particle force input before mapped additions."""
@@ -2119,7 +2118,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             particle_local_to_global = entry.particle_local_to_global
         self._add_particle_force_input(entry, particle_local_to_global, particle_f)
         if entry.state_0.particle_f is not None:
-            self._notify_input_state_update(entry, CouplingInputStateFlags.PARTICLE_F, dt=dt)
+            self._notify_input_state_update(entry, StateFlags.PARTICLE_F, dt=dt)
 
     def _set_local_particle_force_input(
         self,
@@ -2134,41 +2133,41 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry.state_0.particle_f.zero_()
         else:
             _copy_prefix(entry.state_0.particle_f, particle_f, "particle_f")
-        self._notify_input_state_update(entry, CouplingInputStateFlags.PARTICLE_F, dt=dt)
+        self._notify_input_state_update(entry, StateFlags.PARTICLE_F, dt=dt)
 
     @staticmethod
-    def _input_state_copy_flags(src: State, dst: State) -> CouplingInputStateFlags:
+    def _input_state_copy_flags(src: State, dst: State) -> StateFlags | int:
         """Return state-array flags that ``_copy_state`` will update."""
-        flags = CouplingInputStateFlags(0)
+        flags = StateFlags.NONE
         if src.body_q is not None and dst.body_q is not None:
-            flags |= CouplingInputStateFlags.BODY_Q
+            flags |= StateFlags.BODY_Q
             if src.body_qd is not None and dst.body_qd is not None:
-                flags |= CouplingInputStateFlags.BODY_QD
+                flags |= StateFlags.BODY_QD
         if dst.body_f is not None:
-            flags |= CouplingInputStateFlags.BODY_F
+            flags |= StateFlags.BODY_F
         if src.particle_q is not None and dst.particle_q is not None:
-            flags |= CouplingInputStateFlags.PARTICLE_Q
+            flags |= StateFlags.PARTICLE_Q
             if src.particle_qd is not None and dst.particle_qd is not None:
-                flags |= CouplingInputStateFlags.PARTICLE_QD
+                flags |= StateFlags.PARTICLE_QD
         if dst.particle_f is not None:
-            flags |= CouplingInputStateFlags.PARTICLE_F
+            flags |= StateFlags.PARTICLE_F
         if src.joint_q is not None and dst.joint_q is not None:
-            flags |= CouplingInputStateFlags.JOINT_Q
+            flags |= StateFlags.JOINT_Q
             if src.joint_qd is not None and dst.joint_qd is not None:
-                flags |= CouplingInputStateFlags.JOINT_QD
+                flags |= StateFlags.JOINT_QD
         return flags
 
     def _notify_input_state_update(
         self,
         entry: SolverEntry,
-        flags: CouplingInputStateFlags | int,
+        flags: StateFlags | int,
         *,
         dt: float = 0.0,
         iteration_restart: bool = False,
     ) -> None:
         """Notify custom solvers after coupler-produced input state updates."""
-        flags = CouplingInputStateFlags(flags)
-        if flags == 0 and not iteration_restart:
+        flags = StateFlags(flags)
+        if flags == StateFlags.NONE and not iteration_restart:
             return
         _require_supports_coupling(entry.solver)
         entry.solver.coupling_notify_input_state_update(
