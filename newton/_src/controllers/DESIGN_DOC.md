@@ -57,8 +57,6 @@ Concrete controllers fall into two flavors based on **whether the control law ne
 `ControllerDifferentialKinematics` and `ControllerDifferentialDrive` are the canonical examples. A robot's output DOFs are coupled — they cannot be solved independently of one another — and the goal is specified once per robot rather than per DOF. Such a controller:
 
 - **Carries a model of the robot.** This can be a full `newton.ModelBuilder` of `N` topologically-identical articulations (`ControllerDifferentialKinematics`, finalized internally for FK + Jacobian evaluation) or just the handful of geometry parameters the law needs (`ControllerDifferentialDrive`'s per-robot `wheel_radius` / `wheel_base`). Either way it describes the robot the law reasons about.
-- **Takes per-robot goals.** A goal is one task-space target per robot — an end-effector pose for differential IK, a `(linear_speed, angular_speed)` body command for differential drive — not a per-DOF value. There are `num_robots` goals.
-- **Works one robot at a time.** The natural unit of computation is a robot, not an individual DOF.
 
 ### Examples
 
@@ -95,8 +93,6 @@ ControllerPID(
     ...
 )
 ```
-
-`output_attr` is an example of the `*_attr` argument (which array); `output_idx` is an example of the `*_idx` argument (which slots of it). The kernel combines the two as `output[output_idx[i]]`.
 
 #### `*_attr` — which array
 
@@ -157,9 +153,9 @@ ControllerDifferentialDrive(
 
 #### Live parameters (`str`)
 
-The string is an attribute name on the step-time input object. Each `compute()` resolves it with `getattr` and reads `arr[i]` in natural order. Same length/dtype rules as baked.
+If a parameter is given as a string, then it is expected that the parameter is given as at every step as part of the input object. Each `compute()` resolves it with `getattr` and reads `arr[i]` in natural order. Same length/dtype rules as baked.
 
-`test_controllers` passes `kp="kp"` so gains can change between steps without reconstructing the controller; `ControllerDifferentialKinematics` accepts `bandwidth="my_band"` the same way:
+For example, the test file `test_controllers` passes `kp="kp"` so gains can change between steps without reconstructing the controller; `ControllerDifferentialKinematics` accepts `bandwidth="my_band"` the same way:
 
 ```python
 ControllerPID(
