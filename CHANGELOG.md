@@ -21,6 +21,7 @@
 ### Removed
 
 - Remove the deprecated Style3D `CollisionHandler`; use `Collision` instead
+- Remove the deprecated implicit MPM `collider_velocity_mode` aliases `'finite_difference'` and `'instantaneous'` (deprecated in 1.1.0); use `'backward'` and `'forward'` instead
 
 ## [1.3.0] - 2026-06-11
 
