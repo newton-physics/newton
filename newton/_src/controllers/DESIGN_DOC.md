@@ -1,5 +1,8 @@
 # Newton Controllers — Design Doc
 
+**NOTE** This is a temporary document for design review purposes only. It should be deleted
+and replaced by proper documentation before merging.
+
 ## Background
 
 There are many controllers implemented across Isaac Lab/Sim. The goal of this module is to centralize them in Newton, re-implementing each so that they are completely CUDA-graphable and vectorized.
