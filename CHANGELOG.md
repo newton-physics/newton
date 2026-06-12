@@ -21,6 +21,7 @@
 ### Removed
 
 - Remove the deprecated Style3D `CollisionHandler`; use `Collision` instead
+- Remove the deprecated `Viewer.update_shape_colors()`; write to `Model.shape_color` directly instead
 
 ## [1.3.0] - 2026-06-11
 
