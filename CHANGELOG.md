@@ -21,6 +21,7 @@
 ### Removed
 
 - Remove the deprecated Style3D `CollisionHandler`; use `Collision` instead
+- Remove body armature — `ModelBuilder.default_body_armature`, the `armature` parameter of `ModelBuilder.add_link()` / `add_body()`, and USD-authored body `newton:armature` (deprecated in 1.1.0); add any isotropic artificial inertia directly to `inertia` instead. The remaining `add_link()` / `add_body()` parameters after `xform` are now keyword-only
 
 ## [1.3.0] - 2026-06-11
 

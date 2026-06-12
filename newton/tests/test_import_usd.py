@@ -114,7 +114,10 @@ def Xform "Root" (
         self.assertEqual(len(collision_shapes), 13)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_import_body_newton_armature_warns_deprecated(self):
+    def test_import_body_newton_armature_ignored(self):
+        # Body-level newton:armature was removed: an authored value must be
+        # ignored without warning and contribute nothing to body inertia.
+        # (Joint-level newton:armature is a separate, supported attribute.)
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -133,17 +136,15 @@ def Xform "Root" (
             warnings.simplefilter("always")
             builder.add_usd(stage)
 
-        deprecations = [item for item in caught if issubclass(item.category, DeprecationWarning)]
-        self.assertEqual(len(deprecations), 1)
-        message = str(deprecations[0].message)
-        self.assertIn("newton:armature", message)
-        self.assertIn("/World/Body", message)
-        self.assertNotIn("add_link(..., armature=...)", message)
+        self.assertFalse(
+            any("newton:armature" in str(w.message) for w in caught if issubclass(w.category, DeprecationWarning)),
+            "body newton:armature should be ignored silently",
+        )
 
-        # Verify the armature was applied to body inertia (default cube: half-extents
-        # (1,1,1), density 1000 → mass 8000, diagonal = 16000/3; plus armature 0.125)
+        # Authored armature is ignored: inertia is shape-only (default cube:
+        # half-extents (1,1,1), density 1000 → mass 8000, diagonal = 16000/3).
         inertia = builder.body_inertia[0]
-        expected_diag = 16000.0 / 3.0 + 0.125
+        expected_diag = 16000.0 / 3.0
         for j in range(3):
             self.assertAlmostEqual(float(inertia[j, j]), expected_diag, places=2)
 
