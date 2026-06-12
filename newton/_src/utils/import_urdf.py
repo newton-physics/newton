@@ -319,18 +319,21 @@ def parse_urdf(
 
     def _parse_material_properties(material_element):
         if material_element is None:
-            return None, None
+            return None, None, None
 
         color = None
+        opacity = None
         texture = None
 
         color_el = material_element.find("color")
         if color_el is not None:
             rgba = color_el.get("rgba")
             if rgba:
-                parts = rgba.split()
-                if len(parts) >= 3:
-                    color = (float(parts[0]), float(parts[1]), float(parts[2]))
+                values = np.fromstring(rgba, sep=" ", dtype=np.float32)
+                if len(values) >= 3:
+                    color = (float(values[0]), float(values[1]), float(values[2]))
+                if len(values) >= 4:
+                    opacity = float(values[3])
 
         texture_el = material_element.find("texture")
         if texture_el is not None:
@@ -349,22 +352,23 @@ def parse_urdf(
                     if tmpfile is not None:
                         os.remove(tmpfile.name)
 
-        return color, texture
+        return color, opacity, texture
 
-    materials: dict[str, dict[str, np.ndarray | None]] = {}
+    materials: dict[str, dict[str, object | None]] = {}
     for material in urdf_root.findall("material"):
         mat_name = material.get("name")
         if not mat_name:
             continue
-        color, texture = _parse_material_properties(material)
+        color, opacity, texture = _parse_material_properties(material)
         materials[mat_name] = {
             "color": color,
+            "opacity": opacity,
             "texture": texture,
         }
 
     def resolve_material(material_element):
         if material_element is None:
-            return {"color": None, "texture": None}
+            return {"color": None, "opacity": None, "texture": None}
         mat_name = material_element.get("name")
 
         # Fast path: pure name reference to an already-parsed material. URDFs
@@ -374,19 +378,21 @@ def parse_urdf(
         if mat_name and mat_name in materials and len(material_element) == 0:
             return dict(materials[mat_name])
 
-        color, texture = _parse_material_properties(material_element)
+        color, opacity, texture = _parse_material_properties(material_element)
 
         if mat_name and mat_name in materials:
             resolved = dict(materials[mat_name])
         else:
-            resolved = {"color": None, "texture": None}
+            resolved = {"color": None, "opacity": None, "texture": None}
 
         if color is not None:
             resolved["color"] = color
+        if opacity is not None:
+            resolved["opacity"] = opacity
         if texture is not None:
             resolved["texture"] = texture
 
-        if mat_name and mat_name not in materials and any(value is not None for value in (color, texture)):
+        if mat_name and mat_name not in materials and any(value is not None for value in (color, opacity, texture)):
             materials[mat_name] = dict(resolved)
 
         return resolved
@@ -439,7 +445,15 @@ def parse_urdf(
             if incoming_xform is not None:
                 tf = incoming_xform * tf
 
-            material_info = resolve_material(geom_group.find("material"))
+            material_info = {"color": None, "opacity": None, "texture": None}
+            if just_visual:
+                material_info = resolve_material(geom_group.find("material"))
+                if material_info["opacity"] is not None:
+                    shape_kwargs["opacity"] = material_info["opacity"]
+                else:
+                    shape_kwargs.pop("opacity", None)
+            else:
+                shape_kwargs.pop("opacity", None)
 
             for box in geo.findall("box"):
                 size = box.get("size") or "1 1 1"

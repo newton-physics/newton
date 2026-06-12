@@ -62,6 +62,15 @@
 
 ### Changed
 
+- Use a `wp.Mesh` BVH for `GeoType.HFIELD` raycasting (built during `ModelBuilder.finalize()`) instead of per-thread DDA grid traversal. Migrate custom `raycast_kernel` launches by removing the old `shape_heightfield_index`, `heightfield_data`, and `heightfield_elevations` arguments; pass `model.shape_source_ptr` with `model.shape_type` and `model.shape_scale` like other mesh geometry. Keep the heightfield arrays only for collision kernels.
+- Stop writing the deferred mesh SDF back to `Mesh.sdf` on shared `Mesh` instances in `ModelBuilder.finalize()`. The SDF data is retained on the finalized `Model` (`model.shape_sdf_index`, `model.texture_sdf_data`). Call `Mesh.build_sdf()` directly when you want the SDF stored on a `Mesh`.
+- Raise `ValueError` from `ModelBuilder.add_shape_convex_hull()` (and any path producing `GeoType.CONVEX_MESH`) if `ShapeConfig.sdf_*` or `ShapeConfig.is_hydroelastic` are set, matching `add_shape_mesh()`. Build and attach the SDF on the underlying `Mesh` via `Mesh.build_sdf()` instead.
+- `GeoType.HFIELD` shapes now use a `wp.Mesh` BVH for raycasting (built during `ModelBuilder.finalize()`), replacing the per-thread DDA grid traversal; the raycast kernel signature no longer accepts `shape_heightfield_index`, `heightfield_data`, or `heightfield_elevations` — those arrays are still present on `Model` for collision kernels
+- `ModelBuilder.finalize()` no longer writes the deferred mesh SDF back to `Mesh.sdf` on shared `Mesh` instances. The SDF data is retained on the finalized `Model` (`model.shape_sdf_index`, `model.texture_sdf_data`). Call `Mesh.build_sdf()` directly when you want the SDF stored on a `Mesh`.
+- `ModelBuilder.add_shape_convex_hull()` (and any path producing `GeoType.CONVEX_MESH`) now raises `ValueError` if `ShapeConfig.sdf_*` or `ShapeConfig.is_hydroelastic` are set, matching `add_shape_mesh()`. Build and attach the SDF on the underlying `Mesh` via `Mesh.build_sdf()` instead.
+- Build shape and particle BVHs automatically during `ModelBuilder.finalize()`. Call `Model.bvh_refit_shapes()` and `Model.bvh_refit_particles()` after state changes; use `Model.bvh_build_shapes()` and `Model.bvh_build_particles()` only when explicitly rebuilding, selecting a custom constructor, or working with manually populated models.
+- Treat `NewtonSDFCollisionAPI` and `NewtonMeshCollisionAPI` as independent collision representations in the USD importer. Co-applying both APIs on the same prim emits a warning and SDF configuration is used. `physics:approximation` (inherited from `PhysicsMeshCollisionAPI`) is ignored on SDF prims with a warning. `ModelBuilder.approximate_meshes()` raises `ValueError` for mesh-replacing methods (`convex_hull`, `coacd`, `vhacd`, `bounding_box`, `bounding_sphere`) when a target shape carries deferred SDF configuration or the `HYDROELASTIC` flag.
+- Warn and degrade in the USD importer on invalid or under-specified SDF configuration instead of aborting the whole import. A hydroelastic `Mesh` prim without an SDF source (no `newton:sdfMaxResolution` / `newton:sdfTargetVoxelSize`) imports as a plain mesh collider with hydroelastic disabled. An `sdfMaxResolution` not divisible by 8, an unknown `sdfTextureFormat`, and both `sdfMaxResolution` and `sdfTargetVoxelSize` authored on the same prim each warn with the prim path and fall back to defaults (`sdfTargetVoxelSize` takes precedence over `sdfMaxResolution`). The Python API path (`ShapeConfig.validate()`) still raises.
 - Users of heightfield ray queries, `newton.intersect_ray()`, or sensor rendering should call `Model.bvh_refit_shapes(state)` after shape state changes. `GeoType.HFIELD` ray queries now use the mesh BVH built during `ModelBuilder.finalize()` instead of per-thread DDA grid traversal; only code manually launching internal raycast kernels is affected by the removed heightfield-specific kernel buffers. (#2971, #3039)
 - Users who update shape or particle state after finalization should call `Model.bvh_refit_shapes()` or `Model.bvh_refit_particles()` before BVH-backed queries. `ModelBuilder.finalize()` now builds shape and particle BVHs automatically; use `Model.bvh_build_shapes()` and `Model.bvh_build_particles()` only when explicitly rebuilding, selecting a custom constructor, or working with manually populated models. (#3039)
 - Users who relied on `ModelBuilder.finalize()` populating `Mesh.sdf` on shared `Mesh` instances should call `Mesh.build_sdf()` directly when reusable SDF data must live on the `Mesh`. The finalized model now retains deferred SDF data internally for contact generation; do not depend on `Model.shape_sdf_index` or `Model.texture_sdf_data`. (#2533)
@@ -340,6 +349,8 @@
 - Add `newton.geometry.compute_offset_mesh()` for extracting offset surface meshes from any collision shape, and a viewer toggle to visualize gap + margin wireframes in the GL viewer
 - Add differentiable rigid contacts (experimental) with respect to body poses via `CollisionPipeline` when `requires_grad=True`
 - Add per-shape display colors via `ModelBuilder.shape_color`, `Model.shape_color`, and `color=` on `ModelBuilder.add_shape_*`; mesh shapes fall back to `Mesh.color` when available and viewers honor runtime `Model.shape_color` updates
+- Add per-shape display opacity via `ModelBuilder.shape_opacity`, `Model.shape_opacity`, `Mesh.opacity`, and `opacity=` on `ModelBuilder.add_shape_*`; viewers and URDF/MJCF/USD importers preserve authored alpha where supported
+- Add surface display opacity for cloth and soft mesh triangle rendering via `Model.tri_opacity`, `TetMesh.opacity`, and `opacity=` on cloth/soft builder helpers
 - Add `ModelBuilder.inertia_tolerance` to configure the eigenvalue positivity and triangle inequality threshold used during inertia correction in `finalize()`
 - Add `ViewerBase.set_visible_worlds()` for runtime control of which worlds are rendered, replacing the static `max_worlds` parameter
 - Add `compute_normals` and `compute_uvs` optional arguments to `Mesh.create_heightfield()` and `Mesh.create_terrain()`
@@ -353,8 +364,15 @@
 - Export `ViewerBase` from `newton.viewer` public API
 - Add `custom_attributes` argument to `ModelBuilder.add_shape_convex_hull()`
 - Add RJ45 plug-socket insertion example with SDF contacts, latch joint, and interactive gizmo
+- Add `TRIANGLE_PRISM` support-function type for heightfield triangles, extruding 1 m along the heightfield's local -Z so GJK/MPR naturally resolves shapes on the back side
+- Add `ViewerGL.log_scalar()` for live scalar time-series plots in the viewer
+- Add `deterministic` flag to `CollisionPipeline` and `NarrowPhase` for GPU-thread-scheduling-independent contact ordering via radix sort and deterministic fingerprint tiebreaking in contact reduction
+- Add `ViewerBase.log_arrows()` for arrow rendering (wide line + arrowhead) in the GL viewer with a dedicated geometry shader
+- Add cable cross-slide table example with transparent pulley visuals
 
 ### Changed
+
+- Make the cup, gripper pads, and MPM viscous funnel transparent in example viewer output
 
 - Require `mujoco ~=3.6.0` and `mujoco-warp ~=3.6.0` (previously 3.5.x)
 - Replace `plyfile` dependency with `open3d` for mesh I/O. Users who depended on `plyfile` transitively should install it separately.

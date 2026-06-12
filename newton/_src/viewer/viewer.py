@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import enum
+import hashlib
 import os
 import sys
 import warnings
@@ -24,6 +25,7 @@ from .kernels import (
     compute_hydro_contact_surface_lines,
     estimate_world_extents,
     repack_shape_colors,
+    repack_shape_opacities,
 )
 
 
@@ -96,6 +98,8 @@ class ViewerBase(ABC):
 
         # Shape instance batches (shape hash -> ShapeInstances)
         self._shape_instances = {}
+        self._triangle_opacity_groups: list[tuple[str, wp.array[wp.int32], float]] | None = None
+        self._triangle_opacity_signature: tuple[int, str] | None = None
         # Inertia box wireframe line vertices (12 lines per body)
         self._inertia_box_points0 = None
         self._inertia_box_points1 = None
@@ -156,10 +160,13 @@ class ViewerBase(ABC):
 
         # Per-shape color buffer and indexing
         self.model_shape_color: wp.array[wp.vec3] = None
+        self.model_shape_opacity: wp.array[wp.float32] = None
         self._shape_to_slot: np.ndarray | None = None
         self._slot_to_shape: np.ndarray | None = None
         self._slot_to_shape_wp: wp.array | None = None
         self._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
+        self._shape_transparent_mask: np.ndarray | None = None
+        self._shape_batches_have_transparency: bool = False
 
         # Isomesh cache for SDF collision visualization
         self._isomesh_cache: dict[int, newton.Mesh | None] = {}
@@ -257,10 +264,14 @@ class ViewerBase(ABC):
         self._sdf_isomesh_instances = {}
         self._sdf_isomesh_populated = False
         self.model_shape_color = None
+        self.model_shape_opacity = None
         self._shape_to_slot = None
         self._slot_to_shape = None
         self._slot_to_shape_wp = None
         self._shape_to_batch = None
+        self._shape_transparent_mask = None
+        self._triangle_opacity_groups = None
+        self._triangle_opacity_signature = None
 
         self._populate_shapes()
         if self._user_spacing is not None:
@@ -502,6 +513,7 @@ class ViewerBase(ABC):
             return
 
         self._sync_shape_colors_from_model()
+        self._sync_shape_opacities_from_model()
 
         # compute shape transforms and render
         for shapes in self._shape_instances.values():
@@ -511,6 +523,7 @@ class ViewerBase(ABC):
                 shapes.update(state, world_offsets=self.world_offsets)
 
             colors = shapes.colors if self.model_changed or shapes.colors_changed else None
+            opacities = shapes.opacities if self.model_changed or shapes.opacities_changed else None
             materials = shapes.materials if self.model_changed else None
 
             # Capsules may be rendered via a specialized path by the concrete viewer/backend
@@ -524,6 +537,7 @@ class ViewerBase(ABC):
                     shapes.scales,
                     colors,
                     materials,
+                    opacities=opacities,
                     hidden=not visible,
                 )
             else:
@@ -534,10 +548,12 @@ class ViewerBase(ABC):
                     shapes.scales,  # Always pass scales - needed for transform matrix calculation
                     colors,
                     materials,
+                    opacities=opacities,
                     hidden=not visible,
                 )
 
             shapes.colors_changed = False
+            shapes.opacities_changed = False
 
         self._log_gaussian_shapes(state)
         self._log_non_shape_state(state)
@@ -568,6 +584,27 @@ class ViewerBase(ABC):
         )
         for batch_ref in self._shape_instances.values():
             batch_ref.colors_changed = True
+
+    def _sync_shape_opacities_from_model(self):
+        """Propagate model-owned shape opacities into viewer batches."""
+        if (
+            self.model is None
+            or self.model.shape_opacity is None
+            or self.model_shape_opacity is None
+            or self._slot_to_shape_wp is None
+        ):
+            return
+
+        wp.launch(
+            kernel=repack_shape_opacities,
+            dim=len(self.model_shape_opacity),
+            inputs=[self.model.shape_opacity, self._slot_to_shape_wp],
+            outputs=[self.model_shape_opacity],
+            device=self.device,
+            record_tape=False,
+        )
+        for batch_ref in self._shape_instances.values():
+            batch_ref.opacities_changed = True
 
     def _log_gaussian_shapes(self, state: newton.State):
         """Render Gaussian shapes as point clouds with current body transforms."""
@@ -622,6 +659,7 @@ class ViewerBase(ABC):
                 shapes.scales,
                 shapes.colors if send_appearance else None,
                 shapes.materials if send_appearance else None,
+                opacities=shapes.opacities if send_appearance else None,
                 hidden=not visible,
             )
 
@@ -780,6 +818,7 @@ class ViewerBase(ABC):
         xforms: wp.array[wp.transform],
         colors: wp.array[wp.vec3] | None = None,
         materials: wp.array[wp.vec4] | None = None,
+        opacities: wp.array[wp.float32] | None = None,
         geo_thickness: float = 0.0,
         geo_is_solid: bool = True,
         geo_src: newton.Mesh | newton.Heightfield | None = None,
@@ -800,6 +839,7 @@ class ViewerBase(ABC):
             xforms: wp.array[wp.transform] of instance transforms
             colors: wp.array[wp.vec3] or None (broadcasted if length 1)
             materials: wp.array[wp.vec4] or None (broadcasted if length 1)
+            opacities: wp.array[wp.float32] or None (broadcasted if length 1)
             geo_thickness: Optional thickness used for hashing and solidification.
             geo_is_solid: If False, use shell-thickening for mesh-based geometry.
             geo_src: Source geometry to use only when ``geo_type`` is
@@ -848,9 +888,18 @@ class ViewerBase(ABC):
                 return wp.array([val] * num_instances, dtype=wp.vec4, device=self.device)
             return arr
 
+        def _ensure_float_array(arr, default):
+            if arr is None:
+                return wp.array([default] * num_instances, dtype=wp.float32, device=self.device)
+            if len(arr) == 1 and num_instances > 1:
+                val = float(arr.numpy()[0])
+                return wp.array([val] * num_instances, dtype=wp.float32, device=self.device)
+            return arr
+
         # defaults
         default_color = wp.vec3(0.3, 0.8, 0.9)
         default_material = wp.vec4(0.5, 0.0, 0.0, 0.0)
+        default_opacity = 1.0
 
         # planes default to checkerboard and mid-gray if not overridden
         if geo_type == newton.GeoType.PLANE:
@@ -859,9 +908,10 @@ class ViewerBase(ABC):
 
         colors = _ensure_vec3_array(colors, default_color)
         materials = _ensure_vec4_array(materials, default_material)
+        opacities = _ensure_float_array(opacities, default_opacity)
 
         # finally, log the instances
-        self.log_instances(name, mesh_path, xforms, scales, colors, materials, hidden=hidden)
+        self.log_instances(name, mesh_path, xforms, scales, colors, materials, opacities=opacities, hidden=hidden)
 
     def log_geo(
         self,
@@ -1045,6 +1095,7 @@ class ViewerBase(ABC):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        opacity: float | None = None,
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
@@ -1061,6 +1112,7 @@ class ViewerBase(ABC):
             texture: Optional texture image array or path.
             hidden: Whether the mesh should be hidden.
             backface_culling: Whether back-face culling should be enabled.
+            opacity: Optional display opacity in [0, 1].
             color: Optional base color as an RGB tuple with values in
                 [0, 1]. Used when no texture is provided.
             roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
@@ -1079,6 +1131,8 @@ class ViewerBase(ABC):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
+        *,
+        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
     ):
         """
@@ -1091,6 +1145,7 @@ class ViewerBase(ABC):
             scales: Optional per-instance scales as a Warp vec3 array.
             colors: Optional per-instance colors as a Warp vec3 array.
             materials: Optional per-instance material parameters as a Warp vec4 array.
+            opacities: Optional per-instance opacity values as a Warp float array.
             hidden: Whether the instance batch should be hidden.
         """
         pass
@@ -1103,6 +1158,8 @@ class ViewerBase(ABC):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
+        *,
+        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
     ):
         """
@@ -1118,9 +1175,10 @@ class ViewerBase(ABC):
             scales: Optional per-capsule scales as a Warp vec3 array.
             colors: Optional per-capsule colors as a Warp vec3 array.
             materials: Optional per-capsule material parameters as a Warp vec4 array.
+            opacities: Optional per-capsule opacity values as a Warp float array.
             hidden: Whether the capsule batch should be hidden.
         """
-        self.log_instances(name, mesh, xforms, scales, colors, materials, hidden=hidden)
+        self.log_instances(name, mesh, xforms, scales, colors, materials, opacities=opacities, hidden=hidden)
 
     @abstractmethod
     def log_lines(
@@ -1346,6 +1404,10 @@ class ViewerBase(ABC):
             self.scales = []
             self.colors = []
             """Color (vec3f) per instance."""
+            self.opacities = []
+            """Opacity (float) per instance."""
+            self.transparent: bool = False
+            """Whether this render batch belongs to the transparent pass."""
             self.materials = []
             self.worlds = []  # World index for each shape
 
@@ -1358,6 +1420,11 @@ class ViewerBase(ABC):
             should be included in
             :meth:`~newton.viewer.ViewerBase.log_instances`.
             """
+            self.opacities_changed: bool = False
+            """Indicates that finalized
+            ``ShapeInstances.opacities`` changed and should be included in
+            :meth:`~newton.viewer.ViewerBase.log_instances`.
+            """
 
         def add(
             self,
@@ -1366,6 +1433,7 @@ class ViewerBase(ABC):
             scale: wp.vec3,
             color: wp.vec3,
             material: wp.vec4,
+            opacity: float,
             shape_index: int,
             world: int = -1,
         ):
@@ -1378,6 +1446,7 @@ class ViewerBase(ABC):
                 scale: The scale of the instance.
                 color: The color of the instance.
                 material: The material of the instance.
+                opacity: The opacity of the instance.
                 shape_index: The shape index.
                 world: The world index.
             """
@@ -1385,16 +1454,22 @@ class ViewerBase(ABC):
             self.xforms.append(xform)
             self.scales.append(scale)
             self.colors.append(color)
+            self.opacities.append(float(opacity))
             self.materials.append(material)
             self.worlds.append(world)
             self.model_shapes.append(shape_index)
 
-        def finalize(self, shape_colors: wp.array[wp.vec3] | None = None):
+        def finalize(
+            self,
+            shape_colors: wp.array[wp.vec3] | None = None,
+            shape_opacities: wp.array[wp.float32] | None = None,
+        ):
             """
             Allocates the batch of shape instances as Warp arrays.
 
             Args:
                 shape_colors: The colors of the shapes.
+                shape_opacities: The opacities of the shapes.
             """
             self.parents = wp.array(self.parents, dtype=int, device=self.device)
             self.xforms = wp.array(self.xforms, dtype=wp.transform, device=self.device)
@@ -1404,6 +1479,11 @@ class ViewerBase(ABC):
                 self.colors = shape_colors
             else:
                 self.colors = wp.array(self.colors, dtype=wp.vec3, device=self.device)
+            if shape_opacities is not None:
+                assert len(shape_opacities) == len(self.scales), "shape_opacities length mismatch"
+                self.opacities = shape_opacities
+            else:
+                self.opacities = wp.array(self.opacities, dtype=wp.float32, device=self.device)
             self.materials = wp.array(self.materials, dtype=wp.vec4, device=self.device)
             self.worlds = wp.array(self.worlds, dtype=int, device=self.device)
 
@@ -1439,8 +1519,8 @@ class ViewerBase(ABC):
     ) -> int:
         return hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
 
-    def _hash_shape(self, geo_hash, shape_static, shape_flags) -> int:
-        return hash((geo_hash, shape_static, shape_flags))
+    def _hash_shape(self, geo_hash, shape_static, shape_flags, shape_transparent: bool = False) -> int:
+        return hash((geo_hash, shape_static, shape_flags, bool(shape_transparent)))
 
     def _should_show_shape(self, flags: int, is_static: bool) -> bool:
         """Determine if a shape should be visible based on current settings."""
@@ -1588,8 +1668,10 @@ class ViewerBase(ABC):
         shape_flags = self.model.shape_flags.numpy()
         shape_world = self.model.shape_world.numpy()
         shape_display_color = self.model.shape_color.numpy() if self.model.shape_color is not None else None
+        shape_display_opacity = self.model.shape_opacity.numpy() if self.model.shape_opacity is not None else None
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
+        shape_transparent_mask = np.zeros(shape_count, dtype=bool)
 
         # loop over shapes
         for s in range(shape_count):
@@ -1664,6 +1746,10 @@ class ViewerBase(ABC):
             flags = shape_flags[s]
             parent = shape_body[s]
             static = parent == -1
+            opacity = float(shape_display_opacity[s]) if shape_display_opacity is not None else 1.0
+            opacity = max(0.0, min(1.0, opacity))
+            transparent = opacity < 0.999
+            shape_transparent_mask[s] = transparent
 
             # For collision shapes that ALSO have the VISIBLE flag AND have SDF volumes,
             # treat the original mesh as visual geometry (the SDF isomesh will be rendered
@@ -1681,13 +1767,14 @@ class ViewerBase(ABC):
                 # Remove COLLIDE_SHAPES flag so this is treated as a visual shape
                 flags = flags & ~int(newton.ShapeFlags.COLLIDE_SHAPES)
 
-            shape_hash = self._hash_shape(geo_hash, static, flags)
+            shape_hash = self._hash_shape(geo_hash, static, flags, transparent)
 
             # ensure batch exists
             if shape_hash not in self._shape_instances:
                 shape_name = f"/model/shapes/shape_{len(self._shape_instances)}"
                 batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
                 batch.geo_type = geo_type
+                batch.transparent = transparent
                 self._shape_instances[shape_hash] = batch
             else:
                 batch = self._shape_instances[shape_hash]
@@ -1733,6 +1820,7 @@ class ViewerBase(ABC):
                 scale=scale,
                 color=color,
                 material=material,
+                opacity=opacity,
                 shape_index=s,
                 world=shape_world[s],
             )
@@ -1745,12 +1833,15 @@ class ViewerBase(ABC):
         # Allocate single contiguous color buffer and copy initial per-batch colors
         if total_instances:
             self.model_shape_color = wp.zeros(total_instances, dtype=wp.vec3, device=self.device)
+            self.model_shape_opacity = wp.zeros(total_instances, dtype=wp.float32, device=self.device)
 
         for b_idx, batch in enumerate(batches):
             if total_instances:
                 color_array = self.model_shape_color[offsets[b_idx] : offsets[b_idx + 1]]
+                opacity_array = self.model_shape_opacity[offsets[b_idx] : offsets[b_idx + 1]]
                 color_array.assign(wp.array(batch.colors, dtype=wp.vec3, device=self.device))
-                batch.finalize(shape_colors=color_array)
+                opacity_array.assign(wp.array(batch.opacities, dtype=wp.float32, device=self.device))
+                batch.finalize(shape_colors=color_array, shape_opacities=opacity_array)
             else:
                 batch.finalize()
 
@@ -1768,6 +1859,8 @@ class ViewerBase(ABC):
         self._slot_to_shape_wp = (
             wp.array(slot_to_shape, dtype=wp.int32, device=self.device) if total_instances else None
         )
+        self._shape_transparent_mask = shape_transparent_mask
+        self._shape_batches_have_transparency = bool(np.any(shape_transparent_mask))
 
         # Build shape -> batch reference mapping for change signalling
         shape_to_batch: list[ViewerBase.ShapeInstances | None] = [None] * shape_count
@@ -1873,6 +1966,7 @@ class ViewerBase(ABC):
                 scale=scale,
                 color=color,
                 material=material,
+                opacity=1.0,
                 shape_index=s,
                 world=shape_world[s],
             )
@@ -2259,15 +2353,85 @@ class ViewerBase(ABC):
 
         self.log_points("/model/com", self._com_positions, com_radius, self._com_colors, hidden=not self.show_com)
 
+    def _get_triangle_opacity_groups(
+        self,
+    ) -> tuple[
+        list[tuple[str, wp.array[wp.int32], float]],
+        list[tuple[str, wp.array[wp.int32], float]],
+    ]:
+        """Return cached triangle index groups split by display opacity."""
+        if self.model is None or not self.model.tri_count:
+            stale_groups = self._triangle_opacity_groups or []
+            self._triangle_opacity_groups = []
+            self._triangle_opacity_signature = None
+            return [], stale_groups
+
+        tri_count = self.model.tri_count
+        if self.model.tri_opacity is None:
+            opacities = np.ones(tri_count, dtype=np.float32)
+        else:
+            opacities = np.clip(self.model.tri_opacity.numpy().astype(np.float32).reshape(-1), 0.0, 1.0)
+            if len(opacities) == 1:
+                opacities = np.full(tri_count, float(opacities[0]), dtype=np.float32)
+            elif len(opacities) != tri_count:
+                opacities = np.ones(tri_count, dtype=np.float32)
+
+        signature = (
+            tri_count,
+            hashlib.blake2s(np.ascontiguousarray(opacities, dtype=np.float32).tobytes(), digest_size=8).hexdigest(),
+        )
+        if signature == self._triangle_opacity_signature and self._triangle_opacity_groups is not None:
+            return self._triangle_opacity_groups, []
+
+        stale_groups = self._triangle_opacity_groups or []
+        tri_indices_np = self.model.tri_indices.numpy().astype(np.int32).reshape(-1, 3)
+
+        if np.all(opacities == opacities[0]):
+            groups = [
+                (
+                    "/model/triangles",
+                    self.model.tri_indices.flatten(),
+                    float(opacities[0]),
+                )
+            ]
+        else:
+            groups = []
+            for group_idx, opacity_value in enumerate(np.unique(opacities)):
+                tri_ids = np.flatnonzero(opacities == opacity_value)
+                group_indices_np = tri_indices_np[tri_ids].reshape(-1)
+                digest = hashlib.blake2s(group_indices_np.tobytes(), digest_size=4).hexdigest()
+                group_indices = wp.array(group_indices_np, dtype=wp.int32, device=self.device)
+                groups.append((f"/model/triangles/opacity_{group_idx}_{digest}", group_indices, float(opacity_value)))
+
+        self._triangle_opacity_groups = groups
+        self._triangle_opacity_signature = signature
+        return groups, stale_groups
+
     def _log_triangles(self, state: newton.State):
         if self.model.tri_count:
-            self.log_mesh(
-                "/model/triangles",
-                state.particle_q,
-                self.model.tri_indices.flatten(),
-                hidden=not self.show_triangles,
-                backface_culling=False,
-            )
+            groups, stale_groups = self._get_triangle_opacity_groups()
+            visible_paths = {name for name, _, _ in groups}
+
+            for name, indices, opacity in groups:
+                self.log_mesh(
+                    name,
+                    state.particle_q,
+                    indices,
+                    hidden=not self.show_triangles,
+                    backface_culling=False,
+                    opacity=opacity,
+                )
+
+            for name, indices, opacity in stale_groups:
+                if name not in visible_paths:
+                    self.log_mesh(
+                        name,
+                        state.particle_q,
+                        indices,
+                        hidden=True,
+                        backface_culling=False,
+                        opacity=opacity,
+                    )
 
     def _log_particles(self, state: newton.State):
         if self.model.particle_count:

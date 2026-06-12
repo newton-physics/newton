@@ -46,6 +46,7 @@ PLUG_Y_OFFSET = -0.025
 
 CABLE_RADIUS = 0.00325
 CABLE_KINEMATIC_COUNT = 4  # first N rod bodies are inside the plug and follow it
+SOCKET_OPACITY = 0.35
 
 # Contact parameters for cable and ground plane (tuned for VBD).
 CABLE_MU = 2.0
@@ -250,6 +251,7 @@ class Example:
             mesh=socket_mesh,
             xform=wp.transform(sc, wp.quat_identity()),
             cfg=SHAPE_CFG,
+            opacity=SOCKET_OPACITY,
             label="socket",
         )
 
@@ -489,7 +491,7 @@ class Example:
                 print(f"[contact overflow] body {label} (idx={i}): {counts[i]} contacts (buffer={buf})")
 
         # Snap gizmo to the plug when the user isn't dragging it.
-        gizmo_active = self.viewer.gizmo_is_using
+        gizmo_active = getattr(self.viewer, "gizmo_is_using", False)
         if not gizmo_active:
             plug_tf = self.state_0.body_q.numpy()[self._plug_body]
             if picked_body >= 0:
