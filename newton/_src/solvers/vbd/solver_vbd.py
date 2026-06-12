@@ -378,12 +378,12 @@ class SolverVBD(SolverBase):
                 stacklevel=2,
             )
 
-        # TODO: Remove this temporary warning after the Newton 1.2 migration window.
+        # TODO: Remove this temporary warning after the Newton 1.4 migration window.
         if (
             model.particle_count > 0 or (model.body_count > 0 and not integrate_with_external_rigid_solver)
         ) and not _vbd_damping_migration_warned["value"]:
             warnings.warn(
-                "SolverVBD damping behavior changed in Newton 1.2.0:\n"
+                "SolverVBD damping behavior changed in Newton 1.4.0:\n"
                 "  - Damping coefficients are interpreted as absolute physical coefficients, "
                 "not stiffness-relative multipliers.\n"
                 "To preserve previous behavior, compute the new damping coefficient as "
