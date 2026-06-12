@@ -53,18 +53,18 @@ class Controller(ABC):
 
     @abstractmethod
     def input_struct(self) -> Any:
-        """Allocate a fresh input container with one field per live read port.
+        """Allocate a fresh input container with one field per input port.
 
-        The returned object is an auto-generated dataclass whose attribute
-        names match the ``*_attr`` / gain-port strings the user passed at
+        The returned object has attributes with
+        names that match the ``*_attr`` strings the user passed at
         construction. Each field is a freshly :func:`wp.zeros`-allocated
         array of the right dtype and size. The user typically reassigns
-        these fields to point at live simulation buffers.
+        these fields to point at live data buffers.
         """
 
     @abstractmethod
     def output_struct(self) -> Any:
-        """Allocate a fresh output container with one field per live write port."""
+        """Allocate a fresh output container with one field per output port."""
 
     @abstractmethod
     def compute(
