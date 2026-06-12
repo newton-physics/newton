@@ -1201,23 +1201,23 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self,
         body_local_to_proxy_global: wp.array[int],
         out_body_f: wp.array[wp.spatial_vector],
-        body_gravity_acceleration: wp.array[wp.vec3],
         *,
-        body_qd_before: wp.array[wp.spatial_vector] | None = None,
-        state: newton.State | None = None,
-        state_out: newton.State | None = None,
-        contacts: newton.Contacts | None = None,
-        dt: float = 0.0,
+        body_qd_before: wp.array[wp.spatial_vector],
+        state: newton.State,
+        state_out: newton.State,
+        contacts: newton.Contacts | None,
+        dt: float,
     ) -> None:
         """Convert MPM collider grid impulses to proxy-body wrenches."""
-        del body_gravity_acceleration, body_qd_before, state_out, contacts
+        del body_qd_before, state_out, contacts
         if dt <= 0.0:
             raise ValueError("MPM proxy wrench harvesting requires a positive dt")
+        out_body_f.zero_()
 
         impulses, positions, collider_ids = self.collect_collider_impulses(state)
         if collider_ids.shape[0] == 0:
             return
-        body_q = state.body_q if state is not None and state.body_q is not None else self.model.body_q
+        body_q = state.body_q if state.body_q is not None else self.model.body_q
 
         wp.launch(
             _harvest_mpm_proxy_wrenches_kernel,
@@ -1278,47 +1278,44 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self,
         particle_local_to_proxy_global: wp.array[int],
         out_particle_f: wp.array[wp.vec3],
-        particle_gravity_acceleration: wp.array[wp.vec3],
         *,
-        particle_qd_before: wp.array[wp.vec3] | None = None,
-        state: newton.State | None = None,
-        state_out: newton.State | None = None,
-        contacts: newton.Contacts | None = None,
-        dt: float = 0.0,
+        particle_qd_before: wp.array[wp.vec3],
+        state: newton.State,
+        state_out: newton.State,
+        contacts: newton.Contacts | None,
+        dt: float,
     ) -> None:
         """Convert MPM proxy momentum changes and collider impulses to forces."""
-        del contacts
         if dt <= 0.0:
             raise ValueError("MPM proxy particle-force harvesting requires a positive dt")
         if particle_local_to_proxy_global.shape[0] == 0:
             return
 
-        qd_before = particle_qd_before
-        if qd_before is None and state is not None and state_out is not None:
-            qd_before = getattr(self, "_proxy_particle_qd_before", None) if state is state_out else state.particle_qd
-
-        if qd_before is not None and state_out is not None:
-            wp.launch(
-                _harvest_mpm_transfer_proxy_particle_forces_kernel,
-                dim=particle_local_to_proxy_global.shape[0],
-                inputs=[
-                    float(dt),
-                    particle_local_to_proxy_global,
-                    int(newton.ParticleFlags.PROXY),
-                    int(newton.ParticleFlags.ACTIVE),
-                    self.model.particle_flags,
-                    self._mpm_model.particle_flags,
-                    qd_before,
-                    state_out.particle_qd,
-                    self.model.particle_mass,
-                    particle_gravity_acceleration,
-                    out_particle_f,
-                ],
-                device=self.model.device,
-            )
+        super().coupling_harvest_proxy_particle_forces(
+            particle_local_to_proxy_global,
+            out_particle_f,
+            particle_qd_before=particle_qd_before,
+            state=state,
+            state_out=state_out,
+            contacts=contacts,
+            dt=dt,
+        )
 
         if not self._mpm_model.deformable_collider_vertex_ranges:
             return
+
+        wp.launch(
+            _clear_inactive_mpm_proxy_particle_forces_kernel,
+            dim=particle_local_to_proxy_global.shape[0],
+            inputs=[
+                particle_local_to_proxy_global,
+                self._mpm_model.particle_flags,
+                int(newton.ParticleFlags.PROXY),
+                int(newton.ParticleFlags.ACTIVE),
+                out_particle_f,
+            ],
+            device=self.model.device,
+        )
 
         impulses, positions, collider_ids = self.collect_collider_impulses(state)
         if collider_ids.shape[0] == 0:
@@ -1335,7 +1332,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 self._mpm_model.collider,
                 particle_local_to_proxy_global,
                 int(newton.ParticleFlags.PROXY),
-                self.model.particle_flags,
+                self._mpm_model.particle_flags,
                 out_particle_f,
             ],
             device=self.model.device,
@@ -2878,36 +2875,6 @@ def _rewind_mpm_proxy_particles_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def _harvest_mpm_transfer_proxy_particle_forces_kernel(
-    dt: float,
-    particle_local_to_proxy_global: wp.array[int],
-    proxy_flag: int,
-    active_flag: int,
-    particle_flags: wp.array[wp.int32],
-    transfer_flags: wp.array[wp.int32],
-    qd_before: wp.array[wp.vec3],
-    qd_after: wp.array[wp.vec3],
-    particle_mass: wp.array[float],
-    particle_gravity_acceleration: wp.array[wp.vec3],
-    out_particle_f: wp.array[wp.vec3],
-):
-    local_particle = wp.tid()
-    proxy_global = particle_local_to_proxy_global[local_particle]
-    if proxy_global < 0 or (particle_flags[local_particle] & proxy_flag) == 0:
-        return
-    if (transfer_flags[local_particle] & active_flag) == 0:
-        return
-
-    mass = particle_mass[local_particle]
-    if mass <= 0.0:
-        return
-
-    g = particle_gravity_acceleration[local_particle]
-    force = mass * (qd_after[local_particle] - qd_before[local_particle]) / dt - mass * g
-    wp.atomic_add(out_particle_f, proxy_global, force)
-
-
-@wp.kernel(enable_backward=False)
 def _harvest_mpm_proxy_particle_forces_kernel(
     dt: float,
     collider_ids: wp.array[int],
@@ -2963,6 +2930,23 @@ def _harvest_mpm_proxy_particle_forces_kernel(
         proxy_global_k = particle_local_to_proxy_global[dst_k]
         if proxy_global_k >= 0 and (particle_flags[dst_k] & proxy_flag) != 0 and w_k > 0.0:
             wp.atomic_add(out_particle_f, proxy_global_k, w_k * f)
+
+
+@wp.kernel(enable_backward=False)
+def _clear_inactive_mpm_proxy_particle_forces_kernel(
+    particle_local_to_proxy_global: wp.array[int],
+    particle_flags: wp.array[wp.int32],
+    proxy_flag: int,
+    active_flag: int,
+    out_particle_f: wp.array[wp.vec3],
+):
+    local_particle = wp.tid()
+    proxy_global = particle_local_to_proxy_global[local_particle]
+    if proxy_global < 0 or proxy_global >= out_particle_f.shape[0]:
+        return
+    particle_flag = particle_flags[local_particle]
+    if (particle_flag & proxy_flag) != 0 and (particle_flag & active_flag) == 0:
+        out_particle_f[proxy_global] = wp.vec3(0.0)
 
 
 @wp.kernel(enable_backward=False)

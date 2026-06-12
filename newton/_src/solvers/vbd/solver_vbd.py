@@ -917,29 +917,28 @@ class SolverVBD(SolverBase, CouplingInterface):
         self,
         body_local_to_proxy_global: wp.array[int],
         out_body_f: wp.array[wp.spatial_vector],
-        body_gravity_acceleration: wp.array[wp.vec3],
         *,
-        body_qd_before: wp.array[wp.spatial_vector] | None = None,
-        state: State | None = None,
-        state_out: State | None = None,
-        contacts: Contacts | None = None,
-        dt: float = 0.0,
+        body_qd_before: wp.array[wp.spatial_vector],
+        state: State,
+        state_out: State,
+        contacts: Contacts | None,
+        dt: float,
     ) -> None:
         """Harvest contact-only proxy-body wrenches."""
-        del state
         if not self._coupling_has_rigid_avbd_state:
             super().coupling_harvest_proxy_wrenches(
                 body_local_to_proxy_global,
                 out_body_f,
-                body_gravity_acceleration,
                 body_qd_before=body_qd_before,
+                state=state,
                 state_out=state_out,
                 contacts=contacts,
                 dt=dt,
             )
             return
 
-        if contacts is None or state_out is None:
+        out_body_f.zero_()
+        if contacts is None:
             return
 
         body_q_prev = self._coupling_body_q_prev_snapshot
@@ -1005,13 +1004,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         self,
         particle_local_to_proxy_global: wp.array[int],
         out_particle_f: wp.array[wp.vec3],
-        particle_gravity_acceleration: wp.array[wp.vec3],
         *,
-        particle_qd_before: wp.array[wp.vec3] | None = None,
-        state: State | None = None,
-        state_out: State | None = None,
-        contacts: Contacts | None = None,
-        dt: float = 0.0,
+        particle_qd_before: wp.array[wp.vec3],
+        state: State,
+        state_out: State,
+        contacts: Contacts | None,
+        dt: float,
     ) -> None:
         """Harvest contact-only proxy-particle forces.
 
@@ -1023,8 +1021,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         ``integrate_with_external_rigid_solver=True``, rigid poses are supplied
         by the external solver in ``state_out`` instead.
         """
-        del particle_gravity_acceleration, particle_qd_before
-        if self.model.particle_count == 0 or particle_local_to_proxy_global.shape[0] == 0 or state is None:
+        del particle_qd_before
+        out_particle_f.zero_()
+        if self.model.particle_count == 0 or particle_local_to_proxy_global.shape[0] == 0:
             return
 
         if (

@@ -19,8 +19,6 @@ from newton._src.solvers.coupled.interface import (
     CouplingInterface,
 )
 from newton._src.solvers.coupled.proxy_utils import (
-    harvest_proxy_momentum_forces_kernel,
-    harvest_proxy_particle_momentum_forces_kernel,
     smooth_proxy_teleportation_kernel,
     subtract_proxy_forces_kernel,
     subtract_proxy_particle_forces_kernel,
@@ -351,15 +349,14 @@ class _ProxyParticleHookSolver(SolverBase, CouplingInterface):
         self,
         particle_local_to_proxy_global,
         out_particle_f,
-        particle_gravity_acceleration,
         *,
-        particle_qd_before=None,
-        state=None,
-        state_out=None,
-        contacts=None,
-        dt=0.0,
+        particle_qd_before,
+        state,
+        state_out,
+        contacts,
+        dt,
     ):
-        del particle_gravity_acceleration, particle_qd_before, state, state_out, contacts, dt
+        del particle_qd_before, state, state_out, contacts, dt
         self.harvest_calls += 1
         wp.launch(
             _write_proxy_particle_force_kernel,
@@ -391,15 +388,14 @@ class _ParticleHarvestStateRecordingSolver(SolverBase, CouplingInterface):
         self,
         particle_local_to_proxy_global,
         out_particle_f,
-        particle_gravity_acceleration,
         *,
-        particle_qd_before=None,
-        state=None,
-        state_out=None,
-        contacts=None,
-        dt=0.0,
+        particle_qd_before,
+        state,
+        state_out,
+        contacts,
+        dt,
     ):
-        del particle_local_to_proxy_global, out_particle_f, particle_gravity_acceleration, dt
+        del particle_local_to_proxy_global, out_particle_f, dt
         self.harvest_particle_qd = state.particle_qd.numpy().copy()
         self.harvest_particle_qd_before = particle_qd_before.numpy().copy()
         self.harvest_particle_qd_out = state_out.particle_qd.numpy().copy()
@@ -427,15 +423,14 @@ class _BodyHarvestStateRecordingSolver(SolverBase, CouplingInterface):
         self,
         body_local_to_proxy_global,
         out_body_f,
-        body_gravity_acceleration,
         *,
-        body_qd_before=None,
-        state=None,
-        state_out=None,
-        contacts=None,
-        dt=0.0,
+        body_qd_before,
+        state,
+        state_out,
+        contacts,
+        dt,
     ):
-        del body_local_to_proxy_global, out_body_f, body_gravity_acceleration, state_out, contacts, dt
+        del body_local_to_proxy_global, out_body_f, state_out, contacts, dt
         self.harvest_body_qd = state.body_qd.numpy().copy()
         self.harvest_body_qd_before = body_qd_before.numpy().copy()
 
@@ -465,15 +460,14 @@ class _ProxyBodyHookSolver(SolverBase, CouplingInterface):
         self,
         body_local_to_proxy_global,
         out_body_f,
-        body_gravity_acceleration,
         *,
-        body_qd_before=None,
-        state=None,
-        state_out=None,
-        contacts=None,
-        dt=0.0,
+        body_qd_before,
+        state,
+        state_out,
+        contacts,
+        dt,
     ):
-        del body_gravity_acceleration, body_qd_before, state, state_out, contacts, dt
+        del body_qd_before, state, state_out, contacts, dt
         self.harvest_calls += 1
         wp.launch(
             _write_proxy_body_wrench_kernel,
@@ -593,15 +587,14 @@ class _ContactRecordingBodyHarvestSolver(_ContactRecordingCopySolver):
         self,
         body_local_to_proxy_global,
         out_body_f,
-        body_gravity_acceleration,
         *,
-        body_qd_before=None,
-        state=None,
-        state_out=None,
-        contacts=None,
-        dt=0.0,
+        body_qd_before,
+        state,
+        state_out,
+        contacts,
+        dt,
     ):
-        del body_local_to_proxy_global, out_body_f, body_gravity_acceleration, body_qd_before, state, state_out, dt
+        del body_local_to_proxy_global, out_body_f, body_qd_before, state, state_out, dt
         self.harvest_contacts.append(contacts)
 
 
@@ -3526,77 +3519,6 @@ class TestParticleFlagsProxy(unittest.TestCase):
         self.assertNotEqual(newton.ParticleFlags.PROXY, newton.ParticleFlags.ACTIVE)
 
 
-class TestDefaultProxyMomentumHarvest(unittest.TestCase):
-    """Default momentum harvest excludes public force inputs."""
-
-    def test_body_harvest_subtracts_public_force_and_gravity(self):
-        dev = "cpu"
-        dt = 0.5
-        body_local_to_proxy_global = wp.array([0], dtype=int, device=dev)
-        qd_before = wp.array([wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=dev)
-        qd_after = wp.array([wp.spatial_vector(1.0, 2.0, 3.0, 0.5, 0.25, 0.125)], dtype=wp.spatial_vector, device=dev)
-        body_f = wp.array([wp.spatial_vector(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)], dtype=wp.spatial_vector, device=dev)
-        body_mass = wp.array([2.0], dtype=float, device=dev)
-        body_inertia = wp.array(
-            [wp.mat33(4.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 6.0)],
-            dtype=wp.mat33,
-            device=dev,
-        )
-        body_q = wp.array([wp.transform(wp.vec3(0.0), wp.quat_identity())], dtype=wp.transform, device=dev)
-        body_gravity_acceleration = wp.array([wp.vec3(0.0, -9.8, 0.0)], dtype=wp.vec3, device=dev)
-        out = wp.zeros(1, dtype=wp.spatial_vector, device=dev)
-
-        wp.launch(
-            harvest_proxy_momentum_forces_kernel,
-            dim=1,
-            inputs=[
-                dt,
-                body_local_to_proxy_global,
-                qd_before,
-                qd_after,
-                body_f,
-                body_mass,
-                body_inertia,
-                body_q,
-                body_gravity_acceleration,
-                out,
-            ],
-            device=dev,
-        )
-
-        expected = np.array([3.0, 25.6, 9.0, 0.0, -2.5, -4.5])
-        np.testing.assert_allclose(out.numpy()[0], expected, rtol=1.0e-6, atol=1.0e-6)
-
-    def test_particle_harvest_subtracts_public_force_and_gravity(self):
-        dev = "cpu"
-        dt = 0.5
-        particle_local_to_proxy_global = wp.array([0], dtype=int, device=dev)
-        qd_before = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=dev)
-        qd_after = wp.array([wp.vec3(1.0, 2.0, 3.0)], dtype=wp.vec3, device=dev)
-        particle_f = wp.array([wp.vec3(1.0, 2.0, 3.0)], dtype=wp.vec3, device=dev)
-        particle_mass = wp.array([2.0], dtype=float, device=dev)
-        particle_gravity_acceleration = wp.array([wp.vec3(0.0, -10.0, 0.0)], dtype=wp.vec3, device=dev)
-        out = wp.zeros(1, dtype=wp.vec3, device=dev)
-
-        wp.launch(
-            harvest_proxy_particle_momentum_forces_kernel,
-            dim=1,
-            inputs=[
-                dt,
-                particle_local_to_proxy_global,
-                qd_before,
-                qd_after,
-                particle_f,
-                particle_mass,
-                particle_gravity_acceleration,
-                out,
-            ],
-            device=dev,
-        )
-
-        np.testing.assert_allclose(out.numpy()[0], np.array([3.0, 26.0, 9.0]), rtol=1.0e-6, atol=1.0e-6)
-
-
 class TestProxyVelocityRewind(unittest.TestCase):
     """Default proxy rewinds remove lagged feedback and public force inputs."""
 
@@ -3755,12 +3677,10 @@ class TestVBDProxyParticleHarvest(unittest.TestCase):
         contacts.soft_contact_normal.assign(np.array([[1.0, 0.0, 0.0]], dtype=np.float32))
 
         out_particle_f = wp.zeros(1, dtype=wp.vec3, device=model.device)
-        particle_gravity_acceleration = wp.empty(model.particle_count, dtype=wp.vec3, device=model.device)
-        solver.coupling_eval_gravity_acceleration(None, particle_gravity_acceleration)
         solver.coupling_harvest_proxy_particle_forces(
             wp.array([0], dtype=int, device=model.device),
             out_particle_f,
-            particle_gravity_acceleration,
+            particle_qd_before=state.particle_qd,
             state=state,
             state_out=state_out,
             contacts=contacts,

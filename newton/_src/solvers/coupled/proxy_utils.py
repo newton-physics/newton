@@ -230,11 +230,9 @@ def harvest_proxy_momentum_forces_kernel(
     body_local_to_proxy_global: wp.array[int],
     qd_before: wp.array[wp.spatial_vector],
     qd_after: wp.array[wp.spatial_vector],
-    body_f: wp.array[wp.spatial_vector],
     body_mass: wp.array[float],
     body_inertia: wp.array[wp.mat33],
     body_q: wp.array[wp.transform],
-    body_gravity_acceleration: wp.array[wp.vec3],
     out_coupling_forces: wp.array[wp.spatial_vector],
 ):
     """Estimate proxy feedback force from destination velocity change."""
@@ -250,14 +248,8 @@ def harvest_proxy_momentum_forces_kernel(
     I_body = body_inertia[local_id]
     r = wp.transform_get_rotation(body_q[local_id])
 
-    g = body_gravity_acceleration[local_id]
-
-    f_ext = wp.spatial_vector(wp.vec3(0.0), wp.vec3(0.0))
-    if body_f:
-        f_ext = body_f[local_id]
-
-    f = m * dv / dt - m * g - wp.spatial_top(f_ext)
-    tau = wp.quat_rotate(r, I_body * wp.quat_rotate_inv(r, dw)) / dt - wp.spatial_bottom(f_ext)
+    f = m * dv / dt
+    tau = wp.quat_rotate(r, I_body * wp.quat_rotate_inv(r, dw)) / dt
 
     wp.atomic_add(out_coupling_forces, global_id, wp.spatial_vector(f, tau))
 
@@ -268,9 +260,9 @@ def harvest_proxy_particle_momentum_forces_kernel(
     particle_local_to_proxy_global: wp.array[int],
     qd_before: wp.array[wp.vec3],
     qd_after: wp.array[wp.vec3],
-    particle_f: wp.array[wp.vec3],
     particle_mass: wp.array[float],
-    particle_gravity_acceleration: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
+    active_flag: int,
     out_coupling_forces: wp.array[wp.vec3],
 ):
     """Estimate proxy particle feedback force from destination velocity change."""
@@ -278,16 +270,14 @@ def harvest_proxy_particle_momentum_forces_kernel(
     global_id = particle_local_to_proxy_global[local_id]
     if global_id < 0:
         return
+    if (particle_flags[local_id] & active_flag) == 0:
+        return
 
     dv = qd_after[local_id] - qd_before[local_id]
     m = particle_mass[local_id]
 
-    g = particle_gravity_acceleration[local_id]
-    f_ext = wp.vec3(0.0, 0.0, 0.0)
-    if particle_f:
-        f_ext = particle_f[local_id]
-
-    wp.atomic_add(out_coupling_forces, global_id, m * dv / dt - m * g - f_ext)
+    f = m * dv / dt
+    wp.atomic_add(out_coupling_forces, global_id, f)
 
 
 @wp.kernel(enable_backward=False)

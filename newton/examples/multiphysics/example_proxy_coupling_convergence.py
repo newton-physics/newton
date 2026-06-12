@@ -140,15 +140,15 @@ class _KktResponseSolver(SolverBase, CouplingInterface):
         self,
         particle_local_to_proxy_global,
         out_particle_f,
-        particle_gravity_acceleration,
         *,
-        particle_qd_before=None,
-        state=None,
-        state_out=None,
-        contacts=None,
-        dt=0.0,
+        particle_qd_before,
+        state,
+        state_out,
+        contacts,
+        dt,
     ):
-        del particle_gravity_acceleration, particle_qd_before, state, state_out, contacts, dt
+        del particle_qd_before, state, state_out, contacts, dt
+        out_particle_f.zero_()
         wp.launch(
             _scatter_proxy_particle_forces,
             dim=particle_local_to_proxy_global.shape[0],
