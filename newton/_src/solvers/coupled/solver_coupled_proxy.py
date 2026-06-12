@@ -763,8 +763,10 @@ class SolverCoupledProxy(SolverCoupled):
                     dt=dt,
                 )
 
+                wp.copy(proxy.proxy_qd_before, dst.state_0.body_qd)
+
                 if is_staggered:
-                    continue
+                    proxy.coupling_forces.zero_()
 
                 dst.solver.coupling_rewind_proxy_body_velocity(
                     proxy.destination_local_to_proxy_global,
@@ -797,6 +799,8 @@ class SolverCoupledProxy(SolverCoupled):
                     CouplingInputStateFlags.PARTICLE_Q | CouplingInputStateFlags.PARTICLE_QD,
                     dt=dt,
                 )
+
+                wp.copy(proxy.proxy_qd_before, dst.state_0.particle_qd)
 
                 if is_staggered:
                     continue
@@ -841,11 +845,6 @@ class SolverCoupledProxy(SolverCoupled):
                 ):
                     restore_external_contacts = contacts_before_prepare
 
-            for proxy in body_proxies:
-                wp.copy(proxy.proxy_qd_before, dst.state_0.body_qd)
-            for proxy in particle_proxies:
-                wp.copy(proxy.proxy_qd_before, dst.state_0.particle_qd)
-
             try:
                 dst_contacts_used = self._step_entry(
                     dst, control, dst_contacts, dt, filter_contacts=filter_dst_contacts
@@ -864,11 +863,9 @@ class SolverCoupledProxy(SolverCoupled):
                     )
 
             for proxy in body_proxies:
-                proxy.coupling_forces.zero_()
                 dst.solver.coupling_harvest_proxy_wrenches(
                     proxy.destination_local_to_proxy_global,
                     proxy.coupling_forces,
-                    dst.body_gravity_acceleration,
                     body_qd_before=proxy.proxy_qd_before,
                     state=dst.state_0,
                     state_out=dst.state_1,
@@ -877,11 +874,9 @@ class SolverCoupledProxy(SolverCoupled):
                 )
 
             for proxy in particle_proxies:
-                proxy.coupling_forces.zero_()
                 dst.solver.coupling_harvest_proxy_particle_forces(
                     proxy.destination_local_to_proxy_global,
                     proxy.coupling_forces,
-                    dst.particle_gravity_acceleration,
                     particle_qd_before=proxy.proxy_qd_before,
                     state=dst.state_0,
                     state_out=dst.state_1,

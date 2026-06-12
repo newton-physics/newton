@@ -54,26 +54,24 @@ Supported hook signatures are:
     def coupling_harvest_proxy_wrenches(
         body_local_to_proxy_global,
         out_body_f,
-        body_gravity_acceleration,
         *,
-        body_qd_before=None,
-        state=None,
-        state_out=None,
-        contacts=None,
-        dt=0.0,
+        body_qd_before,
+        state,
+        state_out,
+        contacts,
+        dt,
     ) -> None: ...
 
 
     def coupling_harvest_proxy_particle_forces(
         particle_local_to_proxy_global,
         out_particle_f,
-        particle_gravity_acceleration,
         *,
-        particle_qd_before=None,
-        state=None,
-        state_out=None,
-        contacts=None,
-        dt=0.0,
+        particle_qd_before,
+        state,
+        state_out,
+        contacts,
+        dt,
     ) -> None: ...
 
 
@@ -87,6 +85,7 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
+from ...geometry import ParticleFlags
 from ...sim import BodyFlags
 from .proxy_utils import (
     filter_proxy_rigid_contacts_kernel,
@@ -361,20 +360,19 @@ class CouplingInterface:
         self,
         body_local_to_proxy_global: wp.array[int],
         out_body_f: wp.array[wp.spatial_vector],
-        body_gravity_acceleration: wp.array[wp.vec3],
         *,
-        body_qd_before: wp.array[wp.spatial_vector] | None = None,
-        state: State | None = None,
-        state_out: State | None = None,
-        contacts: Contacts | None = None,
-        dt: float = 0.0,
+        body_qd_before: wp.array[wp.spatial_vector],
+        state: State,
+        state_out: State,
+        contacts: Contacts | None,
+        dt: float,
     ) -> None:
         """Estimate proxy-body feedback from destination momentum change."""
-        del contacts
+        del state, contacts
         if body_local_to_proxy_global.shape[0] == 0:
             return
-        if body_qd_before is None or state_out is None or state_out.body_qd is None:
-            raise ValueError("Default body proxy harvest requires body_qd_before and state_out.body_qd")
+        if state_out.body_qd is None:
+            raise ValueError("Default body proxy harvest requires state_out.body_qd")
         if dt <= 0.0:
             raise ValueError("Default body proxy harvest requires dt > 0")
 
@@ -387,11 +385,9 @@ class CouplingInterface:
                 body_local_to_proxy_global,
                 body_qd_before,
                 state_out.body_qd,
-                state.body_f if state is not None else None,
                 model.body_mass,
                 model.body_inertia,
                 state_out.body_q,
-                body_gravity_acceleration,
                 out_body_f,
             ],
             device=model.device,
@@ -401,20 +397,19 @@ class CouplingInterface:
         self,
         particle_local_to_proxy_global: wp.array[int],
         out_particle_f: wp.array[wp.vec3],
-        particle_gravity_acceleration: wp.array[wp.vec3],
         *,
-        particle_qd_before: wp.array[wp.vec3] | None = None,
-        state: State | None = None,
-        state_out: State | None = None,
-        contacts: Contacts | None = None,
-        dt: float = 0.0,
+        particle_qd_before: wp.array[wp.vec3],
+        state: State,
+        state_out: State,
+        contacts: Contacts | None,
+        dt: float,
     ) -> None:
         """Estimate proxy-particle feedback from destination momentum change."""
-        del contacts
+        del state, contacts
         if particle_local_to_proxy_global.shape[0] == 0:
             return
-        if particle_qd_before is None or state_out is None or state_out.particle_qd is None:
-            raise ValueError("Default particle proxy harvest requires particle_qd_before and state_out.particle_qd")
+        if state_out.particle_qd is None:
+            raise ValueError("Default particle proxy harvest requires state_out.particle_qd")
         if dt <= 0.0:
             raise ValueError("Default particle proxy harvest requires dt > 0")
 
@@ -427,9 +422,9 @@ class CouplingInterface:
                 particle_local_to_proxy_global,
                 particle_qd_before,
                 state_out.particle_qd,
-                state.particle_f if state is not None else None,
                 model.particle_mass,
-                particle_gravity_acceleration,
+                model.particle_flags,
+                int(ParticleFlags.ACTIVE),
                 out_particle_f,
             ],
             device=model.device,

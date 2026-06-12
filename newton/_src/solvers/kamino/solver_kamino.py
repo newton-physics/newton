@@ -97,42 +97,6 @@ class SolverKamino(SolverBase, CouplingInterface):
                 state_in, state_out = state_out, state_in
     """
 
-    @override
-    def coupling_harvest_proxy_wrenches(
-        self,
-        body_local_to_proxy_global: wp.array[int],
-        out_body_f: wp.array[wp.spatial_vector],
-        body_gravity_acceleration: wp.array[wp.vec3],
-        *,
-        body_qd_before: wp.array[wp.spatial_vector] | None = None,
-        state: State | None = None,
-        state_out: State | None = None,
-        contacts: Contacts | None = None,
-        dt: float = 0.0,
-    ) -> None:
-        """Reject proxy-body feedback harvesting."""
-        del body_local_to_proxy_global, out_body_f, body_gravity_acceleration
-        del body_qd_before, state, state_out, contacts, dt
-        raise NotImplementedError("Kamino does not support proxy body harvest")
-
-    @override
-    def coupling_harvest_proxy_particle_forces(
-        self,
-        particle_local_to_proxy_global: wp.array[int],
-        out_particle_f: wp.array[wp.vec3],
-        particle_gravity_acceleration: wp.array[wp.vec3],
-        *,
-        particle_qd_before: wp.array[wp.vec3] | None = None,
-        state: State | None = None,
-        state_out: State | None = None,
-        contacts: Contacts | None = None,
-        dt: float = 0.0,
-    ) -> None:
-        """Reject proxy-particle feedback harvesting."""
-        del particle_local_to_proxy_global, out_particle_f, particle_gravity_acceleration
-        del particle_qd_before, state, state_out, contacts, dt
-        raise NotImplementedError("Kamino does not support proxy particle harvest")
-
     @dataclass
     class Config:
         """
