@@ -275,57 +275,57 @@ def add_single_contact(
     if (distance - margin_plus_gap) > 0.0:
         return
 
-    # Increment the active contact counters
-    mcid = wp.atomic_add(contact_model_num, 0, 1)
+    # Safely increment the active contact counters (see notes in _write_contact_unified_kamino in unified.py)
     wcid = wp.atomic_add(contact_world_num, wid, 1)
-
-    # If within max allocated contacts, write the new contact data
-    if mcid < model_max_contacts and wcid < world_max_contacts:
-        # Perform A/B geom and body assignment
-        # NOTE: We want the normal to always point from A to B,
-        # and hence body B to be the "effected" body in the contact
-        # so we have to ensure that bid_B is always non-negative
-        if bid_2 < 0:
-            gid_AB = vec2i(gid_2, gid_1)
-            bid_AB = vec2i(bid_2, bid_1)
-            normal = -normal
-        else:
-            gid_AB = vec2i(gid_1, gid_2)
-            bid_AB = vec2i(bid_1, bid_2)
-
-        # Compute absolute penetration distance
-        distance_abs = wp.abs(distance)
-
-        # The colliders compute the contact point in the middle, and thus to get the
-        # per-geom contact points we need to offset by the penetration depth along the normal
-        position_A = position + 0.5 * distance_abs * normal
-        position_B = position - 0.5 * distance_abs * normal
-
-        # Store margin-shifted distance in gapfunc.w: negative means penetration
-        # past the resting separation, zero means at rest, positive means within
-        # the detection gap but not yet at rest.
-        d = distance - margin
-        gapfunc = vec4f(normal.x, normal.y, normal.z, d)
-        q_frame = wp.quat_from_matrix(make_contact_frame_znorm(normal))
-        material = vec2f(friction, restitution)
-        key = build_pair_key2(uint32(gid_AB[0]), uint32(gid_AB[1]))
-
-        # Store the active contact output data
-        contact_wid[mcid] = wid
-        contact_cid[mcid] = wcid
-        contact_gid_AB[mcid] = gid_AB
-        contact_bid_AB[mcid] = bid_AB
-        contact_position_A[mcid] = position_A
-        contact_position_B[mcid] = position_B
-        contact_gapfunc[mcid] = gapfunc
-        contact_frame[mcid] = q_frame
-        contact_material[mcid] = material
-        contact_key[mcid] = key
-
-    # Otherwise roll-back the atomic add if we exceeded limits
-    else:
+    if wcid >= world_max_contacts:
+        wp.atomic_sub(contact_world_num, wid, 1)
+        return
+    mcid = wp.atomic_add(contact_model_num, 0, 1)
+    if mcid >= model_max_contacts:
         wp.atomic_sub(contact_model_num, 0, 1)
         wp.atomic_sub(contact_world_num, wid, 1)
+        return
+
+    # Perform A/B geom and body assignment
+    # NOTE: We want the normal to always point from A to B,
+    # and hence body B to be the "effected" body in the contact
+    # so we have to ensure that bid_B is always non-negative
+    if bid_2 < 0:
+        gid_AB = vec2i(gid_2, gid_1)
+        bid_AB = vec2i(bid_2, bid_1)
+        normal = -normal
+    else:
+        gid_AB = vec2i(gid_1, gid_2)
+        bid_AB = vec2i(bid_1, bid_2)
+
+    # Compute absolute penetration distance
+    distance_abs = wp.abs(distance)
+
+    # The colliders compute the contact point in the middle, and thus to get the
+    # per-geom contact points we need to offset by the penetration depth along the normal
+    position_A = position + 0.5 * distance_abs * normal
+    position_B = position - 0.5 * distance_abs * normal
+
+    # Store margin-shifted distance in gapfunc.w: negative means penetration
+    # past the resting separation, zero means at rest, positive means within
+    # the detection gap but not yet at rest.
+    d = distance - margin
+    gapfunc = vec4f(normal.x, normal.y, normal.z, d)
+    q_frame = wp.quat_from_matrix(make_contact_frame_znorm(normal))
+    material = vec2f(friction, restitution)
+    key = build_pair_key2(uint32(gid_AB[0]), uint32(gid_AB[1]))
+
+    # Store the active contact output data
+    contact_wid[mcid] = wid
+    contact_cid[mcid] = wcid
+    contact_gid_AB[mcid] = gid_AB
+    contact_bid_AB[mcid] = bid_AB
+    contact_position_A[mcid] = position_A
+    contact_position_B[mcid] = position_B
+    contact_gapfunc[mcid] = gapfunc
+    contact_frame[mcid] = q_frame
+    contact_material[mcid] = material
+    contact_key[mcid] = key
 
 
 def make_add_multiple_contacts(MAX_CONTACTS: int, SHARED_NORMAL: bool):
@@ -382,12 +382,30 @@ def make_add_multiple_contacts(MAX_CONTACTS: int, SHARED_NORMAL: bool):
             gid_AB = vec2i(gid_1, gid_2)
             bid_AB = vec2i(bid_1, bid_2)
 
-        # Increment the active contact counter
-        mcio = wp.atomic_add(contact_model_num, 0, num_contacts)
+        # Safely increment the per-world active contact counter (see notes in _write_contact_unified_kamino in unified.py)
         wcio = wp.atomic_add(contact_world_num, wid, num_contacts)
+        if wcio >= world_max_contacts:
+            wp.atomic_sub(contact_world_num, wid, num_contacts)
+            return
 
-        # Retrieve the maximum number of contacts that can be stored for this geom pair
-        max_num_contacts = wp.min(wp.min(model_max_contacts - mcio, world_max_contacts - wcio), num_contacts)
+        # Handle case where this thread saturated the counter and only partial contacts can be written
+        max_num_contacts = wp.min(world_max_contacts - wcio, num_contacts)
+        if max_num_contacts < num_contacts:
+            wp.atomic_sub(contact_world_num, wid, num_contacts - max_num_contacts)
+
+        # Safely increment the model active contact counter
+        mcio = wp.atomic_add(contact_model_num, 0, max_num_contacts)
+        if mcio >= model_max_contacts:
+            wp.atomic_sub(contact_model_num, 0, max_num_contacts)
+            wp.atomic_sub(contact_world_num, wid, max_num_contacts)
+            return
+
+        # Handle case where this thread saturated the counter and only partial contacts can be written
+        max_num_contacts_prev = max_num_contacts
+        max_num_contacts = wp.min(model_max_contacts - mcio, max_num_contacts_prev)
+        if max_num_contacts < max_num_contacts_prev:
+            wp.atomic_sub(contact_model_num, 0, max_num_contacts_prev - max_num_contacts)
+            wp.atomic_sub(contact_world_num, wid, max_num_contacts_prev - max_num_contacts)
 
         # Create the common material for this contact set
         material = vec2f(friction, restitution)
@@ -446,11 +464,6 @@ def make_add_multiple_contacts(MAX_CONTACTS: int, SHARED_NORMAL: bool):
 
                 # Increment active contact index
                 active_contact_idx += 1
-
-        # Roll-back the atomic add if we exceeded limits
-        if active_contact_idx < num_contacts:
-            wp.atomic_sub(contact_model_num, 0, num_contacts - active_contact_idx)
-            wp.atomic_sub(contact_world_num, wid, num_contacts - active_contact_idx)
 
     # Return the generated function
     return add_multiple_contacts
