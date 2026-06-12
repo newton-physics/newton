@@ -4,7 +4,7 @@
 ###########################################################################
 # Example Controllers — Differential IK driving four Franka Panda arms
 #
-# A ControlLawDifferentialIK manages four Franka Panda (fr3 + hand) robots
+# A ControllerDifferentialIK manages four Franka Panda (fr3 + hand) robots
 # arranged in a row. Each robot has its own 6DOF draggable gizmo in the
 # viewer; the controller drives every arm's TCP toward its gizmo every
 # step. The MuJoCo solver applies the controller's commanded q-targets
