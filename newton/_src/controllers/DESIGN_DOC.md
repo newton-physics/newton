@@ -177,7 +177,7 @@ ControllerDifferentialKinematics(
 
 ## State
 
-Stateful laws (PID) define a nested `@dataclass class State(Controller.State)` with their internal buffers (PID's `integral`). `state()` allocates a fresh instance with zero-initialized fields. Users typically double-buffer:
+Stateful laws (PID) define a nested `@dataclass class State(Controller.State)` with their internal buffers (PID's `integral`). The abstract function `state()` allocates a fresh instance with zero-initialized fields. Users typically double-buffer:
 
 ```python
 s0, s1 = controller.state(), controller.state()
@@ -192,13 +192,38 @@ Stateless laws (`ControllerDifferentialKinematics`, `ControllerDifferentialDrive
 
 ## Struct factories
 
-`input_struct()` and `output_struct()` allocate auto-generated struct instances with one `wp.zeros` field per live port the user declared. Field names match the user's `*_attr` strings (and live-gain strings). Baked parameters are absent (they live on the controller). Each field is sized minimally for the controller's view — `max(idx)+1` for ports with an explicit `_idx`, otherwise the natural-order length (`num_outputs` / `num_robots`).
+The inputs and outputs of particular controllers are highly dependent on the specific algorithm. This can be contrasted to `newton.actuators`, where the input is predictably a set of desired position/velocity/effort floats, and the output is an effort float.
+
+To simplify working with different controllers, each `Controller` implements `input_struct()` and `output_struct()` functions to auto-allocate correctly-sized struct instances which meet that controllers interface. Field names match the user's `*_attr` strings. Baked parameters are absent from either struct (they live on the controller). Each field is sized minimally for the controller's view — `max(idx)+1` for ports with an explicit `_idx`, otherwise the natural-order length (`num_outputs` / `num_robots`).
 
 Users can:
 
-- Use the returned struct as-is (each call gives a fresh allocation).
-- Reassign fields to point at live sim buffers (`s.joint_q = state.joint_q`).
-- Skip the factory entirely and pass any duck-typed object with the right attributes — `SimpleNamespace`, a hand-written dataclass, even `newton.State` if its field names happen to match.
+- Use the returned struct as-is (each call gives a fresh allocation):
+
+```python
+inp = controller.input_struct()       # fresh wp.zeros fields
+inp.joint_target_q.assign([0.6, -1.2])
+out = controller.output_struct()
+controller.compute(inp, out, s0, s1, time_step=dt)
+```
+
+- Reassign fields to point at live sim buffers:
+
+```python
+inp = controller.input_struct()
+inp.joint_q = state.joint_q           # share the solver's array, no copy
+out = controller.output_struct()
+out.joint_f = control.joint_f         # write directly into the solver's input
+```
+
+- Skip the factory entirely and pass any duck-typed object with the right attributes:
+
+```python
+inp = SimpleNamespace(joint_q=state.joint_q, joint_qd=state.joint_qd,
+                      joint_target_q=target_q, joint_target_qd=target_qd)
+out = SimpleNamespace(joint_f=control.joint_f)
+controller.compute(inp, out, s0, s1, time_step=dt)
+```
 
 ---
 
