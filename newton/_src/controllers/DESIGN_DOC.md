@@ -5,7 +5,7 @@ and replaced by proper documentation before merging.
 
 ## Background
 
-There are many controllers implemented across Isaac Lab/Sim. The goal of this module is to centralize them in Newton, re-implementing each so that they are completely CUDA-graphable and vectorized.
+There are many controllers implemented across Isaac Lab/Sim. The goal of this module is to centralize them in Newton, re-implementing each so that they are completely vectorized and CUDA-graphable. Below is a table summarizing existing controllers, where their implementation currently lives, and whether there is a replacement already completed in this module.
 
 | Controller | Current Repo | Completed? |
 | --- | --- | --- |
