@@ -753,14 +753,15 @@ def compute_and_write_joint_implicit_dynamics(
         pd_dq_j_ref = data_joint_dq_j_ref[dofs_offset_j]
         pd_tau_j_ff = data_joint_tau_j_ref[dofs_offset_j]
 
-        # Compute the implicit joint dynamics intermedates
-        m_j = a_j + dt * (b_j + k_d_j) + dt * dt * k_p_j
+        # Compute the implicit joint dynamics intermediates
+        # Enforce minimum mass to avoid division by zero
+        m_j = wp.max(1e-6, a_j + dt * (b_j + k_d_j) + dt * dt * k_p_j)
         inv_m_j = 1.0 / m_j
         tau_j = pd_tau_j_ff + k_p_j * (pd_q_j_ref - q_j) + k_d_j * pd_dq_j_ref
         h_j = a_j * dq_j + dt * tau_j
         dq_b_j = inv_m_j * h_j
 
-        # Store the resulting joint dynamics intermadiates
+        # Store the resulting joint dynamics intermediates
         data_joint_m_j[dynamic_cts_offset_j] = m_j
         data_joint_inv_m_j[dynamic_cts_offset_j] = inv_m_j
         data_joint_dq_b_j[dynamic_cts_offset_j] = dq_b_j
