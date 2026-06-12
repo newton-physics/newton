@@ -6,7 +6,6 @@ from __future__ import annotations
 import collections
 import copy
 import datetime
-import inspect
 import itertools
 import logging
 import math
@@ -50,24 +49,6 @@ from .import_utils import should_show_collider
 logger = logging.getLogger("newton")
 
 AttributeFrequency = Model.AttributeFrequency
-
-_NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
-
-
-def _external_stacklevel() -> int:
-    """Return a ``stacklevel`` that points past all ``newton._src`` frames."""
-    frame = inspect.currentframe()
-    if frame is None:
-        return 2
-    frame = frame.f_back
-    stacklevel = 1
-    try:
-        while frame is not None and os.path.normpath(frame.f_code.co_filename).startswith(_NEWTON_SRC_DIR):
-            frame = frame.f_back
-            stacklevel += 1
-        return stacklevel
-    finally:
-        del frame
 
 
 def parse_usd(
@@ -759,7 +740,6 @@ def parse_usd(
         return imageable.ComputeVisibility() != UsdGeom.Tokens.invisible
 
     bodies_with_visual_shapes: set[int] = set()
-    warned_deprecated_body_armature_paths: set[str] = set()
 
     def _get_prim_world_mat(prim, articulation_root_xform, incoming_world_xform):
         prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
@@ -997,7 +977,6 @@ def parse_usd(
         prim: Usd.Prim,
         xform: wp.transform,
         label: str,
-        armature: float | None,
         articulation_root_xform: wp.transform | None = None,
         is_kinematic: bool = False,
     ) -> int:
@@ -1006,13 +985,10 @@ def parse_usd(
         body_custom_attrs = usd.get_custom_attribute_values(
             prim, builder_custom_attr_body, context={"builder": builder}
         )
-        body_inertia = wp.mat33(np.eye(3, dtype=np.float32)) * armature if armature is not None else None
 
         b = builder.add_link(
             xform=xform,
             label=label,
-            inertia=body_inertia,
-            armature=0.0 if armature is not None else None,
             is_kinematic=is_kinematic,
             custom_attributes=body_custom_attrs,
         )
@@ -1044,28 +1020,6 @@ def parse_usd(
             origin = wp.mul(incoming_xform, origin)
         path = str(prim.GetPath())
 
-        body_armature_source_path: str | None = None
-        body_armature = usd.get_float(prim, "newton:armature", None)
-        if body_armature is not None:
-            body_armature_source_path = path
-        if body_armature is None and physics_scene_prim:
-            body_armature = usd.get_float(physics_scene_prim, "newton:armature", None)
-            if body_armature is not None:
-                body_armature_source_path = str(physics_scene_prim.GetPath())
-
-        if (
-            body_armature_source_path is not None
-            and body_armature_source_path not in warned_deprecated_body_armature_paths
-        ):
-            warnings.warn(
-                f"USD-authored 'newton:armature' on {body_armature_source_path} is deprecated and will be "
-                "removed in a future release. Add any isotropic artificial inertia directly to the body's "
-                "inertia instead.",
-                DeprecationWarning,
-                stacklevel=_external_stacklevel(),
-            )
-            warned_deprecated_body_armature_paths.add(body_armature_source_path)
-
         is_kinematic = rigid_body_desc.kinematicBody
 
         if add_body_to_builder:
@@ -1073,7 +1027,6 @@ def parse_usd(
                 prim,
                 origin,
                 path,
-                body_armature,
                 articulation_root_xform=articulation_root_xform,
                 is_kinematic=is_kinematic,
             )
@@ -1082,7 +1035,6 @@ def parse_usd(
                 "prim": prim,
                 "xform": origin,
                 "label": path,
-                "armature": body_armature,
                 "is_kinematic": is_kinematic,
             }
             if articulation_root_xform is not None:

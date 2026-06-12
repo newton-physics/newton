@@ -54,6 +54,7 @@
 - Remove the deprecated `SensorRaycast`; use `SensorTiledCamera` (`SensorTiledCamera.utils.compute_pinhole_camera_rays()` and `create_depth_image_output()` for single-camera depth) instead
 - Remove the deprecated `max_worlds` parameter of `ViewerBase.set_model()`; call `ViewerBase.set_visible_worlds()` after `set_model()` instead
 - Remove the deprecated `a`, `b`, `c` parameters of `ModelBuilder.add_shape_ellipsoid()` (deprecated in 1.1.0); use `rx`, `ry`, `rz` instead
+- Remove body armature — `ModelBuilder.default_body_armature`, the `armature` parameter of `ModelBuilder.add_link()` / `add_body()`, and USD-authored body `newton:armature` (deprecated in 1.1.0); add any isotropic artificial inertia directly to `inertia` instead. The remaining `add_link()` / `add_body()` parameters after `xform` are now keyword-only
 
 ## [1.3.0] - 2026-06-11
 
