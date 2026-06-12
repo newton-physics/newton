@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 from contextlib import contextmanager
 from io import StringIO
 
@@ -92,6 +93,14 @@ def main(argv=None):
     )
     parser.add_argument(
         "--junit-report-xml", metavar="FILE", help="Generate JUnit report format XML file"
+    )  # NVIDIA Modification
+    parser.add_argument(
+        "--strict-warnings",
+        action="store_true",
+        default=False,
+        help="Treat warnings we can act on as errors: all DeprecationWarnings (from Newton or its "
+        "dependencies) and any warning attributed to a newton.* module. Off by default so verifying an "
+        "installation does not fail on warnings the user cannot act on; enabled in CI to surface warning debt.",
     )  # NVIDIA Modification
     group_parallel = parser.add_argument_group("parallelization options")
     group_parallel.add_argument(
@@ -506,6 +515,16 @@ class ParallelTestManager:
         newton.tests.unittest_utils.coverage_enabled = self.args.coverage
         newton.tests.unittest_utils.coverage_temp_dir = self.temp_dir
         newton.tests.unittest_utils.coverage_branch = self.args.coverage_branch
+
+        # Expose the warning policy to test modules (e.g. test_examples.py) and
+        # escalate the warnings we can act on to errors in this worker process when
+        # requested: all DeprecationWarnings (any source) plus any warning attributed
+        # to a newton.* module. Dependency-owned non-deprecation warnings stay
+        # warnings, since we cannot act on those.
+        newton.tests.unittest_utils.strict_warnings = self.args.strict_warnings
+        if self.args.strict_warnings:
+            warnings.filterwarnings("error", category=DeprecationWarning)
+            warnings.filterwarnings("error", module=r"newton(\.|$)")
 
         if self.args.junit_report_xml:
             resultclass = ParallelJunitTestResult
