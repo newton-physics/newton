@@ -11,8 +11,8 @@ coupling via proxy bodies or proxy particles:
    to avoid discontinuities in penetration-free solvers.
 3. **Velocity rewind** -- remove previously applied coupling forces, external
    force inputs, and gravity from proxy velocities to prevent double-counting.
-4. **Harvest wrenches** -- extract proxy feedback from destination solver
-   momentum changes or contact data.
+4. **Harvest feedback** -- accumulate proxy feedback from destination solver
+   momentum changes.
 """
 
 from __future__ import annotations
@@ -353,99 +353,3 @@ def restore_filtered_proxy_rigid_contacts_kernel(
         rigid_contact_shape0[contact_id] = -s0 - 2
     if s1 < -1:
         rigid_contact_shape1[contact_id] = -s1 - 2
-
-
-@wp.kernel(enable_backward=False)
-def harvest_proxy_wrenches_kernel(
-    rigid_contact_count: wp.array[int],
-    contact_body0: wp.array[wp.int32],
-    contact_body1: wp.array[wp.int32],
-    contact_point0_world: wp.array[wp.vec3],
-    contact_point1_world: wp.array[wp.vec3],
-    contact_force_on_body1: wp.array[wp.vec3],
-    dst_body_inv_mass: wp.array[float],
-    dst_body_flags: wp.array[wp.int32],
-    body_local_to_proxy_global: wp.array[int],
-    proxy_flag: int,
-    body_com: wp.array[wp.vec3],
-    body_q: wp.array[wp.transform],
-    out_proxy_body_f: wp.array[wp.spatial_vector],
-):
-    """Extract contact forces on proxy bodies and convert to spatial wrenches.
-
-    Only contacts where exactly one body is a proxy and the other is dynamic
-    are included.  Proxy-proxy and proxy-static contacts are excluded.
-
-    The output wrench is accumulated in ``out_proxy_body_f``, indexed by the
-    global proxy body id. The caller is responsible for mapping those
-    proxy-indexed values back onto source ids if needed.
-
-    Args:
-        rigid_contact_count: Scalar array holding the number of active contacts.
-        contact_body0: Body index of first contact body (destination solver).
-        contact_body1: Body index of second contact body (destination solver).
-        contact_point0_world: World-space contact point on body 0.
-        contact_point1_world: World-space contact point on body 1.
-        contact_force_on_body1: Force vector applied to body 1 [N].
-        dst_body_inv_mass: Inverse masses in the destination solver.
-        dst_body_flags: Body flags in the destination solver view.
-        body_local_to_proxy_global: Dense map from local body id to global
-            proxy body id. ``-1`` entries are skipped.
-        proxy_flag: Integer value of :attr:`~newton.BodyFlags.PROXY`.
-        body_com: Center-of-mass offsets in the destination solver.
-        body_q: Body transforms in the destination solver.
-        out_proxy_body_f: Output spatial wrenches on proxy bodies.
-    """
-    contact_id = wp.tid()
-    if contact_id >= rigid_contact_count[0]:
-        return
-
-    body0 = contact_body0[contact_id]
-    body1 = contact_body1[contact_id]
-    if body0 < 0 or body1 < 0:
-        return
-
-    is_proxy0 = int(0)
-    is_proxy1 = int(0)
-    proxy_global0 = int(-1)
-    proxy_global1 = int(-1)
-    if body0 < dst_body_flags.shape[0] and (dst_body_flags[body0] & proxy_flag) != 0:
-        proxy_global0 = body_local_to_proxy_global[body0]
-        if proxy_global0 >= 0:
-            is_proxy0 = 1
-    if body1 < dst_body_flags.shape[0] and (dst_body_flags[body1] & proxy_flag) != 0:
-        proxy_global1 = body_local_to_proxy_global[body1]
-        if proxy_global1 >= 0:
-            is_proxy1 = 1
-
-    # Exactly one body must be a proxy
-    if (is_proxy0 + is_proxy1) != 1:
-        return
-
-    # Non-proxy body must be dynamic
-    other_id = body1 if is_proxy0 == 1 else body0
-    if other_id < 0 or other_id >= dst_body_inv_mass.shape[0]:
-        return
-    if dst_body_inv_mass[other_id] <= 0.0:
-        return
-
-    # Determine force direction and proxy body.
-    force_on_b1 = contact_force_on_body1[contact_id]
-    if is_proxy1 == 1:
-        proxy_local_id = body1
-        proxy_global_id = proxy_global1
-        contact_point = contact_point1_world[contact_id]
-        force_on_proxy = force_on_b1
-    else:
-        proxy_local_id = body0
-        proxy_global_id = proxy_global0
-        contact_point = contact_point0_world[contact_id]
-        force_on_proxy = -force_on_b1
-
-    if proxy_global_id < 0 or proxy_global_id >= out_proxy_body_f.shape[0]:
-        return
-
-    # Wrench = force + torque about proxy body COM.
-    com_world = wp.transform_point(body_q[proxy_local_id], body_com[proxy_local_id])
-    torque = wp.cross(contact_point - com_world, force_on_proxy)
-    wp.atomic_add(out_proxy_body_f, proxy_global_id, wp.spatial_vector(force_on_proxy, torque))

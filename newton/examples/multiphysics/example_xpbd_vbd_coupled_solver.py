@@ -29,22 +29,15 @@ import newton.examples
 from newton.solvers import SolverVBD, SolverXPBD
 
 
-class _VBDXPBDParticleProxyCoupled(SolverCoupledProxy):
-    """Coupled solver for the example's VBD-source / XPBD-contact split."""
-
-    def _customize_view(self, name: str, view: ModelView, body_indices: wp.array[int]) -> None:
-        del body_indices
-        if name != "xpbd":
-            return
-
-        # XPBD should treat VBD-owned cloth particles as collision proxies only.
-        # The shared model still contains the cloth's springs/edges/triangles
-        # for VBD and rendering; stripping XPBD's elastic topology keeps the
-        # secondary solver contact-only for the source cloth particles.
-        view.spring_count = 0
-        view.tri_count = 0
-        view.edge_count = 0
-        view.tet_count = 0
+def _configure_contact_only_xpbd_view(view: ModelView) -> None:
+    # XPBD should treat VBD-owned cloth particles as collision proxies only.
+    # The shared model still contains the cloth's springs/edges/triangles for
+    # VBD and rendering; stripping XPBD's elastic topology keeps the secondary
+    # solver contact-only for the source cloth particles.
+    view.spring_count = 0
+    view.tri_count = 0
+    view.edge_count = 0
+    view.tet_count = 0
 
 
 class Example:
@@ -82,7 +75,7 @@ class Example:
         }
 
         if self.solver_type == "coupled":
-            self.solver = _VBDXPBDParticleProxyCoupled(
+            self.solver = SolverCoupledProxy(
                 model=self.model,
                 entries=[
                     # VBD is the primary/source solver. It owns the cloth and
@@ -99,6 +92,7 @@ class Example:
                         name="xpbd",
                         solver=lambda v: SolverXPBD(model=v, **xpbd_kwargs),
                         particles=self.xpbd_particles,
+                        configure_view=_configure_contact_only_xpbd_view,
                     ),
                 ],
                 coupling=SolverCoupledProxy.Config(
@@ -173,10 +167,7 @@ class Example:
 
     def _contact_only_xpbd_view(self) -> ModelView:
         view = ModelView(self.model, "xpbd")
-        view.spring_count = 0
-        view.tri_count = 0
-        view.edge_count = 0
-        view.tet_count = 0
+        _configure_contact_only_xpbd_view(view)
         return view
 
     def _emit_vbd_cloth(self, builder: newton.ModelBuilder, args) -> list[int]:

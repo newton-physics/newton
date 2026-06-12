@@ -11,7 +11,6 @@ import warp as wp
 
 from ...core.types import override
 from ...geometry import ParticleFlags
-from ...math import quat_velocity
 from ...sim import (
     BodyFlags,
     Contacts,
@@ -24,7 +23,6 @@ from ...sim import (
 )
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInputStateFlags, CouplingInterface
-from ..coupled.proxy_utils import harvest_proxy_wrenches_kernel
 from ..solver import SolverBase
 from ..xpbd.kernels import apply_joint_forces
 from .particle_vbd_kernels import (
@@ -49,8 +47,6 @@ from .particle_vbd_kernels import (
     apply_truncation_ts,
     build_edge_n_ring_edge_collision_filter,
     build_vertex_n_ring_tris_collision_filter,
-    evaluate_edge_edge_contact_2_vertices,
-    evaluate_vertex_triangle_collision_force_hessian_4_vertices,
     # Solver kernels (particle VBD)
     forward_step,
     set_to_csr,
@@ -63,10 +59,8 @@ from .rigid_vbd_kernels import (
     RigidContactHistory,
     RigidForceElementAdjacencyInfo,
     _count_num_adjacent_joints,
-    _eval_body_particle_contact,
     _fill_adjacent_joints,
     accumulate_body_body_contacts_per_body,
-    accumulate_body_particle_contact_forces_on_proxy_bodies,
     accumulate_body_particle_contacts_per_body,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
@@ -90,6 +84,13 @@ from .rigid_vbd_kernels import (
 from .tri_mesh_collision import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
+)
+from .vbd_coupling_kernels import (
+    _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel,
+    _harvest_vbd_proxy_particle_body_contact_forces_kernel,
+    _harvest_vbd_proxy_particle_self_contact_forces_kernel,
+    _harvest_vbd_proxy_wrenches_kernel,
+    _update_vbd_body_input_state_kernel,
 )
 
 __all__ = ["SolverVBD"]
@@ -842,30 +843,13 @@ class SolverVBD(SolverBase, CouplingInterface):
         body_gravity_acceleration: wp.array[wp.vec3],
         dt: float,
     ) -> None:
-        """Remove explicit loads while preserving VBD's position-level feedback.
-
-        VBD proxy feedback is barrier-style and position-dependent, so lagged
-        ``coupling_forces`` are not rewound. Public body forces and gravity are
-        removed because the destination VBD step will integrate them again.
-        """
-        del coupling_forces
-        if state.body_qd is None or body_local_to_proxy_global.shape[0] == 0:
-            return
-
-        wp.launch(
-            _rewind_vbd_proxy_body_external_forces_kernel,
-            dim=body_local_to_proxy_global.shape[0],
-            inputs=[
-                float(dt),
-                body_gravity_acceleration,
-                state.body_q,
-                state.body_f,
-                body_local_to_proxy_global,
-                self.model.body_inv_mass,
-                self.model.body_inv_inertia,
-                state.body_qd,
-            ],
-            device=self.device,
+        coupling_forces.zero_()
+        super().coupling_rewind_proxy_body_velocity(
+            body_local_to_proxy_global,
+            state,
+            coupling_forces,
+            body_gravity_acceleration,
+            dt,
         )
 
     def coupling_rewind_proxy_particle_velocity(
@@ -876,28 +860,13 @@ class SolverVBD(SolverBase, CouplingInterface):
         particle_gravity_acceleration: wp.array[wp.vec3],
         dt: float,
     ) -> None:
-        """Remove explicit loads while preserving VBD's position-level feedback.
-
-        VBD proxy feedback is barrier-style and position-dependent, so lagged
-        ``coupling_forces`` are not rewound. Public particle forces and gravity
-        are removed because the destination VBD step will integrate them again.
-        """
-        del coupling_forces
-        if state.particle_qd is None or particle_local_to_proxy_global.shape[0] == 0:
-            return
-
-        wp.launch(
-            _rewind_vbd_proxy_particle_external_forces_kernel,
-            dim=particle_local_to_proxy_global.shape[0],
-            inputs=[
-                float(dt),
-                particle_gravity_acceleration,
-                state.particle_f,
-                particle_local_to_proxy_global,
-                self.model.particle_inv_mass,
-                state.particle_qd,
-            ],
-            device=self.device,
+        coupling_forces.zero_()
+        super().coupling_rewind_proxy_particle_velocity(
+            particle_local_to_proxy_global,
+            state,
+            coupling_forces,
+            particle_gravity_acceleration,
+            dt,
         )
 
     def coupling_harvest_proxy_wrenches(
@@ -911,7 +880,17 @@ class SolverVBD(SolverBase, CouplingInterface):
         contacts: Contacts | None,
         dt: float,
     ) -> None:
-        """Harvest contact-only proxy-body wrenches."""
+        """Harvest contact-only proxy-body wrenches.
+
+        VBD deliberately does not rely on the default momentum harvest here.
+        The generic proxy path filters proxy-vs-proxy and proxy-vs-static rigid
+        contacts so harvested momentum only reflects coupling-relevant
+        interactions. VBD relaxes that restriction because allowing some proxy
+        interaction inside the destination solve can strengthen the coupled
+        solve. Those extra interactions still must not feed back through the
+        coupling interface, so VBD harvests explicit contact forces instead of
+        inferring feedback from total proxy momentum change.
+        """
         if not self._coupling_has_rigid_avbd_state:
             super().coupling_harvest_proxy_wrenches(
                 body_local_to_proxy_global,
@@ -938,7 +917,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 dt,
             )
             wp.launch(
-                harvest_proxy_wrenches_kernel,
+                _harvest_vbd_proxy_wrenches_kernel,
                 dim=contacts.rigid_contact_max,
                 inputs=[
                     rigid_contact_count,
@@ -960,7 +939,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         if contacts.soft_contact_max > 0 and self.body_particle_contact_penalty_k.shape[0] >= contacts.soft_contact_max:
             wp.launch(
-                accumulate_body_particle_contact_forces_on_proxy_bodies,
+                _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel,
                 dim=contacts.soft_contact_max,
                 inputs=[
                     float(dt),
@@ -970,6 +949,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self.model.particle_radius,
                     state_out.body_q,
                     body_q_prev,
+                    state_out.body_qd,
                     self.model.body_com,
                     float(self.friction_epsilon),
                     self.body_particle_contact_penalty_k,
@@ -1000,13 +980,10 @@ class SolverVBD(SolverBase, CouplingInterface):
     ) -> None:
         """Harvest contact-only proxy-particle forces.
 
-        On the internal VBD/AVBD path, :meth:`step` advances ``state`` arrays
-        in place and mirrors final poses to ``state_out``. This hook therefore
-        reads ``state.particle_q`` and ``state.body_q`` as the converged
-        positions, while the pre-step body poses come from the coupling
-        snapshot because finalization advances ``body_q_prev``. With
-        ``integrate_with_external_rigid_solver=True``, rigid poses are supplied
-        by the external solver in ``state_out`` instead.
+        As for proxy-body harvest, this stays contact-based because VBD allows
+        some proxy interaction inside the destination solve for stronger
+        coupling, but those proxy-only interactions should not appear as
+        feedback forces on the source side.
         """
         del particle_qd_before
         out_particle_f.zero_()
@@ -3192,388 +3169,3 @@ class SolverVBD(SolverBase, CouplingInterface):
         """
         if self.particle_enable_self_contact:
             self.trimesh_collision_detector.rebuild(state.particle_q)
-
-
-@wp.kernel(enable_backward=False)
-def _update_vbd_body_input_state_kernel(
-    dt: float,
-    body_flags: wp.array[wp.int32],
-    kinematic_flag: int,
-    body_q: wp.array[wp.transform],
-    body_q_prev: wp.array[wp.transform],
-    body_qd: wp.array[wp.spatial_vector],
-):
-    local_body = wp.tid()
-    if (body_flags[local_body] & kinematic_flag) != 0:
-        return
-
-    q_prev = body_q_prev[local_body]
-    q_teleported = body_q[local_body]
-
-    p_teleported = wp.transform_get_translation(q_teleported)
-    p_prev = wp.transform_get_translation(q_prev)
-    dv = (p_teleported - p_prev) / dt
-
-    r_teleported = wp.transform_get_rotation(q_teleported)
-    r_prev = wp.transform_get_rotation(q_prev)
-    dw = quat_velocity(r_teleported, r_prev, dt)
-
-    body_qd[local_body] += wp.spatial_vector(dv, dw)
-    body_q[local_body] = q_prev
-
-
-@wp.kernel(enable_backward=False)
-def _rewind_vbd_proxy_body_external_forces_kernel(
-    dt: float,
-    body_gravity_acceleration: wp.array[wp.vec3],
-    body_q: wp.array[wp.transform],
-    body_f: wp.array[wp.spatial_vector],
-    body_local_to_proxy_global: wp.array[int],
-    body_inv_mass: wp.array[float],
-    body_inv_inertia: wp.array[wp.mat33],
-    body_qd: wp.array[wp.spatial_vector],
-):
-    local_id = wp.tid()
-    global_id = body_local_to_proxy_global[local_id]
-    if global_id < 0:
-        return
-
-    inv_m = body_inv_mass[local_id]
-    r = wp.transform_get_rotation(body_q[local_id])
-    inv_I = body_inv_inertia[local_id]
-
-    f = body_f[local_id]
-    delta_v = dt * inv_m * wp.spatial_top(f)
-    delta_w = dt * wp.quat_rotate(r, inv_I * wp.quat_rotate_inv(r, wp.spatial_bottom(f)))
-
-    delta_v_grav = wp.vec3(0.0, 0.0, 0.0)
-    if inv_m > 0.0:
-        delta_v_grav = dt * body_gravity_acceleration[local_id]
-
-    body_qd[local_id] = body_qd[local_id] - wp.spatial_vector(delta_v + delta_v_grav, delta_w)
-
-
-@wp.kernel(enable_backward=False)
-def _rewind_vbd_proxy_particle_external_forces_kernel(
-    dt: float,
-    particle_gravity_acceleration: wp.array[wp.vec3],
-    particle_f: wp.array[wp.vec3],
-    particle_local_to_proxy_global: wp.array[int],
-    particle_inv_mass: wp.array[float],
-    particle_qd: wp.array[wp.vec3],
-):
-    local_id = wp.tid()
-    global_id = particle_local_to_proxy_global[local_id]
-    if global_id < 0:
-        return
-
-    inv_m = particle_inv_mass[local_id]
-    if inv_m <= 0.0:
-        return
-
-    delta_v = dt * particle_gravity_acceleration[local_id]
-    if particle_f:
-        delta_v = delta_v + dt * inv_m * particle_f[local_id]
-
-    particle_qd[local_id] = particle_qd[local_id] - delta_v
-
-
-@wp.func
-def _vbd_particle_is_mapped_proxy(
-    particle_idx: int,
-    particle_local_to_proxy_global: wp.array[int],
-    particle_flags: wp.array[wp.int32],
-    proxy_particle_flag: int,
-):
-    if particle_idx < 0 or particle_idx >= particle_local_to_proxy_global.shape[0]:
-        return False
-    if particle_local_to_proxy_global[particle_idx] < 0:
-        return False
-    if (particle_flags[particle_idx] & proxy_particle_flag) == 0:
-        return False
-    return True
-
-
-@wp.func
-def _vbd_particle_is_dynamic_nonproxy(
-    particle_idx: int,
-    particle_flags: wp.array[wp.int32],
-    particle_inv_mass: wp.array[float],
-    active_particle_flag: int,
-    proxy_particle_flag: int,
-):
-    if particle_idx < 0 or particle_idx >= particle_flags.shape[0] or particle_idx >= particle_inv_mass.shape[0]:
-        return False
-    if (particle_flags[particle_idx] & active_particle_flag) == 0:
-        return False
-    if (particle_flags[particle_idx] & proxy_particle_flag) != 0:
-        return False
-    if particle_inv_mass[particle_idx] <= 0.0:
-        return False
-    return True
-
-
-@wp.func
-def _vbd_body_is_dynamic_nonproxy(
-    body_idx: int,
-    body_flags: wp.array[wp.int32],
-    body_inv_mass: wp.array[float],
-    proxy_body_flag: int,
-):
-    if body_idx < 0 or body_idx >= body_flags.shape[0] or body_idx >= body_inv_mass.shape[0]:
-        return False
-    if (body_flags[body_idx] & proxy_body_flag) != 0:
-        return False
-    if body_inv_mass[body_idx] <= 0.0:
-        return False
-    return True
-
-
-@wp.func
-def _vbd_add_proxy_particle_force(
-    particle_idx: int,
-    force: wp.vec3,
-    particle_local_to_proxy_global: wp.array[int],
-    out_particle_f: wp.array[wp.vec3],
-):
-    proxy_global = particle_local_to_proxy_global[particle_idx]
-    if proxy_global < 0 or proxy_global >= out_particle_f.shape[0]:
-        return
-    wp.atomic_add(out_particle_f, proxy_global, force)
-
-
-@wp.kernel(enable_backward=False)
-def _harvest_vbd_proxy_particle_body_contact_forces_kernel(
-    dt: float,
-    particle_local_to_proxy_global: wp.array[int],
-    particle_q: wp.array[wp.vec3],
-    particle_q_prev: wp.array[wp.vec3],
-    particle_flags: wp.array[wp.int32],
-    particle_inv_mass: wp.array[float],
-    active_particle_flag: int,
-    proxy_particle_flag: int,
-    friction_epsilon: float,
-    particle_radius: wp.array[float],
-    body_particle_contact_count: wp.array[int],
-    body_particle_contact_particle: wp.array[int],
-    body_particle_contact_penalty_k: wp.array[float],
-    body_particle_contact_material_kd: wp.array[float],
-    body_particle_contact_material_mu: wp.array[float],
-    shape_body: wp.array[wp.int32],
-    body_flags: wp.array[wp.int32],
-    body_inv_mass: wp.array[float],
-    proxy_body_flag: int,
-    body_q: wp.array[wp.transform],
-    body_q_prev: wp.array[wp.transform],
-    body_qd: wp.array[wp.spatial_vector],
-    body_com: wp.array[wp.vec3],
-    body_particle_contact_shape: wp.array[int],
-    body_particle_contact_body_pos: wp.array[wp.vec3],
-    body_particle_contact_body_vel: wp.array[wp.vec3],
-    body_particle_contact_normal: wp.array[wp.vec3],
-    out_particle_f: wp.array[wp.vec3],
-):
-    contact_idx = wp.tid()
-    if contact_idx >= body_particle_contact_count[0]:
-        return
-
-    particle_idx = body_particle_contact_particle[contact_idx]
-    if not _vbd_particle_is_mapped_proxy(
-        particle_idx, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
-    ):
-        return
-
-    shape_idx = body_particle_contact_shape[contact_idx]
-    if shape_idx < 0 or shape_idx >= shape_body.shape[0]:
-        return
-
-    body_idx = shape_body[shape_idx]
-    if not _vbd_body_is_dynamic_nonproxy(body_idx, body_flags, body_inv_mass, proxy_body_flag):
-        return
-
-    body_contact_force, _body_contact_hessian = _eval_body_particle_contact(
-        particle_idx,
-        particle_q[particle_idx],
-        particle_q_prev[particle_idx],
-        contact_idx,
-        body_particle_contact_penalty_k[contact_idx],
-        body_particle_contact_material_kd[contact_idx],
-        body_particle_contact_material_mu[contact_idx],
-        friction_epsilon,
-        particle_radius,
-        shape_body,
-        body_q,
-        body_q_prev,
-        body_qd,
-        body_com,
-        body_particle_contact_shape,
-        body_particle_contact_body_pos,
-        body_particle_contact_body_vel,
-        body_particle_contact_normal,
-        dt,
-    )
-    _vbd_add_proxy_particle_force(particle_idx, body_contact_force, particle_local_to_proxy_global, out_particle_f)
-
-
-@wp.kernel(enable_backward=False)
-def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
-    dt: float,
-    particle_local_to_proxy_global: wp.array[int],
-    particle_q_prev: wp.array[wp.vec3],
-    particle_q: wp.array[wp.vec3],
-    particle_flags: wp.array[wp.int32],
-    particle_inv_mass: wp.array[float],
-    active_particle_flag: int,
-    proxy_particle_flag: int,
-    tri_indices: wp.array2d[wp.int32],
-    edge_indices: wp.array2d[wp.int32],
-    collision_info_array: wp.array[TriMeshCollisionInfo],
-    collision_radius: float,
-    soft_contact_ke: float,
-    soft_contact_kd: float,
-    soft_contact_mu: float,
-    friction_epsilon: float,
-    edge_edge_parallel_epsilon: float,
-    out_particle_f: wp.array[wp.vec3],
-):
-    t_id = wp.tid()
-    collision_info = collision_info_array[0]
-
-    primitive_id = t_id // NUM_THREADS_PER_COLLISION_PRIMITIVE
-    t_id_current_primitive = t_id % NUM_THREADS_PER_COLLISION_PRIMITIVE
-
-    if primitive_id < collision_info.edge_colliding_edges_buffer_sizes.shape[0]:
-        e1_idx = primitive_id
-        collision_buffer_counter = t_id_current_primitive
-        collision_buffer_offset = collision_info.edge_colliding_edges_offsets[primitive_id]
-        while collision_buffer_counter < collision_info.edge_colliding_edges_buffer_sizes[primitive_id]:
-            e2_idx = collision_info.edge_colliding_edges[2 * (collision_buffer_offset + collision_buffer_counter) + 1]
-
-            if e1_idx != -1 and e2_idx != -1:
-                e1_v1 = edge_indices[e1_idx, 2]
-                e1_v2 = edge_indices[e1_idx, 3]
-                e2_v1 = edge_indices[e2_idx, 2]
-                e2_v2 = edge_indices[e2_idx, 3]
-
-                e1_proxy = _vbd_particle_is_mapped_proxy(
-                    e1_v1, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
-                ) and _vbd_particle_is_mapped_proxy(
-                    e1_v2, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
-                )
-                e2_dynamic = _vbd_particle_is_dynamic_nonproxy(
-                    e2_v1, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
-                ) and _vbd_particle_is_dynamic_nonproxy(
-                    e2_v2, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
-                )
-
-                if e1_proxy and e2_dynamic:
-                    has_contact, collision_force_0, collision_force_1, _hessian_0, _hessian_1 = (
-                        evaluate_edge_edge_contact_2_vertices(
-                            e1_idx,
-                            e2_idx,
-                            particle_q,
-                            particle_q_prev,
-                            edge_indices,
-                            collision_radius,
-                            soft_contact_ke,
-                            soft_contact_kd,
-                            soft_contact_mu,
-                            friction_epsilon,
-                            dt,
-                            edge_edge_parallel_epsilon,
-                        )
-                    )
-
-                    if has_contact:
-                        _vbd_add_proxy_particle_force(
-                            e1_v1, collision_force_0, particle_local_to_proxy_global, out_particle_f
-                        )
-                        _vbd_add_proxy_particle_force(
-                            e1_v2, collision_force_1, particle_local_to_proxy_global, out_particle_f
-                        )
-            collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
-
-    if primitive_id < collision_info.vertex_colliding_triangles_buffer_sizes.shape[0]:
-        particle_idx = primitive_id
-        collision_buffer_counter = t_id_current_primitive
-        collision_buffer_offset = collision_info.vertex_colliding_triangles_offsets[primitive_id]
-        while collision_buffer_counter < collision_info.vertex_colliding_triangles_buffer_sizes[primitive_id]:
-            tri_idx = collision_info.vertex_colliding_triangles[
-                (collision_buffer_offset + collision_buffer_counter) * 2 + 1
-            ]
-
-            if particle_idx != -1 and tri_idx != -1:
-                tri_a = tri_indices[tri_idx, 0]
-                tri_b = tri_indices[tri_idx, 1]
-                tri_c = tri_indices[tri_idx, 2]
-
-                vertex_proxy = _vbd_particle_is_mapped_proxy(
-                    particle_idx, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
-                )
-                vertex_dynamic = _vbd_particle_is_dynamic_nonproxy(
-                    particle_idx, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
-                )
-                tri_proxy = (
-                    _vbd_particle_is_mapped_proxy(
-                        tri_a, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
-                    )
-                    and _vbd_particle_is_mapped_proxy(
-                        tri_b, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
-                    )
-                    and _vbd_particle_is_mapped_proxy(
-                        tri_c, particle_local_to_proxy_global, particle_flags, proxy_particle_flag
-                    )
-                )
-                tri_dynamic = (
-                    _vbd_particle_is_dynamic_nonproxy(
-                        tri_a, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
-                    )
-                    and _vbd_particle_is_dynamic_nonproxy(
-                        tri_b, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
-                    )
-                    and _vbd_particle_is_dynamic_nonproxy(
-                        tri_c, particle_flags, particle_inv_mass, active_particle_flag, proxy_particle_flag
-                    )
-                )
-
-                if (vertex_proxy and tri_dynamic) or (tri_proxy and vertex_dynamic):
-                    (
-                        has_contact,
-                        collision_force_0,
-                        collision_force_1,
-                        collision_force_2,
-                        collision_force_3,
-                        _hessian_0,
-                        _hessian_1,
-                        _hessian_2,
-                        _hessian_3,
-                    ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
-                        particle_idx,
-                        tri_idx,
-                        particle_q,
-                        particle_q_prev,
-                        tri_indices,
-                        collision_radius,
-                        soft_contact_ke,
-                        soft_contact_kd,
-                        soft_contact_mu,
-                        friction_epsilon,
-                        dt,
-                    )
-
-                    if has_contact:
-                        if vertex_proxy and tri_dynamic:
-                            _vbd_add_proxy_particle_force(
-                                particle_idx, collision_force_3, particle_local_to_proxy_global, out_particle_f
-                            )
-                        if tri_proxy and vertex_dynamic:
-                            _vbd_add_proxy_particle_force(
-                                tri_a, collision_force_0, particle_local_to_proxy_global, out_particle_f
-                            )
-                            _vbd_add_proxy_particle_force(
-                                tri_b, collision_force_1, particle_local_to_proxy_global, out_particle_f
-                            )
-                            _vbd_add_proxy_particle_force(
-                                tri_c, collision_force_2, particle_local_to_proxy_global, out_particle_f
-                            )
-            collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
