@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -497,81 +496,3 @@ class RenderContext:
 
         self.mesh_data = wp.array(self.__mesh_data, dtype=MeshData, device=self.device)
         self.shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)
-
-    def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
-        """Create an output array for color rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_color_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_color_image_output is deprecated, use SensorTiledCamera.utils.create_color_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_color_image_output(width, height, camera_count)
-
-    def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.float32]:
-        """Create an output array for depth rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_depth_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_depth_image_output is deprecated, use SensorTiledCamera.utils.create_depth_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_depth_image_output(width, height, camera_count)
-
-    def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
-        """Create an output array for shape-index rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_shape_index_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_shape_index_image_output is deprecated, use SensorTiledCamera.utils.create_shape_index_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_shape_index_image_output(width, height, camera_count)
-
-    def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.vec3f]:
-        """Create an output array for surface-normal rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_normal_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_normal_image_output is deprecated, use SensorTiledCamera.utils.create_normal_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_normal_image_output(width, height, camera_count)
-
-    def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
-        """Create an output array for albedo rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_albedo_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_albedo_image_output is deprecated, use SensorTiledCamera.utils.create_albedo_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_albedo_image_output(width, height, camera_count)
-
-    def create_hdr_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.vec3f]:
-        """Create an output array for linear HDR color rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_hdr_color_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_hdr_color_image_output is deprecated, use SensorTiledCamera.utils.create_hdr_color_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_hdr_color_image_output(width, height, camera_count)
