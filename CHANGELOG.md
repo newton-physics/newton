@@ -86,6 +86,7 @@
 - Users configuring Warp logging should use Newton's `--quiet` flag or `--warp-config log_level=...` instead of legacy Warp `verbose` or `quiet` config keys. Newton now requires Warp 1.14 and configures Warp logging through `warp.config.log_level`. (#2900, #3046)
 - Rename `SensorContact` sensing-object API names: `sensing_obj_idx` to `sensing_indices`, `sensing_obj_type` to `sensing_type`, `sensing_obj_transforms` to `sensing_transforms`, `sensing_obj_bodies` to `sensing_bodies`, and `sensing_obj_shapes` to `sensing_shapes`; the old names remain deprecated aliases for compatibility. (#3120)
 - Bump `newton-usd-schemas` to `>=0.3.1`
+- Change `ModelBuilder.add_joint_free` to initialize `joint_q` to the identity transform like every other joint type; the initial world pose of a floating-base body is now carried by `joint_X_p` and applied via forward kinematics (`body_q = parent * joint_X_p * X_j * inv(joint_X_c)`). This is a breaking change: reads and writes of `state.joint_q[:7]` for floating roots no longer return or set the body world pose — use `state.body_q`, `ArticulationView.get_root_transforms`/`set_root_transforms`, or set `builder.joint_X_p[root_joint]` / pass `xform=` to `add_body` instead.
 
 ### Deprecated
 
@@ -246,6 +247,8 @@
 - Deprecate `SensorRaycast` in favor of `SensorTiledCamera`; migrate to `SensorTiledCamera.utils.compute_pinhole_camera_rays()` and `create_depth_image_output()` for single-camera depth rendering — see the `SensorRaycast` class docstring for a complete migration example
 - Deprecate and ignore `rigid_enable_dahl_friction` in `SolverVBD`; Dahl friction is now auto-detected from model attributes (`model.vbd.dahl_eps_max` / `model.vbd.dahl_tau`)
 - Deprecate `newton-actuators` package dependency; all actuator functionality is now built into `newton.actuators`. The dependency is kept for backward compatibility and will be removed in a future release; migrate imports from `newton_actuators` to `newton.actuators`
+
+### Removed
 
 ### Fixed
 

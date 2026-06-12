@@ -87,6 +87,7 @@ def test_fk_ik(test, device):
     world_count = 1
 
     for i in range(world_count):
+        joint_start = len(builder.joint_type)
         builder.add_mjcf(newton.examples.get_asset("nv_ant.xml"), up_axis="Y")
 
         coord_count = 15
@@ -94,6 +95,11 @@ def test_fk_ik(test, device):
 
         coord_start = i * coord_count
         dof_start = i * dof_count
+
+        # reset the free joint's parent/child anchors to identity so the test's joint_q
+        # values below set the root body world pose directly via FK composition
+        builder.joint_X_p[joint_start] = wp.transform_identity()
+        builder.joint_X_c[joint_start] = wp.transform_identity()
 
         # base
         builder.joint_q[coord_start : coord_start + 3] = [i * 2.0, 0.70, 0.0]

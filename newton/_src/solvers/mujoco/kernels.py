@@ -624,18 +624,15 @@ def convert_mj_coords_to_warp_kernel(
         return
 
     if type == JointType.FREE:
-        # MuJoCo's FREE joint qpos/qvel are in world frame. Newton's public
-        # joint_q[0:7] for FREE is kept in world frame here as well (separate
-        # from the parent-frame contract documented elsewhere; see #2704).
+        # MuJoCo qpos[0:7] holds the body's world pose; decompose into Newton
+        # joint_q (the relative transform between joint anchors) via
+        #   joint_q_transform = inv(joint_X_p) * world_body_pose * joint_X_c.
         # joint_qd[0:6] follows the parent-frame contract from State.joint_qd:
         # linear is child-COM velocity, angular is angular velocity, both
         # expressed in the joint parent frame. MuJoCo only allows FREE joints
         # at the worldbody root, so X_wpj == joint_X_p.
-        for i in range(3):
-            joint_q[wq_i + i] = qpos[worldid, q_i + i]
-
-        # change quaternion order from wxyz to xyzw
-        rot = quat_wxyz_to_xyzw(
+        world_pos = wp.vec3(qpos[worldid, q_i + 0], qpos[worldid, q_i + 1], qpos[worldid, q_i + 2])
+        world_rot = quat_wxyz_to_xyzw(
             wp.quat(
                 qpos[worldid, q_i + 3],
                 qpos[worldid, q_i + 4],
@@ -643,10 +640,20 @@ def convert_mj_coords_to_warp_kernel(
                 qpos[worldid, q_i + 6],
             )
         )
-        joint_q[wq_i + 3] = rot[0]
-        joint_q[wq_i + 4] = rot[1]
-        joint_q[wq_i + 5] = rot[2]
-        joint_q[wq_i + 6] = rot[3]
+        world_tf = wp.transform(world_pos, world_rot)
+        j_tf = wp.transform_inverse(joint_X_p[joint_id]) * world_tf * joint_X_c[joint_id]
+        j_pos = wp.transform_get_translation(j_tf)
+        j_rot = wp.transform_get_rotation(j_tf)
+        joint_q[wq_i + 0] = j_pos[0]
+        joint_q[wq_i + 1] = j_pos[1]
+        joint_q[wq_i + 2] = j_pos[2]
+        joint_q[wq_i + 3] = j_rot[0]
+        joint_q[wq_i + 4] = j_rot[1]
+        joint_q[wq_i + 5] = j_rot[2]
+        joint_q[wq_i + 6] = j_rot[3]
+
+        # velocity conversion below uses the body's world rotation
+        rot = world_rot
 
         # MuJoCo qvel for FREE: linear is body-origin velocity in world,
         # angular is in body frame. Convert origin→COM in world, then rotate
@@ -736,22 +743,25 @@ def convert_warp_coords_to_mj_kernel(
     wqd_i = joint_qd_start[joint_id]
 
     if jtype == JointType.FREE:
-        # Newton's public joint_q[0:7] for FREE is kept in world frame at the
-        # MuJoCo bridge boundary (separate from the parent-frame contract
-        # documented elsewhere; see #2704). joint_qd[0:6] follows the parent-
-        # frame contract from State.joint_qd. MuJoCo only allows FREE joints at
-        # the worldbody root, so X_wpj == joint_X_p.
-        for i in range(3):
-            qpos[worldid, q_i + i] = joint_q[wq_i + i]
-
-        rot = wp.quat(
-            joint_q[wq_i + 3],
-            joint_q[wq_i + 4],
-            joint_q[wq_i + 5],
-            joint_q[wq_i + 6],
+        # Compose the body's world pose from Newton joint_q (the relative transform
+        # between joint anchors) for MuJoCo qpos:
+        #   world_body_pose = joint_X_p * joint_q_transform * inv(joint_X_c).
+        # joint_qd[0:6] follows the parent-frame contract from State.joint_qd. MuJoCo
+        # only allows FREE joints at the worldbody root, so X_wpj == joint_X_p.
+        j_tf = wp.transform(
+            wp.vec3(joint_q[wq_i + 0], joint_q[wq_i + 1], joint_q[wq_i + 2]),
+            wp.quat(joint_q[wq_i + 3], joint_q[wq_i + 4], joint_q[wq_i + 5], joint_q[wq_i + 6]),
         )
+        world_tf = joint_X_p[joint_id] * j_tf * wp.transform_inverse(joint_X_c[joint_id])
+        world_pos = wp.transform_get_translation(world_tf)
+        world_rot = wp.transform_get_rotation(world_tf)
+
+        qpos[worldid, q_i + 0] = world_pos[0]
+        qpos[worldid, q_i + 1] = world_pos[1]
+        qpos[worldid, q_i + 2] = world_pos[2]
+
         # change quaternion order from xyzw to wxyz
-        rot_wxyz = quat_xyzw_to_wxyz(rot)
+        rot_wxyz = quat_xyzw_to_wxyz(world_rot)
         qpos[worldid, q_i + 3] = rot_wxyz[0]
         qpos[worldid, q_i + 4] = rot_wxyz[1]
         qpos[worldid, q_i + 5] = rot_wxyz[2]
@@ -759,6 +769,7 @@ def convert_warp_coords_to_mj_kernel(
 
         # Velocities: rotate parent-frame twist into world, then apply CoM→origin
         # and world→body conversions to match MuJoCo qvel.
+        rot = world_rot
         q_p = wp.transform_get_rotation(joint_X_p[joint_id])
         v_com_parent = wp.vec3(joint_qd[wqd_i + 0], joint_qd[wqd_i + 1], joint_qd[wqd_i + 2])
         w_parent = wp.vec3(joint_qd[wqd_i + 3], joint_qd[wqd_i + 4], joint_qd[wqd_i + 5])

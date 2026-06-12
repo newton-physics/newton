@@ -122,11 +122,11 @@ Since :meth:`~newton.ModelBuilder.add_body` automatically adds a free joint, the
   tf = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi))
   body = builder.add_link(xform=tf)
   builder.add_shape_box(body)  # add a shape to the body to add some inertia
-  joint = builder.add_joint_free(body)  # add a free joint to connect the body to the world
+  # The initial body world pose is carried by the joint's parent anchor; joint_q
+  # is the *relative* transform between the parent and child anchors and stays at
+  # the identity by default.
+  joint = builder.add_joint_free(body, parent_xform=tf)  # add a free joint to connect the body to the world
   builder.add_articulation([joint])  # create articulation from the joint
-  # The free joint's coordinates (joint_q) are initialized by its child body's pose,
-  # so we do not need to specify them here
-  # builder.joint_q[-7:] = *tf
 
   model = builder.finalize()
   state = model.state()
@@ -134,11 +134,22 @@ Since :meth:`~newton.ModelBuilder.add_body` automatically adds a free joint, the
   # The body poses (maximal coordinates) are initialized by the xform argument:
   assert all(state.body_q.numpy()[0] == [*tf])
 
-  # Now, the generalized coordinates are initialized by the free joint:
+  # The free joint contributes 7 generalized coordinates initialized to the
+  # identity transform; the body's world pose is reproduced by forward kinematics
+  # as body_q = parent_xform * joint_q * inv(child_xform).
   assert len(state.joint_q) == 7
-  assert all(state.joint_q.numpy() == [*tf])
+  assert all(state.joint_q.numpy() == [*wp.transform_identity()])
 
 This scene can now be simulated by both maximal-coordinate and generalized-coordinate solvers.
+
+To later "reset" the floating base to a new world pose, write to ``state.joint_q[:7]``
+directly: with the default identity ``joint_X_c``, ``joint_q`` is the body's pose relative
+to ``joint_X_p`` (the rest pose set at build time), so setting it is a relative move from
+that rest pose. If you plan to reposition the root often from world coordinates, build the
+articulation with ``parent_xform=identity`` (so ``joint_X_p`` is identity and ``joint_q``
+becomes the body's world pose directly), or use
+:meth:`newton.selection.ArticulationView.set_root_transforms`, which takes world poses and
+performs the decomposition for you.
 
 .. _Kinematic links:
 
@@ -563,15 +574,17 @@ Construct a view by matching articulation keys with a pattern and optional filte
 
     builder = newton.ModelBuilder()
     for i in range(2):
-        root = builder.add_link(
-            xform=wp.transform(wp.vec3(float(i) * 2.0, 0.0, 0.0), wp.quat_identity())
-        )
+        root_xform = wp.transform(wp.vec3(float(i) * 2.0, 0.0, 0.0), wp.quat_identity())
+        root = builder.add_link(xform=root_xform)
         tip = builder.add_link(
             xform=wp.transform(wp.vec3(float(i) * 2.0 + 1.0, 0.0, 0.0), wp.quat_identity())
         )
         builder.add_shape_box(root, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(tip, hx=0.1, hy=0.1, hz=0.1)
-        j_root = builder.add_joint_free(parent=-1, child=root)
+        # carry the root body's initial world pose via parent_xform so the FK
+        # composition body_q = joint_X_p * joint_q * inv(joint_X_c) reproduces it
+        # with the default identity joint_q
+        j_root = builder.add_joint_free(parent=-1, child=root, parent_xform=root_xform)
         j_tip = builder.add_joint_revolute(
             parent=root,
             child=tip,
@@ -620,8 +633,10 @@ Use :meth:`newton.selection.ArticulationView.set_root_transforms` to move select
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
     assert np.allclose(view.get_root_transforms(state).numpy()[0, :, 0], [0.2, 2.2])
 
-For floating-base articulations (root joint type ``FREE`` or ``DISTANCE``), this updates
-the root coordinates in ``joint_q``.
+For floating-base articulations, ``set_root_transforms()`` decomposes each desired world
+transform through the root joint's ``joint_X_p`` and ``joint_X_c`` so that forward kinematics
+(``body_q[root] = joint_X_p * X_j * inv(joint_X_c)``) reproduces it; ``joint_q`` of the root
+free joint is therefore the *relative* joint transform, not an absolute world pose.
 For non-floating-base articulations (for example ``FIXED`` or a world-attached
 ``REVOLUTE`` root), ``set_root_transforms()`` moves the articulation by writing
 ``Model.joint_X_p`` because there is no root pose stored in state coordinates.

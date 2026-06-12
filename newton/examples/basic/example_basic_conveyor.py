@@ -310,11 +310,12 @@ class Example:
 
             # Spawn just above the belt to avoid initial interpenetration and large bounces.
             bag_z = belt_top_z + bag_vertical_extent + BAG_DROP_CLEARANCE
+            bag_xform = wp.transform(
+                p=wp.vec3(bag_x, bag_y, bag_z),
+                q=wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), bag_yaw),
+            )
             bag_body = builder.add_link(
-                xform=wp.transform(
-                    p=wp.vec3(bag_x, bag_y, bag_z),
-                    q=wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), bag_yaw),
-                ),
+                xform=bag_xform,
                 mass=2.8 + 0.1 * i,
                 label=f"bag_{i}",
             )
@@ -336,7 +337,10 @@ class Example:
             else:
                 builder.add_shape_sphere(bag_body, radius=0.11, cfg=bag_shape_cfg)
 
-            builder.add_articulation([builder.add_joint_free(bag_body)], label=f"bag_{i}")
+            builder.add_articulation(
+                [builder.add_joint_free(bag_body, parent_xform=bag_xform)],
+                label=f"bag_{i}",
+            )
             self.bag_bodies.append(bag_body)
 
         builder.color()

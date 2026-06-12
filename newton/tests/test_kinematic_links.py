@@ -325,7 +325,10 @@ def test_kinematic_free_base_prescribed_motion(
 
             joint_q = state_0.joint_q.numpy()
             joint_qd = state_0.joint_qd.numpy()
-            joint_q[q_start : q_start + 7] = np.array([x0 + vx * t, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+            # joint_q is the body's pose relative to joint_X_p (the rest pose set by add_body
+            # to (x0, 0, 0), with identity rotation). Prescribing a translation of (vx*t, 0, 0)
+            # therefore drives the body from world x = x0 to world x = x0 + vx*t.
+            joint_q[q_start : q_start + 7] = np.array([vx * t, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32)
             joint_qd[qd_start : qd_start + 6] = np.array([vx, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
             state_0.joint_q.assign(joint_q)
             state_0.joint_qd.assign(joint_qd)
