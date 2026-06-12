@@ -6345,16 +6345,11 @@ class ModelBuilder:
         color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        **kwargs,
     ) -> int:
         """Adds an ellipsoid collision shape or site to a body.
 
         The ellipsoid is centered at its local origin as defined by `xform`, with semi-axes
         `rx`, `ry`, `rz` along the local X, Y, Z axes respectively.
-
-        .. deprecated:: 1.1
-            The ``a``, ``b``, ``c`` parameter names are deprecated; use
-            ``rx``, ``ry``, ``rz`` instead.
 
         Note:
             Ellipsoid collision is handled by the GJK/MPR collision pipeline,
@@ -6394,26 +6389,6 @@ class ModelBuilder:
                 # A sphere is a special case where rx = ry = rz
                 builder.add_shape_ellipsoid(body=body, rx=0.5, ry=0.5, rz=0.5)
         """
-        # Backward compat: accept deprecated a, b, c parameter names
-        _deprecated_map = {"a": ("rx", rx, 1.0), "b": ("ry", ry, 0.75), "c": ("rz", rz, 0.5)}
-        for old_name, (new_name, new_val, default) in _deprecated_map.items():
-            if old_name in kwargs:
-                if new_val != default:
-                    raise TypeError(f"Cannot specify both '{old_name}' and '{new_name}'")
-                warnings.warn(
-                    f"Parameter '{old_name}' is deprecated, use '{new_name}' instead.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-        if "a" in kwargs:
-            rx = kwargs.pop("a")
-        if "b" in kwargs:
-            ry = kwargs.pop("b")
-        if "c" in kwargs:
-            rz = kwargs.pop("c")
-        if kwargs:
-            raise TypeError(f"Unexpected keyword arguments: {set(kwargs)}")
-
         if cfg is None:
             cfg = self.default_site_cfg if as_site else self.default_shape_cfg
         elif as_site:
