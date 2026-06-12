@@ -19,8 +19,11 @@ Below is a table summarizing existing Isaac Sim/Lab controllers, where their imp
 | Holonomic Drive | Isaac Sim | :x: |
 | Ackermann | Isaac Sim | :x: |
 
-Further, we may want to add general-purpose algorithms common in robotics (linear filters: low-pass, band-pass, notch, …).
+An open question is whether to broaden this "control toolbox" beyond the controllers in the table above to include general-purpose algorithms common in robotics. For example, a linear-filter class could implement:
 
+- low-pass
+- band-pass
+- notch
 ---
 
 ## Architecture
