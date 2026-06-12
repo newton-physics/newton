@@ -135,9 +135,10 @@ attributes, read the attributes you use in your pipeline and pass the numeric va
    )
 
 For fisheye cameras, extract the calibration values from your chosen USD attributes and call one of
-``compute_fisheye_camera_rays_opencv()``, ``compute_fisheye_camera_rays_ftheta()``, or
-``compute_fisheye_camera_rays_kannala_brandt()``. Each fisheye helper builds rays for one camera; pass
-``out_rays`` and ``camera_index`` to fill a shared ray buffer.
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_fisheye_camera_rays_opencv`,
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_fisheye_camera_rays_ftheta`, or
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_fisheye_camera_rays_kannala_brandt`. Each fisheye helper builds
+rays for one camera; pass ``out_rays`` and ``camera_index`` to fill a shared ray buffer.
 
 Extended Attributes
 -------------------
