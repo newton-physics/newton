@@ -21,6 +21,7 @@
 ### Removed
 
 - Remove the deprecated Style3D `CollisionHandler`; use `Collision` instead
+- Remove support for passing a `Gaussian` as the second positional argument to `ModelBuilder.add_shape_gaussian()` (deprecated in 1.1.0); pass it via the `gaussian=` keyword instead
 - Remove the deprecated `a`, `b`, `c` parameters of `ModelBuilder.add_shape_ellipsoid()` (deprecated in 1.1.0); use `rx`, `ry`, `rz` instead
 
 ## [1.3.0] - 2026-06-11

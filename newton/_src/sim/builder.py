@@ -6840,10 +6840,6 @@ class ModelBuilder:
         The Gaussian is attached as a ``GeoType.GAUSSIAN`` shape for rendering.
         Collision is handled separately via *collision_proxy*.
 
-        .. deprecated:: 1.1
-            Passing ``gaussian`` as the second positional argument is
-            deprecated; pass it via the ``gaussian=`` keyword instead.
-
         Args:
             body: The index of the parent body this shape belongs to.
                 Use ``-1`` for static world geometry.
@@ -6866,20 +6862,6 @@ class ModelBuilder:
         Returns:
             The index of the Gaussian shape.
         """
-        # Backward compat: detect Gaussian passed as second positional arg (old API
-        # had signature add_shape_gaussian(body, gaussian, xform=...)).
-        if isinstance(xform, Gaussian):
-            warnings.warn(
-                "Passing 'gaussian' as the second positional argument is deprecated. "
-                "Use add_shape_gaussian(body, xform=..., gaussian=...) instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            if gaussian is not None:
-                raise TypeError("Cannot pass 'gaussian' both as positional and keyword argument.")
-            gaussian = xform
-            xform = None
-
         if gaussian is None:
             raise TypeError("'gaussian' is required when adding a Gaussian shape.")
 
