@@ -6,7 +6,6 @@ import math
 import sys
 import unittest
 import warnings
-from array import array
 from types import SimpleNamespace
 from unittest import mock
 
@@ -329,30 +328,6 @@ class TestModelMesh(unittest.TestCase):
 
         shape_source_ptr = model.shape_source_ptr.numpy()
         self.assertEqual(shape_source_ptr[0], shape_source_ptr[1])
-
-    def test_compact_finalize_storage_preserves_model_arrays(self):
-        def build_builder():
-            builder = ModelBuilder()
-            body = builder.add_body(xform=wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_identity()))
-            builder.add_shape_box(body=body, hx=0.5, hy=0.25, hz=0.125)
-            return builder
-
-        baseline = build_builder()
-        compact = build_builder()
-
-        converted = compact.compact_finalize_storage()
-
-        self.assertIn("shape_body", converted)
-        self.assertIn("shape_transform", converted)
-        self.assertIsInstance(compact.shape_body, array)
-        self.assertIsInstance(compact.shape_transform, np.ndarray)
-
-        baseline_model = baseline.finalize(device="cpu")
-        compact_model = compact.finalize(device="cpu")
-
-        np.testing.assert_array_equal(compact_model.shape_body.numpy(), baseline_model.shape_body.numpy())
-        np.testing.assert_allclose(compact_model.shape_transform.numpy(), baseline_model.shape_transform.numpy())
-        np.testing.assert_allclose(compact_model.body_q.numpy(), baseline_model.body_q.numpy())
 
     def test_add_triangles(self):
         rng = np.random.default_rng(123)
