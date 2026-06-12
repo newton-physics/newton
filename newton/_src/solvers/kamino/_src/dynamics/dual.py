@@ -61,7 +61,7 @@ import warp as wp
 from .....core.types import override
 from ...config import ConfigBase, ConstrainedDynamicsConfig, ConstraintStabilizationConfig
 from ..core.data import DataKamino
-from ..core.math import FLOAT32_EPS, UNIT_Z, screw, screw_angular, screw_linear
+from ..core.math import FLOAT32_EPS, screw, screw_angular, screw_linear
 from ..core.model import ModelKamino
 from ..core.size import SizeKamino
 from ..core.types import float32, int32, mat33f, vec2f, vec3f, vec4f, vec6f
@@ -605,7 +605,7 @@ def _build_free_velocity_bias_contacts(
     wid_k = contacts_wid[tid]
     cid_k = contacts_cid[tid]
     material_k = contacts_material[tid]
-    penetration_k = contacts_gapfunc[tid][3]
+    distance_k = contacts_gapfunc[tid][3]
 
     # Retrieve the world-specific data
     inv_dt = model_time_inv_dt[wid_k]
@@ -622,36 +622,36 @@ def _build_free_velocity_bias_contacts(
 
     # Retrieve the contact material properties
     mu_k = material_k.x  # Friction coefficient
-    epsilon_k = material_k.y  # Penetration reduction coefficient
+    epsilon_k = material_k.y  # Restitution coefficient
 
-    # The gap-function value (penetration_k) is the margin-shifted signed
-    # distance: negative means penetration past the resting separation,
-    # zero means at rest, positive means within the detection gap.
-    # Pass the full value through so that one-sided Baumgarte stabilization
-    # (xi_relaxed) can generate a positive bias for gap contacts, guiding
-    # objects toward d = 0.  A dead-zone of config.delta filters out
-    # floating-point noise on nearly-touching contacts that would otherwise
-    # destabilize accelerated solvers (e.g. Nesterov momentum in PADMM).
-    distance_k = wp.where(wp.abs(penetration_k) < config.delta, 0.0, penetration_k)
+    # The gap-function value (penetration_k) is the margin-shifted
+    # signed distance: negative means penetration past the resting
+    # separation, zero means at rest, positive means within the
+    # detection gap.
+    # A dead-zone of config.delta on either side filters out floating-point
+    # noise on nearly-touching contacts. Outside the dead-zone, we shift
+    # penetration_k by delta to preserve continuity w.r.t. distance_k.
+    penetration_k = wp.sign(distance_k) * wp.max(0.0, wp.abs(distance_k) - config.delta)
 
     # Compute the per-contact penetration error reduction term
-    # NOTE#1: Penetrations are represented as xi < 0 (hence the sign inversion)
-    # NOTE#2: xi_p_relaxed corresponds to one-sided Baumgarte-like stabilization
-    xi = inv_dt * distance_k
+    # NOTE#1: Penetrations are represented as penetration_k < 0
+    # NOTE#2: xi corresponds to one-sided Baumgarte-like stabilization
+    xi = inv_dt * penetration_k
     xi_relaxed = config.gamma * wp.min(0.0, xi) + wp.max(0.0, xi)
-    if epsilon_k == 1.0:
-        alpha = 0.0
-    else:
-        alpha = 1.0
 
-    # Compute the contact constraint stabilization bias
-    v_b_k = alpha * xi_relaxed * UNIT_Z
+    # Gate contact stabilization for restitutive impacts with
+    # critical restitution coefficients (i.e. epsilon_k >= 1.0)
+    # NOTE: Otherwise the bias would be too large and destabilize the solver
+    alpha = wp.where(epsilon_k >= 1.0, 0.0, 1.0)
 
     # Store the contact constraint stabilization bias in the output vector
-    for i in range(3):
-        problem_v_b[ccio_k + i] = v_b_k[i]
+    # NOTE: We still write zeros to overwrite previous values
+    problem_v_b[ccio_k] = 0.0
+    problem_v_b[ccio_k + 1] = 0.0
+    problem_v_b[ccio_k + 2] = alpha * xi_relaxed
 
     # Initialize the restitutive Newton-type impact model term
+    # NOTE: We still write zeros to overwrite previous values
     problem_v_i[ccio_k] = 0.0
     problem_v_i[ccio_k + 1] = 0.0
     problem_v_i[ccio_k + 2] = epsilon_k
