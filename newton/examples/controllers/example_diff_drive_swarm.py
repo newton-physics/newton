@@ -50,9 +50,7 @@ def _build_robot_template():
     """One chassis fixed to the world + two revolute wheels."""
     builder = newton.ModelBuilder()
 
-    chassis = builder.add_link(
-        xform=wp.transform(p=wp.vec3(0., 0., 0.2))
-    )
+    chassis = builder.add_link(xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.2)))
     builder.add_shape_box(chassis, hx=0.15, hy=0.10, hz=0.04)
     # add_shape_cylinder is fixed along Z; rotate the shape so its length
     # aligns with the wheel rotation axis (Y).
@@ -63,7 +61,7 @@ def _build_robot_template():
     builder.add_shape_cylinder(right, xform=wheel_xform, radius=WHEEL_RADIUS, half_height=0.01)
 
     j_base = builder.add_joint_free(
-        parent=-1, 
+        parent=-1,
         child=chassis,
     )
     j_left = builder.add_joint_revolute(
@@ -132,8 +130,10 @@ class Example:
         )
 
         # robots all go in a circle:
-        omega = 0.05 # speed at which they will circle.
-        linear_cmd = np.linspace(ROBOT_SPACING*omega, ROBOT_COUNT*ROBOT_SPACING*omega, ROBOT_COUNT, dtype=np.float32)
+        omega = 0.05  # speed at which they will circle.
+        linear_cmd = np.linspace(
+            ROBOT_SPACING * omega, ROBOT_COUNT * ROBOT_SPACING * omega, ROBOT_COUNT, dtype=np.float32
+        )
         angular_cmd = np.full(shape=ROBOT_COUNT, fill_value=omega, dtype=np.float32)
         self._input = self.controller.input_struct()
         self._input.linear_speed_command.assign(linear_cmd)
@@ -147,7 +147,7 @@ class Example:
         self._output.joint_target_qd = self.control.joint_target_qd
 
         self.viewer.set_model(self.model)
-        self.viewer.set_world_offsets((0., ROBOT_SPACING, 0.))
+        self.viewer.set_world_offsets((0.0, ROBOT_SPACING, 0.0))
         self.graph = None
         if self.device.is_cuda:
             with wp.ScopedCapture() as capture:

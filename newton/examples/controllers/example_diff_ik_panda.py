@@ -78,7 +78,7 @@ class Example:
         # ------------------------------------------------------------------
         # Template — one Franka with MuJoCo PD attrs + a TCP site
         # ------------------------------------------------------------------
-        
+
         template = newton.ModelBuilder()
         urdf_path = newton.utils.download_asset("franka_emika_panda") / "urdf" / "fr3_franka_hand.urdf"
         template.add_urdf(
@@ -111,7 +111,6 @@ class Example:
         for i in range(len(template.joint_target_ke)):
             template.joint_target_ke[i] = 3000.0
             template.joint_target_kd[i] = 100.0
-
 
         # ------------------------------------------------------------------
         # Scene — replicate 4, add ground plane.

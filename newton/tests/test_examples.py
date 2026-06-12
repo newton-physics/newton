@@ -882,8 +882,10 @@ add_example_test(
     use_viewer=True,
 )
 
+
 class TestControllerExamples(unittest.TestCase):
     pass
+
 
 add_example_test(
     TestControllerExamples,
