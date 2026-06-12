@@ -1,0 +1,56 @@
+name: Auto-assign PR creator
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+
+permissions:
+  pull-requests: write
+
+jobs:
+  assign-creator:
+    if: >-
+      github.repository == 'newton-physics/newton' &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Assign PR creator when no assignee
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+
+            if (pr.assignees?.length > 0) {
+              core.info(`PR #${pr.number} already has assignee(s).`);
+              return;
+            }
+
+            const author = pr.user.login;
+
+            if (author.endsWith('[bot]')) {
+              core.info(`Skipping bot author: ${author}`);
+              return;
+            }
+
+            try {
+              await github.rest.issues.addAssignees({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                assignees: [author],
+              });
+              core.info(`Assigned PR #${pr.number} to ${author}`);
+            } catch (error) {
+              core.warning(
+                `Could not assign ${author} on PR #${pr.number}: ${error.message}`
+              );
+            }
