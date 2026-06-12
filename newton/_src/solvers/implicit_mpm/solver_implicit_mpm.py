@@ -16,7 +16,7 @@ import warp.sparse as wps
 import newton
 
 from ...core.types import override
-from ..flags import SolverNotifyFlags
+from ...sim import ModelFlags
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
 from .rasterized_collisions import (
@@ -1086,8 +1086,8 @@ class SolverImplicitMPM(SolverBase):
             scratch.release_temporaries()
 
     @override
-    def notify_model_changed(self, flags: int) -> None:
-        if flags & SolverNotifyFlags.MODEL_PROPERTIES:
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        if flags & ModelFlags.MODEL_PROPERTIES:
             self._mpm_model.notify_particle_material_changed()
 
     def collect_collider_impulses(self, state: newton.State) -> tuple[wp.array, wp.array, wp.array]:
