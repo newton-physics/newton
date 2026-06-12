@@ -15,7 +15,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 
 **Core loop methods** — every viewer uses the same simulation loop pattern:
 
-- :meth:`~newton.viewer.ViewerBase.set_model` — assign a :class:`~newton.Model` and optionally limit the number of rendered worlds with ``max_worlds``
+- :meth:`~newton.viewer.ViewerBase.set_model` — assign a :class:`~newton.Model` (use :meth:`~newton.viewer.ViewerBase.set_visible_worlds` afterwards to limit the number of rendered worlds)
 - :meth:`~newton.viewer.ViewerBase.begin_frame` — start a new frame with the current simulation time
 - :meth:`~newton.viewer.ViewerBase.log_state` — update the viewer with the current :class:`~newton.State` (body transforms, particle positions, etc.)
 - :meth:`~newton.viewer.ViewerBase.end_frame` — finish the frame and present it
