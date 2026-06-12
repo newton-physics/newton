@@ -2906,7 +2906,7 @@ def accumulate_body_particle_contacts_per_body(
         n = body_particle_contact_normal[contact_idx]
         radius = particle_radius[particle_idx]
         s_idx = body_particle_contact_shape[contact_idx]
-        margin = shape_margin[s_idx] if shape_margin.shape[0] > 0 else 0.0
+        margin = shape_margin[s_idx] if s_idx >= 0 and shape_margin.shape[0] > 0 else 0.0
         penetration_depth = -(wp.dot(n, particle_pos - cp_world) - radius - margin)
 
         if penetration_depth <= 0.0:
@@ -3786,7 +3786,7 @@ def update_duals_body_particle_contacts(
     cp_world = wp.transform_point(X_wb, body_particle_contact_body_pos[idx])
     particle_pos = particle_q[particle_idx]
     radius = particle_radius[particle_idx]
-    margin = shape_margin[shape_idx] if shape_margin.shape[0] > 0 else 0.0
+    margin = shape_margin[shape_idx] if shape_idx >= 0 and shape_margin.shape[0] > 0 else 0.0
     n = body_particle_contact_normal[idx]
 
     penetration = -(wp.dot(n, particle_pos - cp_world) - radius - margin)
