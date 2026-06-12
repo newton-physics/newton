@@ -9,7 +9,7 @@
 # cylinder, cone, mesh bear) are placed inside.  After settling, the
 # pinned vertices are raised upward, lifting the contents with the bag.
 #
-# Command: python -m newton.examples vbd_bag_lift
+# Command: python -m newton.examples vbd_soft_rigid_mix_contact
 #
 ###########################################################################
 

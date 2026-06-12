@@ -10,7 +10,7 @@
 # then lifted, making it easy to spot which shape type causes
 # instability.
 #
-# Command: python -m newton.examples vbd_soft_contact
+# Command: python -m newton.examples vbd_soft_rigid_contact
 #
 ###########################################################################
 
