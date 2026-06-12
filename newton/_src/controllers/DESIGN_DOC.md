@@ -358,17 +358,22 @@ controller = ControllerPID(
     kd=wp.array([320.0, 160.0], dtype=wp.float32),
 )
 
-# Read ports default to joint_q / joint_qd; the write port defaults to joint_f.
+# Allocate an input struct for this controller:
 inp = controller.input_struct()
-inp.joint_target_q.assign([0.6, -1.2])      # setpoint [rad]
+inp.joint_target_q.assign([0.6, -1.2])
+
+# Allocate an output struct for this controller:
 out = controller.output_struct()
-out.joint_f = control.joint_f               # write straight into the solver's array
+out.joint_f = control.joint_f # reassign into the solver's array
 
 s0, s1 = controller.state(), controller.state()   # PID integral, double-buffered
 
 for _ in range(num_steps):
-    inp.joint_q = state_0.joint_q           # rebind to the current sim state
+    # rebind to the current sim state
+    inp.joint_q = state_0.joint_q           
     inp.joint_qd = state_0.joint_qd
+    
+    # step the controller, then step the sim.
     controller.compute(inp, out, s0, s1, time_step=dt)
     s0, s1 = s1, s0
     solver.step(state_0, state_1, control, contacts, dt)
