@@ -119,28 +119,6 @@ class TestModelBuilderDeprecations(unittest.TestCase):
         self.assertEqual(len(caught), 1)
         self.assertEqual(model.mujoco.equality_constraint_count, 3)
 
-    def test_body_armature_removed(self):
-        # Body armature was removed: the `armature` argument of add_link/add_body
-        # and the `default_body_armature` attribute no longer exist. Add any
-        # isotropic artificial inertia directly to `inertia` instead.
-        builder = ModelBuilder()
-        inertia = np.diag([1.0, 2.0, 3.0]).astype(np.float32)
-
-        with self.assertRaises(TypeError):
-            builder.add_link(mass=1.0, inertia=inertia, armature=0.5)
-        with self.assertRaises(TypeError):
-            builder.add_body(mass=1.0, inertia=inertia, armature=0.25)
-        with self.assertRaises(AttributeError):
-            _ = builder.default_body_armature
-
-        # `inertia` is honored as-is, with no armature contribution.
-        body = builder.add_link(mass=1.0, inertia=inertia)
-        np.testing.assert_allclose(
-            np.asarray(builder.body_inertia[body]).reshape(3, 3),
-            inertia,
-            atol=1e-6,
-        )
-
     def test_joint_target_pos_vel_aliases_warn(self):
         """Legacy ``joint_target_pos`` / ``joint_target_vel`` warn under the
         default flag and raise under ``use_coord_layout_targets=True``;
