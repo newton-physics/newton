@@ -152,9 +152,9 @@ See a list of all available examples (also browsable from the viewer's side pane
 Quick Start
 ^^^^^^^^^^^
 
-After installing Newton, you can build
-models, create solvers, and run simulations directly from Python. A typical
-workflow looks like this:
+After installing Newton with the base package, you can build models, create
+solvers, and run simulations directly from Python. This example uses only the
+required dependencies installed by ``pip install newton``:
 
 .. code-block:: python
 
@@ -163,12 +163,16 @@ workflow looks like this:
 
     # Build a model
     builder = newton.ModelBuilder()
-    builder.add_mjcf("robot.xml")        # or add_urdf() / add_usd()
+    body = builder.add_body(
+        xform=wp.transform((0.0, 1.0, 0.0), wp.quat_identity()),
+        mass=1.0,
+    )
+    builder.add_shape_sphere(body, radius=0.25)
     builder.add_ground_plane()
     model = builder.finalize()
 
     # Create a solver and allocate state
-    solver = newton.solvers.SolverMuJoCo(model)
+    solver = newton.solvers.SolverXPBD(model)
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
@@ -177,15 +181,21 @@ workflow looks like this:
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     # Step the simulation
-    for step in range(1000):
+    for step in range(120):
         state_0.clear_forces()
         model.collide(state_0, contacts)
-        solver.step(state_0, state_1, control, contacts, 1.0 / 60.0 / 4.0)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
         state_0, state_1 = state_1, state_0
 
-For robot-learning workflows with parallel environments (as used by
-`Isaac Lab <https://isaac-sim.github.io/IsaacLab/>`_), you can replicate a
-robot template across many worlds and step them all simultaneously on the GPU:
+The following workflow uses :class:`~newton.solvers.SolverMuJoCo`, so install
+the optional simulation dependencies first:
+
+.. code-block:: console
+
+    pip install "newton[sim]"
+
+Then build a robot template, replicate it across many worlds, and step them all
+simultaneously on the GPU:
 
 .. code-block:: python
 

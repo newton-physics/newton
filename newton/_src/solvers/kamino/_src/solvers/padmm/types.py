@@ -41,7 +41,7 @@ import warp as wp
 
 from ....config import PADMMSolverConfig
 from ...core.size import SizeKamino
-from ...core.types import float32, int32, override, vec2f
+from ...core.types import float32, int32, override, to_warp_int32_array, vec2f
 
 ###
 # Module interface
@@ -1161,7 +1161,7 @@ class PADMMInfo:
         offsets = [max_iters * i for i in range(size.num_worlds)]
 
         # Allocate the on-device solver info data arrays
-        self.offsets = wp.array(offsets, dtype=int32)
+        self.offsets = to_warp_int32_array(offsets)
         self.num_rho_updates = wp.zeros(maxsize, dtype=int32)
         self.norm_s = wp.zeros(maxsize, dtype=float32)
         self.norm_x = wp.zeros(maxsize, dtype=float32)

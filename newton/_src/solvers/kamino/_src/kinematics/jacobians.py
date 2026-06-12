@@ -23,11 +23,13 @@ from ..core.math import (
 )
 from ..core.model import ModelKamino
 from ..core.types import (
+    assign_to_warp_int32_array,
     float32,
     int32,
     mat33f,
     mat66f,
     quatf,
+    to_warp_int32_array,
     transformf,
     vec2i,
     vec3f,
@@ -391,16 +393,17 @@ def store_joint_dofs_jacobian_sparse(
 
 
 @wp.func
-def compute_joint_relative_quaternion(T_B_j: transformf, T_F_j: transformf, X_j: mat33f) -> quatf:
-    """ "
+def compute_joint_relative_quaternion(T_B_j: transformf, T_F_j: transformf, X_Bj: mat33f, X_Fj: mat33f) -> quatf:
+    """
     Computes the relative quaternion mapping base to follower joint frame, from the current base
-    and follower pose, and the joint frame expressed in local body frame.
+    and follower pose, and the joint frames in local coordinates on either body.
     """
     q_B_j = wp.transform_get_rotation(T_B_j)
     q_F_j = wp.transform_get_rotation(T_F_j)
-    q_X_j = wp.quat_from_matrix(X_j)
-    q_Bj = q_B_j * q_X_j
-    q_Fj = q_F_j * q_X_j
+    q_X_Bj = wp.quat_from_matrix(X_Bj)
+    q_X_Fj = wp.quat_from_matrix(X_Fj)
+    q_Bj = q_B_j * q_X_Bj
+    q_Fj = q_F_j * q_X_Fj
     return wp.quat_inverse(q_Bj) * q_Fj
 
 
@@ -447,7 +450,8 @@ def _build_joint_jacobians_dense(
     model_joints_kinematic_cts_offset: wp.array[int32],
     model_joints_bid_B: wp.array[int32],
     model_joints_bid_F: wp.array[int32],
-    model_joints_X_j: wp.array[mat33f],
+    model_joints_X_Bj: wp.array[mat33f],
+    model_joints_X_Fj: wp.array[mat33f],
     state_joints_p: wp.array[transformf],
     state_bodies_q: wp.array[transformf],
     jac_cts_offsets: wp.array[int32],
@@ -515,7 +519,7 @@ def _build_joint_jacobians_dense(
         R_X_bar_j = expand6d(R_X_j)
     # Universal joint: replace R_X_j with the frame of the intermediate body for rotation constraints
     else:
-        j_q_j = compute_joint_relative_quaternion(T_B_j, T_F_j, model_joints_X_j[jid])
+        j_q_j = compute_joint_relative_quaternion(T_B_j, T_F_j, model_joints_X_Bj[jid], model_joints_X_Fj[jid])
         R_intermediate = compute_intermediate_body_frame_universal_joint(j_q_j)
         R_X_bar_j = concat6d(R_X_j, R_X_j @ R_intermediate)
 
@@ -557,7 +561,8 @@ def _build_joint_jacobians_sparse(
     model_joints_num_dynamic_cts: wp.array[int32],
     model_joints_bid_B: wp.array[int32],
     model_joints_bid_F: wp.array[int32],
-    model_joints_X_j: wp.array[mat33f],
+    model_joints_X_Bj: wp.array[mat33f],
+    model_joints_X_Fj: wp.array[mat33f],
     model_joints_dynamic_cts_offset: wp.array[int32],
     state_joints_p: wp.array[transformf],
     state_bodies_q: wp.array[transformf],
@@ -603,7 +608,7 @@ def _build_joint_jacobians_sparse(
         R_X_bar_j = expand6d(R_X_j)
     # Universal joint: replace R_X_j with the frame of the intermediate body for rotation constraints
     else:
-        j_q_j = compute_joint_relative_quaternion(T_B_j, T_F_j, model_joints_X_j[jid])
+        j_q_j = compute_joint_relative_quaternion(T_B_j, T_F_j, model_joints_X_Bj[jid], model_joints_X_Fj[jid])
         R_intermediate = compute_intermediate_body_frame_universal_joint(j_q_j)
         R_X_bar_j = concat6d(R_X_j, R_X_j @ R_intermediate)
 
@@ -1361,8 +1366,8 @@ class DenseSystemJacobians:
 
         # Allocate the Jacobian arrays
         with wp.ScopedDevice(device):
-            self._data.J_cts_offsets = wp.array(J_cts_offsets, dtype=int32)
-            self._data.J_dofs_offsets = wp.array(J_dofs_offsets, dtype=int32)
+            self._data.J_cts_offsets = to_warp_int32_array(J_cts_offsets)
+            self._data.J_dofs_offsets = to_warp_int32_array(J_dofs_offsets)
             self._data.J_cts_data = wp.zeros(shape=(total_J_cts_size,), dtype=float32)
             self._data.J_dofs_data = wp.zeros(shape=(total_J_dofs_size,), dtype=float32)
 
@@ -1422,7 +1427,8 @@ class DenseSystemJacobians:
                     model.joints.kinematic_cts_offset,
                     model.joints.bid_B,
                     model.joints.bid_F,
-                    model.joints.X_j,
+                    model.joints.X_Bj,
+                    model.joints.X_Fj,
                     data.joints.p_j,
                     data.bodies.q_i,
                     self._data.J_cts_offsets,
@@ -1705,15 +1711,15 @@ class SparseSystemJacobians:
 
             # Set all constant values into BSMs (corresponding to joint dofs/cts)
             if bsm_cts.max_of_max_dims[0] * bsm_cts.max_of_max_dims[1] > 0:
-                bsm_cts.nzb_row.assign(J_cts_nzb_row)
-                bsm_cts.nzb_col.assign(J_cts_nzb_col)
-                bsm_cts.num_cols.assign(num_body_dofs)
+                assign_to_warp_int32_array(bsm_cts.nzb_row, J_cts_nzb_row)
+                assign_to_warp_int32_array(bsm_cts.nzb_col, J_cts_nzb_col)
+                assign_to_warp_int32_array(bsm_cts.num_cols, num_body_dofs)
             if bsm_dofs.max_of_max_dims[0] * bsm_dofs.max_of_max_dims[1] > 0:
-                bsm_dofs.nzb_row.assign(J_dofs_nzb_row)
-                bsm_dofs.nzb_col.assign(J_dofs_nzb_col)
-                bsm_dofs.num_rows.assign(num_joint_dofs)
-                bsm_dofs.num_cols.assign(num_body_dofs)
-                bsm_dofs.num_nzb.assign(J_dofs_nnzb)
+                assign_to_warp_int32_array(bsm_dofs.nzb_row, J_dofs_nzb_row)
+                assign_to_warp_int32_array(bsm_dofs.nzb_col, J_dofs_nzb_col)
+                assign_to_warp_int32_array(bsm_dofs.num_rows, num_joint_dofs)
+                assign_to_warp_int32_array(bsm_dofs.num_cols, num_body_dofs)
+                assign_to_warp_int32_array(bsm_dofs.num_nzb, J_dofs_nnzb)
 
             # Convert per-world nzb offsets to global nzb offsets
             J_cts_nzb_start = bsm_cts.nzb_start.numpy()
@@ -1724,13 +1730,13 @@ class SparseSystemJacobians:
                 J_dofs_joint_nzb_offsets[_j] += J_dofs_nzb_start[w]
 
             # Create/move precomputed helper arrays to device
-            self._J_cts_joint_nzb_offsets = wp.array(J_cts_joint_nzb_offsets, dtype=int32, device=device)
+            self._J_cts_joint_nzb_offsets = to_warp_int32_array(J_cts_joint_nzb_offsets, device=device)
             self._J_cts_limit_nzb_offsets = wp.zeros(shape=(model.size.sum_of_max_limits,), dtype=int32, device=device)
             self._J_cts_contact_nzb_offsets = wp.zeros(
                 shape=(model.size.sum_of_max_contacts,), dtype=int32, device=device
             )
-            self._J_dofs_joint_nzb_offsets = wp.array(J_dofs_joint_nzb_offsets, dtype=int32, device=device)
-            self._J_cts_num_joint_nzb = wp.array(J_cts_nnzb_min, dtype=int32, device=device)
+            self._J_dofs_joint_nzb_offsets = to_warp_int32_array(J_dofs_joint_nzb_offsets, device=device)
+            self._J_cts_num_joint_nzb = to_warp_int32_array(J_cts_nnzb_min, device=device)
 
     def build(
         self,
@@ -1801,7 +1807,8 @@ class SparseSystemJacobians:
                     model.joints.num_dynamic_cts,
                     model.joints.bid_B,
                     model.joints.bid_F,
-                    model.joints.X_j,
+                    model.joints.X_Bj,
+                    model.joints.X_Fj,
                     model.joints.dynamic_cts_offset,
                     data.joints.p_j,
                     data.bodies.q_i,
@@ -2057,9 +2064,9 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
 
             # Set all constant values into BSM
             if self.bsm.max_of_max_dims[0] * self.bsm.max_of_max_dims[1] > 0:
-                self.bsm.nzb_row.assign(J_cts_nzb_row)
-                self.bsm.nzb_col.assign(J_cts_nzb_col)
-                self.bsm.num_cols.assign(num_body_dofs)
+                assign_to_warp_int32_array(self.bsm.nzb_row, J_cts_nzb_row)
+                assign_to_warp_int32_array(self.bsm.nzb_col, J_cts_nzb_col)
+                assign_to_warp_int32_array(self.bsm.num_cols, num_body_dofs)
 
             # Convert per-world nzb offsets to global nzb offsets
             nzb_start = self.bsm.nzb_start.numpy()
@@ -2068,8 +2075,8 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
                 J_cts_cm_joint_nzb_offsets[_j] += nzb_start[w]
 
             # Move precomputed helper arrays to device
-            self._joint_nzb_offsets = wp.array(J_cts_cm_joint_nzb_offsets, dtype=int32, device=device)
-            self._num_joint_nzb = wp.array(J_cts_cm_nnzb_min, dtype=int32, device=device)
+            self._joint_nzb_offsets = to_warp_int32_array(J_cts_cm_joint_nzb_offsets, device=device)
+            self._num_joint_nzb = to_warp_int32_array(J_cts_cm_nnzb_min, device=device)
 
         if jacobians is not None:
             self.update(model=model, jacobians=jacobians, limits=limits, contacts=contacts)

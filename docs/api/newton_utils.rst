@@ -13,9 +13,9 @@ newton.utils
    :toctree: _generated
    :nosignatures:
 
+   ColorSpace
    EventTracer
    MeshAdjacency
-   OnnxRuntime
 
 .. rubric:: Functions
 
@@ -26,6 +26,8 @@ newton.utils
    apply_cable_body_transforms
    bourke_color_map
    color_graph
+   color_linear_to_srgb
+   color_srgb_to_linear
    compute_cable_segment_lengths
    compute_world_offsets
    create_cable_body_transforms

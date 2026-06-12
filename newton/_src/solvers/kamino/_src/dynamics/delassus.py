@@ -70,7 +70,7 @@ import warp as wp
 from ..core.data import DataKamino
 from ..core.model import ModelKamino
 from ..core.size import SizeKamino
-from ..core.types import FloatType, float32, int32, mat33f, vec3f, vec6f
+from ..core.types import FloatType, float32, int32, mat33f, to_warp_int32_array, vec3f, vec6f
 from ..geometry.contacts import ContactsKamino
 from ..kinematics.constraints import get_max_constraints_per_world
 from ..kinematics.jacobians import ColMajorSparseConstraintJacobians, DenseSystemJacobians, SparseSystemJacobians
@@ -616,7 +616,7 @@ def _add_matrix_diag_product(
     x: wp.array[float32],
     y: wp.array[float32],
     alpha: float,
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
 ):
     """
     Adds the product of a vector with a diagonal matrix to another vector: y += alpha * diag(d) @ x
@@ -626,7 +626,7 @@ def _add_matrix_diag_product(
     world_id, ct_id = wp.tid()
 
     # Terminate early if world or constraint is inactive
-    if world_mask[world_id] == 0 or ct_id >= model_data_num_total_cts[world_id]:
+    if not world_mask[world_id] or ct_id >= model_data_num_total_cts[world_id]:
         return
 
     idx = row_start[world_id] + ct_id
@@ -643,7 +643,7 @@ def _scale_row_vector_kernel(
     x: wp.array[Any],
     beta: Any,
     # Mask:
-    matrix_mask: wp.array[int32],
+    matrix_mask: wp.array[bool],
 ):
     """
     Computes a vector scaling for all active entries: y = beta * y
@@ -680,7 +680,7 @@ def _make_block_sparse_gemv_regularization_kernel(alpha: float32):
         y: wp.array[float32],
         z: wp.array[float32],
         # Mask:
-        matrix_mask: wp.array[int32],
+        matrix_mask: wp.array[bool],
     ):
         """
         Computes a generalized matrix-vector product with an added diagonal regularization component:
@@ -916,7 +916,7 @@ class DelassusOperator:
                 maxdim=model.info.max_total_cts,
                 dim=data.info.num_total_cts,
                 vio=model.info.total_cts_offset,
-                mio=wp.array(mat_offsets[: self._num_worlds], dtype=int32, device=self._device),
+                mio=to_warp_int32_array(mat_offsets[: self._num_worlds], device=self._device),
                 dtype=float32,
                 device=self._device,
             )

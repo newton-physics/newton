@@ -9,7 +9,6 @@ import warp as wp
 
 from ..geometry.raycast import (
     sensor_raycast_kernel,
-    sensor_raycast_kernel_no_hfield,
     sensor_raycast_particles_kernel,
 )
 from ..sim import Model, State
@@ -57,7 +56,7 @@ class SensorRaycast:
             camera_transforms = wp.array([[t] * model.world_count], dtype=wp.transformf)
 
             # Build BVH once; refit before frames where geometry changes.
-            newton.geometry.build_bvh_shape(model, state)
+            model.bvh_build_shapes(state)
             sensor.update(state, camera_transforms, rays, depth_image=depth)
             # depth[0, 0] has shape (height, width) with 0.0 for no-hit by default.
             # Pass clear_data=SensorTiledCamera.ClearData(clear_depth=-1.0) to use
@@ -218,12 +217,10 @@ class SensorRaycast:
         # Launch raycast kernel for each pixel-shape combination
         # We use 3D launch with dimensions (width, height, num_shapes)
         if num_shapes > 0:
-            # Pick the lean (no-HFIELD) kernel variant when the scene has no
-            # heightfields, so non-HFIELD scenes don't pay the per-thread
-            # HeightfieldData overhead in the kernel body.
-            kernel = sensor_raycast_kernel if self.model.has_heightfields else sensor_raycast_kernel_no_hfield
+            # HFIELD shapes are raycast through their wp.Mesh BVH via shape_source_ptr,
+            # so a single kernel handles every geometry type.
             wp.launch(
-                kernel=kernel,
+                kernel=sensor_raycast_kernel,
                 dim=(self.width, self.height, num_shapes),
                 inputs=[
                     # Model data
@@ -233,9 +230,6 @@ class SensorRaycast:
                     self.model.shape_type,
                     self.model.shape_scale,
                     self.model.shape_source_ptr,
-                    self.model.shape_heightfield_index,
-                    self.model.heightfield_data,
-                    self.model.heightfield_elevations,
                     # Camera parameters
                     camera_position,
                     camera_direction,

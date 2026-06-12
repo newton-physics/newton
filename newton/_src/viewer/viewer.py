@@ -191,7 +191,7 @@ class ViewerBase(ABC):
             model: The Newton model to visualize.
             max_worlds: Maximum number of worlds to render (None = all).
 
-                .. deprecated::
+                .. deprecated:: 1.1
                     Use :meth:`set_visible_worlds` instead.
         """
         if self.model is not None:
@@ -211,7 +211,7 @@ class ViewerBase(ABC):
 
         if model is not None:
             self.device = model.device
-            self._shape_sdf_index_host = model.shape_sdf_index.numpy() if model.shape_sdf_index is not None else None
+            self._shape_sdf_index_host = model._shape_sdf_index.numpy() if model._shape_sdf_index is not None else None
             self._build_visible_worlds_mask()
             self._populate_shapes()
 
@@ -311,15 +311,15 @@ class ViewerBase(ABC):
             return None
 
         sdf_idx = int(self._shape_sdf_index_host[shape_idx]) if self._shape_sdf_index_host is not None else -1
-        if sdf_idx < 0 or self.model.texture_sdf_data is None:
+        if sdf_idx < 0 or self.model._texture_sdf_data is None:
             return None
 
         if sdf_idx in self._isomesh_cache:
             return self._isomesh_cache[sdf_idx]
 
         slots = (
-            self.model.texture_sdf_subgrid_start_slots[sdf_idx]
-            if hasattr(self.model, "texture_sdf_subgrid_start_slots") and self.model.texture_sdf_subgrid_start_slots
+            self.model._texture_sdf_subgrid_start_slots[sdf_idx]
+            if self.model._texture_sdf_subgrid_start_slots
             else None
         )
         if slots is None:
@@ -328,10 +328,10 @@ class ViewerBase(ABC):
 
         from ..geometry.sdf_texture import compute_isomesh_from_texture_sdf  # noqa: PLC0415
 
-        coarse_tex = self.model.texture_sdf_coarse_textures[sdf_idx]
+        coarse_tex = self.model._texture_sdf_coarse_textures[sdf_idx]
         coarse_dims = (coarse_tex.width - 1, coarse_tex.height - 1, coarse_tex.depth - 1)
         isomesh = compute_isomesh_from_texture_sdf(
-            self.model.texture_sdf_data, sdf_idx, slots, coarse_dims, device=self.device
+            self.model._texture_sdf_data, sdf_idx, slots, coarse_dims, device=self.device
         )
         self._isomesh_cache[sdf_idx] = isomesh
         return isomesh
@@ -1446,8 +1446,10 @@ class ViewerBase(ABC):
             )
 
     # returns a unique (non-stable) identifier for a geometry configuration
-    def _hash_geometry(self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None) -> int:
-        return hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid)))
+    def _hash_geometry(
+        self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None, mirror: bool = False
+    ) -> int:
+        return hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
 
     def _hash_shape(self, geo_hash, shape_static, shape_flags) -> int:
         return hash((geo_hash, shape_static, shape_flags))
@@ -1480,10 +1482,17 @@ class ViewerBase(ABC):
         thickness: float,
         is_solid: bool,
         geo_src=None,
+        mirror: bool = False,
     ) -> str:
         """Ensure a geometry mesh exists and return its mesh path.
 
         Computes a stable hash from the parameters; creates and caches the mesh path if needed.
+
+        When ``mirror`` is True and ``geo_type`` is :class:`newton.GeoType.MESH` or
+        :class:`newton.GeoType.CONVEX_MESH`, a winding-flipped variant of the source
+        mesh is cached (at most one extra entry per source mesh, regardless of the
+        actual signed scale). The instance is still rendered with its signed scale
+        so the shader's normal transform stays consistent.
         """
 
         # normalize
@@ -1499,6 +1508,7 @@ class ViewerBase(ABC):
             float(thickness),
             bool(is_solid),
             geo_src,
+            bool(mirror),
         )
 
         if geo_hash in self._geometry_cache:
@@ -1521,19 +1531,61 @@ class ViewerBase(ABC):
             raise ValueError(f"Unsupported geo_type for ensure_geometry: {geo_type}")
 
         mesh_path = f"/geometry/{base_name}_{len(self._geometry_cache)}"
-        self.log_geo(
-            mesh_path,
-            int(geo_type),
-            tuple(scale_list),
-            float(thickness),
-            bool(is_solid),
-            geo_src=geo_src
-            if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
-            else None,
-            hidden=True,
-        )
+
+        if mirror and geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) and geo_src is not None:
+            self._log_mesh_winding_flipped(mesh_path, geo_src, thickness, is_solid, hidden=True)
+        else:
+            self.log_geo(
+                mesh_path,
+                int(geo_type),
+                tuple(scale_list),
+                float(thickness),
+                bool(is_solid),
+                geo_src=geo_src
+                if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
+                else None,
+                hidden=True,
+            )
         self._geometry_cache[geo_hash] = mesh_path
         return mesh_path
+
+    def _log_mesh_winding_flipped(
+        self, name: str, src: newton.Mesh, thickness: float, is_solid: bool, hidden: bool
+    ) -> None:
+        """Upload a winding-flipped copy of ``src`` for use with mirrored (det<0) instances.
+
+        The cached mesh has triangle indices swapped and any explicit per-vertex normals
+        negated so back-face culling stays consistent on a mirrored instance and the
+        shader's determinant-based normal flip yields outward shading normals.
+        """
+        if not is_solid:
+            indices, points = solidify_mesh(src.indices, src.vertices, thickness)
+        else:
+            indices, points = src.indices, src.vertices
+
+        idx_flipped = np.asarray(indices, dtype=np.int32).reshape(-1, 3).copy()
+        idx_flipped[:, [1, 2]] = idx_flipped[:, [2, 1]]
+
+        points_wp = wp.array(points, dtype=wp.vec3, device=self.device)
+        indices_wp = wp.array(idx_flipped.flatten(), dtype=wp.int32, device=self.device)
+
+        normals_wp = None
+        if src._normals is not None:
+            normals_wp = wp.array(-np.asarray(src._normals, dtype=np.float32), dtype=wp.vec3, device=self.device)
+
+        uvs_wp = None
+        if src._uvs is not None:
+            uvs_wp = wp.array(src._uvs, dtype=wp.vec2, device=self.device)
+
+        self.log_mesh(
+            name,
+            points_wp,
+            indices_wp,
+            normals_wp,
+            uvs_wp,
+            hidden=hidden,
+            texture=getattr(src, "texture", None),
+        )
 
     # creates meshes and instances for each shape in the Model
     def _populate_shapes(self):
@@ -1563,6 +1615,16 @@ class ViewerBase(ABC):
             geo_is_solid = bool(shape_geo_is_solid[s])
             geo_src = shape_geo_src[s]
 
+            # Mesh-class shapes can carry signed scale. When det(scale) < 0 the GPU
+            # mirrors the geometry, which reverses screen-space triangle winding;
+            # cache a single winding-flipped variant per source mesh so back-face
+            # culling stays consistent. The signed scale is still applied to the
+            # instance so the shader's normal transform mirrors normals correctly.
+            mirror = (
+                geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH)
+                and geo_scale[0] * geo_scale[1] * geo_scale[2] < 0.0
+            )
+
             # Gaussians bypass the mesh instancing pipeline; render as point clouds.
             if geo_type == newton.GeoType.GAUSSIAN:
                 if isinstance(geo_src, newton.Gaussian):
@@ -1574,20 +1636,27 @@ class ViewerBase(ABC):
                     )
                 continue
 
-            # check whether we can instance an already created shape with the same geometry
+            # check whether we can instance an already created shape with the same geometry.
+            # For the mirrored variant of a mesh-class shape, the cached geometry is
+            # independent of the actual scale magnitude (scale is applied at instance
+            # time), so we collapse the magnitude in the cache key. Combined with the
+            # ``mirror`` bit this guarantees at most one extra cached entry per source
+            # mesh, irrespective of how many distinct signed scales share that source.
+            hash_scale = (1.0, 1.0, 1.0) if mirror else tuple(geo_scale)
             geo_hash = self._hash_geometry(
                 int(geo_type),
-                tuple(geo_scale),
+                hash_scale,
                 float(geo_thickness),
                 bool(geo_is_solid),
                 geo_src,
+                mirror,
             )
 
             # ensure geometry exists and get mesh path
             if geo_hash not in self._geometry_cache:
                 mesh_name = self._populate_geometry(
                     int(geo_type),
-                    tuple(geo_scale),
+                    hash_scale,
                     float(geo_thickness),
                     bool(geo_is_solid),
                     geo_src=geo_src
@@ -1598,6 +1667,7 @@ class ViewerBase(ABC):
                         newton.GeoType.HFIELD,
                     )
                     else None,
+                    mirror=mirror,
                 )
             else:
                 mesh_name = self._geometry_cache[geo_hash]
@@ -1618,7 +1688,7 @@ class ViewerBase(ABC):
             is_visible = flags & int(newton.ShapeFlags.VISIBLE)
             # Check for texture SDF existence without computing the isomesh (lazy evaluation)
             sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
-            has_sdf = sdf_idx >= 0 and self.model.texture_sdf_data is not None
+            has_sdf = sdf_idx >= 0 and self.model._texture_sdf_data is not None
             if is_collision_shape and is_visible and has_sdf:
                 # Remove COLLIDE_SHAPES flag so this is treated as a visual shape
                 flags = flags & ~int(newton.ShapeFlags.COLLIDE_SHAPES)
@@ -1735,7 +1805,7 @@ class ViewerBase(ABC):
         shape_flags = self.model.shape_flags.numpy()
         shape_world = self.model.shape_world.numpy()
         shape_geo_scale = self.model.shape_scale.numpy()
-        tex_sdf_np = self.model.texture_sdf_data.numpy() if self.model.texture_sdf_data is not None else None
+        tex_sdf_np = self.model._texture_sdf_data.numpy() if self.model._texture_sdf_data is not None else None
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
 
@@ -1826,6 +1896,10 @@ class ViewerBase(ABC):
     def update_shape_colors(self, shape_colors: dict[int, wp.vec3 | tuple[float, float, float]]):
         """
         Set colors for a set of shapes at runtime.
+
+        .. deprecated:: 1.1
+            Write to :attr:`Model.shape_color` instead.
+
         Args:
             shape_colors: mapping from shape index -> color
         """
