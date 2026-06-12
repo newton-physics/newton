@@ -777,14 +777,13 @@ void main() {
     # ------------------------------------------------ ViewerUSD overrides
 
     @override
-    def set_model(self, model: newton.Model | None, max_worlds: int | None = None) -> None:
+    def set_model(self, model: newton.Model | None) -> None:
         """Set the Newton model to visualize.
 
         Args:
             model: The Newton model instance.
-            max_worlds: Maximum number of worlds to render (``None`` = all).
         """
-        super().set_model(model, max_worlds=max_worlds)
+        super().set_model(model)
         if model is not None:
             from pyglet.math import Vec3 as PyVec3
 

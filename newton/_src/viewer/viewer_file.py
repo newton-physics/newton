@@ -1122,14 +1122,13 @@ class ViewerFile(ViewerBase):
         self._model_recorded = False
 
     @override
-    def set_model(self, model: Model | None, max_worlds: int | None = None):
+    def set_model(self, model: Model | None):
         """Override set_model to record the model when it is set.
 
         Args:
             model: Model to bind to this viewer.
-            max_worlds: Optional cap on rendered worlds.
         """
-        super().set_model(model, max_worlds=max_worlds)
+        super().set_model(model)
 
         if model is not None and not self._model_recorded:
             self.record_model(model)
