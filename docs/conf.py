@@ -128,6 +128,7 @@ exclude_patterns = [
     "_build",
     "Thumbs.db",
     ".DS_Store",
+    "superpowers",
     "sphinx-env/**",
     "sphinx-env",
     "**/site-packages/**",
