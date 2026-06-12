@@ -19,6 +19,7 @@ Newton Physics
    guide/compatibility
    guide/visualization
    guide/tutorials
+   guide/examples
    Development <guide/development>
 
 .. toctree::
