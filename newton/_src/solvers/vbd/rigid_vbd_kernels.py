@@ -648,25 +648,41 @@ def evaluate_rigid_contact_from_collision(
     x_com_a_now = wp.transform_point(X_wa, body_a_com_local)
     x_com_b_now = wp.transform_point(X_wb, body_b_com_local)
 
+    # Normal response uses geometric (skeleton) points; friction uses the surface anchor.
+    x_s_a_now = wp.transform_point(X_wa, contact_point_a_local)
+    x_s_b_now = wp.transform_point(X_wb, contact_point_b_local)
+    x_s_a_prev = wp.transform_point(X_wa_prev, contact_point_a_local)
+    x_s_b_prev = wp.transform_point(X_wb_prev, contact_point_b_local)
+
     x_c_a_now = contact_surface_point(X_wa, contact_point_a_local, contact_offset_a_local)
     x_c_b_now = contact_surface_point(X_wb, contact_point_b_local, contact_offset_b_local)
     x_c_a_prev = contact_surface_point(X_wa_prev, contact_point_a_local, contact_offset_a_local)
     x_c_b_prev = contact_surface_point(X_wb_prev, contact_point_b_local, contact_offset_b_local)
 
     n_outer = wp.outer(contact_normal, contact_normal)
+    I3 = wp.identity(n=3, dtype=float)
 
-    v_rel = (x_c_b_now - x_c_b_prev - x_c_a_now + x_c_a_prev) / dt
-    v_dot_n = wp.dot(contact_normal, v_rel)
+    # Normal approach rate from the geometric points (not the rotating anchor).
+    v_rel_n = (x_s_b_now - x_s_b_prev - x_s_a_now + x_s_a_prev) / dt
+    v_dot_n = wp.dot(contact_normal, v_rel_n)
+
+    # Tangential slip from the surface anchor (required for finite-radius friction).
+    v_rel_t = (x_c_b_now - x_c_b_prev - x_c_a_now + x_c_a_prev) / dt
+    v_t = v_rel_t - contact_normal * wp.dot(contact_normal, v_rel_t)
+
+    # Normal block (force + optional approach damping), applied at the geometric lever.
+    f_n_vec = contact_normal * f_n
+    K_n = contact_ke * n_outer
+
+    # Tangential friction block, applied at the surface-anchor lever.
+    f_t_vec = wp.vec3(0.0)
+    K_t = wp.mat33(0.0)
 
     if hard_contact == 1:
-        f_total = contact_normal * f_n
-        K_total = contact_ke * n_outer
-
         if friction_mu > 0.0 and f_n > 0.0:
             # ALM tangential friction with Coulomb cone clamping.
             # Tangential constraint: rel_disp + friction_c0
             # (friction_c0 = (1 - alpha) * C0_t, pre-scaled by the caller).
-            v_t = v_rel - contact_normal * v_dot_n
             tangential_disp = -(v_t * dt)
             lam_t = contact_lam - contact_normal * lam_n
             f_t_vec = contact_ke_t * (tangential_disp + friction_c0) + lam_t
@@ -675,48 +691,51 @@ def evaluate_rigid_contact_from_collision(
             if f_t_len > cone_limit and f_t_len > 0.0:
                 cone_ratio = cone_limit / f_t_len
                 f_t_vec = f_t_vec * cone_ratio
-            f_total = f_total + f_t_vec
-            I3 = wp.identity(n=3, dtype=float)
-            K_total = K_total + contact_ke_t * (I3 - n_outer)
+            K_t = contact_ke_t * (I3 - n_outer)
     else:
-        # Soft contact: normal penalty + IPC velocity-based friction
-        f_total = contact_normal * f_n
-        K_total = contact_ke * n_outer
-
+        # Soft contact: IPC velocity-based friction.
         if friction_mu > 0.0 and f_n > 0.0:
-            v_t = v_rel - contact_normal * v_dot_n
             f_friction, K_friction = compute_projected_isotropic_friction(
                 friction_mu, f_n, contact_normal, v_t * dt, friction_epsilon * dt
             )
-            f_total = f_total + f_friction
-            K_total = K_total + K_friction
+            f_t_vec = f_friction
+            K_t = K_friction
 
     if contact_kd > 0.0 and v_dot_n < 0.0 and f_n > 0.0:
         damping_coeff = contact_kd * contact_ke
-        f_total = f_total - damping_coeff * v_dot_n * contact_normal
-        K_total = K_total + (damping_coeff / dt) * n_outer
+        f_n_vec = f_n_vec - damping_coeff * v_dot_n * contact_normal
+        K_n = K_n + (damping_coeff / dt) * n_outer
 
-    r_a = x_c_a_now - x_com_a_now
-    r_b = x_c_b_now - x_com_b_now
+    f_total = f_n_vec + f_t_vec
+    K_total = K_n + K_t
 
-    r_a_skew = wp.skew(r_a)
-    r_a_skew_T_K = wp.transpose(r_a_skew) * K_total
-    h_aa_a = r_a_skew_T_K * r_a_skew
-    h_al_a = -r_a_skew_T_K
+    # Geometric lever for the normal block, surface-anchor lever for friction.
+    r_s_a = x_s_a_now - x_com_a_now
+    r_c_a = x_c_a_now - x_com_a_now
+    r_s_b = x_s_b_now - x_com_b_now
+    r_c_b = x_c_b_now - x_com_b_now
 
-    r_b_skew = wp.skew(r_b)
-    r_b_skew_T_K = wp.transpose(r_b_skew) * K_total
-    h_aa_b = r_b_skew_T_K * r_b_skew
-    h_al_b = -r_b_skew_T_K
+    r_s_a_skew_T = wp.transpose(wp.skew(r_s_a))
+    r_c_a_skew_T = wp.transpose(wp.skew(r_c_a))
+    h_al_a = -(r_s_a_skew_T * K_n + r_c_a_skew_T * K_t)
+    h_aa_a = r_s_a_skew_T * K_n * wp.skew(r_s_a) + r_c_a_skew_T * K_t * wp.skew(r_c_a)
+
+    r_s_b_skew_T = wp.transpose(wp.skew(r_s_b))
+    r_c_b_skew_T = wp.transpose(wp.skew(r_c_b))
+    h_al_b = -(r_s_b_skew_T * K_n + r_c_b_skew_T * K_t)
+    h_aa_b = r_s_b_skew_T * K_n * wp.skew(r_s_b) + r_c_b_skew_T * K_t * wp.skew(r_c_b)
+
+    torque_a = wp.cross(r_s_a, -f_n_vec) + wp.cross(r_c_a, -f_t_vec)
+    torque_b = wp.cross(r_s_b, f_n_vec) + wp.cross(r_c_b, f_t_vec)
 
     return (
         -f_total,
-        wp.cross(r_a, -f_total),
+        torque_a,
         K_total,
         h_al_a,
         h_aa_a,
         f_total,
-        wp.cross(r_b, f_total),
+        torque_b,
         K_total,
         h_al_b,
         h_aa_b,
