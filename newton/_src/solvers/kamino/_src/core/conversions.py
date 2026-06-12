@@ -233,17 +233,12 @@ def joint_conversion_kernel(
     assert act_type_j >= 0, "Joint actuation type must be valid"
     joint_act_type[joint_id] = act_type_j
 
-    # Infer if the joint requires dynamic constraints
-    is_dynamic_j = bool(False)
-    for dof_id in range(ndofs_j):
-        a_j = model_joint_armature[dofs_start_j + dof_id]
-        b_j = model_joint_friction[dofs_start_j + dof_id]
-        ke_j = model_joint_target_ke[dofs_start_j + dof_id]
-        kd_j = model_joint_target_kd[dofs_start_j + dof_id]
-        is_dynamic_j = is_dynamic_j or (a_j > 0.0) or (b_j > 0.0) or (ke_j > 0.0) or (kd_j > 0.0)
+    is_dynamic_j = ndofs_j > 0 and (dof_type_j == JointDoFType.REVOLUTE or dof_type_j == JointDoFType.PRISMATIC)
 
-    # Set joint dimensions
     joint_num_kinematic_cts[joint_id] = ncts_j
+    for dof_id in range(qd_count_j):
+        model_joint_armature[dofs_start_j + dof_id] = wp.max(model_joint_armature[dofs_start_j + dof_id], 1.0e-6)
+
     if is_dynamic_j:
         joint_num_dynamic_cts[joint_id] = ndofs_j
     joint_num_cts[joint_id] = joint_num_dynamic_cts[joint_id] + joint_num_kinematic_cts[joint_id]
@@ -862,6 +857,7 @@ def convert_joints(
     joint_limit_upper = wp.clone(model.joint_limit_upper)
     joint_velocity_limit = wp.clone(model.joint_velocity_limit)
     joint_effort_limit = wp.clone(model.joint_effort_limit)
+    joint_armature = wp.clone(model.joint_armature)
 
     wp.launch(
         kernel=joint_conversion_kernel,
@@ -875,7 +871,7 @@ def convert_joints(
             model.joint_dof_dim,
             model.joint_q_start,
             model.joint_qd_start,
-            model.joint_armature,
+            joint_armature,
             model.joint_friction,
             model.joint_target_ke,
             model.joint_target_kd,
@@ -1262,7 +1258,7 @@ def convert_joints(
         q_j_max=joint_limit_upper,
         dq_j_max=joint_velocity_limit,
         tau_j_max=joint_effort_limit,
-        a_j=model.joint_armature,
+        a_j=joint_armature,
         b_j=model.joint_friction,  # TODO: Is this the right attribute?
         k_p_j=model.joint_target_ke,
         k_d_j=model.joint_target_kd,
