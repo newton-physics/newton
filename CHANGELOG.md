@@ -411,7 +411,9 @@
 - Fix MJCF mesh scale resolution to use the mesh asset's own class rather than the geom's default class, avoiding incorrect vertex scaling for models like Robotiq 2F-85 V4
 - Fix articulated bodies drifting laterally on the ground in XPBD solver by solving rigid contacts before joints
 - Fix `hide_collision_shapes=True` not hiding collision meshes that have bound PBR materials
-- Filter inactive particles in viewer so only particles with `ParticleFlags.ACTIVE` are rendered
+- Filter inactive particles in viewer so only particles with `ParticleFlags.ACTIVE` are rendered; render particles as 3D sphere instances in `ViewerUSD` instead of flat splats
+- Fix `ViewerUSD` leaving stale particle sphere instances visible when all particles become inactive; the zero-active-particle path now hides the `PointInstancer` primitive instead of silently returning
+- Fix `cloth_franka` example rendering particles at cm simulation scale instead of metre viewer scale when `show_particles` is enabled
 - Fix concurrent asset download races on Windows by using content-addressed cache directories
 - Fix body `gravcomp` not being written to the MuJoCo spec, causing it to be absent from XML saved via `save_to_mjcf`
 - Fix `compute_world_offsets` grid ordering to match terrain grid row-major order so replicated world indices align with terrain block indices

@@ -1374,6 +1374,7 @@ class ViewerFile(ViewerBase):
         radii: wp.array[wp.float32] | float | None = None,
         colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
+        as_spheres: bool = False,
     ):
         """File viewer does not render point primitives.
 
@@ -1383,6 +1384,7 @@ class ViewerFile(ViewerBase):
             radii: Optional per-point radii or a shared radius.
             colors: Optional per-point colors or a shared RGB triplet.
             hidden: Whether the point batch is hidden.
+            as_spheres: Ignored — file viewer discards all rendering.
         """
         pass
 
