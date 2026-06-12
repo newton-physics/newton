@@ -748,7 +748,7 @@ def _rigid_contact_stick_flags_require_cone_and_small_residual(test, device):
         np.testing.assert_array_equal(stick_flag.numpy(), [0, 0, 0, 0])
 
 
-def _capsule_axial_spin_dissipates_via_friction(test, device):
+def _capsule_axial_spin_dissipates_via_friction(test, device, hard_contact=True):
     """An axially-spinning capsule on its side must dissipate spin via Coulomb friction.
 
     Lays a capsule on the ground (long axis along world X), gives it pure angular
@@ -762,7 +762,7 @@ def _capsule_axial_spin_dissipates_via_friction(test, device):
 
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e6
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 0.0
     builder.default_shape_cfg.mu = 0.5
     builder.add_ground_plane()
 
@@ -774,7 +774,7 @@ def _capsule_axial_spin_dissipates_via_friction(test, device):
 
     with wp.ScopedDevice(device):
         model = builder.finalize()
-        solver = newton.solvers.SolverVBD(model, iterations=10)
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_contact_hard=hard_contact)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
@@ -798,6 +798,98 @@ def _capsule_axial_spin_dissipates_via_friction(test, device):
 
     test.assertLess(v_y, -0.1, f"capsule failed to translate under axial spin (v_y={v_y:.4f}, omega_x={omega_x:.4f})")
     test.assertLess(omega_x, 4.0, f"axial spin failed to dissipate (omega_x={omega_x:.4f}, v_y={v_y:.4f})")
+
+
+def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True):
+    """A yawed finite-radius cable settling on a plane must not gain kinetic energy.
+
+    With zero friction there is no energy source, so kinetic energy must decay to rest. A
+    non-conservative contact response would instead pump energy and blow the cable up
+    (checked for both the hard and soft contact paths).
+    """
+    num_segments = 12
+    segment_length = 0.5 / 19.0
+    radius = 0.005
+    yaw = math.radians(10.0)
+    substeps = 8
+    sim_dt = 1.0 / 100.0 / substeps
+    num_frames = 200
+    settle_frames = 50
+
+    builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
+    cfg = newton.ModelBuilder.ShapeConfig()
+    cfg.density = 100.0
+    cfg.mu = 0.0
+    cfg.ke = 1.0e3
+    cfg.kd = 1.0
+    cfg.kf = 0.0
+    builder.add_shape_plane(body=-1, cfg=cfg)
+
+    length = num_segments * segment_length
+    direction = wp.vec3(float(math.cos(yaw)), float(math.sin(yaw)), 0.0)
+    center = wp.vec3(0.0, 0.0, radius + 0.05)
+    start = center - 0.5 * length * direction
+    points = newton.utils.create_straight_cable_points(
+        start=start, direction=direction, length=length, num_segments=num_segments
+    )
+    quaternions = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=0.0)
+    bodies, _joints = builder.add_rod(
+        positions=points,
+        quaternions=quaternions,
+        radius=radius,
+        cfg=cfg,
+        stretch_stiffness=1.0e6,
+        stretch_damping=1.0e-4,
+        bend_stiffness=1.0e-4,
+        bend_damping=1.0e-4,
+        label="cable",
+    )
+    builder.color(balance_colors=False)
+
+    with wp.ScopedDevice(device):
+        model = builder.finalize()
+        solver = newton.solvers.SolverVBD(
+            model,
+            iterations=20,
+            rigid_contact_hard=hard_contact,
+        )
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        contacts = model.contacts()
+
+        masses = model.body_mass.numpy()
+        inertias = model.body_inertia.numpy()
+        body_idx = [int(b) for b in bodies]
+
+        def kinetic_energy() -> float:
+            qd = state_0.body_qd.numpy()
+            ke = 0.0
+            for b in body_idx:
+                omega = qd[b, 0:3]
+                vel = qd[b, 3:6]
+                ke += 0.5 * float(masses[b]) * float(vel @ vel)
+                ke += 0.5 * float(omega @ (inertias[b] @ omega))
+            return ke
+
+        max_ke_settled = 0.0
+        for frame in range(num_frames):
+            for _ in range(substeps):
+                state_0.clear_forces()
+                model.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, sim_dt)
+                state_0, state_1 = state_1, state_0
+            if frame >= settle_frames:
+                max_ke_settled = max(max_ke_settled, kinetic_energy())
+
+        final_ke = kinetic_energy()
+
+    test.assertTrue(np.isfinite(final_ke), f"cable kinetic energy became non-finite ({final_ke})")
+    test.assertLess(
+        max_ke_settled,
+        1.0e-3,
+        f"yawed cable injected kinetic energy (max settled KE={max_ke_settled:.3e})",
+    )
 
 
 def _collect_rigid_contact_forces_reports_surface_points(test, device):
@@ -928,9 +1020,31 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
-    "test_capsule_axial_spin_dissipates_via_friction",
+    "test_capsule_axial_spin_dissipates_via_friction_hard",
     _capsule_axial_spin_dissipates_via_friction,
     devices=devices,
+    hard_contact=True,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_capsule_axial_spin_dissipates_via_friction_soft",
+    _capsule_axial_spin_dissipates_via_friction,
+    devices=devices,
+    hard_contact=False,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_yawed_cable_does_not_inject_energy_hard",
+    _yawed_cable_does_not_inject_energy,
+    devices=devices,
+    hard_contact=True,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_yawed_cable_does_not_inject_energy_soft",
+    _yawed_cable_does_not_inject_energy,
+    devices=devices,
+    hard_contact=False,
 )
 add_function_test(
     TestSolverVBD,
