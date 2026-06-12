@@ -10,7 +10,7 @@ There are many controllers implemented across Isaac Lab/Sim. The goal of this mo
 | PID | — | :heavy_check_mark: |
 | Operational Space | Isaac Lab | :x:  |
 | Joint Impedance | Isaac Lab | :x: |
-| Differential Drive | Isaac Sim | :x: |
+| Differential Drive | Isaac Sim | :heavy_check_mark: |
 | Holonomic Drive | Isaac Sim | :x: |
 | Ackermann | Isaac Sim | :x: |
 
@@ -20,7 +20,7 @@ Further, we may want to add general-purpose algorithms common in robotics (linea
 
 ## Architecture
 
-The module exposes a single abstract base class — `Controller(ABC)` — that every concrete control law (`ControllerPID`, `ControllerDifferentialKinematics`, …) subclasses directly. There is **no framework-level composition**: callers wanting to combine multiple control laws invoke each one's `compute()` in sequence themselves.
+The module exposes a single abstract base class — `Controller(ABC)` — that every concrete control law (`ControllerPID`, `ControllerDifferentialKinematics`, `ControllerDifferentialDrive`, …) subclasses directly. There is **no framework-level composition**: callers wanting to combine multiple control laws invoke each one's `compute()` in sequence themselves.
 
 `Controller` declares the surface every law implements:
 
@@ -70,7 +70,7 @@ for ... :
     s0, s1 = s1, s0
 ```
 
-Stateless laws (DiffIK) return `None` from `state()` and accept `None` for both state slots.
+Stateless laws (`ControllerDifferentialKinematics`, `ControllerDifferentialDrive`) return `None` from `state()` and accept `None` for both state slots.
 
 ---
 
@@ -140,3 +140,9 @@ output_q = q_current + q_dot * dt
 **Tape-safe forward, zero-grad through the solve.** Every kernel except `_cholesky_solve_kernel` is autograd-able by default; the solve uses `wp.tile_cholesky` / `wp.tile_cholesky_solve` whose registered adjoints return zero gradients in Warp 1.14.0, so that one kernel is marked `enable_backward=False`. Revisit when upstream tile-Cholesky backward lands.
 
 Stateless (`state()` returns `None`).
+
+### `ControllerDifferentialDrive`
+
+Vectorized unicycle differential-drive: per robot, converts body-frame `(linear_speed, angular_speed)` into left/right wheel angular velocities and writes them into a `joint_target_qd`-style output array via `default_dof_indices` (`[r0_left, r0_right, r1_left, r1_right, …]`). Commands and wheel rates are clamped per robot; parameter ports (`wheel_radius`, `wheel_base`, speed limits) are per-robot baked or live arrays.
+
+Stateless (`state()` returns `None`). Example: `python -m newton.examples diff_drive_swarm`.
