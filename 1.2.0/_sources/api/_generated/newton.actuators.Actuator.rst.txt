@@ -1,0 +1,8 @@
+﻿newton.actuators.Actuator
+=========================
+
+.. autoclass:: newton.actuators.Actuator
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise
