@@ -21,6 +21,10 @@
 ### Removed
 
 - Remove the deprecated Style3D `CollisionHandler`; use `Collision` instead
+- Remove `SensorTiledCamera.Config`; use `SensorTiledCamera.RenderConfig` and `SensorTiledCamera.utils.*` instead
+- Remove `SensorTiledCamera.RenderContext` and `SensorTiledCamera.render_context`; use `SensorTiledCamera.RenderConfig` and `SensorTiledCamera.render_config` / `SensorTiledCamera.utils` instead
+- Remove the `SensorTiledCamera` and `RenderContext` image helpers (`create_*_image_output`, `flatten_*_to_rgba`, `compute_pinhole_camera_rays`, `create_default_light`, `assign_checkerboard_material_to_all_shapes`); use the `SensorTiledCamera.utils.*` equivalents instead
+- Remove `SensorTiledCamera.utils.assign_random_colors_per_world()` and `assign_random_colors_per_shape()`; use per-shape colors via `ModelBuilder.add_shape_*(color=...)` instead
 
 ## [1.3.0] - 2026-06-11
 
