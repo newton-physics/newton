@@ -90,7 +90,7 @@ Users can:
 
 ### `ControllerPID`
 
-Per-DOF PID with symmetric anti-windup clamping.
+Per-DOF PID with symmetric anti-windup clamping. Stateful (`State.integral` shape `[num_outputs]`, float32).
 
 ```python
 output[output_idx[i]] = kp[i] * (joint_target - joint_measured)
@@ -98,34 +98,37 @@ output[output_idx[i]] = kp[i] * (joint_target - joint_measured)
                       + kd[i] * (joint_target_rate - joint_measured_rate)
 ```
 
-Constructor (abbreviated):
+Constructor:
 
 ```python
 ControllerPID(
-    kp: wp.array | str,
-    kd: wp.array | str,
-    ki: wp.array | str,
-    integral_max: wp.array | str,
     default_dof_indices: wp.array,
+    kp: wp.array | str | None = None,
+    kd: wp.array | str | None = None,
+    ki: wp.array | str | None = None,
+    integral_max: wp.array | str | None = None,
     joint_measured_attr: str = "joint_q",
     joint_measured_idx: wp.array | None = None,
+    joint_measured_rate_attr: str = "joint_qd",
+    joint_measured_rate_idx: wp.array | None = None,
     joint_target_attr: str = "joint_target_q",
     joint_target_idx: wp.array | None = None,
+    joint_target_rate_attr: str = "joint_target_qd",
+    joint_target_rate_idx: wp.array | None = None,
     output_attr: str = "joint_f",
     output_idx: wp.array | None = None,
-    ...   # mirror for *_rate
-    device=None,
-    requires_grad=False,
+    device: Any = None,
+    requires_grad: bool = False,
 )
 ```
 
-`State.integral` shape `[num_outputs]`, float32.
+Omitted gain ports default to zero arrays of length `num_outputs`. `integral_max` defaults to `+inf` per DOF (no clamping).
 
 ### `ControllerDifferentialKinematics`
 
-One-step damped-least-squares differential IK for one end-effector per robot. The user passes a `newton.ModelBuilder` with `N` topologically-identical articulations; the controller finalizes that internally for FK + Jacobian evaluation.
+One-step differential IK for one end-effector per robot. The user passes a `newton.ModelBuilder` with `N` topologically-identical articulations; the controller finalizes that internally for FK + Jacobian evaluation. Stateless (`state()` returns `None`).
 
-Per-robot solve:
+Per-robot solve (`IkMethod.DAMPED_LEAST_SQUARES`, default):
 
 ```
 e        = [target_pos - site_pos ;  2 * sign(q_err.w) * q_err.xyz]
@@ -135,14 +138,65 @@ q_dot    = bandwidth * J_site^T y
 output_q = q_current + q_dot * dt
 ```
 
+With `IkMethod.TRANSPOSE`: `q_dot = bandwidth * J_site^T e`.
+
 `solver_damping` is `lambda`; `bandwidth` is the scalar multiplier on the solve output (both per-robot gain ports).
 
 **Tape-safe forward, zero-grad through the solve.** Every kernel except `_cholesky_solve_kernel` is autograd-able by default; the solve uses `wp.tile_cholesky` / `wp.tile_cholesky_solve` whose registered adjoints return zero gradients in Warp 1.14.0, so that one kernel is marked `enable_backward=False`. Revisit when upstream tile-Cholesky backward lands.
 
-Stateless (`state()` returns `None`).
+Constructor:
+
+```python
+ControllerDifferentialKinematics(
+    model_builder: ModelBuilder,
+    controlled_site_label: str,
+    default_dof_indices: wp.array,
+    bandwidth: wp.array | str,
+    solver_damping: wp.array | str | None = None,
+    ik_method: IkMethod = IkMethod.DAMPED_LEAST_SQUARES,
+    target_pos_attr: str = "site_target_position",
+    target_pos_idx: wp.array | None = None,
+    target_quat_attr: str = "site_target_quaternion",
+    target_quat_idx: wp.array | None = None,
+    joint_measurement_attr: str = "joint_q",
+    joint_measurement_idx: wp.array | None = None,
+    joint_measurement_rate_attr: str = "joint_qd",
+    joint_measurement_rate_idx: wp.array | None = None,
+    joint_target_q_attr: str = "joint_target_q",
+    joint_target_q_idx: wp.array | None = None,
+    joint_target_qd_attr: str = "joint_target_qd",
+    joint_target_qd_idx: wp.array | None = None,
+    device: Any = None,
+    requires_grad: bool = False,
+)
+```
+
+`num_robots = model_builder.articulation_count`. `default_dof_indices` length is `num_robots * dofs_per_robot`, laid out `[r0_d0, r0_d1, …, r1_d0, …]`. `solver_damping` defaults to `DEFAULT_SOLVER_DAMPING` (`0.05`) per robot when `None`.
 
 ### `ControllerDifferentialDrive`
 
-Vectorized unicycle differential-drive: per robot, converts body-frame `(linear_speed, angular_speed)` into left/right wheel angular velocities and writes them into a `joint_target_qd`-style output array via `default_dof_indices` (`[r0_left, r0_right, r1_left, r1_right, …]`). Commands and wheel rates are clamped per robot; parameter ports (`wheel_radius`, `wheel_base`, speed limits) are per-robot baked or live arrays.
+Vectorized unicycle differential-drive: per robot, converts body-frame `(linear_speed, angular_speed)` into left/right wheel angular velocities and writes them into a `joint_target_qd`-style output array via `default_dof_indices` (`[r0_left, r0_right, r1_left, r1_right, …]`). Commands and wheel rates are clamped per robot; parameter ports (`wheel_radius`, `wheel_base`, speed limits) are per-robot baked or live arrays. Stateless (`state()` returns `None`). Example: `python -m newton.examples diff_drive_swarm`.
 
-Stateless (`state()` returns `None`). Example: `python -m newton.examples diff_drive_swarm`.
+Constructor:
+
+```python
+ControllerDifferentialDrive(
+    num_robots: int,
+    wheel_radius: wp.array | str,
+    wheel_base: wp.array | str,
+    default_dof_indices: wp.array,
+    max_linear_speed: wp.array | str | None = None,
+    max_angular_speed: wp.array | str | None = None,
+    max_wheel_speed: wp.array | str | None = None,
+    linear_speed_attr: str = "linear_speed_command",
+    linear_speed_idx: wp.array | None = None,
+    angular_speed_attr: str = "angular_speed_command",
+    angular_speed_idx: wp.array | None = None,
+    joint_target_qd_attr: str = "joint_target_qd",
+    joint_target_qd_idx: wp.array | None = None,
+    device: Any = None,
+    requires_grad: bool = False,
+)
+```
+
+Omitted clamp ports default to `+inf` per robot (no clamping). `default_dof_indices` must be `wp.array[uint32]` with length `2 * num_robots`.
