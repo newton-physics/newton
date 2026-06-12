@@ -81,8 +81,8 @@ class Example:
         # output struct. Gains baked in as wp.arrays.
         default_dof_indices = wp.array([0, 1], dtype=wp.uint32, device=self.device)
         self.controller = ControllerPID(
-            kp=wp.array([1800.0, 600.0], dtype=wp.float32, device=self.device),
-            kd=wp.array([160.0, 80.0], dtype=wp.float32, device=self.device),
+            kp=wp.array([3600.0, 1200.0], dtype=wp.float32, device=self.device),
+            kd=wp.array([320.0, 160.0], dtype=wp.float32, device=self.device),
             default_dof_indices=default_dof_indices,
             device=self.device,
         )

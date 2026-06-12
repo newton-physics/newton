@@ -134,7 +134,7 @@ class Example:
         # robots all go in a circle:
         omega = 0.05 # speed at which they will circle.
         linear_cmd = np.linspace(ROBOT_SPACING*omega, ROBOT_COUNT*ROBOT_SPACING*omega, ROBOT_COUNT, dtype=np.float32)
-        angular_cmd = wp.full(shape=ROBOT_COUNT, value=omega, dtype=wp.float32)
+        angular_cmd = np.full(shape=ROBOT_COUNT, fill_value=omega, dtype=np.float32)
         self._input = self.controller.input_struct()
         self._input.linear_speed_command.assign(linear_cmd)
         self._input.angular_speed_command.assign(angular_cmd)
