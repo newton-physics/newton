@@ -71,7 +71,7 @@ Concrete controllers fall into two flavors based on **whether the control law ne
 
 ## Controller Initialization
 
-Every controller implementation declares a fixed set of inputs/outputs/parameters when it is initalized. There are two shapes for how these declarations happen:
+Every controller implementation declares a fixed set of inputs/outputs/parameters when it is initialized. There are two shapes for how these declarations happen:
 
 ### Live ports (`*_attr` + `*_idx`)
 
