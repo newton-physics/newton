@@ -113,7 +113,8 @@ silently using an invalid path.
 The protocol currently covers these concepts:
 
 - ``coupling_notify_input_state_update()`` tells a solver that public state
-  arrays were changed by the coupler. VBD uses this to realign private
+  arrays or force-input buffers were changed by the coupler. Its ``flags``
+  argument uses :class:`newton.StateFlags`. VBD uses this to realign private
   previous-pose state after proxy synchronization or ADMM iteration restarts.
   MPM uses it to keep collider caches consistent.
 - ``coupling_eval_gravity_acceleration()`` lets a solver report the body and

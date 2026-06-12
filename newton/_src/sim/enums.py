@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from enum import IntEnum
+from enum import IntEnum, IntFlag
 
 
 class ModelFlags(IntEnum):
@@ -53,13 +53,17 @@ class ModelFlags(IntEnum):
     """Indicates all property updates."""
 
 
-class StateFlags(IntEnum):
-    """Flags indicating which state attributes should be reset.
+class StateFlags(IntFlag):
+    """Flags indicating which state attributes were updated or should be reset.
 
-    These flags are used with :meth:`~newton.solvers.SolverBase.reset` to control
-    which parts of the simulation state are reset, allowing the solver to
-    efficiently update only the necessary components.
+    These flags are used with :meth:`~newton.solvers.SolverBase.reset` to
+    control which parts of the simulation state are reset, and with
+    :meth:`~newton.solvers.experimental.coupled.CouplingInterface.coupling_notify_input_state_update`
+    to describe which public state inputs a coupler updated.
     """
+
+    NONE = 0
+    """Indicates no state attributes were updated."""
 
     JOINT_Q = 1 << 0
     """Indicates reduced joint position coordinates: ``State.joint_q``."""
@@ -79,8 +83,29 @@ class StateFlags(IntEnum):
     PARTICLE_QD = 1 << 5
     """Indicates particle velocities: ``State.particle_qd``."""
 
-    ALL = JOINT_Q | JOINT_QD | BODY_Q | BODY_QD | PARTICLE_Q | PARTICLE_QD
-    """Indicates all state attributes should be reset."""
+    BODY_F = 1 << 6
+    """Indicates rigid-body force inputs: ``State.body_f``."""
+
+    PARTICLE_F = 1 << 7
+    """Indicates particle force inputs: ``State.particle_f``."""
+
+    JOINT_F = 1 << 8
+    """Indicates joint force inputs: ``Control.joint_f`` or solver-local equivalents."""
+
+    BODY = BODY_Q | BODY_QD
+    """Indicates rigid-body pose and velocity inputs."""
+
+    PARTICLE = PARTICLE_Q | PARTICLE_QD
+    """Indicates particle position and velocity inputs."""
+
+    JOINT = JOINT_Q | JOINT_QD
+    """Indicates joint position and velocity inputs."""
+
+    FORCE = BODY_F | PARTICLE_F | JOINT_F
+    """Indicates force-input arrays."""
+
+    ALL = BODY | PARTICLE | JOINT | FORCE
+    """Indicates all public state and force-input attributes."""
 
 
 # Body flags

@@ -14,10 +14,7 @@ from newton._src.solvers.coupled.admm_utils import (
     contact_rp_fill_from_soft_contacts_kernel,
     contact_rr_fill_from_rigid_contacts_kernel,
 )
-from newton._src.solvers.coupled.interface import (
-    CouplingInputStateFlags,
-    CouplingInterface,
-)
+from newton._src.solvers.coupled.interface import CouplingInterface
 from newton._src.solvers.coupled.proxy_utils import (
     smooth_proxy_teleportation_kernel,
     subtract_proxy_forces_kernel,
@@ -231,10 +228,10 @@ class _ParticleForceNotifySolver(_ParticleForceRecordingSolver):
 
     def coupling_notify_input_state_update(self, state, flags, *, iteration_restart=False, dt=0.0):
         del dt
-        flags = CouplingInputStateFlags(flags)
+        flags = newton.StateFlags(flags)
         self.notified_flags.append(flags)
         self.notified_iteration_restart.append(bool(iteration_restart))
-        if flags & CouplingInputStateFlags.PARTICLE_F:
+        if flags & newton.StateFlags.PARTICLE_F:
             self.notified_particle_f.append(state.particle_f.numpy().copy())
 
 
@@ -2970,7 +2967,7 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         coupled.step(state_0, state_1, control=None, contacts=None, dt=0.5)
 
         solver = _ParticleForceNotifySolver.instances[-1]
-        self.assertTrue(any(flags & CouplingInputStateFlags.PARTICLE_F for flags in solver.notified_flags))
+        self.assertTrue(any(flags & newton.StateFlags.PARTICLE_F for flags in solver.notified_flags))
         np.testing.assert_allclose(solver.input_particle_f[0][0], np.array([2.0, 3.0, 4.0]), atol=1.0e-6)
         np.testing.assert_allclose(solver.notified_particle_f[-1][0], np.array([2.0, 3.0, 4.0]), atol=1.0e-6)
         np.testing.assert_allclose(

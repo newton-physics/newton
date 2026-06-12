@@ -16,7 +16,6 @@ import warp as wp
 from ...sim import ModelFlags, StateFlags
 from .interface import (
     CouplingEndpointKind,
-    CouplingInputStateFlags,
 )
 from .proxy_utils import (
     restore_filtered_proxy_rigid_contacts_kernel,
@@ -725,7 +724,7 @@ class SolverCoupledProxy(SolverCoupled):
                         proxy.source_local_to_proxy_global,
                         proxy.coupling_forces,
                     )
-                self._notify_input_state_update(src, CouplingInputStateFlags.BODY_F, dt=dt)
+                self._notify_input_state_update(src, StateFlags.BODY_F, dt=dt)
 
             if src.has_particle_force_input and (src.particle_indices.shape[0] > 0 or particle_proxies):
                 self._clear_particle_force_input(src)
@@ -736,7 +735,7 @@ class SolverCoupledProxy(SolverCoupled):
                         proxy.source_local_to_proxy_global,
                         proxy.coupling_forces,
                     )
-                self._notify_input_state_update(src, CouplingInputStateFlags.PARTICLE_F, dt=dt)
+                self._notify_input_state_update(src, StateFlags.PARTICLE_F, dt=dt)
 
             self._step_entry(src, control, contacts, dt)
 
@@ -759,7 +758,7 @@ class SolverCoupledProxy(SolverCoupled):
 
                 self._notify_input_state_update(
                     dst,
-                    CouplingInputStateFlags.BODY_Q | CouplingInputStateFlags.BODY_QD,
+                    StateFlags.BODY_Q | StateFlags.BODY_QD,
                     dt=dt,
                 )
 
@@ -775,7 +774,7 @@ class SolverCoupledProxy(SolverCoupled):
                     dst.body_gravity_acceleration,
                     dt,
                 )
-                self._notify_input_state_update(dst, CouplingInputStateFlags.BODY_QD, dt=dt)
+                self._notify_input_state_update(dst, StateFlags.BODY_QD, dt=dt)
 
             for proxy in particle_proxies:
                 is_staggered = int(proxy.mode) == int(_ProxyMode.STAGGERED)
@@ -796,7 +795,7 @@ class SolverCoupledProxy(SolverCoupled):
 
                 self._notify_input_state_update(
                     dst,
-                    CouplingInputStateFlags.PARTICLE_Q | CouplingInputStateFlags.PARTICLE_QD,
+                    StateFlags.PARTICLE_Q | StateFlags.PARTICLE_QD,
                     dt=dt,
                 )
 
@@ -812,7 +811,7 @@ class SolverCoupledProxy(SolverCoupled):
                     dst.particle_gravity_acceleration,
                     dt,
                 )
-                self._notify_input_state_update(dst, CouplingInputStateFlags.PARTICLE_QD, dt=dt)
+                self._notify_input_state_update(dst, StateFlags.PARTICLE_QD, dt=dt)
 
             dst_contacts = contacts
             # Without a proxy-local collision pipeline, the caller-provided
