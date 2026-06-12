@@ -32,6 +32,7 @@ def create_kernel(
     config: RenderContext.Config, state: RenderContext.State, clear_data: RenderContext.ClearData
 ) -> wp.kernel:
     compute_lighting = lighting.create_compute_lighting_function(config, state)
+    sample_texture = textures.create_sample_texture_function(config)
 
     if (
         state.render_color
@@ -211,7 +212,7 @@ def create_kernel(
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 texture_index = shape_texture_ids[closest_hit.shape_index]
                 if texture_index > -1:
-                    tex_color = textures.sample_texture(
+                    tex_color = sample_texture(
                         shape_types[closest_hit.shape_index],
                         shape_transforms[closest_hit.shape_index],
                         texture_data,
@@ -220,6 +221,7 @@ def create_kernel(
                         mesh_data,
                         shape_mesh_data_ids[closest_hit.shape_index],
                         hit_point,
+                        closest_hit.normal,
                         closest_hit.bary_u,
                         closest_hit.bary_v,
                         closest_hit.face_idx,
