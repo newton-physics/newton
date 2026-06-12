@@ -1299,16 +1299,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
         joint_order: Sequence[int],
         articulation_order: Sequence[int],
     ) -> list[int]:
-        joint_global_to_local = {global_id: local_id for local_id, global_id in enumerate(joint_order)}
         joint_articulation = self.model.joint_articulation.numpy() if self.model.joint_count else []
-        starts: list[int] = []
-        for articulation in articulation_order:
-            local_joints = [
-                local
-                for global_joint, local in joint_global_to_local.items()
-                if int(joint_articulation[global_joint]) == int(articulation)
-            ]
-            starts.append(min(local_joints) if local_joints else len(joint_order))
+        art_first_local: dict[int, int] = {}
+        for local, global_joint in enumerate(joint_order):
+            art = int(joint_articulation[global_joint])
+            if art not in art_first_local:
+                art_first_local[art] = local
+        starts = [art_first_local.get(int(articulation), len(joint_order)) for articulation in articulation_order]
         starts.append(len(joint_order))
         return starts
 
