@@ -76,7 +76,7 @@ Stateless laws (`ControllerDifferentialKinematics`, `ControllerDifferentialDrive
 
 ## Struct factories
 
-`input_struct()` and `output_struct()` allocate auto-generated `@dataclass` instances with one `wp.zeros` field per live port the user declared. Field names match the user's `*_attr` strings (and live-gain strings). Baked parameters are absent (they live on the controller). Each field is sized minimally for the controller's view — `max(idx)+1` for ports with an explicit `_idx`, otherwise the natural-order length (`num_outputs` / `num_robots`).
+`input_struct()` and `output_struct()` allocate auto-generated struct instances with one `wp.zeros` field per live port the user declared. Field names match the user's `*_attr` strings (and live-gain strings). Baked parameters are absent (they live on the controller). Each field is sized minimally for the controller's view — `max(idx)+1` for ports with an explicit `_idx`, otherwise the natural-order length (`num_outputs` / `num_robots`).
 
 Users can:
 
