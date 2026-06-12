@@ -4346,8 +4346,10 @@ class SolverMuJoCo(SolverBase):
         # find graph coloring of collision filter pairs
         num_shapes = len(selected_shapes)
         shape_a, shape_b = np.triu_indices(num_shapes, k=1)
-        shape_collision_group_np = model.shape_collision_group.numpy()
-        cgroup = [shape_collision_group_np[i] for i in selected_shapes]
+        shape_collision_type_np = model.shape_collision_type.numpy()
+        shape_collision_affinity_np = model.shape_collision_affinity.numpy()
+        ctype = [int(shape_collision_type_np[i]) for i in selected_shapes]
+        caffinity = [int(shape_collision_affinity_np[i]) for i in selected_shapes]
         # edges representing colliding shape pairs
         graph_edges = [
             (i, j)
@@ -4355,7 +4357,7 @@ class SolverMuJoCo(SolverBase):
             if (
                 (min(selected_shapes[i], selected_shapes[j]), max(selected_shapes[i], selected_shapes[j]))
                 not in model.shape_collision_filter_pairs
-                and (cgroup[i] == cgroup[j] or cgroup[i] == -1 or cgroup[j] == -1)
+                and ((ctype[i] & caffinity[j]) != 0 or (ctype[j] & caffinity[i]) != 0)
             )
         ]
         shape_color = np.zeros(model.shape_count, dtype=np.int32)
@@ -4738,7 +4740,8 @@ class SolverMuJoCo(SolverBase):
         shape_type = model.shape_type.numpy()
         shape_size = model.shape_scale.numpy()
         shape_flags = model.shape_flags.numpy()
-        shape_collision_group = model.shape_collision_group.numpy()
+        shape_collision_type = model.shape_collision_type.numpy()
+        shape_collision_affinity = model.shape_collision_affinity.numpy()
         shape_world = model.shape_world.numpy()
         shape_mu = model.shape_material_mu.numpy()
         shape_ke = model.shape_material_ke.numpy()
@@ -5167,7 +5170,8 @@ class SolverMuJoCo(SolverBase):
 
                     vertices, indices, maxhullvert, is_planar = mesh_export
                     uses_mujoco_contacts = (
-                        bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES) and int(shape_collision_group[shape]) != 0
+                        bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES)
+                        and (int(shape_collision_type[shape]) != 0 or int(shape_collision_affinity[shape]) != 0)
                     ) or shape in mujoco_pair_contact_shapes
                     if is_planar and self._use_mujoco_contacts and not disable_contacts and uses_mujoco_contacts:
                         raise ValueError(
@@ -5198,8 +5202,10 @@ class SolverMuJoCo(SolverBase):
                     geom_params["rgba"] = [0.0, 0.3, 0.6, 1.0]
 
                 # encode collision filtering information
-                if not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES) or shape_collision_group[shape] == 0:
-                    # Non-colliding shape, or collision_group=0 (e.g. MJCF contype=conaffinity=0
+                if not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES) or (
+                    shape_collision_type[shape] == 0 and shape_collision_affinity[shape] == 0
+                ):
+                    # Non-colliding shape, or contype=conaffinity=0
                     # geoms that only participate in explicit <pair> contacts)
                     geom_params["contype"] = 0
                     geom_params["conaffinity"] = 0

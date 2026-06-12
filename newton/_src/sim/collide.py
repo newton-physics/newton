@@ -1006,7 +1006,7 @@ class CollisionPipeline:
                 self.narrow_phase.shape_aabb_lower,
                 self.narrow_phase.shape_aabb_upper,
                 None,  # AABBs are pre-expanded, no additional margin needed
-                model.shape_collision_group,
+                None,
                 model.shape_world,
                 model.shape_count,
                 self.broad_phase_shape_pairs,
@@ -1015,13 +1015,15 @@ class CollisionPipeline:
                 filter_pairs=self.shape_pairs_excluded,
                 num_filter_pairs=self.shape_pairs_excluded_count,
                 skip_count_zero=True,  # Already zeroed by compute_shape_aabbs
+                shape_collision_type=model.shape_collision_type,
+                shape_collision_affinity=model.shape_collision_affinity,
             )
         elif isinstance(self.broad_phase, BroadPhaseSAP):
             self.broad_phase.launch(
                 self.narrow_phase.shape_aabb_lower,
                 self.narrow_phase.shape_aabb_upper,
                 None,  # AABBs are pre-expanded, no additional margin needed
-                model.shape_collision_group,
+                None,
                 model.shape_world,
                 model.shape_count,
                 self.broad_phase_shape_pairs,
@@ -1030,6 +1032,8 @@ class CollisionPipeline:
                 filter_pairs=self.shape_pairs_excluded,
                 num_filter_pairs=self.shape_pairs_excluded_count,
                 skip_count_zero=True,  # Already zeroed by compute_shape_aabbs
+                shape_collision_type=model.shape_collision_type,
+                shape_collision_affinity=model.shape_collision_affinity,
             )
         else:  # BroadPhaseExplicit
             self.broad_phase.launch(

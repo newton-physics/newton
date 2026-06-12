@@ -521,14 +521,16 @@ def find_redundant_edges(
         )
 
         shape_world_np = np.zeros(n_edges, dtype=np.int32)
-        shape_collision_group_np = np.ones(n_edges, dtype=np.int32)
+        shape_collision_type_np = np.ones(n_edges, dtype=np.uint32)
+        shape_collision_affinity_np = np.ones(n_edges, dtype=np.uint32)
         shape_flags_np = np.full(n_edges, int(ShapeFlags.COLLIDE_SHAPES), dtype=np.int32)
         # Clear the collide flag on degenerate boxes so SAP skips them.
         valid_host = box_valid.numpy()
         shape_flags_np[valid_host == 0] = 0
 
         shape_world_wp = wp.array(shape_world_np, dtype=wp.int32)
-        shape_collision_group_wp = wp.array(shape_collision_group_np, dtype=wp.int32)
+        shape_collision_type_wp = wp.array(shape_collision_type_np, dtype=wp.uint32)
+        shape_collision_affinity_wp = wp.array(shape_collision_affinity_np, dtype=wp.uint32)
         shape_flags_wp = wp.array(shape_flags_np, dtype=wp.int32)
 
         sap = BroadPhaseSAP(shape_world=shape_world_wp, shape_flags=shape_flags_wp)
@@ -544,11 +546,13 @@ def find_redundant_edges(
                 shape_lower=aabb_lower,
                 shape_upper=aabb_upper,
                 shape_gap=None,
-                shape_collision_group=shape_collision_group_wp,
+                shape_collision_group=None,
                 shape_world=shape_world_wp,
                 shape_count=n_edges,
                 candidate_pair=candidate_pair,
                 candidate_pair_count=candidate_pair_count,
+                shape_collision_type=shape_collision_type_wp,
+                shape_collision_affinity=shape_collision_affinity_wp,
             )
             actual_pair_count = int(candidate_pair_count.numpy()[0])
             if actual_pair_count <= capacity:

@@ -18,9 +18,10 @@ import warp as wp
 from ..core.types import Devicelike
 from .broad_phase_common import (
     check_aabb_overlap,
+    compile_group_masks_for_broad_phase,
     is_pair_excluded,
     precompute_world_map,
-    test_world_and_group_pair,
+    test_world_and_type_affinity_pair,
     write_pair,
 )
 
@@ -132,7 +133,8 @@ def _nxn_broadphase_kernel(
     shape_bounding_box_lower: wp.array[wp.vec3],
     shape_bounding_box_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
-    collision_group: wp.array[int],  # per-shape
+    collision_type: wp.array[wp.uint32],  # per-shape
+    collision_affinity: wp.array[wp.uint32],  # per-shape
     shape_world: wp.array[int],  # per-shape world indices
     world_cumsum_lower_tri: wp.array[int],  # Cumulative sum of lower tri elements per world
     world_slice_ends: wp.array[int],  # End indices of each world slice
@@ -171,11 +173,13 @@ def _nxn_broadphase_kernel(
     shape1 = wp.min(shape1_tmp, shape2_tmp)
     shape2 = wp.max(shape1_tmp, shape2_tmp)
 
-    # Get world and collision groups
+    # Get world and collision masks
     world1 = shape_world[shape1]
     world2 = shape_world[shape2]
-    collision_group1 = collision_group[shape1]
-    collision_group2 = collision_group[shape2]
+    collision_type1 = collision_type[shape1]
+    collision_type2 = collision_type[shape2]
+    collision_affinity1 = collision_affinity[shape1]
+    collision_affinity2 = collision_affinity[shape2]
 
     # Skip pairs where both geometries are global (world -1), unless we're in the dedicated -1 segment
     # The dedicated -1 segment is the last segment (world_id >= num_regular_worlds)
@@ -183,8 +187,15 @@ def _nxn_broadphase_kernel(
     if world1 == -1 and world2 == -1 and not is_dedicated_minus_one_segment:
         return
 
-    # Check both world and collision groups
-    if not test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
+    # Check both world and collision masks
+    if not test_world_and_type_affinity_pair(
+        world1,
+        world2,
+        collision_type1,
+        collision_affinity1,
+        collision_type2,
+        collision_affinity2,
+    ):
         return
 
     # Check if gaps are provided (empty array means AABBs are pre-expanded)
@@ -307,7 +318,7 @@ class BroadPhaseAllPairs:
         shape_lower: wp.array[wp.vec3],  # Lower bounds of shape bounding boxes
         shape_upper: wp.array[wp.vec3],  # Upper bounds of shape bounding boxes
         shape_gap: wp.array[float] | None,  # Optional per-shape effective gaps
-        shape_collision_group: wp.array[int],  # Collision group ID per box
+        shape_collision_group: wp.array[int] | None,  # Collision group ID per box
         shape_world: wp.array[int],  # World index per box
         shape_count: int,  # Number of active bounding boxes
         # Outputs
@@ -317,6 +328,8 @@ class BroadPhaseAllPairs:
         filter_pairs: wp.array[wp.vec2i] | None = None,  # Sorted excluded pairs
         num_filter_pairs: int | None = None,
         skip_count_zero: bool = False,  # Skip candidate_pair_count.zero_() if already zeroed by the caller
+        shape_collision_type: wp.array[wp.uint32] | None = None,  # Collision type mask per box
+        shape_collision_affinity: wp.array[wp.uint32] | None = None,  # Collision affinity mask per box
     ) -> None:
         """Launch the N x N broad phase collision detection.
 
@@ -329,9 +342,7 @@ class BroadPhaseAllPairs:
             shape_upper: Array of upper bounds for each shape's AABB
             shape_gap: Optional array of per-shape effective gaps. If None or empty array,
                 assumes AABBs are pre-expanded (gaps = 0). If provided, gaps are added during overlap checks.
-            shape_collision_group: Array of collision group IDs for each shape. Positive values indicate
-                groups that only collide with themselves (and with negative groups). Negative values indicate
-                groups that collide with everything except their negative counterpart. Zero indicates no collisions.
+            shape_collision_group: Array of collision group IDs for each shape.
             shape_world: Array of world indices for each shape. Index -1 indicates global entities
                 that collide with all worlds. Indices 0, 1, 2, ... indicate world-specific entities.
             shape_count: Number of active bounding boxes to check
@@ -360,6 +371,15 @@ class BroadPhaseAllPairs:
         if shape_gap is None:
             shape_gap = wp.empty(0, dtype=wp.float32, device=device)
 
+        if shape_collision_type is None or shape_collision_affinity is None:
+            if shape_collision_group is None:
+                raise ValueError(
+                    "Either shape_collision_group or shape_collision_type/shape_collision_affinity is required."
+                )
+            shape_collision_type, shape_collision_affinity = compile_group_masks_for_broad_phase(
+                shape_collision_group, device=device
+            )
+
         # Exclusion filter: empty array and 0 when not provided or empty
         if filter_pairs is None or filter_pairs.shape[0] == 0:
             filter_pairs_arr = wp.empty(0, dtype=wp.vec2i, device=device)
@@ -376,7 +396,8 @@ class BroadPhaseAllPairs:
                 shape_lower,
                 shape_upper,
                 shape_gap,
-                shape_collision_group,
+                shape_collision_type,
+                shape_collision_affinity,
                 shape_world,
                 self.world_cumsum_lower_tri,
                 self.world_slice_ends,

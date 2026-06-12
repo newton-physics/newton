@@ -262,7 +262,21 @@ class ModelBuilder:
         is_solid: bool = True
         """Indicates whether the shape is solid or hollow. Defaults to True."""
         collision_group: int = 1
-        """The collision group ID for the shape. Defaults to 1 (default group). Set to 0 to disable collisions for this shape."""
+        """Collision group ID. Defaults to 1 (default group). Set to 0 to disable collisions.
+
+        During finalization, collision groups are resolved into ``collision_type`` and
+        ``collision_affinity`` bitmasks used by runtime collision filtering.
+        """
+        collision_type: int | None = None
+        """Collision type bitmask for mask-based filtering.
+
+        If ``None``, derives from ``collision_group`` unless ``collision_affinity`` is explicitly set.
+        """
+        collision_affinity: int | None = None
+        """Collision affinity bitmask for mask-based filtering.
+
+        If ``None``, derives from ``collision_group`` unless ``collision_type`` is explicitly set.
+        """
         collision_filter_parent: bool = True
         """Whether to inherit collision filtering from the parent. Defaults to True."""
         has_shape_collision: bool = True
@@ -371,6 +385,21 @@ class ModelBuilder:
                     f"sdf_max_resolution must be divisible by 8 (got {self.sdf_max_resolution}). "
                     "This is required because SDF volumes are allocated in 8x8x8 tiles."
                 )
+            for name, mask in (
+                ("collision_type", self.collision_type),
+                ("collision_affinity", self.collision_affinity),
+            ):
+                if mask is not None and not (0 <= mask <= 0xFFFFFFFF):
+                    raise ValueError(f"{name} must fit in a uint32 bitmask (got {mask}).")
+            if (self.collision_type is None) != (self.collision_affinity is None):
+                import warnings  # noqa: PLC0415
+
+                warnings.warn(
+                    "Set both collision_type and collision_affinity when using mask-based filtering. "
+                    "The unset mask will be treated as 0.",
+                    UserWarning,
+                    stacklevel=3,
+                )
             hydroelastic_supported = shape_type not in (GeoType.PLANE, GeoType.HFIELD)
             hydroelastic_requires_configured_sdf = shape_type in (
                 GeoType.SPHERE,
@@ -407,6 +436,8 @@ class ModelBuilder:
             self.has_particle_collision = False
             self.density = 0.0
             self.collision_group = 0
+            self.collision_type = 0
+            self.collision_affinity = 0
 
         @property
         def flags(self) -> int:
@@ -439,6 +470,8 @@ class ModelBuilder:
                 self.is_site = False
                 self.density = defaults.density
                 self.collision_group = defaults.collision_group
+                self.collision_type = defaults.collision_type
+                self.collision_affinity = defaults.collision_affinity
                 self.has_shape_collision = bool(value & ShapeFlags.COLLIDE_SHAPES)
                 self.has_particle_collision = bool(value & ShapeFlags.COLLIDE_PARTICLES)
 
@@ -956,6 +989,10 @@ class ModelBuilder:
         """Contact gaps [m] accumulated for :attr:`Model.shape_gap`."""
         self.shape_collision_group: list[int] = []
         """Collision groups accumulated for :attr:`Model.shape_collision_group`."""
+        self.shape_collision_type: list[int | None] = []
+        """Collision type masks accumulated for :attr:`Model.shape_collision_type`."""
+        self.shape_collision_affinity: list[int | None] = []
+        """Collision affinity masks accumulated for :attr:`Model.shape_collision_affinity`."""
         self.shape_collision_radius: list[float] = []
         """Broadphase collision radii [m] accumulated for :attr:`Model.shape_collision_radius`."""
         self.shape_world: list[int] = []
@@ -1420,6 +1457,49 @@ class ModelBuilder:
             shape_b: Second shape index
         """
         self.shape_collision_filter_pairs.append((min(shape_a, shape_b), max(shape_a, shape_b)))
+
+    def _compile_shape_collision_masks(self) -> tuple[np.ndarray, np.ndarray]:
+        """Compile group filters and explicit type/affinity masks into uint32 arrays."""
+        group_to_bit: dict[int, int] = {}
+        unique_groups = [group for group in sorted(set(self.shape_collision_group)) if group != 0]
+        if len(unique_groups) > 32:
+            raise ValueError(
+                "Mask-based collision filtering supports up to 32 non-zero collision groups. "
+                f"Got {len(unique_groups)} groups. Set collision_type/collision_affinity explicitly "
+                "or reduce the number of collision_group values."
+            )
+        for bit, group in enumerate(unique_groups):
+            group_to_bit[group] = 1 << bit
+
+        positive_mask = 0
+        negative_mask = 0
+        for group, bit_mask in group_to_bit.items():
+            if group > 0:
+                positive_mask |= bit_mask
+            else:
+                negative_mask |= bit_mask
+
+        collision_type = np.zeros(self.shape_count, dtype=np.uint32)
+        collision_affinity = np.zeros(self.shape_count, dtype=np.uint32)
+        for shape, group in enumerate(self.shape_collision_group):
+            authored_type = self.shape_collision_type[shape]
+            authored_affinity = self.shape_collision_affinity[shape]
+            if authored_type is not None or authored_affinity is not None:
+                collision_type[shape] = 0 if authored_type is None else np.uint32(authored_type)
+                collision_affinity[shape] = 0 if authored_affinity is None else np.uint32(authored_affinity)
+                continue
+
+            if group == 0:
+                continue
+
+            bit_mask = group_to_bit[group]
+            collision_type[shape] = np.uint32(bit_mask)
+            if group > 0:
+                collision_affinity[shape] = np.uint32(bit_mask | negative_mask)
+            else:
+                collision_affinity[shape] = np.uint32((positive_mask | negative_mask) & ~bit_mask)
+
+        return collision_type, collision_affinity
 
     @staticmethod
     def _default_filter_parent(joint_type: JointType, parent: int) -> bool:
@@ -3551,6 +3631,8 @@ class ModelBuilder:
 
         # Copy collision groups without modification
         self.shape_collision_group.extend(builder.shape_collision_group)
+        self.shape_collision_type.extend(builder.shape_collision_type)
+        self.shape_collision_affinity.extend(builder.shape_collision_affinity)
 
         # Copy collision filter pairs with offset
         self.shape_collision_filter_pairs.extend(
@@ -6240,6 +6322,8 @@ class ModelBuilder:
         self.shape_material_kh.append(cfg.kh)
         self.shape_gap.append(cfg.gap if cfg.gap is not None else self.rigid_gap)
         self.shape_collision_group.append(cfg.collision_group)
+        self.shape_collision_type.append(cfg.collision_type)
+        self.shape_collision_affinity.append(cfg.collision_affinity)
         self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
         self.shape_world.append(self.current_world)
         self.shape_sdf_narrow_band_range.append(cfg.sdf_narrow_band_range)
@@ -7223,6 +7307,8 @@ class ModelBuilder:
                             margin=self.shape_margin[shape],
                             is_solid=self.shape_is_solid[shape],
                             collision_group=self.shape_collision_group[shape],
+                            collision_type=self.shape_collision_type[shape],
+                            collision_affinity=self.shape_collision_affinity[shape],
                             collision_filter_parent=self.default_shape_cfg.collision_filter_parent,
                         )
                         cfg.flags = self.shape_flags[shape]
@@ -10677,6 +10763,9 @@ class ModelBuilder:
                 (min(s1, s2), max(s1, s2)) for s1, s2 in self.shape_collision_filter_pairs
             }
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
+            collision_type, collision_affinity = self._compile_shape_collision_masks()
+            m.shape_collision_type = wp.array(collision_type, dtype=wp.uint32)
+            m.shape_collision_affinity = wp.array(collision_affinity, dtype=wp.uint32)
 
             # ---------------------
             # Compute local AABBs and voxel resolutions for contact reduction
@@ -11681,17 +11770,47 @@ class ModelBuilder:
         # If same world or at least one is global (-1), check collision groups
         return self._test_group_pair(collision_group_a, collision_group_b)
 
+    @staticmethod
+    def _test_type_affinity_pair(
+        collision_type_a: int,
+        collision_affinity_a: int,
+        collision_type_b: int,
+        collision_affinity_b: int,
+    ) -> bool:
+        """Test MuJoCo-style collision type/affinity bitmasks."""
+        return ((collision_type_a & collision_affinity_b) != 0) or ((collision_type_b & collision_affinity_a) != 0)
+
+    def _test_world_and_type_affinity_pair(
+        self,
+        world_a: int,
+        world_b: int,
+        collision_type_a: int,
+        collision_affinity_a: int,
+        collision_type_b: int,
+        collision_affinity_b: int,
+    ) -> bool:
+        """Test world indices and collision type/affinity masks."""
+        if world_a != -1 and world_b != -1 and world_a != world_b:
+            return False
+
+        return self._test_type_affinity_pair(
+            collision_type_a,
+            collision_affinity_a,
+            collision_type_b,
+            collision_affinity_b,
+        )
+
     def find_shape_contact_pairs(self, model: Model):
         """
         Identifies and stores all potential shape contact pairs for collision detection.
 
-        This method examines the collision groups and collision masks of all shapes in the model
+        This method examines the collision type and affinity masks of all shapes in the model
         to determine which pairs of shapes should be considered for contact generation. It respects
         any user-specified collision filter pairs to avoid redundant or undesired contacts.
 
         The resulting contact pairs are stored in the model as a 2D array of shape indices.
 
-        Uses the exact same filtering logic as the broad phase kernels (test_world_and_group_pair)
+        Uses the exact same filtering logic as the broad phase kernels (test_world_and_type_affinity_pair)
         to ensure consistency between EXPLICIT mode (precomputed pairs) and NXN/SAP modes.
 
         Args:
@@ -11703,6 +11822,7 @@ class ModelBuilder:
         """
         filters: set[tuple[int, int]] = model.shape_collision_filter_pairs
         contact_pairs: list[tuple[int, int]] = []
+        collision_type, collision_affinity = self._compile_shape_collision_masks()
 
         # Keep only colliding shapes (those with COLLIDE_SHAPES flag) and sort by world for optimization
         colliding_indices = [i for i, flag in enumerate(self.shape_flags) if flag & ShapeFlags.COLLIDE_SHAPES]
@@ -11712,12 +11832,14 @@ class ModelBuilder:
         for i1 in range(len(sorted_indices)):
             s1 = sorted_indices[i1]
             world1 = self.shape_world[s1]
-            collision_group1 = self.shape_collision_group[s1]
+            collision_type1 = int(collision_type[s1])
+            collision_affinity1 = int(collision_affinity[s1])
 
             for i2 in range(i1 + 1, len(sorted_indices)):
                 s2 = sorted_indices[i2]
                 world2 = self.shape_world[s2]
-                collision_group2 = self.shape_collision_group[s2]
+                collision_type2 = int(collision_type[s2])
+                collision_affinity2 = int(collision_affinity[s2])
 
                 # Early break optimization: if both shapes are in non-global worlds and different worlds,
                 # they can never collide. Since shapes are sorted by world, all remaining shapes will also
@@ -11725,8 +11847,15 @@ class ModelBuilder:
                 if world1 != -1 and world2 != -1 and world1 != world2:
                     break
 
-                # Apply the exact same filtering logic as test_world_and_group_pair kernel
-                if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
+                # Apply the exact same filtering logic as test_world_and_type_affinity_pair kernel
+                if not self._test_world_and_type_affinity_pair(
+                    world1,
+                    world2,
+                    collision_type1,
+                    collision_affinity1,
+                    collision_type2,
+                    collision_affinity2,
+                ):
                     continue
 
                 if s1 > s2:

@@ -296,7 +296,11 @@ class Model:
         """Shape filter group, shape [shape_count], int."""
 
         self.shape_collision_group: wp.array[wp.int32] | None = None
-        """Collision group of each shape, shape [shape_count], int. Array populated during finalization."""
+        """Collision group of each shape, shape [shape_count], int."""
+        self.shape_collision_type: wp.array[wp.uint32] | None = None
+        """Runtime collision type bitmask of each shape, shape [shape_count], uint32."""
+        self.shape_collision_affinity: wp.array[wp.uint32] | None = None
+        """Runtime collision affinity bitmask of each shape, shape [shape_count], uint32."""
         self.shape_collision_filter_pairs: set[tuple[int, int]] = set()
         """Pairs of shape indices (s1, s2) that should not collide. Pairs are in canonical order: s1 < s2."""
         self.shape_collision_radius: wp.array[wp.float32] | None = None

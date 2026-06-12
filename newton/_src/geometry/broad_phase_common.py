@@ -180,6 +180,35 @@ def test_world_and_group_pair(world_a: int, world_b: int, collision_group_a: int
     return test_group_pair(collision_group_a, collision_group_b)
 
 
+@wp.func
+def test_type_affinity_pair(
+    collision_type_a: wp.uint32,
+    collision_affinity_a: wp.uint32,
+    collision_type_b: wp.uint32,
+    collision_affinity_b: wp.uint32,
+) -> bool:
+    """Test MuJoCo-style collision type/affinity bitmasks."""
+    return ((collision_type_a & collision_affinity_b) != wp.uint32(0)) or (
+        (collision_type_b & collision_affinity_a) != wp.uint32(0)
+    )
+
+
+@wp.func
+def test_world_and_type_affinity_pair(
+    world_a: int,
+    world_b: int,
+    collision_type_a: wp.uint32,
+    collision_affinity_a: wp.uint32,
+    collision_type_b: wp.uint32,
+    collision_affinity_b: wp.uint32,
+) -> bool:
+    """Test if two entities should collide based on world indices and type/affinity masks."""
+    if world_a != -1 and world_b != -1 and world_a != world_b:
+        return False
+
+    return test_type_affinity_pair(collision_type_a, collision_affinity_a, collision_type_b, collision_affinity_b)
+
+
 def precompute_world_map(shape_world: np.ndarray | list[int], shape_flags: np.ndarray | list[int] | None = None):
     """Precompute an index map that groups shapes by world ID with shared shapes.
 
@@ -298,3 +327,54 @@ def precompute_world_map(shape_world: np.ndarray | list[int], shape_flags: np.nd
     slice_ends[world_count] = current_pos
 
     return index_map, slice_ends
+
+
+def compile_group_masks_for_broad_phase(
+    collision_group: wp.array | np.ndarray | list[int],
+    device: Any | None = None,
+) -> tuple[wp.array, wp.array]:
+    """Compile collision groups into type/affinity masks for broad-phase callers."""
+    if isinstance(collision_group, wp.array):
+        collision_group_np = collision_group.numpy()
+        if device is None:
+            device = collision_group.device
+    else:
+        collision_group_np = np.asarray(collision_group, dtype=np.int32)
+        if device is None:
+            device = "cpu"
+
+    group_to_bit: dict[int, int] = {}
+    unique_groups = [int(group) for group in sorted(set(collision_group_np.tolist())) if int(group) != 0]
+    if len(unique_groups) > 32:
+        raise ValueError(
+            "Mask-based collision filtering supports up to 32 non-zero collision groups. "
+            f"Got {len(unique_groups)} groups."
+        )
+    for bit, group in enumerate(unique_groups):
+        group_to_bit[group] = 1 << bit
+
+    positive_mask = 0
+    negative_mask = 0
+    for group, bit_mask in group_to_bit.items():
+        if group > 0:
+            positive_mask |= bit_mask
+        else:
+            negative_mask |= bit_mask
+
+    collision_type = np.zeros(len(collision_group_np), dtype=np.uint32)
+    collision_affinity = np.zeros(len(collision_group_np), dtype=np.uint32)
+    for shape, group_value in enumerate(collision_group_np):
+        group_id = int(group_value)
+        if group_id == 0:
+            continue
+        bit_mask = group_to_bit[group_id]
+        collision_type[shape] = np.uint32(bit_mask)
+        if group_id > 0:
+            collision_affinity[shape] = np.uint32(bit_mask | negative_mask)
+        else:
+            collision_affinity[shape] = np.uint32((positive_mask | negative_mask) & ~bit_mask)
+
+    return (
+        wp.array(collision_type, dtype=wp.uint32, device=device),
+        wp.array(collision_affinity, dtype=wp.uint32, device=device),
+    )
