@@ -42,7 +42,7 @@ Users compose laws by simply instantiating many `Controller`s and composing the 
 
 ## Controller flavors
 
-Concrete controllers fall on a spectrum defined by **how much of the robot's structure the control law needs to know**. This single distinction drives the constructor shape, the meaning of `default_dof_indices`, and what counts as a "goal."
+Concrete controllers fall into two flavors based on **whether the control law needs a model of the robot**. This drives the constructor shape and what counts as a "goal."
 
 ### Decoupled controllers (DOFs independent)
 
@@ -54,26 +54,20 @@ Concrete controllers fall on a spectrum defined by **how much of the robot's str
 
 ### Model-based controllers (DOFs coupled, per-robot goals)
 
-`ControllerDifferentialKinematics` is the canonical example. A robot's output DOFs are coupled: the command for one joint depends on the robot's **entire** configuration through the Jacobian. Such a controller:
+`ControllerDifferentialKinematics` and `ControllerDifferentialDrive` are the canonical examples. A robot's output DOFs are coupled — they cannot be solved independently of one another — and the goal is specified once per robot rather than per DOF. Such a controller:
 
-- **Carries an explicit robot model.** The constructor takes a `newton.ModelBuilder` of `N` topologically-identical articulations and finalizes it internally for FK + Jacobian evaluation.
-- **Takes per-robot, task-space goals.** A goal is a per-robot end-effector pose (`site_target_position` / `site_target_quaternion`), not a per-DOF joint value. There are `num_robots` goals but `num_robots * dofs_per_robot` outputs.
-- **Works one robot at a time.** The natural unit is a robot (e.g. a per-robot 6×6 solve), so `default_dof_indices` is laid out in per-robot DOF blocks `[r0_d0, …, r0_dk, r1_d0, …]`.
+- **Carries a model of the robot.** This can be a full `newton.ModelBuilder` of `N` topologically-identical articulations (`ControllerDifferentialKinematics`, finalized internally for FK + Jacobian evaluation) or just the handful of geometry parameters the law needs (`ControllerDifferentialDrive`'s per-robot `wheel_radius` / `wheel_base`). Either way it describes the robot the law reasons about.
+- **Takes per-robot goals.** A goal is one task-space target per robot — an end-effector pose for differential IK, a `(linear_speed, angular_speed)` body command for differential drive — not a per-DOF value. There are `num_robots` goals.
+- **Works one robot at a time.** The natural unit of computation is a robot, not an individual DOF.
 
-### The middle ground: closed-form coupling
+### Examples
 
-`ControllerDifferentialDrive` sits between the two. Its outputs are coupled within a robot — both wheel velocities come from one shared `(linear_speed, angular_speed)` body command and shared wheel geometry — but the coupling is a fixed closed-form relation, not a general articulation model. So it needs **no `ModelBuilder`** (its "model" is two scalars per robot, `wheel_radius` / `wheel_base`, passed as ordinary parameter ports), takes **per-robot goals** like the model-based flavor, yet writes **per-DOF outputs** (two wheel DOFs per robot) like the decoupled flavor.
-
-### Why it matters
-
-| | Decoupled (`PID`) | Closed-form (`DifferentialDrive`) | Model-based (`DifferentialKinematics`) |
-| --- | --- | --- | --- |
-| Robot model at construction | none | scalars (geometry) | `ModelBuilder` |
-| Goal shape | per-DOF scalar | per-robot command | per-robot pose |
-| DOF coupling | none | within a robot | within a robot (full config) |
-| Knows about "robots"? | no (`num_outputs`) | yes (`num_robots`) | yes (`num_robots`) |
-
-A new controller should decide its flavor first: it dictates whether the constructor needs a `ModelBuilder`, how `default_dof_indices` is laid out, and whether goals arrive per-DOF or per-robot.
+| | Decoupled (`PID`) | Model-based (`DifferentialKinematics`, `DifferentialDrive`) |
+| --- | --- | --- |
+| Robot model at construction | none | `ModelBuilder` or geometry parameters |
+| Goal shape | per-DOF scalar | per-robot target |
+| DOF coupling | none | within a robot |
+| Knows about "robots"? | no (`num_outputs`) | yes (`num_robots`) |
 
 ---
 
