@@ -5,7 +5,9 @@ and replaced by proper documentation before merging.
 
 ## Background
 
-There are many controllers implemented across Isaac Lab/Sim. The goal of this module is to centralize them in Newton, re-implementing each so that they are completely vectorized and CUDA-graphable. Below is a table summarizing existing controllers, where their implementation currently lives, and whether there is a replacement already completed in this module.
+There are many controllers implemented across Isaac Lab/Sim. The goal of this module is to centralize them in Newton, re-implementing each so that they are completely vectorized and CUDA-graphable.
+
+Below is a table summarizing existing Isaac Sim/Lab controllers, where their implementation currently lives, and whether there is a replacement already completed in this module.
 
 | Controller | Current Repo | Completed? |
 | --- | --- | --- |
@@ -38,27 +40,148 @@ Users compose laws by simply instantiating many `Controller`s and composing the 
 
 ---
 
-## Ports
+## Controller flavors
 
-Every controller declares a fixed set of *ports* — named pieces of data it reads or writes per step. There are two port shapes:
+Concrete controllers fall on a spectrum defined by **how much of the robot's structure the control law needs to know**. This single distinction drives the constructor shape, the meaning of `default_dof_indices`, and what counts as a "goal."
+
+### Decoupled controllers (DOFs independent)
+
+`ControllerPID` is the canonical example. Each output depends only on the matching entries of its own ports: `output[i]` is a function of `joint_measured[i]`, `joint_target[i]`, the gains at `[i]`, and the state at `[i]` — nothing else. As a result it:
+
+- **Carries no robot model.** It never needs topology, mass, or geometry — only `default_dof_indices` to know which slots to read and write.
+- **Takes per-DOF goals.** A goal is a scalar target for a single controlled DOF (e.g. a target joint angle), in the same layout as every other port.
+- **Has no concept of a "robot."** `num_robots` never appears; only `num_outputs`. One DOF is indistinguishable from the next, so the law vectorizes across any mix of robots for free.
+
+### Model-based controllers (DOFs coupled, per-robot goals)
+
+`ControllerDifferentialKinematics` is the canonical example. A robot's output DOFs are coupled: the command for one joint depends on the robot's **entire** configuration through the Jacobian. Such a controller:
+
+- **Carries an explicit robot model.** The constructor takes a `newton.ModelBuilder` of `N` topologically-identical articulations and finalizes it internally for FK + Jacobian evaluation.
+- **Takes per-robot, task-space goals.** A goal is a per-robot end-effector pose (`site_target_position` / `site_target_quaternion`), not a per-DOF joint value. There are `num_robots` goals but `num_robots * dofs_per_robot` outputs.
+- **Works one robot at a time.** The natural unit is a robot (e.g. a per-robot 6×6 solve), so `default_dof_indices` is laid out in per-robot DOF blocks `[r0_d0, …, r0_dk, r1_d0, …]`.
+
+### The middle ground: closed-form coupling
+
+`ControllerDifferentialDrive` sits between the two. Its outputs are coupled within a robot — both wheel velocities come from one shared `(linear_speed, angular_speed)` body command and shared wheel geometry — but the coupling is a fixed closed-form relation, not a general articulation model. So it needs **no `ModelBuilder`** (its "model" is two scalars per robot, `wheel_radius` / `wheel_base`, passed as ordinary parameter ports), takes **per-robot goals** like the model-based flavor, yet writes **per-DOF outputs** (two wheel DOFs per robot) like the decoupled flavor.
+
+### Why it matters
+
+| | Decoupled (`PID`) | Closed-form (`DifferentialDrive`) | Model-based (`DifferentialKinematics`) |
+| --- | --- | --- | --- |
+| Robot model at construction | none | scalars (geometry) | `ModelBuilder` |
+| Goal shape | per-DOF scalar | per-robot command | per-robot pose |
+| DOF coupling | none | within a robot | within a robot (full config) |
+| Knows about "robots"? | no (`num_outputs`) | yes (`num_robots`) | yes (`num_robots`) |
+
+A new controller should decide its flavor first: it dictates whether the constructor needs a `ModelBuilder`, how `default_dof_indices` is laid out, and whether goals arrive per-DOF or per-robot.
+
+---
+
+## Controller Initialization
+
+Every controller implementation declares a fixed set of inputs/outputs/parameters when it is initalized. There are two shapes for how these declarations happen:
 
 ### Live ports (`*_attr` + `*_idx`)
 
-For data that comes from the simulation each step (joint positions, target poses, …):
+A live port connects the controller to an array that the caller supplies fresh on every step. Each live port is declared by a pair of constructor arguments: a `*_attr` string and an optional `*_idx` array.
 
-- `*_attr: str` — attribute name on the user-supplied `input_struct` / `output_struct`. Resolved at step time via `getattr(struct, attr_name)`.
-- `*_idx: wp.array[wp.uint32] | None` — kernel reads `arr[idx[i]]`. When `None`, the controller's `default_dof_indices` (per-DOF ports) or natural-order `wp.arange(num_robots)` (per-robot ports) is used.
+```python
+ControllerPID(
+    default_dof_indices: wp.array,
+    joint_measured_attr: str = "joint_q",
+    joint_measured_idx: wp.array | None = None,
+    joint_measured_rate_attr: str = "joint_qd",
+    joint_measured_rate_idx: wp.array | None = None,
+    joint_target_attr: str = "joint_target_q",
+    joint_target_idx: wp.array | None = None,
+    joint_target_rate_attr: str = "joint_target_qd",
+    joint_target_rate_idx: wp.array | None = None,
+    output_attr: str = "joint_f",
+    output_idx: wp.array | None = None,
+    ...
+)
+```
 
-The pattern lets a controller view an arbitrary slice of a larger sim-side array: a per-DOF index of `[5, 7]` writes only those two slots and leaves the others alone.
+`output_attr` is an example of the `*_attr` argument (which array); `output_idx` is an example of the `*_idx` argument (which slots of it). The kernel combines the two as `output[output_idx[i]]`.
+
+#### `*_attr` — which array
+
+The string names an attribute on the object the caller passes to `compute()`; the controller resolves it each step via `getattr`. Different controllers default to different names, and the caller can override any of them.
+
+#### `*_idx` — which slots
+
+An optional `wp.array[wp.uint32]`. The kernel touches only `arr[idx[i]]`, leaving every other slot of the array untouched. When `*_idx` is `None`, the port falls back to `default_dof_indices`, so by default the read and write ports line up on the same slots.
+
+Passing an explicit `*_idx` lets the controller read from one layout and write into another. In `test_controllers` the controller reads `joint_target_q[1, 2]` but writes `output[5, 7]`:
+
+```python
+ControllerPID(
+    default_dof_indices=wp.array([5, 7], dtype=wp.uint32, device=device),
+    joint_target_idx=wp.array([1, 2], dtype=wp.uint32, device=device),
+    output_attr="output",
+    ...
+)
+```
 
 ### Parameter ports (`wp.array | str`)
 
-For configuration knobs (PID gains, DLS damping, IK bandwidth) the user can pick:
+Parameter ports are configuration knobs (PID gains, DLS damping, IK bandwidth, wheel geometry, …). Each accepts either a `wp.array` (*baked*) or a `str` (*live*).
 
-- Pass a `wp.array` — *baked*: the controller takes a copy at construction. Mutating the user's original later has no effect. Must have length `num_outputs` (per-DOF) or `num_robots` (per-robot) and dtype `wp.float32`.
-- Pass a `str` — *live*: at step time the controller resolves `getattr(input_struct, value)` and reads that array. Same length/dtype requirement.
+```python
+ControllerPID(
+    default_dof_indices: wp.array,
+    kp: wp.array | str | None = None,
+    kd: wp.array | str | None = None,
+    ki: wp.array | str | None = None,
+    integral_max: wp.array | str | None = None,
+    ...
+)
+```
 
-Parameter ports are always read in natural order (`arr[i]`) — no `_idx` override. The user's "leave them in order" choice keeps the constructor surface flat and matches how gain arrays are typically authored.
+`ControllerPID(kp=wp.array(...))` is an example of **baked** parameters; `ControllerPID(kp="kp")` is an example of **live** parameters.
+
+#### Baked parameters (`wp.array`)
+
+The controller copies the array at construction. Mutating the user's original afterward has no effect. Length must be `num_outputs` (per-DOF) or `num_robots` (per-robot); dtype `wp.float32`. Read in natural order (`arr[i]`) — no `_idx` override.
+
+`example_pid_pendulum` bakes PID gains; `example_diff_drive_swarm` bakes per-robot `wheel_radius` / `wheel_base`:
+
+```python
+ControllerPID(
+    default_dof_indices=default_dof_indices,
+    kp=wp.array([3600.0, 1200.0], dtype=wp.float32, device=device),
+    kd=wp.array([320.0, 160.0], dtype=wp.float32, device=device),
+)
+
+ControllerDifferentialDrive(
+    num_robots=16,
+    wheel_radius=wp.full(16, 0.05, dtype=wp.float32, device=device),
+    wheel_base=wp.full(16, 0.2, dtype=wp.float32, device=device),
+    default_dof_indices=default_dof_indices,
+)
+```
+
+#### Live parameters (`str`)
+
+The string is an attribute name on the step-time input object. Each `compute()` resolves it with `getattr` and reads `arr[i]` in natural order. Same length/dtype rules as baked.
+
+`test_controllers` passes `kp="kp"` so gains can change between steps without reconstructing the controller; `ControllerDifferentialKinematics` accepts `bandwidth="my_band"` the same way:
+
+```python
+ControllerPID(
+    default_dof_indices=default_dof_indices,
+    kp="kp",
+    ...
+)
+
+ControllerDifferentialKinematics(
+    model_builder=builder,
+    controlled_site_label="tool",
+    default_dof_indices=default_dof_indices,
+    bandwidth="my_band",
+    ...
+)
+```
 
 ---
 
@@ -203,3 +326,33 @@ ControllerDifferentialDrive(
 ```
 
 Omitted clamp ports default to `+inf` per robot (no clamping). `default_dof_indices` must be `wp.array[uint32]` with length `2 * num_robots`.
+
+---
+
+## End-to-end example
+
+A minimal PID loop driving two joints to a fixed target (condensed from `example_pid_pendulum`):
+
+```python
+controller = ControllerPID(
+    default_dof_indices=wp.array([0, 1], dtype=wp.uint32),
+    kp=wp.array([3600.0, 1200.0], dtype=wp.float32),
+    kd=wp.array([320.0, 160.0], dtype=wp.float32),
+)
+
+# Read ports default to joint_q / joint_qd; the write port defaults to joint_f.
+inp = controller.input_struct()
+inp.joint_target_q.assign([0.6, -1.2])      # setpoint [rad]
+out = controller.output_struct()
+out.joint_f = control.joint_f               # write straight into the solver's array
+
+s0, s1 = controller.state(), controller.state()   # PID integral, double-buffered
+
+for _ in range(num_steps):
+    inp.joint_q = state_0.joint_q           # rebind to the current sim state
+    inp.joint_qd = state_0.joint_qd
+    controller.compute(inp, out, s0, s1, time_step=dt)
+    s0, s1 = s1, s0
+    solver.step(state_0, state_1, control, contacts, dt)
+    state_0, state_1 = state_1, state_0
+```
