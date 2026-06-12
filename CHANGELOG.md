@@ -21,6 +21,7 @@
 ### Removed
 
 - Remove the deprecated Style3D `CollisionHandler`; use `Collision` instead
+- Remove support for `worlds_per_row=0` in `SensorTiledCamera.flatten_*_to_rgba()` (deprecated in 1.2.0); pass `worlds_per_row=None` for automatic layout (values below 1 now raise `ValueError`) (#3149)
 - Remove the deprecated `a`, `b`, `c` parameters of `ModelBuilder.add_shape_ellipsoid()` (deprecated in 1.1.0); use `rx`, `ry`, `rz` instead
 
 ## [1.3.0] - 2026-06-11
