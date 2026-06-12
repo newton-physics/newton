@@ -367,7 +367,7 @@ class CouplingInterface:
         contacts: Contacts | None,
         dt: float,
     ) -> None:
-        """Estimate proxy-body feedback from destination momentum change."""
+        """Accumulate proxy-body feedback from destination momentum change."""
         del state, contacts
         if body_local_to_proxy_global.shape[0] == 0:
             return
@@ -404,7 +404,7 @@ class CouplingInterface:
         contacts: Contacts | None,
         dt: float,
     ) -> None:
-        """Estimate proxy-particle feedback from destination momentum change."""
+        """Accumulate proxy-particle feedback from destination momentum change."""
         del state, contacts
         if particle_local_to_proxy_global.shape[0] == 0:
             return

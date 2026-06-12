@@ -67,6 +67,8 @@ def _make_kamino_config() -> SolverKamino.Config:
 
 def _rigid_solver_entry_args(rigid_solver: str):
     rigid_solver = _normalized_rigid_solver_name(rigid_solver)
+    if rigid_solver == "vbd":
+        return "avbd", SolverVBD, {"iterations": 10}
     if rigid_solver == "kamino":
         return "kamino", SolverKamino, {"config": _make_kamino_config()}
     if rigid_solver == "mjc":
@@ -178,7 +180,7 @@ class Example:
             label="rigid_sphere",
         )
 
-        if self.soft_solver == "vbd":
+        if "vbd" in (self.soft_solver, self.rigid_solver):
             builder.color()
 
         self.model = builder.finalize()
@@ -359,7 +361,7 @@ class Example:
             "--rigid-solver",
             help="Rigid solver used by --solver coupled",
             type=str,
-            choices=["mjc", "mujoco", "kamino"],
+            choices=["mjc", "mujoco", "kamino", "vbd"],
             default="mjc",
         )
         parser.add_argument(

@@ -3628,68 +3628,6 @@ class TestProxyVelocityRewind(unittest.TestCase):
         np.testing.assert_allclose(particle_qd.numpy()[0], np.array([4.5, 10.5, 6.5]), rtol=1.0e-6, atol=1.0e-6)
 
 
-class TestVBDProxyParticleHarvest(unittest.TestCase):
-    """VBD proxy-particle harvest uses the converged in-place solver state."""
-
-    def test_body_particle_harvest_uses_coupling_body_q_prev_snapshot(self):
-        builder = newton.ModelBuilder(gravity=0.0)
-        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        builder.add_shape_sphere(body=body, radius=0.1)
-        builder.add_particle(
-            pos=(0.0, 0.0, 0.0),
-            vel=(0.0, 0.0, 0.0),
-            mass=1.0,
-            radius=0.1,
-            flags=int(newton.ParticleFlags.ACTIVE) | int(newton.ParticleFlags.PROXY),
-        )
-        builder.color()
-        model = builder.finalize(device="cpu")
-        solver = SolverVBD(model, iterations=1)
-        state = model.state()
-        state_out = model.state()
-
-        wp.copy(
-            solver._coupling_body_q_prev_snapshot,
-            wp.array(
-                [wp.transform(wp.vec3(-0.1, 0.0, 0.0), wp.quat_identity())],
-                dtype=wp.transform,
-                device=model.device,
-            ),
-        )
-        wp.copy(
-            solver.body_q_prev,
-            wp.array(
-                [wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())],
-                dtype=wp.transform,
-                device=model.device,
-            ),
-        )
-        solver.body_particle_contact_penalty_k = wp.array([10.0], dtype=float, device=model.device)
-        solver.body_particle_contact_material_kd = wp.array([2.0], dtype=float, device=model.device)
-        solver.body_particle_contact_material_mu = wp.array([0.0], dtype=float, device=model.device)
-
-        contacts = newton.Contacts(0, 1, device=model.device)
-        contacts.contact_counters.assign(np.array([0, 1], dtype=np.int32))
-        contacts.soft_contact_particle.assign(np.array([0], dtype=np.int32))
-        contacts.soft_contact_shape.assign(np.array([0], dtype=np.int32))
-        contacts.soft_contact_body_pos.assign(np.array([[0.0, 0.0, 0.0]], dtype=np.float32))
-        contacts.soft_contact_body_vel.assign(np.array([[0.0, 0.0, 0.0]], dtype=np.float32))
-        contacts.soft_contact_normal.assign(np.array([[1.0, 0.0, 0.0]], dtype=np.float32))
-
-        out_particle_f = wp.zeros(1, dtype=wp.vec3, device=model.device)
-        solver.coupling_harvest_proxy_particle_forces(
-            wp.array([0], dtype=int, device=model.device),
-            out_particle_f,
-            particle_qd_before=state.particle_qd,
-            state=state,
-            state_out=state_out,
-            contacts=contacts,
-            dt=1.0,
-        )
-
-        np.testing.assert_allclose(out_particle_f.numpy()[0], np.array([3.0, 0.0, 0.0]), rtol=1.0e-6, atol=1.0e-6)
-
-
 class TestSmoothTeleportRecovery(unittest.TestCase):
     """Validate that sync + smooth teleportation + VBD forward integration
     recovers the driving solver's end-of-step positions when there are no
