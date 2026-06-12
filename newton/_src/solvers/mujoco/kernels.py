@@ -405,9 +405,9 @@ def convert_newton_contacts_to_mjwarp_kernel(
         )
 
         # FORCE_SPACE per-contact override: bypass contact_params' per-geom
-        # solref averaging and write the two-body factor directly. See
-        # docs/integrations/mujoco.rst > "Shape-material contact stiffness
-        # and damping" for the mechanism.
+        # solref averaging and recompute the solref from the combined
+        # two-body factor. See docs/integrations/mujoco.rst > "Shape-material
+        # contact stiffness and damping" for the mechanism.
         if shape_mjc_solref_mode:
             mode_a = shape_mjc_solref_mode[shape_a]
             mode_b = shape_mjc_solref_mode[shape_b]
@@ -430,7 +430,12 @@ def convert_newton_contacts_to_mjwarp_kernel(
                 dmax = solimp[1]
                 if m_inv > 0.0 and dmax < 1.0:
                     factor = m_inv * (1.0 - dmax)
-                    solref = wp.vec2(-ke * factor, -kd * factor)
+                    solref = convert_solref(
+                        wp.max(ke * factor, MJ_MINVAL),
+                        wp.max(kd * factor, MJ_MINVAL),
+                        1.0,
+                        1.0,
+                    )
 
         # Convert Newton per-contact stiffness/damping to MuJoCo solref
         # (timeconst, dampratio). Per-contact overrides take precedence over
@@ -2544,13 +2549,15 @@ def update_jnt_solref_from_invweight0_kernel(
     simulated restoring torque matches the user-specified ``limit_ke`` /
     ``limit_kd``.
 
-    The limit uses the negative (stiffness, damping) convention so the result is
-    ``solref = (-ke * factor, -kd * factor)``. When ``ke <= 0`` or ``kd <= 0``,
-    Newton restores MuJoCo's default ``(0.02, 1.0)`` pair so runtime disablement
-    matches a fresh model compiled without ``solreflimit``. MJCF-imported raw
-    ``solreflimit`` values are forwarded unchanged when present; MJCF joints
-    that rely on the implicit default keep MuJoCo's native ``(0.02, 1.0)`` until
-    ``joint_limit_ke``/``joint_limit_kd`` are changed by the user.
+    The force-space path converts the scaled direct stiffness/damping pair to
+    MuJoCo's positive ``(timeconst, dampratio)`` convention. This lets MuJoCo's
+    ``refsafe`` clamp soften constraints that are too stiff for the timestep.
+    When ``ke <= 0`` or ``kd <= 0``, Newton restores MuJoCo's default
+    ``(0.02, 1.0)`` pair so runtime disablement matches a fresh model compiled
+    without ``solreflimit``. MJCF-imported raw ``solreflimit`` values are
+    forwarded unchanged when present; MJCF joints that rely on the implicit
+    default keep MuJoCo's native ``(0.02, 1.0)`` until ``joint_limit_ke`` /
+    ``joint_limit_kd`` are changed by the user.
     ``dof_invweight0`` is only valid after MuJoCo's ``set_const_0`` /
     ``mj_setConst`` has run, so this kernel must be launched from
     :meth:`SolverMuJoCo.notify_model_changed` after those calls (and once at
@@ -2577,8 +2584,7 @@ def update_jnt_solref_from_invweight0_kernel(
         jnt_solimp: MuJoCo limit ``solimp`` per joint, shape ``[world, mjc_jnt]``
             with component ``[..., 1]`` carrying ``dmax``.
         jnt_solref: Output ``solref`` per joint, shape ``[world, mjc_jnt]``,
-            written in MuJoCo's negative-direct-mode convention
-            ``(-ke·factor, -kd·factor)``.
+            written in MuJoCo's positive ``(timeconst, dampratio)`` convention.
     """
     world, mjc_jnt = wp.tid()
     newton_dof = mjc_jnt_to_newton_dof[world, mjc_jnt]
@@ -2625,9 +2631,7 @@ def update_jnt_solref_from_invweight0_kernel(
         # Restore MuJoCo's compiled default so runtime ``ke -> 0`` or ``kd -> 0``
         # updates behave the same as a fresh model built without a custom limit
         # solref. Without the ``kd <= 0`` guard, a ``(ke>0, kd=0)`` pair would
-        # write ``solref = (-ke·factor, 0)``, which MuJoCo's negative-direct-mode
-        # convention treats as ``dampratio = 0`` and triggers a divide-by-zero
-        # in ``k_eff = 1/(τ²·ζ²)``.
+        # produce an infinite time constant in the positive solref conversion.
         jnt_solref[world, mjc_jnt] = wp.vec2(DEFAULT_LIMIT_SOLREF_TIMECONST, DEFAULT_LIMIT_SOLREF_DAMPRATIO)
         return
 
@@ -2639,7 +2643,12 @@ def update_jnt_solref_from_invweight0_kernel(
     if invw > 0.0 and dmax < 1.0:
         factor = invw * (1.0 - dmax)
 
-    jnt_solref[world, mjc_jnt] = wp.vec2(-ke * factor, -kd * factor)
+    direct_stiffness = wp.max(ke * factor, MJ_MINVAL)
+    direct_damping = wp.max(kd * factor, MJ_MINVAL)
+    timeconst = 2.0 / direct_damping
+    dampratio = direct_damping / (2.0 * wp.sqrt(direct_stiffness))
+
+    jnt_solref[world, mjc_jnt] = wp.vec2(timeconst, dampratio)
 
 
 @wp.kernel(enable_backward=False)
