@@ -8,12 +8,23 @@ wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
 
 import math
+import os
 
 import newton
 from newton import ShapeFlags
 from newton.sensors import SensorTiledCamera
 
 NICE_NAMES = {}
+ASV_RUN_TILED_CAMERA_BENCHMARKS_ENV_VAR = "NEWTON_RUN_TILED_CAMERA_BENCHMARKS"
+TILED_BENCHMARK_METHODS = {
+    "time_rendering_tiled_color_depth",
+    "time_rendering_tiled_color_only",
+    "time_rendering_tiled_depth_only",
+}
+
+
+def run_tiled_camera_benchmarks():
+    return os.environ.get(ASV_RUN_TILED_CAMERA_BENCHMARKS_ENV_VAR, "").lower() in {"1", "true", "yes", "on"}
 
 
 def nice_name(value):
@@ -38,6 +49,12 @@ def nice_name_collector():
 class FastSensorTiledCamera:
     param_names = ["resolution", "world_count", "iterations"]
     params = ([64], [4096], [50])
+
+    def __dir__(self):
+        names = super().__dir__()
+        if run_tiled_camera_benchmarks():
+            return names
+        return [name for name in names if name not in TILED_BENCHMARK_METHODS]
 
     def setup(self, resolution: int, world_count: int, iterations: int):
         self.device = wp.get_preferred_device()
@@ -87,18 +104,19 @@ class FastSensorTiledCamera:
         self.tiled_camera_sensor.sync_transforms(self.state)
 
         # Warmup Kernels
-        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.TILED
-        self.tiled_camera_sensor.render_config.tile_width = 8
-        self.tiled_camera_sensor.render_config.tile_height = 8
-        for out_color, out_depth in [(True, True), (True, False), (False, True)]:
-            for _ in range(iterations):
-                self.tiled_camera_sensor.update(
-                    self.state,
-                    self.camera_transforms,
-                    self.camera_rays,
-                    color_image=self.color_image if out_color else None,
-                    depth_image=self.depth_image if out_depth else None,
-                )
+        if run_tiled_camera_benchmarks():
+            self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.TILED
+            self.tiled_camera_sensor.render_config.tile_width = 8
+            self.tiled_camera_sensor.render_config.tile_height = 8
+            for out_color, out_depth in [(True, True), (True, False), (False, True)]:
+                for _ in range(iterations):
+                    self.tiled_camera_sensor.update(
+                        self.state,
+                        self.camera_transforms,
+                        self.camera_rays,
+                        color_image=self.color_image if out_color else None,
+                        depth_image=self.depth_image if out_depth else None,
+                    )
 
         self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         for out_color, out_depth in [(True, True), (True, False), (False, True)]:
@@ -152,7 +170,7 @@ class FastSensorTiledCamera:
         wp.synchronize()
 
     @nice_name("Rendering (Tiled)")
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or not run_tiled_camera_benchmarks())
     def time_rendering_tiled_color_depth(self, resolution: int, world_count: int, iterations: int):
         self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.TILED
         self.tiled_camera_sensor.render_config.tile_width = 8
@@ -168,7 +186,7 @@ class FastSensorTiledCamera:
         wp.synchronize()
 
     @nice_name("Rendering (Tiled) (Color Only)")
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or not run_tiled_camera_benchmarks())
     def time_rendering_tiled_color_only(self, resolution: int, world_count: int, iterations: int):
         self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.TILED
         self.tiled_camera_sensor.render_config.tile_width = 8
@@ -183,7 +201,7 @@ class FastSensorTiledCamera:
         wp.synchronize()
 
     @nice_name("Rendering (Tiled) (Depth Only)")
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or not run_tiled_camera_benchmarks())
     def time_rendering_tiled_depth_only(self, resolution: int, world_count: int, iterations: int):
         self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.TILED
         self.tiled_camera_sensor.render_config.tile_width = 8
@@ -237,7 +255,15 @@ if __name__ == "__main__":
         choices=benchmark_list.keys(),
         help="Run a specific benchmark; may be repeated to run multiple (e.g., --bench A --bench B).",
     )
+    parser.add_argument(
+        "--include-tiled",
+        action="store_true",
+        help=f"Run the tiled render-order benchmarks. For ASV, set {ASV_RUN_TILED_CAMERA_BENCHMARKS_ENV_VAR}=1.",
+    )
     args = parser.parse_known_args()[0]
+
+    if args.include_tiled:
+        os.environ[ASV_RUN_TILED_CAMERA_BENCHMARKS_ENV_VAR] = "1"
 
     if args.bench is None:
         benchmarks = benchmark_list.keys()
