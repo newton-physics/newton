@@ -17,6 +17,8 @@
 - Fix MJCF `euler` producing wrong orientations for multi-component angles by treating angles as intrinsic rotations. (#3030)
 - Fix MJCF parsing so attributes from multiple `<compiler>` elements, including `<include>`-expanded children, are merged in document order. (#3030)
 - Fix MJCF worldbody static geoms bypassing the visual/collider class filter, so `parse_visuals=False` drops visual-class geoms attached directly to `<worldbody>` too. (#3030)
+- Fix USD import of body-to-world fixed joints without `PhysicsArticulationRootAPI` creating partial articulation metadata. Rootless USD mechanisms now remain consistently rootless instead of assigning only the world fixed joint to articulation 0.
+- Fix USD import auto-inserted root joints creating one-joint articulations for rootless jointed mechanisms with no `PhysicsArticulationRootAPI`.
 
 ### Removed
 

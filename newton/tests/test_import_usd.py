@@ -171,6 +171,91 @@ def Xform "Root" (
         self.assertTrue(all(art_id == -1 for art_id in model.joint_articulation.numpy()))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_body_to_world_fixed_joint_without_articulation_root_stays_orphan(self):
+        """A USD fixed joint to world must not synthesize an articulation root."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Base")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+        mass_api.GetMassAttr().Set(1.0)
+        mass_api.GetCenterOfMassAttr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        mass_api.GetDiagonalInertiaAttr().Set(Gf.Vec3f(1.0, 1.0, 1.0))
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/root_joint")
+        fixed.CreateBody1Rel().SetTargets([body.GetPath()])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, load_visual_shapes=False)
+
+        self.assertEqual(builder.articulation_count, 0)
+        self.assertEqual(builder.joint_count, 1)
+        self.assertEqual(builder.joint_label, ["/World/root_joint"])
+        self.assertEqual(builder.joint_articulation, [-1])
+
+        model = builder.finalize()
+        self.assertEqual(model.articulation_count, 0)
+        self.assertEqual(model.joint_articulation.numpy().tolist(), [-1])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_rootless_mechanism_root_and_child_joints_stay_orphan(self):
+        """A root joint without ArticulationRootAPI must not split the mechanism."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        base = UsdGeom.Xform.Define(stage, "/World/Base")
+        UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
+
+        link = UsdGeom.Xform.Define(stage, "/World/Link")
+        link.AddTranslateOp().Set(Gf.Vec3d(1.0, 0.0, 0.0))
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        UsdPhysics.MassAPI.Apply(link.GetPrim()).GetMassAttr().Set(1.0)
+
+        root_joint = UsdPhysics.FixedJoint.Define(stage, "/World/RootJoint")
+        root_joint.CreateBody1Rel().SetTargets([base.GetPath()])
+        root_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        root_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        root_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        root_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        child_joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/ChildJoint")
+        child_joint.CreateBody0Rel().SetTargets([base.GetPath()])
+        child_joint.CreateBody1Rel().SetTargets([link.GetPath()])
+        child_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0.0, 0.0))
+        child_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(-0.5, 0.0, 0.0))
+        child_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        child_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        child_joint.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarns(UserWarning):
+            builder.add_usd(stage, load_visual_shapes=False)
+
+        self.assertEqual(builder.articulation_count, 0)
+        self.assertEqual(set(builder.joint_label), {"/World/RootJoint", "/World/ChildJoint"})
+        root_joint_idx = builder.joint_label.index("/World/RootJoint")
+        child_joint_idx = builder.joint_label.index("/World/ChildJoint")
+        self.assertEqual(builder.joint_parent[root_joint_idx], -1)
+        self.assertEqual(builder.joint_parent[child_joint_idx], builder.body_label.index("/World/Base"))
+        self.assertEqual(builder.joint_articulation, [-1, -1])
+
+        model = builder.finalize(skip_validation_joints=True)
+        self.assertEqual(model.articulation_count, 0)
+        self.assertEqual(model.joint_articulation.numpy().tolist(), [-1, -1])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_disabled_joints_create_free_joints(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -184,7 +269,7 @@ def Xform "Root" (
             body = UsdGeom.Cube.Define(stage, path)
             UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
             # Adding CollisionAPI triggers mass computation from geometry (density * volume).
-            # Bodies need positive mass to receive base joints from _add_base_joints_to_floating_bodies.
+            # Bodies need positive mass to receive auto-inserted base joints.
             UsdPhysics.CollisionAPI.Apply(body.GetPrim())
             return body
 
@@ -209,9 +294,69 @@ def Xform "Root" (
         self.assertEqual(builder.body_count, 2)
         self.assertEqual(builder.joint_count, 2)
         self.assertEqual(builder.joint_type.count(newton.JointType.FREE), 2)
-        # Each floating body should get its own single-joint articulation.
+        # With no enabled mechanism joints, each standalone body gets its own articulation.
         self.assertEqual(builder.articulation_count, 2)
         self.assertEqual(set(builder.joint_articulation), {0, 1})
+
+        model = builder.finalize()
+        self.assertEqual(model.articulation_count, 2)
+        self.assertEqual(set(model.joint_articulation.numpy().tolist()), {0, 1})
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_unrelated_floating_body_gets_single_body_articulation(self):
+        """Floating bodies outside authored articulations get standalone articulations."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        robot = UsdGeom.Xform.Define(stage, "/World/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(robot.GetPrim())
+
+        robot_base = UsdGeom.Cube.Define(stage, "/World/Robot/Base")
+        UsdPhysics.RigidBodyAPI.Apply(robot_base.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(robot_base.GetPrim())
+
+        robot_link = UsdGeom.Cube.Define(stage, "/World/Robot/Link")
+        robot_link.AddTranslateOp().Set(Gf.Vec3d(1.0, 0.0, 0.0))
+        UsdPhysics.RigidBodyAPI.Apply(robot_link.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(robot_link.GetPrim())
+
+        robot_joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Robot/Joint")
+        robot_joint.CreateBody0Rel().SetTargets([robot_base.GetPath()])
+        robot_joint.CreateBody1Rel().SetTargets([robot_link.GetPath()])
+        robot_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0.0, 0.0))
+        robot_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(-0.5, 0.0, 0.0))
+        robot_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        robot_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        robot_joint.CreateAxisAttr().Set("Z")
+
+        loose_body = UsdGeom.Cube.Define(stage, "/World/LooseBody")
+        UsdPhysics.RigidBodyAPI.Apply(loose_body.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(loose_body.GetPrim())
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, floating=False)
+
+        self.assertEqual(builder.body_count, 3)
+        self.assertEqual(builder.joint_count, 3)
+        self.assertEqual(builder.articulation_count, 2)
+
+        robot_base_joint = next(
+            i for i, child in enumerate(builder.joint_child) if builder.body_label[child] == "/World/Robot/Base"
+        )
+        loose_joint = next(
+            i for i, child in enumerate(builder.joint_child) if builder.body_label[child] == "/World/LooseBody"
+        )
+
+        self.assertEqual(builder.joint_articulation[robot_base_joint], 0)
+        self.assertEqual(builder.joint_articulation[builder.joint_label.index("/World/Robot/Joint")], 0)
+        self.assertEqual(builder.joint_articulation[loose_joint], 1)
+
+        model = builder.finalize()
+        self.assertEqual(model.articulation_count, 2)
+        self.assertEqual(model.joint_articulation.numpy().tolist()[loose_joint], 1)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_orphan_joints_with_articulation_present(self):
@@ -307,7 +452,7 @@ def Xform "Root" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_body_to_world_fixed_joint(self):
         """A body connected to the world via a PhysicsFixedJoint must be imported
-        with a FIXED joint (not FREE) and placed in its own articulation."""
+        with a FIXED joint (not FREE) without synthesizing a new articulation."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -358,6 +503,7 @@ def Xform "Root" (
 
         # 3 bodies: Base, Link1, WorldLink.
         self.assertEqual(builder.body_count, 3)
+        self.assertEqual(builder.articulation_count, 1)
 
         wl_body_idx = builder.body_label.index("/World/WorldLink")
         wl_joint_idx = next(i for i in range(builder.joint_count) if builder.joint_child[i] == wl_body_idx)
@@ -366,14 +512,13 @@ def Xform "Root" (
         self.assertEqual(builder.joint_type[wl_joint_idx], newton.JointType.FIXED)
         # Parent is -1 (world).
         self.assertEqual(builder.joint_parent[wl_joint_idx], -1)
-        # world_link's FIXED joint must belong to its own articulation,
-        # separate from the main arm articulation.
-        wl_art = builder.joint_articulation[wl_joint_idx]
-        self.assertNotEqual(wl_art, -1)
+        # The world-fixed joint pins a standalone body without generalized
+        # coordinates, so it stays outside the authored arm articulation.
+        self.assertEqual(builder.joint_articulation[wl_joint_idx], -1)
 
         rev_joint_idx = builder.joint_label.index("/World/Arm/RevJoint")
         arm_art = builder.joint_articulation[rev_joint_idx]
-        self.assertNotEqual(wl_art, arm_art)
+        self.assertNotEqual(arm_art, -1)
 
         # Model must finalize without errors (no orphan joint issues).
         model = builder.finalize()
@@ -381,7 +526,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_orphan_world_fixed_joint_respects_env_offset_and_xform(self):
-        """Orphan body-to-world fixed joints must FK to env-origin + spawn xform."""
+        """Orphan body-to-world fixed joints keep env-origin + spawn xform."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         local_pose0 = wp.transform(wp.vec3(0.1, 0.2, 0.3), wp.quat(0.0, 0.0, 0.7071068, 0.7071068))  # 90deg about z
@@ -416,11 +561,12 @@ def Xform "Root" (
 
                 link_idx = builder.body_label.index("/World/env/PinnedLink")
                 joint_idx = builder.joint_label.index("/World/env/PinnedLink/FixedJoint")
+                self.assertEqual(builder.articulation_count, 0)
                 self.assertEqual(builder.joint_type[joint_idx], newton.JointType.FIXED)
                 self.assertEqual(builder.joint_parent[joint_idx], -1)
+                self.assertEqual(builder.joint_articulation[joint_idx], -1)
 
                 # Check the fixed joint frame by validating the joint_X_c.
-                # Checking joint_X_p is left to the FK check below, which implicitly validates it.
                 expected_X_c = local_pose0 if side == "body0" else local_pose1
                 joint_X_c = builder.joint_X_c[joint_idx]
                 assert_np_equal(np.array(joint_X_c.p), np.array(expected_X_c.p), tol=1e-4)
@@ -428,15 +574,15 @@ def Xform "Root" (
                 q_err = joint_X_c.q * wp.quat_inverse(expected_X_c.q)
                 self.assertLessEqual(2.0 * math.acos(min(1.0, abs(q_err[3]))), 1e-4)
 
-                model = builder.finalize()
-                state = model.state()
-                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                # Check that the body is in the right pose: FK reproduces spawn * USD child world pose
+                # Check that the body is imported at spawn * USD child world pose
                 # (env origin + spawn translation, identity rotation).
-                body_q = state.body_q.numpy()[link_idx]
-                assert_np_equal(body_q[:3], np.array([105.0, 200.0, 0.0]), tol=1e-4)
-                q_err = wp.quat(*body_q[3:7]) * wp.quat_inverse(wp.quat_identity())
+                body_q = builder.body_q[link_idx]
+                assert_np_equal(np.array(body_q.p), np.array([105.0, 200.0, 0.0]), tol=1e-4)
+                q_err = body_q.q * wp.quat_inverse(wp.quat_identity())
                 self.assertLessEqual(2.0 * math.acos(min(1.0, abs(q_err[3]))), 1e-4)
+
+                model = builder.finalize()
+                self.assertEqual(model.articulation_count, 0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collapse_fixed_joints_preserves_orphan_joints(self):
@@ -1701,13 +1847,14 @@ class TestImportUsdPhysics(unittest.TestCase):
         self.assertEqual(builder.body_label[0], "/World/Box")
         self.assertEqual(builder.shape_label[0], "/World/Box")
 
-        # Ensure the body has a free joint assigned and is in an articulation
+        # Ensure the body has a free joint assigned and is in an articulation.
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_type[0], newton.JointType.FREE)
         self.assertEqual(builder.joint_parent[0], -1)
         self.assertEqual(builder.joint_child[0], 0)
         self.assertEqual(builder.articulation_count, 1)
         self.assertEqual(builder.articulation_label[0], "/World/Box")
+        self.assertEqual(builder.joint_articulation, [0])
 
         # Get parsed inertia tensor
         inertia_parsed = np.array(builder.body_inertia[0])
@@ -2914,130 +3061,6 @@ def Xform "Root" (
             builder2.joint_target_mode[get_qd_start(builder2, "/Root/joint_velocity")],
             int(JointTargetMode.VELOCITY),
         )
-
-    def test__add_base_joints_to_floating_bodies_default(self):
-        """Test _add_base_joints_to_floating_bodies with default parameters creates free joints."""
-        builder = newton.ModelBuilder()
-
-        # Create two bodies at different positions using add_link (no auto joint)
-        body0 = builder.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
-        body1 = builder.add_link(xform=wp.transform((2.0, 0.0, 1.0), wp.quat_identity()))
-
-        # Add shapes so bodies have mass
-        builder.add_shape_box(body0, hx=0.5, hy=0.5, hz=0.5)
-        builder.add_shape_box(body1, hx=0.5, hy=0.5, hz=0.5)
-
-        # Call the method with default parameters
-        builder._add_base_joints_to_floating_bodies([body0, body1])
-
-        self.assertEqual(builder.joint_count, 2)
-        self.assertEqual(builder.joint_type.count(newton.JointType.FREE), 2)
-        self.assertEqual(builder.articulation_count, 2)
-
-    def test__add_base_joints_to_floating_bodies_fixed(self):
-        """Test _add_base_joints_to_floating_bodies with floating=False creates fixed joints."""
-        builder = newton.ModelBuilder()
-
-        # Use add_link to create body without auto joint
-        body0 = builder.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
-        builder.add_shape_box(body0, hx=0.5, hy=0.5, hz=0.5)
-
-        builder._add_base_joints_to_floating_bodies([body0], floating=False)
-
-        self.assertEqual(builder.joint_count, 1)
-        self.assertEqual(builder.joint_type[0], newton.JointType.FIXED)
-        self.assertEqual(builder.articulation_count, 1)
-
-        # Verify the parent transform uses the body position
-        parent_xform = builder.joint_X_p[0]
-        assert_np_equal(np.array(parent_xform.p), np.array([0.0, 0.0, 1.0]), tol=1e-6)
-
-    def test__add_base_joints_to_floating_bodies_base_joint_dict(self):
-        """Test _add_base_joints_to_floating_bodies with base_joint dict creates a D6 joint."""
-        builder = newton.ModelBuilder()
-
-        # Use add_link to create body without auto joint
-        body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
-        builder.add_shape_box(body0, hx=0.5, hy=0.5, hz=0.5)
-
-        builder._add_base_joints_to_floating_bodies(
-            [body0],
-            base_joint={
-                "joint_type": newton.JointType.D6,
-                "linear_axes": [
-                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
-                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
-                ],
-                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
-            },
-        )
-
-        self.assertEqual(builder.joint_count, 1)
-        self.assertEqual(builder.joint_type[0], newton.JointType.D6)
-        self.assertEqual(builder.joint_dof_count, 3)  # 2 linear + 1 angular axes
-        self.assertEqual(builder.articulation_count, 1)
-
-        # Verify the parent transform uses the body position
-        parent_xform = builder.joint_X_p[0]
-        assert_np_equal(np.array(parent_xform.p), np.array([1.0, 2.0, 3.0]), tol=1e-6)
-
-    def test__add_base_joints_to_floating_bodies_base_joint_dict_revolute(self):
-        """Test _add_base_joints_to_floating_bodies with base_joint dict creates a revolute joint."""
-        builder = newton.ModelBuilder()
-
-        # Use add_link to create body without auto joint
-        body0 = builder.add_link(xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()))
-        builder.add_shape_box(body0, hx=0.5, hy=0.5, hz=0.5)
-
-        # Use angular_axes with JointDofConfig for revolute joint
-        builder._add_base_joints_to_floating_bodies(
-            [body0],
-            base_joint={
-                "joint_type": newton.JointType.REVOLUTE,
-                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=(0, 0, 1))],
-            },
-        )
-
-        self.assertEqual(builder.joint_count, 1)
-        self.assertEqual(builder.joint_type[0], newton.JointType.REVOLUTE)
-        self.assertEqual(builder.joint_dof_count, 1)
-        self.assertEqual(builder.articulation_count, 1)
-
-    def test__add_base_joints_to_floating_bodies_skips_connected(self):
-        """Test that _add_base_joints_to_floating_bodies skips bodies already connected as children."""
-        builder = newton.ModelBuilder()
-
-        # Create parent and child bodies using add_link (no auto joint)
-        parent = builder.add_link(xform=wp.transform((0.0, 0.0, 0.0), wp.quat_identity()))
-        child = builder.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
-        builder.add_shape_box(parent, hx=0.5, hy=0.5, hz=0.5)
-        builder.add_shape_box(child, hx=0.5, hy=0.5, hz=0.5)
-
-        # Connect parent to child with a revolute joint
-        joint = builder.add_joint_revolute(parent, child, axis=(0, 0, 1))
-        builder.add_articulation([joint])
-
-        # Now call _add_base_joints_to_floating_bodies - only parent should get a joint
-        builder._add_base_joints_to_floating_bodies([parent, child], floating=False)
-
-        # Should have 2 joints total: 1 revolute + 1 fixed for parent
-        self.assertEqual(builder.joint_count, 2)
-        self.assertEqual(builder.joint_type.count(newton.JointType.REVOLUTE), 1)
-        self.assertEqual(builder.joint_type.count(newton.JointType.FIXED), 1)
-
-    def test__add_base_joints_to_floating_bodies_skips_zero_mass(self):
-        """Test that _add_base_joints_to_floating_bodies skips bodies with zero mass."""
-        builder = newton.ModelBuilder()
-
-        # Create a body with zero mass using add_link (no auto joint, no shapes)
-        body0 = builder.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
-        # Don't add any shapes, so mass stays at 0
-
-        builder._add_base_joints_to_floating_bodies([body0])
-
-        # No joints should be created for zero mass bodies
-        self.assertEqual(builder.joint_count, 0)
-        self.assertEqual(builder.articulation_count, 0)
 
     def test_add_base_joint_default(self):
         """Test add_base_joint with default parameters creates a free joint."""
@@ -6946,10 +6969,6 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         Regression test: prims under instanceable prims should be visited during
         custom frequency USD parsing via TraverseInstanceProxies predicate.
         """
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_floating_true_creates_free_joint(self):
-        """Test that floating=True creates a free joint for the root body."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -7014,18 +7033,10 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertAlmostEqual(child_values[1], 99.0, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_custom_frequency_wildcard_usd_attribute(self):
-        """Test that usd_attribute_name='*' calls the usd_value_transformer for every matching prim.
-
-        Registers a CustomFrequency that selects prims of a custom type, then uses
-        usd_attribute_name='*' with a usd_value_transformer to derive CustomAttribute
-        values from arbitrary prim data (not from a specific USD attribute).
-        """
+    def test_floating_true_creates_free_joint(self):
+        """Test that floating=True creates a free joint for the root body."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
-        # Create a USD stage with a physics scene and three "sensor" prims.
-        # Each sensor has a different "position" attribute that we will read
-        # through the wildcard transformer (not through the normal attribute path).
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
@@ -7041,10 +7052,12 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
 
         self.assertEqual(model.joint_count, 1)
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.FREE)
+        self.assertEqual(model.articulation_count, 1)
+        self.assertEqual(model.joint_articulation.numpy().tolist(), [0])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_floating_false_creates_fixed_joint(self):
-        """Test that floating=False creates a fixed joint for the root body."""
+    def test_custom_frequency_wildcard_usd_attribute(self):
+        """Test that usd_attribute_name='*' transforms every matching prim."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -7161,8 +7174,8 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertIn("usd_value_transformer", str(ctx.exception))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_custom_frequency_usd_entry_expander_multiple_rows(self):
-        """Test that usd_entry_expander can emit multiple rows per matched prim."""
+    def test_floating_false_creates_fixed_joint(self):
+        """Test that floating=False creates a fixed joint for the root body."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -7180,6 +7193,8 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
 
         self.assertEqual(model.joint_count, 1)
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.FIXED)
+        self.assertEqual(model.articulation_count, 1)
+        self.assertEqual(model.joint_articulation.numpy().tolist(), [0])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_base_joint_dict_creates_d6_joint(self):
@@ -7211,6 +7226,8 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
 
         self.assertEqual(model.joint_count, 1)
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
+        self.assertEqual(model.articulation_count, 1)
+        self.assertEqual(model.joint_articulation.numpy().tolist(), [0])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_base_joint_dict_creates_custom_joint(self):
@@ -7238,6 +7255,8 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
 
         self.assertEqual(model.joint_count, 1)
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.REVOLUTE)
+        self.assertEqual(model.articulation_count, 1)
+        self.assertEqual(model.joint_articulation.numpy().tolist(), [0])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_floating_and_base_joint_mutually_exclusive(self):
@@ -7270,30 +7289,8 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertIn("Cannot specify both", str(ctx.exception))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_base_joint_respects_import_xform(self):
-        """Test that base joints (parent == -1) correctly use the import xform.
-
-            This is a regression test for a bug where root bodies with base_joint
-            ignored the import xform parameter, using raw body pos/ori instead of
-            the composed world_xform.
-
-            Setup:
-            - Root body at (1, 0, 0) with no rotation
-            - Import xform: translate by (10, 20, 30) and rotate 90° around Z
-            - Using base_joint={
-            "joint_type": newton.JointType.D6,
-            "linear_axes": [
-                newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
-                newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
-                newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])
-            ],
-        } (D6 joint with linear axes)
-
-            Expected final body transform after FK:
-            - world_xform = import_xform * body_local_xform
-            - Position should reflect import position + rotated offset
-            - Orientation should reflect import rotation
-        """
+    def test_custom_frequency_usd_entry_expander_multiple_rows(self):
+        """Test that usd_entry_expander can emit multiple rows per matched prim."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -7340,8 +7337,8 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         assert_np_equal(values, np.array([1.0, 2.0, 1.0], dtype=np.float32), tol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_custom_frequency_usd_filter_and_expander_context_unified(self):
-        """Test that usd_prim_filter and usd_entry_expander receive the same context contract."""
+    def test_base_joint_respects_import_xform(self):
+        """Test that base joints with parent == -1 use the import xform."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -7665,9 +7662,8 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         builder.add_usd(gripper_stage, parent_body=base_body_idx, floating=False)
         model = builder.finalize()
 
-        # Verify it worked - gripper should be attached with FIXED joint
         self.assertTrue(any("GripperBase" in key for key in builder.body_label))
-        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)  # Single articulation
+        self.assertEqual(model.articulation_count, 1)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     @_expect_jointless_articulation_warning
@@ -7789,10 +7785,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
 
         model = builder.finalize()
 
-        # All should be in ONE articulation
-        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)
-
-        # Verify joint count: arm (1 fixed + 2 revolute) + gripper (1 fixed + 1 revolute) + sensor (1 fixed) = 6
+        self.assertEqual(model.articulation_count, 1)
         self.assertEqual(model.joint_count, 6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -7813,16 +7806,12 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
 
             return stage
 
-        # Build the model
         builder = newton.ModelBuilder()
-
-        # Add parent body at world position (0, 0, 2)
         parent_stage = create_simple_body_stage("parent")
         builder.add_usd(parent_stage, xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()), floating=False)
 
         parent_body_idx = builder.body_label.index("/parent")
 
-        # Attach child to parent with xform (0, 0, 0.5) - interpreted as parent-relative offset
         child_stage = create_simple_body_stage("child")
         builder.add_usd(
             child_stage, parent_body=parent_body_idx, xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity())
@@ -7830,26 +7819,16 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
 
         child_body_idx = builder.body_label.index("/child")
 
-        # Finalize and compute forward kinematics to get world-space positions
         model = builder.finalize()
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
         body_q = state.body_q.numpy()
-        parent_world_pos = body_q[parent_body_idx, :3]  # Extract x, y, z
-        child_world_pos = body_q[child_body_idx, :3]  # Extract x, y, z
+        parent_world_pos = body_q[parent_body_idx, :3]
+        child_world_pos = body_q[child_body_idx, :3]
 
-        # Verify parent is at specified world position
-        self.assertAlmostEqual(parent_world_pos[0], 0.0, places=5)
-        self.assertAlmostEqual(parent_world_pos[1], 0.0, places=5)
-        self.assertAlmostEqual(parent_world_pos[2], 2.0, places=5, msg="Parent should be at Z=2.0")
-
-        # Verify child is offset by +0.5 in Z from parent
-        self.assertAlmostEqual(child_world_pos[0], parent_world_pos[0], places=5)
-        self.assertAlmostEqual(child_world_pos[1], parent_world_pos[1], places=5)
-        self.assertAlmostEqual(
-            child_world_pos[2], parent_world_pos[2] + 0.5, places=5, msg="Child should be offset by +0.5 in Z"
-        )
+        np.testing.assert_allclose(parent_world_pos, [0.0, 0.0, 2.0], atol=1e-5)
+        np.testing.assert_allclose(child_world_pos, parent_world_pos + np.array([0.0, 0.0, 0.5]), atol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_many_independent_articulations(self):
@@ -7896,15 +7875,12 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
 
         model = builder.finalize()
 
-        # Should have 5 articulations
-        self.assertEqual(len(model.articulation_start.numpy()) - 1, 5)
-
-        # Each articulation has 2 joints (FIXED base + revolute)
+        self.assertEqual(model.articulation_count, 5)
         self.assertEqual(model.joint_count, 10)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_base_joint_dict_conflicting_keys_fails(self):
-        """Test that base_joint dict with conflicting keys raises ValueError."""
+    def test_custom_frequency_usd_filter_and_expander_context_unified(self):
+        """Test that usd_prim_filter and usd_entry_expander receive the same context contract."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -8036,6 +8012,15 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         seen_counts = model.test.consumer_seen_producer_count.numpy()
         assert_np_equal(seen_counts, np.array([1, 2, 3], dtype=np.int32), tol=0)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_base_joint_dict_conflicting_keys_fails(self):
+        """Test that base_joint dict with conflicting keys raises ValueError."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
         body = UsdGeom.Cube.Define(stage, "/Body")
         body_prim = body.GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(body_prim)
@@ -8044,19 +8029,16 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        # Test with 'parent' key
         with self.assertRaises(ValueError) as ctx:
             builder.add_usd(stage, base_joint={"joint_type": newton.JointType.REVOLUTE, "parent": 5})
         self.assertIn("cannot specify", str(ctx.exception))
         self.assertIn("parent", str(ctx.exception))
 
-        # Test with 'child' key
         with self.assertRaises(ValueError) as ctx:
             builder.add_usd(stage, base_joint={"joint_type": newton.JointType.REVOLUTE, "child": 3})
         self.assertIn("cannot specify", str(ctx.exception))
         self.assertIn("child", str(ctx.exception))
 
-        # Test with 'parent_xform' key
         with self.assertRaises(ValueError) as ctx:
             builder.add_usd(
                 stage,

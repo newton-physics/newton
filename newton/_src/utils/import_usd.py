@@ -2087,6 +2087,12 @@ def parse_usd(
     # This allows us to parse orphan joints (joints not included in any articulation)
     # even when articulations are present in the USD.
     processed_joints: set[str] = set()
+    authored_articulation_root_paths = [
+        str(prim.GetPath())
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies())
+        if prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+    ]
+    authored_articulation_root_paths.sort(key=len, reverse=True)
 
     # maps from articulation_id to bool indicating if self-collisions are enabled
     articulation_has_self_collision = {}
@@ -2548,7 +2554,7 @@ def parse_usd(
     )
 
     # insert remaining bodies that were not part of any articulation so far
-    # (joints for these bodies will be added later by _add_base_joints_to_floating_bodies)
+    # (root joints for these bodies will be added after mass properties are resolved)
     for path, rigid_body_desc in body_specs.items():
         key = str(path)
         body_id: int = parse_body(  # pyright: ignore[reportAssignmentType]
@@ -2579,9 +2585,10 @@ def parse_usd(
         if str(joint_desc.body0) in ignored_body_paths or str(joint_desc.body1) in ignored_body_paths:
             continue
         # Skip body-to-world joints (where one body is empty/world) only when
-        # FREE joints will be auto-inserted for remaining bodies — but always
-        # keep body-to-world FIXED joints so the body is properly welded to
-        # world instead of receiving an incorrect FREE base joint.
+        # FREE joints will be auto-inserted for remaining bodies. Keep
+        # body-to-world FIXED joints as real joints so maximal-coordinate
+        # solvers can enforce the authored weld without synthesizing articulation
+        # metadata.
         body0_path = str(joint_desc.body0)
         body1_path = str(joint_desc.body1)
         is_body_to_world = body0_path in ("", "/") or body1_path in ("", "/")
@@ -2616,13 +2623,9 @@ def parse_usd(
                     world_body_xform_o = child_world_xform_o * child_tf_o * wp.transform_inverse(parent_tf_o)
                     orphan_incoming_xform = incoming_world_xform * world_body_xform_o
             joint_index = parse_joint(joint_desc, incoming_xform=orphan_incoming_xform)
-            # Handle body-to-world FIXED joints separately to ensure proper welding.
-            # Creates an articulation for the body-to-world FIXED joint (consistent with MuJoCo approach)
-            if joint_index is not None and is_body_to_world and is_fixed_joint:
-                child_body = builder.joint_child[joint_index]
-                builder.add_articulation([joint_index], label=builder.body_label[child_body])
-            else:
-                orphan_joints.append(joint_path)
+            if joint_index is not None:
+                if not (is_body_to_world and is_fixed_joint):
+                    orphan_joints.append(joint_path)
         except ValueError as exc:
             if verbose:
                 print(f"Skipping joint {joint_path}: {exc}")
@@ -3695,7 +3698,31 @@ def parse_usd(
                     articulation_label=None,
                 )
         else:
-            builder._add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
+            joint_children = set(builder.joint_child)
+            for body_id in new_bodies:
+                if body_id in joint_children:
+                    continue
+                if builder.body_mass[body_id] <= 0:
+                    continue
+
+                joint_id = builder._add_base_joint(body_id, floating=floating, base_joint=base_joint)
+                body_path = builder.body_label[body_id]
+                articulation_root_path = next(
+                    (
+                        root
+                        for root in authored_articulation_root_paths
+                        if body_path == root or body_path.startswith("/" if root == "/" else f"{root}/")
+                    ),
+                    None,
+                )
+                if articulation_root_path is not None:
+                    builder._finalize_imported_articulation(
+                        joint_indices=[joint_id],
+                        parent_body=parent_body,
+                        articulation_label=articulation_root_path,
+                    )
+                else:
+                    builder.add_articulation([joint_id], label=body_path)
 
     # Parse MjcEquality constraints *before* collapsing fixed joints so that the
     # builder's collapse logic can remap body/joint indices and adjust anchors/relposes
