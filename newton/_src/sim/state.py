@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import ClassVar
+
 import warp as wp
 
 
@@ -55,13 +58,21 @@ class State:
     store and update the simulation's current configuration and derived data.
     """
 
-    EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(
-        (
-            "body_qdd",
-            "body_parent_f",
-            "mujoco:qfrc_actuator",
-        )
-    )
+    @dataclass(frozen=True)
+    class ExtendedAttributeTemplate:
+        """Allocation metadata for an optional built-in state attribute."""
+
+        frequency: str
+        dtype: type
+
+    EXTENDED_ATTRIBUTE_TEMPLATES: ClassVar[dict[str, ExtendedAttributeTemplate]] = {
+        "body_qdd": ExtendedAttributeTemplate("BODY", wp.spatial_vector),
+        "body_parent_f": ExtendedAttributeTemplate("BODY", wp.spatial_vector),
+        "mujoco:qfrc_actuator": ExtendedAttributeTemplate("JOINT_DOF", wp.float32),
+    }
+    """Optional extended state attributes and their allocation metadata."""
+
+    EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(EXTENDED_ATTRIBUTE_TEMPLATES)
     """
     Names of optional extended state attributes that are not allocated by default.
 

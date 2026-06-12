@@ -186,6 +186,149 @@ def test_particle_state(
             raise ValueError(f'Test "{test_name}" failed for {len(failed_particles)} out of {len(indices)} particles')
 
 
+_COUPLED_VIEW_COMBINED = "combined"
+
+
+def add_coupled_view_args(parser) -> None:
+    """Add the standard coupled-solver view selection argument to an example parser.
+
+    Args:
+        parser: Argument parser to extend.
+    """
+    parser.add_argument(
+        "--coupled-view",
+        type=str,
+        default=_COUPLED_VIEW_COMBINED,
+        metavar="NAME",
+        help="Coupled solver view to render: 'combined' or one sub-solver entry name.",
+    )
+
+
+def configure_coupled_view(example, args=None, view_name: str | None = None):
+    """Configure an example viewer for combined or entry-local coupled rendering.
+
+    Args:
+        example: Example instance with ``viewer``, ``model``, ``state_0`` and
+            optionally a coupled ``solver``.
+        args: Parsed arguments that may contain ``coupled_view``.
+        view_name: Explicit view name overriding ``args.coupled_view``.
+
+    Returns:
+        Model or ModelView passed to the viewer.
+
+    Raises:
+        ValueError: If an entry view is requested for a non-coupled solver or
+            the entry name does not exist.
+    """
+    name = _coupled_view_name(args, view_name)
+    model = _coupled_view_model(example, name)
+    example._coupled_view_name = name
+    example.viewer.set_model(model)
+    return model
+
+
+def is_coupled_view_combined(example) -> bool:
+    """Return whether an example is rendering the combined parent model."""
+    return getattr(example, "_coupled_view_name", _COUPLED_VIEW_COMBINED) == _COUPLED_VIEW_COMBINED
+
+
+def get_coupled_view_state(example):
+    """Return the state matching an example's selected coupled render view.
+
+    Args:
+        example: Example instance configured with :func:`configure_coupled_view`.
+
+    Returns:
+        Parent-model state for the combined view or entry-local state for an
+        individual coupled solver view.
+    """
+    name = getattr(example, "_coupled_view_name", _COUPLED_VIEW_COMBINED)
+    return _coupled_view_state(example, name)
+
+
+def apply_coupled_viewer_forces(example, state: newton.State) -> None:
+    """Apply viewer-driven forces when the viewer is bound to the parent model.
+
+    Entry-local render views can compact ids, so picking and wind forces are not
+    mapped back to the parent state in that mode.
+
+    Args:
+        example: Example instance with ``viewer`` and coupled-view metadata.
+        state: Parent-model state to receive viewer forces.
+    """
+    if is_coupled_view_combined(example):
+        example.viewer.apply_forces(state)
+
+
+def log_coupled_view(example, contacts=None, *, log_contacts: bool = True) -> None:
+    """Log the currently selected coupled view for an example frame.
+
+    Args:
+        example: Example instance with ``viewer``, ``model``, ``state_0`` and
+            optionally a coupled ``solver``.
+        contacts: Parent-model contacts to log when compatible with the
+            selected view.
+        log_contacts: Whether to log compatible contacts.
+    """
+    name = getattr(example, "_coupled_view_name", _COUPLED_VIEW_COMBINED)
+    state = _coupled_view_state(example, name)
+    example.viewer.log_state(state)
+
+    if not log_contacts:
+        return
+
+    view_contacts = contacts
+    if name != _COUPLED_VIEW_COMBINED:
+        solver = getattr(example, "solver", None)
+        entry_contacts = getattr(solver, "entry_contacts", None)
+        view_contacts = None if not callable(entry_contacts) else entry_contacts(name, contacts)
+    if view_contacts is not None:
+        example.viewer.log_contacts(view_contacts, state)
+
+
+def _coupled_view_name(args, view_name: str | None) -> str:
+    if view_name is not None:
+        return str(view_name)
+    return str(getattr(args, "coupled_view", _COUPLED_VIEW_COMBINED))
+
+
+def _coupled_entry_names(solver) -> tuple[str, ...]:
+    entry_names = getattr(solver, "entry_names", None)
+    if not callable(entry_names):
+        return ()
+    return tuple(str(name) for name in entry_names())
+
+
+def _coupled_view_model(example, name: str):
+    if name == _COUPLED_VIEW_COMBINED:
+        return example.model
+
+    solver = getattr(example, "solver", None)
+    entry_names = _coupled_entry_names(solver)
+    if not entry_names:
+        raise ValueError("--coupled-view requires a coupled solver when not set to 'combined'")
+    if name not in entry_names:
+        choices = ", ".join((_COUPLED_VIEW_COMBINED, *entry_names))
+        raise ValueError(f"Unknown coupled solver view {name!r}; choose one of: {choices}")
+
+    entry_view = getattr(solver, "entry_view", None)
+    if callable(entry_view):
+        return entry_view(name)
+    return solver.view(name)
+
+
+def _coupled_view_state(example, name: str):
+    if name == _COUPLED_VIEW_COMBINED:
+        return example.state_0
+
+    solver = example.solver
+    output_valid = getattr(solver, "entry_output_state_valid", None)
+    sync_entry_states = getattr(solver, "sync_entry_states", None)
+    if callable(output_valid) and callable(sync_entry_states) and not output_valid():
+        sync_entry_states(example.state_0)
+    return solver.entry_state(name)
+
+
 class _ExampleBrowser:
     """Manages the example browser UI and switching/reset logic for the run loop."""
 

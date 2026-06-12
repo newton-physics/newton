@@ -805,6 +805,14 @@ add_example_test(
 )
 add_example_test(
     TestMultiphysicsExamples,
+    name="multiphysics.example_softbody_dropping_to_cloth",
+    devices=test_devices,
+    test_options={"num-frames": 2, "solver": "coupled", "vbd-iterations": 2},
+    use_viewer=True,
+    test_suffix="coupled",
+)
+add_example_test(
+    TestMultiphysicsExamples,
     name="multiphysics.example_rigid_soft_contact",
     devices=cuda_test_devices,
     test_options={"num-frames": 180, "solver": "xpbd"},
@@ -826,6 +834,65 @@ add_example_test(
     test_options={"num-frames": 180, "solver": "vbd"},
     use_viewer=True,
     test_suffix="vbd",
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_rigid_soft_contact",
+    devices=test_devices,
+    test_options={"num-frames": 2, "solver": "coupled", "rigid-solver": "mjc", "vbd-iterations": 1},
+    use_viewer=True,
+    test_suffix="coupled_mjc",
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_rigid_soft_contact",
+    devices=["cpu"],
+    test_options={"num-frames": 0, "solver": "coupled", "rigid-solver": "mjc", "soft-solver": "xpbd"},
+    use_viewer=True,
+    test_suffix="coupled_xpbd",
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_rigid_soft_contact",
+    devices=["cpu"],
+    test_options={"num-frames": 0, "solver": "coupled", "rigid-solver": "mjc", "soft-solver": "semi_implicit"},
+    use_viewer=True,
+    test_suffix="coupled_semi_implicit",
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_mujoco_vbd_admm_solver",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 30},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_admm_contact_solver",
+    devices=test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_admm_rigid_contact_solver",
+    devices=test_devices,
+    test_options={"num-frames": 90, "tilt-time": 1.0},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_kamino_mujoco_admm_solver",
+    devices=["cpu"],
+    test_options={"num-frames": 30, "world-count": 4, "graph-capture": False},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_xpbd_vbd_coupled_solver",
+    devices=test_devices,
+    test_options={"num-frames": 5, "xpbd-iterations": 4, "vbd-iterations": 2},
+    use_viewer=True,
 )
 
 

@@ -1,0 +1,407 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+"""Reusable GPU kernels for proxy coupling between solvers.
+
+These kernels implement the core operations needed for staggered two-way
+coupling via proxy bodies or proxy particles:
+
+1. **Sync** -- copy poses/velocities from the driving solver to proxy bodies.
+2. **Smooth teleportation** -- encode position jumps as velocity corrections
+   to avoid discontinuities in penetration-free solvers.
+3. **Velocity rewind** -- remove previously applied coupling forces, external
+   force inputs, and gravity from proxy velocities to prevent double-counting.
+4. **Harvest feedback** -- accumulate proxy feedback from destination solver
+   momentum changes.
+"""
+
+from __future__ import annotations
+
+import warp as wp
+
+from ...math import quat_velocity
+
+# ------------------------------------------------------------------
+# 1. Sync proxy states
+# ------------------------------------------------------------------
+
+
+@wp.kernel(enable_backward=False)
+def sync_proxy_states_kernel(
+    src_body_q: wp.array[wp.transform],
+    src_body_qd: wp.array[wp.spatial_vector],
+    source_local_to_proxy_local: wp.array[int],
+    dst_body_q: wp.array[wp.transform],
+    dst_body_qd: wp.array[wp.spatial_vector],
+):
+    """Copy body poses and velocities from a source solver to proxy bodies in a destination solver.
+
+    Args:
+        src_body_q: Source solver begin-of-step body transforms.
+        src_body_qd: Source solver begin-of-step body velocities.
+        source_local_to_proxy_local: Dense map from source-local body id to
+            proxy-local body id. ``-1`` means no proxy exists for that source
+            body.
+        dst_body_q: Destination solver body transforms (written for proxies).
+        dst_body_qd: Destination solver body velocities (written for proxies).
+    """
+    source_local_id = wp.tid()
+    proxy_local_id = source_local_to_proxy_local[source_local_id]
+
+    if proxy_local_id >= 0:
+        dst_body_q[proxy_local_id] = src_body_q[source_local_id]
+        dst_body_qd[proxy_local_id] = src_body_qd[source_local_id]
+
+
+@wp.kernel(enable_backward=False)
+def sync_proxy_particles_kernel(
+    src_particle_q: wp.array[wp.vec3],
+    src_particle_qd: wp.array[wp.vec3],
+    source_local_to_proxy_local: wp.array[int],
+    dst_particle_q: wp.array[wp.vec3],
+    dst_particle_qd: wp.array[wp.vec3],
+):
+    """Copy particle positions and velocities from a source solver to proxy particles."""
+    source_local_id = wp.tid()
+    proxy_local_id = source_local_to_proxy_local[source_local_id]
+
+    if proxy_local_id >= 0:
+        dst_particle_q[proxy_local_id] = src_particle_q[source_local_id]
+        dst_particle_qd[proxy_local_id] = src_particle_qd[source_local_id]
+
+
+# ------------------------------------------------------------------
+# 2. Smooth teleportation
+# ------------------------------------------------------------------
+
+
+@wp.kernel(enable_backward=False)
+def smooth_proxy_teleportation_kernel(
+    dt: float,
+    proxy_body_ids_local: wp.array[int],
+    dst_body_q: wp.array[wp.transform],
+    dst_body_qd: wp.array[wp.spatial_vector],
+    dst_body_q_prev: wp.array[wp.transform],
+):
+    """Encode a proxy teleportation as a velocity correction and undo the position jump.
+
+    After :func:`sync_proxy_states_kernel` teleports proxy ``body_q`` to the
+    driving solver's begin-of-step pose, this kernel computes the residual
+    between the teleported pose and the destination solver's previous
+    end-of-step pose (``body_q_prev``), folds it into ``body_qd`` as a smooth
+    velocity correction, and resets ``body_q`` back to ``body_q_prev``.
+
+    This avoids a position discontinuity that would contaminate
+    finite-difference velocity estimates used for contact damping and friction
+    in penetration-free solvers (e.g. VBD).
+
+    Args:
+        dt: Substep time step [s].
+        proxy_body_ids_local: Compact list of proxy-local body ids.
+        dst_body_q: Destination body transforms (read then overwritten).
+        dst_body_qd: Destination body velocities (accumulated).
+        dst_body_q_prev: Destination solver's previous end-of-step body transforms.
+    """
+    i = wp.tid()
+    if i >= proxy_body_ids_local.shape[0]:
+        return
+
+    b = proxy_body_ids_local[i]
+    q_teleported = dst_body_q[b]
+    q_prev = dst_body_q_prev[b]
+
+    # Translational correction
+    p_teleported = wp.transform_get_translation(q_teleported)
+    p_prev = wp.transform_get_translation(q_prev)
+    dv = (p_teleported - p_prev) / dt
+
+    # Rotational correction
+    r_teleported = wp.transform_get_rotation(q_teleported)
+    r_prev = wp.transform_get_rotation(q_prev)
+    dw = quat_velocity(r_teleported, r_prev, dt)
+
+    # Add correction to the synced velocity
+    qd = dst_body_qd[b]
+    dst_body_qd[b] = qd + wp.spatial_vector(dv, dw)
+
+    # Reset position to previous end-of-step (no discontinuity)
+    dst_body_q[b] = q_prev
+
+
+# ------------------------------------------------------------------
+# 3. Rewind proxy velocities
+# ------------------------------------------------------------------
+
+
+@wp.kernel(enable_backward=False)
+def subtract_proxy_forces_kernel(
+    dt: float,
+    body_gravity_acceleration: wp.array[wp.vec3],
+    dst_body_q: wp.array[wp.transform],
+    dst_body_f: wp.array[wp.spatial_vector],
+    coupling_forces: wp.array[wp.spatial_vector],
+    body_local_to_proxy_global: wp.array[int],
+    dst_body_inv_mass: wp.array[float],
+    dst_body_inv_inertia: wp.array[wp.mat33],
+    dst_body_qd: wp.array[wp.spatial_vector],
+):
+    """Subtract default velocity-level feedback, force inputs, and gravity.
+
+    The generic proxy path treats ``coupling_forces`` as lagged momentum or
+    velocity-level feedback, so they are rewound before the destination solve.
+    Position-dependent feedback, such as barrier-style contact, should use a
+    solver-specific rewind hook that preserves ``coupling_forces``.
+    Destination external force inputs and gravity are also subtracted because
+    the synced proxy velocity came from a driving solver that already accounted
+    for those contributions.
+
+    Args:
+        dt: Substep time step [s].
+        body_gravity_acceleration: Per-body acceleration applied internally by
+            the destination solver's gravity-like forces [m/s^2].
+        dst_body_q: Destination body transforms (for rotating inertia).
+        dst_body_f: Destination body force inputs.
+        coupling_forces: Spatial forces previously applied to the driving solver,
+            indexed by global proxy body id.
+        body_local_to_proxy_global: Dense map from local body id to global
+            proxy body id. ``-1`` entries are skipped.
+        dst_body_inv_mass: Destination inverse masses.
+        dst_body_inv_inertia: Destination inverse inertia tensors.
+        dst_body_qd: Destination body velocities (modified in-place).
+    """
+    local_id = wp.tid()
+    global_id = body_local_to_proxy_global[local_id]
+    if global_id < 0:
+        return
+
+    f = coupling_forces[global_id] + dst_body_f[local_id]
+
+    inv_m = dst_body_inv_mass[local_id]
+    r = wp.transform_get_rotation(dst_body_q[local_id])
+    inv_I = dst_body_inv_inertia[local_id]
+
+    delta_v = dt * inv_m * wp.spatial_top(f)
+    delta_w = dt * wp.quat_rotate(r, inv_I * wp.quat_rotate_inv(r, wp.spatial_bottom(f)))
+
+    # Subtract solver-applied gravity-like acceleration (driving solver already applied it).
+    g = body_gravity_acceleration[local_id]
+    delta_v_grav = wp.vec3(0.0, 0.0, 0.0)
+    if inv_m > 0.0:
+        delta_v_grav = dt * g
+
+    dst_body_qd[local_id] = dst_body_qd[local_id] - wp.spatial_vector(delta_v + delta_v_grav, delta_w)
+
+
+@wp.kernel(enable_backward=False)
+def subtract_proxy_particle_forces_kernel(
+    dt: float,
+    particle_gravity_acceleration: wp.array[wp.vec3],
+    dst_particle_f: wp.array[wp.vec3],
+    coupling_forces: wp.array[wp.vec3],
+    particle_local_to_proxy_global: wp.array[int],
+    dst_particle_inv_mass: wp.array[float],
+    dst_particle_qd: wp.array[wp.vec3],
+):
+    """Subtract default velocity-level feedback, particle force inputs, and gravity."""
+    local_id = wp.tid()
+    global_id = particle_local_to_proxy_global[local_id]
+    if global_id < 0:
+        return
+
+    inv_m = dst_particle_inv_mass[local_id]
+    delta_v = dt * inv_m * (coupling_forces[global_id] + dst_particle_f[local_id])
+
+    g = particle_gravity_acceleration[local_id]
+    delta_v_grav = wp.vec3(0.0, 0.0, 0.0)
+    if inv_m > 0.0:
+        delta_v_grav = dt * g
+
+    dst_particle_qd[local_id] = dst_particle_qd[local_id] - (delta_v + delta_v_grav)
+
+
+# ------------------------------------------------------------------
+# 4. Harvest proxy feedback
+# ------------------------------------------------------------------
+
+
+@wp.kernel(enable_backward=False)
+def harvest_proxy_momentum_forces_kernel(
+    dt: float,
+    body_local_to_proxy_global: wp.array[int],
+    qd_before: wp.array[wp.spatial_vector],
+    qd_after: wp.array[wp.spatial_vector],
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    body_q: wp.array[wp.transform],
+    out_coupling_forces: wp.array[wp.spatial_vector],
+):
+    """Estimate proxy feedback force from destination velocity change."""
+    local_id = wp.tid()
+    global_id = body_local_to_proxy_global[local_id]
+    if global_id < 0:
+        return
+
+    dv = wp.spatial_top(qd_after[local_id]) - wp.spatial_top(qd_before[local_id])
+    dw = wp.spatial_bottom(qd_after[local_id]) - wp.spatial_bottom(qd_before[local_id])
+
+    m = body_mass[local_id]
+    I_body = body_inertia[local_id]
+    r = wp.transform_get_rotation(body_q[local_id])
+
+    f = m * dv / dt
+    tau = wp.quat_rotate(r, I_body * wp.quat_rotate_inv(r, dw)) / dt
+
+    wp.atomic_add(out_coupling_forces, global_id, wp.spatial_vector(f, tau))
+
+
+@wp.kernel(enable_backward=False)
+def harvest_proxy_particle_momentum_forces_kernel(
+    dt: float,
+    particle_local_to_proxy_global: wp.array[int],
+    qd_before: wp.array[wp.vec3],
+    qd_after: wp.array[wp.vec3],
+    particle_mass: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    active_flag: int,
+    out_coupling_forces: wp.array[wp.vec3],
+):
+    """Estimate proxy particle feedback force from destination velocity change."""
+    local_id = wp.tid()
+    global_id = particle_local_to_proxy_global[local_id]
+    if global_id < 0:
+        return
+    if (particle_flags[local_id] & active_flag) == 0:
+        return
+
+    dv = qd_after[local_id] - qd_before[local_id]
+    m = particle_mass[local_id]
+
+    f = m * dv / dt
+    wp.atomic_add(out_coupling_forces, global_id, f)
+
+
+@wp.kernel(enable_backward=False)
+def stash_proxy_body_forces_kernel(
+    proxy_body_ids_global: wp.array[int],
+    coupling_forces: wp.array[wp.spatial_vector],
+    out_previous_coupling_forces: wp.array[wp.spatial_vector],
+):
+    """Save the current proxy-body feedback for a later relaxation blend."""
+    i = wp.tid()
+    out_previous_coupling_forces[i] = coupling_forces[proxy_body_ids_global[i]]
+
+
+@wp.kernel(enable_backward=False)
+def stash_proxy_particle_forces_kernel(
+    proxy_particle_ids_global: wp.array[int],
+    coupling_forces: wp.array[wp.vec3],
+    out_previous_coupling_forces: wp.array[wp.vec3],
+):
+    """Save the current proxy-particle feedback for a later relaxation blend."""
+    i = wp.tid()
+    out_previous_coupling_forces[i] = coupling_forces[proxy_particle_ids_global[i]]
+
+
+@wp.kernel(enable_backward=False)
+def blend_proxy_body_forces_kernel(
+    proxy_relaxation: float,
+    proxy_body_ids_global: wp.array[int],
+    previous_coupling_forces: wp.array[wp.spatial_vector],
+    coupling_forces: wp.array[wp.spatial_vector],
+):
+    """Blend harvested proxy-body feedback with the saved lagged value."""
+    i = wp.tid()
+    global_id = proxy_body_ids_global[i]
+    coupling_forces[global_id] = (
+        proxy_relaxation * coupling_forces[global_id] + (1.0 - proxy_relaxation) * previous_coupling_forces[i]
+    )
+
+
+@wp.kernel(enable_backward=False)
+def blend_proxy_particle_forces_kernel(
+    proxy_relaxation: float,
+    proxy_particle_ids_global: wp.array[int],
+    previous_coupling_forces: wp.array[wp.vec3],
+    coupling_forces: wp.array[wp.vec3],
+):
+    """Blend harvested proxy-particle feedback with the saved lagged value."""
+    i = wp.tid()
+    global_id = proxy_particle_ids_global[i]
+    coupling_forces[global_id] = (
+        proxy_relaxation * coupling_forces[global_id] + (1.0 - proxy_relaxation) * previous_coupling_forces[i]
+    )
+
+
+@wp.kernel(enable_backward=False)
+def filter_proxy_rigid_contacts_kernel(
+    rigid_contact_count: wp.array[int],
+    rigid_contact_shape0: wp.array[wp.int32],
+    rigid_contact_shape1: wp.array[wp.int32],
+    shape_body: wp.array[wp.int32],
+    body_flags: wp.array[wp.int32],
+    body_inv_mass: wp.array[float],
+    proxy_flag: int,
+):
+    """Invalidate proxy-vs-static and proxy-vs-proxy rigid contacts."""
+    contact_id = wp.tid()
+    if contact_id >= rigid_contact_count[0]:
+        return
+
+    s0 = rigid_contact_shape0[contact_id]
+    s1 = rigid_contact_shape1[contact_id]
+    body0 = shape_body[s0] if s0 >= 0 and s0 < shape_body.shape[0] else -1
+    body1 = shape_body[s1] if s1 >= 0 and s1 < shape_body.shape[0] else -1
+
+    is_proxy0 = 0
+    if body0 >= 0 and body0 < body_flags.shape[0]:
+        if (body_flags[body0] & proxy_flag) != 0:
+            is_proxy0 = 1
+    is_proxy1 = 0
+    if body1 >= 0 and body1 < body_flags.shape[0]:
+        if (body_flags[body1] & proxy_flag) != 0:
+            is_proxy1 = 1
+
+    is_static0 = 0
+    if body0 < 0:
+        is_static0 = 1
+    elif body0 < body_inv_mass.shape[0] and body_inv_mass[body0] == 0.0:
+        is_static0 = 1
+
+    is_static1 = 0
+    if body1 < 0:
+        is_static1 = 1
+    elif body1 < body_inv_mass.shape[0] and body_inv_mass[body1] == 0.0:
+        is_static1 = 1
+
+    discard = 0
+    if is_proxy0 == 1 and is_proxy1 == 1:
+        discard = 1
+    if is_proxy0 == 1 and is_static1 == 1:
+        discard = 1
+    if is_proxy1 == 1 and is_static0 == 1:
+        discard = 1
+
+    if discard == 1:
+        if s0 >= 0:
+            rigid_contact_shape0[contact_id] = -s0 - 2
+        if s1 >= 0:
+            rigid_contact_shape1[contact_id] = -s1 - 2
+
+
+@wp.kernel(enable_backward=False)
+def restore_filtered_proxy_rigid_contacts_kernel(
+    rigid_contact_count: wp.array[int],
+    rigid_contact_shape0: wp.array[wp.int32],
+    rigid_contact_shape1: wp.array[wp.int32],
+):
+    """Restore contacts temporarily encoded by proxy contact filtering."""
+    contact_id = wp.tid()
+    if contact_id >= rigid_contact_count[0]:
+        return
+
+    s0 = rigid_contact_shape0[contact_id]
+    s1 = rigid_contact_shape1[contact_id]
+    if s0 < -1:
+        rigid_contact_shape0[contact_id] = -s0 - 2
+    if s1 < -1:
+        rigid_contact_shape1[contact_id] = -s1 - 2
