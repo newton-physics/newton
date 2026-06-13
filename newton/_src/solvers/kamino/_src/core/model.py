@@ -14,7 +14,7 @@ import warp as wp
 from .....sim import Model
 
 # Kamino imports
-from .bodies import RigidBodiesData, RigidBodiesModel, convert_geom_offset_origin_to_com
+from .bodies import RigidBodiesData, RigidBodiesModel
 from .control import ControlKamino
 from .conversions import (
     convert_geometries,
@@ -687,6 +687,10 @@ class ModelKamino:
     def from_newton(model: Model) -> ModelKamino:
         """
         Finalizes the :class:`ModelKamino` from an existing instance of :class:`newton.Model`.
+
+        Args:
+            model:
+                The source :class:`newton.Model` instance to be converted.
         """
 
         # Ensure the base model is valid
@@ -746,23 +750,16 @@ class ModelKamino:
             model_joints = convert_joints(model, model_size, model_info)
 
             # Geometries
-            model_geoms = convert_geometries(model, model_size, materials_manager)
+            model_geoms = convert_geometries(
+                model=model,
+                model_size=model_size,
+                model_bodies=model_bodies,
+                materials_manager=materials_manager,
+            )
 
             # Materials
             model_materials = materials_manager.make_materials_model()
             model_material_pairs = materials_manager.make_material_pairs_model()
-
-        ###
-        # Post-processing
-        ###
-
-        # Convert shape offsets from body-frame-relative to COM-relative
-        convert_geom_offset_origin_to_com(
-            model_bodies.i_r_com_i,
-            model.shape_body,
-            model.shape_transform,
-            model_geoms.offset,
-        )
 
         # Construct and return the new ModelKamino instance
         return ModelKamino(
