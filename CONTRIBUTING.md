@@ -76,8 +76,10 @@ When developing an external solver or extension:
 * publish it in its own repository or package with a dependency on Newton;
 * use public Newton APIs only; do not import from `newton._src`;
 * keep solver-specific tests, examples, and documentation with the external project;
-* propose minimal Newton API additions separately if you need new extension points;
+* open a separate GitHub Issue or Discussion if you need new public extension points in Newton;
 * add the `newton-physics` GitHub topic to the repository for discoverability.
+
+If an external solver or extension becomes broadly useful and has clear long-term maintainers, Project Members may decide case-by-case to adopt part or all of it into the main Newton repository. This is conservative and not guaranteed. Contributors should not rely on upstream adoption as the expected path.
 
 The bar for adding a solver to the main Newton repository is high because every upstream solver adds API, testing, review, release, and support responsibilities for the project. Project Members may ask that a solver remain external, or that only smaller reusable API hooks or improvements be contributed upstream.
 
