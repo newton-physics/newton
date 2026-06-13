@@ -5,8 +5,8 @@
 # Example Cable Rest Initial Pose
 #
 # Shows that cable rest pose and simulation initial pose are separate:
-# - left cable: straight rest pose, spiral initial pose
-# - right cable: spiral rest pose, straight initial pose
+# - left cable: straight rest pose, helical initial pose
+# - right cable: helical rest pose, straight initial pose
 #
 # In both cases, rest and initial segment lengths are matched so the demo is
 # about bend/twist rest-shape mismatch, not accidental initial stretch.
@@ -25,13 +25,6 @@ import newton
 import newton.examples
 
 
-def _pin_body(builder: newton.ModelBuilder, body: int) -> None:
-    builder.body_mass[body] = 0.0
-    builder.body_inv_mass[body] = 0.0
-    builder.body_inertia[body] = wp.mat33(0.0)
-    builder.body_inv_inertia[body] = wp.mat33(0.0)
-
-
 class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
@@ -46,7 +39,7 @@ class Example:
 
         self.num_segments = 60
         self.cable_radius = 0.015
-        self.spiral_radius = 0.22
+        self.helix_radius = 0.22
         self.bend_stiffness = 4.0e2
         self.bend_damping = 5.0e-3
         self.stretch_stiffness = 1.0e6
@@ -62,19 +55,20 @@ class Example:
         cable_cfg.has_shape_collision = True
         cable_cfg.has_particle_collision = False
 
-        cable_height = self.cable_radius
+        cable_height = self.cable_radius + self.helix_radius
         left_start = wp.vec3(-1.35, -0.45, cable_height)
         right_start = wp.vec3(-1.35, 0.45, cable_height)
 
-        left_initial_points = self._create_spiral_points(left_start)
+        left_initial_points = self._create_helix_points(left_start)
         left_rest_points, left_rest_quats = newton.utils.create_straight_cable_rest_from_initial(
             left_initial_points,
             start=left_start,
             direction=wp.vec3(1.0, 0.0, 0.0),
         )
         left_initial_xforms = newton.utils.create_cable_body_transforms(left_initial_points)
+        newton.utils.validate_cable_segment_lengths_match(left_rest_points, left_initial_points)
 
-        right_rest_points = self._create_spiral_points(right_start)
+        right_rest_points = self._create_helix_points(right_start)
         right_rest_quats = newton.utils.create_parallel_transport_cable_quaternions(right_rest_points)
         right_initial_points = newton.utils.create_straight_cable_points_from_lengths(
             right_start,
@@ -91,14 +85,14 @@ class Example:
             left_rest_points,
             left_rest_quats,
             cable_cfg,
-            label="straight_rest_spiral_initial",
+            label="straight_rest_helix_initial",
         )
         right_bodies = self._add_cable(
             builder,
             right_rest_points,
             right_rest_quats,
             cable_cfg,
-            label="spiral_rest_straight_initial",
+            label="helix_rest_straight_initial",
         )
         self.case_body_ids.extend([left_bodies, right_bodies])
 
@@ -119,18 +113,16 @@ class Example:
             iterations=self.sim_iterations,
         )
 
-        newton.utils.apply_cable_body_transforms(
-            [self.state_initial, self.state_0, self.state_1],
-            left_bodies,
-            left_initial_xforms,
-            body_q_prev=self.solver.body_q_prev,
-        )
-        newton.utils.apply_cable_body_transforms(
-            [self.state_initial, self.state_0, self.state_1],
-            right_bodies,
-            right_initial_xforms,
-            body_q_prev=self.solver.body_q_prev,
-        )
+        for body_ids, initial_xforms in (
+            (left_bodies, left_initial_xforms),
+            (right_bodies, right_initial_xforms),
+        ):
+            newton.utils.apply_cable_body_transforms(
+                [self.state_initial, self.state_0, self.state_1],
+                body_ids,
+                initial_xforms,
+                body_q_prev=self.solver.body_q_prev,
+            )
 
         self.viewer.set_model(self.model)
         self.viewer.set_camera(pos=wp.vec3(-0.05, -2.1, 2.4), pitch=-52.0, yaw=90.0)
@@ -139,7 +131,7 @@ class Example:
 
         self.capture()
 
-    def _create_spiral_points(self, start: wp.vec3) -> list[wp.vec3]:
+    def _create_helix_points(self, start: wp.vec3) -> list[wp.vec3]:
         axis_length = 2.6
         turns = 2.5
 
@@ -150,8 +142,8 @@ class Example:
             points.append(
                 wp.vec3(
                     float(start[0]) + axis_length * u,
-                    float(start[1]) + self.spiral_radius * (math.cos(theta) - 1.0),
-                    float(start[2]),
+                    float(start[1]) + self.helix_radius * (math.cos(theta) - 1.0),
+                    float(start[2]) + self.helix_radius * math.sin(theta),
                 )
             )
         return points

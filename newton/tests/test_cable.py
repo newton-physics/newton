@@ -345,6 +345,20 @@ def _cable_rest_initial_pose_utils_impl(test: unittest.TestCase, device):
     xform_np = wp.array(xforms, dtype=wp.transform, device=device).numpy()
     np.testing.assert_allclose(xform_np[:, :3], np.array(initial_points[:-1], dtype=float), rtol=0.0, atol=1.0e-7)
 
+    xforms_com = newton.utils.create_cable_body_transforms(initial_points, body_frame_origin="com")
+    xform_com_np = wp.array(xforms_com, dtype=wp.transform, device=device).numpy()
+    expected_com = 0.5 * (np.array(initial_points[:-1], dtype=float) + np.array(initial_points[1:], dtype=float))
+    np.testing.assert_allclose(xform_com_np[:, :3], expected_com, rtol=0.0, atol=1.0e-7)
+
+    with test.assertRaisesRegex(ValueError, "body_frame_origin"):
+        newton.utils.create_cable_body_transforms(initial_points, body_frame_origin="bad")
+
+    with test.assertRaisesRegex(ValueError, "align local \\+Z"):
+        newton.utils.create_cable_body_transforms(
+            initial_points,
+            [wp.quat_identity() for _ in range(len(initial_points) - 1)],
+        )
+
 
 def _apply_cable_body_transforms_syncs_vbd_history_impl(test: unittest.TestCase, device):
     """Applying a cable initial pose updates states and VBD previous-pose storage consistently."""
@@ -390,6 +404,20 @@ def _apply_cable_body_transforms_syncs_vbd_history_impl(test: unittest.TestCase,
     np.testing.assert_allclose(state1.body_q.numpy()[rod_bodies], expected, rtol=0.0, atol=1.0e-7)
     np.testing.assert_allclose(solver.body_q_prev.numpy()[rod_bodies], expected, rtol=0.0, atol=1.0e-7)
     np.testing.assert_allclose(state0.body_qd.numpy()[rod_bodies], 0.0, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(state1.body_qd.numpy()[rod_bodies], 0.0, rtol=0.0, atol=0.0)
+
+    with test.assertRaisesRegex(ValueError, "body_indices contain index"):
+        newton.utils.apply_cable_body_transforms(
+            state0,
+            [state0.body_q.shape[0]],
+            [initial_xforms[0]],
+        )
+    with test.assertRaisesRegex(TypeError, "integer body index"):
+        newton.utils.apply_cable_body_transforms(
+            state0,
+            [0.5],
+            [initial_xforms[0]],
+        )
 
 
 def _cable_curved_init_straight_rest_no_stretch_impl(test: unittest.TestCase, device):

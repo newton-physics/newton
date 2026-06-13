@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import math
+import operator
 from collections.abc import Sequence
+from typing import Literal
 
 import warp as wp
 
@@ -49,8 +51,27 @@ def _as_points(points: Sequence[wp.vec3], name: str = "points") -> list[wp.vec3]
     return [_as_vec3(p, f"{name}[{i}]") for i, p in enumerate(points)]
 
 
+def _as_quat(value, name: str) -> wp.quat:
+    try:
+        q = wp.quat(float(value[0]), float(value[1]), float(value[2]), float(value[3]))
+    except (IndexError, TypeError, ValueError) as exc:
+        raise TypeError(f"{name} must be a quaternion") from exc
+
+    if not all(math.isfinite(float(q[i])) for i in range(4)):
+        raise ValueError(f"{name} must contain finite values")
+    return q
+
+
 def _as_body_indices(body_indices: Sequence[int]) -> list[int]:
-    indices = [int(i) for i in body_indices]
+    indices = []
+    for i, value in enumerate(body_indices):
+        if isinstance(value, bool):
+            raise TypeError(f"body_indices[{i}] must be an integer body index")
+        try:
+            indices.append(operator.index(value))
+        except TypeError as exc:
+            raise TypeError(f"body_indices[{i}] must be an integer body index") from exc
+
     if not indices:
         raise ValueError("body_indices must contain at least one body index")
     if any(i < 0 for i in indices):
@@ -62,6 +83,34 @@ def _as_state_sequence(states) -> list[object]:
     if hasattr(states, "body_q"):
         return [states]
     return list(states)
+
+
+def _validate_body_indices_in_bounds(indices: list[int], array: wp.array, name: str) -> None:
+    count = array.shape[0]
+    max_index = max(indices)
+    if max_index >= count:
+        raise ValueError(f"body_indices contain index {max_index}, but {name} has length {count}")
+
+
+def _validate_quaternions_align_segments(points: list[wp.vec3], quats: list[wp.quat]) -> None:
+    for i, q in enumerate(quats):
+        seg = points[i + 1] - points[i]
+        seg_len = float(wp.length(seg))
+        if seg_len <= 0.0:
+            raise ValueError("points must not contain duplicate consecutive points")
+
+        seg_dir = seg / seg_len
+        local_z_world = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
+        local_z_len = float(wp.length(local_z_world))
+        if local_z_len <= 0.0 or not math.isfinite(local_z_len):
+            raise ValueError(f"quaternions[{i}] must rotate local +Z to a finite direction")
+
+        alignment = float(wp.dot(seg_dir, local_z_world / local_z_len))
+        if not math.isfinite(alignment) or alignment < 0.999:
+            raise ValueError(
+                "quaternions must align local +Z with the matching cable segment direction; "
+                f"quaternions[{i}] has alignment {alignment:.6g}"
+            )
 
 
 def create_cable_stiffness_from_elastic_moduli(
@@ -185,8 +234,7 @@ def validate_cable_segment_lengths_match(
 ) -> None:
     """Validate that rest and initial cable polylines have matching segment lengths.
 
-    Use this when both rest and initial cable shapes are non-straight and should start without
-    stretch strain.
+    Use this when rest and initial cable shapes differ but should start without stretch strain.
 
     Args:
         rest_points: Rest cable polyline points.
@@ -326,17 +374,20 @@ def create_cable_body_transforms(
     quaternions: Sequence[wp.quat] | None = None,
     *,
     twist_total: float = 0.0,
+    body_frame_origin: Literal["start", "com"] = "start",
 ) -> list[wp.transform]:
     """Create rod body transforms from cable points and per-segment quaternions.
 
-    The returned transforms match the ``ModelBuilder.add_rod()`` convention: body ``i`` is
-    placed at ``points[i]`` with an orientation for segment ``i``.
+    The returned transforms match the ``ModelBuilder.add_rod()`` convention by default:
+    body ``i`` is placed at ``points[i]`` with an orientation for segment ``i``.
 
     Args:
-        points: Cable polyline points of length >= 2.
+        points: Cable centerline points (segment endpoints) of length >= 2.
         quaternions: Optional per-segment orientations. If omitted, parallel-transport
             orientations are generated from ``points``.
         twist_total: Optional total twist used only when ``quaternions`` is omitted.
+        body_frame_origin: Location of each segment body frame. ``"start"`` places body ``i``
+            at ``points[i]``. ``"com"`` places it at the segment midpoint.
 
     Returns:
         List of ``wp.transform`` values of length ``len(points) - 1``.
@@ -348,12 +399,20 @@ def create_cable_body_transforms(
     if quaternions is None:
         quats = create_parallel_transport_cable_quaternions(points_wp, twist_total=twist_total)
     else:
-        quats = list(quaternions)
+        quats = [_as_quat(q, f"quaternions[{i}]") for i, q in enumerate(quaternions)]
         expected = len(points_wp) - 1
         if len(quats) != expected:
             raise ValueError(f"quaternions must have {expected} elements, got {len(quats)}")
+        _validate_quaternions_align_segments(points_wp, quats)
 
-    return [wp.transform(points_wp[i], quats[i]) for i in range(len(quats))]
+    if body_frame_origin == "start":
+        origins = points_wp[:-1]
+    elif body_frame_origin == "com":
+        origins = [points_wp[i] + 0.5 * (points_wp[i + 1] - points_wp[i]) for i in range(len(quats))]
+    else:
+        raise ValueError('body_frame_origin must be "start" or "com"')
+
+    return [wp.transform(origins[i], quats[i]) for i in range(len(quats))]
 
 
 def create_straight_cable_rest_from_initial(
@@ -367,10 +426,12 @@ def create_straight_cable_rest_from_initial(
 
     This supports the common VBD setup where the model/rest cable is straight, but the
     simulation starts from a curved cable pose. Matching segment lengths avoids unintended
-    initial stretch while still allowing initial bend.
+    initial stretch while still allowing initial bend; it also keeps the capsule sizing (and
+    thus the midpoint COM offset, see :func:`create_cable_body_transforms`) consistent between
+    the rest and initial poses.
 
     Args:
-        initial_points: Initial cable polyline points.
+        initial_points: Initial cable centerline points (segment endpoints).
         start: Optional start point for the straight rest cable. Defaults to
             ``initial_points[0]``.
         direction: Optional straight rest direction. Defaults to the chord from first to
@@ -425,22 +486,24 @@ def apply_cable_body_transforms(
     body_indices: Sequence[int],
     transforms: Sequence[wp.transform],
     *,
-    body_q_prev: wp.array | None = None,
+    body_q_prev: wp.array[wp.transform] | None = None,
     zero_velocities: bool = True,
 ) -> None:
     """Apply cable body transforms to states and optional previous-pose storage.
 
     Use this when a cable's simulation initial pose differs from its model/rest pose. It updates
     only the requested bodies and, when ``body_q_prev`` is provided, keeps previous-pose history
-    in sync so the first step does not see an artificial teleportation.
+    in sync so the first step does not see an artificial teleportation. For
+    :class:`~newton.solvers.SolverVBD`, pass ``solver.body_q_prev`` for best first-step behavior.
 
     Args:
         states: A single :class:`~newton.State` or a sequence of states whose ``body_q`` arrays
             should be updated.
         body_indices: Body indices corresponding to ``transforms``.
         transforms: Initial body transforms, one per body index.
-        body_q_prev: Optional previous-pose buffer, e.g. ``solver.body_q_prev`` for
-            :class:`~newton.solvers.SolverVBD`.
+        body_q_prev: Optional previous-pose buffer. For :class:`~newton.solvers.SolverVBD`,
+            pass ``solver.body_q_prev`` so VBD's previous-body-pose history matches the applied
+            initial pose.
         zero_velocities: If True, zero matching ``state.body_qd`` entries so the applied pose starts
             at rest.
 
@@ -467,48 +530,71 @@ def apply_cable_body_transforms(
     xforms = list(transforms)
     if len(xforms) != len(indices):
         raise ValueError(f"transforms must have {len(indices)} elements, got {len(xforms)}")
+    if not states_list and body_q_prev is None:
+        raise ValueError("states must contain at least one state when body_q_prev is not provided")
+
+    n = len(indices)
+    # Upload the (index, transform) arrays once per device and reuse them across every
+    # target buffer (each state's body_q, any state.body_q_prev, and the solver body_q_prev),
+    # instead of re-creating identical arrays per launch.
+    device_arrays = {}
+
+    def arrays_for(device):
+        key = str(device)
+        cached = device_arrays.get(key)
+        if cached is None:
+            cached = (
+                wp.array(indices, dtype=wp.int32, device=device),
+                wp.array(xforms, dtype=wp.transform, device=device),
+            )
+            device_arrays[key] = cached
+        return cached
 
     for state_index, state in enumerate(states_list):
         body_q = getattr(state, "body_q", None)
         if body_q is None:
             raise ValueError(f"states[{state_index}] does not have a body_q array")
-
-        body_indices_wp = wp.array(indices, dtype=wp.int32, device=body_q.device)
-        transforms_wp = wp.array(xforms, dtype=wp.transform, device=body_q.device)
+        _validate_body_indices_in_bounds(indices, body_q, f"states[{state_index}].body_q")
+        body_indices_wp, transforms_wp = arrays_for(body_q.device)
 
         body_qd = getattr(state, "body_qd", None)
         if zero_velocities and body_qd is not None:
+            if str(body_qd.device) != str(body_q.device):
+                raise ValueError(
+                    f"states[{state_index}].body_qd must be on the same device as states[{state_index}].body_q"
+                )
+            _validate_body_indices_in_bounds(indices, body_qd, f"states[{state_index}].body_qd")
             wp.launch(
                 _set_indexed_body_transforms_and_zero_velocities,
-                dim=len(indices),
+                dim=n,
                 inputs=[body_indices_wp, transforms_wp, body_q, body_qd],
                 device=body_q.device,
             )
         else:
             wp.launch(
                 _set_indexed_body_transforms,
-                dim=len(indices),
+                dim=n,
                 inputs=[body_indices_wp, transforms_wp, body_q],
                 device=body_q.device,
             )
 
         state_body_q_prev = getattr(state, "body_q_prev", None)
         if state_body_q_prev is not None:
-            prev_body_indices_wp = wp.array(indices, dtype=wp.int32, device=state_body_q_prev.device)
-            prev_transforms_wp = wp.array(xforms, dtype=wp.transform, device=state_body_q_prev.device)
+            _validate_body_indices_in_bounds(indices, state_body_q_prev, f"states[{state_index}].body_q_prev")
+            prev_indices_wp, prev_transforms_wp = arrays_for(state_body_q_prev.device)
             wp.launch(
                 _set_indexed_body_transforms,
-                dim=len(indices),
-                inputs=[prev_body_indices_wp, prev_transforms_wp, state_body_q_prev],
+                dim=n,
+                inputs=[prev_indices_wp, prev_transforms_wp, state_body_q_prev],
                 device=state_body_q_prev.device,
             )
 
     if body_q_prev is not None:
-        body_indices_wp = wp.array(indices, dtype=wp.int32, device=body_q_prev.device)
-        transforms_wp = wp.array(xforms, dtype=wp.transform, device=body_q_prev.device)
+        _validate_body_indices_in_bounds(indices, body_q_prev, "body_q_prev")
+        prev_indices_wp, prev_transforms_wp = arrays_for(body_q_prev.device)
         wp.launch(
             _set_indexed_body_transforms,
-            dim=len(indices),
-            inputs=[body_indices_wp, transforms_wp, body_q_prev],
+            dim=n,
+            inputs=[prev_indices_wp, prev_transforms_wp, body_q_prev],
             device=body_q_prev.device,
         )
