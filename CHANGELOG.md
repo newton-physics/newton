@@ -5,6 +5,7 @@
 ### Added
 
 - Add `cloth_stiff_material_hanging` and `cloth_stiff_material_stretch` examples regression-guarding the new Neo-Hookean triangle material (stability under gravity at extreme stiffness, and bulk area-preservation across a Poisson-ratio sweep)
+- Add contact examples for Newton's cradle, a balance bird, and a domino spiral
 
 ### Changed
 
