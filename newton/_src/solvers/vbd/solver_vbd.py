@@ -746,7 +746,6 @@ class SolverVBD(SolverBase):
 
             # Split cables use local +Z as the material tangent (a SolverVBD convention).
             self.joint_cable_kb_rest_local = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
-            self.joint_cable_twist_rest = wp.zeros(model.joint_count, dtype=float, device=self.device)
             self._refresh_cable_rest_bend_twist_cache()
 
         # -------------------------------------------------------------
@@ -871,7 +870,6 @@ class SolverVBD(SolverBase):
             ],
             outputs=[
                 self.joint_cable_kb_rest_local,
-                self.joint_cable_twist_rest,
             ],
             device=self.device,
         )
@@ -2097,7 +2095,6 @@ class SolverVBD(SolverBase):
                         model.joint_X_p,
                         model.joint_X_c,
                         self.joint_cable_kb_rest_local,
-                        self.joint_cable_twist_rest,
                         self.body_q_prev,
                         model.body_q,
                         self.joint_constraint_start,
@@ -2133,7 +2130,6 @@ class SolverVBD(SolverBase):
                         self.joint_penalty_k_max,
                         self.joint_is_hard,
                         self.joint_cable_kb_rest_local,
-                        self.joint_cable_twist_rest,
                         self.body_q_prev,
                         self.joint_sigma_prev,
                         self.joint_kappa_prev,
@@ -2573,7 +2569,6 @@ class SolverVBD(SolverBase):
                     model.joint_X_c,
                     model.joint_axis,
                     self.joint_cable_kb_rest_local,
-                    self.joint_cable_twist_rest,
                     model.joint_qd_start,
                     model.joint_target_q_start,
                     self.joint_constraint_start,
@@ -2681,7 +2676,6 @@ class SolverVBD(SolverBase):
                     model.joint_X_c,
                     model.joint_axis,
                     self.joint_cable_kb_rest_local,
-                    self.joint_cable_twist_rest,
                     model.joint_qd_start,
                     model.joint_target_q_start,
                     self.joint_constraint_start,
@@ -2903,7 +2897,6 @@ class SolverVBD(SolverBase):
                     self.joint_penalty_k_max,
                     self.joint_is_hard,
                     self.joint_cable_kb_rest_local,
-                    self.joint_cable_twist_rest,
                     state_out.body_q,
                     self.joint_dahl_eps_max,
                     self.joint_dahl_tau,

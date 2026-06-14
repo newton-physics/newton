@@ -14,7 +14,6 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _korner_cable_residual_z,
     _normalize_with_fallback,
     compute_cable_dahl_parameters,
-    compute_geometric_cable_kappa_cached_z,
     evaluate_angular_constraint_force_hessian,
     evaluate_cable_bend_twist_force_hessian_z,
 )
@@ -4460,7 +4459,6 @@ def _eval_split_cable_material_force_law_kernel(
         q_id,
         q_bend,
         zero,
-        0.0,
         q_id,
         q_id,
         True,
@@ -4477,7 +4475,6 @@ def _eval_split_cable_material_force_law_kernel(
         q_id,
         q_twist,
         zero,
-        0.0,
         q_id,
         q_id,
         True,
@@ -4523,7 +4520,6 @@ def _eval_split_cable_cantilever_moment_law_kernel(
         q_id,
         q_bend,
         zero,
-        0.0,
         q_id,
         q_id,
         True,
@@ -4641,7 +4637,7 @@ def _geometric_cable_test_energy(
     K_elastic_diag: wp.vec3,
 ) -> float:
     kb_rest_local = _korner_cable_deformation_z(q_wp_rest, q_wc_rest)
-    residual = _korner_cable_deformation_z(q_wp, q_wc) - kb_rest_local
+    residual = _korner_cable_residual_z(q_wp, q_wc, kb_rest_local)
     return 0.5 * wp.dot(wp.cw_mul(K_elastic_diag, residual), residual)
 
 
@@ -4660,7 +4656,6 @@ def _eval_geometric_cable_test_force_hessian(
         q_wp,
         q_wc,
         kb_rest_local,
-        0.0,
         q_wp,
         q_wc,
         is_parent,
@@ -4845,7 +4840,7 @@ def _eval_geometric_precurved_twist_is_pure_twist_kernel(errors: wp.array[wp.vec
     # reference): pure twist on a pre-curved rest must not leak into bend, and the
     # twist magnitude is the Korner value 2 sin(twist/2).
     kb_rest_local = _korner_cable_deformation_z(q_wp_rest, q_wc_rest)
-    kappa = compute_geometric_cable_kappa_cached_z(q_wp, q_wc, kb_rest_local, 0.0)
+    kappa = _korner_cable_residual_z(q_wp, q_wc, kb_rest_local)
     bend_leak = wp.length(P_bend * kappa)
     expected_twist = 2.0 * wp.sin(0.5 * twist_angle)
     twist_err = wp.abs(wp.length(P_twist * kappa) - expected_twist)
@@ -4869,7 +4864,7 @@ def _eval_geometric_global_rotation_preserves_rest_strain_kernel(errors: wp.arra
     q_wc = q_global * q_wc_rest
 
     kb_rest_local = _korner_cable_deformation_z(q_wp_rest, q_wc_rest)
-    kappa = compute_geometric_cable_kappa_cached_z(q_wp, q_wc, kb_rest_local, 0.0)
+    kappa = _korner_cable_residual_z(q_wp, q_wc, kb_rest_local)
     errors[0] = wp.vec3(wp.length(kappa), wp.length(kappa), wp.length(kappa))
 
 
@@ -4884,7 +4879,6 @@ def _eval_geometric_korner_sharp_turn_kernel(errors: wp.array[wp.vec3]):
         q_wp,
         q_wc,
         zero,
-        0.0,
         q_wp,
         q_wc,
         True,
@@ -4979,7 +4973,6 @@ def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
         joint_penalty_k = wp.array([0.0, 0.0, 10.0, 2.0, 0.0, 0.0, 10.0, 2.0], dtype=float, device=device)
         joint_is_hard = wp.array([0, 0, 0, 0, 0, 0, 0, 0], dtype=wp.int32, device=device)
         joint_cable_kb_rest_local = wp.zeros(2, dtype=wp.vec3, device=device)
-        joint_cable_twist_rest = wp.zeros(2, dtype=float, device=device)
 
         q_bend = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.1)
         q_twist = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.1)
@@ -5011,7 +5004,6 @@ def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
                 joint_penalty_k,
                 joint_is_hard,
                 joint_cable_kb_rest_local,
-                joint_cable_twist_rest,
                 body_q,
                 zero_vec3,
                 zero_vec3,

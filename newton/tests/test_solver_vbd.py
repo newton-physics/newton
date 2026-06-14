@@ -381,7 +381,6 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
         joint_x_c = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
         joint_axis = wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
         joint_cable_kb_rest_local = wp.zeros(1, dtype=wp.vec3, device=device)
-        joint_cable_twist_rest = wp.zeros(1, dtype=float, device=device)
         joint_qd_start = wp.array([0], dtype=wp.int32, device=device)
         joint_target_q_start = wp.array([0], dtype=wp.int32, device=device)
         joint_constraint_start = wp.array([0], dtype=wp.int32, device=device)
@@ -414,7 +413,6 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
                 joint_x_c,
                 joint_axis,
                 joint_cable_kb_rest_local,
-                joint_cable_twist_rest,
                 joint_qd_start,
                 joint_target_q_start,
                 joint_constraint_start,

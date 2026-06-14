@@ -222,6 +222,15 @@ def _quat_rotate_local_z(q: wp.quat) -> wp.vec3:
 
 
 @wp.func
+def _korner_principal_vector(q: wp.quat) -> wp.vec3:
+    """Return ``2 * Im(q)`` on the principal quaternion branch."""
+    sign = 1.0
+    if q[3] < 0.0:
+        sign = -1.0
+    return sign * 2.0 * wp.vec3(q[0], q[1], q[2])
+
+
+@wp.func
 def _korner_cable_deformation_z(q_wp: wp.quat, q_wc: wp.quat) -> wp.vec3:
     """Korner/Audoly bend-twist deformation measure for local +Z cable frames.
 
@@ -230,22 +239,18 @@ def _korner_cable_deformation_z(q_wp: wp.quat, q_wc: wp.quat) -> wp.vec3:
     small-angle equivalent to the DER bend/twist vector, but stays bounded at
     sharp turns instead of requiring the finite-curvature-binormal cap.
     """
-    q_rel = wp.mul(wp.quat_inverse(q_wp), q_wc)
-    sign = 1.0
-    if q_rel[3] < 0.0:
-        sign = -1.0
-    return sign * 2.0 * wp.vec3(q_rel[0], q_rel[1], q_rel[2])
+    return _korner_principal_vector(wp.mul(wp.quat_inverse(q_wp), q_wc))
 
 
 @wp.func
-def _korner_rest_quat(kb_rest_local: wp.vec3) -> wp.quat:
-    """Reconstruct the rest relative rotation from the stored Korner rest vector.
+def _korner_rest_quat_inverse(kb_rest_local: wp.vec3) -> wp.quat:
+    """Inverse rest relative rotation reconstructed from the stored Korner vector.
 
     ``kb_rest_local`` is ``2 * Im(q_rel_rest)`` with a non-negative scalar part
-    (see :func:`init_cable_rest_bend_twist`), so the unit rotation is recovered
-    on the principal branch as ``(Im, sqrt(1 - |Im|^2))``.
+    (see :func:`init_cable_rest_bend_twist`), so
+    ``inv(q_rel_rest) = (-0.5 * kb_rest_local, sqrt(1 - |0.5 * kb|^2))``.
     """
-    v = 0.5 * kb_rest_local
+    v = -0.5 * kb_rest_local
     w = wp.sqrt(wp.max(0.0, 1.0 - wp.dot(v, v)))
     return wp.quat(v[0], v[1], v[2], w)
 
@@ -261,11 +266,8 @@ def _korner_cable_residual_z(q_wp: wp.quat, q_wc: wp.quat, kb_rest_local: wp.vec
     global rotation of the rest shape produces no strain. For a straight rest
     (``q_rel_rest`` identity) it reduces to ``2 * Im(inv(q_wp) * q_wc)``.
     """
-    q_def = wp.mul(wp.quat_inverse(_korner_rest_quat(kb_rest_local)), wp.mul(wp.quat_inverse(q_wp), q_wc))
-    sign = 1.0
-    if q_def[3] < 0.0:
-        sign = -1.0
-    return sign * 2.0 * wp.vec3(q_def[0], q_def[1], q_def[2])
+    q_def = wp.mul(_korner_rest_quat_inverse(kb_rest_local), wp.mul(wp.quat_inverse(q_wp), q_wc))
+    return _korner_principal_vector(q_def)
 
 
 @wp.func
@@ -283,7 +285,7 @@ def _korner_cable_residual_directional_derivative_z(
     ``(w I - [v]x)(R_A omega_world)`` and the parent derivative is its negation.
     Reduces to the rest-free derivative when ``q_rel_rest`` is the identity.
     """
-    A = wp.mul(wp.quat_inverse(_korner_rest_quat(kb_rest_local)), wp.quat_inverse(q_wp))
+    A = wp.mul(_korner_rest_quat_inverse(kb_rest_local), wp.quat_inverse(q_wp))
     q_def = wp.mul(A, q_wc)
     sign = 1.0
     if q_def[3] < 0.0:
@@ -315,17 +317,6 @@ def _korner_cable_jacobian_z(
     j1 = _korner_cable_residual_directional_derivative_z(q_wp, q_wc, kb_rest_local, e1, is_parent)
     j2 = _korner_cable_residual_directional_derivative_z(q_wp, q_wc, kb_rest_local, e2, is_parent)
     return wp.matrix_from_cols(j0, j1, j2)
-
-
-@wp.func
-def compute_geometric_cable_kappa_cached_z(
-    q_wp: wp.quat,
-    q_wc: wp.quat,
-    kb_rest_local: wp.vec3,
-    twist_rest: float,
-) -> wp.vec3:
-    """Geometric cable strain residual for fixed local +Z cables."""
-    return _korner_cable_residual_z(q_wp, q_wc, kb_rest_local)
 
 
 @wp.func
@@ -589,7 +580,6 @@ def evaluate_cable_bend_twist_force_hessian_z(
     q_wp: wp.quat,
     q_wc: wp.quat,
     kb_rest_local: wp.vec3,
-    twist_rest: float,
     q_wp_prev: wp.quat,
     q_wc_prev: wp.quat,
     is_parent: bool,
@@ -1274,7 +1264,6 @@ def evaluate_joint_force_hessian(
     joint_X_c: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
     joint_cable_kb_rest_local: wp.array[wp.vec3],
-    joint_cable_twist_rest: wp.array[float],
     joint_qd_start: wp.array[int],
     joint_target_q_start: wp.array[int],
     joint_constraint_start: wp.array[int],
@@ -1429,7 +1418,6 @@ def evaluate_joint_force_hessian(
                 q_wp,
                 q_wc,
                 joint_cable_kb_rest_local[joint_index],
-                joint_cable_twist_rest[joint_index],
                 q_wp_prev,
                 q_wc_prev,
                 is_parent_body,
@@ -2288,12 +2276,10 @@ def init_cable_rest_bend_twist(
     joint_X_c: wp.array[wp.transform],
     body_q_rest: wp.array[wp.transform],
     joint_cable_kb_rest_local: wp.array[wp.vec3],
-    joint_cable_twist_rest: wp.array[float],
 ):
     """Precompute cable rest angular deformation invariants."""
     j = wp.tid()
     joint_cable_kb_rest_local[j] = wp.vec3(0.0)
-    joint_cable_twist_rest[j] = 0.0
 
     if joint_type[j] != JointType.CABLE:
         return
@@ -2314,7 +2300,6 @@ def init_cable_rest_bend_twist(
     # Historical storage name: this vec3 now stores the full Korner/Audoly
     # rest angular deformation [bend_x, bend_y, twist_z].
     joint_cable_kb_rest_local[j] = _korner_cable_deformation_z(q_wp_rest, q_wc_rest)
-    joint_cable_twist_rest[j] = 0.0
 
 
 @wp.kernel
@@ -2326,7 +2311,6 @@ def step_joint_C0_lambda(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     joint_cable_kb_rest_local: wp.array[wp.vec3],
-    joint_cable_twist_rest: wp.array[float],
     body_q_prev: wp.array[wp.transform],
     body_q_rest: wp.array[wp.transform],
     joint_constraint_start: wp.array[wp.int32],
@@ -2410,11 +2394,10 @@ def step_joint_C0_lambda(
         if has_angular_hard == 1:
             q_wp = wp.transform_get_rotation(X_wp)
             q_wc = wp.transform_get_rotation(X_wc)
-            joint_C0_ang[j] = compute_geometric_cable_kappa_cached_z(
+            joint_C0_ang[j] = _korner_cable_residual_z(
                 q_wp,
                 q_wc,
                 joint_cable_kb_rest_local[j],
-                joint_cable_twist_rest[j],
             )
             joint_lambda_ang[j] = joint_lambda_ang[j] * lambda_decay
         else:
@@ -2822,7 +2805,6 @@ def compute_cable_dahl_parameters(
     joint_penalty_k: wp.array[float],
     joint_is_hard: wp.array[wp.int32],
     joint_cable_kb_rest_local: wp.array[wp.vec3],
-    joint_cable_twist_rest: wp.array[float],
     body_q: wp.array[wp.transform],
     joint_sigma_prev: wp.array[wp.vec3],
     joint_kappa_prev: wp.array[wp.vec3],
@@ -2880,11 +2862,10 @@ def compute_cable_dahl_parameters(
     X_wc = body_q[child] * joint_X_c[j]
     q_wp = wp.transform_get_rotation(X_wp)
     q_wc = wp.transform_get_rotation(X_wc)
-    kappa_now = compute_geometric_cable_kappa_cached_z(
+    kappa_now = _korner_cable_residual_z(
         q_wp,
         q_wc,
         joint_cable_kb_rest_local[j],
-        joint_cable_twist_rest[j],
     )
 
     # Previous Dahl state (from last converged timestep).
@@ -3401,7 +3382,6 @@ def solve_rigid_body(
     joint_X_c: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
     joint_cable_kb_rest_local: wp.array[wp.vec3],
-    joint_cable_twist_rest: wp.array[float],
     joint_qd_start: wp.array[int],
     joint_target_q_start: wp.array[int],
     joint_constraint_start: wp.array[int],
@@ -3575,7 +3555,6 @@ def solve_rigid_body(
             joint_X_c,
             joint_axis,
             joint_cable_kb_rest_local,
-            joint_cable_twist_rest,
             joint_qd_start,
             joint_target_q_start,
             joint_constraint_start,
@@ -3656,7 +3635,6 @@ def update_duals_joint(
     joint_X_c: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
     joint_cable_kb_rest_local: wp.array[wp.vec3],
-    joint_cable_twist_rest: wp.array[float],
     joint_qd_start: wp.array[int],
     joint_target_q_start: wp.array[int],
     joint_constraint_start: wp.array[int],
@@ -3731,11 +3709,10 @@ def update_duals_joint(
         x_c = wp.transform_get_translation(X_wc)
         C_vec = x_c - x_p
 
-        kappa = compute_geometric_cable_kappa_cached_z(
+        kappa = _korner_cable_residual_z(
             q_wp,
             q_wc,
             joint_cable_kb_rest_local[j],
-            joint_cable_twist_rest[j],
         )
 
         # Linear penalty update: axial stretch / transverse shear.
@@ -4398,7 +4375,6 @@ def update_cable_dahl_state(
     joint_penalty_k: wp.array[float],
     joint_is_hard: wp.array[wp.int32],
     joint_cable_kb_rest_local: wp.array[wp.vec3],
-    joint_cable_twist_rest: wp.array[float],
     # Body states (final, after solver convergence)
     body_q: wp.array[wp.transform],
     # Dahl model parameters (PER-JOINT arrays, isotropic)
@@ -4436,11 +4412,10 @@ def update_cable_dahl_state(
     q_wp = wp.transform_get_rotation(X_wp)
     q_wc = wp.transform_get_rotation(X_wc)
 
-    kappa_final = compute_geometric_cable_kappa_cached_z(
+    kappa_final = _korner_cable_residual_z(
         q_wp,
         q_wc,
         joint_cable_kb_rest_local[j],
-        joint_cable_twist_rest[j],
     )
 
     c_start = joint_constraint_start[j]
