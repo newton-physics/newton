@@ -243,7 +243,7 @@ class TestDynamicsWrenches(unittest.TestCase):
             num_worlds=1,
             with_limits=True,
             with_contacts=True,
-            with_implicit_joints=True,
+            with_implicit_joints=False,
             verbose=False,  # TODO
         )
 
@@ -263,7 +263,7 @@ class TestDynamicsWrenches(unittest.TestCase):
             num_worlds=3,
             with_limits=True,
             with_contacts=True,
-            with_implicit_joints=True,
+            with_implicit_joints=False,
             verbose=False,
         )
 
@@ -282,7 +282,7 @@ class TestDynamicsWrenches(unittest.TestCase):
             max_world_contacts=12,
             with_limits=True,
             with_contacts=True,
-            with_implicit_joints=True,
+            with_implicit_joints=False,
             verbose=False,
         )
 

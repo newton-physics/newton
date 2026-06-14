@@ -719,6 +719,7 @@ def compute_and_write_joint_implicit_dynamics(
     model_joint_k_d_j: wp.array[float32],
     data_joint_q_j: wp.array[float32],
     data_joint_dq_j: wp.array[float32],
+    data_joint_tau_j: wp.array[float32],
     data_joint_q_j_ref: wp.array[float32],
     data_joint_dq_j_ref: wp.array[float32],
     data_joint_tau_j_ref: wp.array[float32],
@@ -748,17 +749,20 @@ def compute_and_write_joint_implicit_dynamics(
         k_p_j = model_joint_k_p_j[dofs_offset_j]
         k_d_j = model_joint_k_d_j[dofs_offset_j]
 
+        # Retrieve external load
+        tau_j = data_joint_tau_j[dofs_offset_j]
+
         # Retrieve PD control references
         pd_q_j_ref = data_joint_q_j_ref[coords_offset_j]
         pd_dq_j_ref = data_joint_dq_j_ref[dofs_offset_j]
-        pd_tau_j_ff = data_joint_tau_j_ref[dofs_offset_j]
+        pd_tau_j_ff = data_joint_tau_j_ref[dofs_offset_j] if data_joint_tau_j_ref else 0.0
 
         # Compute the implicit joint dynamics intermediates
         # Enforce minimum mass to avoid division by zero
         m_j = wp.max(1e-6, a_j + dt * (b_j + k_d_j) + dt * dt * k_p_j)
         inv_m_j = 1.0 / m_j
-        tau_j = pd_tau_j_ff + k_p_j * (pd_q_j_ref - q_j) + k_d_j * pd_dq_j_ref
-        h_j = a_j * dq_j + dt * tau_j
+        tau_j_tot = tau_j + pd_tau_j_ff + k_p_j * (pd_q_j_ref - q_j) + k_d_j * pd_dq_j_ref
+        h_j = a_j * dq_j + dt * tau_j_tot
         dq_b_j = inv_m_j * h_j
 
         # Store the resulting joint dynamics intermediates
@@ -800,6 +804,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         model_joint_k_d_j: wp.array[float32],
         data_body_q_i: wp.array[transformf],
         data_body_u_i: wp.array[vec6f],
+        data_joint_tau_j: wp.array[float32],
         data_joint_q_j_ref: wp.array[float32],
         data_joint_dq_j_ref: wp.array[float32],
         data_joint_tau_j_ref: wp.array[float32],
@@ -887,6 +892,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
             model_joint_k_d_j,
             data_joint_q_j,
             data_joint_dq_j,
+            data_joint_tau_j,
             data_joint_q_j_ref,
             data_joint_dq_j_ref,
             data_joint_tau_j_ref,
@@ -1051,6 +1057,7 @@ def compute_joints_data(
             model.joints.k_d_j,
             data.bodies.q_i,
             data.bodies.u_i,
+            data.joints.tau_j,
             data.joints.q_j_ref,
             data.joints.dq_j_ref,
             data.joints.tau_j_ref,
