@@ -433,7 +433,7 @@ class SolverKamino(SolverBase):
             config=self._config,
         )
 
-        self._control_kamino = self._kamino.ControlKamino.for_newton(self._model_kamino)
+        self._control_kamino = self._kamino.ControlKamino.create_newton_wrapper(self._model_kamino)
 
     @override
     def reset(

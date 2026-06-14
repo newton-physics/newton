@@ -96,14 +96,15 @@ class ControlKamino:
     ###
 
     @classmethod
-    def for_newton(cls, model: ModelKamino, device: wp.DeviceLike = None) -> ControlKamino:
+    def create_newton_wrapper(cls, model: ModelKamino, device: wp.DeviceLike = None) -> ControlKamino:
         """Create a :class:`ControlKamino` wrapper for the Newton solver bridge."""
         if device is None:
             device = model.device
 
+        # Kamino to Newton conversion does not set `tau_j_ref`, so it needs to
+        # be created here
         ndofs = model.size.sum_of_num_joint_dofs
         control = cls(
-            tau_j=wp.zeros(shape=ndofs, dtype=float32, device=device),
             tau_j_ref=wp.zeros(shape=ndofs, dtype=float32, device=device),
         )
         control.finalize(model, device=device)
@@ -170,7 +171,7 @@ class ControlKamino:
             control: Source :class:`newton.Control` to read from.
             model: The Kamino model holding the system description.
         """
-        self.tau_j_ref = control.joint_f
+        self.tau_j = control.joint_f
         self.dq_j_ref = control.joint_target_qd
         if self._needs_coord_conversion:
             self.q_j_ref = self._q_j_ref_coords_space
@@ -191,7 +192,7 @@ class ControlKamino:
             control: Destination :class:`newton.Control` to write into.
             model: The Kamino model holding the system description.
         """
-        control.joint_f = self.tau_j_ref
+        control.joint_f = self.tau_j
         control.joint_target_qd = self.dq_j_ref
         if self._needs_coord_conversion:
             convert_target_coords_to_target_dofs(
