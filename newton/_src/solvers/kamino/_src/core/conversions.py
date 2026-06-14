@@ -165,6 +165,7 @@ def mass_prop_accumulation_kernel(
 @wp.kernel
 def joint_conversion_kernel(
     # Inputs:
+    force_dynamic: bool,
     model_joint_world: wp.array[int32],
     model_joint_world_start: wp.array[int32],
     model_joint_type: wp.array[int32],
@@ -229,7 +230,17 @@ def joint_conversion_kernel(
     assert act_type_j >= 0, "Joint actuation type must be valid"
     joint_act_type[joint_id] = act_type_j
 
-    is_dynamic_j = ndofs_j > 0 and (dof_type_j == JointDoFType.REVOLUTE or dof_type_j == JointDoFType.PRISMATIC)
+    is_dynamic_j = bool(False)
+    if force_dynamic and (dof_type_j == JointDoFType.REVOLUTE or dof_type_j == JointDoFType.PRISMATIC):
+        is_dynamic_j = True
+    else:
+        # Infer if the joint requires dynamic constraints
+        for dof_id in range(ndofs_j):
+            a_j = model_joint_armature[dofs_start_j + dof_id]
+            b_j = model_joint_friction[dofs_start_j + dof_id]
+            ke_j = model_joint_target_ke[dofs_start_j + dof_id]
+            kd_j = model_joint_target_kd[dofs_start_j + dof_id]
+            is_dynamic_j = is_dynamic_j or (a_j > 0.0) or (b_j > 0.0) or (ke_j > 0.0) or (kd_j > 0.0)
 
     joint_num_kinematic_cts[joint_id] = ncts_j
     if is_dynamic_j:
@@ -811,6 +822,7 @@ def convert_joints(
     model: Model,
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
+    force_joint_dynamics: bool = False,
 ) -> JointsModel:
     """
     Converts the joints from a Newton model into Kamino's format. The function will
@@ -822,6 +834,8 @@ def convert_joints(
         model: Newton model.
         model_size: Model size object, to be filled in by the function.
         model_info: Model info object, to be filled in by the function.
+        force_joint_dynamics: Flag to indicate whether joint dynamics should
+                be forced for supported types.
 
     Returns:
         Fully converted joints model in Kamino's format.
@@ -856,6 +870,7 @@ def convert_joints(
         dim=model.joint_count,
         inputs=[
             # Inputs:
+            force_joint_dynamics,
             model.joint_world,
             model.joint_world_start,
             model.joint_type,
