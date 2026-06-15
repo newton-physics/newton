@@ -952,7 +952,7 @@ class SolverKaminoImpl(SolverBase):
         """
         Runs limit detection to generate active joint limits.
         """
-        self._limits.detect(self._model, self._data)
+        self._limits.detect(q_j=self._data.joints.q_j)
 
     def _update_constraint_info(self):
         """
@@ -1119,7 +1119,7 @@ class SolverKaminoImpl(SolverBase):
         # If a limits container/detector is provided, run joint-limit
         # detection to generate active joint limits at the current state
         if limits is not None:
-            limits.detect(self._model, self._data)
+            limits.detect(q_j=self._data.joints.q_j)
 
         # Update the constraint state info
         self._update_constraint_info()

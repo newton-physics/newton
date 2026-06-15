@@ -245,6 +245,53 @@ class TestModelBuilderDeprecations(unittest.TestCase):
             _ = model.joint_target_qd
         self.assertFalse(any(issubclass(w.category, DeprecationWarning) for w in caught))
 
+    def test_model_builder_joint_target_pos_vel_setters_warn_and_forward(self):
+        prev_flag = newton.use_coord_layout_targets
+        try:
+            newton.use_coord_layout_targets = False
+
+            builder = ModelBuilder()
+            inertia = np.eye(3, dtype=np.float32)
+            b0 = builder.add_link(mass=1.0, inertia=inertia)
+            j_free = builder.add_joint_free(child=b0)
+            b1 = builder.add_link(mass=1.0, inertia=inertia)
+            j_ball = builder.add_joint_ball(parent=-1, child=b1)
+            b2 = builder.add_link(mass=1.0, inertia=inertia)
+            j_revolute = builder.add_joint_revolute(parent=b1, child=b2, axis=newton.Axis.Z)
+            builder.add_articulation([j_free])
+            builder.add_articulation([j_ball, j_revolute])
+
+            target_pos = [1.0, 2.0, 3.0, 0.1, 0.2, 0.3, -0.4, 0.5, 0.6, 0.7]
+            target_vel = [10.0 + i for i in range(builder.joint_dof_count)]
+
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                builder.joint_target_pos = target_pos
+                builder.joint_target_vel = target_vel
+
+            deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+            self.assertEqual(len(deprecations), 2)
+            self.assertTrue(any("ModelBuilder.joint_target_pos" in str(w.message) for w in deprecations))
+            self.assertTrue(any("ModelBuilder.joint_target_vel" in str(w.message) for w in deprecations))
+
+            free_q_start = builder.joint_q_start[j_free]
+            ball_q_start = builder.joint_q_start[j_ball]
+            self.assertEqual(builder.joint_target_q[free_q_start + 6], 1.0)
+            self.assertEqual(builder.joint_target_q[ball_q_start + 3], 1.0)
+
+            model = builder.finalize(skip_all_validations=True)
+            np.testing.assert_allclose(model.joint_target_q.numpy(), target_pos, rtol=0.0, atol=1e-6)
+            np.testing.assert_allclose(model.joint_target_qd.numpy(), target_vel, rtol=0.0, atol=1e-6)
+
+            newton.use_coord_layout_targets = True
+            coord_builder = ModelBuilder()
+            with self.assertRaises(AttributeError):
+                coord_builder.joint_target_pos = []
+            with self.assertRaises(AttributeError):
+                coord_builder.joint_target_vel = []
+        finally:
+            newton.use_coord_layout_targets = prev_flag
+
 
 class TestModelMesh(unittest.TestCase):
     def test_empty_numeric_custom_attribute_uses_wp_full_default(self):

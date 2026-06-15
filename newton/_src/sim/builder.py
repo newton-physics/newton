@@ -386,9 +386,9 @@ class ModelBuilder:
         density: float = 1000.0
         """The density of the shape material."""
         ke: float = 2.5e3
-        """The contact elastic stiffness. Used by SemiImplicit, Featherstone, MuJoCo."""
+        """The contact elastic stiffness [N/m]. Used by SemiImplicit, Featherstone, MuJoCo, VBD."""
         kd: float = 100.0
-        """The contact damping coefficient. Used by SemiImplicit, Featherstone, MuJoCo."""
+        """The contact damping coefficient [N·s/m]. Used by SemiImplicit, Featherstone, MuJoCo, VBD."""
         kf: float = 1000.0
         """The friction damping coefficient. Used by SemiImplicit, Featherstone."""
         ka: float = 0.0
@@ -627,7 +627,8 @@ class ModelBuilder:
             self.limit_ke = limit_ke
             """The elastic stiffness of the joint axis limits. Defaults to 1e4."""
             self.limit_kd = limit_kd
-            """The damping stiffness of the joint axis limits. Defaults to 1e1."""
+            """The damping coefficient of the joint axis limits
+            [N·s/m or N·m·s/rad, depending on joint type]. Defaults to 1e1."""
             self.target_pos = target_pos
             """The target position of the joint axis.
             If the initial `target_pos` is outside the limits,
@@ -1027,7 +1028,7 @@ class ModelBuilder:
         """Default second Lame parameter [Pa] for tetrahedral elements."""
 
         self.default_tet_k_damp = 0.0
-        """Default damping stiffness for tetrahedral elements."""
+        """Default viscous damping coefficient [Pa·s] for tetrahedral elements."""
 
         self.default_tet_density = 1.0
         """Default density [kg/m^3] for tetrahedral soft bodies."""
@@ -2504,11 +2505,13 @@ class ModelBuilder:
 
     @property
     def joint_target_pos(self) -> list[float]:
-        """Deprecated read-only alias for :attr:`joint_target_q` (DOF-shape).
+        """Deprecated alias for :attr:`joint_target_q` (DOF-shape).
 
         Returns a fresh DOF-shaped list — for FREE/BALL/DISTANCE the quat-w
-        slot is dropped; other joints copy verbatim. Mutations do not
-        propagate back. Raises :class:`AttributeError` under
+        slot is dropped; other joints copy verbatim. Mutating the returned
+        list does not propagate back; assign to this alias to update the
+        underlying targets during the deprecation window. Raises
+        :class:`AttributeError` under
         :data:`newton.use_coord_layout_targets` ``True``.
 
         .. deprecated:: 1.3
@@ -2530,10 +2533,31 @@ class ModelBuilder:
         )
         return self._project_target_q_to_dof()
 
+    @joint_target_pos.setter
+    def joint_target_pos(self, value: Sequence[float]) -> None:
+        import newton  # noqa: PLC0415
+
+        if newton.use_coord_layout_targets:
+            raise AttributeError(
+                "ModelBuilder.joint_target_pos is unavailable when "
+                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_q."
+            )
+        warnings.warn(
+            "ModelBuilder.joint_target_pos is deprecated; use ModelBuilder.joint_target_q "
+            "(coord-shaped). Assignments to the legacy alias are converted from DOF layout "
+            "during the deprecation window. The attribute will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._assign_target_q_from_dof(value)
+
     @property
     def joint_target_vel(self) -> list[float]:
-        """Deprecated read-only alias for :attr:`joint_target_qd`. Returns a
-        fresh copy — mutations do not propagate back. Raises
+        """Deprecated alias for :attr:`joint_target_qd`.
+
+        Returns a fresh copy — mutating it does not propagate back; assign to
+        this alias to update :attr:`joint_target_qd` during the deprecation
+        window. Raises
         :class:`AttributeError` under
         :data:`newton.use_coord_layout_targets` ``True``.
 
@@ -2554,6 +2578,27 @@ class ModelBuilder:
             stacklevel=2,
         )
         return list(self.joint_target_qd)
+
+    @joint_target_vel.setter
+    def joint_target_vel(self, value: Sequence[float]) -> None:
+        import newton  # noqa: PLC0415
+
+        if newton.use_coord_layout_targets:
+            raise AttributeError(
+                "ModelBuilder.joint_target_vel is unavailable when "
+                "newton.use_coord_layout_targets is True; use ModelBuilder.joint_target_qd."
+            )
+        warnings.warn(
+            "ModelBuilder.joint_target_vel is deprecated; use ModelBuilder.joint_target_qd. "
+            "Assignments to the legacy alias are forwarded during the deprecation window. "
+            "The attribute will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        values = list(value)
+        if len(values) != self.joint_dof_count:
+            raise ValueError(f"ModelBuilder.joint_target_vel expects {self.joint_dof_count} values, got {len(values)}.")
+        self.joint_target_qd = values
 
     def _project_target_q_to_dof(self) -> list[float]:
         """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
@@ -2577,6 +2622,31 @@ class ModelBuilder:
                 num_lin, num_ang = self.joint_dof_dim[j]
                 result.extend(self.joint_target_q[q_start : q_start + num_lin + num_ang])
         return result
+
+    def _assign_target_q_from_dof(self, values: Sequence[float]) -> None:
+        """Write DOF-shaped legacy target values into the coord-sized buffer."""
+        values = list(values)
+        if len(values) != self.joint_dof_count:
+            raise ValueError(f"ModelBuilder.joint_target_pos expects {self.joint_dof_count} values, got {len(values)}.")
+
+        value_start = 0
+        for j, jtype in enumerate(self.joint_type):
+            q_start = self.joint_q_start[j]
+            if jtype == JointType.BALL:
+                self.joint_target_q[q_start : q_start + 3] = values[value_start : value_start + 3]
+                self.joint_target_q[q_start + 3] = 1.0
+                value_start += 3
+            elif jtype == JointType.FREE or jtype == JointType.DISTANCE:
+                self.joint_target_q[q_start : q_start + 6] = values[value_start : value_start + 6]
+                self.joint_target_q[q_start + 6] = 1.0
+                value_start += 6
+            elif jtype == JointType.FIXED:
+                pass
+            else:
+                num_lin, num_ang = self.joint_dof_dim[j]
+                dof_count = num_lin + num_ang
+                self.joint_target_q[q_start : q_start + dof_count] = values[value_start : value_start + dof_count]
+                value_start += dof_count
 
     @staticmethod
     def _quat_from_axis_targets(t_x: float, t_y: float, t_z: float) -> tuple[float, float, float, float]:
@@ -5010,13 +5080,11 @@ class ModelBuilder:
             child_xform: The transform from the child body frame to the joint child anchor frame; its
                 translation is the attachment point.
             stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e5.
-            stretch_damping: Cable stretch damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
-                this is a dimensionless (Rayleigh-style) coefficient. If None,
+            stretch_damping: Cable stretch damping [N·s/m] (stored as ``target_kd``). If None,
                 defaults to 0.0.
             bend_stiffness: Cable bend/twist stiffness (stored as ``target_ke``) [N*m] (torque per radian). If None,
                 defaults to 0.0.
-            bend_damping: Cable bend/twist damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
-                this is a dimensionless (Rayleigh-style) coefficient. If None,
+            bend_damping: Cable bend/twist damping [N·m·s/rad] (stored as ``target_kd``). If None,
                 defaults to 0.0.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
@@ -6537,16 +6605,11 @@ class ModelBuilder:
         color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        **kwargs,
     ) -> int:
         """Adds an ellipsoid collision shape or site to a body.
 
         The ellipsoid is centered at its local origin as defined by `xform`, with semi-axes
         `rx`, `ry`, `rz` along the local X, Y, Z axes respectively.
-
-        .. deprecated:: 1.1
-            The ``a``, ``b``, ``c`` parameter names are deprecated; use
-            ``rx``, ``ry``, ``rz`` instead.
 
         Note:
             Ellipsoid collision is handled by the GJK/MPR collision pipeline,
@@ -6586,26 +6649,6 @@ class ModelBuilder:
                 # A sphere is a special case where rx = ry = rz
                 builder.add_shape_ellipsoid(body=body, rx=0.5, ry=0.5, rz=0.5)
         """
-        # Backward compat: accept deprecated a, b, c parameter names
-        _deprecated_map = {"a": ("rx", rx, 1.0), "b": ("ry", ry, 0.75), "c": ("rz", rz, 0.5)}
-        for old_name, (new_name, new_val, default) in _deprecated_map.items():
-            if old_name in kwargs:
-                if new_val != default:
-                    raise TypeError(f"Cannot specify both '{old_name}' and '{new_name}'")
-                warnings.warn(
-                    f"Parameter '{old_name}' is deprecated, use '{new_name}' instead.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-        if "a" in kwargs:
-            rx = kwargs.pop("a")
-        if "b" in kwargs:
-            ry = kwargs.pop("b")
-        if "c" in kwargs:
-            rz = kwargs.pop("c")
-        if kwargs:
-            raise TypeError(f"Unexpected keyword arguments: {set(kwargs)}")
-
         if cfg is None:
             cfg = self.default_site_cfg if as_site else self.default_shape_cfg
         elif as_site:
@@ -7475,11 +7518,11 @@ class ModelBuilder:
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, defaults to 1.0e5.
-            stretch_damping: Stretch damping for the cable joints (applied per-joint; not length-normalized). If None,
+            stretch_damping: Stretch damping [N·s/m] for the cable joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
-            bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke`` [N*m]
+            bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke``
                 (torque per radian). If None, defaults to 0.0.
-            bend_damping: Bend/twist damping for the cable joints (applied per-joint; not length-normalized). If None,
+            bend_damping: Bend/twist damping [N·m·s/rad] for the cable joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
@@ -7666,10 +7709,11 @@ class ModelBuilder:
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
                 Defaults to 1.0e5.
-            stretch_damping: Stretch damping (per joint). Defaults to 0.0.
-            bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke`` [N*m].
+            stretch_damping: Stretch damping [N·s/m] (per joint). Defaults to 0.0.
+            bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke``
+                (torque per radian).
                 Defaults to 0.0.
-            bend_damping: Bend/twist damping (per joint). Defaults to 0.0.
+            bend_damping: Bend/twist damping [N·m·s/rad] (per joint). Defaults to 0.0.
             label: Optional label prefix for bodies, shapes, joints, and articulations.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
                 per connected component.
@@ -8096,7 +8140,7 @@ class ModelBuilder:
             i: The index of the first particle
             j: The index of the second particle
             ke: The elastic stiffness of the spring
-            kd: The damping stiffness of the spring
+            kd: The damping coefficient of the spring [N·s/m].
             control: The actuation level of the spring
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -8152,7 +8196,7 @@ class ModelBuilder:
             k: The index of the third particle.
             tri_ke: The elastic stiffness of the triangle. If None, the default value (:attr:`default_tri_ke`) is used.
             tri_ka: The area stiffness of the triangle. If None, the default value (:attr:`default_tri_ka`) is used.
-            tri_kd: The damping stiffness of the triangle. If None, the default value (:attr:`default_tri_kd`) is used.
+            tri_kd: The damping coefficient of the triangle. If None, the default value (:attr:`default_tri_kd`) is used.
             tri_drag: The drag coefficient of the triangle. If None, the default value (:attr:`default_tri_drag`) is used.
             tri_lift: The lift coefficient of the triangle. If None, the default value (:attr:`default_tri_lift`) is used.
             custom_attributes: Dictionary of custom attribute names to values.
@@ -8235,7 +8279,7 @@ class ModelBuilder:
             k: The indices of the third particle
             tri_ke: The elastic stiffness of the triangles. If None, the default value (:attr:`default_tri_ke`) is used.
             tri_ka: The area stiffness of the triangles. If None, the default value (:attr:`default_tri_ka`) is used.
-            tri_kd: The damping stiffness of the triangles. If None, the default value (:attr:`default_tri_kd`) is used.
+            tri_kd: The damping coefficient of the triangles. If None, the default value (:attr:`default_tri_kd`) is used.
             tri_drag: The drag coefficient of the triangles. If None, the default value (:attr:`default_tri_drag`) is used.
             tri_lift: The lift coefficient of the triangles. If None, the default value (:attr:`default_tri_lift`) is used.
             custom_attributes: Dictionary of custom attribute names to values.
@@ -8348,7 +8392,7 @@ class ModelBuilder:
             l: The index of the fourth particle
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
-            k_damp: The element's damping stiffness
+            k_damp: The element's viscous damping coefficient [Pa·s].
             custom_attributes: Dictionary of custom attribute names to values.
 
         Return:
@@ -8991,7 +9035,7 @@ class ModelBuilder:
             density: The density of each particle
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
-            k_damp: The damping stiffness
+            k_damp: The viscous damping coefficient [Pa·s].
             fix_left: Make the left-most edge of particles kinematic (fixed in place)
             fix_right: Make the right-most edge of particles kinematic
             fix_top: Make the top-most edge of particles kinematic
@@ -9161,7 +9205,7 @@ class ModelBuilder:
             k_lambda: The second elastic Lame parameter [Pa]. Scalar or
                 per-element array. Overrides ``mesh.k_lambda`` if both are
                 provided.
-            k_damp: The damping stiffness. Scalar or per-element array.
+            k_damp: The viscous damping coefficient [Pa·s]. Scalar or per-element array.
                 Overrides ``mesh.k_damp`` if both are provided.
             tri_ke: Stiffness for surface mesh triangles. Defaults to 0.0.
             tri_ka: Area stiffness for surface mesh triangles. Defaults to 0.0.

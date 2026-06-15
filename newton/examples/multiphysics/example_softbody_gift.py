@@ -171,7 +171,7 @@ class Example:
                 density=100,
                 k_mu=1.0e5,
                 k_lambda=1.0e5,
-                k_damp=1e-5,
+                k_damp=1e0,
             )
 
         # Add first cloth strap
@@ -185,9 +185,9 @@ class Example:
             density=0.02,
             tri_ke=1e5,
             tri_ka=1e5,
-            tri_kd=1e-5,
+            tri_kd=1e0,
             edge_ke=0.01,
-            edge_kd=1e-2,
+            edge_kd=1e-4,
         )
 
         # Add second cloth strap (rotated 90 degrees)
@@ -201,9 +201,9 @@ class Example:
             density=0.02,
             tri_ke=1e5,
             tri_ka=1e5,
-            tri_kd=1e-5,
+            tri_kd=1e0,
             edge_ke=0.01,
-            edge_kd=1e-2,
+            edge_kd=1e-4,
         )
 
         # Color the mesh for VBD solver
@@ -213,7 +213,7 @@ class Example:
 
         # Contact parameters
         self.model.soft_contact_ke = 5.0e4
-        self.model.soft_contact_kd = 1e-5
+        self.model.soft_contact_kd = 5.0e-1
         self.model.soft_contact_mu = 1.0
 
         self.solver = newton.solvers.SolverVBD(
