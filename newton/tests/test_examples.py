@@ -915,5 +915,33 @@ add_example_test(
 )
 
 
+class TestControllerExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestControllerExamples,
+    name="controllers.example_pid_pendulum",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120},
+)
+
+add_example_test(
+    TestControllerExamples,
+    name="controllers.example_diff_ik_panda",
+    devices=cuda_test_devices,  # or test_devices with low num-frames on CPU
+    use_viewer=True,
+    test_options={"num-frames": 120},
+)
+
+add_example_test(
+    TestControllerExamples,
+    name="controllers.example_diff_drive_swarm",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120},
+)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
