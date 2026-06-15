@@ -817,7 +817,7 @@ class TestSensorContactKamino(unittest.TestCase):
 
         # SensorContact requests the ``force`` contact attribute, so allocate the
         # output ``Contacts`` buffer afterwards to pick it up.
-        sensor = SensorContact(model, sensing_obj_bodies=["box"])
+        sensor = SensorContact(model, sensing_bodies=["box"])
         contacts = newton.Contacts(
             rigid_contact_max=200,
             soft_contact_max=0,
