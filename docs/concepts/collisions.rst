@@ -398,6 +398,51 @@ Collision groups control which shapes collide within the same world:
 
     model = builder.finalize()
 
+**Collision type and affinity masks**
+
+For more expressive filtering, shapes can set ``collision_type`` and
+``collision_affinity`` bitmasks. A shape pair is considered for collision when
+either shape's type is accepted by the other's affinity:
+``(type_a & affinity_b) != 0 or (type_b & affinity_a) != 0``.
+
+``collision_group`` provides simple group-level filtering. At model
+finalization, Newton resolves either explicit masks or group-derived masks into
+``Model.shape_collision_type`` and ``Model.shape_collision_affinity``. The
+broad phase and solvers use those resolved masks, so group-level filtering does
+not add per-step filtering cost.
+
+Mask values are unsigned 32-bit integers. Each set bit represents a collision
+category. A shape's ``collision_type`` says which categories it belongs to, and
+``collision_affinity`` says which categories it can collide with. Setting both
+to zero makes a shape inert for automatic shape-shape contact generation.
+
+If neither mask is set, Newton derives masks from ``collision_group``. If either
+mask is set explicitly, the explicit mask values are used; an unset counterpart
+is treated as zero and Newton emits a warning. For clarity, set both
+``collision_type`` and ``collision_affinity`` together when using mask-based
+filtering.
+
+MJCF ``contype`` and ``conaffinity`` map directly to ``collision_type`` and
+``collision_affinity``. For example, a floor with ``contype=0`` and
+``conaffinity=1`` collides with spheres whose ``contype=1`` and
+``conaffinity=0``; the spheres do not collide with each other because neither
+sphere accepts the other's type.
+
+.. testcode:: collision-type-affinity
+
+    builder = newton.ModelBuilder()
+    floor_cfg = builder.ShapeConfig(collision_type=0, collision_affinity=1)
+    ball_cfg = builder.ShapeConfig(collision_type=1, collision_affinity=0)
+
+    floor = builder.add_shape_box(body=-1, hx=5.0, hy=5.0, hz=0.01, cfg=floor_cfg)
+    body_a = builder.add_body()
+    body_b = builder.add_body()
+    sphere_a = builder.add_shape_sphere(body_a, radius=0.1, cfg=ball_cfg)
+    sphere_b = builder.add_shape_sphere(body_b, radius=0.1, cfg=ball_cfg)
+
+    # The spheres collide with the floor, but not with each other.
+    model = builder.finalize()
+
 **Self-collision within articulations**
 
 Self-collisions within an articulation can be enabled or disabled with ``enable_self_collisions`` when loading models. By default, adjacent body collisions (parent-child pairs connected by joints) are disabled via ``collision_filter_parent=True``.
@@ -1034,7 +1079,11 @@ Shape collision behavior is controlled via :class:`~ModelBuilder.ShapeConfig`:
    * - Parameter
      - Description
    * - ``collision_group``
-     - Collision group ID. 0 disables collisions. Default: 1.
+     - Collision group ID. When ``collision_type`` / ``collision_affinity`` are unset, 0 disables collisions and Newton derives runtime masks from this value. Default: 1.
+   * - ``collision_type``
+     - Collision type bitmask [uint32]. If both masks are unset, derived from ``collision_group``.
+   * - ``collision_affinity``
+     - Collision affinity bitmask [uint32]. If both masks are unset, derived from ``collision_group``.
    * - ``collision_filter_parent``
      - Filter collisions with adjacent body (parent in articulation or connected via joint). Default: True.
    * - ``has_shape_collision``

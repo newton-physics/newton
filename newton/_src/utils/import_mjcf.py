@@ -729,6 +729,8 @@ def parse_mjcf(
             # while keeping the shape as a collider for explicit <pair> contacts.
             contype = int(geom_attrib.get("contype", 1))
             conaffinity = int(geom_attrib.get("conaffinity", 1))
+            shape_cfg.collision_type = contype
+            shape_cfg.collision_affinity = conaffinity
             if contype == 0 and conaffinity == 0 and not just_visual:
                 shape_cfg.collision_group = 0
 

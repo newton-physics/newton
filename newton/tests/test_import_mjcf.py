@@ -7903,6 +7903,99 @@ class TestContypeConaffinityZero(unittest.TestCase):
         builder.add_mjcf(mjcf)
         self.assertEqual(builder.shape_collision_group[0], 1)
 
+    def test_contype_conaffinity_masks_filter_contacts(self):
+        """MJCF contype/conaffinity masks control Newton contact pairs."""
+        mjcf = """<mujoco model="minexample">
+            <option timestep="0.002" gravity="0 0 -9.81"/>
+            <default>
+                <geom contype="0" conaffinity="0" condim="3"/>
+            </default>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.01"
+                      contype="0" conaffinity="1"/>
+                <body name="sphere_a" pos="0 -0.06 0.6">
+                    <freejoint/>
+                    <geom name="sphere_a" type="sphere" size="0.1"
+                          contype="1" conaffinity="0" mass="1"/>
+                </body>
+                <body name="sphere_b" pos="0 0.06 0.6">
+                    <freejoint/>
+                    <geom name="sphere_b" type="sphere" size="0.1"
+                          contype="1" conaffinity="0" mass="1"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        floor_shapes = [
+            i
+            for i, (collision_type, collision_affinity) in enumerate(
+                zip(builder.shape_collision_type, builder.shape_collision_affinity, strict=True)
+            )
+            if collision_type == 0 and collision_affinity == 1
+        ]
+        sphere_shapes = [
+            i
+            for i, (collision_type, collision_affinity) in enumerate(
+                zip(builder.shape_collision_type, builder.shape_collision_affinity, strict=True)
+            )
+            if collision_type == 1 and collision_affinity == 0
+        ]
+
+        self.assertEqual(len(floor_shapes), 1)
+        self.assertEqual(len(sphere_shapes), 2)
+        floor = floor_shapes[0]
+        sphere_a, sphere_b = sphere_shapes
+
+        model = builder.finalize()
+        contact_pairs = {tuple(sorted(pair)) for pair in model.shape_contact_pairs.numpy().tolist()}
+
+        self.assertIn(tuple(sorted((floor, sphere_a))), contact_pairs)
+        self.assertIn(tuple(sorted((floor, sphere_b))), contact_pairs)
+        self.assertNotIn(tuple(sorted((sphere_a, sphere_b))), contact_pairs)
+
+    def test_solver_exports_contype_conaffinity_masks(self):
+        """SolverMuJoCo exports exact contype/conaffinity masks."""
+        mjcf = """<mujoco model="minexample">
+            <option timestep="0.002" gravity="0 0 -9.81"/>
+            <default>
+                <geom contype="0" conaffinity="0" condim="3"/>
+            </default>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.01"
+                      contype="0" conaffinity="1"/>
+                <body name="sphere_a" pos="0 -0.06 0.6">
+                    <freejoint/>
+                    <geom name="sphere_a" type="sphere" size="0.1"
+                          contype="1" conaffinity="0" mass="1"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        def geom_id_containing(token: str) -> int:
+            for geom_id in range(solver.mj_model.ngeom):
+                name = solver._mujoco.mj_id2name(
+                    solver.mj_model,
+                    solver._mujoco.mjtObj.mjOBJ_GEOM,
+                    geom_id,
+                )
+                if name is not None and token in name:
+                    return geom_id
+            raise AssertionError(f"No MuJoCo geom name contains {token!r}")
+
+        floor_id = geom_id_containing("floor")
+        sphere_id = geom_id_containing("sphere_a")
+
+        self.assertEqual(solver.mj_model.geom_contype[floor_id], 0)
+        self.assertEqual(solver.mj_model.geom_conaffinity[floor_id], 1)
+        self.assertEqual(solver.mj_model.geom_contype[sphere_id], 1)
+        self.assertEqual(solver.mj_model.geom_conaffinity[sphere_id], 0)
+
     def test_collision_group_zero_from_global_default(self):
         """Collision-class geoms inheriting contype=conaffinity=0 from global default."""
         # Apollo pattern: global default sets contype=conaffinity=0, collision class inherits it

@@ -21,9 +21,10 @@ from ..core.types import Devicelike
 from .broad_phase_common import (
     binary_search,
     check_aabb_overlap,
+    compile_group_masks_for_broad_phase,
     is_pair_excluded,
     precompute_world_map,
-    test_world_and_group_pair,
+    test_world_and_type_affinity_pair,
     write_pair,
 )
 
@@ -287,7 +288,8 @@ def _sap_broadphase_kernel(
     shape_bounding_box_lower: wp.array[wp.vec3],
     shape_bounding_box_upper: wp.array[wp.vec3],
     shape_gap: wp.array[float],  # Optional per-shape effective gaps (can be empty if AABBs pre-expanded)
-    collision_group: wp.array[int],
+    collision_type: wp.array[wp.uint32],
+    collision_affinity: wp.array[wp.uint32],
     shape_world: wp.array[int],  # World indices
     world_index_map: wp.array[int],
     world_slice_ends: wp.array[int],
@@ -364,9 +366,11 @@ def _sap_broadphase_kernel(
         shape1 = wp.min(shape1_tmp, shape2_tmp)
         shape2 = wp.max(shape1_tmp, shape2_tmp)
 
-        # Get collision and world groups
-        col_group1 = collision_group[shape1]
-        col_group2 = collision_group[shape2]
+        # Get collision masks and world groups
+        col_type1 = collision_type[shape1]
+        col_type2 = collision_type[shape2]
+        col_affinity1 = collision_affinity[shape1]
+        col_affinity2 = collision_affinity[shape2]
         world1 = shape_world[shape1]
         world2 = shape_world[shape2]
 
@@ -377,8 +381,15 @@ def _sap_broadphase_kernel(
             workid += nsweep_in
             continue
 
-        # Check both world and collision groups
-        if test_world_and_group_pair(world1, world2, col_group1, col_group2):
+        # Check both world and collision masks
+        if test_world_and_type_affinity_pair(
+            world1,
+            world2,
+            col_type1,
+            col_affinity1,
+            col_type2,
+            col_affinity2,
+        ):
             _process_single_sap_pair(
                 wp.vec2i(shape1, shape2),
                 shape_bounding_box_lower,
@@ -512,7 +523,7 @@ class BroadPhaseSAP:
         shape_lower: wp.array[wp.vec3],  # Lower bounds of shape bounding boxes
         shape_upper: wp.array[wp.vec3],  # Upper bounds of shape bounding boxes
         shape_gap: wp.array[float] | None,  # Optional per-shape effective gaps
-        shape_collision_group: wp.array[int],  # Collision group ID per box
+        shape_collision_group: wp.array[int] | None,  # Collision group ID per box
         shape_world: wp.array[int],  # World index per box
         shape_count: int,  # Number of active bounding boxes
         # Outputs
@@ -522,6 +533,8 @@ class BroadPhaseSAP:
         filter_pairs: wp.array[wp.vec2i] | None = None,  # Sorted excluded pairs
         num_filter_pairs: int | None = None,
         skip_count_zero: bool = False,  # Skip candidate_pair_count.zero_() if already zeroed by the caller
+        shape_collision_type: wp.array[wp.uint32] | None = None,  # Collision type mask per box
+        shape_collision_affinity: wp.array[wp.uint32] | None = None,  # Affinity mask per box
     ) -> None:
         """Launch the sweep and prune broad phase collision detection with per-world segmented sort.
 
@@ -534,22 +547,28 @@ class BroadPhaseSAP:
             shape_upper: Array of upper bounds for each shape's AABB
             shape_gap: Optional array of per-shape effective gaps. If None or empty array,
                 assumes AABBs are pre-expanded (gaps = 0). If provided, gaps are added during overlap checks.
-            shape_collision_group: Array of collision group IDs for each shape. Positive values indicate
-                groups that only collide with themselves (and with negative groups). Negative values indicate
-                groups that collide with everything except their negative counterpart. Zero indicates no collisions.
+            shape_collision_group: Optional array of collision group IDs for each shape.
+                If type/affinity masks are not provided, collision groups are resolved
+                into masks before launch.
             shape_world: Array of world indices for each shape. Index -1 indicates global entities
                 that collide with all worlds. Indices 0, 1, 2, ... indicate world-specific entities.
             shape_count: Number of active bounding boxes to check (not used in world-based approach)
             candidate_pair: Output array to store overlapping shape pairs
             candidate_pair_count: Output array to store number of overlapping pairs found
             device: Device to launch on. If None, uses the device of the input arrays.
+            filter_pairs: Optional array of sorted shape-pair exclusions.
+            num_filter_pairs: Number of entries in ``filter_pairs``.
             skip_count_zero: If True, skip the internal ``candidate_pair_count.zero_()``.
                 The caller guarantees ``candidate_pair_count[0] == 0`` on entry (e.g. when
                 the counter was zeroed by a preceding fused kernel).  Defaults to False so
                 the launch remains self-contained.
+            shape_collision_type: Optional per-shape collision type bitmask. If None,
+                derived from ``shape_collision_group``.
+            shape_collision_affinity: Optional per-shape collision affinity bitmask. If None,
+                derived from ``shape_collision_group``.
 
         The method will populate candidate_pair with the indices of shape pairs whose AABBs overlap
-        (with optional margin expansion), whose collision groups allow interaction, and whose worlds are
+        (with optional margin expansion), whose collision masks allow interaction, and whose worlds are
         compatible (same world or at least one is global). Pairs in filter_pairs (if provided) are excluded.
         The number of pairs found will be written to candidate_pair_count[0].
         """
@@ -568,6 +587,18 @@ class BroadPhaseSAP:
         # If no gaps provided, pass empty array (kernel will use 0.0 gaps)
         if shape_gap is None:
             shape_gap = wp.empty(0, dtype=wp.float32, device=device)
+
+        if (shape_collision_type is None) != (shape_collision_affinity is None):
+            raise ValueError("shape_collision_type and shape_collision_affinity must be provided together.")
+
+        if shape_collision_type is None:
+            if shape_collision_group is None:
+                raise ValueError(
+                    "Either shape_collision_group or both shape_collision_type and shape_collision_affinity are required."
+                )
+            shape_collision_type, shape_collision_affinity = compile_group_masks_for_broad_phase(
+                shape_collision_group, device=device
+            )
 
         # Exclusion filter: empty array and 0 when not provided or empty
         if filter_pairs is None or filter_pairs.shape[0] == 0:
@@ -654,7 +685,8 @@ class BroadPhaseSAP:
                 shape_lower,
                 shape_upper,
                 shape_gap,
-                shape_collision_group,
+                shape_collision_type,
+                shape_collision_affinity,
                 shape_world,
                 self.world_index_map,
                 self.world_slice_ends,
