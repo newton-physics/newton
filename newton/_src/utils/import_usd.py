@@ -3554,6 +3554,13 @@ def parse_usd(
                 continue
             closed = curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic
 
+            # Optional Newton control: by default each cable is wrapped in its own
+            # articulation. Authoring newton:cableWrapInArticulation=false leaves the
+            # cable joints unwrapped so the caller can place them (e.g. close a loop
+            # with extra joints, or attach the cable to other bodies) before finalize.
+            wrap_attr = prim.GetAttribute("newton:cableWrapInArticulation")
+            wrap_in_articulation = bool(wrap_attr.Get()) if wrap_attr and wrap_attr.HasAuthoredValue() else True
+
             world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
             w_pos, w_rot, w_scale = wp.transform_decompose(world_mat)
             world_xf = wp.transform(w_pos, w_rot)
@@ -3635,6 +3642,7 @@ def parse_usd(
                     bend_stiffness=bend_stiffness,
                     closed=closed,
                     label=label,
+                    wrap_in_articulation=wrap_in_articulation,
                 )
                 cable_bodies.extend(bodies)
                 cable_joints.extend(joints)

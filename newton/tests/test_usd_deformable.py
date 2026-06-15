@@ -333,6 +333,26 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder.add_usd(str(usd_path))
             self.assertIn("/World/Cable_articulation", builder.articulation_label)
 
+    def test_cable_wrap_in_articulation_false(self):
+        """newton:cableWrapInArticulation=false leaves the cable joints unwrapped for the caller."""
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_unwrapped.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            curves.GetPrim().CreateAttribute("newton:cableWrapInArticulation", Sdf.ValueTypeNames.Bool).Set(False)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            # Cable bodies/joints still created, but not wrapped in an articulation.
+            bodies, joints = result["path_cable_map"]["/World/Cable"]
+            self.assertEqual((len(bodies), len(joints)), (3, 2))
+            self.assertNotIn("/World/Cable_articulation", builder.articulation_label)
+
 
 # Authored .usda cable asset (T7): loading it should replace the programmatic
 # cable construction used by the cable examples.
