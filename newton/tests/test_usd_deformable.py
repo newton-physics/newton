@@ -137,6 +137,72 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertAlmostEqual(ke[dof0], expected_stretch, delta=expected_stretch * 1e-3)
             self.assertAlmostEqual(ke[dof0 + 1], expected_bend, delta=expected_bend * 1e-3)
 
+    def test_two_cables_have_disjoint_body_ranges(self):
+        """Two cables in one stage map to disjoint body/joint index ranges (addressability)."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "two_cables.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            a = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]  # 3 seg
+            b = [(0.0, 1.0, 1.0), (0.1, 1.0, 1.0), (0.2, 1.0, 1.0)]  # 2 seg
+            _add_cable_curve(stage, "/World/CableA", a)
+            _add_cable_curve(stage, "/World/CableB", b)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            cmap = result["path_cable_map"]
+
+            bodies_a, joints_a = cmap["/World/CableA"]
+            bodies_b, joints_b = cmap["/World/CableB"]
+            self.assertEqual((len(bodies_a), len(joints_a)), (3, 2))
+            self.assertEqual((len(bodies_b), len(joints_b)), (2, 1))
+            # Disjoint, covering all created bodies.
+            self.assertEqual(set(bodies_a) & set(bodies_b), set())
+            self.assertEqual(sorted(bodies_a + bodies_b), list(range(builder.body_count)))
+
+    def test_cable_body_range_matches_curve(self):
+        """Each cable body origin matches the authored segment start point (map points at the right bodies)."""
+        import numpy as np
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_pos.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            # Z-up stage so authored points are not axis-converted on import.
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            _add_cable_curve(stage, "/World/Cable", pts)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            bodies, _ = result["path_cable_map"]["/World/Cable"]
+
+            # Body i origin sits at segment start points[i] (origin == start on main).
+            for i, body in enumerate(bodies):
+                origin = np.array(builder.body_q[body][:3], dtype=np.float32)
+                np.testing.assert_allclose(origin, np.array(pts[i], dtype=np.float32), atol=1e-5)
+
+    def test_cable_articulation_label_survives_finalize(self):
+        """The cable's articulation is labeled by prim path — the replication-durable handle."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_art.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            _add_cable_curve(stage, "/World/Cable", pts)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            builder.add_usd(str(usd_path))
+            self.assertIn("/World/Cable_articulation", builder.articulation_label)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
