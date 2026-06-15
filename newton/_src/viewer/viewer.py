@@ -6,7 +6,6 @@ from __future__ import annotations
 import enum
 import os
 import sys
-import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Any
