@@ -866,8 +866,8 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True):
             qd = state_0.body_qd.numpy()
             ke = 0.0
             for b in body_idx:
-                omega = qd[b, 0:3]
-                vel = qd[b, 3:6]
+                vel = qd[b, 0:3]
+                omega = qd[b, 3:6]
                 ke += 0.5 * float(masses[b]) * float(vel @ vel)
                 ke += 0.5 * float(omega @ (inertias[b] @ omega))
             return ke
