@@ -37,6 +37,18 @@ def _add_cable_curve(stage, path, points, *, periodic=False):
     return curves
 
 
+def _bind_cable_material(stage, prim, mat_path, **attrs):
+    """Author a curve-deformable material under omniphysics: and bind it to a prim."""
+    from pxr import Sdf, UsdShade
+
+    mat = UsdShade.Material.Define(stage, mat_path)
+    for name, value in attrs.items():
+        mat.GetPrim().CreateAttribute(f"omniphysics:{name}", Sdf.ValueTypeNames.Float).Set(value)
+    binding = UsdShade.MaterialBindingAPI.Apply(prim)
+    binding.Bind(mat, materialPurpose="physics")
+    return mat
+
+
 class TestUSDDeformableCable(unittest.TestCase):
     """Curve-deformable (cable) parsing into VBD rod bodies + cable joints."""
 
@@ -80,6 +92,50 @@ class TestUSDDeformableCable(unittest.TestCase):
 
             self.assertEqual(result["path_cable_map"], {})
             self.assertEqual(builder.body_count, 0)
+
+    def test_cable_material_maps_to_rod_stiffness(self):
+        """Bound curve-deformable material → radius + per-joint stretch/bend stiffness."""
+        import math
+
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_mat.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            # 3 segments of length 0.1 along x.
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            thickness, stretch_mod, bend_mod = 0.02, 2.0e6, 3.0e5
+            _bind_cable_material(
+                stage,
+                curves.GetPrim(),
+                "/World/CableMat",
+                thickness=thickness,
+                stretchStiffness=stretch_mod,
+                bendStiffness=bend_mod,
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            bodies, joints = result["path_cable_map"]["/World/Cable"]
+            self.assertEqual(len(bodies), 3)
+
+            # radius = thickness / 2; stretch/bend converted with A/L, I/L.
+            r = 0.5 * thickness
+            seg_len = 0.3 / 3
+            area = math.pi * r * r
+            inertia = 0.25 * math.pi * r**4
+            expected_stretch = stretch_mod * area / seg_len
+            expected_bend = bend_mod * inertia / seg_len
+
+            # Cable joints store stretch in the linear DOF target_ke, bend in the angular.
+            j0 = joints[0]
+            dof0 = builder.joint_qd_start[j0]
+            ke = builder.joint_target_ke
+            self.assertAlmostEqual(ke[dof0], expected_stretch, delta=expected_stretch * 1e-3)
+            self.assertAlmostEqual(ke[dof0 + 1], expected_bend, delta=expected_bend * 1e-3)
 
 
 if __name__ == "__main__":

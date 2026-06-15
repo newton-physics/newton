@@ -3443,8 +3443,20 @@ def parse_usd(
             w_pos, w_rot, w_scale = wp.transform_decompose(world_mat)
             world_xf = wp.transform(w_pos, w_rot)
 
-            # TODO(phase 1): read radius from thickness on the bound material.
-            radius = 0.05
+            # Curve-deformable material → cable parameters. The material moduli
+            # are force/area; convert to per-joint stiffness with the circular
+            # cross-section geometry (A = pi r^2, I = pi r^4 / 4) and the segment
+            # length, mirroring create_cable_stiffness_from_elastic_moduli.
+            cable_mat = usd.get_curve_deformable_material(prim) or {}
+            radius = 0.5 * cable_mat["thickness"] if "thickness" in cable_mat else 0.05
+            area = math.pi * radius * radius
+            inertia = 0.25 * math.pi * radius**4
+            if "shearStiffness" in cable_mat or "twistStiffness" in cable_mat:
+                warnings.warn(
+                    f"{path}: shearStiffness / twistStiffness are not yet mapped to the VBD cable "
+                    f"(isotropic bend only); ignoring.",
+                    stacklevel=2,
+                )
 
             cable_bodies: list[int] = []
             cable_joints: list[int] = []
@@ -3462,8 +3474,27 @@ def parse_usd(
                     )
                     for p in local_pts
                 ]
+                # Per-joint stiffness needs a segment length; use the curve's mean.
+                seg_len = float(wp.length(positions[-1] - positions[0])) / max(1, n - 1)
+                stretch_stiffness = (
+                    cable_mat["stretchStiffness"] * area / seg_len
+                    if "stretchStiffness" in cable_mat and seg_len > 0.0
+                    else None
+                )
+                bend_stiffness = (
+                    cable_mat["bendStiffness"] * inertia / seg_len
+                    if "bendStiffness" in cable_mat and seg_len > 0.0
+                    else None
+                )
                 label = path if len(vertex_counts) == 1 else f"{path}_curve{ci}"
-                bodies, joints = builder.add_rod(positions=positions, radius=radius, closed=closed, label=label)
+                bodies, joints = builder.add_rod(
+                    positions=positions,
+                    radius=radius,
+                    stretch_stiffness=stretch_stiffness,
+                    bend_stiffness=bend_stiffness,
+                    closed=closed,
+                    label=label,
+                )
                 cable_bodies.extend(bodies)
                 cable_joints.extend(joints)
 

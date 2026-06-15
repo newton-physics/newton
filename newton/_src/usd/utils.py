@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import warnings
 from collections.abc import Iterable, Sequence
@@ -1376,6 +1377,38 @@ def _read_physics_attr(prim: Usd.Prim, name: str):
         if attr and attr.HasAuthoredValue():
             return attr.Get()
     return None
+
+
+def get_curve_deformable_material(prim: Usd.Prim) -> dict[str, float] | None:
+    """Read curve-deformable (cable) material parameters bound to a prim.
+
+    Resolves the physics material bound via ``material:binding:physics`` (on the
+    prim or an ancestor) and reads the ``PhysicsCurvesDeformableMaterialAPI``
+    attributes under the ``omniphysics:`` / ``physxDeformableBody:`` /
+    ``physics:`` namespaces.
+
+    Args:
+        prim: The curve prim whose bound physics material is read.
+
+    Returns:
+        A dict of authored, finite, positive values among ``thickness``,
+        ``stretchStiffness``, ``shearStiffness``, ``bendStiffness``,
+        ``twistStiffness`` and ``density``; or ``None`` if no physics material is
+        bound. The schema's ``-inf`` "simulator default" sentinel and any
+        non-positive value are dropped so the caller falls back to its defaults.
+    """
+    material_prim = _find_physics_material_prim(prim)
+    if material_prim is None:
+        return None
+    out: dict[str, float] = {}
+    for name in ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "twistStiffness", "density"):
+        val = _read_physics_attr(material_prim, name)
+        if val is None:
+            continue
+        val = float(val)
+        if math.isfinite(val) and val > 0.0:
+            out[name] = val
+    return out
 
 
 def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:
