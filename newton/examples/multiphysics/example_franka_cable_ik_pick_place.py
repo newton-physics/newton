@@ -63,8 +63,24 @@ GRIP_STIFFNESS = 1000.0  # finger PD stiffness [N/m] (IsaacLab panda_hand)
 
 @wp.kernel
 def set_gripper_q(joint_q: wp.array2d[float], finger_pos: wp.array[float], idx0: int, idx1: int):
-    joint_q[0, idx0] = finger_pos[0]
-    joint_q[0, idx1] = finger_pos[0]
+    world_idx = wp.tid()
+    joint_q[world_idx, idx0] = finger_pos[world_idx]
+    joint_q[world_idx, idx1] = finger_pos[world_idx]
+
+
+@wp.kernel
+def set_task_targets(
+    target_positions: wp.array[wp.vec3],
+    target_rotations: wp.array[wp.vec4],
+    finger_pos: wp.array[float],
+    pos: wp.vec3,
+    rot: wp.vec4,
+    grip_width: float,
+):
+    world_idx = wp.tid()
+    target_positions[world_idx] = pos
+    target_rotations[world_idx] = rot
+    finger_pos[world_idx] = grip_width
 
 
 def _find_label_index(labels: list[str], suffix: str) -> int:
@@ -83,12 +99,14 @@ class Example:
         self.sim_substeps = max(1, int(args.substeps))
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.use_graph = bool(args.graph_capture)
+        self.world_count = max(1, int(args.world_count))
         self.payload_segments = max(2, int(args.payload_segments))
         self.payload_radius = float(args.payload_radius)
         # Working-surface height: the cable rests on it and the arm is mounted on it.
         self.surface_z = float(CABLE_CENTER[2]) - self.payload_radius
 
         self._build_scene()
+        self.control = self.model.control()
         self._build_solvers(args)
         self._build_ik()
 
@@ -101,11 +119,13 @@ class Example:
         )
         self.contacts = self.collision_pipeline.contacts()
         self.solver.prepare_contacts(self.contacts)
-        self.control = self.model.control()
 
-        self.viewer.set_model(self.model)
+        newton.examples.configure_coupled_view(self, args)
+        if self.world_count > 1:
+            self.viewer.set_world_offsets((1.1, 1.1, 0.0))
         if isinstance(self.viewer, newton.viewer.ViewerGL):
-            self.viewer.set_camera(pos=wp.vec3(0.9, -1.4, 0.9), pitch=-22.0, yaw=120.0)
+            scale = max(1.0, float(np.sqrt(self.world_count)))
+            self.viewer.set_camera(pos=wp.vec3(0.9 * scale, -1.4 * scale, 0.9 * scale), pitch=-22.0, yaw=120.0)
             if hasattr(self.viewer.camera, "look_at"):
                 self.viewer.camera.look_at(wp.vec3(0.45, 0.0, 0.28))
 
@@ -132,11 +152,44 @@ class Example:
         builder.joint_target_q[: len(FRANKA_Q)] = FRANKA_Q
 
     def _build_scene(self):
-        builder = newton.ModelBuilder(gravity=-9.81)
-        builder.rigid_gap = 0.01
-        SolverMuJoCo.register_custom_attributes(builder)
-        SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+        template = newton.ModelBuilder(gravity=-9.81)
+        template.rigid_gap = 0.01
+        SolverMuJoCo.register_custom_attributes(template)
+        SolverVBD.register_custom_attributes(template, dahl_defaults_enabled=False)
+        self._emit_template(template)
 
+        bodies_per_world = template.body_count
+        joints_per_world = template.joint_count
+        shapes_per_world = template.shape_count
+
+        builder = newton.ModelBuilder(gravity=-9.81)
+        builder.rigid_gap = template.rigid_gap
+        builder.replicate(template, world_count=self.world_count)
+        self._expand_world_indices(bodies_per_world, joints_per_world, shapes_per_world)
+
+        # Working surface (cable rests on it).
+        plane_cfg = newton.ModelBuilder.ShapeConfig(ke=1.0e4, kd=1.0e-5, mu=1.0, margin=0.0, gap=0.01)
+        self.ground_shapes = [
+            builder.add_ground_plane(
+                height=self.surface_z,
+                cfg=plane_cfg,
+                label="cable_ground_plane",
+            )
+        ]
+
+        builder.color()
+        self.model = builder.finalize()
+        self.device = self.model.device
+
+        # Uniform rigid contact material across all shapes (IsaacLab NewtonModelCfg).
+        self.model.shape_material_ke.fill_(1.0e4)
+        self.model.shape_material_kd.fill_(1.0e-5)
+        self.model.shape_material_mu.fill_(1.0)
+
+        # Build keyframe sequence now that the cable pose is known.
+        self._build_keyframes()
+
+    def _emit_template(self, builder):
         franka_body_start = builder.body_count
         franka_joint_start = builder.joint_count
         franka_shape_start = builder.shape_count
@@ -199,40 +252,35 @@ class Example:
         self.payload_bodies = list(range(payload_body_start, builder.body_count))
         self.payload_joints = list(range(payload_joint_start, builder.joint_count))
         self.payload_shapes = list(range(payload_shape_start, builder.shape_count))
-
-        # Working surface (cable rests on it).
-        plane_cfg = newton.ModelBuilder.ShapeConfig(ke=1.0e4, kd=1.0e-5, mu=1.0, margin=0.0, gap=0.01)
-        self.ground_shapes = [
-            builder.add_ground_plane(
-                height=self.surface_z,
-                cfg=plane_cfg,
-                label="cable_ground_plane",
-            )
-        ]
-
-        builder.color()
-        self.model = builder.finalize()
-        self.device = self.model.device
-
-        # Uniform rigid contact material across all shapes (IsaacLab NewtonModelCfg).
-        self.model.shape_material_ke.fill_(1.0e4)
-        self.model.shape_material_kd.fill_(1.0e-5)
-        self.model.shape_material_mu.fill_(1.0)
+        self.payload_body_count_per_world = len(self.payload_bodies)
+        self.payload_mid_body_offset = self.payload_body_count_per_world // 2
 
         # Gripper bodies exposed to VBD as proxies for cable contact.
         self.gripper_bodies = [
-            b for b in self.franka_bodies if "hand" in self.model.body_label[b] or "finger" in self.model.body_label[b]
+            body
+            for body in self.franka_bodies
+            if "hand" in builder.body_label[body] or "finger" in builder.body_label[body]
         ]
         if not self.gripper_bodies:
             raise RuntimeError("Could not locate Franka gripper bodies for proxy coupling")
 
-        # Build keyframe sequence now that the cable pose is known.
-        self._build_keyframes()
+    def _expand_world_indices(self, bodies_per_world: int, joints_per_world: int, shapes_per_world: int):
+        def expand(ids: list[int], stride: int) -> list[int]:
+            return [world * stride + id_ for world in range(self.world_count) for id_ in ids]
+
+        self.franka_bodies = expand(self.franka_bodies, bodies_per_world)
+        self.franka_joints = expand(self.franka_joints, joints_per_world)
+        self.franka_shapes = expand(self.franka_shapes, shapes_per_world)
+        self.payload_bodies = expand(self.payload_bodies, bodies_per_world)
+        self.payload_joints = expand(self.payload_joints, joints_per_world)
+        self.payload_shapes = expand(self.payload_shapes, shapes_per_world)
+        self.gripper_bodies = expand(self.gripper_bodies, bodies_per_world)
 
     # ------------------------------------------------------------------
     # Solvers
     # ------------------------------------------------------------------
     def _build_solvers(self, args):
+        mujoco_contact_budget = max(64, 16 * self.world_count)
         self.solver = SolverCoupledProxy(
             model=self.model,
             entries=[
@@ -246,8 +294,8 @@ class Example:
                         iterations=int(args.mujoco_iterations),
                         ls_iterations=int(args.mujoco_ls_iterations),
                         use_mujoco_contacts=False,
-                        njmax=256,
-                        nconmax=64,
+                        njmax=max(256, 64 * self.world_count),
+                        nconmax=mujoco_contact_budget,
                     ),
                     bodies=self.franka_bodies,
                     joints=self.franka_joints,
@@ -306,37 +354,42 @@ class Example:
         # so its coords (0 .. n_coords) line up with this model's coords.
         ik_builder = newton.ModelBuilder(gravity=-9.81)
         self._add_franka(ik_builder, self.surface_z)
-        self.ik_model = ik_builder.finalize()
+        self.ik_model = ik_builder.finalize(device=self.device)
 
         self.n_coords = self.ik_model.joint_coord_count
-        self.ik_joint_q = wp.array(self.ik_model.joint_q, shape=(1, self.n_coords))
+        self.ik_joint_q = wp.clone(self.model.joint_q.reshape((self.world_count, -1))[:, : self.n_coords])
+        self.control_joint_target_q = self.control.joint_target_q.reshape((self.world_count, -1))
         self.finger_idx0 = self.n_coords - 2
         self.finger_idx1 = self.n_coords - 1
-        self.finger_pos_buf = wp.full(1, GRIP_OPEN, dtype=float)
+        self.finger_pos_buf = wp.full(self.world_count, GRIP_OPEN, dtype=float, device=self.device)
         hand_body = _find_label_index(self.ik_model.body_label, "fr3_hand")
 
         target_pos = wp.vec3(*self.targets[0][:3].tolist())
         target_rot = wp.vec4(*self.targets[0][3:7].tolist())
+        self.ik_target_positions = wp.array([target_pos] * self.world_count, dtype=wp.vec3, device=self.device)
+        self.ik_target_rotations = wp.array([target_rot] * self.world_count, dtype=wp.vec4, device=self.device)
 
         # Tool offset reaches the TCP between the fingers (IsaacLab body_offset 0.107).
         self.pos_obj = ik.IKObjectivePosition(
             link_index=hand_body,
             link_offset=wp.vec3(0.0, 0.0, 0.107),
-            target_positions=wp.array([target_pos], dtype=wp.vec3),
+            target_positions=self.ik_target_positions,
         )
         self.rot_obj = ik.IKObjectiveRotation(
             link_index=hand_body,
             link_offset_rotation=wp.quat_identity(),
-            target_rotations=wp.array([target_rot], dtype=wp.vec4),
+            target_rotations=self.ik_target_rotations,
         )
+        joint_limit_lower = wp.clone(self.model.joint_limit_lower.reshape((self.world_count, -1))[:, : self.n_coords])
+        joint_limit_upper = wp.clone(self.model.joint_limit_upper.reshape((self.world_count, -1))[:, : self.n_coords])
         self.joint_limits_obj = ik.IKObjectiveJointLimit(
-            joint_limit_lower=self.ik_model.joint_limit_lower,
-            joint_limit_upper=self.ik_model.joint_limit_upper,
+            joint_limit_lower=joint_limit_lower.flatten(),
+            joint_limit_upper=joint_limit_upper.flatten(),
             weight=10.0,
         )
         self.ik_solver = ik.IKSolver(
             model=self.ik_model,
-            n_problems=1,
+            n_problems=self.world_count,
             objectives=[self.pos_obj, self.rot_obj, self.joint_limits_obj],
             lambda_initial=0.05,
             jacobian_mode=ik.IKJacobianType.ANALYTIC,
@@ -386,9 +439,19 @@ class Example:
         prev = self.targets[interval - 1] if interval > 0 else cur
         interp = (1.0 - alpha) * prev + alpha * cur
 
-        self.pos_obj.set_target_position(0, wp.vec3(*interp[:3].tolist()))
-        self.rot_obj.set_target_rotation(0, wp.vec4(*interp[3:7].tolist()))
-        self.finger_pos_buf.fill_(float(interp[-1]))
+        wp.launch(
+            set_task_targets,
+            dim=self.world_count,
+            inputs=[
+                self.ik_target_positions,
+                self.ik_target_rotations,
+                self.finger_pos_buf,
+                wp.vec3(*interp[:3].tolist()),
+                wp.vec4(*interp[3:7].tolist()),
+                float(interp[-1]),
+            ],
+            device=self.device,
+        )
 
     # ------------------------------------------------------------------
     # Simulation
@@ -405,10 +468,11 @@ class Example:
         self.ik_solver.step(self.ik_joint_q, self.ik_joint_q, iterations=self.ik_iters)
         wp.launch(
             set_gripper_q,
-            dim=1,
+            dim=self.world_count,
             inputs=[self.ik_joint_q, self.finger_pos_buf, self.finger_idx0, self.finger_idx1],
+            device=self.device,
         )
-        wp.copy(self.control.joint_target_q, self.ik_joint_q, count=self.n_coords)
+        wp.copy(dest=self.control_joint_target_q[:, : self.n_coords], src=self.ik_joint_q)
 
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -439,15 +503,18 @@ class Example:
         assert np.all(np.isfinite(body_qd)), "Body velocities contain NaN or inf values"
 
         # The cable is grasped at its midpoint and carried to the place target; verify that
-        # grasped segment was placed within 1 cm of the target (x, y).
-        mid_body = self.payload_bodies[len(self.payload_bodies) // 2]
-        dist = float(np.linalg.norm(body_q[mid_body, :2] - np.asarray(self.place_target_xy, dtype=np.float32)))
-        assert dist < 0.01, f"Cable placed {dist * 100:.1f} cm from target (expected < 1 cm)"
+        # the grasped segment was placed within 1 cm of the target (x, y) in every world.
+        target_xy = np.asarray(self.place_target_xy, dtype=np.float32)
+        for world_idx in range(self.world_count):
+            mid_body = self.payload_bodies[world_idx * self.payload_body_count_per_world + self.payload_mid_body_offset]
+            dist = float(np.linalg.norm(body_q[mid_body, :2] - target_xy))
+            assert dist < 0.01, f"World {world_idx} cable placed {dist * 100:.1f} cm from target (expected < 1 cm)"
 
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
         newton.examples.add_coupled_view_args(parser)
+        newton.examples.add_world_count_arg(parser)
         parser.add_argument("--substeps", type=int, default=10, help="Coupled substeps per rendered frame.")
         parser.add_argument("--proxy-iterations", type=int, default=4, help="Proxy relaxation passes per substep.")
         parser.add_argument("--mass-scale", type=float, default=1.0, help="Proxy body mass scale in VBD.")
