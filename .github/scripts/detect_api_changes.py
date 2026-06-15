@@ -157,6 +157,127 @@ def _is_enum_class(node: ast.ClassDef) -> bool:
     return False
 
 
+def _qualified_name_parts(node: ast.AST) -> list[str]:
+    if isinstance(node, ast.Name):
+        return [node.id]
+    if isinstance(node, ast.Attribute):
+        return [*_qualified_name_parts(node.value), node.attr]
+    return []
+
+
+def _is_call_to_name(node: ast.AST | None, name: str) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    parts = _qualified_name_parts(node.func)
+    return bool(parts) and parts[-1] == name
+
+
+def _is_dataclass_decorator(node: ast.AST) -> bool:
+    decorator = node.func if isinstance(node, ast.Call) else node
+    parts = _qualified_name_parts(decorator)
+    return bool(parts) and parts[-1] == "dataclass"
+
+
+def _is_dataclass_class(node: ast.ClassDef) -> bool:
+    return any(_is_dataclass_decorator(decorator) for decorator in node.decorator_list)
+
+
+def _literal_bool_value(node: ast.AST, default: bool) -> bool:
+    if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+        return node.value
+    return default
+
+
+def _dataclass_option(node: ast.ClassDef, name: str, default: bool) -> bool:
+    for decorator in node.decorator_list:
+        if not isinstance(decorator, ast.Call) or not _is_dataclass_decorator(decorator):
+            continue
+        for keyword in decorator.keywords:
+            if keyword.arg == name:
+                return _literal_bool_value(keyword.value, default)
+    return default
+
+
+def _class_has_explicit_init(node: ast.ClassDef) -> bool:
+    return any(
+        isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name == "__init__" for child in node.body
+    )
+
+
+def _format_dataclass_init_signature(node: ast.ClassDef, class_name: str) -> str | None:
+    if not _is_dataclass_class(node) or not _dataclass_option(node, "init", True) or _class_has_explicit_init(node):
+        return None
+
+    args = [f"self: {class_name}"]
+    has_kw_only_marker = False
+    kw_only_default = _dataclass_option(node, "kw_only", False)
+    for name, annotation, default, kw_only in _iter_dataclass_init_fields(node, kw_only_default):
+        if kw_only and not has_kw_only_marker:
+            args.append("*")
+            has_kw_only_marker = True
+        args.append(_format_dataclass_arg(name, annotation, default))
+    return f"__init__({', '.join(args)})"
+
+
+def _iter_dataclass_init_fields(
+    node: ast.ClassDef,
+    kw_only_default: bool,
+) -> list[tuple[str, str, str | None, bool]]:
+    fields: list[tuple[str, str, str | None, bool]] = []
+    kw_only = kw_only_default
+
+    for child in node.body:
+        if not isinstance(child, ast.AnnAssign) or not isinstance(child.target, ast.Name):
+            continue
+        name = child.target.id
+        annotation = _format_annotation(child.annotation)
+        if _is_dataclass_kw_only_marker(name, annotation):
+            kw_only = True
+            continue
+        if _is_classvar_annotation(annotation):
+            continue
+        field_init, default, field_kw_only = _dataclass_field_options(child.value, kw_only)
+        if field_init:
+            fields.append((name, annotation, default, field_kw_only))
+    return fields
+
+
+def _is_dataclass_kw_only_marker(name: str, annotation: str) -> bool:
+    return name == "_" and annotation.rsplit(".", maxsplit=1)[-1] == "KW_ONLY"
+
+
+def _is_classvar_annotation(annotation: str) -> bool:
+    annotation_root = annotation.split("[", 1)[0].rsplit(".", maxsplit=1)[-1]
+    return annotation_root == "ClassVar"
+
+
+def _dataclass_field_options(value: ast.AST | None, kw_only_default: bool) -> tuple[bool, str | None, bool]:
+    if not _is_call_to_name(value, "field"):
+        return True, _format_value(value) if value is not None else None, kw_only_default
+
+    assert isinstance(value, ast.Call)
+    init = True
+    default: str | None = None
+    kw_only = kw_only_default
+    for keyword in value.keywords:
+        if keyword.arg == "init":
+            init = _literal_bool_value(keyword.value, init)
+        elif keyword.arg == "default":
+            default = _format_value(keyword.value)
+        elif keyword.arg == "default_factory":
+            default = f"field(default_factory={_format_value(keyword.value) or '...'})"
+        elif keyword.arg == "kw_only":
+            kw_only = _literal_bool_value(keyword.value, kw_only)
+    return init, default, kw_only
+
+
+def _format_dataclass_arg(name: str, annotation: str, default: str | None) -> str:
+    result = f"{name}: {annotation}" if annotation else name
+    if default is not None:
+        result += f" = {default}"
+    return result
+
+
 def _extract_dunder_all(tree: ast.Module) -> list[str] | None:
     """Extract __all__ list if defined, else return None."""
     found = False
@@ -293,27 +414,42 @@ def _collect_definitions(tree: ast.Module, module_name: str, defs: dict[str, dic
     """Collect all top-level definitions from a module (for re-export resolution)."""
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
-            kind = "enum" if _is_enum_class(node) else "class"
-            bases = [_format_annotation(base) for base in node.bases]
-            sig = f"class {node.name}({', '.join(bases)})" if bases else f"class {node.name}"
-            defs[node.name] = _make_symbol(kind, sig)
-            for child in node.body:
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    if not _is_public_name(child.name) and child.name != "__init__":
-                        continue
-                    method_key = f"{node.name}.{child.name}"
-                    defs[method_key] = _make_symbol(
-                        "method",
-                        _format_callable_signature(child, owner_name=node.name),
-                    )
-                    if child.name == "__init__":
-                        _collect_init_attribute_defs(child, node.name, defs)
-                elif isinstance(child, (ast.Assign, ast.AnnAssign)):
-                    _collect_class_attr_defs(child, node.name, _is_enum_class(node), defs)
+            _collect_class_defs(node, node.name, defs)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             defs[node.name] = _make_symbol("function", _format_callable_signature(node))
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
             _collect_module_assignment_defs(node, defs)
+
+
+def _collect_class_defs(node: ast.ClassDef, class_name: str, defs: dict[str, dict]) -> None:
+    is_enum = _is_enum_class(node)
+    kind = "enum" if is_enum else "class"
+    bases = [_format_annotation(base) for base in node.bases]
+    defs[class_name] = _make_symbol(
+        kind,
+        f"class {node.name}({', '.join(bases)})" if bases else f"class {node.name}",
+    )
+
+    for child in node.body:
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not _is_public_name(child.name) and child.name != "__init__":
+                continue
+            method_key = f"{class_name}.{child.name}"
+            defs[method_key] = _make_symbol(
+                "method",
+                _format_callable_signature(child, owner_name=class_name),
+            )
+            if child.name == "__init__":
+                _collect_init_attribute_defs(child, class_name, defs)
+        elif isinstance(child, ast.ClassDef):
+            if _is_public_name(child.name):
+                _collect_class_defs(child, f"{class_name}.{child.name}", defs)
+        elif isinstance(child, (ast.Assign, ast.AnnAssign)):
+            _collect_class_attr_defs(child, class_name, is_enum, defs)
+
+    dataclass_init = _format_dataclass_init_signature(node, class_name)
+    if dataclass_init is not None:
+        defs[f"{class_name}.__init__"] = _make_symbol("method", dataclass_init)
 
 
 def _collect_class_attr_defs(
@@ -688,8 +824,11 @@ def _extract_class_symbols(
     node: ast.ClassDef,
     module_name: str,
     symbols: dict[str, dict],
+    class_path: str | None = None,
+    class_name: str | None = None,
 ) -> None:
-    class_path = f"{module_name}.{node.name}"
+    class_path = class_path or f"{module_name}.{node.name}"
+    class_name = class_name or node.name
     is_enum = _is_enum_class(node)
     kind = "enum" if is_enum else "class"
 
@@ -706,12 +845,25 @@ def _extract_class_symbols(
             method_path = f"{class_path}.{child.name}"
             symbols[method_path] = _make_symbol(
                 "method",
-                _format_callable_signature(child, owner_name=node.name),
+                _format_callable_signature(child, owner_name=class_name),
             )
             if child.name == "__init__":
                 _extract_init_attribute_symbols(child, class_path, symbols)
+        elif isinstance(child, ast.ClassDef):
+            if _is_public_name(child.name):
+                _extract_class_symbols(
+                    child,
+                    module_name,
+                    symbols,
+                    f"{class_path}.{child.name}",
+                    f"{class_name}.{child.name}",
+                )
         elif isinstance(child, (ast.Assign, ast.AnnAssign)):
             _extract_class_attribute_symbols(child, class_path, is_enum, symbols)
+
+    dataclass_init = _format_dataclass_init_signature(node, class_name)
+    if dataclass_init is not None:
+        symbols[f"{class_path}.__init__"] = _make_symbol("method", dataclass_init)
 
 
 def _extract_init_attribute_symbols(

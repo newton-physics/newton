@@ -20,7 +20,136 @@ detector = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(detector)
 
 
+def _write_package(root: Path, files: dict[str, str]) -> None:
+    for path, source in files.items():
+        file_path = root / path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(source, encoding="utf-8")
+
+
 class TestDetectApiChanges(unittest.TestCase):
+    def test_compare_reports_nested_public_types_and_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = root / "base"
+            head = root / "head"
+
+            shared_init = "from ._src.model import Actuator, Model\n"
+            _write_package(
+                base,
+                {
+                    "newton/__init__.py": shared_init,
+                    "newton/_src/model.py": """
+from dataclasses import dataclass
+from enum import Enum
+
+
+class Model:
+    class AttributeFrequency(Enum):
+        ONCE = "once"
+        BODY = "body"
+
+
+class Actuator:
+    @dataclass
+    class State:
+        position: float
+""",
+                },
+            )
+            _write_package(
+                head,
+                {
+                    "newton/__init__.py": shared_init,
+                    "newton/_src/model.py": """
+from dataclasses import dataclass
+from enum import Enum
+
+
+class Model:
+    class AttributeFrequency(Enum):
+        ONCE = "once"
+        SHAPE = "shape"
+
+
+class Actuator:
+    @dataclass
+    class State:
+        position: float
+        velocity: float
+""",
+                },
+            )
+
+            diff = detector.compare_symbols(
+                detector.extract_api_symbols(base),
+                detector.extract_api_symbols(head),
+            )
+
+            added_paths = {item["path"] for item in diff["added"]}
+            removed_paths = {item["path"] for item in diff["removed"]}
+            changed_paths = {item["path"] for item in diff["changed"]}
+            self.assertIn("newton.Model.AttributeFrequency.SHAPE", added_paths)
+            self.assertIn("newton.Model.AttributeFrequency.BODY", removed_paths)
+            self.assertIn("newton.Actuator.State.__init__", changed_paths)
+            self.assertIn("newton.Actuator.State.velocity", added_paths)
+
+    def test_compare_reports_dataclass_constructor_order_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = root / "base"
+            head = root / "head"
+
+            shared_init = "from ._src.actuators import ActuatorParsed\n"
+            _write_package(
+                base,
+                {
+                    "newton/__init__.py": shared_init,
+                    "newton/_src/actuators.py": """
+from dataclasses import dataclass
+
+
+@dataclass
+class ActuatorParsed:
+    name: str
+    path: str
+""",
+                },
+            )
+            _write_package(
+                head,
+                {
+                    "newton/__init__.py": shared_init,
+                    "newton/_src/actuators.py": """
+from dataclasses import dataclass
+
+
+@dataclass
+class ActuatorParsed:
+    path: str
+    name: str
+""",
+                },
+            )
+
+            diff = detector.compare_symbols(
+                detector.extract_api_symbols(base),
+                detector.extract_api_symbols(head),
+            )
+
+            constructor_changes = [item for item in diff["changed"] if item["path"] == "newton.ActuatorParsed.__init__"]
+            self.assertEqual(len(constructor_changes), 1)
+            signature_change = constructor_changes[0]["changes"][0]
+            self.assertEqual(signature_change["field"], "signature")
+            self.assertEqual(
+                signature_change["before"],
+                "__init__(self: ActuatorParsed, name: str, path: str)",
+            )
+            self.assertEqual(
+                signature_change["after"],
+                "__init__(self: ActuatorParsed, path: str, name: str)",
+            )
+
     def test_main_reports_skipped_modules_without_false_removals(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
