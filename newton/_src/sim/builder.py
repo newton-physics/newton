@@ -139,6 +139,11 @@ class _BuilderShapeCollisionFilterPairs(MutableSequence):
     def __len__(self) -> int:
         return len(self._pairs) + self._block_pair_count
 
+    @property
+    def explicit_pairs(self):
+        """Pairs stored outside compact replicated blocks."""
+        return self._pairs
+
     def __bool__(self) -> bool:
         return bool(self._pairs) or bool(self._blocks)
 
@@ -10835,16 +10840,20 @@ class ModelBuilder:
             m.shape_material_kh = wp.array(self.shape_material_kh, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_gap = wp.array(self.shape_gap, dtype=wp.float32, requires_grad=requires_grad)
 
-            filter_blocks_cover_filters = bool(self._shape_collision_filter_pair_blocks) and sum(
+            explicit_filter_pairs = tuple(self.shape_collision_filter_pairs.explicit_pairs)
+            block_filter_count = sum(
                 len(local_pairs) for _, _, _, local_pairs in self._shape_collision_filter_pair_blocks
-            ) == len(self.shape_collision_filter_pairs)
+            )
+            compact_filters_cover_filters = bool(self._shape_collision_filter_pair_blocks) and (
+                block_filter_count + len(explicit_filter_pairs) == len(self.shape_collision_filter_pairs)
+            )
             if (
                 len(self.shape_collision_filter_pairs) > self._SHAPE_COLLISION_FILTER_PAIR_SET_LIMIT
-                and filter_blocks_cover_filters
+                and compact_filters_cover_filters
             ):
                 # For very large replicated scenes, avoid building a second
                 # Python set of all filter tuples. The contact-pair fast path
-                # below can consume the compact block metadata directly.
+                # below can consume compact blocks plus explicit residual filters.
                 m.shape_collision_filter_pairs = _ShapeCollisionFilterPairs(
                     self.shape_collision_filter_pairs, self._SHAPE_COLLISION_FILTER_PAIR_SET_LIMIT
                 )
@@ -11877,9 +11886,12 @@ class ModelBuilder:
             - Sets `model.shape_contact_pairs` to a wp.array of shape pairs (wp.vec2i).
             - Sets `model.shape_contact_pair_count` to the number of contact pairs found.
         """
+        explicit_filter_pairs = tuple(self.shape_collision_filter_pairs.explicit_pairs)
         block_filter_count = sum(len(local_pairs) for _, _, _, local_pairs in self._shape_collision_filter_pair_blocks)
-        if block_filter_count == len(self.shape_collision_filter_pairs):
+        if block_filter_count + len(explicit_filter_pairs) == len(self.shape_collision_filter_pairs):
             blocks_by_world = {}
+            explicit_filters_by_world = {}
+            global_filter_pairs = set()
             use_filter_blocks = bool(self._shape_collision_filter_pair_blocks)
 
             for world, shape_start, shape_count, local_filter_pairs in self._shape_collision_filter_pair_blocks:
@@ -11901,6 +11913,35 @@ class ModelBuilder:
                 )
 
             if use_filter_blocks:
+                for filter_a, filter_b in explicit_filter_pairs:
+                    s1, s2 = (filter_a, filter_b) if filter_a <= filter_b else (filter_b, filter_a)
+                    world1 = self.shape_world[s1]
+                    world2 = self.shape_world[s2]
+
+                    if world1 == -1 and world2 == -1:
+                        global_filter_pairs.add((s1, s2))
+                    elif world1 == -1 and world2 >= 0:
+                        explicit_filters_by_world.setdefault(world2, []).append(
+                            ("global_local", s1, s2 - self.shape_world_start[world2])
+                        )
+                    elif world2 == -1 and world1 >= 0:
+                        explicit_filters_by_world.setdefault(world1, []).append(
+                            ("global_local", s2, s1 - self.shape_world_start[world1])
+                        )
+                    elif world1 == world2 and world1 >= 0:
+                        world_start = self.shape_world_start[world1]
+                        explicit_filters_by_world.setdefault(world1, []).append(
+                            ("local", s1 - world_start, s2 - world_start)
+                        )
+                    elif world1 != world2:
+                        # Cross-world pairs never collide, so an explicit filter for
+                        # them cannot change the generated contact-pair set.
+                        continue
+                    else:
+                        use_filter_blocks = False
+                        break
+
+            if use_filter_blocks:
                 contact_pairs = []
                 colliding_globals = [
                     (shape_idx, self.shape_collision_group[shape_idx])
@@ -11912,7 +11953,9 @@ class ModelBuilder:
                     for shape_b, group_b in colliding_globals[i1 + 1 :]:
                         if not self._test_group_pair(group_a, group_b):
                             continue
-                        contact_pairs.append((shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a))
+                        pair = (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
+                        if pair not in global_filter_pairs:
+                            contact_pairs.append(pair)
 
                 template_cache = {}
                 global_groups_key = tuple(colliding_globals)
@@ -11926,10 +11969,11 @@ class ModelBuilder:
                     flags = tuple(self.shape_flags[world_start:world_end])
                     collision_groups = tuple(self.shape_collision_group[world_start:world_end])
                     block_specs = tuple(blocks_by_world.get(world, ()))
+                    explicit_filter_specs = tuple(explicit_filters_by_world.get(world, ()))
                     block_key = tuple(
                         (offset, shape_count, id(local_pairs)) for offset, shape_count, local_pairs in block_specs
                     )
-                    cache_key = (flags, collision_groups, block_key, global_groups_key)
+                    cache_key = (flags, collision_groups, block_key, explicit_filter_specs, global_groups_key)
                     cached_pairs = template_cache.get(cache_key)
 
                     if cached_pairs is None:
@@ -11950,6 +11994,13 @@ class ModelBuilder:
                                 else:
                                     local_filters.add((shape_b, shape_a))
 
+                        global_local_filters = set()
+                        for kind, shape_a, shape_b in explicit_filter_specs:
+                            if kind == "local":
+                                local_filters.add((shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a))
+                            else:
+                                global_local_filters.add((shape_a, shape_b))
+
                         # Store global/local pairs separately. The global shape id is
                         # already absolute; the local shape id is shifted by each
                         # world's start index when the cached template is replayed.
@@ -11957,7 +12008,9 @@ class ModelBuilder:
                         for global_shape, global_group in colliding_globals:
                             for local_shape in local_colliding_indices:
                                 if self._test_group_pair(global_group, collision_groups[local_shape]):
-                                    global_local_pairs.append((global_shape, local_shape))
+                                    pair = (global_shape, local_shape)
+                                    if pair not in global_local_filters:
+                                        global_local_pairs.append(pair)
 
                         local_pairs = []
                         for i1, shape_a in enumerate(local_colliding_indices):
