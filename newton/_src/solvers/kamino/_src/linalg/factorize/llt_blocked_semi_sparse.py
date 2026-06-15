@@ -75,12 +75,12 @@ def reorder_rows_kernel(
     ordering: wp.array2d[int],
     n_rows_arr: wp.array[int],
     n_cols_arr: wp.array[int],
-    batch_mask: wp.array[int],
+    batch_mask: wp.array[bool],
 ):
     batch_id, i, j = wp.tid()  # 2D launch: (n_rows, n_cols)
     n_rows = n_rows_arr[batch_id]
     n_cols = n_cols_arr[batch_id]
-    if i < n_rows and j < n_cols and batch_mask[batch_id] != 0:
+    if i < n_rows and j < n_cols and batch_mask[batch_id]:
         src_row = ordering[batch_id, i]
         src_col = ordering[batch_id, j]
         dst[batch_id, i, j] = src[batch_id, src_row, src_col]
@@ -92,11 +92,11 @@ def reorder_rows_kernel_col_vector(
     dst: wp.array3d[float],
     ordering: wp.array2d[int],
     n_rows_arr: wp.array[int],
-    batch_mask: wp.array[int],
+    batch_mask: wp.array[bool],
 ):
     batch_id, i = wp.tid()
     n_rows = n_rows_arr[batch_id]
-    if i < n_rows and batch_mask[batch_id] != 0:
+    if i < n_rows and batch_mask[batch_id]:
         src_row = ordering[batch_id, i]
         # For column vectors (2d arrays with shape (n, 1)), just copy columns directly
         dst[batch_id, i, 0] = src[batch_id, src_row, 0]
@@ -171,7 +171,7 @@ def create_blocked_cholesky_kernel(block_size: int):
         L_batched: wp.array3d[float],
         L_tile_pattern_batched: wp.array3d[int],
         active_matrix_size_arr: wp.array[int],
-        batch_mask: wp.array[int],
+        batch_mask: wp.array[bool],
     ):
         """
         Batched Cholesky factorization of symmetric positive definite matrices in blocks.
@@ -182,7 +182,7 @@ def create_blocked_cholesky_kernel(block_size: int):
             L_batched: Output Cholesky factors (batch_size, n, n)
             L_tile_pattern_batched: Sparsity pattern for L tiles (1=nonzero, 0=zero)
             active_matrix_size_arr: Size of each active matrix in batch
-            batch_mask: Flag for each matrix in the batch, indicating whether to process it (0 = skip)
+            batch_mask: Boolean flag for each matrix in the batch, indicating whether to process it (False = skip)
 
         Notes:
             - Parallel processing across batch dimension
@@ -193,7 +193,7 @@ def create_blocked_cholesky_kernel(block_size: int):
         batch_id, tid_block = wp.tid()
         num_threads_per_block = wp.block_dim()
 
-        if batch_mask[batch_id] == 0:
+        if not batch_mask[batch_id]:
             return
 
         A = A_batched[batch_id]
@@ -300,7 +300,7 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
         x_batched: wp.array3d[float],
         y_batched: wp.array3d[float],
         active_matrix_size_arr: wp.array[int],
-        batch_mask: wp.array[int],
+        batch_mask: wp.array[bool],
     ):
         """
         Batched blocked Cholesky solver kernel. For each batch, solves A x = b using L L^T = A.
@@ -309,7 +309,7 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
 
         batch_id, _tid_block = wp.tid()
 
-        if batch_mask[batch_id] == 0:
+        if not batch_mask[batch_id]:
             return
 
         L = L_batched[batch_id]
@@ -509,7 +509,7 @@ class SemiSparseBlockCholeskySolverBatched:
         self,
         A: wp.array3d[float],
         num_active_equations: wp.array[int],
-        batch_mask: wp.array[int],
+        batch_mask: wp.array[bool],
     ):
         """
         Computes the Cholesky factorization of a symmetric positive definite matrix A in blocks.
@@ -518,7 +518,7 @@ class SemiSparseBlockCholeskySolverBatched:
         Args:
             A: Input SPD matrices of shape (batch_size, n, n).
             num_active_equations: Size of the top-left block to factorize for each matrix in the batch.
-            batch_mask: Flag for each matrix in the batch, indicating whether to process it (0 = skip)
+            batch_mask: Boolean flag for each matrix in the batch, indicating whether to process it (False = skip)
         """
 
         self.num_active_equations = num_active_equations
@@ -552,7 +552,7 @@ class SemiSparseBlockCholeskySolverBatched:
         self,
         rhs: wp.array3d[float],
         result: wp.array3d[float],
-        batch_mask: wp.array[int],
+        batch_mask: wp.array[bool],
     ):
         """
         Solves A x = b given the Cholesky factor L (A = L L^T) using
@@ -561,7 +561,7 @@ class SemiSparseBlockCholeskySolverBatched:
         Args:
             rhs: Input right-hand-side matrices of shape (batch_size, n, p).
             result: Output solution matrices of shape (batch_size, n, p).
-            batch_mask: Flag for each matrix in the batch, indicating whether to process it (0 = skip)
+            batch_mask: Boolean flag for each matrix in the batch, indicating whether to process it (False = skip)
         """
 
         R = result

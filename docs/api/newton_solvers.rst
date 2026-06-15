@@ -51,7 +51,7 @@ Supported Features
      - Soft bodies
      - Differentiable
    * - :class:`~newton.solvers.SolverFeatherstone`
-     - Explicit
+     - Semi-implicit
      - ✅
      - ✅ generalized coordinates
      - ✅
@@ -75,7 +75,7 @@ Supported Features
      - ❌
      - ❌
    * - :class:`~newton.solvers.SolverMuJoCo`
-     - Explicit, Semi-implicit, Implicit
+     - Explicit, Semi-implicit, Implicit-in-velocity
      - ✅ :sup:`1`
      - ✅ generalized coordinates
      - ❌
@@ -119,6 +119,12 @@ Supported Features
   unless ``use_mujoco_contacts`` is set to ``False``.
 | :sup:`2` ``basic`` means Newton includes several examples that use these solvers in diffsim workflows,
   see :ref:`Differentiability` for further details.
+
+.. experimental::
+    :class:`~newton.solvers.SolverKamino`'s public API and behavior may change without prior notice.
+
+.. experimental::
+    :class:`~newton.solvers.SolverVBD`'s public API and behavior may change without prior notice.
 
 .. _Joint feature support:
 
@@ -341,7 +347,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |no|
 
 | :sup:`3` Mimic constraints in MuJoCo are supported for REVOLUTE and PRISMATIC joints only.
-| :sup:`4` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as dimensionless Rayleigh damping coefficients (``D = kd * ke``), not absolute units.
+| :sup:`4` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
 
 
 

@@ -10,8 +10,8 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton import JointTargetMode, ModelBuilder
-from newton.solvers import SolverMuJoCo, SolverNotifyFlags
+from newton import JointTargetMode, ModelBuilder, ModelFlags
+from newton.solvers import SolverMuJoCo
 from newton.tests import get_asset
 from newton.tests.unittest_utils import USD_AVAILABLE
 
@@ -633,7 +633,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         model.joint_target_ke.assign(new_ke)
         model.joint_target_kd.assign(new_kd)
 
-        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
 
         updated_gainprm = solver.mjw_model.actuator_gainprm.numpy()
         updated_biasprm = solver.mjw_model.actuator_biasprm.numpy()
@@ -695,7 +695,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         model.mujoco.actuator_gainprm.assign(new_gainprm)
         model.mujoco.actuator_biasprm.assign(new_biasprm)
 
-        solver.notify_model_changed(SolverNotifyFlags.ACTUATOR_PROPERTIES)
+        solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
 
         updated_gainprm = solver.mjw_model.actuator_gainprm.numpy()
         updated_biasprm = solver.mjw_model.actuator_biasprm.numpy()

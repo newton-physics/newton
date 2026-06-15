@@ -116,7 +116,7 @@ def sample_sdf_using_mesh(
     """
     Sample signed distance to mesh surface using mesh query.
 
-    Uses wp.mesh_query_point_sign_normal to find the closest point on the mesh
+    Uses wp.mesh_query_point_sign_parity to find the closest point on the mesh
     and compute the signed distance. This is compatible with the return type of
     sample_sdf_extrapolated.
 
@@ -128,16 +128,11 @@ def sample_sdf_using_mesh(
     Returns:
         The signed distance value (negative inside, positive outside)
     """
-    face_index = int(0)
-    face_u = float(0.0)
-    face_v = float(0.0)
-    sign = float(0.0)
+    res = wp.mesh_query_point_sign_parity(mesh_id, world_pos, max_dist)
 
-    res = wp.mesh_query_point_sign_normal(mesh_id, world_pos, max_dist, sign, face_index, face_u, face_v)
-
-    if res:
-        closest = wp.mesh_eval_position(mesh_id, face_index, face_u, face_v)
-        return wp.length(world_pos - closest) * sign
+    if res.result:
+        closest = wp.mesh_eval_position(mesh_id, res.face, res.u, res.v)
+        return wp.length(world_pos - closest) * res.sign
 
     return max_dist
 
@@ -151,7 +146,7 @@ def sample_sdf_grad_using_mesh(
     """
     Sample signed distance and gradient to mesh surface using mesh query.
 
-    Uses wp.mesh_query_point_sign_normal to find the closest point on the mesh
+    Uses wp.mesh_query_point_sign_parity to find the closest point on the mesh
     and compute both the signed distance and the gradient direction. This is
     compatible with the return type of sample_sdf_grad_extrapolated.
 
@@ -168,16 +163,12 @@ def sample_sdf_grad_using_mesh(
         - distance: Signed distance value (negative inside, positive outside)
         - gradient: Normalized direction of increasing distance
     """
-    face_index = int(0)
-    face_u = float(0.0)
-    face_v = float(0.0)
-    sign = float(0.0)
     gradient = wp.vec3(0.0, 0.0, 0.0)
 
-    res = wp.mesh_query_point_sign_normal(mesh_id, world_pos, max_dist, sign, face_index, face_u, face_v)
+    res = wp.mesh_query_point_sign_parity(mesh_id, world_pos, max_dist)
 
-    if res:
-        closest = wp.mesh_eval_position(mesh_id, face_index, face_u, face_v)
+    if res.result:
+        closest = wp.mesh_eval_position(mesh_id, res.face, res.u, res.v)
         diff = world_pos - closest
         dist = wp.length(diff)
 
@@ -185,21 +176,21 @@ def sample_sdf_grad_using_mesh(
             # Gradient points from surface toward query point, scaled by sign
             # When outside (sign > 0): gradient points away from surface (correct for SDF)
             # When inside (sign < 0): gradient points toward surface (correct for SDF)
-            gradient = (diff / dist) * sign
+            gradient = (diff / dist) * res.sign
         else:
             # Point is exactly on surface - use face normal
             # Get the face normal from the mesh
             mesh = wp.mesh_get(mesh_id)
-            i0 = mesh.indices[face_index * 3 + 0]
-            i1 = mesh.indices[face_index * 3 + 1]
-            i2 = mesh.indices[face_index * 3 + 2]
+            i0 = mesh.indices[res.face * 3 + 0]
+            i1 = mesh.indices[res.face * 3 + 1]
+            i2 = mesh.indices[res.face * 3 + 2]
             v0 = mesh.points[i0]
             v1 = mesh.points[i1]
             v2 = mesh.points[i2]
             face_normal = wp.normalize(wp.cross(v1 - v0, v2 - v0))
-            gradient = face_normal * sign
+            gradient = face_normal * res.sign
 
-        return dist * sign, gradient
+        return dist * res.sign, gradient
 
     # No hit found - return max distance with arbitrary gradient
     return max_dist, wp.vec3(0.0, 0.0, 1.0)

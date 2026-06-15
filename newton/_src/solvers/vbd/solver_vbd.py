@@ -16,9 +16,9 @@ from ...sim import (
     JointType,
     Model,
     ModelBuilder,
+    ModelFlags,
     State,
 )
-from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from ..xpbd.kernels import apply_joint_forces
 from .particle_vbd_kernels import (
@@ -85,8 +85,14 @@ from .tri_mesh_collision import (
 __all__ = ["SolverVBD"]
 
 
+_vbd_damping_migration_warned = {"value": False}
+
+
 class SolverVBD(SolverBase):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
+
+    .. experimental::
+        SolverVBD's public API and behavior may change without prior notice.
 
     This unified solver supports:
         - Particle simulation (cloth, soft bodies) using the VBD algorithm
@@ -111,13 +117,10 @@ class SolverVBD(SolverBase):
         - :attr:`~newton.Model.joint_enabled` is supported for all joint types.
         - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are supported
           for REVOLUTE, PRISMATIC, D6 (as drives), and CABLE (as stretch/bend stiffness and damping).
-          VBD interprets ``kd`` as a dimensionless Rayleigh coefficient (``D = kd * ke``).
+          VBD interprets ``kd`` as absolute damping in physical units.
         - :attr:`~newton.Model.joint_limit_lower`/:attr:`~newton.Model.joint_limit_upper` and
           :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd` are supported
-          for REVOLUTE, PRISMATIC, and D6 joints. The default ``limit_kd`` in
-          :class:`~newton.ModelBuilder.JointDofConfig` is ``1e1``, which under VBD's Rayleigh
-          convention (``D = kd * ke``) can produce excessive damping. When using joint limits
-          with VBD, explicitly set ``limit_kd`` to a small value.
+          for REVOLUTE, PRISMATIC, and D6 joints.
         - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
         - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
@@ -236,8 +239,8 @@ class SolverVBD(SolverBase):
         rigid_joint_angular_ke: float = 1.0e5,  # Penalty stiffness ceiling for structural angular joint constraints
         rigid_joint_linear_k_start: float = 1.0e2,  # Linear penalty seed (used when linear beta > 0)
         rigid_joint_angular_k_start: float = 1.0e1,  # Angular penalty seed (used when angular beta > 0)
-        rigid_joint_linear_kd: float = 0.0,  # Rayleigh damping for non-cable linear joint constraints
-        rigid_joint_angular_kd: float = 0.0,  # Rayleigh damping for non-cable angular joint constraints
+        rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-cable linear joint constraints
+        rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-cable angular joint constraints
         rigid_enable_dahl_friction: bool | None = None,  # Deprecated: controlled by model attributes
     ):
         """
@@ -342,9 +345,9 @@ class SolverVBD(SolverBase):
             rigid_joint_angular_k_start: Angular penalty seed for AVBD ramping. Used when
                 ``rigid_avbd_angular_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the angular beta is 0, k is fixed at the joint stiffness regardless of this value.
-            rigid_joint_linear_kd: Rayleigh damping coefficient for non-cable linear joint constraints.
+            rigid_joint_linear_kd: Damping coefficient for non-cable linear joint constraints [N·s/m].
                 Negative values are clamped to 0.
-            rigid_joint_angular_kd: Rayleigh damping coefficient for non-cable angular joint constraints.
+            rigid_joint_angular_kd: Damping coefficient for non-cable angular joint constraints [N·m·s/rad].
                 Negative values are clamped to 0.
             rigid_enable_dahl_friction: Deprecated and ignored. Dahl friction is controlled
                 by ``model.vbd.dahl_eps_max`` / ``model.vbd.dahl_tau``.
@@ -374,6 +377,22 @@ class SolverVBD(SolverBase):
                 DeprecationWarning,
                 stacklevel=2,
             )
+
+        # TODO: Remove this temporary warning after the Newton 1.4 migration window.
+        if (
+            model.particle_count > 0 or (model.body_count > 0 and not integrate_with_external_rigid_solver)
+        ) and not _vbd_damping_migration_warned["value"]:
+            warnings.warn(
+                "SolverVBD damping behavior changed in Newton 1.4.0:\n"
+                "  - Damping coefficients are interpreted as absolute physical coefficients, "
+                "not stiffness-relative multipliers.\n"
+                "To preserve previous behavior, compute the new damping coefficient as "
+                "kd_new = kd_old * k, where kd_old is the old relative damping value and k is "
+                "the stiffness or penalty coefficient for the same constraint, contact, or material.",
+                UserWarning,
+                stacklevel=2,
+            )
+            _vbd_damping_migration_warned["value"] = True
 
         if rigid_avbd_beta < 0:
             raise ValueError(f"rigid_avbd_beta must be >= 0, got {rigid_avbd_beta}")
@@ -777,8 +796,8 @@ class SolverVBD(SolverBase):
             )
 
     @override
-    def notify_model_changed(self, flags: int) -> None:
-        if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
 
     # =====================================================
@@ -2202,6 +2221,7 @@ class SolverVBD(SolverBase):
                         contacts.soft_contact_count,
                         contacts.soft_contact_max,
                         self.body_particle_contact_penalty_k,
+                        self.body_particle_contact_material_ke,
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
                         model.shape_material_mu,
@@ -2408,6 +2428,7 @@ class SolverVBD(SolverBase):
                         self.body_inv_mass_effective,
                         self.friction_epsilon,
                         self.body_particle_contact_penalty_k,
+                        self.body_particle_contact_material_ke,
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
                         contacts.soft_contact_count,
@@ -2445,6 +2466,7 @@ class SolverVBD(SolverBase):
                         self.body_inv_mass_effective,
                         self.friction_epsilon,
                         self.body_body_contact_penalty_k,
+                        self.body_body_contact_material_ke,
                         self.body_body_contact_material_kd,
                         self.body_body_contact_material_mu,
                         self.body_body_contact_lambda,
@@ -2498,6 +2520,7 @@ class SolverVBD(SolverBase):
                     model.joint_X_c,
                     model.joint_axis,
                     model.joint_qd_start,
+                    model.joint_target_q_start,
                     self.joint_constraint_start,
                     self.joint_penalty_k,
                     self.joint_penalty_kd,
@@ -2505,8 +2528,8 @@ class SolverVBD(SolverBase):
                     self.joint_C_fric,
                     model.joint_target_ke,
                     model.joint_target_kd,
-                    control.joint_target_pos,
-                    control.joint_target_vel,
+                    control.joint_target_q,
+                    control.joint_target_qd,
                     model.joint_limit_lower,
                     model.joint_limit_upper,
                     model.joint_limit_ke,
@@ -2604,6 +2627,7 @@ class SolverVBD(SolverBase):
                     model.joint_X_c,
                     model.joint_axis,
                     model.joint_qd_start,
+                    model.joint_target_q_start,
                     self.joint_constraint_start,
                     state_in.body_q,
                     model.body_q,
@@ -2616,7 +2640,7 @@ class SolverVBD(SolverBase):
                     self.rigid_linear_beta,
                     self.rigid_angular_beta,
                     model.joint_target_ke,
-                    control.joint_target_pos,
+                    control.joint_target_q,
                     model.joint_limit_lower,
                     model.joint_limit_upper,
                     model.joint_limit_ke,
@@ -2736,6 +2760,7 @@ class SolverVBD(SolverBase):
                 body_q_prev,
                 self.model.body_com,
                 self.body_body_contact_penalty_k,
+                self.body_body_contact_material_ke,
                 self.body_body_contact_material_kd,
                 self.body_body_contact_material_mu,
                 self.body_body_contact_lambda,

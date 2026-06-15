@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import os
 import unittest
+import warnings
 from abc import abstractmethod
 from collections import defaultdict
 from pathlib import Path
@@ -289,8 +290,8 @@ class StepResponseControlStrategy(ControlStrategy):
             and getattr(newton_solver, "mjc_actuator_ctrl_source", None) is not None
             and getattr(newton_solver, "mjc_actuator_to_newton_idx", None) is not None
         ):
-            self._joint_target_pos = newton_control.joint_target_pos
-            self._joint_target_vel = newton_control.joint_target_vel
+            self._joint_target_pos = newton_control.joint_target_q
+            self._joint_target_vel = newton_control.joint_target_qd
             self._mjc_actuator_ctrl_source = newton_solver.mjc_actuator_ctrl_source
             self._mjc_actuator_to_newton_idx = newton_solver.mjc_actuator_to_newton_idx
             self._dofs_per_world = self._joint_target_pos.shape[0] // num_worlds
@@ -1669,7 +1670,13 @@ class TestMenagerieBase(unittest.TestCase):
         if self.solver_integrator is not None:
             solver_kwargs["integrator"] = self.solver_integrator
 
-        cls._newton_solver = SolverMuJoCo(cls._newton_model, **solver_kwargs)
+        # Some real MJCFs (e.g. Apollo, Go2) author geom or contact-pair
+        # margins that the native-CCD path zeroes (#2106); the field comparison
+        # below already mirrors that zeroing, so tolerate the advisory rather
+        # than failing under strict warnings. Other warnings still surface.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=r"(Geom|Pair).* zeroed for NATIVECCD")
+            cls._newton_solver = SolverMuJoCo(cls._newton_model, **solver_kwargs)
 
         cls._mj_model, cls._mj_data_native, cls._native_mjw_model, cls._native_mjw_data = (
             self._create_native_mujoco_warp()
@@ -1961,11 +1968,26 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
-    # Dynamics disabled: qvel diverges ~5x at step 0 even with ctrl=0 (#2491)
-    num_steps = 0
+    num_steps = 20
     fk_enabled = True
     fk_tolerance = 5e-6  # float32 precision (max diff ~1.2e-6)
     backfill_model = True
+    # FR3v2's MJCF doesn't author <option integrator=...>, so native picks
+    # MuJoCo's default (Euler / integrator=0) while Newton's SolverMuJoCo
+    # auto-selects IMPLICITFAST (integrator=3). Without alignment, the two
+    # sides step with different integrators and identical forces produce
+    # ~5x different qvel updates at step 0 (#2491). Pin native to Newton's
+    # choice in _align_models so we test Newton's actual default behavior.
+    # Float32 + GPU atomic-reduction non-determinism floor under IMPLICITFAST,
+    # measured via 15-trial native-vs-native: qvel diff peaks at 1.98e-4
+    # (mean 1.25e-4). Newton-vs-native max 1.98e-4. Tolerance ~2.5x above.
+    dynamics_tolerance = 5e-4
+
+    def _align_models(self, newton_solver, native_mjw_model, mj_model):
+        # Sync native's integrator to whichever one Newton's SolverMuJoCo
+        # picked (so the dynamics comparison runs both engines on the
+        # integrator Newton would use in production).
+        native_mjw_model.opt.integrator = newton_solver.mjw_model.opt.integrator
 
 
 class TestMenagerie_KinovaGen3(TestMenagerieMJCF):
@@ -2163,12 +2185,16 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
     """ALOHA bimanual system."""
 
     robot_folder = "aloha"
-    # Dynamics and FK disabled: multiple MJCF import issues (#2492)
-    num_steps = 0
-    fk_enabled = False  # FK fails (xpos diff 0.14) due to import bugs (#2492)
-    # TODO(#2492): dof_damping, jnt_range, eq_, ngeom differ
-    # jnt_ is broad but needed: compare_jnt_range runs outside model_skip_fields
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"dof_damping", "eq_", "neq", "ngeom", "jnt_"}
+    num_steps = 20
+    fk_enabled = True
+    # Aloha's MJCF doesn't author `<option integrator=...>`, so sync native
+    # to Newton's auto-selected IMPLICITFAST (same pattern as FR3v2/Cassie).
+    # 15-trial native-vs-native qvel diff is bit-exact (0); newton-vs-native
+    # max 1.43e-6 (float32 noise). Tolerance set ~7x for headroom.
+    dynamics_tolerance = 1e-5
+
+    def _align_models(self, newton_solver, native_mjw_model, mj_model):
+        native_mjw_model.opt.integrator = newton_solver.mjw_model.opt.integrator
 
 
 class TestMenagerie_GoogleRobot(TestMenagerieMJCF):
@@ -2357,9 +2383,6 @@ class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
     # the observed native-vs-native variance with safety margin.
     dynamics_tolerance = 1e-4
     backfill_model = True
-    # Cassie's MJCF doesn't specify <option integrator=...>, so native uses
-    # MuJoCo's default (Euler). Pin Newton's integrator to match.
-    solver_integrator = "euler"
     # eq_data: compilation-dependent for CONNECT constraints; body2 anchor is
     # derived from body_quat, which differs due to inertia re-diagonalization.
     # jnt_actfrclimited: Newton unconditionally sets True with effort_limit=1e6,
@@ -2371,6 +2394,13 @@ class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
         "jnt_actfrclimited",
     ]
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"eq_data"}
+
+    def _align_models(self, newton_solver, native_mjw_model, mj_model):
+        # Cassie's MJCF doesn't specify <option integrator=...>, so native picks
+        # MuJoCo's default (Euler) while Newton's SolverMuJoCo auto-selects
+        # IMPLICITFAST. Sync native to Newton's choice so we test Newton's
+        # actual default behavior (rather than forcing both to Euler).
+        native_mjw_model.opt.integrator = newton_solver.mjw_model.opt.integrator
 
 
 # -----------------------------------------------------------------------------

@@ -3,8 +3,8 @@
 
 """Discover AWS EC2 runner networking for GitHub Actions.
 
-The script is designed to run inside ``aws_gpu_tests.yml`` after AWS
-credentials are configured. It writes one GitHub Actions step output:
+The script is designed to run inside EC2-backed GPU GitHub Actions workflows
+after AWS credentials are configured. It writes one GitHub Actions step output:
 
 ``availability-zones-config``
     JSON array passed to ``machulav/ec2-github-runner``.

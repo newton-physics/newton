@@ -166,11 +166,11 @@ class BatchedLinearOperator:
             total_vec_size=total_vec_size,
         )
 
-    def gemv(self, x: wp.array, y: wp.array, world_active: wp.array, alpha: float, beta: float):
+    def gemv(self, x: wp.array, y: wp.array, world_active: wp.array[bool], alpha: float, beta: float):
         """Compute y = alpha * A @ x + beta * y."""
         self._gemv_fn(x, y, world_active, alpha, beta)
 
-    def matvec(self, x: wp.array, y: wp.array, world_active: wp.array):
+    def matvec(self, x: wp.array, y: wp.array, world_active: wp.array[bool]):
         if self._matvec_fn is not None:
             return self._matvec_fn(x, y, world_active)
         return self._gemv_fn(x, y, world_active, 1.0, 0.0)
@@ -180,19 +180,13 @@ class BatchedLinearOperator:
 # ---------------
 
 
-@wp.func
-def lt_mask(a: Any, b: Any):
-    """Return 1 if a < b, else 0"""
-    return wp.where(a < b, type(a)(1), type(a)(0))
-
-
 @wp.kernel
 def check_termination(
     maxiter: wp.array[int],
     loop_granularity: int,
     r_norm_sq: wp.array[Any],
     atol_sq: wp.array[Any],
-    world_active: wp.array[wp.int32],
+    world_active: wp.array[bool],
     cur_iter: wp.array[int],
     world_condition: wp.array[wp.int32],
     batch_condition: wp.array[wp.int32],
@@ -200,18 +194,17 @@ def check_termination(
     wid = wp.tid()
 
     # Update iteration
-    active = world_active[wid]
-    condition = world_condition[wid]
-    world_stepped = active * condition
-    iter = world_stepped * loop_granularity + cur_iter[wid]
-    cur_iter[wid] = iter
+    condition = world_condition[wid] != 0
+    world_stepped = world_active[wid] and condition
+    iteration = cur_iter[wid]
+    if world_stepped:
+        iteration += loop_granularity
+    cur_iter[wid] = iteration
 
     # Check convergence
-    cont_norm = wp.int32(lt_mask(atol_sq[wid], r_norm_sq[wid]))
-    cont_iter = wp.int32(lt_mask(iter, maxiter[wid]))
-    cont = cont_iter * cont_norm * world_stepped
-    world_condition[wid] = cont
-    if cont > 0:
+    continue_world = world_stepped and atol_sq[wid] < r_norm_sq[wid] and iteration < maxiter[wid]
+    world_condition[wid] = wp.int32(continue_world)
+    if continue_world:
         batch_condition[0] = 1
 
 
@@ -317,7 +310,7 @@ def _cr_kernel_2(
 def _run_capturable_loop(
     do_iteration: Callable,
     r_norm_sq: wp.array,
-    world_active: wp.array[wp.int32],
+    world_active: wp.array[bool],
     cur_iter: wp.array[wp.int32],
     conditions: wp.array[wp.int32],
     maxiter: wp.array[int],
@@ -406,7 +399,7 @@ def make_dot_kernel(tile_size: int, maxdim: int):
         b: wp.array2d[Any],
         vio: wp.array[wp.int32],
         world_size: wp.array[wp.int32],
-        world_active: wp.array[wp.int32],
+        world_active: wp.array[bool],
         result: wp.array2d[Any],
     ):
         """Compute the dot products between flat arrays using tiles and pairwise summation."""
@@ -447,7 +440,7 @@ def dot_sequential(
     b: wp.array2d[Any],
     vio: wp.array[wp.int32],
     world_size: wp.array[wp.int32],
-    world_active: wp.array[wp.int32],
+    world_active: wp.array[bool],
     partial_sum: wp.array3d[Any],
 ):
     col, world = wp.tid()
@@ -520,7 +513,7 @@ class ConjugateSolver:
     Args:
         A: Linear operator representing the system matrix.
         active_dims: Active dimension per world. If None, uses A.active_dims.
-        world_active: Int32 mask indicating which worlds are active (1) or inactive (0).
+        world_active: Per-world mask indicating which worlds are active (`True`) or inactive (`False`).
         atol: Absolute tolerance for convergence. Scalar or per-world array.
         rtol: Relative tolerance for convergence. Scalar or per-world array.
         maxiter: Maximum iterations per world. If None, defaults to 1.5 * maxdims.
@@ -534,7 +527,7 @@ class ConjugateSolver:
         self,
         A: BatchedLinearOperator,
         active_dims: wp.array[Any] | None = None,
-        world_active: wp.array[wp.int32] | None = None,
+        world_active: wp.array[bool] | None = None,
         atol: float | wp.array[Any] | None = None,
         rtol: float | wp.array[Any] | None = None,
         maxiter: wp.array = None,
@@ -680,7 +673,7 @@ class CGSolver(ConjugateSolver):
         b: wp.array,
         x: wp.array,
         active_dims: wp.array[Any] | None = None,
-        world_active: wp.array[wp.int32] | None = None,
+        world_active: wp.array[bool] | None = None,
     ):
         if b.shape[0] != self.total_vec_size:
             raise ValueError(f"b has size {b.shape[0]} but solver expects total_vec_size={self.total_vec_size}")
@@ -798,7 +791,7 @@ class CRSolver(ConjugateSolver):
         b: wp.array,
         x: wp.array,
         active_dims: wp.array[Any] | None = None,
-        world_active: wp.array[wp.int32] | None = None,
+        world_active: wp.array[bool] | None = None,
     ):
         if b.shape[0] != self.total_vec_size:
             raise ValueError(f"b has size {b.shape[0]} but solver expects total_vec_size={self.total_vec_size}")

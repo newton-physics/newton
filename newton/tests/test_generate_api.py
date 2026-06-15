@@ -7,9 +7,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from docs import generate_api
+try:
+    from docs import generate_api
+except ModuleNotFoundError as exc:
+    # The ``docs`` package lives at the repository root and is not included in
+    # installed/wheel builds, so these tests only run from a source checkout.
+    # Re-raise anything other than a missing top-level ``docs`` package so that
+    # genuine import failures (e.g. a broken ``generate_api``) are not masked.
+    if exc.name != "docs":
+        raise
+    generate_api = None
 
 
+@unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
 class TestGenerateApiCopyright(unittest.TestCase):
     def tearDown(self):
         generate_api._COPYRIGHT_LINES.clear()
