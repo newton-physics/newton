@@ -19,14 +19,25 @@ from newton._src.solvers.mujoco.constants import (
     DEFAULT_LIMIT_KD,
     DEFAULT_LIMIT_KE,
     KINEMATIC_ARMATURE,
+    MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
+from newton._src.solvers.mujoco.kernels import convert_solref
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
+
+
+def _expected_positive_limit_solref(ke: float, kd: float, factor: float) -> np.ndarray:
+    direct_stiffness = max(float(ke) * float(factor), MJ_MINVAL)
+    direct_damping = max(float(kd) * float(factor), MJ_MINVAL)
+    return np.array(
+        [2.0 / direct_damping, direct_damping / (2.0 * math.sqrt(direct_stiffness))],
+        dtype=np.float64,
+    )
 
 
 class TestMuJoCoSolver(unittest.TestCase):
@@ -1489,10 +1500,8 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
 
     def test_joint_limit_solref_conversion(self):
         """
-        Verify that joint_limit_ke and joint_limit_kd are properly converted to MuJoCo's solref_limit
-        using the negative convention ``solref_limit = (-ke * factor, -kd * factor)`` where
-        ``factor = dof_invweight0 * (1 - dmax)`` makes MuJoCo's effective stiffness match the
-        force-space values users configure.
+        Verify that joint_limit_ke and joint_limit_kd are converted to MuJoCo's positive
+        ``solref_limit`` convention after scaling by ``dof_invweight0 * (1 - dmax)``.
         """
         # Skip if no joints
         if self.model.joint_dof_count == 0:
@@ -1535,14 +1544,14 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
             invw = float(solver.mjw_model.dof_invweight0.numpy()[world_idx, dof_adr])
             dmax = float(solver.mjw_model.jnt_solimp.numpy()[world_idx, mjc_idx][1])
             factor = invw * (1.0 - dmax) if invw > 0.0 and dmax < 1.0 else 1.0
-            return -ke * factor, -kd * factor
+            return _expected_positive_limit_solref(ke, kd, factor)
 
         for world_idx in range(self.model.world_count):
             for _i, (mjc_idx, newton_dof_idx) in enumerate(
                 zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
             ):
                 global_dof_idx = world_idx * dofs_per_world + newton_dof_idx
-                expected_ke, expected_kd = expected_scaled_solref(
+                expected_solref = expected_scaled_solref(
                     world_idx, mjc_idx, initial_limit_ke[global_dof_idx], initial_limit_kd[global_dof_idx]
                 )
 
@@ -1553,15 +1562,15 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                 actual_solref = solver.mjw_model.jnt_solref.numpy()[world_idx, mjc_idx]
                 self.assertAlmostEqual(
                     float(actual_solref[0]),
-                    expected_ke,
-                    delta=abs(expected_ke) * rel_tol,
-                    msg=f"Initial solref stiffness for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                    expected_solref[0],
+                    delta=abs(expected_solref[0]) * rel_tol,
+                    msg=f"Initial solref time constant for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
                 self.assertAlmostEqual(
                     float(actual_solref[1]),
-                    expected_kd,
-                    delta=abs(expected_kd) * rel_tol,
-                    msg=f"Initial solref damping for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                    expected_solref[1],
+                    delta=abs(expected_solref[1]) * rel_tol,
+                    msg=f"Initial solref damping ratio for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
 
         # Test runtime update capability - update joint limit ke/kd values
@@ -1580,7 +1589,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                 zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
             ):
                 global_dof_idx = world_idx * dofs_per_world + newton_dof_idx
-                expected_ke, expected_kd = expected_scaled_solref(
+                expected_solref = expected_scaled_solref(
                     world_idx, mjc_idx, updated_limit_ke[global_dof_idx], updated_limit_kd[global_dof_idx]
                 )
 
@@ -1589,15 +1598,15 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                 actual_solref = solver.mjw_model.jnt_solref.numpy()[world_idx, mjc_idx]
                 self.assertAlmostEqual(
                     float(actual_solref[0]),
-                    expected_ke,
-                    delta=abs(expected_ke) * rel_tol,
-                    msg=f"Updated solref stiffness for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                    expected_solref[0],
+                    delta=abs(expected_solref[0]) * rel_tol,
+                    msg=f"Updated solref time constant for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
                 self.assertAlmostEqual(
                     float(actual_solref[1]),
-                    expected_kd,
-                    delta=abs(expected_kd) * rel_tol,
-                    msg=f"Updated solref damping for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
+                    expected_solref[1],
+                    delta=abs(expected_solref[1]) * rel_tol,
+                    msg=f"Updated solref damping ratio for MuJoCo joint {mjc_idx} (Newton DOF {newton_dof_idx}) in world {world_idx}",
                 )
 
     def test_joint_limit_range_conversion(self):
@@ -10133,9 +10142,10 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
     ``limit_kd`` as *force-space* stiffness/damping (N·m/rad). MuJoCo's
     limit-constraint solver, however, applies effective stiffness
     ``k_eff = k / (invweight * (1 - dmax))``. Unless the Newton→MuJoCo
-    ``jnt_solref`` conversion pre-multiplies by
-    ``dof_invweight0 * (1 - dmax)`` the simulated stiffness ends up
-    scaled by the DOF inertia instead of matching the configured
+    ``jnt_solref`` conversion pre-multiplies the direct stiffness/damping
+    pair by ``dof_invweight0 * (1 - dmax)`` before converting to MuJoCo's
+    positive ``(timeconst, dampratio)`` convention, the simulated stiffness
+    ends up scaled by the DOF inertia instead of matching the configured
     force-space limit response.
 
     The analogous scaling for ``shape_material_ke``/``kd`` on
@@ -10212,13 +10222,13 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
     ):
         if solref is not None:
             return np.array(solref, dtype=np.float64)
-        if ke <= 0.0:
+        if ke <= 0.0 or kd <= 0.0:
             return np.array([0.02, 1.0], dtype=np.float64)
 
         dof_invweight0 = float(solver.mj_model.dof_invweight0[0])
         dmax = float(solver.mj_model.jnt_solimp[0, 1])
         factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
-        return np.array([-ke * factor, -kd * factor], dtype=np.float64)
+        return _expected_positive_limit_solref(ke, kd, factor)
 
     def test_cpu_and_warp_joint_limit_solref_cases_match(self):
         """CPU and Warp backends must agree for each joint-limit ``solref`` branch."""
@@ -10300,7 +10310,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
                     np.testing.assert_allclose(mjw_solref, expected, rtol=1e-5, atol=1e-6)
 
     def test_joint_limit_solref_uses_dof_invweight0(self):
-        """``jnt_solref`` for joint limits must be scaled by ``dof_invweight0 * (1 - dmax)``."""
+        """``jnt_solref`` must use gains scaled by ``dof_invweight0 * (1 - dmax)``."""
         ke = 10000.0
         kd = 100.0
         # Use inertia = 0.5 so ``dof_invweight0 = 1/0.5 = 2`` and factor = 2 * 0.05 = 0.1,
@@ -10315,9 +10325,10 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         factor = dof_invweight0 * (1.0 - dmax)
 
         actual_solref = solver.mjw_model.jnt_solref.numpy()[0, 0]
+        expected_solref = _expected_positive_limit_solref(ke, kd, factor)
         rel_tol = 1e-4
-        self.assertAlmostEqual(float(actual_solref[0]), -ke * factor, delta=abs(ke * factor) * rel_tol)
-        self.assertAlmostEqual(float(actual_solref[1]), -kd * factor, delta=abs(kd * factor) * rel_tol)
+        self.assertAlmostEqual(float(actual_solref[0]), expected_solref[0], delta=abs(expected_solref[0]) * rel_tol)
+        self.assertAlmostEqual(float(actual_solref[1]), expected_solref[1], delta=abs(expected_solref[1]) * rel_tol)
 
     def test_joint_limit_solref_updates_after_mass_change(self):
         """Changing inertia and notifying the solver must recompute the ``invweight0`` factor."""
@@ -10345,11 +10356,10 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         # is computed in float64 on the host. Use a relative tolerance so the
         # assertion passes for float32 round-off on multi-thousand-scale values
         # while still rejecting the buggy 10x-too-stiff solref.
-        expected_ke = -ke * factor
-        expected_kd = -kd * factor
+        expected_solref = _expected_positive_limit_solref(ke, kd, factor)
         rel_tol = 1e-4
-        self.assertAlmostEqual(float(actual_solref[0]), expected_ke, delta=abs(expected_ke) * rel_tol)
-        self.assertAlmostEqual(float(actual_solref[1]), expected_kd, delta=abs(expected_kd) * rel_tol)
+        self.assertAlmostEqual(float(actual_solref[0]), expected_solref[0], delta=abs(expected_solref[0]) * rel_tol)
+        self.assertAlmostEqual(float(actual_solref[1]), expected_solref[1], delta=abs(expected_solref[1]) * rel_tol)
 
     def test_mjcf_unauthored_solreflimit_ke_updates_are_not_shadowed(self):
         """MJCF joints without ``solreflimit`` must keep the sentinel so ``limit_ke`` updates apply."""
@@ -10387,7 +10397,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
         dmax = float(solver.mjw_model.jnt_solimp.numpy()[0, 0][1])
         factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
-        expected_solref = np.array([-ke[0] * factor, -kd[0] * factor], dtype=np.float64)
+        expected_solref = _expected_positive_limit_solref(ke[0], kd[0], factor)
         actual_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
 
         self.assertFalse(np.allclose(actual_solref, initial_solref))
@@ -10427,7 +10437,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         dof_invweight0 = float(solver.mjw_model.dof_invweight0.numpy()[0, 0])
         dmax = float(solver.mjw_model.jnt_solimp.numpy()[0, 0][1])
         factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
-        expected_solref = np.array([-DEFAULT_LIMIT_KE * factor, -DEFAULT_LIMIT_KD * factor], dtype=np.float64)
+        expected_solref = _expected_positive_limit_solref(DEFAULT_LIMIT_KE, DEFAULT_LIMIT_KD, factor)
         actual_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
 
         np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
@@ -10540,10 +10550,10 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
             dof_invweight0 = float(solver.mj_model.dof_invweight0[0])
             dmax = float(solver.mj_model.jnt_solimp[0, 1])
             factor = dof_invweight0 * (1.0 - dmax)
-            expected_solref = np.array([-ke * factor, -kd * factor], dtype=np.float64)
+            expected_solref = _expected_positive_limit_solref(ke, kd, factor)
 
-            # Runtime ``MjModel`` still carries the scaled solref so MuJoCo
-            # produces the right force at this instant.
+            # Runtime ``MjModel`` still carries the derived solref so MuJoCo
+            # produces the right force at this instant while retaining refsafety.
             np.testing.assert_allclose(solver.mj_model.jnt_solref[0], expected_solref, rtol=1e-6, atol=1e-6)
 
             # Exported MJCF must NOT author ``solreflimit`` for this
@@ -10552,7 +10562,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
             joint = next(tree.iter("joint"))
             self.assertIsNone(
                 joint.get("solreflimit"),
-                "FORCE_SPACE joints must not persist a scaled solreflimit into the saved MJCF",
+                "FORCE_SPACE joints must not persist a derived solreflimit into the saved MJCF",
             )
         finally:
             os.unlink(xml_path)
@@ -10643,7 +10653,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         dof_invweight0 = float(solver.mj_model.dof_invweight0[0])
         dmax = float(solimp[0, 1])
         factor = dof_invweight0 * (1.0 - dmax)
-        expected_solref = np.array([-ke * factor, -kd * factor], dtype=np.float64)
+        expected_solref = _expected_positive_limit_solref(ke, kd, factor)
         np.testing.assert_allclose(solver.mj_model.jnt_solref[0], expected_solref, rtol=1e-6, atol=1e-6)
 
     def test_joint_limit_solref_resets_to_default_when_limit_ke_is_disabled(self):
@@ -10679,7 +10689,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
             self.assertAlmostEqual(dof_invweight0, expected_invweight0, delta=1e-4)
             dmax = float(solver.mj_model.jnt_solimp[0, 1])
             factor = dof_invweight0 * (1.0 - dmax)
-            expected_solref = np.array([-ke * factor, -kd * factor], dtype=np.float64)
+            expected_solref = _expected_positive_limit_solref(ke, kd, factor)
             actual_solref = np.array(solver.mj_model.jnt_solref[0], dtype=np.float64)
             np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-6, atol=1e-6)
 
@@ -10814,7 +10824,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
                     dmax = float(solver.mjw_model.jnt_solimp.numpy()[0, 0][1])
                     actual_solref = np.array(solver.mjw_model.jnt_solref.numpy()[0, 0], dtype=np.float64)
                 factor = dof_invweight0 * (1.0 - dmax) if dof_invweight0 > 0.0 and dmax < 1.0 else 1.0
-                expected_solref = np.array([-ke * factor, -kd * factor], dtype=np.float64)
+                expected_solref = _expected_positive_limit_solref(ke, kd, factor)
 
                 self.assertFalse(np.allclose(actual_solref, [0.03, 0.7]))
                 np.testing.assert_allclose(actual_solref, expected_solref, rtol=1e-5, atol=1e-6)
@@ -10885,13 +10895,13 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
             invw = float(dof_invweight0[dof_idx])
             dmax = float(jnt_solimp[mjc_jnt][1])
             factor = invw * (1.0 - dmax) if invw > 0.0 and dmax < 1.0 else 1.0
-            expected = np.array([-ke * factor, -kd * factor], dtype=np.float64)
+            expected = _expected_positive_limit_solref(ke, kd, factor)
             np.testing.assert_allclose(
                 jnt_solref[mjc_jnt],
                 expected,
                 rtol=1e-5,
                 atol=1e-6,
-                err_msg=f"D6 DOF {mjc_jnt}: expected scaled solref {expected.tolist()}, "
+                err_msg=f"D6 DOF {mjc_jnt}: expected positive solref {expected.tolist()}, "
                 f"got {jnt_solref[mjc_jnt].tolist()}",
             )
 
@@ -11044,8 +11054,9 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
 
     Tests use ``use_mujoco_contacts=False`` explicitly so the
     Newton-contacts kernel (where the override lives) runs. They read
-    ``mjw_data.contact.solref`` back directly and compare to
-    ``(-ke·factor, -kd·factor)`` — mirroring the joint-limit suite
+    ``mjw_data.contact.solref`` back directly and compare to the
+    ``convert_solref`` conversion of ``(ke·factor, kd·factor)`` —
+    mirroring the joint-limit suite
     pattern (:meth:`TestMuJoCoSolverInvweightScaledSolref
     .test_joint_limit_solref_uses_dof_invweight0`). ``use_mujoco_contacts
     =True`` and the MuJoCo CPU backend remain unsupported for
@@ -11103,11 +11114,12 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         invw_b = float(body_invweight0[0, body_b, 0]) if body_b >= 0 else 0.0
         dmax = float(solver.mjw_data.contact.solimp.numpy()[contact_idx, 1])
         factor = (invw_a + invw_b) * (1.0 - dmax)
-        return -ke * factor, -kd * factor
+        solref = convert_solref(max(ke * factor, MJ_MINVAL), max(kd * factor, MJ_MINVAL), 1.0, 1.0)
+        return float(solref[0]), float(solref[1])
 
     def test_force_space_contact_solref_uses_invweight0_and_dmax(self):
-        """Per-contact ``solref`` must equal ``(-ke·factor, -kd·factor)`` with
-        ``factor = (invw_a + invw_b) * (1 - dmax)``."""
+        """Per-contact ``solref`` must equal the ``convert_solref`` conversion of
+        ``(ke·factor, kd·factor)`` with ``factor = (invw_a + invw_b) * (1 - dmax)``."""
         ke, kd, mass = 1.0e4, 100.0, 5.0
         model, _ = self._build_box_on_plane(mass=mass, ke=ke, kd=kd)
         solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
@@ -11120,10 +11132,6 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         rel_tol = 1.0e-4
         self.assertAlmostEqual(float(actual_solref[0]), expected_ref, delta=abs(expected_ref) * rel_tol)
         self.assertAlmostEqual(float(actual_solref[1]), expected_damp, delta=abs(expected_damp) * rel_tol)
-        # Sign sanity: the legacy ``convert_solref(ke, kd, 1, 1)`` fallback
-        # would emit a positive ``(timeconst, dampratio)`` pair, never negative.
-        self.assertLess(float(actual_solref[0]), 0.0)
-        self.assertLess(float(actual_solref[1]), 0.0)
 
     def test_force_space_contact_solref_uses_two_body_invweight_sum(self):
         """Dynamic-vs-dynamic contact: factor uses the sum of both bodies' invweight0."""
@@ -11203,7 +11211,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         actual_solref = solver.mjw_data.contact.solref.numpy()[0]
         rel_tol = 1.0e-4
         self.assertAlmostEqual(float(actual_solref[0]), updated_solref_ref, delta=abs(updated_solref_ref) * rel_tol)
-        # Heavier body → smaller invweight0 → smaller |factor| → less-negative solref[0].
+        # Heavier body → smaller factor → larger solref[0] (2 / (kd * factor)).
         self.assertGreater(updated_solref_ref, initial_solref_ref)
 
     def test_force_space_contact_mixed_mode_falls_through_to_geom_solref(self):
@@ -11222,10 +11230,13 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
         self._run_to_first_contact(model, solver)
         actual_solref = solver.mjw_data.contact.solref.numpy()[0]
-        # Per-geom mixing produces a positive ``(timeconst, dampratio)`` pair;
-        # the force-space override would have produced negatives.
-        self.assertGreater(float(actual_solref[0]), 0.0)
-        self.assertGreater(float(actual_solref[1]), 0.0)
+        # Override bypassed: solref must differ from the force-space conversion.
+        override_ref, override_damp = self._expected_force_space_solref(solver, 0, ke=ke, kd=kd)
+        self.assertFalse(
+            np.isclose(float(actual_solref[0]), override_ref, rtol=1e-3)
+            and np.isclose(float(actual_solref[1]), override_damp, rtol=1e-3),
+            "mixed-mode contact must not use the force-space override solref",
+        )
 
     def test_force_space_contact_solref_dmax_one_disables_override(self):
         """Guard boundary: ``dmax >= 1`` must skip the override (factor would be zero)."""
@@ -11239,10 +11250,55 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
         self._run_to_first_contact(model, solver)
         actual_solref = solver.mjw_data.contact.solref.numpy()[0]
-        # With dmax=1 the override's ``factor = m_inv * (1 - dmax) = 0`` is
-        # discarded; per-geom mixing keeps positive (timeconst, dampratio).
-        self.assertGreater(float(actual_solref[0]), 0.0)
-        self.assertGreater(float(actual_solref[1]), 0.0)
+        # dmax=1 zeroes the factor → override skipped; solref[0] stays sub-1.0
+        # instead of the ~2/MJ_MINVAL a fired override would produce.
+        self.assertLess(float(actual_solref[0]), 1.0)
+
+    def test_force_space_contact_stiff_contact_stays_finite(self):
+        """A very stiff force-space contact must stay finite — the contact
+        analogue of #3109, where a too-stiff constraint diverged."""
+        # Low mass + very stiff ke make the contact too stiff for the step, so
+        # the written timeconst falls below 2*dt and refsafe must engage.
+        ke, kd, mass = 1.0e7, 1.0e3, 0.05
+        sim_dt = 1.0 / 60.0
+        model, _ = self._build_box_on_plane(mass=mass, ke=ke, kd=kd)
+        solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
+
+        contacts = model.contacts()
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+
+        contacted = False
+        for _ in range(120):
+            state_in.clear_forces()
+            model.collide(state_in, contacts)
+            solver.step(state_in, state_out, control, contacts, sim_dt)
+            state_in, state_out = state_out, state_in
+            if int(solver.mjw_data.nacon.numpy()[0]) > 0:
+                contacted = True
+                break
+        self.assertTrue(contacted, "box never contacted the plane")
+
+        # Written (unclamped) timeconst < 2*dt: the regime where the old negative
+        # direct-mode solref bypassed refsafe and diverged.
+        timeconst = float(solver.mjw_data.contact.solref.numpy()[0][0])
+        self.assertLess(timeconst, 2.0 * sim_dt)
+
+        # Step through the stiff contact; it must stay finite and bounded
+        # (the #3109 joint analogue went non-finite around step 98).
+        for _ in range(200):
+            state_in.clear_forces()
+            model.collide(state_in, contacts)
+            solver.step(state_in, state_out, control, contacts, sim_dt)
+            state_in, state_out = state_out, state_in
+
+        qvel = solver.mjw_data.qvel.numpy()
+        qfrc = solver.mjw_data.qfrc_constraint.numpy()
+        body_qd = state_in.body_qd.numpy()
+        self.assertTrue(np.all(np.isfinite(qvel)), "qvel went non-finite")
+        self.assertTrue(np.all(np.isfinite(qfrc)), "qfrc_constraint went non-finite")
+        self.assertTrue(np.all(np.isfinite(body_qd)), "body_qd went non-finite")
+        self.assertLess(float(np.max(np.abs(body_qd))), 1.0e3, "contact response blew up")
 
     def test_force_space_with_mujoco_contacts_emits_startup_warning(self):
         """Opting into FORCE_SPACE while running ``use_mujoco_contacts=True`` must warn at startup.
@@ -11299,26 +11355,22 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         actual_solref = solver.mjw_data.contact.solref.numpy()[0]
         # Per MuJoCo's solmix rule with equal priority and unit solmix on both
         # shapes, ``mix == 0.5`` exactly. Recover the mixed ke/kd, then assert
-        # ``contact.solref == -mix_ke * factor`` etc. The blended values fall
-        # strictly between the two endpoints, which is the smoke test for
-        # ``mix`` actually being used.
-        geom_pair = solver.mjw_data.contact.geom.numpy()[0]
-        geom_bodyid = solver.mjw_model.geom_bodyid.numpy()
-        body_a = int(geom_bodyid[int(geom_pair[0])])
-        body_b = int(geom_bodyid[int(geom_pair[1])])
-        body_invweight0 = solver.mjw_model.body_invweight0.numpy()
-        invw_a = float(body_invweight0[0, body_a, 0]) if body_a >= 0 else 0.0
-        invw_b = float(body_invweight0[0, body_b, 0]) if body_b >= 0 else 0.0
-        dmax = float(solver.mjw_data.contact.solimp.numpy()[0, 1])
-        factor = (invw_a + invw_b) * (1.0 - dmax)
+        # ``contact.solref`` equals the ``convert_solref`` conversion of the
+        # blended pair.
         mix_ke = 0.5 * ke_a + 0.5 * ke_b
         mix_kd = 0.5 * kd_a + 0.5 * kd_b
         rel_tol = 1.0e-3
-        self.assertAlmostEqual(float(actual_solref[0]), -mix_ke * factor, delta=abs(mix_ke * factor) * rel_tol)
-        self.assertAlmostEqual(float(actual_solref[1]), -mix_kd * factor, delta=abs(mix_kd * factor) * rel_tol)
-        # Sanity: blended value is between the two extremes, neither endpoint matches.
-        self.assertNotAlmostEqual(float(actual_solref[0]), -ke_a * factor, delta=abs(ke_a * factor) * 0.05)
-        self.assertNotAlmostEqual(float(actual_solref[0]), -ke_b * factor, delta=abs(ke_b * factor) * 0.05)
+        expected_ref, expected_damp = self._expected_force_space_solref(solver, 0, ke=mix_ke, kd=mix_kd)
+        self.assertAlmostEqual(float(actual_solref[0]), expected_ref, delta=abs(expected_ref) * rel_tol)
+        self.assertAlmostEqual(float(actual_solref[1]), expected_damp, delta=abs(expected_damp) * rel_tol)
+        # Sanity: the blended solref[0] (which tracks ``kd``) lies strictly
+        # between the single-material endpoints, the smoke test for ``mix``
+        # actually being used.
+        ref_a, _ = self._expected_force_space_solref(solver, 0, ke=ke_a, kd=kd_a)
+        ref_b, _ = self._expected_force_space_solref(solver, 0, ke=ke_b, kd=kd_b)
+        lo, hi = sorted((ref_a, ref_b))
+        self.assertGreater(float(actual_solref[0]), lo)
+        self.assertLess(float(actual_solref[0]), hi)
 
     def test_mjcf_default_mode_preserved(self):
         """Unauthored MJCF geoms stay in ``SOLREF_MODE_MJCF_DEFAULT``.

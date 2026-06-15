@@ -170,7 +170,7 @@ class Example:
                 radius=cable_radius,
                 stretch_stiffness=stretch_stiffness,
                 bend_stiffness=bend_stiffness,
-                bend_damping=1.0e-2,
+                bend_damping=1.0e-2 * bend_stiffness,
                 label=f"cable_{i}",
             )
 
