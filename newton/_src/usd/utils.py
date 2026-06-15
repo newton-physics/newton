@@ -1379,7 +1379,7 @@ def _read_physics_attr(prim: Usd.Prim, name: str):
     return None
 
 
-def get_curve_deformable_material(prim: Usd.Prim) -> dict[str, float] | None:
+def _get_curve_deformable_material(prim: Usd.Prim) -> dict[str, float] | None:
     """Read curve-deformable (cable) material parameters bound to a prim.
 
     Resolves the physics material bound via ``material:binding:physics`` (on the

@@ -3484,7 +3484,7 @@ def parse_usd(
             # are force/area; convert to per-joint stiffness with the circular
             # cross-section geometry (A = pi r^2, I = pi r^4 / 4) and the segment
             # length, mirroring create_cable_stiffness_from_elastic_moduli.
-            cable_mat = usd.get_curve_deformable_material(prim) or {}
+            cable_mat = usd._get_curve_deformable_material(prim) or {}
             radius = 0.5 * cable_mat["thickness"] if "thickness" in cable_mat else 0.05
             area = math.pi * radius * radius
             inertia = 0.25 * math.pi * radius**4
