@@ -11,11 +11,23 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.vbd.particle_vbd_kernels import evaluate_self_contact_force_norm
+from newton._src.solvers.vbd.particle_vbd_kernels import (
+    accumulate_particle_body_contact_force_and_hessian,
+    evaluate_dihedral_angle_based_bending_force_hessian,
+    evaluate_neo_hookean_membrane_force_hessian,
+    evaluate_self_contact_force_norm,
+    evaluate_spring_force_and_hessian,
+    evaluate_spring_force_and_hessian_both_vertices,
+    evaluate_vertex_triangle_collision_force_hessian_4_vertices,
+    evaluate_volumetric_neo_hookean_force_and_hessian,
+)
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     RigidContactHistory,
+    compute_rigid_contact_forces,
     evaluate_angular_constraint_force_hessian,
+    evaluate_body_particle_contact,
     evaluate_linear_constraint_force_hessian,
+    evaluate_rigid_contact_from_collision,
     init_body_body_contacts_avbd,
     snapshot_body_body_contact_history,
     update_duals_body_body_contacts,
@@ -41,6 +53,189 @@ def _transform_contact_point_np(body_q, body_id, local_point):
     if body_id < 0:
         return np.asarray(local_point, dtype=np.float64)
     return _transform_point_np(body_q[body_id], local_point)
+
+
+def _random_rotation_matrices(count, seed):
+    rng = np.random.default_rng(seed)
+    quat = rng.normal(size=(count, 4))
+    quat /= np.linalg.norm(quat, axis=1, keepdims=True)
+    return _rotation_matrices_from_quaternions(quat)
+
+
+def _random_quaternions(count, seed):
+    rng = np.random.default_rng(seed)
+    quat = rng.normal(size=(count, 4)).astype(np.float32)
+    quat /= np.linalg.norm(quat, axis=1, keepdims=True)
+    return quat
+
+
+def _rotation_matrices_from_quaternions(quat):
+    x = quat[:, 0]
+    y = quat[:, 1]
+    z = quat[:, 2]
+    w = quat[:, 3]
+
+    rotations = np.empty((quat.shape[0], 3, 3), dtype=np.float32)
+    rotations[:, 0, 0] = 1.0 - 2.0 * (y * y + z * z)
+    rotations[:, 0, 1] = 2.0 * (x * y - z * w)
+    rotations[:, 0, 2] = 2.0 * (x * z + y * w)
+    rotations[:, 1, 0] = 2.0 * (x * y + z * w)
+    rotations[:, 1, 1] = 1.0 - 2.0 * (x * x + z * z)
+    rotations[:, 1, 2] = 2.0 * (y * z - x * w)
+    rotations[:, 2, 0] = 2.0 * (x * z - y * w)
+    rotations[:, 2, 1] = 2.0 * (y * z + x * w)
+    rotations[:, 2, 2] = 1.0 - 2.0 * (x * x + y * y)
+    return rotations
+
+
+def _contact_damping_rigid_motion_data(sample_count=100, seed=29):
+    quats = _random_quaternions(sample_count, seed)
+    rotations = _rotation_matrices_from_quaternions(quats)
+    rng = np.random.default_rng(seed + 1)
+    translations = rng.uniform(-1.0, 1.0, size=(sample_count, 3)).astype(np.float32)
+
+    normal_rest = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    contact_distance = np.float32(0.04)
+    body_rest = np.array([0.1, -0.2, 0.3], dtype=np.float32)
+    particle_rest = body_rest + contact_distance * normal_rest
+    rigid_a_rest = np.array([-0.2, 0.1, 0.0], dtype=np.float32)
+    rigid_b_rest = rigid_a_rest + contact_distance * normal_rest
+    soft_rest = np.array(
+        [
+            [-0.6, -0.5, 0.0],
+            [0.7, -0.4, 0.0],
+            [0.1, 0.8, 0.0],
+            [0.05, 0.1, contact_distance],
+        ],
+        dtype=np.float32,
+    )
+
+    body_q_prev = np.empty((sample_count, 7), dtype=np.float32)
+    body_q = np.empty((sample_count, 7), dtype=np.float32)
+    rigid_body_q_prev = np.empty((2 * sample_count, 7), dtype=np.float32)
+    rigid_body_q = np.empty((2 * sample_count, 7), dtype=np.float32)
+    particle_q_prev = np.empty((sample_count, 3), dtype=np.float32)
+    particle_q = np.empty((sample_count, 3), dtype=np.float32)
+    contact_normal = np.empty((sample_count, 3), dtype=np.float32)
+    soft_pos_anchor = np.empty((4 * sample_count, 3), dtype=np.float32)
+    soft_pos = np.empty((4 * sample_count, 3), dtype=np.float32)
+    tri_indices = np.empty((sample_count, 3), dtype=np.int32)
+
+    identity_quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+    for sample in range(sample_count):
+        R = rotations[sample]
+        t = translations[sample]
+        q = quats[sample]
+
+        body_q_prev[sample, :3] = body_rest
+        body_q_prev[sample, 3:] = identity_quat
+        body_q[sample, :3] = body_rest @ R.T + t
+        body_q[sample, 3:] = q
+
+        rigid_start = 2 * sample
+        rigid_body_q_prev[rigid_start, :3] = rigid_a_rest
+        rigid_body_q_prev[rigid_start, 3:] = identity_quat
+        rigid_body_q_prev[rigid_start + 1, :3] = rigid_b_rest
+        rigid_body_q_prev[rigid_start + 1, 3:] = identity_quat
+        rigid_body_q[rigid_start, :3] = rigid_a_rest @ R.T + t
+        rigid_body_q[rigid_start, 3:] = q
+        rigid_body_q[rigid_start + 1, :3] = rigid_b_rest @ R.T + t
+        rigid_body_q[rigid_start + 1, 3:] = q
+
+        particle_q_prev[sample] = particle_rest
+        particle_q[sample] = particle_rest @ R.T + t
+        contact_normal[sample] = normal_rest @ R.T
+
+        soft_start = 4 * sample
+        soft_pos_anchor[soft_start : soft_start + 4] = soft_rest
+        soft_pos[soft_start : soft_start + 4] = soft_rest @ R.T + t
+        tri_indices[sample] = [soft_start, soft_start + 1, soft_start + 2]
+
+    return {
+        "body_q_prev": body_q_prev,
+        "body_q": body_q,
+        "rigid_body_q_prev": rigid_body_q_prev,
+        "rigid_body_q": rigid_body_q,
+        "particle_q_prev": particle_q_prev,
+        "particle_q": particle_q,
+        "contact_normal": contact_normal,
+        "soft_pos_anchor": soft_pos_anchor,
+        "soft_pos": soft_pos,
+        "tri_indices": tri_indices,
+    }
+
+
+def _elastic_damping_rigid_motion_data(sample_count=100, seed=17):
+    rest = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.2, 0.1, 0.0],
+            [0.2, 1.1, 0.1],
+            [0.1, 0.2, 1.3],
+        ],
+        dtype=np.float32,
+    )
+
+    rotations = _random_rotation_matrices(sample_count, seed)
+    rng = np.random.default_rng(seed + 1)
+    translations = rng.uniform(-1.0, 1.0, size=(sample_count, 3)).astype(np.float32)
+
+    pos_anchor = np.tile(rest, (sample_count, 1))
+    pos = np.empty_like(pos_anchor)
+    for sample in range(sample_count):
+        start = 4 * sample
+        pos[start : start + 4] = rest @ rotations[sample].T + translations[sample]
+
+    particle_ids = np.arange(sample_count, dtype=np.int32)[:, None] * 4
+    spring_indices = np.column_stack((particle_ids[:, 0], particle_ids[:, 0] + 1)).astype(np.int32).reshape(-1)
+    tri_indices = np.column_stack((particle_ids[:, 0], particle_ids[:, 0] + 1, particle_ids[:, 0] + 2)).astype(np.int32)
+    tet_indices = np.column_stack(
+        (particle_ids[:, 0], particle_ids[:, 0] + 1, particle_ids[:, 0] + 2, particle_ids[:, 0] + 3)
+    ).astype(np.int32)
+    edge_indices = np.column_stack(
+        (particle_ids[:, 0], particle_ids[:, 0] + 1, particle_ids[:, 0] + 2, particle_ids[:, 0] + 3)
+    ).astype(np.int32)
+
+    qp = rest[1] - rest[0]
+    rp = rest[2] - rest[0]
+    tri_normal = np.cross(qp, rp)
+    tri_normal /= np.linalg.norm(tri_normal)
+    e1 = qp / np.linalg.norm(qp)
+    e2 = np.cross(tri_normal, e1)
+    e2 /= np.linalg.norm(e2)
+    tri_D = np.array((e1, e2), dtype=np.float32) @ np.array((qp, rp), dtype=np.float32).T
+    tri_pose = np.linalg.inv(tri_D).astype(np.float32)
+    tri_area = np.float32(np.linalg.det(tri_D) * 0.5)
+
+    tet_Dm = np.array((rest[1] - rest[0], rest[2] - rest[0], rest[3] - rest[0]), dtype=np.float32).T
+    tet_pose = np.linalg.inv(tet_Dm).astype(np.float32)
+
+    x1, x2, x3, x4 = rest[0], rest[1], rest[2], rest[3]
+    n1 = np.cross(x3 - x1, x4 - x1)
+    n1 /= np.linalg.norm(n1)
+    n2 = np.cross(x4 - x2, x3 - x2)
+    n2 /= np.linalg.norm(n2)
+    edge_dir = x4 - x3
+    edge_dir /= np.linalg.norm(edge_dir)
+    edge_rest_angle = np.float32(math.atan2(np.dot(np.cross(n1, n2), edge_dir), np.dot(n1, n2)))
+    edge_rest_length = np.float32(np.linalg.norm(x4 - x3))
+
+    return {
+        "pos": pos,
+        "pos_anchor": pos_anchor,
+        "spring_indices": spring_indices,
+        "spring_rest_length": np.full(sample_count, np.linalg.norm(rest[1] - rest[0]), dtype=np.float32),
+        "spring_stiffness": np.zeros(sample_count, dtype=np.float32),
+        "spring_damping": np.full(sample_count, 20.0, dtype=np.float32),
+        "tri_indices": tri_indices,
+        "tri_poses": np.tile(tri_pose, (sample_count, 1, 1)),
+        "tri_areas": np.full(sample_count, tri_area, dtype=np.float32),
+        "edge_indices": edge_indices,
+        "edge_rest_angle": np.full(sample_count, edge_rest_angle, dtype=np.float32),
+        "edge_rest_length": np.full(sample_count, edge_rest_length, dtype=np.float32),
+        "tet_indices": tet_indices,
+        "tet_poses": np.tile(tet_pose, (sample_count, 1, 1)),
+    }
 
 
 @wp.kernel
@@ -107,6 +302,437 @@ def _eval_directional_joint_projection_kernel(
         0.01,
     )
     angular_torque_out[0] = torque
+
+
+@wp.kernel
+def _eval_body_particle_contact_damping_kernel(
+    particle_radius: wp.array[float],
+    shape_material_mu: wp.array[float],
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[wp.int32],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    forces: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    ke = wp.where(i < 2, 400.0, 100.0)
+    kd = wp.where((i & 1) == 0, 20.0, 0.0)
+    force, _hessian = evaluate_body_particle_contact(
+        0,
+        wp.vec3(0.0, 0.0, 0.04),
+        wp.vec3(0.0, 0.0, 0.05),
+        0,
+        ke,
+        kd,
+        0.0,
+        0.01,
+        particle_radius,
+        shape_material_mu,
+        shape_body,
+        body_q,
+        body_q_prev,
+        body_qd,
+        body_com,
+        contact_shape,
+        contact_body_pos,
+        contact_body_vel,
+        contact_normal,
+        0.1,
+    )
+    forces[i] = force
+
+
+@wp.kernel
+def _eval_vertex_triangle_uniform_motion_kernel(
+    pos: wp.array[wp.vec3],
+    pos_prev: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    forces: wp.array[wp.vec3],
+    hessians: wp.array[wp.mat33],
+):
+    i = wp.tid()
+    kd = wp.where(i == 1, 50.0, 0.0)
+    (
+        _has_contact,
+        _force_0,
+        _force_1,
+        _force_2,
+        force_3,
+        _hessian_0,
+        _hessian_1,
+        _hessian_2,
+        hessian_3,
+    ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
+        3,
+        0,
+        pos,
+        pos_prev,
+        tri_indices,
+        0.1,
+        100.0,
+        kd,
+        0.0,
+        0.01,
+        0.1,
+    )
+    forces[i] = force_3
+    hessians[i] = hessian_3
+
+
+@wp.kernel
+def _eval_spring_damping_kernel(
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    spring_indices: wp.array[int],
+    spring_rest_length: wp.array[float],
+    spring_stiffness: wp.array[float],
+    spring_damping: wp.array[float],
+    force: wp.array[wp.vec3],
+    hessian: wp.array[wp.mat33],
+):
+    spring_force, spring_hessian = evaluate_spring_force_and_hessian(
+        0,
+        0,
+        0.1,
+        pos,
+        pos_anchor,
+        spring_indices,
+        spring_rest_length,
+        spring_stiffness,
+        spring_damping,
+    )
+    force[0] = spring_force
+    hessian[0] = spring_hessian
+
+
+@wp.kernel
+def _eval_bending_degenerate_anchor_kernel(
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_angle: wp.array[float],
+    edge_rest_length: wp.array[float],
+    force_norms: wp.array[float],
+):
+    v_order = wp.tid()
+    force, hessian = evaluate_dihedral_angle_based_bending_force_hessian(
+        0,
+        v_order,
+        pos,
+        pos_anchor,
+        edge_indices,
+        edge_rest_angle,
+        edge_rest_length,
+        0.0,
+        20.0,
+        0.1,
+    )
+    force_norms[v_order] = wp.length(force) + wp.length(hessian[0]) + wp.length(hessian[1]) + wp.length(hessian[2])
+
+
+@wp.kernel
+def _eval_elastic_damping_rigid_motion_kernel(
+    pos: wp.array[wp.vec3],
+    pos_anchor: wp.array[wp.vec3],
+    spring_indices: wp.array[int],
+    spring_rest_length: wp.array[float],
+    spring_stiffness: wp.array[float],
+    spring_damping: wp.array[float],
+    tri_indices: wp.array2d[wp.int32],
+    tri_poses: wp.array[wp.mat22],
+    tri_areas: wp.array[float],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_angle: wp.array[float],
+    edge_rest_length: wp.array[float],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    force_norms: wp.array2d[float],
+):
+    sample = wp.tid()
+    dt = 0.1
+    damping = 20.0
+
+    _v0, _v1, spring_force_0, spring_force_1, _spring_hessian = evaluate_spring_force_and_hessian_both_vertices(
+        sample,
+        dt,
+        pos,
+        pos_anchor,
+        spring_indices,
+        spring_rest_length,
+        spring_stiffness,
+        spring_damping,
+    )
+    force_norms[sample, 0] = wp.max(wp.length(spring_force_0), wp.length(spring_force_1))
+
+    tri_max = float(0.0)
+    for v_order in range(3):
+        tri_force, _tri_hessian = evaluate_neo_hookean_membrane_force_hessian(
+            sample,
+            v_order,
+            pos,
+            pos_anchor,
+            tri_indices,
+            tri_poses[sample],
+            tri_areas[sample],
+            0.0,
+            1.0,
+            damping,
+            dt,
+        )
+        tri_max = wp.max(tri_max, wp.length(tri_force))
+    force_norms[sample, 1] = tri_max
+
+    bend_max = float(0.0)
+    for v_order in range(4):
+        bend_force, _bend_hessian = evaluate_dihedral_angle_based_bending_force_hessian(
+            sample,
+            v_order,
+            pos,
+            pos_anchor,
+            edge_indices,
+            edge_rest_angle,
+            edge_rest_length,
+            0.0,
+            damping,
+            dt,
+        )
+        bend_max = wp.max(bend_max, wp.length(bend_force))
+    force_norms[sample, 2] = bend_max
+
+    tet_max = float(0.0)
+    for v_order in range(4):
+        tet_force, _tet_hessian = evaluate_volumetric_neo_hookean_force_and_hessian(
+            sample,
+            v_order,
+            pos_anchor,
+            pos,
+            tet_indices,
+            tet_poses[sample],
+            0.0,
+            1.0,
+            damping,
+            dt,
+        )
+        tet_max = wp.max(tet_max, wp.length(tet_force))
+    force_norms[sample, 3] = tet_max
+
+
+@wp.kernel
+def _eval_body_particle_contact_rigid_motion_kernel(
+    particle_q: wp.array[wp.vec3],
+    particle_q_prev: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    shape_material_mu: wp.array[float],
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[wp.int32],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    damping_delta_norms: wp.array[float],
+):
+    sample = wp.tid()
+    dt = 0.1
+
+    body_particle_force_damped, _body_particle_hessian_damped = evaluate_body_particle_contact(
+        sample,
+        particle_q[sample],
+        particle_q_prev[sample],
+        sample,
+        100.0,
+        20.0,
+        0.0,
+        0.01,
+        particle_radius,
+        shape_material_mu,
+        shape_body,
+        body_q,
+        body_q_prev,
+        body_qd,
+        body_com,
+        contact_shape,
+        contact_body_pos,
+        contact_body_vel,
+        contact_normal,
+        dt,
+    )
+    body_particle_force_undamped, _body_particle_hessian_undamped = evaluate_body_particle_contact(
+        sample,
+        particle_q[sample],
+        particle_q_prev[sample],
+        sample,
+        100.0,
+        0.0,
+        0.0,
+        0.01,
+        particle_radius,
+        shape_material_mu,
+        shape_body,
+        body_q,
+        body_q_prev,
+        body_qd,
+        body_com,
+        contact_shape,
+        contact_body_pos,
+        contact_body_vel,
+        contact_normal,
+        dt,
+    )
+    damping_delta_norms[sample] = wp.length(body_particle_force_damped - body_particle_force_undamped)
+
+
+@wp.kernel
+def _eval_rigid_contact_rigid_motion_kernel(
+    contact_normal: wp.array[wp.vec3],
+    rigid_body_q: wp.array[wp.transform],
+    rigid_body_q_prev: wp.array[wp.transform],
+    rigid_body_com: wp.array[wp.vec3],
+    damping_delta_norms: wp.array[float],
+):
+    sample = wp.tid()
+    dt = 0.1
+    rigid_body_a = 2 * sample
+    rigid_body_b = rigid_body_a + 1
+    (
+        force_a_damped,
+        torque_a_damped,
+        _h_ll_a_damped,
+        _h_al_a_damped,
+        _h_aa_a_damped,
+        force_b_damped,
+        torque_b_damped,
+        _h_ll_b_damped,
+        _h_al_b_damped,
+        _h_aa_b_damped,
+    ) = evaluate_rigid_contact_from_collision(
+        rigid_body_a,
+        rigid_body_b,
+        rigid_body_q,
+        rigid_body_q_prev,
+        rigid_body_com,
+        wp.vec3(0.2, -0.1, 0.05),
+        wp.vec3(0.2, -0.1, 0.05),
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        contact_normal[sample],
+        0.06,
+        100.0,
+        100.0,
+        20.0,
+        wp.vec3(0.0),
+        0.0,
+        0.01,
+        0,
+        dt,
+        wp.vec3(0.0),
+    )
+    (
+        force_a_undamped,
+        torque_a_undamped,
+        _h_ll_a_undamped,
+        _h_al_a_undamped,
+        _h_aa_a_undamped,
+        force_b_undamped,
+        torque_b_undamped,
+        _h_ll_b_undamped,
+        _h_al_b_undamped,
+        _h_aa_b_undamped,
+    ) = evaluate_rigid_contact_from_collision(
+        rigid_body_a,
+        rigid_body_b,
+        rigid_body_q,
+        rigid_body_q_prev,
+        rigid_body_com,
+        wp.vec3(0.2, -0.1, 0.05),
+        wp.vec3(0.2, -0.1, 0.05),
+        wp.vec3(0.0),
+        wp.vec3(0.0),
+        contact_normal[sample],
+        0.06,
+        100.0,
+        100.0,
+        0.0,
+        wp.vec3(0.0),
+        0.0,
+        0.01,
+        0,
+        dt,
+        wp.vec3(0.0),
+    )
+    rigid_delta = wp.max(wp.length(force_a_damped - force_a_undamped), wp.length(force_b_damped - force_b_undamped))
+    rigid_delta = wp.max(rigid_delta, wp.length(torque_a_damped - torque_a_undamped))
+    rigid_delta = wp.max(rigid_delta, wp.length(torque_b_damped - torque_b_undamped))
+    damping_delta_norms[sample] = rigid_delta
+
+
+@wp.kernel
+def _eval_vertex_triangle_contact_rigid_motion_kernel(
+    soft_pos: wp.array[wp.vec3],
+    soft_pos_anchor: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    damping_delta_norms: wp.array[float],
+):
+    sample = wp.tid()
+    dt = 0.1
+    vertex = 4 * sample + 3
+    (
+        _has_contact_damped,
+        force_0_damped,
+        force_1_damped,
+        force_2_damped,
+        force_3_damped,
+        _hessian_0_damped,
+        _hessian_1_damped,
+        _hessian_2_damped,
+        _hessian_3_damped,
+    ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
+        vertex,
+        sample,
+        soft_pos,
+        soft_pos_anchor,
+        tri_indices,
+        0.1,
+        100.0,
+        20.0,
+        0.0,
+        0.01,
+        dt,
+    )
+    (
+        _has_contact_undamped,
+        force_0_undamped,
+        force_1_undamped,
+        force_2_undamped,
+        force_3_undamped,
+        _hessian_0_undamped,
+        _hessian_1_undamped,
+        _hessian_2_undamped,
+        _hessian_3_undamped,
+    ) = evaluate_vertex_triangle_collision_force_hessian_4_vertices(
+        vertex,
+        sample,
+        soft_pos,
+        soft_pos_anchor,
+        tri_indices,
+        0.1,
+        100.0,
+        0.0,
+        0.0,
+        0.01,
+        dt,
+    )
+    soft_delta = wp.max(wp.length(force_0_damped - force_0_undamped), wp.length(force_1_damped - force_1_undamped))
+    soft_delta = wp.max(soft_delta, wp.length(force_2_damped - force_2_undamped))
+    soft_delta = wp.max(soft_delta, wp.length(force_3_damped - force_3_undamped))
+    damping_delta_norms[sample] = soft_delta
 
 
 def test_self_contact_barrier_c2_at_tau(test, device):
@@ -456,6 +1082,434 @@ def _joint_force_projection_filters_free_direction(test, device):
         angular_torque_np = angular_torque.numpy()
         np.testing.assert_allclose(angular_torque_np[:, 0], [0.0], rtol=1e-6, atol=1e-6)
         test.assertGreater(np.linalg.norm(angular_torque_np[:, 1:]), 0.0)
+
+
+def _body_particle_contact_damping_is_absolute(test, device):
+    """Changing contact stiffness should not change the damping contribution."""
+    with wp.ScopedDevice(device):
+        particle_radius = wp.array([0.1], dtype=float, device=device)
+        shape_material_mu = wp.array([0.0], dtype=float, device=device)
+        shape_body = wp.array([-1], dtype=wp.int32, device=device)
+        body_q = wp.zeros(0, dtype=wp.transform, device=device)
+        body_q_prev = wp.zeros(0, dtype=wp.transform, device=device)
+        body_qd = wp.zeros(0, dtype=wp.spatial_vector, device=device)
+        body_com = wp.zeros(0, dtype=wp.vec3, device=device)
+        contact_shape = wp.array([0], dtype=wp.int32, device=device)
+        contact_body_pos = wp.zeros(1, dtype=wp.vec3, device=device)
+        contact_body_vel = wp.zeros(1, dtype=wp.vec3, device=device)
+        contact_normal = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
+        forces = wp.zeros(4, dtype=wp.vec3, device=device)
+
+        wp.launch(
+            _eval_body_particle_contact_damping_kernel,
+            dim=4,
+            inputs=[
+                particle_radius,
+                shape_material_mu,
+                shape_body,
+                body_q,
+                body_q_prev,
+                body_qd,
+                body_com,
+                contact_shape,
+                contact_body_pos,
+                contact_body_vel,
+                contact_normal,
+            ],
+            outputs=[forces],
+            device=device,
+        )
+
+        force_np = forces.numpy()
+        damping_low_ke = force_np[0] - force_np[1]
+        damping_high_ke = force_np[2] - force_np[3]
+        np.testing.assert_allclose(damping_low_ke, damping_high_ke, rtol=1.0e-6, atol=1.0e-6)
+        np.testing.assert_allclose(damping_low_ke, [0.0, 0.0, 2.0], rtol=1.0e-6, atol=1.0e-6)
+
+
+def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
+    """Ramped body-particle contact stiffness must not scale absolute damping."""
+    with wp.ScopedDevice(device):
+        particle_q = wp.array([[0.0, 0.0, 0.04]] * 4, dtype=wp.vec3, device=device)
+        particle_q_prev = wp.array([[0.0, 0.0, 0.05]] * 4, dtype=wp.vec3, device=device)
+        particle_colors = wp.zeros(4, dtype=int, device=device)
+        particle_radius = wp.array([0.1] * 4, dtype=float, device=device)
+
+        contact_count = wp.array([4], dtype=int, device=device)
+        contact_particle = wp.array([0, 1, 2, 3], dtype=int, device=device)
+        contact_penalty_k = wp.array([400.0, 400.0, 100.0, 100.0], dtype=float, device=device)
+        contact_material_ke = wp.array([100.0] * 4, dtype=float, device=device)
+        contact_material_kd = wp.array([20.0, 0.0, 20.0, 0.0], dtype=float, device=device)
+        contact_material_mu = wp.zeros(4, dtype=float, device=device)
+
+        shape_material_mu = wp.zeros(1, dtype=float, device=device)
+        shape_body = wp.array([-1], dtype=int, device=device)
+        body_q = wp.zeros(0, dtype=wp.transform, device=device)
+        body_q_prev = wp.zeros(0, dtype=wp.transform, device=device)
+        body_qd = wp.zeros(0, dtype=wp.spatial_vector, device=device)
+        body_com = wp.zeros(0, dtype=wp.vec3, device=device)
+        contact_shape = wp.zeros(4, dtype=int, device=device)
+        contact_body_pos = wp.zeros(4, dtype=wp.vec3, device=device)
+        contact_body_vel = wp.zeros(4, dtype=wp.vec3, device=device)
+        contact_normal = wp.array([[0.0, 0.0, 1.0]] * 4, dtype=wp.vec3, device=device)
+
+        forces = wp.zeros(4, dtype=wp.vec3, device=device)
+        hessians = wp.zeros(4, dtype=wp.mat33, device=device)
+
+        wp.launch(
+            accumulate_particle_body_contact_force_and_hessian,
+            dim=4,
+            inputs=[
+                0.1,
+                0,
+                particle_q_prev,
+                particle_q,
+                particle_colors,
+                0.01,
+                particle_radius,
+                contact_particle,
+                contact_count,
+                4,
+                contact_penalty_k,
+                contact_material_ke,
+                contact_material_kd,
+                contact_material_mu,
+                shape_material_mu,
+                shape_body,
+                body_q,
+                body_q_prev,
+                body_qd,
+                body_com,
+                contact_shape,
+                contact_body_pos,
+                contact_body_vel,
+                contact_normal,
+            ],
+            outputs=[forces, hessians],
+            device=device,
+        )
+
+        force_np = forces.numpy()
+        damping_ramped = force_np[0] - force_np[1]
+        damping_unramped = force_np[2] - force_np[3]
+        np.testing.assert_allclose(damping_ramped, damping_unramped, rtol=1.0e-6, atol=1.0e-6)
+        np.testing.assert_allclose(damping_unramped, [0.0, 0.0, 2.0], rtol=1.0e-6, atol=1.0e-6)
+
+
+def _body_body_contact_damping_ignores_penalty_ramp(test, device):
+    """Ramped body-body contact stiffness must not scale absolute damping."""
+    with wp.ScopedDevice(device):
+        contact_count = wp.array([4], dtype=int, device=device)
+        shape0 = wp.zeros(4, dtype=int, device=device)
+        shape1 = wp.ones(4, dtype=int, device=device)
+        point0 = wp.zeros(4, dtype=wp.vec3, device=device)
+        point1 = wp.zeros(4, dtype=wp.vec3, device=device)
+        offset0 = wp.zeros(4, dtype=wp.vec3, device=device)
+        offset1 = wp.zeros(4, dtype=wp.vec3, device=device)
+        normal = wp.array([[0.0, 0.0, 1.0]] * 4, dtype=wp.vec3, device=device)
+        margin0 = wp.array([0.1] * 4, dtype=float, device=device)
+        margin1 = wp.zeros(4, dtype=float, device=device)
+
+        shape_body = wp.array([-1, 0], dtype=wp.int32, device=device)
+        body_q = wp.array(
+            [wp.transform(wp.vec3(0.0, 0.0, 0.04), wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        body_q_prev = wp.array(
+            [wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity())], dtype=wp.transform, device=device
+        )
+        body_com = wp.zeros(1, dtype=wp.vec3, device=device)
+
+        penalty_k = wp.array([400.0, 400.0, 100.0, 100.0], dtype=float, device=device)
+        material_ke = wp.array([100.0] * 4, dtype=float, device=device)
+        material_kd = wp.array([20.0, 0.0, 20.0, 0.0], dtype=float, device=device)
+        material_mu = wp.zeros(4, dtype=float, device=device)
+        contact_lambda = wp.zeros(4, dtype=wp.vec3, device=device)
+        contact_c0 = wp.zeros(4, dtype=wp.vec3, device=device)
+
+        body0 = wp.empty(4, dtype=wp.int32, device=device)
+        body1 = wp.empty(4, dtype=wp.int32, device=device)
+        point0_world = wp.empty(4, dtype=wp.vec3, device=device)
+        point1_world = wp.empty(4, dtype=wp.vec3, device=device)
+        force_on_body1 = wp.empty(4, dtype=wp.vec3, device=device)
+
+        wp.launch(
+            compute_rigid_contact_forces,
+            dim=4,
+            inputs=[
+                0.1,
+                contact_count,
+                shape0,
+                shape1,
+                point0,
+                point1,
+                offset0,
+                offset1,
+                normal,
+                margin0,
+                margin1,
+                shape_body,
+                body_q,
+                body_q_prev,
+                body_com,
+                penalty_k,
+                material_ke,
+                material_kd,
+                material_mu,
+                contact_lambda,
+                contact_c0,
+                0.95,
+                0,
+                0.01,
+            ],
+            outputs=[body0, body1, point0_world, point1_world, force_on_body1],
+            device=device,
+        )
+
+        force_np = force_on_body1.numpy()
+        damping_ramped = force_np[0] - force_np[1]
+        damping_unramped = force_np[2] - force_np[3]
+        np.testing.assert_allclose(damping_ramped, damping_unramped, rtol=1.0e-6, atol=1.0e-6)
+        np.testing.assert_allclose(damping_unramped, [0.0, 0.0, 2.0], rtol=1.0e-6, atol=1.0e-6)
+
+
+def _spring_damping_is_axial(test, device):
+    """Spring damping damps length change, not tangential rigid rotation."""
+    with wp.ScopedDevice(device):
+        theta = 0.1
+        pos = wp.array([[0.5, 0.0, 0.0], [-0.5, 0.0, 0.0]], dtype=wp.vec3, device=device)
+        pos_anchor = wp.array(
+            [
+                [0.5 * math.cos(theta), 0.5 * math.sin(theta), 0.0],
+                [-0.5 * math.cos(theta), -0.5 * math.sin(theta), 0.0],
+            ],
+            dtype=wp.vec3,
+            device=device,
+        )
+        spring_indices = wp.array([0, 1], dtype=int, device=device)
+        spring_rest_length = wp.array([2.0], dtype=float, device=device)
+        spring_stiffness = wp.array([0.0], dtype=float, device=device)
+        spring_damping = wp.array([20.0], dtype=float, device=device)
+        force = wp.zeros(1, dtype=wp.vec3, device=device)
+        hessian = wp.zeros(1, dtype=wp.mat33, device=device)
+
+        wp.launch(
+            _eval_spring_damping_kernel,
+            dim=1,
+            inputs=[pos, pos_anchor, spring_indices, spring_rest_length, spring_stiffness, spring_damping],
+            outputs=[force, hessian],
+            device=device,
+        )
+
+        np.testing.assert_allclose(force.numpy()[0], [0.0, 0.0, 0.0], rtol=1.0e-6, atol=1.0e-6)
+        np.testing.assert_allclose(
+            hessian.numpy()[0],
+            [[200.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            rtol=1.0e-6,
+            atol=1.0e-6,
+        )
+
+
+def _bending_damping_handles_degenerate_anchor(test, device):
+    """Bending damping skips collapsed previous-step geometry."""
+    with wp.ScopedDevice(device):
+        pos = wp.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.1],
+            ],
+            dtype=wp.vec3,
+            device=device,
+        )
+        pos_anchor = wp.zeros(4, dtype=wp.vec3, device=device)
+        edge_indices = wp.array([[0, 1, 2, 3]], dtype=wp.int32, ndim=2, device=device)
+        edge_rest_angle = wp.array([0.0], dtype=float, device=device)
+        edge_rest_length = wp.array([1.0], dtype=float, device=device)
+        force_norms = wp.zeros(4, dtype=float, device=device)
+
+        wp.launch(
+            _eval_bending_degenerate_anchor_kernel,
+            dim=4,
+            inputs=[pos, pos_anchor, edge_indices, edge_rest_angle, edge_rest_length],
+            outputs=[force_norms],
+            device=device,
+        )
+
+        force_norms_np = force_norms.numpy()
+
+    test.assertTrue(np.all(np.isfinite(force_norms_np)))
+    np.testing.assert_allclose(force_norms_np, np.zeros(4), rtol=0.0, atol=1.0e-6)
+
+
+def _elastic_damping_ignores_rigid_motion(test, device):
+    """Elastic damping should not produce force under fixed-seed rigid rotations."""
+    sample_count = 100
+    data = _elastic_damping_rigid_motion_data(sample_count=sample_count, seed=17)
+
+    with wp.ScopedDevice(device):
+        pos = wp.array(data["pos"], dtype=wp.vec3, device=device)
+        pos_anchor = wp.array(data["pos_anchor"], dtype=wp.vec3, device=device)
+        spring_indices = wp.array(data["spring_indices"], dtype=int, device=device)
+        spring_rest_length = wp.array(data["spring_rest_length"], dtype=float, device=device)
+        spring_stiffness = wp.array(data["spring_stiffness"], dtype=float, device=device)
+        spring_damping = wp.array(data["spring_damping"], dtype=float, device=device)
+        tri_indices = wp.array(data["tri_indices"], dtype=wp.int32, ndim=2, device=device)
+        tri_poses = wp.array(data["tri_poses"], dtype=wp.mat22, device=device)
+        tri_areas = wp.array(data["tri_areas"], dtype=float, device=device)
+        edge_indices = wp.array(data["edge_indices"], dtype=wp.int32, ndim=2, device=device)
+        edge_rest_angle = wp.array(data["edge_rest_angle"], dtype=float, device=device)
+        edge_rest_length = wp.array(data["edge_rest_length"], dtype=float, device=device)
+        tet_indices = wp.array(data["tet_indices"], dtype=wp.int32, ndim=2, device=device)
+        tet_poses = wp.array(data["tet_poses"], dtype=wp.mat33, device=device)
+        force_norms = wp.zeros((sample_count, 4), dtype=float, device=device)
+
+        wp.launch(
+            _eval_elastic_damping_rigid_motion_kernel,
+            dim=sample_count,
+            inputs=[
+                pos,
+                pos_anchor,
+                spring_indices,
+                spring_rest_length,
+                spring_stiffness,
+                spring_damping,
+                tri_indices,
+                tri_poses,
+                tri_areas,
+                edge_indices,
+                edge_rest_angle,
+                edge_rest_length,
+                tet_indices,
+                tet_poses,
+            ],
+            outputs=[force_norms],
+            device=device,
+        )
+
+        max_norms = force_norms.numpy().max(axis=0)
+
+    np.testing.assert_allclose(
+        max_norms,
+        np.zeros(4),
+        rtol=0.0,
+        atol=1.0e-4,
+        err_msg="Expected zero damping force for spring, membrane, bending, and tet rigid motions",
+    )
+
+
+def _contact_damping_ignores_rigid_motion(test, device):
+    """Contact damping should not add force under fixed-seed rigid rotations."""
+    sample_count = 100
+    data = _contact_damping_rigid_motion_data(sample_count=sample_count, seed=29)
+
+    with wp.ScopedDevice(device):
+        particle_q = wp.array(data["particle_q"], dtype=wp.vec3, device=device)
+        particle_q_prev = wp.array(data["particle_q_prev"], dtype=wp.vec3, device=device)
+        particle_radius = wp.array(np.full(sample_count, 0.1, dtype=np.float32), dtype=float, device=device)
+        shape_material_mu = wp.zeros(sample_count, dtype=float, device=device)
+        shape_body = wp.array(np.arange(sample_count, dtype=np.int32), dtype=wp.int32, device=device)
+        body_q = wp.array(data["body_q"], dtype=wp.transform, device=device)
+        body_q_prev = wp.array(data["body_q_prev"], dtype=wp.transform, device=device)
+        body_qd = wp.zeros(sample_count, dtype=wp.spatial_vector, device=device)
+        body_com = wp.zeros(sample_count, dtype=wp.vec3, device=device)
+        contact_shape = wp.array(np.arange(sample_count, dtype=np.int32), dtype=wp.int32, device=device)
+        contact_body_pos = wp.zeros(sample_count, dtype=wp.vec3, device=device)
+        contact_body_vel = wp.zeros(sample_count, dtype=wp.vec3, device=device)
+        contact_normal = wp.array(data["contact_normal"], dtype=wp.vec3, device=device)
+
+        rigid_body_q = wp.array(data["rigid_body_q"], dtype=wp.transform, device=device)
+        rigid_body_q_prev = wp.array(data["rigid_body_q_prev"], dtype=wp.transform, device=device)
+        rigid_body_com = wp.zeros(2 * sample_count, dtype=wp.vec3, device=device)
+
+        soft_pos = wp.array(data["soft_pos"], dtype=wp.vec3, device=device)
+        soft_pos_anchor = wp.array(data["soft_pos_anchor"], dtype=wp.vec3, device=device)
+        tri_indices = wp.array(data["tri_indices"], dtype=wp.int32, ndim=2, device=device)
+        rigid_delta_norms = wp.zeros(sample_count, dtype=float, device=device)
+        body_particle_delta_norms = wp.zeros(sample_count, dtype=float, device=device)
+        soft_delta_norms = wp.zeros(sample_count, dtype=float, device=device)
+
+        wp.launch(
+            _eval_rigid_contact_rigid_motion_kernel,
+            dim=sample_count,
+            inputs=[contact_normal, rigid_body_q, rigid_body_q_prev, rigid_body_com],
+            outputs=[rigid_delta_norms],
+            device=device,
+        )
+        wp.launch(
+            _eval_body_particle_contact_rigid_motion_kernel,
+            dim=sample_count,
+            inputs=[
+                particle_q,
+                particle_q_prev,
+                particle_radius,
+                shape_material_mu,
+                shape_body,
+                body_q,
+                body_q_prev,
+                body_qd,
+                body_com,
+                contact_shape,
+                contact_body_pos,
+                contact_body_vel,
+                contact_normal,
+            ],
+            outputs=[body_particle_delta_norms],
+            device=device,
+        )
+        wp.launch(
+            _eval_vertex_triangle_contact_rigid_motion_kernel,
+            dim=sample_count,
+            inputs=[soft_pos, soft_pos_anchor, tri_indices],
+            outputs=[soft_delta_norms],
+            device=device,
+        )
+
+        max_delta_norms = np.array(
+            [
+                rigid_delta_norms.numpy().max(),
+                body_particle_delta_norms.numpy().max(),
+                soft_delta_norms.numpy().max(),
+            ]
+        )
+
+    np.testing.assert_allclose(
+        max_delta_norms,
+        np.zeros(3),
+        rtol=0.0,
+        atol=1.0e-4,
+        err_msg="Expected zero damping contribution for rigid-rigid, rigid-soft, and soft-soft rigid motions",
+    )
+
+
+def _self_contact_damping_uses_relative_gap_rate(test, device):
+    """Uniform motion of a contact stencil should not add normal damping."""
+    with wp.ScopedDevice(device):
+        pos_np = np.array(
+            [
+                [-1.0, -1.0, 0.0],
+                [1.0, -1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.05],
+            ],
+            dtype=np.float32,
+        )
+        pos = wp.array(pos_np, dtype=wp.vec3, device=device)
+        pos_prev = wp.array(pos_np + np.array([0.0, 0.0, 0.01], dtype=np.float32), dtype=wp.vec3, device=device)
+        tri_indices = wp.array(np.array([[0, 1, 2]], dtype=np.int32), dtype=wp.int32, ndim=2, device=device)
+        forces = wp.zeros(2, dtype=wp.vec3, device=device)
+        hessians = wp.zeros(2, dtype=wp.mat33, device=device)
+
+        wp.launch(
+            _eval_vertex_triangle_uniform_motion_kernel,
+            dim=2,
+            inputs=[pos, pos_prev, tri_indices],
+            outputs=[forces, hessians],
+            device=device,
+        )
+
+        np.testing.assert_allclose(forces.numpy()[1], forces.numpy()[0], rtol=1.0e-6, atol=1.0e-6)
+        np.testing.assert_allclose(hessians.numpy()[1], hessians.numpy()[0], rtol=1.0e-6, atol=1.0e-6)
 
 
 def _d6_fully_free_structural_slots_are_inactive(test, device):
@@ -986,6 +2040,54 @@ add_function_test(
     TestSolverVBD,
     "test_joint_force_projection_filters_free_direction",
     _joint_force_projection_filters_free_direction,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_contact_damping_is_absolute",
+    _body_particle_contact_damping_is_absolute,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_contact_damping_ignores_penalty_ramp",
+    _body_particle_contact_damping_ignores_penalty_ramp,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_body_contact_damping_ignores_penalty_ramp",
+    _body_body_contact_damping_ignores_penalty_ramp,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_spring_damping_is_axial",
+    _spring_damping_is_axial,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_bending_damping_handles_degenerate_anchor",
+    _bending_damping_handles_degenerate_anchor,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_elastic_damping_ignores_rigid_motion",
+    _elastic_damping_ignores_rigid_motion,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_contact_damping_ignores_rigid_motion",
+    _contact_damping_ignores_rigid_motion,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_self_contact_damping_uses_relative_gap_rate",
+    _self_contact_damping_uses_relative_gap_rate,
     devices=devices,
 )
 add_function_test(
