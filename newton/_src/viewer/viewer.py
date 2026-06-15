@@ -184,30 +184,18 @@ class ViewerBase(ABC):
             ViewerBase.SDFMarginMode, dict[int, tuple[np.ndarray, int, np.ndarray, int]]
         ] = {}
 
-    def set_model(self, model: newton.Model | None, max_worlds: int | None = None):
+    def set_model(self, model: newton.Model | None):
         """Set the model to be visualized.
 
         Args:
             model: The Newton model to visualize.
-            max_worlds: Maximum number of worlds to render (None = all).
-
-                .. deprecated:: 1.1
-                    Use :meth:`set_visible_worlds` instead.
         """
         if self.model is not None:
             self.clear_model()
 
         self.model = model
 
-        if max_worlds is not None:
-            warnings.warn(
-                "max_worlds is deprecated, use set_visible_worlds() instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            self._visible_worlds = set(range(max_worlds))
-        else:
-            self._visible_worlds = None
+        self._visible_worlds = None
 
         if model is not None:
             self.device = model.device
