@@ -225,12 +225,31 @@ class CheckOutput:
 
 @dataclasses.dataclass
 class _OutputRegex:
+    """A single output expectation for the strict output contract.
+
+    Attributes:
+        pattern: Regular expression matched against captured output.
+        stream: Which stream the pattern applies to: ``"stdout"``,
+            ``"stderr"``, or ``"any"``.
+        required: Whether the pattern must match (expected output) or is
+            merely permitted (allowed output).
+    """
+
     pattern: str
     stream: str
     required: bool
 
 
 class _OutputCapture:
+    """Captures stdout/stderr during a test and checks it against patterns.
+
+    Output is captured between :meth:`begin` and :meth:`finish`. Registered
+    patterns are then matched against the captured streams: required patterns
+    must appear, and any output left unmatched by every pattern is reported as
+    unexpected. This enforces the strict output contract used by
+    :class:`NewtonTestCase`.
+    """
+
     def __init__(self):
         self.stdout_capture = StdOutCapture()
         self.stderr_capture = StdErrCapture()
