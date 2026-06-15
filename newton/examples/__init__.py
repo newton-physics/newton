@@ -390,61 +390,6 @@ def run(example, args):
                 raise ValueError(f"NaN members found in contacts: {nan_members}")
 
 
-def compute_world_offsets(
-    world_count: int,
-    world_offset: tuple[float, float, float] = (5.0, 5.0, 0.0),
-    up_axis: newton.AxisType = newton.Axis.Z,
-):
-    # raise deprecation warning
-    import warnings  # noqa: PLC0415
-
-    warnings.warn(
-        (
-            "compute_world_offsets is deprecated and will be removed in a future version. "
-            "Use the builder.replicate() function instead."
-        ),
-        stacklevel=2,
-    )
-
-    # compute positional offsets per world
-    world_offset = np.array(world_offset)
-    nonzeros = np.nonzero(world_offset)[0]
-    num_dim = nonzeros.shape[0]
-    if num_dim > 0:
-        side_length = int(np.ceil(world_count ** (1.0 / num_dim)))
-        world_offsets = []
-        if num_dim == 1:
-            for i in range(world_count):
-                world_offsets.append(i * world_offset)
-        elif num_dim == 2:
-            for i in range(world_count):
-                d0 = i // side_length
-                d1 = i % side_length
-                offset = np.zeros(3)
-                offset[nonzeros[0]] = d0 * world_offset[nonzeros[0]]
-                offset[nonzeros[1]] = d1 * world_offset[nonzeros[1]]
-                world_offsets.append(offset)
-        elif num_dim == 3:
-            for i in range(world_count):
-                d0 = i // (side_length * side_length)
-                d1 = (i // side_length) % side_length
-                d2 = i % side_length
-                offset = np.zeros(3)
-                offset[0] = d0 * world_offset[0]
-                offset[1] = d1 * world_offset[1]
-                offset[2] = d2 * world_offset[2]
-                world_offsets.append(offset)
-        world_offsets = np.array(world_offsets)
-    else:
-        world_offsets = np.zeros((world_count, 3))
-    min_offsets = np.min(world_offsets, axis=0)
-    correction = min_offsets + (np.max(world_offsets, axis=0) - min_offsets) / 2.0
-    # ensure the envs are not shifted below the ground plane
-    correction[newton.Axis.from_any(up_axis)] = 0.0
-    world_offsets -= correction
-    return world_offsets
-
-
 def get_examples() -> dict[str, str]:
     """Return a dict mapping example short names to their full module paths."""
     example_map = {}

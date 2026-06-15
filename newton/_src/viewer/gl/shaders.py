@@ -951,3 +951,47 @@ class ShaderArrow(ShaderGL):
     def set_world(self, world: np.ndarray):
         """Set the per-shape world matrix uniform."""
         self._gl.glUniformMatrix4fv(self.loc_world, 1, self._gl.GL_FALSE, arr_pointer(world))
+
+
+edge_fragment_shader = """
+#version 330 core
+out vec4 FragColor;
+uniform vec4 edge_color;
+void main()
+{
+    FragColor = edge_color;
+}
+"""
+
+
+class ShaderEdge(ShaderGL):
+    """Flat-color shader for the edge/wireframe overlay pass."""
+
+    def __init__(self, gl):
+        super().__init__()
+        from pyglet.graphics.shader import Shader, ShaderProgram
+
+        self._gl = gl
+        self.shader_program = ShaderProgram(
+            Shader(shape_vertex_shader, "vertex"), Shader(edge_fragment_shader, "fragment")
+        )
+
+        with self:
+            self.loc_view = self._get_uniform_location("view")
+            self.loc_projection = self._get_uniform_location("projection")
+            self.loc_edge_color = self._get_uniform_location("edge_color")
+            self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
+
+    def update(
+        self,
+        view_matrix: np.ndarray,
+        projection_matrix: np.ndarray,
+        edge_color: tuple[float, float, float, float] = (0.05, 0.05, 0.05, 1.0),
+        light_space_matrix: np.ndarray | None = None,
+    ):
+        with self:
+            self._gl.glUniformMatrix4fv(self.loc_view, 1, self._gl.GL_FALSE, arr_pointer(view_matrix))
+            self._gl.glUniformMatrix4fv(self.loc_projection, 1, self._gl.GL_FALSE, arr_pointer(projection_matrix))
+            self._gl.glUniform4f(self.loc_edge_color, *edge_color)
+            lsm = light_space_matrix if light_space_matrix is not None else np.eye(4, dtype=np.float32)
+            self._gl.glUniformMatrix4fv(self.loc_light_space_matrix, 1, self._gl.GL_FALSE, arr_pointer(lsm))

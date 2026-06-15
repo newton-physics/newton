@@ -616,7 +616,7 @@ def _add_matrix_diag_product(
     x: wp.array[float32],
     y: wp.array[float32],
     alpha: float,
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
 ):
     """
     Adds the product of a vector with a diagonal matrix to another vector: y += alpha * diag(d) @ x
@@ -626,7 +626,7 @@ def _add_matrix_diag_product(
     world_id, ct_id = wp.tid()
 
     # Terminate early if world or constraint is inactive
-    if world_mask[world_id] == 0 or ct_id >= model_data_num_total_cts[world_id]:
+    if not world_mask[world_id] or ct_id >= model_data_num_total_cts[world_id]:
         return
 
     idx = row_start[world_id] + ct_id
@@ -643,7 +643,7 @@ def _scale_row_vector_kernel(
     x: wp.array[Any],
     beta: Any,
     # Mask:
-    matrix_mask: wp.array[int32],
+    matrix_mask: wp.array[bool],
 ):
     """
     Computes a vector scaling for all active entries: y = beta * y
@@ -680,7 +680,7 @@ def _make_block_sparse_gemv_regularization_kernel(alpha: float32):
         y: wp.array[float32],
         z: wp.array[float32],
         # Mask:
-        matrix_mask: wp.array[int32],
+        matrix_mask: wp.array[bool],
     ):
         """
         Computes a generalized matrix-vector product with an added diagonal regularization component:

@@ -42,7 +42,10 @@ def _imgui_uses_imvec4_color_edit3() -> bool:
 
 
 _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
-# Width of the main Newton Viewer sidebar [px].
+# Width of the main Newton Viewer sidebar in logical (96-DPI) pixels. The
+# actual framebuffer width used at render time is ``_SIDEBAR_WIDTH_PX *
+# ui.dpi_scale`` so the sidebar keeps a constant visual size on HiDPI
+# displays — see :meth:`ViewerGL._dpi_scale`.
 _SIDEBAR_WIDTH_PX: float = 300.0
 
 
@@ -236,7 +239,11 @@ class ViewerGL(ViewerBase):
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
-        self._image_logger = ImageLogger(device=self.device, sidebar_width_px=_SIDEBAR_WIDTH_PX)
+        self._image_logger = ImageLogger(
+            device=self.device,
+            sidebar_width_px=self._sidebar_width_fb_px(),
+            dpi_scale=self._dpi_scale(),
+        )
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
@@ -259,6 +266,9 @@ class ViewerGL(ViewerBase):
         # Only create UI in non-headless mode to avoid OpenGL context dependency
         if not headless:
             self.gui = ViewerGui(self, self.renderer.window)
+            # ViewerGL owns the pyglet ``on_scale`` event so the GUI and
+            # ImageLogger receive the same resolved DPI scale value.
+            self.renderer.window.push_handlers(on_scale=self._on_window_scale)
         else:
             self.gui = None
         self._gizmo_log = None
@@ -513,22 +523,25 @@ class ViewerGL(ViewerBase):
         super().clear_model()
 
     @override
-    def set_model(self, model: nt.Model | None, max_worlds: int | None = None):
+    def set_model(self, model: nt.Model | None):
         """
         Set the Newton model to visualize.
 
         Args:
             model: The Newton model instance.
-            max_worlds: Maximum number of worlds to render (None = all).
         """
-        super().set_model(model, max_worlds=max_worlds)
+        super().set_model(model)
 
         # ``ViewerBase.set_model`` may have switched ``self.device`` to the
         # model's device. Rebind the image logger so its GPU path tests against
         # — and registers PBO interop with — the correct CUDA context.
         if self._image_logger is not None and self._image_logger.device != self.device:
             self._image_logger.clear()
-            self._image_logger = ImageLogger(device=self.device, sidebar_width_px=_SIDEBAR_WIDTH_PX)
+            self._image_logger = ImageLogger(
+                device=self.device,
+                sidebar_width_px=self._sidebar_width_fb_px(),
+                dpi_scale=self._dpi_scale(),
+            )
 
         if self.model is not None:
             # For capsule batches, replace per-instance scales with (radius, radius, half_height)
@@ -635,7 +648,12 @@ class ViewerGL(ViewerBase):
             if _key not in capsule_keys:
                 if shapes.name not in self.objects:
                     if shapes.mesh in self.objects and isinstance(self.objects[shapes.mesh], MeshGL):
-                        self.objects[shapes.name] = MeshInstancerGL(max(n, 1), self.objects[shapes.mesh])
+                        instancer = MeshInstancerGL(max(n, 1), self.objects[shapes.mesh])
+                        # Planes (e.g. the ground) opt out of the wireframe edge
+                        # overlay. Keyed on geometry type, not the checker material
+                        # bit, so checker-shaded non-planes still get edges (#2808).
+                        instancer.draw_edge = shapes.geo_type != nt.GeoType.PLANE
+                        self.objects[shapes.name] = instancer
 
         self._packed_write_indices = wp.array(write_np, dtype=int, device=device)
         self._packed_world_xforms = all_world_xforms
@@ -1945,6 +1963,81 @@ class ViewerGL(ViewerBase):
         if self.ui:
             self.ui.resize(width, height)
 
+        self._refresh_dpi_state()
+
+    def _on_window_scale(self, scale: float, dpi: int) -> None:
+        """Refresh DPI-dependent layout when pyglet reports a display change.
+
+        pyglet dispatches ``on_scale`` whenever the window crosses to a display
+        with a different ``backingScaleFactor`` / DPI. The window size need not
+        change, so ``on_resize`` isn't always fired.
+        """
+        self._refresh_dpi_state(dpi_scale=scale)
+
+    def _refresh_dpi_state(self, dpi_scale: float | None = None) -> None:
+        """Propagate the current DPI to all DPI-dependent layout state.
+
+        ``dpi_scale`` is the raw pyglet ``on_scale`` value when available. We
+        resolve it against the current framebuffer/window ratio once here, then
+        feed that same value to both UI and ImageLogger.
+        """
+        resolved_scale = self._resolve_dpi_scale(dpi_scale)
+        if self.ui is not None and self.ui.is_available:
+            resolved_scale = self.ui.refresh_dpi(resolved_scale)
+        if self._image_logger is not None:
+            self._image_logger._sidebar_width_px = _SIDEBAR_WIDTH_PX * resolved_scale
+            self._image_logger.dpi_scale = resolved_scale
+
+    def _dpi_scale(self) -> float:
+        """Return the current DPI scale.
+
+        Falls back to ``window.scale`` (pyglet's documented HiDPI API) and
+        then the framebuffer/window-size ratio when the ImGui UI is not yet
+        available (e.g. during ``__init__`` before the UI is created, or in
+        headless mode). On macOS Retina ``window.scale`` is the only signal
+        that yields a value > 1.0 because pyglet reports both sizes in
+        physical pixels there.
+        """
+        ui = getattr(self, "ui", None)
+        if ui is not None and ui.is_available:
+            return ui.dpi_scale
+        return self._detect_window_dpi_scale()
+
+    def _detect_window_dpi_scale(self) -> float:
+        """Return the current DPI scale from pyglet window APIs."""
+        return self._resolve_dpi_scale()
+
+    def _resolve_dpi_scale(self, dpi_scale: float | None = None) -> float:
+        """Return one DPI scale resolved from event and window signals."""
+        scale = self._coerce_dpi_scale(dpi_scale) if dpi_scale is not None else 1.0
+        try:
+            scale = max(scale, self._coerce_dpi_scale(self.renderer.window.scale))
+        except AttributeError:
+            pass
+
+        try:
+            get_size = self.renderer.window.get_size
+            get_framebuffer_size = self.renderer.window.get_framebuffer_size
+        except AttributeError:
+            return max(1.0, scale)
+
+        ww, wh = get_size()
+        fw, fh = get_framebuffer_size()
+        if ww > 0 and wh > 0:
+            scale = max(scale, fw / ww, fh / wh)
+        return max(1.0, scale)
+
+    @staticmethod
+    def _coerce_dpi_scale(value: float) -> float:
+        try:
+            return max(1.0, float(value))
+        except (TypeError, ValueError):
+            return 1.0
+
+    def _sidebar_width_fb_px(self) -> float:
+        """Sidebar width in framebuffer pixels, scaled by the current DPI."""
+        return _SIDEBAR_WIDTH_PX * self._dpi_scale()
+
     def _ui_populate_rendering_panel(self, imgui):
         """Render GL-specific items inside the Rendering Options panel section."""
         # Sky rendering
@@ -2103,14 +2196,16 @@ class ViewerGL(ViewerBase):
         )
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
-    def _render_array_heatmap(self, name: str, array: np.ndarray, width: float):
+    def _render_array_heatmap(self, name: str, array: np.ndarray, width: float, dpi_scale: float = 1.0):
         imgui = self.ui.imgui
+        s = max(1.0, float(dpi_scale))
 
         rows, cols = array.shape
-        heatmap_width = max(120.0, width)
-        heatmap_height = np.clip(heatmap_width * rows / max(cols, 1), 80.0, 220.0)
-        target_cols = max(1, min(cols, int(heatmap_width / self._heatmap_min_cell_pixels)))
-        target_rows = max(1, min(rows, int(heatmap_height / self._heatmap_min_cell_pixels)))
+        heatmap_width = max(120.0 * s, width)
+        heatmap_height = float(np.clip(heatmap_width * rows / max(cols, 1), 80.0 * s, 220.0 * s))
+        min_cell_px = max(1.0, self._heatmap_min_cell_pixels * s)
+        target_cols = max(1, min(cols, int(heatmap_width / min_cell_px)))
+        target_rows = max(1, min(rows, int(heatmap_height / min_cell_px)))
         display_array = self._downsample_heatmap(array, target_rows, target_cols)
         display_rows, display_cols = display_array.shape
         texture_state = self._ensure_array_texture(name, display_cols, display_rows)
