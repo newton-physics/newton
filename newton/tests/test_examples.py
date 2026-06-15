@@ -13,7 +13,6 @@ manipulating cloth example, which takes approximately 35 seconds to run on a
 CUDA device.
 """
 
-import importlib.util
 import os
 import subprocess
 import sys
@@ -33,7 +32,6 @@ from newton.tests.unittest_utils import (
     sanitize_identifier,
 )
 
-_HAS_ONNX = importlib.util.find_spec("onnx") is not None
 _PXR_WORK_THREAD_LIMIT_OUTPUT_RE = (
     r"(?s)#+\n#  PXR_WORK_THREAD_LIMIT is overridden to '1'\.  Default is '0'\.  #\n#+\n?"
 )
@@ -126,12 +124,18 @@ def add_example_test(
         else:
             options = _merge_options(test_options, test_options_cpu)
 
-        # Mark the test as skipped if onnx is not installed but required
-        onnx_required = options.pop("onnx_required", False)
-        # Legacy alias: torch_required examples have been migrated to ONNX.
-        onnx_required = onnx_required or options.pop("torch_required", False)
-        if onnx_required and not _HAS_ONNX:
-            test.skipTest("onnx not installed")
+        # Mark the test as skipped if Torch is not installed but required
+        torch_required = options.pop("torch_required", False)
+        if torch_required:
+            try:
+                import torch
+
+                if wp.get_device(device).is_cuda and not torch.cuda.is_available():
+                    # Ensure torch has CUDA support
+                    test.skipTest("Torch not compiled with CUDA support")
+
+            except Exception as e:
+                test.skipTest(f"{e}")
 
         # Mark the test as skipped if USD is not installed but required
         usd_required = options.pop("usd_required", False)
@@ -428,6 +432,20 @@ add_example_test(
     test_options={"num-frames": 200},
     use_viewer=True,
 )
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_cloth_stiff_material_hanging",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 360},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_cloth_stiff_material_stretch",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 360},
+    use_viewer=True,
+)
 
 
 class TestRobotExamples(unittest.TestCase):
@@ -446,7 +464,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_c_walk",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500, "onnx_required": True},
+    test_options={"usd_required": True, "num-frames": 500, "torch_required": True},
     use_viewer=True,
 )
 add_example_test(
@@ -503,7 +521,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "onnx_required": True, "robot": "g1_29dof"},
+    test_options={"num-frames": 500, "torch_required": True, "robot": "g1_29dof"},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
     test_suffix="G1_29dof",
@@ -512,7 +530,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "onnx_required": True, "robot": "g1_23dof"},
+    test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof"},
     use_viewer=True,
     test_suffix="G1_23dof",
 )
@@ -520,7 +538,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "onnx_required": True, "robot": "g1_23dof", "physx": True},
+    test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof", "physx": True},
     use_viewer=True,
     test_suffix="G1_23dof_Physx",
 )
@@ -528,7 +546,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "onnx_required": True, "robot": "anymal"},
+    test_options={"num-frames": 500, "torch_required": True, "robot": "anymal"},
     use_viewer=True,
     test_suffix="Anymal",
 )
@@ -536,7 +554,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "onnx_required": True, "robot": "anymal", "physx": True},
+    test_options={"num-frames": 500, "torch_required": True, "robot": "anymal", "physx": True},
     use_viewer=True,
     test_suffix="Anymal_Physx",
 )
@@ -544,7 +562,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"onnx_required": True},
+    test_options={"torch_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2"},
     use_viewer=True,
     test_suffix="Go2",
@@ -553,7 +571,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"onnx_required": True},
+    test_options={"torch_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2", "physx": True},
     use_viewer=True,
     test_suffix="Go2_Physx",
@@ -568,7 +586,7 @@ add_example_test(
     TestAdvancedRobotExamples,
     name="mpm.example_mpm_anymal",
     devices=cuda_test_devices,
-    test_options={"num-frames": 100, "onnx_required": True},
+    test_options={"num-frames": 100, "torch_required": True},
     use_viewer=True,
 )
 
@@ -847,6 +865,30 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 200},
     use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_rigid_soft_contact",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 180, "solver": "xpbd"},
+    use_viewer=True,
+    test_suffix="xpbd",
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_rigid_soft_contact",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 180, "solver": "semi_implicit"},
+    use_viewer=True,
+    test_suffix="semi_implicit",
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_rigid_soft_contact",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 180, "solver": "vbd"},
+    use_viewer=True,
+    test_suffix="vbd",
 )
 
 

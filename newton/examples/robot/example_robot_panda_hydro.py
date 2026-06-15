@@ -53,6 +53,7 @@ def broadcast_ik_solution_kernel(
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.scene = SceneType(args.scene)
         self.test_mode = args.test
         self.show_isosurface = False  # Disabled by default for performance
@@ -139,7 +140,7 @@ class Example:
             7.8549200e-01,
         ]
         builder.joint_q[:9] = [*init_q, 0.05, 0.05]
-        builder.joint_target_pos[:9] = [*init_q, 1.0, 1.0]
+        builder.joint_target_q[:9] = [*init_q, 1.0, 1.0]
 
         builder.joint_target_ke[:9] = [650.0] * 9
         builder.joint_target_kd[:9] = [100.0] * 9
@@ -311,9 +312,9 @@ class Example:
 
         self.setup_ik()
         self.control = self.model.control()
-        self.joint_target_shape = self.control.joint_target_pos.reshape((self.world_count, -1)).shape
+        self.joint_target_shape = self.control.joint_target_q.reshape((self.world_count, -1)).shape
         self.joint_targets_2d = wp.zeros(self.joint_target_shape, dtype=wp.float32)
-        wp.copy(self.control.joint_target_pos[:9], self.model.joint_q[:9])
+        wp.copy(self.control.joint_target_q[:9], self.model.joint_q[:9])
 
         # Track maximum object height for testing (only in test mode)
         self.object_max_z = [self.object_pos[2]] * self.world_count if self.test_mode else None
@@ -349,7 +350,7 @@ class Example:
             dim=self.world_count,
             inputs=[self.joint_q_ik, self.joint_targets_2d, gripper_value],
         )
-        wp.copy(self.control.joint_target_pos, self.joint_targets_2d.flatten())
+        wp.copy(self.control.joint_target_q, self.joint_targets_2d.flatten())
 
         if self.time_in_waypoint >= self.waypoints[self.current_waypoint][1]:
             self.current_waypoint = (self.current_waypoint + 1) % len(self.waypoints)

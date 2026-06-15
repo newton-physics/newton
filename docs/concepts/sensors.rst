@@ -87,7 +87,7 @@ Examples::
    SensorIMU(model, sites="foot_*")
 
    # list of patterns: union of two groups
-   SensorContact(model, sensing_obj_shapes=["*Plate*", "*Flap*"])
+   SensorContact(model, sensing_shapes=["*Plate*", "*Flap*"])
 
    # list of indices: explicit selection
    SensorFrameTransform(model, shapes=[0, 3, 7], reference_sites=[1])

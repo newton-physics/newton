@@ -162,8 +162,11 @@ def solver_submodule_pages() -> list[str]:
     return modules
 
 
-def write_module_page(mod_name: str) -> None:
+def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None) -> None:
     """Create an .rst file for *mod_name* under *OUTPUT_DIR*."""
+
+    if api_toctree_modules is None:
+        api_toctree_modules = set(api_modules())
 
     is_solver_submodule = mod_name.startswith("newton.solvers.") and mod_name != "newton.solvers"
     if is_solver_submodule:
@@ -246,25 +249,24 @@ def write_module_page(mod_name: str) -> None:
     else:
         lines.extend([f".. py:module:: {mod_name}", f".. currentmodule:: {mod_name}", ""])
 
-    # Render a simple bullet list of submodules (no autosummary/toctree) to
-    # avoid generating stub pages that can cause duplicate descriptions.
     if modules and not is_solver_submodule:
         modules.sort()
-        lines.extend(
-            [
-                ".. toctree::",
-                "   :hidden:",
-                "",
-            ]
-        )
-        for sub in modules:
-            modname = f"{mod_name}.{sub}"
-            docname = modname.replace(".", "_")
-            lines.append(f"   {docname}")
-        lines.append("")
+        nested_modules = [sub for sub in modules if f"{mod_name}.{sub}" not in api_toctree_modules]
+        if nested_modules:
+            lines.extend(
+                [
+                    ".. toctree::",
+                    "   :hidden:",
+                    "",
+                ]
+            )
+            for sub in nested_modules:
+                modname = f"{mod_name}.{sub}"
+                docname = modname.replace(".", "_")
+                lines.append(f"   {docname}")
+            lines.append("")
 
         lines.extend([".. rubric:: Submodules", ""])
-        # Link to sibling generated module pages without creating autosummary stubs.
         for sub in modules:
             modname = f"{mod_name}.{sub}"
             docname = modname.replace(".", "_")
@@ -385,7 +387,7 @@ def generate_all() -> None:
     all_modules = modules + [mod for mod in extra_solver_modules if mod not in modules]
 
     for mod in all_modules:
-        write_module_page(mod)
+        write_module_page(mod, set(modules))
 
     write_api_toctree(modules)
 

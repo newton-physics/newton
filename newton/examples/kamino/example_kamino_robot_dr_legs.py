@@ -33,7 +33,7 @@ class Example:
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = 1e-6
-        robot_builder.default_shape_cfg.gap = 0.01
+        robot_builder.default_shape_cfg.gap = 1e-2
 
         # Load the DR Legs USD and add it to the builder
         asset_path = newton.utils.download_asset("disneyresearch")
@@ -51,6 +51,9 @@ class Example:
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.request_contact_attributes("force")
+        builder.default_shape_cfg.margin = 1e-6
+        builder.default_shape_cfg.gap = 1e-2
         for _ in range(self.world_count):
             builder.add_world(robot_builder)
 
@@ -59,11 +62,13 @@ class Example:
 
         # Create the model from the builder
         self.model = builder.finalize(skip_validation_joints=True)
+        self.model.rigid_contact_max = 72
 
         # Create the Kamino solver for the given model
         self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
         self.config.use_fk_solver = True
         self.config.use_collision_detector = self.use_kamino_contacts
+        self.config.constraints.delta = 1e-3
         self.config.padmm.max_iterations = 200
         self.config.padmm.primal_tolerance = 1e-4
         self.config.padmm.dual_tolerance = 1e-4
@@ -106,10 +111,11 @@ class Example:
         q_b = wp.quat_identity(dtype=wp.float32)
         q_base = wp.transformf((0.0, 0.0, 0.4), q_b)
         self.base_q.assign([q_base] * self.world_count)
-        self.solver.reset(state_out=self.state_0, base_q=self.base_q)
+        self.solver.reset(state=self.state_0, base_q=self.base_q)
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
+        self.graph = None
         self.capture()
 
         # If only a single-world is created, set initial
@@ -127,7 +133,6 @@ class Example:
                 self.simulate()
             self.graph = capture.graph
 
-    # simulate() performs one frame's worth of updates
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -151,7 +156,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_1)
         self.viewer.end_frame()
 
     def test_final(self):

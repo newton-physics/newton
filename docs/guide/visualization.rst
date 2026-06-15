@@ -15,7 +15,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 
 **Core loop methods** — every viewer uses the same simulation loop pattern:
 
-- :meth:`~newton.viewer.ViewerBase.set_model` — assign a :class:`~newton.Model` and optionally limit the number of rendered worlds with ``max_worlds``
+- :meth:`~newton.viewer.ViewerBase.set_model` — assign a :class:`~newton.Model` (use :meth:`~newton.viewer.ViewerBase.set_visible_worlds` afterwards to limit the number of rendered worlds)
 - :meth:`~newton.viewer.ViewerBase.begin_frame` — start a new frame with the current simulation time
 - :meth:`~newton.viewer.ViewerBase.log_state` — update the viewer with the current :class:`~newton.State` (body transforms, particle positions, etc.)
 - :meth:`~newton.viewer.ViewerBase.end_frame` — finish the frame and present it
@@ -39,7 +39,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image as a dockable window in :class:`~newton.viewer.ViewerGL` (no-op on other backends)
 
 **Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance.
-All viewers support the ``max_worlds`` parameter to limit visualization to a subset of environments:
+All viewers support ``set_visible_worlds()`` to limit visualization to a subset of environments:
 
 .. testcode:: viewer-max-worlds
 
@@ -49,7 +49,8 @@ All viewers support the ``max_worlds`` parameter to limit visualization to a sub
 
     # Only render the first 4 environments
     viewer = newton.viewer.ViewerNull()
-    viewer.set_model(model, max_worlds=4)
+    viewer.set_model(model)
+    viewer.set_visible_worlds(range(4))
 
 Real-time Viewers
 -----------------
@@ -59,13 +60,6 @@ OpenGL Viewer
 
 Newton provides :class:`~newton.viewer.ViewerGL`, a simple OpenGL viewer for interactive real-time visualization of simulations.
 The viewer requires pyglet (version >= 2.1.6) and imgui_bundle (version >= 1.92.0) to be installed.
-
-Constructor parameters:
-
-- ``width``: Window width in pixels (default: ``1920``)
-- ``height``: Window height in pixels (default: ``1080``)
-- ``vsync``: Enable vertical sync (default: ``False``)
-- ``headless``: Run without a visible window, useful for off-screen rendering (default: ``False``)
 
 .. code-block:: python
 
@@ -202,20 +196,6 @@ presenting the result in a pyglet/OpenGL window.
 
 This installs ``ovrtx`` (the NVIDIA OVRTX renderer) and ``usd-core``, in addition to ``pyglet`` for the window.
 
-Constructor parameters:
-
-- ``width``: Window width in pixels (default: ``1280``)
-- ``height``: Window height in pixels (default: ``720``)
-- ``fps``: Target frame rate (default: ``60``)
-- ``up_axis``: Scene up axis, ``"Y"`` or ``"Z"`` (default: ``"Z"``)
-- ``num_frames``: Maximum number of frames to render, or ``None`` for unlimited (default: ``None``)
-- ``scaling``: Uniform scaling applied to the scene root (default: ``1.0``)
-- ``headless``: Run without a visible window (default: ``False``)
-- ``paused``: Start with simulation paused (default: ``False``)
-- ``environment``: Lighting environment preset — ``"default"``, ``"studio"``, or ``"none"`` (default: ``"default"``)
-- ``vsync``: Enable vertical sync (default: ``False``)
-- ``async_rendering``: Render asynchronously for higher throughput (default: ``True``)
-
 .. code-block:: python
 
     viewer = newton.viewer.ViewerRTX(environment="studio")
@@ -303,25 +283,10 @@ Use :class:`~newton.viewer.ViewerFile` to load a recording, then restore the mod
 
 For a complete example with UI controls for scrubbing and playback, see ``newton/examples/basic/example_replay_viewer.py``.
 
-Key parameters:
-
-- ``output_path``: Path to the output file (format determined by extension: .json or .bin)
-- ``auto_save``: If True, automatically save periodically during recording (default: ``True``)
-- ``save_interval``: Number of frames between auto-saves when auto_save=True (default: ``100``)
-- ``max_history_size``: Maximum number of frames to keep in memory (default: ``None`` for unlimited)
-
 Rendering to USD
 ~~~~~~~~~~~~~~~~
 
 Instead of rendering in real-time, you can also render the simulation as a time-sampled USD stage to be visualized in Omniverse or other USD-compatible tools using the :class:`~newton.viewer.ViewerUSD` backend.
-
-Constructor parameters:
-
-- ``output_path``: Path to the output USD file
-- ``fps``: Frames per second for time sampling (default: ``60``)
-- ``up_axis``: USD up axis, ``"Y"`` or ``"Z"`` (default: ``"Z"``)
-- ``num_frames``: Maximum number of frames to record, or ``None`` for unlimited (default: ``100``)
-- ``scaling``: Uniform scaling applied to the scene root (default: ``1.0``)
 
 .. code-block:: python
 
@@ -351,17 +316,6 @@ enabling real-time or offline visualization with advanced features like time scr
 .. code-block:: bash
 
     pip install rerun-sdk
-
-Constructor parameters:
-
-- ``app_id``: Application ID for Rerun (default: ``"newton-viewer"``). Use different IDs to differentiate between parallel viewer instances.
-- ``address``: Optional server address to connect to a remote Rerun server. If provided, connects to the specified server.
-- ``serve_web_viewer``: Serve a web viewer over HTTP and open it in the browser (default: ``True``). If ``False``, spawns a native Rerun viewer.
-- ``web_port``: Port for the web viewer (default: ``9090``)
-- ``grpc_port``: Port for the gRPC server (default: ``9876``)
-- ``keep_historical_data``: Keep historical state data in the viewer for time scrubbing (default: ``False``)
-- ``keep_scalar_history``: Keep scalar time-series history (default: ``True``)
-- ``record_to_rrd``: Optional path to save a ``.rrd`` recording file
 
 **Usage**:
 
@@ -468,14 +422,6 @@ providing web-based 3D visualization that works in any browser and has native Ju
 
     # Close the viewer when done
     viewer.close()
-
-Key parameters:
-
-- ``port``: Port number for the web server (default: ``8080``)
-- ``label``: Optional label for the browser window title
-- ``verbose``: If True, print the server URL when starting (default: ``True``)
-- ``share``: If True, create a publicly accessible URL via viser's share feature
-- ``record_to_viser``: Path to record the visualization to a ``.viser`` file for later playback
 
 **Recording and playback**
 

@@ -44,7 +44,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
                     # Verify rr.init was called with app_id as positional arg and blueprint
                     from unittest.mock import ANY
 
-                    self.mock_rr.init.assert_called_once_with("newton-viewer", default_blueprint=ANY)
+                    self.mock_rr.init.assert_called_once_with("newton-viewer", recording_id=None, default_blueprint=ANY)
 
                     # Verify rr.serve_grpc() was called
                     self.mock_rr.serve_grpc.assert_called_once()
@@ -71,7 +71,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
                     # Verify rr.init was called with app_id as positional arg and blueprint
                     from unittest.mock import ANY
 
-                    self.mock_rr.init.assert_called_once_with("newton-viewer", default_blueprint=ANY)
+                    self.mock_rr.init.assert_called_once_with("newton-viewer", recording_id=None, default_blueprint=ANY)
 
                     # Verify rr.spawn() was called
                     self.mock_rr.spawn.assert_called_once()
@@ -94,7 +94,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
                     # Verify rr.init was called with app_id as positional arg and blueprint
                     from unittest.mock import ANY
 
-                    self.mock_rr.init.assert_called_once_with("newton-viewer", default_blueprint=ANY)
+                    self.mock_rr.init.assert_called_once_with("newton-viewer", recording_id=None, default_blueprint=ANY)
 
                     # Verify rr.connect_grpc() was called with the address
                     self.mock_rr.connect_grpc.assert_called_once_with(test_address)
@@ -138,7 +138,7 @@ class TestViewerRerunInitArgs(unittest.TestCase):
                     # Verify rr.init was called with custom app_id as positional arg and blueprint
                     from unittest.mock import ANY
 
-                    self.mock_rr.init.assert_called_once_with(custom_app_id, default_blueprint=ANY)
+                    self.mock_rr.init.assert_called_once_with(custom_app_id, recording_id=None, default_blueprint=ANY)
 
                     # Verify the viewer stored the app_id correctly
                     self.assertEqual(viewer.app_id, custom_app_id)
@@ -253,6 +253,39 @@ class TestViewerRerunInitArgs(unittest.TestCase):
                     # Verify parameters were stored correctly
                     self.assertTrue(viewer_true.keep_scalar_history)
                     self.assertFalse(viewer_false.keep_scalar_history)
+
+    def test_custom_rec_id_used(self):
+        """Test that custom rec_id is stored and passed to rr.init."""
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
+                with patch("newton._src.viewer.viewer_rerun.is_jupyter_notebook", return_value=False):
+                    from newton._src.viewer.viewer_rerun import ViewerRerun
+
+                    custom_rec_id = "shared-recording-42"
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        viewer = ViewerRerun(rec_id=custom_rec_id)
+
+                    from unittest.mock import ANY
+
+                    self.mock_rr.init.assert_called_once_with(
+                        "newton-viewer", recording_id=custom_rec_id, default_blueprint=ANY
+                    )
+
+                    self.assertEqual(viewer.rec_id, custom_rec_id)
+
+    def test_default_rec_id_is_none(self):
+        """Test that rec_id defaults to None when not provided."""
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            with patch("newton._src.viewer.viewer_rerun.rrb", self.mock_rrb):
+                with patch("newton._src.viewer.viewer_rerun.is_jupyter_notebook", return_value=False):
+                    from newton._src.viewer.viewer_rerun import ViewerRerun
+
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        viewer = ViewerRerun()
+
+                    self.assertIsNone(viewer.rec_id)
 
 
 if __name__ == "__main__":

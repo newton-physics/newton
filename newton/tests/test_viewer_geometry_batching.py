@@ -31,8 +31,8 @@ class _ViewerGeometryBatchingProbe(ViewerNull):
             geo_scale = (1.0, 1.0)
         return super()._hash_geometry(geo_type, geo_scale, thickness, is_solid, geo_src, mirror)
 
-    def set_model(self, model, max_worlds=None):
-        super().set_model(model, max_worlds=max_worlds)
+    def set_model(self, model):
+        super().set_model(model)
         if self.model is None:
             return
 

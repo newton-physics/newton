@@ -6,7 +6,8 @@ import unittest
 import warp as wp
 
 import newton
-from newton.solvers import SolverMuJoCo, SolverNotifyFlags
+from newton import ModelFlags
+from newton.solvers import SolverMuJoCo
 
 
 class TestJointDrive(unittest.TestCase):
@@ -186,8 +187,8 @@ class TestJointDrive(unittest.TestCase):
         model.joint_target_kd.assign(joint_drive_dampings)
         state_in.joint_q.assign(joint_start_positions)
         state_in.joint_qd.assign(joint_start_velocities)
-        control.joint_target_pos.assign(joint_pos_targets)
-        control.joint_target_vel.assign(joint_vel_targets)
+        control.joint_target_q.assign(joint_pos_targets)
+        control.joint_target_qd.assign(joint_vel_targets)
         newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
 
         # Recompute the expected velocity outcomes
@@ -209,7 +210,7 @@ class TestJointDrive(unittest.TestCase):
             )
 
         # Run a sim step with the new values of ke and kd
-        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
         solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
         for i in range(0, nb_worlds):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
@@ -225,7 +226,7 @@ class TestJointDrive(unittest.TestCase):
 
         model.joint_target_ke.assign(joint_drive_stiffnesses)
         model.joint_target_kd.assign(joint_drive_dampings)
-        control.joint_target_vel.assign(joint_vel_targets)
+        control.joint_target_qd.assign(joint_vel_targets)
         state_in.joint_q.assign(joint_start_positions)
         state_in.joint_qd.assign(joint_start_velocities)
         newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
@@ -249,7 +250,7 @@ class TestJointDrive(unittest.TestCase):
             )
 
         # Run a sim step with the new drive type
-        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
         solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
         for i in range(0, nb_worlds):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
@@ -287,7 +288,7 @@ class TestJointDrive(unittest.TestCase):
             )
 
         # Run a sim step with the new drive type
-        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
         solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
         for i in range(0, nb_worlds):
             self.assertAlmostEqual(vNew[i], state_out.joint_qd.numpy()[i], delta=0.0001)
