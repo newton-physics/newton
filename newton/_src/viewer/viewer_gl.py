@@ -523,15 +523,14 @@ class ViewerGL(ViewerBase):
         super().clear_model()
 
     @override
-    def set_model(self, model: nt.Model | None, max_worlds: int | None = None):
+    def set_model(self, model: nt.Model | None):
         """
         Set the Newton model to visualize.
 
         Args:
             model: The Newton model instance.
-            max_worlds: Maximum number of worlds to render (None = all).
         """
-        super().set_model(model, max_worlds=max_worlds)
+        super().set_model(model)
 
         # ``ViewerBase.set_model`` may have switched ``self.device`` to the
         # model's device. Rebind the image logger so its GPU path tests against
