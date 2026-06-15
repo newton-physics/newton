@@ -253,8 +253,7 @@ def check_matching_cable_segment_lengths(
 
     if len(lengths_a) != len(lengths_b):
         raise ValueError(
-            "points_a and points_b must have the same number of segments "
-            f"(got {len(lengths_a)} and {len(lengths_b)})"
+            f"points_a and points_b must have the same number of segments (got {len(lengths_a)} and {len(lengths_b)})"
         )
 
     rtol_f = float(rtol)
