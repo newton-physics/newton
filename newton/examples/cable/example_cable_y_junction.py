@@ -50,7 +50,7 @@ class Example:
 
         stretch_stiffness = 1.0e7
         bend_stiffness = 1.0e4
-        bend_damping = 1.0e-1
+        bend_damping = 1.0e3
 
         builder = newton.ModelBuilder()
         builder.rigid_gap = contact_gap

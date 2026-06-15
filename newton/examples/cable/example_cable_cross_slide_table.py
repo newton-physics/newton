@@ -27,25 +27,13 @@ import warp as wp
 import newton
 import newton.examples
 
-ATTACH_BASE = 0
-ATTACH_SLIDE = 1
-ATTACH_TABLE = 2
-
-MOTOR_NONE = 0
-MOTOR_INPUT_LEFT = 1
-MOTOR_INPUT_RIGHT = 2
-
 TABLE_RECT_HALF_X = 0.050
 TABLE_RECT_HALF_Y = 0.060
 TABLE_RECT_PERIOD = 16.0
-TABLE_RECT_POINTS = (
-    (-TABLE_RECT_HALF_X, -TABLE_RECT_HALF_Y),
-    (TABLE_RECT_HALF_X, -TABLE_RECT_HALF_Y),
-    (TABLE_RECT_HALF_X, TABLE_RECT_HALF_Y),
-    (-TABLE_RECT_HALF_X, TABLE_RECT_HALF_Y),
-)
-TABLE_RECT_HIT_TOLERANCE = 0.1
-TABLE_RECT_TEST_FRAMES = 2100
+TABLE_TRACKING_MAX_ERROR_TOLERANCE = 0.005
+TABLE_TRACKING_RMS_ERROR_TOLERANCE = 0.0025
+CABLE_XY_ABS_BOUND = 0.30
+JOINT_LIMIT_TOLERANCE = 0.003
 START_RAMP_DURATION = 1.2
 MOUSE_PICK_STIFFNESS = 0.01
 MOUSE_PICK_DAMPING = 0.001
@@ -56,8 +44,9 @@ def drive_input_pulleys(
     sim_time: wp.array[wp.float32],
     body_indices: wp.array[wp.int32],
     body_base_xforms: wp.array[wp.transform],
-    body_motor: wp.array[wp.int32],
-    pulley_radius: float,
+    input_drive_radius: float,
+    input_pulley_angles: wp.array[wp.float32],
+    target_table_xy: wp.array[wp.float32],
     body_q0: wp.array[wp.transform],
     body_q1: wp.array[wp.transform],
 ):
@@ -92,19 +81,22 @@ def drive_input_pulleys(
 
     target_x = ramp * table_x
     target_y = ramp * table_y
+    if tid == 0:
+        target_table_xy[0] = target_x
+        target_table_xy[1] = target_y
     command_x = -target_y
     command_y = target_x
-    q2 = (command_x + command_y) / pulley_radius
-    q6 = (command_y - command_x) / pulley_radius
+    q_left = (command_x + command_y) / input_drive_radius
+    q_right = (command_y - command_x) / input_drive_radius
 
     p = wp.transform_get_translation(base_xform)
     q = wp.transform_get_rotation(base_xform)
 
-    motor = body_motor[tid]
-    if motor == MOTOR_INPUT_LEFT:
-        q = wp.mul(wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), q2), q)
-    elif motor == MOTOR_INPUT_RIGHT:
-        q = wp.mul(wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), q6), q)
+    angle = q_left
+    if tid == 1:
+        angle = q_right
+    input_pulley_angles[tid] = angle
+    q = wp.mul(wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle), q)
 
     xform = wp.transform(p, q)
     body_q0[body] = xform
@@ -132,41 +124,23 @@ def set_body_xforms(
     body_q1[body] = xform
 
 
-def compute_input_pulley_rotations(t: float, pulley_radius: float) -> tuple[float, float]:
-    """Compute the commanded left and right input pulley rotations.
+def _symmetric_bounds(half_extent: float) -> tuple[float, float]:
+    return (-half_extent, half_extent)
 
-    Args:
-        t: Simulation time [s].
-        pulley_radius: Radius of each driven input pulley [m].
 
-    Returns:
-        Tuple of left and right pulley rotations [rad].
-    """
-    ramp = min(1.0, max(0.0, t / START_RAMP_DURATION))
-    ramp = ramp * ramp * (3.0 - 2.0 * ramp)
-    phase_time = t - math.floor(t / TABLE_RECT_PERIOD) * TABLE_RECT_PERIOD
-    side = 4.0 * phase_time / TABLE_RECT_PERIOD
+def _pad_bounds(bounds: tuple[float, float], padding: float) -> tuple[float, float]:
+    return (bounds[0] - padding, bounds[1] + padding)
 
-    table_x = -TABLE_RECT_HALF_X
-    table_y = -TABLE_RECT_HALF_Y
-    if side < 1.0:
-        table_x = -TABLE_RECT_HALF_X + 2.0 * TABLE_RECT_HALF_X * side
-    elif side < 2.0:
-        table_x = TABLE_RECT_HALF_X
-        table_y = -TABLE_RECT_HALF_Y + 2.0 * TABLE_RECT_HALF_Y * (side - 1.0)
-    elif side < 3.0:
-        table_x = TABLE_RECT_HALF_X - 2.0 * TABLE_RECT_HALF_X * (side - 2.0)
-        table_y = TABLE_RECT_HALF_Y
-    else:
-        table_y = TABLE_RECT_HALF_Y - 2.0 * TABLE_RECT_HALF_Y * (side - 3.0)
 
-    target_x = ramp * table_x
-    target_y = ramp * table_y
-    command_x = -target_y
-    command_y = target_x
-    q2 = (command_x + command_y) / pulley_radius
-    q6 = (command_y - command_x) / pulley_radius
-    return q2, q6
+def _check_range(label: str, value: float, bounds: tuple[float, float]):
+    lower, upper = bounds
+    if not lower <= value <= upper:
+        raise ValueError(f"{label} {value:.4f} m is outside [{lower:.4f}, {upper:.4f}] m.")
+
+
+def _check_abs_bound(label: str, value: float, bound: float):
+    if abs(value) > bound:
+        raise ValueError(f"{label} {value:.4f} m exceeds +/-{bound:.4f} m.")
 
 
 def _dim_color(color: tuple[float, float, float], scale: float) -> tuple[float, float, float]:
@@ -181,168 +155,101 @@ def _make_body_kinematic(builder: newton.ModelBuilder, body: int):
     builder.body_inv_inertia[body] = wp.mat33(0.0)
 
 
-def add_guided_pulley(
+def add_pulley(
     builder: newton.ModelBuilder,
     center: wp.vec3,
-    axis: wp.vec3,
-    sheave_diameter: float,
+    radius: float,
     cable_radius: float,
+    color: tuple[float, float, float],
     *,
-    body: int = -1,
-    color: tuple[float, float, float] = (0.42, 0.45, 0.48),
-    groove_width_scale: float = 3.0,
-    flange_radius_scale: float = 3.0,
-    flange_thickness_scale: float = 1.0,
-    ke: float = 1.0e6,
-    kd: float = 1.0e-1,
-    mu: float = 0.0,
-    density: float = 1000.0,
+    parent: int | None,
+    sheave_mu: float,
     label: str | None = None,
-) -> tuple[int, int, int]:
-    """Adds a flanged pulley guide built from primitive collision shapes."""
-    if sheave_diameter <= 0.0:
-        raise ValueError("sheave_diameter must be positive")
-    if cable_radius <= 0.0:
-        raise ValueError("cable_radius must be positive")
-    if float(wp.length(axis)) <= 1.0e-8:
-        raise ValueError("axis must be non-zero")
+) -> tuple[int, int | None]:
+    """Add one XY-table pulley.
 
-    axis = wp.normalize(axis)
-    q_axis = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), axis)
+    A parent of ``None`` means the pulley is one of the two driven blue
+    inputs. Pulleys with a parent are free-spinning revolute joints on that
+    stage body.
+    """
+    body = builder.add_link(
+        xform=wp.transform(center, wp.quat_identity()),
+        is_kinematic=parent is None,
+        label=f"{label}_body" if label else None,
+    )
 
-    sheave_radius = 0.5 * sheave_diameter
-    groove_half_width = 0.5 * groove_width_scale * cable_radius
-    flange_radius = sheave_radius + flange_radius_scale * cable_radius
-    flange_half_thickness = 0.5 * flange_thickness_scale * cable_radius
+    joint = None
+    if parent is None:
+        _make_body_kinematic(builder, body)
+    else:
+        parent_pose = builder.body_q[parent]
+        parent_position = wp.transform_get_translation(parent_pose)
+        joint = builder.add_joint_revolute(
+            parent=parent,
+            child=body,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform(center - parent_position, wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            armature=1.0e-4,
+            friction=1.0,
+            label=f"{label}_free_axle" if label else None,
+        )
 
-    cfg = newton.ModelBuilder.ShapeConfig(density=density, ke=ke, kd=kd, mu=mu)
+    groove_half_width = 1.55 * cable_radius
+    flange_half_thickness = 0.6 * cable_radius
+    flange_radius = radius + 3.2 * cable_radius
+    sheave_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=1.0e5, kd=0.0, mu=sheave_mu)
+    flange_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=1.0e5, kd=0.0, mu=0.0)
     flange_color = _dim_color(color, 0.68)
 
-    sheave = builder.add_shape_cylinder(
-        body=body,
-        xform=wp.transform(center, q_axis),
-        radius=sheave_radius,
-        half_height=groove_half_width,
-        cfg=cfg,
-        color=color,
-        label=f"{label}_sheave" if label else None,
-    )
+    for suffix, z, shape_radius, half_height, cfg, shape_color in (
+        ("sheave", 0.0, radius, groove_half_width, sheave_cfg, color),
+        (
+            "flange_neg",
+            -(groove_half_width + flange_half_thickness),
+            flange_radius,
+            flange_half_thickness,
+            flange_cfg,
+            flange_color,
+        ),
+        (
+            "flange_pos",
+            groove_half_width + flange_half_thickness,
+            flange_radius,
+            flange_half_thickness,
+            flange_cfg,
+            flange_color,
+        ),
+    ):
+        builder.add_shape_cylinder(
+            body=body,
+            xform=wp.transform(wp.vec3(0.0, 0.0, z), wp.quat_identity()),
+            radius=shape_radius,
+            half_height=half_height,
+            cfg=cfg,
+            color=shape_color,
+            label=f"{label}_{suffix}" if label else None,
+        )
 
-    flange_neg = builder.add_shape_cylinder(
-        body=body,
-        xform=wp.transform(center - axis * (groove_half_width + flange_half_thickness), q_axis),
-        radius=flange_radius,
-        half_height=flange_half_thickness,
-        cfg=cfg,
-        color=flange_color,
-        label=f"{label}_flange_neg" if label else None,
-    )
-
-    flange_pos = builder.add_shape_cylinder(
-        body=body,
-        xform=wp.transform(center + axis * (groove_half_width + flange_half_thickness), q_axis),
-        radius=flange_radius,
-        half_height=flange_half_thickness,
-        cfg=cfg,
-        color=flange_color,
-        label=f"{label}_flange_pos" if label else None,
-    )
-
-    return sheave, flange_neg, flange_pos
-
-
-def add_pulley_rotation_dot(
-    builder: newton.ModelBuilder,
-    *,
-    body: int,
-    sheave_diameter: float,
-    cable_radius: float,
-    groove_width_scale: float,
-    flange_thickness_scale: float,
-    color: tuple[float, float, float] = (0.96, 0.92, 0.72),
-    label: str | None = None,
-) -> int:
-    """Adds a tiny non-colliding off-center dot to show pulley rotation."""
-
-    sheave_radius = 0.5 * sheave_diameter
-    groove_half_width = 0.5 * groove_width_scale * cable_radius
-    flange_half_thickness = 0.5 * flange_thickness_scale * cable_radius
     marker_radius = 0.75 * cable_radius
-    marker_z = groove_half_width + 2.0 * flange_half_thickness + 0.35 * marker_radius
     marker_cfg = newton.ModelBuilder.ShapeConfig(
         density=0.0,
         has_shape_collision=False,
         has_particle_collision=False,
     )
-
-    return builder.add_shape_sphere(
+    builder.add_shape_sphere(
         body=body,
-        xform=wp.transform(wp.vec3(0.78 * sheave_radius, 0.0, marker_z), wp.quat_identity()),
+        xform=wp.transform(
+            wp.vec3(0.78 * radius, 0.0, groove_half_width + 2.0 * flange_half_thickness + 0.35 * marker_radius),
+            wp.quat_identity(),
+        ),
         radius=marker_radius,
         cfg=marker_cfg,
-        color=color,
+        color=(0.96, 0.92, 0.72),
         label=f"{label}_rotation_dot" if label else None,
     )
 
-
-def add_kinematic_guided_pulley(
-    builder: newton.ModelBuilder,
-    center: wp.vec3,
-    axis: wp.vec3,
-    sheave_diameter: float,
-    cable_radius: float,
-    *,
-    color: tuple[float, float, float] = (0.42, 0.45, 0.48),
-    groove_width_scale: float = 3.0,
-    flange_radius_scale: float = 3.0,
-    flange_thickness_scale: float = 1.0,
-    ke: float = 1.0e6,
-    kd: float = 1.0e-1,
-    mu: float = 1.0,
-    density: float = 1000.0,
-    label: str | None = None,
-) -> tuple[int, tuple[int, int, int, int]]:
-    """Adds a kinematic flanged pulley body used as a moving cable guide."""
-    if float(wp.length(axis)) <= 1.0e-8:
-        raise ValueError("axis must be non-zero")
-
-    axis = wp.normalize(axis)
-    body = builder.add_link(
-        xform=wp.transform(center, wp.quat_identity()),
-        is_kinematic=True,
-        label=f"{label}_body" if label else None,
-    )
-
-    shapes = add_guided_pulley(
-        builder,
-        center=wp.vec3(0.0, 0.0, 0.0),
-        axis=axis,
-        sheave_diameter=sheave_diameter,
-        cable_radius=cable_radius,
-        body=body,
-        color=color,
-        groove_width_scale=groove_width_scale,
-        flange_radius_scale=flange_radius_scale,
-        flange_thickness_scale=flange_thickness_scale,
-        ke=ke,
-        kd=kd,
-        mu=mu,
-        density=density,
-        label=label,
-    )
-    marker = add_pulley_rotation_dot(
-        builder,
-        body=body,
-        sheave_diameter=sheave_diameter,
-        cable_radius=cable_radius,
-        groove_width_scale=groove_width_scale,
-        flange_thickness_scale=flange_thickness_scale,
-        label=label,
-    )
-
-    _make_body_kinematic(builder, body)
-
-    return body, (*shapes, marker)
+    return body, joint
 
 
 def filter_body_group_collisions(builder: newton.ModelBuilder, bodies: list[int]):
@@ -354,95 +261,10 @@ def filter_body_group_collisions(builder: newton.ModelBuilder, bodies: list[int]
                     builder.add_shape_collision_filter_pair(int(shape_a), int(shape_b))
 
 
-def add_passive_guided_pulley(
-    builder: newton.ModelBuilder,
-    center: wp.vec3,
-    axis: wp.vec3,
-    sheave_diameter: float,
-    cable_radius: float,
-    *,
-    parent: int,
-    color: tuple[float, float, float] = (0.42, 0.45, 0.48),
-    groove_width_scale: float = 3.0,
-    flange_radius_scale: float = 3.0,
-    flange_thickness_scale: float = 1.0,
-    ke: float = 1.0e6,
-    kd: float = 1.0e-1,
-    mu: float = 0.35,
-    density: float = 1000.0,
-    axle_armature: float = 1.0e-4,
-    axle_friction: float = 0.0,
-    label: str | None = None,
-) -> tuple[int, int, tuple[int, int, int, int]]:
-    """Adds a flanged pulley that spins freely on its parent body."""
-    if float(wp.length(axis)) <= 1.0e-8:
-        raise ValueError("axis must be non-zero")
-
-    axis = wp.normalize(axis)
-    body = builder.add_link(xform=wp.transform(center, wp.quat_identity()), label=f"{label}_body" if label else None)
-
-    if parent == -1:
-        parent_center = center
-        joint_axis = axis
-    else:
-        parent_pose = builder.body_q[parent]
-        parent_position = wp.transform_get_translation(parent_pose)
-        parent_rotation = wp.transform_get_rotation(parent_pose)
-        parent_center = wp.quat_rotate_inv(parent_rotation, center - parent_position)
-        joint_axis = wp.quat_rotate_inv(parent_rotation, axis)
-
-    joint = builder.add_joint_revolute(
-        parent=parent,
-        child=body,
-        axis=joint_axis,
-        parent_xform=wp.transform(parent_center, wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
-        armature=axle_armature,
-        friction=axle_friction,
-        label=f"{label}_free_axle" if label else None,
-    )
-
-    shapes = add_guided_pulley(
-        builder,
-        center=wp.vec3(0.0, 0.0, 0.0),
-        axis=axis,
-        sheave_diameter=sheave_diameter,
-        cable_radius=cable_radius,
-        body=body,
-        color=color,
-        groove_width_scale=groove_width_scale,
-        flange_radius_scale=flange_radius_scale,
-        flange_thickness_scale=flange_thickness_scale,
-        ke=ke,
-        kd=kd,
-        mu=mu,
-        density=density,
-        label=label,
-    )
-    marker = add_pulley_rotation_dot(
-        builder,
-        body=body,
-        sheave_diameter=sheave_diameter,
-        cable_radius=cable_radius,
-        groove_width_scale=groove_width_scale,
-        flange_thickness_scale=flange_thickness_scale,
-        label=label,
-    )
-
-    return body, joint, (*shapes, marker)
-
-
-def append_segment(points: list[wp.vec3], end: wp.vec3, segment_length: float):
-    """Append evenly spaced points along a straight segment."""
-    start = points[-1]
-    length = float(wp.length(end - start))
-    if length <= 1.0e-8:
-        return
-
-    count = max(1, int(math.ceil(length / segment_length)))
-    for i in range(1, count + 1):
-        u = float(i) / float(count)
-        points.append(start * (1.0 - u) + end * u)
+def append_route_point(points: list[wp.vec3], point: wp.vec3):
+    """Append a point unless it duplicates the previous route point."""
+    if not points or float(wp.length(point - points[-1])) > 1.0e-8:
+        points.append(point)
 
 
 def append_arc_xy(
@@ -455,7 +277,7 @@ def append_arc_xy(
     *,
     direction: str | None = None,
 ):
-    """Append points along a circular arc in the XY plane."""
+    """Append a polyline approximation of a circular arc in the XY plane."""
     delta = (end_angle - start_angle + math.pi) % (2.0 * math.pi) - math.pi
     if direction == "cw" and delta > 0.0:
         delta -= 2.0 * math.pi
@@ -472,47 +294,46 @@ def append_arc_xy(
             float(center[1]) + radius * math.sin(angle),
             float(center[2]),
         )
-        append_segment(points, point, segment_length)
+        append_route_point(points, point)
 
 
-def resample_equal_length_segments(points: list[wp.vec3], segment_length: float) -> tuple[list[wp.vec3], float]:
-    """Resamples a polyline into globally equal-length segments."""
-    if len(points) < 2:
-        raise ValueError("points must contain at least two points")
+def resample_equal_length_segments(route_points: list[wp.vec3], segment_length: float) -> tuple[list[wp.vec3], float]:
+    """Resample a route into equal-length segments close to the requested length."""
+    if len(route_points) < 2:
+        raise ValueError("route_points must contain at least two points")
     if segment_length <= 0.0:
         raise ValueError("segment_length must be positive")
 
-    clean_points = [points[0]]
+    points = [route_points[0]]
     distances = [0.0]
     total_length = 0.0
-    for point in points[1:]:
-        length = float(wp.length(point - clean_points[-1]))
+    for route_point in route_points[1:]:
+        length = float(wp.length(route_point - points[-1]))
         if length <= 1.0e-8:
             continue
         total_length += length
-        clean_points.append(point)
+        points.append(route_point)
         distances.append(total_length)
 
     if total_length <= 1.0e-8:
-        raise ValueError("points must span a non-zero length")
+        raise ValueError("route_points must span a non-zero length")
 
     segment_count = max(2, int(math.ceil(total_length / segment_length)))
-    equal_segment_length = total_length / float(segment_count)
-    resampled = [clean_points[0]]
-
+    resampled_segment_length = total_length / float(segment_count)
+    resampled = [points[0]]
     point_index = 1
     for segment_index in range(1, segment_count):
-        target_distance = equal_segment_length * float(segment_index)
-        while point_index < len(clean_points) - 1 and distances[point_index] < target_distance:
+        target_distance = resampled_segment_length * float(segment_index)
+        while point_index < len(points) - 1 and distances[point_index] < target_distance:
             point_index += 1
 
         previous_distance = distances[point_index - 1]
         next_distance = distances[point_index]
         u = (target_distance - previous_distance) / (next_distance - previous_distance)
-        resampled.append(clean_points[point_index - 1] * (1.0 - u) + clean_points[point_index] * u)
+        resampled.append(points[point_index - 1] * (1.0 - u) + points[point_index] * u)
 
-    resampled.append(clean_points[-1])
-    return resampled, equal_segment_length
+    resampled.append(points[-1])
+    return resampled, resampled_segment_length
 
 
 def create_xy_table_cable_points(
@@ -520,11 +341,10 @@ def create_xy_table_cable_points(
     pulley_centers: list[wp.vec3],
     pulley_radii: list[float],
     end: wp.vec3,
-    cable_radius: float,
     segment_length: float,
-    wrap_clearance_scale: float = 1.1,
-) -> list[wp.vec3]:
-    """Creates the cable route with straight tangent spans."""
+    wrap_clearance: float,
+) -> tuple[list[wp.vec3], float]:
+    """Create the wrapped cable path with equal-length segments."""
     pulley_arcs = (
         (0.0, 0.5 * math.pi, "ccw"),
         (-0.5 * math.pi, 0.5 * math.pi, "cw"),
@@ -536,9 +356,10 @@ def create_xy_table_cable_points(
     )
     if len(pulley_centers) != len(pulley_arcs) or len(pulley_radii) != len(pulley_arcs):
         raise ValueError("XY table cable route expects seven pulleys")
+    if wrap_clearance < 0.0:
+        raise ValueError("wrap_clearance must be non-negative")
 
-    points = [start]
-    wrap_clearance = wrap_clearance_scale * cable_radius
+    route_points = [start]
 
     # Green pulleys use their inner quadrants. Blue input pulleys and the
     # beige top pulley use the outside path.
@@ -549,7 +370,7 @@ def create_xy_table_cable_points(
         strict=True,
     ):
         append_arc_xy(
-            points,
+            route_points,
             center,
             radius + wrap_clearance,
             start_angle,
@@ -557,8 +378,8 @@ def create_xy_table_cable_points(
             segment_length,
             direction=direction,
         )
-    append_segment(points, end, segment_length)
-    return points
+    append_route_point(route_points, end)
+    return resample_equal_length_segments(route_points, segment_length)
 
 
 def add_visual_bar(
@@ -606,8 +427,12 @@ class Example:
         self.input_pulley_radius = 0.025
         green_sheave_radius = 0.015
         beige_sheave_radius = 0.025
+        input_sheave_mu = 1.0
+        passive_sheave_mu = 0.35
         initial_segment_length = 0.015
         cable_wrap_clearance_scale = 1.1
+        cable_wrap_clearance = cable_radius * cable_wrap_clearance_scale
+        self.input_drive_radius = self.input_pulley_radius + cable_wrap_clearance
 
         blue = (0.12, 0.34, 0.76)
         green = (0.12, 0.58, 0.28)
@@ -616,9 +441,13 @@ class Example:
         # The mechanism is flattened onto the XY plane and layered in Z only
         # enough to keep the base, slide, table, and pulleys visually distinct.
         base_z = 0.006
-        slide_z = 0.014
-        table_z = 0.022
-        pulley_z = 0.046
+        self.slide_z = 0.014
+        self.table_z = 0.022
+        self.pulley_z = 0.046
+        z_bound_pad = JOINT_LIMIT_TOLERANCE
+        self.cable_z_bounds = (self.pulley_z - z_bound_pad, self.pulley_z + z_bound_pad)
+        self.slide_z_bounds = (self.slide_z - z_bound_pad, self.slide_z + z_bound_pad)
+        self.table_z_bounds = (self.table_z - z_bound_pad, self.table_z + z_bound_pad)
 
         # Build the table frame and assign stiff, frictional contact material
         # so the cable remains guided by the pulley grooves.
@@ -629,8 +458,8 @@ class Example:
         builder.default_shape_cfg.mu = 1.0
 
         base_origin = wp.vec3(0.0, 0.0, base_z)
-        slide_origin = wp.vec3(0.0, 0.0, slide_z)
-        table_origin = wp.vec3(0.0, 0.0, table_z)
+        slide_origin = wp.vec3(0.0, 0.0, self.slide_z)
+        table_origin = wp.vec3(0.0, 0.0, self.table_z)
 
         # Fixed blue base.
         add_visual_bar(
@@ -654,8 +483,11 @@ class Example:
             label="beige_y_table",
         )
         self.table_origin_xy = (float(table_origin[0]), float(table_origin[1]))
-        self.table_rect_points = np.array(TABLE_RECT_POINTS, dtype=np.float32)
-        self.table_rect_min_distances = np.full(len(TABLE_RECT_POINTS), np.inf, dtype=np.float32)
+        self.table_tracking_max_error = 0.0
+        self.table_tracking_error_sq_sum = 0.0
+        self.table_tracking_sample_count = 0
+        self.slide_x_bounds = _symmetric_bounds(TABLE_RECT_HALF_X)
+        self.table_y_bounds = _symmetric_bounds(TABLE_RECT_HALF_Y)
 
         slide_joint = builder.add_joint_prismatic(
             parent=-1,
@@ -663,8 +495,8 @@ class Example:
             axis=wp.vec3(1.0, 0.0, 0.0),
             parent_xform=wp.transform(slide_origin, wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
-            limit_lower=-0.07,
-            limit_upper=0.07,
+            limit_lower=self.slide_x_bounds[0],
+            limit_upper=self.slide_x_bounds[1],
             limit_ke=2.0e3,
             limit_kd=1.0e-4,
             friction=0.0,
@@ -676,8 +508,8 @@ class Example:
             axis=wp.vec3(0.0, 1.0, 0.0),
             parent_xform=wp.transform(table_origin - slide_origin, wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
-            limit_lower=-0.08,
-            limit_upper=0.08,
+            limit_lower=self.table_y_bounds[0],
+            limit_upper=self.table_y_bounds[1],
             limit_ke=2.0e3,
             limit_kd=1.0e-4,
             friction=0.0,
@@ -724,99 +556,87 @@ class Example:
         pulley_specs = [
             (
                 "green_lower_left",
-                ATTACH_SLIDE,
-                MOTOR_NONE,
+                self.slide_body,
                 green,
-                wp.vec3(-0.045, -0.045, pulley_z),
+                wp.vec3(-0.045, -0.045, self.pulley_z),
                 green_sheave_radius,
+                passive_sheave_mu,
             ),
             (
                 "blue_input_left",
-                ATTACH_BASE,
-                MOTOR_INPUT_LEFT,
+                None,
                 blue,
-                wp.vec3(-0.19, 0.0, pulley_z),
+                wp.vec3(-0.19, 0.0, self.pulley_z),
                 self.input_pulley_radius,
+                input_sheave_mu,
             ),
             (
                 "green_upper_left",
-                ATTACH_SLIDE,
-                MOTOR_NONE,
+                self.slide_body,
                 green,
-                wp.vec3(-0.045, 0.045, pulley_z),
+                wp.vec3(-0.045, 0.045, self.pulley_z),
                 green_sheave_radius,
+                passive_sheave_mu,
             ),
             (
                 "beige_top",
-                ATTACH_TABLE,
-                MOTOR_NONE,
+                self.table_body,
                 beige,
-                wp.vec3(0.0, 0.19, pulley_z),
+                wp.vec3(0.0, 0.19, self.pulley_z),
                 beige_sheave_radius,
+                passive_sheave_mu,
             ),
             (
                 "green_upper_right",
-                ATTACH_SLIDE,
-                MOTOR_NONE,
+                self.slide_body,
                 green,
-                wp.vec3(0.045, 0.045, pulley_z),
+                wp.vec3(0.045, 0.045, self.pulley_z),
                 green_sheave_radius,
+                passive_sheave_mu,
             ),
             (
                 "blue_input_right",
-                ATTACH_BASE,
-                MOTOR_INPUT_RIGHT,
+                None,
                 blue,
-                wp.vec3(0.19, 0.0, pulley_z),
+                wp.vec3(0.19, 0.0, self.pulley_z),
                 self.input_pulley_radius,
+                input_sheave_mu,
             ),
             (
                 "green_lower_right",
-                ATTACH_SLIDE,
-                MOTOR_NONE,
+                self.slide_body,
                 green,
-                wp.vec3(0.045, -0.045, pulley_z),
+                wp.vec3(0.045, -0.045, self.pulley_z),
                 green_sheave_radius,
+                passive_sheave_mu,
             ),
         ]
 
         self.pulley_bodies: list[int] = []
-        pulley_centers = [spec[4] for spec in pulley_specs]
-        pulley_radii = [spec[5] for spec in pulley_specs]
+        driven_pulley_bodies: list[int] = []
+        pulley_centers = [spec[3] for spec in pulley_specs]
+        pulley_radii = [spec[4] for spec in pulley_specs]
 
-        for i, (label, attach, _motor, color, center, sheave_radius) in enumerate(pulley_specs, start=1):
-            pulley_kwargs = {
-                "center": center,
-                "axis": wp.vec3(0.0, 0.0, 1.0),
-                "sheave_diameter": 2.0 * sheave_radius,
-                "cable_radius": cable_radius,
-                "color": color,
-                "groove_width_scale": 3.1,
-                "flange_radius_scale": 3.2,
-                "flange_thickness_scale": 1.2,
-                "ke": 1.0e5,
-                "kd": 0.0,
-                "mu": 1.0,
-                "density": 1000.0,
-                "label": f"xy_table_{i}_{label}",
-            }
-            if attach == ATTACH_BASE:
-                pulley_body, _ = add_kinematic_guided_pulley(builder, **pulley_kwargs)
+        for i, (label, parent, color, center, sheave_radius, sheave_mu) in enumerate(pulley_specs, start=1):
+            pulley_body, pulley_joint = add_pulley(
+                builder,
+                center,
+                sheave_radius,
+                cable_radius,
+                color,
+                parent=parent,
+                sheave_mu=sheave_mu,
+                label=f"xy_table_{i}_{label}",
+            )
+            if pulley_joint is None:
+                driven_pulley_bodies.append(pulley_body)
             else:
-                parent = self.slide_body if attach == ATTACH_SLIDE else self.table_body
-                pulley_body, pulley_joint, _ = add_passive_guided_pulley(
-                    builder,
-                    parent=parent,
-                    axle_armature=1.0e-4,
-                    axle_friction=1.0,
-                    **pulley_kwargs,
-                )
                 table_articulation_joints.append(pulley_joint)
             self.pulley_bodies.append(pulley_body)
 
         # The cable loop starts and ends on the bottom of the beige table.
-        self.left_anchor_local = wp.vec3(-0.028, -0.21, pulley_z - table_z)
-        self.right_anchor_local = wp.vec3(0.028, -0.21, pulley_z - table_z)
+        self.left_anchor_local = wp.vec3(-0.028, -0.21, self.pulley_z - self.table_z)
+        self.right_anchor_local = wp.vec3(0.028, -0.21, self.pulley_z - self.table_z)
         left_anchor_world = table_origin + self.left_anchor_local
         right_anchor_world = table_origin + self.right_anchor_local
 
@@ -838,19 +658,15 @@ class Example:
                 label=label,
             )
 
-        # Create the wrapped route around the pulley grooves, then resample to
-        # equal segment lengths. The rod is built straight first and moved into
-        # place below so each capsule starts with the desired transform.
-        cable_route_points = create_xy_table_cable_points(
+        # Adjust the cable length so every segment is equal.
+        cable_points, cable_segment_length = create_xy_table_cable_points(
             start=left_anchor_world,
             pulley_centers=pulley_centers,
             pulley_radii=pulley_radii,
             end=right_anchor_world,
-            cable_radius=cable_radius,
             segment_length=initial_segment_length,
-            wrap_clearance_scale=cable_wrap_clearance_scale,
+            wrap_clearance=cable_wrap_clearance,
         )
-        cable_points, cable_segment_length = resample_equal_length_segments(cable_route_points, initial_segment_length)
         cable_quats = newton.utils.create_parallel_transport_cable_quaternions(cable_points)
         cable_segment_count = len(cable_points) - 1
         straight_cable_points, straight_cable_quats = newton.utils.create_straight_cable_points_and_quaternions(
@@ -870,7 +686,7 @@ class Example:
             radius=cable_radius,
             cfg=cable_cfg,
             stretch_stiffness=1.0e5,
-            stretch_damping=0.0,
+            stretch_damping=1.0e-4,
             bend_stiffness=1.0e-2,
             bend_damping=1.0e-2,
             wrap_in_articulation=False,
@@ -886,13 +702,14 @@ class Example:
         # Ball joints close the cable loop at the table anchors.
         first_cable_body = self.cable_bodies[0]
         last_cable_body = self.cable_bodies[-1]
-        last_segment_length = cable_segment_length
         first_endpoint_local = wp.vec3(0.0, 0.0, -0.5 * cable_segment_length)
-        last_endpoint_local = wp.vec3(0.0, 0.0, 0.5 * last_segment_length)
+        last_endpoint_local = wp.vec3(0.0, 0.0, 0.5 * cable_segment_length)
+        first_cable_anchor_xform = wp.transform(first_endpoint_local, wp.quat_identity())
+        last_cable_anchor_xform = wp.transform(last_endpoint_local, wp.quat_identity())
         for i, (body, xform) in enumerate(
             (
-                (first_cable_body, wp.transform(first_endpoint_local, wp.quat_identity())),
-                (last_cable_body, wp.transform(last_endpoint_local, wp.quat_identity())),
+                (first_cable_body, first_cable_anchor_xform),
+                (last_cable_body, last_cable_anchor_xform),
             )
         ):
             builder.add_shape_sphere(
@@ -908,7 +725,7 @@ class Example:
             parent=self.table_body,
             child=first_cable_body,
             parent_xform=wp.transform(self.left_anchor_local, wp.quat_identity()),
-            child_xform=wp.transform(first_endpoint_local, wp.quat_identity()),
+            child_xform=first_cable_anchor_xform,
             armature=1.0e-5,
             friction=0.0,
             label="left_bottom_cable_fix",
@@ -917,7 +734,7 @@ class Example:
             parent=self.table_body,
             child=last_cable_body,
             parent_xform=wp.transform(self.right_anchor_local, wp.quat_identity()),
-            child_xform=wp.transform(last_endpoint_local, wp.quat_identity()),
+            child_xform=last_cable_anchor_xform,
             armature=1.0e-5,
             friction=0.0,
             label="right_bottom_cable_fix_loop",
@@ -927,10 +744,7 @@ class Example:
             label="xy_table_cable_cross_slide",
         )
 
-        kinematic_body_indices = [
-            body for body, spec in zip(self.pulley_bodies, pulley_specs, strict=True) if spec[2] != MOTOR_NONE
-        ]
-        kinematic_body_motor = [spec[2] for spec in pulley_specs if spec[2] != MOTOR_NONE]
+        kinematic_body_indices = driven_pulley_bodies
         kinematic_body_base_xforms = [builder.body_q[body] for body in kinematic_body_indices]
 
         builder.add_ground_plane()
@@ -945,14 +759,13 @@ class Example:
             self.model,
             iterations=sim_iterations,
             rigid_body_contact_buffer_size=256,
-            rigid_contact_hard=True,
-            rigid_contact_history=True,
+            rigid_contact_hard=False,
         )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        pipeline = newton.CollisionPipeline(self.model, broad_phase="explicit", contact_matching="latest")
+        pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.model.contacts(collision_pipeline=pipeline)
 
         # Device arrays used by kernels during simulation and CUDA graph replay.
@@ -966,11 +779,12 @@ class Example:
             dtype=wp.transform,
             device=self.model.device,
         )
-        self.kinematic_body_motor = wp.array(
-            kinematic_body_motor,
-            dtype=wp.int32,
+        self.input_pulley_angles = wp.zeros(
+            len(kinematic_body_indices),
+            dtype=wp.float32,
             device=self.model.device,
         )
+        self.target_table_xy = wp.zeros(2, dtype=wp.float32, device=self.model.device)
         cable_body_indices = wp.array(
             self.cable_bodies,
             dtype=wp.int32,
@@ -992,9 +806,6 @@ class Example:
             ],
             device=self.model.device,
         )
-        # The wrapped cable pose is the initial condition, not a one-frame
-        # teleport. Keep VBD's previous-pose buffer in sync to avoid a fake
-        # first-step velocity.
         self.solver.body_q_prev = wp.clone(self.state_0.body_q, device=self.solver.device)
         self.sim_time_wp = wp.zeros(1, dtype=wp.float32, device=self.model.device)
 
@@ -1030,7 +841,6 @@ class Example:
         """Advance the XY table simulation by one rendered frame."""
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.viewer.apply_forces(self.state_0)
 
             wp.launch(
                 drive_input_pulleys,
@@ -1039,14 +849,16 @@ class Example:
                     self.sim_time_wp,
                     self.kinematic_body_indices,
                     self.kinematic_body_base_xforms,
-                    self.kinematic_body_motor,
-                    self.input_pulley_radius,
+                    self.input_drive_radius,
+                    self.input_pulley_angles,
+                    self.target_table_xy,
                     self.state_0.body_q,
                     self.state_1.body_q,
                 ],
                 device=self.model.device,
             )
 
+            self.viewer.apply_forces(self.state_0)
             self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -1064,19 +876,25 @@ class Example:
 
     def record_diagrams(self):
         """Log pulley rotations and table position for viewer diagrams."""
-        q2, q6 = compute_input_pulley_rotations(self.sim_time, self.input_pulley_radius)
+        input_pulley_angles = self.input_pulley_angles.numpy()
+        q_left = float(input_pulley_angles[0])
+        q_right = float(input_pulley_angles[1])
         body_q = self.state_0.body_q.numpy()
+        target_table_xy = self.target_table_xy.numpy()
         table_pos = body_q[self.table_body, 0:3]
         table_x = float(table_pos[0]) - self.table_origin_xy[0]
         table_y = float(table_pos[1]) - self.table_origin_xy[1]
         table_xy = np.array((table_x, table_y), dtype=np.float32)
-        table_rect_distances = np.linalg.norm(self.table_rect_points - table_xy, axis=1)
-        self.table_rect_min_distances = np.minimum(self.table_rect_min_distances, table_rect_distances)
+        tracking_error = float(np.linalg.norm(table_xy - target_table_xy))
+        self.table_tracking_max_error = max(self.table_tracking_max_error, tracking_error)
+        self.table_tracking_error_sq_sum += tracking_error * tracking_error
+        self.table_tracking_sample_count += 1
 
-        self.viewer.log_scalar("Blue pulley 2 rotation [rad]", q2)
-        self.viewer.log_scalar("Blue pulley 6 rotation [rad]", q6)
+        self.viewer.log_scalar("Blue left input rotation [rad]", q_left)
+        self.viewer.log_scalar("Blue right input rotation [rad]", q_right)
         self.viewer.log_scalar("Beige table X position [m]", table_x)
         self.viewer.log_scalar("Beige table Y position [m]", table_y)
+        self.viewer.log_scalar("Beige table tracking error [m]", tracking_error)
 
     def render(self):
         """Render the current simulation state and contact points."""
@@ -1085,54 +903,68 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
-    def test_final(self):
-        """Validate table travel, cable bounds, and rectangle coverage."""
+    def _check_state_bounds(self, body_q: np.ndarray):
+        """Validate that the mechanism remains finite and inside its workspace."""
+        if not np.all(np.isfinite(body_q)):
+            raise ValueError("NaN/Inf in body transforms.")
+
+        self._check_cable_bounds(body_q)
+        self._check_table_stage_bounds(body_q)
+
+    def _check_cable_bounds(self, body_q: np.ndarray):
+        """Validate that the cable has not escaped the table workspace."""
+        cable_pos = body_q[[int(body) for body in self.cable_bodies], 0:3]
+        _check_range("Cable minimum Z", float(np.min(cable_pos[:, 2])), self.cable_z_bounds)
+        _check_range("Cable maximum Z", float(np.max(cable_pos[:, 2])), self.cable_z_bounds)
+        _check_abs_bound("Cable maximum XY displacement", float(np.max(np.abs(cable_pos[:, 0:2]))), CABLE_XY_ABS_BOUND)
+
+    def _check_table_stage_bounds(self, body_q: np.ndarray):
+        """Validate that the slide and table bodies stay near their joint limits."""
+        slide_pos = body_q[self.slide_body, 0:3]
+        table_pos = body_q[self.table_body, 0:3]
+        slide_x_bounds = _pad_bounds(self.slide_x_bounds, JOINT_LIMIT_TOLERANCE)
+        table_y_bounds = _pad_bounds(self.table_y_bounds, JOINT_LIMIT_TOLERANCE)
+
+        _check_range("Horizontal green carriage X", float(slide_pos[0]), slide_x_bounds)
+        _check_range("Vertical beige carriage Y", float(table_pos[1]), table_y_bounds)
+        _check_range("Horizontal green carriage Z", float(slide_pos[2]), self.slide_z_bounds)
+        _check_range("Vertical beige carriage Z", float(table_pos[2]), self.table_z_bounds)
+
+    def test_post_step(self):
+        """Catch instability as soon as a rendered frame completes."""
         if self.state_0.body_q is None:
             raise RuntimeError("Body state is not available.")
 
         body_q = self.state_0.body_q.numpy()
-        if not np.all(np.isfinite(body_q)):
-            raise ValueError("NaN/Inf in body transforms.")
+        self._check_state_bounds(body_q)
 
-        cable_pos = body_q[[int(body) for body in self.cable_bodies], 0:3]
-        if np.min(cable_pos[:, 2]) < -0.04:
-            raise ValueError("Cable fell below the ground plane.")
-        if np.max(cable_pos[:, 2]) > 0.12:
-            raise ValueError("Cable lifted too far from the ground-plane table.")
-        if np.max(np.abs(cable_pos[:, 0])) > 0.34 or np.max(np.abs(cable_pos[:, 1])) > 0.34:
-            raise ValueError("Cable moved outside the expected XY table bounds.")
+    def test_final(self):
+        """Validate table drift and final mechanism bounds."""
+        if self.state_0.body_q is None:
+            raise RuntimeError("Body state is not available.")
 
-        slide_pos = body_q[self.slide_body, 0:3]
-        table_pos = body_q[self.table_body, 0:3]
-        joint_limit_tolerance = 0.005
-        if not (-0.07 - joint_limit_tolerance <= slide_pos[0] <= 0.07 + joint_limit_tolerance):
-            raise ValueError("Horizontal green carriage moved outside its travel range.")
-        if not (-0.08 - joint_limit_tolerance <= table_pos[1] <= 0.08 + joint_limit_tolerance):
-            raise ValueError("Vertical beige carriage moved outside its travel range.")
-        if not (0.0 <= slide_pos[2] <= 0.04 and 0.0 <= table_pos[2] <= 0.05):
-            raise ValueError("Table bodies left the ground-plane layout.")
+        body_q = self.state_0.body_q.numpy()
+        self._check_state_bounds(body_q)
 
-        missed_points = np.nonzero(self.table_rect_min_distances > TABLE_RECT_HIT_TOLERANCE)[0]
-        if len(missed_points) > 0:
-            details = []
-            for point_index in missed_points:
-                point = self.table_rect_points[point_index]
-                distance = self.table_rect_min_distances[point_index]
-                details.append(f"({point[0]:.3f}, {point[1]:.3f}) min error {distance:.4f} m")
+        if self.table_tracking_sample_count == 0:
+            raise ValueError("No table tracking samples were recorded.")
+
+        table_tracking_rms_error = math.sqrt(self.table_tracking_error_sq_sum / self.table_tracking_sample_count)
+        if self.table_tracking_max_error > TABLE_TRACKING_MAX_ERROR_TOLERANCE:
             raise ValueError(
-                "XY table did not hit every rectangle point within "
-                f"{TABLE_RECT_HIT_TOLERANCE:.3f} m: {', '.join(details)}"
+                "XY table drifted too far from the commanded path: "
+                f"max error {self.table_tracking_max_error:.4f} m exceeds "
+                f"{TABLE_TRACKING_MAX_ERROR_TOLERANCE:.4f} m."
             )
-
-    @staticmethod
-    def create_parser():
-        parser = newton.examples.create_parser()
-        parser.set_defaults(num_frames=TABLE_RECT_TEST_FRAMES)
-        return parser
+        if table_tracking_rms_error > TABLE_TRACKING_RMS_ERROR_TOLERANCE:
+            raise ValueError(
+                "XY table tracking error stayed too high: "
+                f"RMS error {table_tracking_rms_error:.4f} m exceeds "
+                f"{TABLE_TRACKING_RMS_ERROR_TOLERANCE:.4f} m."
+            )
 
 
 if __name__ == "__main__":
-    parser = Example.create_parser()
-    viewer, args = newton.examples.init(parser)
+    viewer, args = newton.examples.init()
     example = Example(viewer, args)
     newton.examples.run(example, args)
