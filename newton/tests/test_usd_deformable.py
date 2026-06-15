@@ -430,6 +430,56 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertAlmostEqual(builder.edge_bending_properties[e0][0], bend, delta=bend * 1e-3)
 
 
+class TestUSDDeformableVolume(unittest.TestCase):
+    """Volume (TetMesh) soft-body addressability (REQ #3038)."""
+
+    def test_tetmesh_imports_with_soft_range(self):
+        """A UsdGeom.TetMesh imports as a soft body with a recoverable particle / tet range."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "tet.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            tet = UsdGeom.TetMesh.Define(stage, "/World/Soft")
+            tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
+            tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            ranges = result["path_soft_map"]["/World/Soft"]
+            self.assertEqual(ranges["particle"], (0, 4))  # 4 tet vertices
+            self.assertEqual(ranges["tet"], (0, 1))  # 1 tetrahedron
+            self.assertEqual(builder.particle_count, 4)
+
+    def test_two_tetmeshes_have_disjoint_soft_ranges(self):
+        """Two TetMesh soft bodies map to disjoint, covering particle ranges."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "tets.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            for name, dz in (("A", 0.0), ("B", 2.0)):
+                tet = UsdGeom.TetMesh.Define(stage, f"/World/Soft{name}")
+                tet.CreatePointsAttr(
+                    [(0.0, 0.0, 1.0 + dz), (1.0, 0.0, 1.0 + dz), (0.0, 1.0, 1.0 + dz), (0.0, 0.0, 2.0 + dz)]
+                )
+                tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            ra = result["path_soft_map"]["/World/SoftA"]["particle"]
+            rb = result["path_soft_map"]["/World/SoftB"]["particle"]
+            self.assertEqual(ra, (0, 4))
+            self.assertEqual(rb, (4, 8))
+            self.assertEqual(builder.particle_count, 8)
+
+
 devices = get_selected_cuda_test_devices()
 add_function_test(
     TestUSDDeformableCableAsset,

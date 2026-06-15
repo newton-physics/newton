@@ -377,6 +377,9 @@ def parse_usd(
     # mapping from cloth prim path to its particle / triangle / bending-edge ranges
     # ([start, end)) in the model arrays, for per-cloth addressability.
     path_cloth_map: dict[str, dict[str, tuple[int, int]]] = {}
+    # mapping from volume (TetMesh) soft-body prim path to its particle / tet
+    # ranges ([start, end)), for per-soft-body addressability.
+    path_soft_map: dict[str, dict[str, tuple[int, int]]] = {}
     # DOF offset within a merged D6 joint for each original prim path (only populated for merged joints)
     merged_dof_offset: dict[str, int] = {}
     # cache for resolved material properties (keyed by prim path)
@@ -3407,7 +3410,12 @@ def parse_usd(
                     soft_mesh_scale, dtype=np.float32
                 )
 
+            soft_p0, soft_t0 = builder.particle_count, builder.tet_count
             builder.add_soft_mesh(**add_soft_mesh_kwargs)
+            path_soft_map[path] = {
+                "particle": (soft_p0, builder.particle_count),
+                "tet": (soft_t0, builder.tet_count),
+            }
 
             if verbose:
                 print(
@@ -4375,6 +4383,7 @@ def parse_usd(
         "path_joint_map": path_joint_map,
         "path_cable_map": path_cable_map,
         "path_cloth_map": path_cloth_map,
+        "path_soft_map": path_soft_map,
         "path_shape_map": path_shape_map,
         "path_shape_scale": path_shape_scale,
         "mass_unit": mass_unit,
