@@ -523,15 +523,14 @@ class ViewerGL(ViewerBase):
         super().clear_model()
 
     @override
-    def set_model(self, model: nt.Model | None, max_worlds: int | None = None):
+    def set_model(self, model: nt.Model | None):
         """
         Set the Newton model to visualize.
 
         Args:
             model: The Newton model instance.
-            max_worlds: Maximum number of worlds to render (None = all).
         """
-        super().set_model(model, max_worlds=max_worlds)
+        super().set_model(model)
 
         # ``ViewerBase.set_model`` may have switched ``self.device`` to the
         # model's device. Rebind the image logger so its GPU path tests against
@@ -649,7 +648,12 @@ class ViewerGL(ViewerBase):
             if _key not in capsule_keys:
                 if shapes.name not in self.objects:
                     if shapes.mesh in self.objects and isinstance(self.objects[shapes.mesh], MeshGL):
-                        self.objects[shapes.name] = MeshInstancerGL(max(n, 1), self.objects[shapes.mesh])
+                        instancer = MeshInstancerGL(max(n, 1), self.objects[shapes.mesh])
+                        # Planes (e.g. the ground) opt out of the wireframe edge
+                        # overlay. Keyed on geometry type, not the checker material
+                        # bit, so checker-shaded non-planes still get edges (#2808).
+                        instancer.draw_edge = shapes.geo_type != nt.GeoType.PLANE
+                        self.objects[shapes.name] = instancer
 
         self._packed_write_indices = wp.array(write_np, dtype=int, device=device)
         self._packed_world_xforms = all_world_xforms

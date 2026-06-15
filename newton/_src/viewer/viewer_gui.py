@@ -814,6 +814,8 @@ class ViewerGui:
                         _, renderer.com_scale = imgui.slider_float("COM Scale", renderer.com_scale, 0.25, 5.0)
                     _changed, viewer.show_triangles = imgui.checkbox("Show Cloth", viewer.show_triangles)
                     _changed, viewer.show_collision = imgui.checkbox("Show Collision", viewer.show_collision)
+                    if renderer is not None and hasattr(renderer, "draw_edges"):
+                        _changed, renderer.draw_edges = imgui.checkbox("Show Edges", renderer.draw_edges)
                     sdf_margin_mode = getattr(viewer, "sdf_margin_mode", None)
                     SDFMarginMode = getattr(type(viewer), "SDFMarginMode", None)
                     if sdf_margin_mode is not None and SDFMarginMode is not None:

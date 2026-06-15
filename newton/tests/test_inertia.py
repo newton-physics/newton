@@ -271,6 +271,39 @@ class TestInertia(unittest.TestCase):
             indices.append([1, ni + 2, i + 2])
         return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.int32)
 
+    def test_mesh_inertia_is_deterministic(self):
+        """Repeated mesh reductions should produce bitwise-identical results."""
+
+        devices = [wp.get_device()]
+        if wp.is_cuda_available() and not devices[0].is_cuda:
+            devices.append(wp.get_device("cuda:0"))
+
+        vertices, indices = self._create_cone_mesh(radius=1.25, half_height=1.75, num_segments=256)
+
+        for device in devices:
+            with self.subTest(device=device):
+                with wp.ScopedDevice(device):
+                    for is_solid, thickness in ((True, 0.001), (False, 0.025)):
+                        reference = compute_inertia_mesh(
+                            density=42.0,
+                            vertices=vertices,
+                            indices=indices,
+                            is_solid=is_solid,
+                            thickness=thickness,
+                        )
+                        for _ in range(5):
+                            actual = compute_inertia_mesh(
+                                density=42.0,
+                                vertices=vertices,
+                                indices=indices,
+                                is_solid=is_solid,
+                                thickness=thickness,
+                            )
+                            self.assertEqual(actual[0], reference[0])
+                            self.assertTrue(np.array_equal(np.array(actual[1]), np.array(reference[1])))
+                            self.assertTrue(np.array_equal(np.array(actual[2]), np.array(reference[2])))
+                            self.assertEqual(actual[3], reference[3])
+
     def test_cone_mesh_inertia(self):
         """Test cone inertia by comparing analytical formula with mesh computation."""
 

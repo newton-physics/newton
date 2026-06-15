@@ -254,7 +254,7 @@ class Example:
             tau_j=wp.to_torch(self.sim.control.tau_j).reshape(num_worlds, num_joint_dofs),
         )
         # Create a world mask array+tensor for per-world selective resets
-        self.world_mask_wp = wp.ones((num_worlds,), dtype=wp.int32, device=self.device)
+        self.world_mask_wp = wp.ones((num_worlds,), dtype=wp.bool, device=self.device)
         self.world_mask_pt = wp.to_torch(self.world_mask_wp)
 
     def _reset_worlds(self):

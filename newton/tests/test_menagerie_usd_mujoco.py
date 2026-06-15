@@ -137,7 +137,12 @@ def download_usd_asset(robot_name: str) -> Path:
 class TestMenagerieUsdImport(unittest.TestCase):
     """Verify that each menagerie USD asset imports correctly into Newton."""
 
-    def _load_robot(self, robot_name: str) -> tuple[newton.ModelBuilder, newton.Model]:
+    def _load_robot(
+        self,
+        robot_name: str,
+        *,
+        convert_mjc_equality_constraints: bool = True,
+    ) -> tuple[newton.ModelBuilder, newton.Model]:
         """Load a menagerie USD asset and return the builder and finalized model."""
         usd_path = download_usd_asset(robot_name)
         self.assertTrue(usd_path.exists(), f"USD asset not found: {usd_path}")
@@ -150,6 +155,7 @@ class TestMenagerieUsdImport(unittest.TestCase):
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+            convert_mjc_equality_constraints=convert_mjc_equality_constraints,
         )
 
         model = builder.finalize()
@@ -188,11 +194,11 @@ class TestMenagerieUsdImport(unittest.TestCase):
         self._assert_no_nan(model, "shadow_hand")
 
     def test_import_robotiq_2f85_v4(self):
-        builder, model = self._load_robot("robotiq_2f85_v4")
+        builder, model = self._load_robot("robotiq_2f85_v4", convert_mjc_equality_constraints=False)
         self.assertEqual(builder.body_count, 11)
         self.assertEqual(builder.joint_count, 11)
         self.assertEqual(builder.shape_count, 28)
-        self.assertEqual(model.equality_constraint_count, 3)
+        self.assertEqual(model.mujoco.equality_constraint_count, 3)
         self._assert_no_nan(model, "robotiq_2f85_v4")
 
     def test_import_apptronik_apollo(self):
@@ -1547,8 +1553,8 @@ class TestMenagerieUSD(TestMenagerieBase):
             # joint_target_pos (initial DOF targets from the USD posture) would apply
             # nonzero forces every world for actuators we didn't drive — surfaced on
             # WonikAllegro where tha0's initial target 0.8295 stayed in every world.
-            joint_target_pos = np.zeros_like(newton_control.joint_target_pos.numpy())
-            joint_target_vel = np.zeros_like(newton_control.joint_target_vel.numpy())
+            joint_target_pos = np.zeros_like(newton_control.joint_target_q.numpy())
+            joint_target_vel = np.zeros_like(newton_control.joint_target_qd.numpy())
             dofs_per_world = joint_target_pos.shape[0] // num_worlds
 
             native_ctrl_np = np.zeros((num_worlds, num_actuators), dtype=np.float32)
@@ -1573,8 +1579,8 @@ class TestMenagerieUSD(TestMenagerieBase):
                         joint_target_vel[w * dofs_per_world + (-(idx + 2))] = target
             native_mjw_data.ctrl.assign(native_ctrl_np)
             newton_control.mujoco.ctrl.assign(newton_ctrl_np)
-            newton_control.joint_target_pos.assign(joint_target_pos)
-            newton_control.joint_target_vel.assign(joint_target_vel)
+            newton_control.joint_target_q.assign(joint_target_pos)
+            newton_control.joint_target_qd.assign(joint_target_vel)
 
             # qpos / qvel permutation arrays (native_idx -> newton_idx).
             nq = int(native_mjw_data.qpos.shape[1])

@@ -14,7 +14,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.solvers import SolverMuJoCo, SolverNotifyFlags
+from newton import ModelFlags
+from newton.solvers import SolverMuJoCo
 
 
 class TestMuJoCoMarginZeroing(unittest.TestCase):
@@ -65,7 +66,7 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
         )
 
         # 3. After runtime update via notify_model_changed
-        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
         np.testing.assert_array_equal(
             solver.mjw_model.geom_margin.numpy(),
             np.zeros_like(solver.mjw_model.geom_margin.numpy()),
@@ -120,7 +121,7 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
 
         new_gap = 0.123
         model.mujoco.pair_gap.assign(wp.array([new_gap], dtype=wp.float32, device=model.device))
-        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
 
         self.assertAlmostEqual(
             float(solver.mjw_model.pair_gap.numpy().max()),
