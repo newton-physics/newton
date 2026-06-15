@@ -50,7 +50,6 @@ class AdmmContactStream:
         point_a: Contact point on side A [m].
         point_b: Contact point on side B [m].
         normal: Contact normal from side B to side A [unitless].
-        distance: Minimum admissible signed gap along ``normal`` [m].
         source_id: Detector-local source id for diagnostics or warm-start keys.
         normal_force: Normal contact force applied to side A [N].
         normal_impulse: Normal contact impulse applied to side A [N s].
@@ -69,7 +68,6 @@ class AdmmContactStream:
     point_a: wp.array[wp.vec3]
     point_b: wp.array[wp.vec3]
     normal: wp.array[wp.vec3]
-    distance: wp.array[float]
     source_id: wp.array[int]
     normal_force: wp.array[float]
     normal_impulse: wp.array[float]
@@ -106,7 +104,6 @@ class AdmmContactStream:
             point_a=wp.zeros(capacity, dtype=wp.vec3, device=device),
             point_b=wp.zeros(capacity, dtype=wp.vec3, device=device),
             normal=wp.zeros(capacity, dtype=wp.vec3, device=device),
-            distance=wp.zeros(capacity, dtype=float, device=device),
             source_id=wp.full(capacity, -1, dtype=int, device=device),
             normal_force=wp.zeros(capacity, dtype=float, device=device),
             normal_impulse=wp.zeros(capacity, dtype=float, device=device),

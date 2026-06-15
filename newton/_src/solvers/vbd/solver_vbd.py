@@ -785,6 +785,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
 
+    @override
+    def coupling_supports_inertial_property_refresh(self) -> bool:
+        return True
+
     def coupling_notify_input_state_update(
         self,
         state: State,

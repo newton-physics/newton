@@ -307,7 +307,7 @@ class Example:
         parser.add_argument("--friction", help="Rigid-rigid Coulomb friction coefficient", type=float, default=0.45)
         parser.add_argument("--admm-iterations", help="ADMM iterations per substep", type=int, default=30)
         parser.add_argument("--rho", help="ADMM penalty parameter", type=float, default=5.0)
-        parser.add_argument("--gamma", help="ADMM proximal mass rescaling", type=float, default=0.2)
+        parser.add_argument("--gamma", help="ADMM proximal metric scale", type=float, default=0.01)
         parser.add_argument(
             "--baumgarte", help="Fraction of contact penetration corrected per substep", type=float, default=0.03
         )

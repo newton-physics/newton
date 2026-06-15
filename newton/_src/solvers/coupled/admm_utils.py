@@ -15,10 +15,12 @@ import warp as wp
 
 from ...geometry import ParticleFlags
 from ...math.spatial import velocity_at_point
+from ...sim.contacts import contact_surface_point
 
 _PARTICLE_FLAG_ACTIVE = wp.constant(int(ParticleFlags.ACTIVE))
 _INACTIVE_U_MIN = wp.constant(-1.0e8)
 _WEIGHT_RESCALE_EPS = wp.constant(1.0e-12)
+_POINT_ANGULAR_LUMP_SCALE = wp.constant(2.0 / 3.0)
 
 
 @wp.func
@@ -37,6 +39,21 @@ def _rescale_lambda(lambda_value: wp.vec3, old_weight: float, new_weight: float)
     if old_weight > _WEIGHT_RESCALE_EPS and new_weight > _WEIGHT_RESCALE_EPS:
         return lambda_value * (old_weight / new_weight)
     return wp.vec3(0.0, 0.0, 0.0)
+
+
+@wp.func
+def _contact_u_min_from_gap(gap: float, baumgarte: float, dt: float) -> float:
+    if dt <= 0.0:
+        return _INACTIVE_U_MIN
+    if gap < 0.0:
+        return -baumgarte * gap / dt
+    return -gap / dt
+
+
+@wp.func
+def _point_angular_lump(arm: wp.vec3) -> float:
+    # Isotropic lump of [r]x^T [r]x: trace(|r|^2 I - r r^T) / 3.
+    return _POINT_ANGULAR_LUMP_SCALE * wp.dot(arm, arm)
 
 
 @wp.kernel(enable_backward=False)
@@ -66,64 +83,6 @@ def scatter_body_effective_mass_block_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def refresh_rr_attachment_weights_kernel(
-    body_a: wp.array[int],
-    body_b: wp.array[int],
-    body_local_to_global_a: wp.array[int],
-    body_local_to_global_b: wp.array[int],
-    body_mass_a: wp.array[float],
-    body_mass_b: wp.array[float],
-    W: wp.array[float],
-    lambda_: wp.array[wp.vec3],
-):
-    """Refresh rigid-rigid point attachment weights and preserve physical lambda."""
-    i = wp.tid()
-    global_a = body_local_to_global_a[body_a[i]]
-    global_b = body_local_to_global_b[body_b[i]]
-    new_weight = _interface_weight(body_mass_a[global_a], body_mass_b[global_b])
-    lambda_[i] = _rescale_lambda(lambda_[i], W[i], new_weight)
-    W[i] = new_weight
-
-
-@wp.kernel(enable_backward=False)
-def refresh_rp_attachment_weights_kernel(
-    body: wp.array[int],
-    particle: wp.array[int],
-    body_local_to_global: wp.array[int],
-    body_mass: wp.array[float],
-    particle_mass: wp.array[float],
-    W: wp.array[float],
-    lambda_: wp.array[wp.vec3],
-):
-    """Refresh rigid-particle attachment weights and preserve physical lambda."""
-    i = wp.tid()
-    global_body = body_local_to_global[body[i]]
-    new_weight = _interface_weight(body_mass[global_body], particle_mass[particle[i]])
-    lambda_[i] = _rescale_lambda(lambda_[i], W[i], new_weight)
-    W[i] = new_weight
-
-
-@wp.kernel(enable_backward=False)
-def refresh_rr_angular_attachment_weights_kernel(
-    body_a: wp.array[int],
-    body_b: wp.array[int],
-    body_local_to_global_a: wp.array[int],
-    body_local_to_global_b: wp.array[int],
-    inertia_scalar_a: wp.array[float],
-    inertia_scalar_b: wp.array[float],
-    W: wp.array[float],
-    lambda_: wp.array[wp.vec3],
-):
-    """Refresh angular attachment weights and preserve physical lambda."""
-    i = wp.tid()
-    global_a = body_local_to_global_a[body_a[i]]
-    global_b = body_local_to_global_b[body_b[i]]
-    new_weight = _interface_weight(inertia_scalar_a[global_a], inertia_scalar_b[global_b])
-    lambda_[i] = _rescale_lambda(lambda_[i], W[i], new_weight)
-    W[i] = new_weight
-
-
-@wp.kernel(enable_backward=False)
 def velocity_proximal_shift_body_kernel(
     v_n: wp.array[wp.spatial_vector],
     v_k: wp.array[wp.spatial_vector],
@@ -142,6 +101,23 @@ def velocity_proximal_shift_body_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def velocity_proximal_shift_body_masked_kernel(
+    v_n: wp.array[wp.spatial_vector],
+    v_k: wp.array[wp.spatial_vector],
+    proximal_mask: wp.array[int],
+    gamma: float,
+    v_out: wp.array[wp.spatial_vector],
+):
+    """Masked body proximal shift; unmasked bodies keep the step input velocity."""
+    i = wp.tid()
+    if proximal_mask[i] == 0:
+        v_out[i] = v_n[i]
+        return
+    inv_denom = 1.0 / (1.0 + gamma)
+    v_out[i] = (v_n[i] + gamma * v_k[i]) * inv_denom
+
+
+@wp.kernel(enable_backward=False)
 def velocity_proximal_shift_particle_kernel(
     v_n: wp.array[wp.vec3],
     v_k: wp.array[wp.vec3],
@@ -150,6 +126,23 @@ def velocity_proximal_shift_particle_kernel(
 ):
     """Particle analogue of :func:`velocity_proximal_shift_body_kernel`."""
     i = wp.tid()
+    inv_denom = 1.0 / (1.0 + gamma)
+    v_out[i] = (v_n[i] + gamma * v_k[i]) * inv_denom
+
+
+@wp.kernel(enable_backward=False)
+def velocity_proximal_shift_particle_masked_kernel(
+    v_n: wp.array[wp.vec3],
+    v_k: wp.array[wp.vec3],
+    proximal_mask: wp.array[int],
+    gamma: float,
+    v_out: wp.array[wp.vec3],
+):
+    """Masked particle proximal shift; unmasked particles keep the step input velocity."""
+    i = wp.tid()
+    if proximal_mask[i] == 0:
+        v_out[i] = v_n[i]
+        return
     inv_denom = 1.0 / (1.0 + gamma)
     v_out[i] = (v_n[i] + gamma * v_k[i]) * inv_denom
 
@@ -170,6 +163,99 @@ def velocity_proximal_shift_joint_kernel(
     i = wp.tid()
     inv_denom = 1.0 / (1.0 + gamma)
     v_out[i] = (v_n[i] + gamma * v_k[i]) * inv_denom
+
+
+@wp.kernel(enable_backward=False)
+def velocity_proximal_shift_joint_masked_kernel(
+    v_n: wp.array[float],
+    v_k: wp.array[float],
+    proximal_mask: wp.array[int],
+    gamma: float,
+    v_out: wp.array[float],
+):
+    """Masked joint-space proximal shift."""
+    i = wp.tid()
+    if proximal_mask[i] == 0:
+        v_out[i] = v_n[i]
+        return
+    inv_denom = 1.0 / (1.0 + gamma)
+    v_out[i] = (v_n[i] + gamma * v_k[i]) * inv_denom
+
+
+@wp.kernel(enable_backward=False)
+def velocity_proximal_shift_body_lumped_kernel(
+    v_n: wp.array[wp.spatial_vector],
+    v_k: wp.array[wp.spatial_vector],
+    proximal_mass: wp.array[float],
+    proximal_inertia: wp.array[float],
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    v_out: wp.array[wp.spatial_vector],
+):
+    """Shift body velocities using the lumped ADMM proximal metric."""
+    i = wp.tid()
+
+    v_n_i = v_n[i]
+    v_k_i = v_k[i]
+    linear = wp.spatial_top(v_n_i)
+    angular = wp.spatial_bottom(v_n_i)
+
+    mass_lump = proximal_mass[i]
+    if mass_lump > 0.0:
+        base_mass = body_mass[i] - mass_lump
+        if base_mass > 0.0:
+            inv_denom = 1.0 / (base_mass + mass_lump)
+            linear = (base_mass * wp.spatial_top(v_n_i) + mass_lump * wp.spatial_top(v_k_i)) * inv_denom
+
+    inertia_lump = proximal_inertia[i]
+    if inertia_lump > 0.0:
+        base_inertia = wp.max(wp.trace(body_inertia[i]) / 3.0 - inertia_lump, 0.0)
+        if base_inertia > 0.0:
+            inv_denom = 1.0 / (base_inertia + inertia_lump)
+            angular = (base_inertia * wp.spatial_bottom(v_n_i) + inertia_lump * wp.spatial_bottom(v_k_i)) * inv_denom
+
+    v_out[i] = wp.spatial_vector(linear, angular)
+
+
+@wp.kernel(enable_backward=False)
+def velocity_proximal_shift_particle_lumped_kernel(
+    v_n: wp.array[wp.vec3],
+    v_k: wp.array[wp.vec3],
+    proximal_mass: wp.array[float],
+    particle_mass: wp.array[float],
+    v_out: wp.array[wp.vec3],
+):
+    """Shift particle velocities using the lumped ADMM proximal metric."""
+    i = wp.tid()
+    mass_lump = proximal_mass[i]
+    if mass_lump <= 0.0:
+        v_out[i] = v_n[i]
+        return
+
+    base_mass = particle_mass[i] - mass_lump
+    if base_mass <= 0.0:
+        v_out[i] = v_n[i]
+        return
+
+    inv_denom = 1.0 / (base_mass + mass_lump)
+    v_out[i] = (base_mass * v_n[i] + mass_lump * v_k[i]) * inv_denom
+
+
+@wp.kernel(enable_backward=False)
+def velocity_proximal_shift_joint_lumped_kernel(
+    v_n: wp.array[float],
+    v_k: wp.array[float],
+    proximal_factor: wp.array[float],
+    v_out: wp.array[float],
+):
+    """Shift generalized velocities using a dimensionless lumped factor."""
+    i = wp.tid()
+    factor = proximal_factor[i]
+    if factor <= 0.0:
+        v_out[i] = v_n[i]
+        return
+    inv_denom = 1.0 / (1.0 + factor)
+    v_out[i] = (v_n[i] + factor * v_k[i]) * inv_denom
 
 
 @wp.kernel(enable_backward=False)
@@ -195,6 +281,25 @@ def body_gravity_compensation_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def body_gravity_compensation_masked_kernel(
+    gamma: float,
+    proximal_mask: wp.array[int],
+    body_mass: wp.array[float],
+    body_inv_mass: wp.array[float],
+    body_gravity_acceleration: wp.array[wp.vec3],
+    body_f: wp.array[wp.spatial_vector],
+):
+    """Cancel gravity introduced by masked ADMM proximal mass scaling."""
+    i = wp.tid()
+    if proximal_mask[i] == 0 or body_inv_mass[i] <= 0.0:
+        return
+
+    mass = body_mass[i] / (1.0 + gamma)
+    g = body_gravity_acceleration[i]
+    wp.atomic_add(body_f, i, wp.spatial_vector(-gamma * mass * g, wp.vec3(0.0, 0.0, 0.0)))
+
+
+@wp.kernel(enable_backward=False)
 def particle_gravity_compensation_kernel(
     gamma: float,
     particle_mass: wp.array[float],
@@ -211,6 +316,369 @@ def particle_gravity_compensation_kernel(
     mass = particle_mass[i] / (1.0 + gamma)
     g = particle_gravity_acceleration[i]
     wp.atomic_add(particle_f, i, -gamma * mass * g)
+
+
+@wp.kernel(enable_backward=False)
+def particle_gravity_compensation_masked_kernel(
+    gamma: float,
+    proximal_mask: wp.array[int],
+    particle_mass: wp.array[float],
+    particle_inv_mass: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    particle_gravity_acceleration: wp.array[wp.vec3],
+    particle_f: wp.array[wp.vec3],
+):
+    """Cancel gravity introduced by masked ADMM proximal mass scaling."""
+    i = wp.tid()
+    if proximal_mask[i] == 0 or particle_inv_mass[i] <= 0.0 or (particle_flags[i] & _PARTICLE_FLAG_ACTIVE) == 0:
+        return
+
+    mass = particle_mass[i] / (1.0 + gamma)
+    g = particle_gravity_acceleration[i]
+    wp.atomic_add(particle_f, i, -gamma * mass * g)
+
+
+@wp.kernel(enable_backward=False)
+def body_gravity_compensation_lumped_kernel(
+    proximal_mass: wp.array[float],
+    body_inv_mass: wp.array[float],
+    body_gravity_acceleration: wp.array[wp.vec3],
+    body_f: wp.array[wp.spatial_vector],
+):
+    """Cancel gravity introduced by lumped proximal mass increments."""
+    i = wp.tid()
+    mass_lump = proximal_mass[i]
+    if mass_lump <= 0.0 or body_inv_mass[i] <= 0.0:
+        return
+
+    g = body_gravity_acceleration[i]
+    wp.atomic_add(body_f, i, wp.spatial_vector(-mass_lump * g, wp.vec3(0.0, 0.0, 0.0)))
+
+
+@wp.kernel(enable_backward=False)
+def particle_gravity_compensation_lumped_kernel(
+    proximal_mass: wp.array[float],
+    particle_inv_mass: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+    particle_gravity_acceleration: wp.array[wp.vec3],
+    particle_f: wp.array[wp.vec3],
+):
+    """Cancel gravity introduced by lumped proximal mass increments."""
+    i = wp.tid()
+    mass_lump = proximal_mass[i]
+    if mass_lump <= 0.0 or particle_inv_mass[i] <= 0.0 or (particle_flags[i] & _PARTICLE_FLAG_ACTIVE) == 0:
+        return
+
+    g = particle_gravity_acceleration[i]
+    wp.atomic_add(particle_f, i, -mass_lump * g)
+
+
+@wp.kernel(enable_backward=False)
+def mark_indices_mask_kernel(indices: wp.array[int], mask: wp.array[int]):
+    """Mark ``mask[indices[i]]`` for each valid index."""
+    i = wp.tid()
+    index = indices[i]
+    if 0 <= index and index < mask.shape[0]:
+        mask[index] = 1
+
+
+@wp.kernel(enable_backward=False)
+def mark_active_indices_mask_kernel(active_count: wp.array[int], indices: wp.array[int], mask: wp.array[int]):
+    """Mark active compact contact indices in a proximal mask."""
+    i = wp.tid()
+    if i >= active_count[0]:
+        return
+    index = indices[i]
+    if 0 <= index and index < mask.shape[0]:
+        mask[index] = 1
+
+
+@wp.kernel(enable_backward=False)
+def mark_global_indices_mask_kernel(
+    indices: wp.array[int],
+    global_to_local: wp.array[int],
+    local_mask: wp.array[int],
+):
+    """Mark local mask entries mapped from global ids."""
+    i = wp.tid()
+    global_id = indices[i]
+    if 0 <= global_id and global_id < global_to_local.shape[0]:
+        local_id = global_to_local[global_id]
+        if 0 <= local_id and local_id < local_mask.shape[0]:
+            local_mask[local_id] = 1
+
+
+@wp.kernel(enable_backward=False)
+def mark_active_global_indices_mask_kernel(
+    active_count: wp.array[int],
+    indices: wp.array[int],
+    global_to_local: wp.array[int],
+    local_mask: wp.array[int],
+):
+    """Mark active global ids after mapping them to local mask entries."""
+    i = wp.tid()
+    if i >= active_count[0]:
+        return
+    global_id = indices[i]
+    if 0 <= global_id and global_id < global_to_local.shape[0]:
+        local_id = global_to_local[global_id]
+        if 0 <= local_id and local_id < local_mask.shape[0]:
+            local_mask[local_id] = 1
+
+
+@wp.kernel(enable_backward=False)
+def mark_active_pair_indices_mask_kernel(
+    active_count: wp.array[int],
+    indices_a: wp.array[int],
+    mask_a: wp.array[int],
+    indices_b: wp.array[int],
+    mask_b: wp.array[int],
+):
+    """Mark both endpoints of active compact contact rows."""
+    i = wp.tid()
+    if i >= active_count[0]:
+        return
+    index_a = indices_a[i]
+    index_b = indices_b[i]
+    if 0 <= index_a and index_a < mask_a.shape[0]:
+        mask_a[index_a] = 1
+    if 0 <= index_b and index_b < mask_b.shape[0]:
+        mask_b[index_b] = 1
+
+
+@wp.kernel(enable_backward=False)
+def mark_local_indices_from_global_mask_kernel(
+    local_to_global: wp.array[int],
+    global_mask: wp.array[int],
+    local_mask: wp.array[int],
+):
+    """Mark local entries whose global id is enabled in ``global_mask``."""
+    local = wp.tid()
+    global_id = local_to_global[local]
+    if 0 <= global_id and global_id < global_mask.shape[0] and global_mask[global_id] != 0:
+        local_mask[local] = 1
+
+
+@wp.kernel(enable_backward=False)
+def accumulate_body_point_proximal_lump_kernel(
+    body_id: wp.array[int],
+    point_local: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    W: wp.array[float],
+    gamma_rho: float,
+    mass_lump: wp.array[float],
+    inertia_lump: wp.array[float],
+    mask: wp.array[int],
+):
+    """Accumulate point-velocity ``gamma rho W^2 J^T J`` lumps for bodies."""
+    i = wp.tid()
+    body = body_id[i]
+    if body < 0 or body >= mass_lump.shape[0]:
+        return
+
+    weight = gamma_rho * W[i] * W[i]
+    xform = body_q[body]
+    point = wp.transform_point(xform, point_local[i])
+    arm = point - wp.transform_point(xform, body_com[body])
+    wp.atomic_add(mass_lump, body, weight)
+    wp.atomic_add(inertia_lump, body, weight * _point_angular_lump(arm))
+    mask[body] = 1
+
+
+@wp.kernel(enable_backward=False)
+def accumulate_active_body_point_proximal_lump_kernel(
+    active_count: wp.array[int],
+    body_id: wp.array[int],
+    point_local: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    W: wp.array[float],
+    gamma_rho: float,
+    mass_lump: wp.array[float],
+    inertia_lump: wp.array[float],
+    mask: wp.array[int],
+):
+    """Accumulate active point-velocity proximal lumps for bodies."""
+    i = wp.tid()
+    if i >= active_count[0]:
+        return
+    body = body_id[i]
+    if body < 0 or body >= mass_lump.shape[0]:
+        return
+
+    weight = gamma_rho * W[i] * W[i]
+    xform = body_q[body]
+    point = wp.transform_point(xform, point_local[i])
+    arm = point - wp.transform_point(xform, body_com[body])
+    wp.atomic_add(mass_lump, body, weight)
+    wp.atomic_add(inertia_lump, body, weight * _point_angular_lump(arm))
+    mask[body] = 1
+
+
+@wp.kernel(enable_backward=False)
+def accumulate_active_body_contact_proximal_lump_kernel(
+    active_count: wp.array[int],
+    body_id: wp.array[int],
+    point_local: wp.array[wp.vec3],
+    point_offset_local: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    W: wp.array[float],
+    gamma_rho: float,
+    mass_lump: wp.array[float],
+    inertia_lump: wp.array[float],
+    mask: wp.array[int],
+):
+    """Accumulate active contact point-velocity proximal lumps for bodies."""
+    i = wp.tid()
+    if i >= active_count[0]:
+        return
+    body = body_id[i]
+    if body < 0 or body >= mass_lump.shape[0]:
+        return
+
+    weight = gamma_rho * W[i] * W[i]
+    xform = body_q[body]
+    point = contact_surface_point(xform, point_local[i], point_offset_local[i])
+    arm = point - wp.transform_point(xform, body_com[body])
+    wp.atomic_add(mass_lump, body, weight)
+    wp.atomic_add(inertia_lump, body, weight * _point_angular_lump(arm))
+    mask[body] = 1
+
+
+@wp.kernel(enable_backward=False)
+def accumulate_body_angular_proximal_lump_kernel(
+    body_id: wp.array[int],
+    W: wp.array[float],
+    gamma_rho: float,
+    component_lump: float,
+    inertia_lump: wp.array[float],
+    mask: wp.array[int],
+):
+    """Accumulate angular ``gamma rho W^2 J^T J`` lumps for bodies."""
+    i = wp.tid()
+    body = body_id[i]
+    if body < 0 or body >= inertia_lump.shape[0]:
+        return
+
+    weight = gamma_rho * W[i] * W[i] * component_lump
+    wp.atomic_add(inertia_lump, body, weight)
+    mask[body] = 1
+
+
+@wp.kernel(enable_backward=False)
+def accumulate_indices_proximal_lump_kernel(
+    indices: wp.array[int],
+    W: wp.array[float],
+    gamma_rho: float,
+    lump: wp.array[float],
+    mask: wp.array[int],
+):
+    """Accumulate scalar proximal lumps for local indices."""
+    i = wp.tid()
+    index = indices[i]
+    if 0 <= index and index < lump.shape[0]:
+        wp.atomic_add(lump, index, gamma_rho * W[i] * W[i])
+        mask[index] = 1
+
+
+@wp.kernel(enable_backward=False)
+def accumulate_active_indices_proximal_lump_kernel(
+    active_count: wp.array[int],
+    indices: wp.array[int],
+    W: wp.array[float],
+    gamma_rho: float,
+    lump: wp.array[float],
+    mask: wp.array[int],
+):
+    """Accumulate scalar proximal lumps for active local indices."""
+    i = wp.tid()
+    if i >= active_count[0]:
+        return
+    index = indices[i]
+    if 0 <= index and index < lump.shape[0]:
+        wp.atomic_add(lump, index, gamma_rho * W[i] * W[i])
+        mask[index] = 1
+
+
+@wp.kernel(enable_backward=False)
+def accumulate_global_indices_proximal_lump_kernel(
+    indices: wp.array[int],
+    global_to_local: wp.array[int],
+    W: wp.array[float],
+    gamma_rho: float,
+    local_lump: wp.array[float],
+    local_mask: wp.array[int],
+):
+    """Accumulate scalar proximal lumps for global ids mapped to local ids."""
+    i = wp.tid()
+    global_id = indices[i]
+    if 0 <= global_id and global_id < global_to_local.shape[0]:
+        local_id = global_to_local[global_id]
+        if 0 <= local_id and local_id < local_lump.shape[0]:
+            wp.atomic_add(local_lump, local_id, gamma_rho * W[i] * W[i])
+            local_mask[local_id] = 1
+
+
+@wp.kernel(enable_backward=False)
+def accumulate_active_global_indices_proximal_lump_kernel(
+    active_count: wp.array[int],
+    indices: wp.array[int],
+    global_to_local: wp.array[int],
+    W: wp.array[float],
+    gamma_rho: float,
+    local_lump: wp.array[float],
+    local_mask: wp.array[int],
+):
+    """Accumulate active scalar proximal lumps for global ids."""
+    i = wp.tid()
+    if i >= active_count[0]:
+        return
+    global_id = indices[i]
+    if 0 <= global_id and global_id < global_to_local.shape[0]:
+        local_id = global_to_local[global_id]
+        if 0 <= local_id and local_id < local_lump.shape[0]:
+            wp.atomic_add(local_lump, local_id, gamma_rho * W[i] * W[i])
+            local_mask[local_id] = 1
+
+
+@wp.kernel(enable_backward=False)
+def accumulate_joint_qd_factor_from_body_proximal_lump_kernel(
+    body_mass_lump: wp.array[float],
+    body_inertia_lump: wp.array[float],
+    body_local_to_global: wp.array[int],
+    body_effective_mass: wp.array[float],
+    body_effective_inertia_scalar: wp.array[float],
+    body_joint_qd_start: wp.array[int],
+    body_joint_qd_count: wp.array[int],
+    body_joint_qd_indices: wp.array[int],
+    joint_qd_factor: wp.array[float],
+    joint_qd_mask: wp.array[int],
+):
+    """Propagate body proximal lumps to generalized-velocity DOFs."""
+    body = wp.tid()
+    global_body = body_local_to_global[body]
+    factor = float(0.0)
+
+    mass = body_effective_mass[global_body]
+    if mass > 0.0 and body_mass_lump[body] > 0.0:
+        factor = factor + body_mass_lump[body] / mass
+
+    inertia = body_effective_inertia_scalar[global_body]
+    if inertia > 0.0 and body_inertia_lump[body] > 0.0:
+        factor = factor + body_inertia_lump[body] / inertia
+
+    if factor <= 0.0:
+        return
+
+    start = body_joint_qd_start[body]
+    count = body_joint_qd_count[body]
+    for offset in range(count):
+        dof = body_joint_qd_indices[start + offset]
+        if 0 <= dof and dof < joint_qd_factor.shape[0]:
+            wp.atomic_add(joint_qd_factor, dof, factor)
+            joint_qd_mask[dof] = 1
 
 
 # ----------------------------------------------------------------------
@@ -328,55 +796,6 @@ def solve_coulomb_isotropic(mu: float, normal: wp.vec3, u: wp.vec3):
 
 @wp.kernel(enable_backward=False)
 def contact_u_update_kernel(
-    u_min: wp.array[float],
-    W: wp.array[float],
-    rho: float,
-    friction: wp.array[float],
-    normal: wp.array[wp.vec3],
-    lambda_k: wp.array[wp.vec3],
-    Jv: wp.array[wp.vec3],
-    u_out: wp.array[wp.vec3],
-):
-    """Local ADMM u-update for unilateral Coulomb contact.
-
-    ``u_min`` is the minimum admissible normal relative velocity. For active
-    penetration this is a non-negative separating velocity; for inactive
-    candidate contacts it is a large negative value so the projection releases
-    any warm-started contact force.
-    """
-    i = wp.tid()
-    W_i = W[i]
-    p = Jv[i]
-    denom = rho * W_i
-    if denom > 0.0:
-        p = p - lambda_k[i] / denom
-
-    u_min_i = u_min[i]
-    if u_min_i <= _INACTIVE_U_MIN:
-        u_out[i] = p
-        return
-
-    n = normal[i]
-    mu = wp.max(0.0, friction[i])
-    shifted = p - u_min_i * n
-    u_out[i] = solve_coulomb_isotropic(mu, n, shifted) + u_min_i * n
-
-
-@wp.kernel(enable_backward=False)
-def contact_lambda_update_kernel(
-    rho: float,
-    W: wp.array[float],
-    u: wp.array[wp.vec3],
-    Jv: wp.array[wp.vec3],
-    lambda_inout: wp.array[wp.vec3],
-):
-    """Dual update for unilateral contact after the Coulomb local solve."""
-    i = wp.tid()
-    lambda_inout[i] = lambda_inout[i] + rho * W[i] * (u[i] - Jv[i])
-
-
-@wp.kernel(enable_backward=False)
-def contact_u_update_active_kernel(
     active_count: wp.array[int],
     u_min: wp.array[float],
     W: wp.array[float],
@@ -410,7 +829,7 @@ def contact_u_update_active_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def contact_lambda_update_active_kernel(
+def contact_lambda_update_kernel(
     active_count: wp.array[int],
     rho: float,
     W: wp.array[float],
@@ -717,7 +1136,7 @@ def attach_rr_revolute_angular_local_accumulate_forces_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def contact_rr_compute_Jv_kernel(
+def attach_rr_compute_Jv_kernel(
     body_a: wp.array[int],
     point_a_local: wp.array[wp.vec3],
     body_b: wp.array[int],
@@ -730,7 +1149,7 @@ def contact_rr_compute_Jv_kernel(
     body_qd_b: wp.array[wp.spatial_vector],
     Jv: wp.array[wp.vec3],
 ):
-    """Compute relative point velocity for a rigid-rigid contact."""
+    """Compute relative point velocity for a rigid-rigid point attachment."""
     i = wp.tid()
     ba = body_a[i]
     bb = body_b[i]
@@ -749,35 +1168,7 @@ def contact_rr_compute_Jv_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def contact_rr_compute_u_min_kernel(
-    body_a: wp.array[int],
-    point_a_local: wp.array[wp.vec3],
-    body_b: wp.array[int],
-    point_b_local: wp.array[wp.vec3],
-    normal: wp.array[wp.vec3],
-    contact_distance: wp.array[float],
-    body_q_a: wp.array[wp.transform],
-    body_q_b: wp.array[wp.transform],
-    baumgarte: float,
-    dt: float,
-    u_min: wp.array[float],
-):
-    """Compute the minimum normal velocity for a rigid-rigid contact."""
-    i = wp.tid()
-    ba = body_a[i]
-    bb = body_b[i]
-    point_a = wp.transform_point(body_q_a[ba], point_a_local[i])
-    point_b = wp.transform_point(body_q_b[bb], point_b_local[i])
-    gap = wp.dot(normal[i], point_a - point_b)
-    violation = contact_distance[i] - gap
-    if violation > 0.0 and dt > 0.0:
-        u_min[i] = baumgarte * violation / dt
-    else:
-        u_min[i] = _INACTIVE_U_MIN
-
-
-@wp.kernel(enable_backward=False)
-def contact_rr_accumulate_forces_kernel(
+def attach_rr_accumulate_forces_kernel(
     body_a: wp.array[int],
     point_a_local: wp.array[wp.vec3],
     body_b: wp.array[int],
@@ -794,7 +1185,7 @@ def contact_rr_accumulate_forces_kernel(
     body_f_a: wp.array[wp.spatial_vector],
     body_f_b: wp.array[wp.spatial_vector],
 ):
-    """Splat Coulomb contact wrenches for a rigid-rigid contact."""
+    """Splat point-attachment forces for a rigid-rigid row."""
     i = wp.tid()
     ba = body_a[i]
     bb = body_b[i]
@@ -814,12 +1205,14 @@ def contact_rr_accumulate_forces_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def contact_rr_compute_Jv_active_kernel(
+def contact_rr_compute_Jv_kernel(
     active_count: wp.array[int],
     body_a: wp.array[int],
     point_a_local: wp.array[wp.vec3],
+    point_a_offset_local: wp.array[wp.vec3],
     body_b: wp.array[int],
     point_b_local: wp.array[wp.vec3],
+    point_b_offset_local: wp.array[wp.vec3],
     body_q_a: wp.array[wp.transform],
     body_com_a: wp.array[wp.vec3],
     body_qd_a: wp.array[wp.spatial_vector],
@@ -836,12 +1229,12 @@ def contact_rr_compute_Jv_active_kernel(
     bb = body_b[i]
 
     xform_a = body_q_a[ba]
-    point_a = wp.transform_point(xform_a, point_a_local[i])
+    point_a = contact_surface_point(xform_a, point_a_local[i], point_a_offset_local[i])
     arm_a = point_a - wp.transform_point(xform_a, body_com_a[ba])
     vel_a = velocity_at_point(body_qd_a[ba], arm_a)
 
     xform_b = body_q_b[bb]
-    point_b = wp.transform_point(xform_b, point_b_local[i])
+    point_b = contact_surface_point(xform_b, point_b_local[i], point_b_offset_local[i])
     arm_b = point_b - wp.transform_point(xform_b, body_com_b[bb])
     vel_b = velocity_at_point(body_qd_b[bb], arm_b)
 
@@ -849,14 +1242,15 @@ def contact_rr_compute_Jv_active_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def contact_rr_compute_u_min_active_kernel(
+def contact_rr_compute_u_min_kernel(
     active_count: wp.array[int],
     body_a: wp.array[int],
     point_a_local: wp.array[wp.vec3],
+    point_a_offset_local: wp.array[wp.vec3],
     body_b: wp.array[int],
     point_b_local: wp.array[wp.vec3],
+    point_b_offset_local: wp.array[wp.vec3],
     normal: wp.array[wp.vec3],
-    contact_distance: wp.array[float],
     body_q_a: wp.array[wp.transform],
     body_q_b: wp.array[wp.transform],
     baumgarte: float,
@@ -869,23 +1263,21 @@ def contact_rr_compute_u_min_active_kernel(
         return
     ba = body_a[i]
     bb = body_b[i]
-    point_a = wp.transform_point(body_q_a[ba], point_a_local[i])
-    point_b = wp.transform_point(body_q_b[bb], point_b_local[i])
+    point_a = contact_surface_point(body_q_a[ba], point_a_local[i], point_a_offset_local[i])
+    point_b = contact_surface_point(body_q_b[bb], point_b_local[i], point_b_offset_local[i])
     gap = wp.dot(normal[i], point_a - point_b)
-    violation = contact_distance[i] - gap
-    if violation > 0.0 and dt > 0.0:
-        u_min[i] = baumgarte * violation / dt
-    else:
-        u_min[i] = _INACTIVE_U_MIN
+    u_min[i] = _contact_u_min_from_gap(gap, baumgarte, dt)
 
 
 @wp.kernel(enable_backward=False)
-def contact_rr_accumulate_forces_active_kernel(
+def contact_rr_accumulate_forces_kernel(
     active_count: wp.array[int],
     body_a: wp.array[int],
     point_a_local: wp.array[wp.vec3],
+    point_a_offset_local: wp.array[wp.vec3],
     body_b: wp.array[int],
     point_b_local: wp.array[wp.vec3],
+    point_b_offset_local: wp.array[wp.vec3],
     body_q_a: wp.array[wp.transform],
     body_com_a: wp.array[wp.vec3],
     body_q_b: wp.array[wp.transform],
@@ -908,13 +1300,13 @@ def contact_rr_accumulate_forces_active_kernel(
     force_a = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
 
     xform_a = body_q_a[ba]
-    point_a = wp.transform_point(xform_a, point_a_local[i])
+    point_a = contact_surface_point(xform_a, point_a_local[i], point_a_offset_local[i])
     arm_a = point_a - wp.transform_point(xform_a, body_com_a[ba])
     wp.atomic_add(body_f_a, ba, wp.spatial_vector(force_a, wp.cross(arm_a, force_a)))
 
     force_b = -force_a
     xform_b = body_q_b[bb]
-    point_b = wp.transform_point(xform_b, point_b_local[i])
+    point_b = contact_surface_point(xform_b, point_b_local[i], point_b_offset_local[i])
     arm_b = point_b - wp.transform_point(xform_b, body_com_b[bb])
     wp.atomic_add(body_f_b, bb, wp.spatial_vector(force_b, wp.cross(arm_b, force_b)))
 
@@ -962,18 +1354,18 @@ def contact_rr_reset_kernel(
     active_count: wp.array[int],
     body_a: wp.array[int],
     point_a_local: wp.array[wp.vec3],
+    point_a_offset_local: wp.array[wp.vec3],
     body_b: wp.array[int],
     point_b_local: wp.array[wp.vec3],
+    point_b_offset_local: wp.array[wp.vec3],
     contact_id: wp.array[int],
     shape_a: wp.array[int],
     shape_b: wp.array[int],
     point_id: wp.array[int],
     active: wp.array[int],
     normal: wp.array[wp.vec3],
-    contact_distance: wp.array[float],
     W: wp.array[float],
     friction: wp.array[float],
-    u: wp.array[wp.vec3],
     lambda_: wp.array[wp.vec3],
     Jv: wp.array[wp.vec3],
     u_min: wp.array[float],
@@ -985,18 +1377,18 @@ def contact_rr_reset_kernel(
 
     body_a[i] = 0
     point_a_local[i] = wp.vec3(0.0, 0.0, 0.0)
+    point_a_offset_local[i] = wp.vec3(0.0, 0.0, 0.0)
     body_b[i] = 0
     point_b_local[i] = wp.vec3(0.0, 0.0, 0.0)
+    point_b_offset_local[i] = wp.vec3(0.0, 0.0, 0.0)
     contact_id[i] = -1
     shape_a[i] = -1
     shape_b[i] = -1
     point_id[i] = -1
     active[i] = 0
     normal[i] = wp.vec3(0.0, 0.0, 0.0)
-    contact_distance[i] = 0.0
     W[i] = 0.0
     friction[i] = 0.0
-    u[i] = wp.vec3(0.0, 0.0, 0.0)
     lambda_[i] = wp.vec3(0.0, 0.0, 0.0)
     Jv[i] = wp.vec3(0.0, 0.0, 0.0)
     u_min[i] = _INACTIVE_U_MIN
@@ -1009,9 +1401,9 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     rigid_contact_shape1: wp.array[int],
     rigid_contact_point0: wp.array[wp.vec3],
     rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_offset0: wp.array[wp.vec3],
+    rigid_contact_offset1: wp.array[wp.vec3],
     rigid_contact_normal: wp.array[wp.vec3],
-    rigid_contact_margin0: wp.array[float],
-    rigid_contact_margin1: wp.array[float],
     rigid_contact_point_id: wp.array[int],
     rigid_contact_match_index: wp.array[wp.int32],
     shape_body: wp.array[int],
@@ -1024,9 +1416,8 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     body_mass_a: wp.array[float],
     body_mass_b: wp.array[float],
     shape_material_mu: wp.array[float],
-    contact_distance_value: float,
-    use_contact_margins: int,
     use_contact_matching: int,
+    contact_matching_force_scale: float,
     capacity: int,
     active_count: wp.array[int],
     active_count_max: wp.array[int],
@@ -1035,18 +1426,18 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     prev_contact_W: wp.array[float],
     body_a: wp.array[int],
     point_a_local: wp.array[wp.vec3],
+    point_a_offset_local: wp.array[wp.vec3],
     body_b: wp.array[int],
     point_b_local: wp.array[wp.vec3],
+    point_b_offset_local: wp.array[wp.vec3],
     contact_id: wp.array[int],
     shape_a: wp.array[int],
     shape_b: wp.array[int],
     point_id: wp.array[int],
     active: wp.array[int],
     normal: wp.array[wp.vec3],
-    contact_distance: wp.array[float],
     W: wp.array[float],
     friction: wp.array[float],
-    u: wp.array[wp.vec3],
     lambda_: wp.array[wp.vec3],
 ):
     """Convert detected rigid contacts into oriented ADMM rigid-rigid rows."""
@@ -1070,6 +1461,8 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     sb = int(-1)
     pa = wp.vec3(0.0, 0.0, 0.0)
     pb = wp.vec3(0.0, 0.0, 0.0)
+    oa = wp.vec3(0.0, 0.0, 0.0)
+    ob = wp.vec3(0.0, 0.0, 0.0)
     n = wp.vec3(0.0, 0.0, 0.0)
 
     if body_mask_a[b1] != 0 and body_mask_b[b0] != 0 and shape_mask_a[s1] != 0 and shape_mask_b[s0] != 0:
@@ -1079,6 +1472,8 @@ def contact_rr_fill_from_rigid_contacts_kernel(
         sb = s0
         pa = rigid_contact_point1[i]
         pb = rigid_contact_point0[i]
+        oa = rigid_contact_offset1[i]
+        ob = rigid_contact_offset0[i]
         n = rigid_contact_normal[i]
     elif body_mask_a[b0] != 0 and body_mask_b[b1] != 0 and shape_mask_a[s0] != 0 and shape_mask_b[s1] != 0:
         ba = b0
@@ -1087,6 +1482,8 @@ def contact_rr_fill_from_rigid_contacts_kernel(
         sb = s1
         pa = rigid_contact_point0[i]
         pb = rigid_contact_point1[i]
+        oa = rigid_contact_offset0[i]
+        ob = rigid_contact_offset1[i]
         n = -rigid_contact_normal[i]
     else:
         return
@@ -1105,18 +1502,16 @@ def contact_rr_fill_from_rigid_contacts_kernel(
 
     body_a[dst] = ba_local
     point_a_local[dst] = pa
+    point_a_offset_local[dst] = oa
     body_b[dst] = bb_local
     point_b_local[dst] = pb
+    point_b_offset_local[dst] = ob
     contact_id[dst] = i
     shape_a[dst] = sa
     shape_b[dst] = sb
     point_id[dst] = rigid_contact_point_id[i]
     active[dst] = 1
     normal[dst] = n
-    if use_contact_margins != 0:
-        contact_distance[dst] = rigid_contact_margin0[i] + rigid_contact_margin1[i]
-    else:
-        contact_distance[dst] = contact_distance_value
 
     ma = body_mass_a[ba]
     mb = body_mass_b[bb]
@@ -1129,9 +1524,11 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     if use_contact_matching != 0:
         prev_id = rigid_contact_match_index[i]
         if prev_id >= 0 and prev_id < prev_contact_active.shape[0] and prev_contact_active[prev_id] != 0:
-            lambda_out = _rescale_lambda(prev_contact_lambda[prev_id], prev_contact_W[prev_id], weight)
+            lambda_out = (
+                contact_matching_force_scale
+                * _rescale_lambda(prev_contact_lambda[prev_id], prev_contact_W[prev_id], weight)
+            )
 
-    u[dst] = wp.vec3(0.0, 0.0, 0.0)
     lambda_[dst] = lambda_out
 
 
@@ -1145,6 +1542,7 @@ def contact_rr_fill_from_rigid_contacts_kernel(
 
 @wp.kernel(enable_backward=False)
 def contact_rp_compute_Jv_kernel(
+    active_count: wp.array[int],
     body_id: wp.array[int],
     point_body_local: wp.array[wp.vec3],
     particle_id: wp.array[int],
@@ -1155,8 +1553,10 @@ def contact_rp_compute_Jv_kernel(
     particle_qd: wp.array[wp.vec3],
     Jv: wp.array[wp.vec3],
 ):
-    """Compute relative velocity for a rigid-particle contact."""
+    """Compute relative velocity for compact active rigid-particle contacts."""
     i = wp.tid()
+    if i >= active_count[0]:
+        return
     b = body_id[i]
     p = particle_id[i]
     xform = body_q[b]
@@ -1172,20 +1572,23 @@ def contact_rp_compute_Jv_kernel(
 
 @wp.kernel(enable_backward=False)
 def contact_rp_compute_u_min_kernel(
+    active_count: wp.array[int],
     body_id: wp.array[int],
     point_body_local: wp.array[wp.vec3],
     particle_id: wp.array[int],
     normal: wp.array[wp.vec3],
     body_sign: wp.array[int],
-    contact_distance: wp.array[float],
     body_q: wp.array[wp.transform],
     particle_q: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
     baumgarte: float,
     dt: float,
     u_min: wp.array[float],
 ):
-    """Compute the minimum normal velocity for a rigid-particle contact."""
+    """Compute the minimum normal velocity for compact active rigid-particle contacts."""
     i = wp.tid()
+    if i >= active_count[0]:
+        return
     b = body_id[i]
     p = particle_id[i]
     body_pt = wp.transform_point(body_q[b], point_body_local[i])
@@ -1197,15 +1600,13 @@ def contact_rp_compute_u_min_kernel(
     else:
         gap = wp.dot(n, particle_pt - body_pt)
 
-    violation = contact_distance[i] - gap
-    if violation > 0.0 and dt > 0.0:
-        u_min[i] = baumgarte * violation / dt
-    else:
-        u_min[i] = _INACTIVE_U_MIN
+    surface_gap = gap - particle_radius[p]
+    u_min[i] = _contact_u_min_from_gap(surface_gap, baumgarte, dt)
 
 
 @wp.kernel(enable_backward=False)
 def contact_rp_accumulate_forces_kernel(
+    active_count: wp.array[int],
     body_id: wp.array[int],
     point_body_local: wp.array[wp.vec3],
     particle_id: wp.array[int],
@@ -1220,8 +1621,10 @@ def contact_rp_accumulate_forces_kernel(
     body_f: wp.array[wp.spatial_vector],
     particle_f: wp.array[wp.vec3],
 ):
-    """Splat Coulomb contact forces for a rigid-particle contact."""
+    """Splat Coulomb contact forces for compact active rigid-particle contacts."""
     i = wp.tid()
+    if i >= active_count[0]:
+        return
     b = body_id[i]
     p = particle_id[i]
     W_i = W[i]
@@ -1242,14 +1645,12 @@ def contact_rp_snapshot_kernel(
     shape_id: wp.array[int],
     active: wp.array[int],
     W: wp.array[float],
-    u: wp.array[wp.vec3],
     lambda_: wp.array[wp.vec3],
     prev_body_id: wp.array[int],
     prev_particle_id: wp.array[int],
     prev_shape_id: wp.array[int],
     prev_active: wp.array[int],
     prev_W: wp.array[float],
-    prev_u: wp.array[wp.vec3],
     prev_lambda: wp.array[wp.vec3],
 ):
     """Snapshot dynamic rigid-particle contacts for key-based warm starting."""
@@ -1259,7 +1660,6 @@ def contact_rp_snapshot_kernel(
     prev_shape_id[i] = shape_id[i]
     prev_active[i] = active[i]
     prev_W[i] = W[i]
-    prev_u[i] = u[i]
     prev_lambda[i] = lambda_[i]
 
 
@@ -1273,10 +1673,8 @@ def contact_rp_reset_kernel(
     active: wp.array[int],
     normal: wp.array[wp.vec3],
     body_sign: wp.array[int],
-    contact_distance: wp.array[float],
     W: wp.array[float],
     friction: wp.array[float],
-    u: wp.array[wp.vec3],
     lambda_: wp.array[wp.vec3],
     Jv: wp.array[wp.vec3],
     u_min: wp.array[float],
@@ -1293,10 +1691,8 @@ def contact_rp_reset_kernel(
     shape_id[i] = -1
     normal[i] = wp.vec3(0.0, 0.0, 0.0)
     body_sign[i] = -1
-    contact_distance[i] = 0.0
     W[i] = 0.0
     friction[i] = 0.0
-    u[i] = wp.vec3(0.0, 0.0, 0.0)
     lambda_[i] = wp.vec3(0.0, 0.0, 0.0)
     Jv[i] = wp.vec3(0.0, 0.0, 0.0)
     u_min[i] = _INACTIVE_U_MIN
@@ -1314,13 +1710,10 @@ def contact_rp_fill_from_soft_contacts_kernel(
     body_owner_mask: wp.array[int],
     shape_filter_mask: wp.array[int],
     body_global_to_local: wp.array[int],
-    particle_radius: wp.array[float],
     body_mass: wp.array[float],
     particle_mass: wp.array[float],
     shape_material_mu: wp.array[float],
     particle_mu: float,
-    contact_distance_value: float,
-    use_particle_radius: int,
     capacity: int,
     active_count: wp.array[int],
     active_count_max: wp.array[int],
@@ -1328,7 +1721,6 @@ def contact_rp_fill_from_soft_contacts_kernel(
     prev_shape_id: wp.array[int],
     prev_active: wp.array[int],
     prev_W: wp.array[float],
-    prev_u: wp.array[wp.vec3],
     prev_lambda: wp.array[wp.vec3],
     body_id: wp.array[int],
     point_body_local: wp.array[wp.vec3],
@@ -1337,10 +1729,8 @@ def contact_rp_fill_from_soft_contacts_kernel(
     active: wp.array[int],
     normal: wp.array[wp.vec3],
     body_sign: wp.array[int],
-    contact_distance: wp.array[float],
     W: wp.array[float],
     friction: wp.array[float],
-    u: wp.array[wp.vec3],
     lambda_: wp.array[wp.vec3],
 ):
     """Populate a dynamic rigid-particle group from soft particle-shape contacts."""
@@ -1380,15 +1770,9 @@ def contact_rp_fill_from_soft_contacts_kernel(
     m_b = particle_mass[p]
     weight = _interface_weight(m_a, m_b)
 
-    distance = contact_distance_value
-    if use_particle_radius != 0:
-        distance = particle_radius[p]
-
-    u0 = wp.vec3(0.0, 0.0, 0.0)
     lambda0 = wp.vec3(0.0, 0.0, 0.0)
     for j in range(capacity):
         if prev_active[j] != 0 and prev_particle_id[j] == p and prev_shape_id[j] == s:
-            u0 = prev_u[j]
             lambda0 = _rescale_lambda(prev_lambda[j], prev_W[j], weight)
             break
 
@@ -1399,11 +1783,9 @@ def contact_rp_fill_from_soft_contacts_kernel(
     shape_id[dst] = s
     normal[dst] = n
     body_sign[dst] = -1
-    contact_distance[dst] = distance
     W[dst] = weight
     # Geometric-mean combining of shape and particle friction.
     friction[dst] = wp.sqrt(shape_material_mu[s] * particle_mu)
-    u[dst] = u0
     lambda_[dst] = lambda0
 
 
@@ -1414,14 +1796,17 @@ def contact_rp_fill_from_soft_contacts_kernel(
 
 @wp.kernel(enable_backward=False)
 def contact_pp_compute_Jv_kernel(
+    active_count: wp.array[int],
     particle_a: wp.array[int],
     particle_b: wp.array[int],
     particle_qd_a: wp.array[wp.vec3],
     particle_qd_b: wp.array[wp.vec3],
     Jv: wp.array[wp.vec3],
 ):
-    """Compute relative velocity for a particle-particle contact."""
+    """Compute relative velocity for compact active particle-particle contacts."""
     i = wp.tid()
+    if i >= active_count[0]:
+        return
     pa = particle_a[i]
     pb = particle_b[i]
     Jv[i] = particle_qd_a[pa] - particle_qd_b[pb]
@@ -1429,30 +1814,30 @@ def contact_pp_compute_Jv_kernel(
 
 @wp.kernel(enable_backward=False)
 def contact_pp_compute_u_min_kernel(
+    active_count: wp.array[int],
     particle_a: wp.array[int],
     particle_b: wp.array[int],
     normal: wp.array[wp.vec3],
-    contact_distance: wp.array[float],
     particle_q_a: wp.array[wp.vec3],
     particle_q_b: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
     baumgarte: float,
     dt: float,
     u_min: wp.array[float],
 ):
-    """Compute the minimum normal velocity for a particle-particle contact."""
+    """Compute the minimum normal velocity for compact active particle-particle contacts."""
     i = wp.tid()
+    if i >= active_count[0]:
+        return
     pa = particle_a[i]
     pb = particle_b[i]
-    gap = wp.dot(normal[i], particle_q_a[pa] - particle_q_b[pb])
-    violation = contact_distance[i] - gap
-    if violation > 0.0 and dt > 0.0:
-        u_min[i] = baumgarte * violation / dt
-    else:
-        u_min[i] = _INACTIVE_U_MIN
+    gap = wp.dot(normal[i], particle_q_a[pa] - particle_q_b[pb]) - (particle_radius[pa] + particle_radius[pb])
+    u_min[i] = _contact_u_min_from_gap(gap, baumgarte, dt)
 
 
 @wp.kernel(enable_backward=False)
 def contact_pp_accumulate_forces_kernel(
+    active_count: wp.array[int],
     particle_a: wp.array[int],
     particle_b: wp.array[int],
     rho: float,
@@ -1463,8 +1848,10 @@ def contact_pp_accumulate_forces_kernel(
     particle_f_a: wp.array[wp.vec3],
     particle_f_b: wp.array[wp.vec3],
 ):
-    """Splat Coulomb contact forces for a particle-particle contact."""
+    """Splat Coulomb contact forces for compact active particle-particle contacts."""
     i = wp.tid()
+    if i >= active_count[0]:
+        return
     pa = particle_a[i]
     pb = particle_b[i]
     W_i = W[i]
@@ -1479,13 +1866,11 @@ def contact_pp_snapshot_kernel(
     particle_b: wp.array[int],
     active: wp.array[int],
     W: wp.array[float],
-    u: wp.array[wp.vec3],
     lambda_: wp.array[wp.vec3],
     prev_particle_a: wp.array[int],
     prev_particle_b: wp.array[int],
     prev_active: wp.array[int],
     prev_W: wp.array[float],
-    prev_u: wp.array[wp.vec3],
     prev_lambda: wp.array[wp.vec3],
 ):
     """Snapshot dynamic particle-particle contacts for key-based warm starting."""
@@ -1494,7 +1879,6 @@ def contact_pp_snapshot_kernel(
     prev_particle_b[i] = particle_b[i]
     prev_active[i] = active[i]
     prev_W[i] = W[i]
-    prev_u[i] = u[i]
     prev_lambda[i] = lambda_[i]
 
 
@@ -1505,10 +1889,8 @@ def contact_pp_reset_kernel(
     particle_b: wp.array[int],
     active: wp.array[int],
     normal: wp.array[wp.vec3],
-    contact_distance: wp.array[float],
     W: wp.array[float],
     friction: wp.array[float],
-    u: wp.array[wp.vec3],
     lambda_: wp.array[wp.vec3],
     Jv: wp.array[wp.vec3],
     u_min: wp.array[float],
@@ -1522,10 +1904,8 @@ def contact_pp_reset_kernel(
     particle_b[i] = 0
     active[i] = 0
     normal[i] = wp.vec3(0.0, 0.0, 0.0)
-    contact_distance[i] = 0.0
     W[i] = 0.0
     friction[i] = 0.0
-    u[i] = wp.vec3(0.0, 0.0, 0.0)
     lambda_[i] = wp.vec3(0.0, 0.0, 0.0)
     Jv[i] = wp.vec3(0.0, 0.0, 0.0)
     u_min[i] = _INACTIVE_U_MIN
@@ -1546,9 +1926,6 @@ def particle_particle_contacts_hashgrid_kernel(
     particle_world: wp.array[int],
     particle_mask_a: wp.array[int],
     particle_mask_b: wp.array[int],
-    contact_distance_value: float,
-    use_radius_sum: int,
-    detection_margin: float,
     query_radius: float,
     capacity: int,
     particle_contact_count: wp.array[int],
@@ -1556,7 +1933,6 @@ def particle_particle_contacts_hashgrid_kernel(
     particle_contact_particle0: wp.array[int],
     particle_contact_particle1: wp.array[int],
     particle_contact_normal: wp.array[wp.vec3],
-    particle_contact_distance: wp.array[float],
     particle_contact_tids: wp.array[int],
 ):
     """Detect particle-particle contacts into a contacts-like stream."""
@@ -1586,13 +1962,9 @@ def particle_particle_contacts_hashgrid_kernel(
         if world_a != -1 and world_b != -1 and world_a != world_b:
             continue
 
-        distance = contact_distance_value
-        if use_radius_sum != 0:
-            distance = particle_radius[pa] + particle_radius[pb]
-
         delta = qa - particle_q[pb]
         gap = wp.length(delta)
-        if gap >= distance + detection_margin:
+        if gap >= particle_radius[pa] + particle_radius[pb]:
             continue
 
         n = wp.vec3(1.0, 0.0, 0.0)
@@ -1609,7 +1981,6 @@ def particle_particle_contacts_hashgrid_kernel(
         particle_contact_particle0[dst] = pa
         particle_contact_particle1[dst] = pb
         particle_contact_normal[dst] = n
-        particle_contact_distance[dst] = distance
         particle_contact_tids[dst] = tid
 
 
@@ -1619,7 +1990,6 @@ def contact_pp_fill_from_particle_contacts_kernel(
     particle_contact_particle0: wp.array[int],
     particle_contact_particle1: wp.array[int],
     particle_contact_normal: wp.array[wp.vec3],
-    particle_contact_distance: wp.array[float],
     particle_mass_a: wp.array[float],
     particle_mass_b: wp.array[float],
     particle_mu: float,
@@ -1630,16 +2000,13 @@ def contact_pp_fill_from_particle_contacts_kernel(
     prev_particle_b: wp.array[int],
     prev_active: wp.array[int],
     prev_W: wp.array[float],
-    prev_u: wp.array[wp.vec3],
     prev_lambda: wp.array[wp.vec3],
     particle_a: wp.array[int],
     particle_b: wp.array[int],
     active: wp.array[int],
     normal: wp.array[wp.vec3],
-    contact_distance: wp.array[float],
     W: wp.array[float],
     friction: wp.array[float],
-    u: wp.array[wp.vec3],
     lambda_: wp.array[wp.vec3],
 ):
     """Populate a dynamic particle-particle group from a contacts-like stream."""
@@ -1660,11 +2027,9 @@ def contact_pp_fill_from_particle_contacts_kernel(
     m_b = particle_mass_b[pb]
     weight = _interface_weight(m_a, m_b)
 
-    u0 = wp.vec3(0.0, 0.0, 0.0)
     lambda0 = wp.vec3(0.0, 0.0, 0.0)
     for j in range(capacity):
         if prev_active[j] != 0 and prev_particle_a[j] == pa and prev_particle_b[j] == pb:
-            u0 = prev_u[j]
             lambda0 = _rescale_lambda(prev_lambda[j], prev_W[j], weight)
             break
 
@@ -1672,8 +2037,6 @@ def contact_pp_fill_from_particle_contacts_kernel(
     particle_b[dst] = pb
     active[dst] = 1
     normal[dst] = particle_contact_normal[i]
-    contact_distance[dst] = particle_contact_distance[i]
     W[dst] = weight
     friction[dst] = particle_mu
-    u[dst] = u0
     lambda_[dst] = lambda0

@@ -2130,13 +2130,14 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
         body_b = wp.zeros(capacity, dtype=int, device=device)
         point_a = wp.zeros(capacity, dtype=wp.vec3, device=device)
         point_b = wp.zeros(capacity, dtype=wp.vec3, device=device)
+        offset_a = wp.zeros(capacity, dtype=wp.vec3, device=device)
+        offset_b = wp.zeros(capacity, dtype=wp.vec3, device=device)
         shape_a = wp.full(capacity, -1, dtype=int, device=device)
         shape_b = wp.full(capacity, -1, dtype=int, device=device)
         contact_id = wp.full(capacity, -1, dtype=int, device=device)
         point_id = wp.full(capacity, -1, dtype=int, device=device)
         active = wp.zeros(capacity, dtype=int, device=device)
         normal = wp.zeros(capacity, dtype=wp.vec3, device=device)
-        contact_distance = wp.zeros(capacity, dtype=float, device=device)
         W = wp.zeros(capacity, dtype=float, device=device)
         friction = wp.zeros(capacity, dtype=float, device=device)
         u = wp.zeros(capacity, dtype=wp.vec3, device=device)
@@ -2156,9 +2157,9 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
                 wp.array([1], dtype=int, device=device),
                 wp.array([wp.vec3(0.1, 0.2, 0.3)], dtype=wp.vec3, device=device),
                 wp.array([wp.vec3(0.4, 0.5, 0.6)], dtype=wp.vec3, device=device),
+                wp.array([wp.vec3(0.0, 0.01, 0.0)], dtype=wp.vec3, device=device),
+                wp.array([wp.vec3(0.0, -0.02, 0.0)], dtype=wp.vec3, device=device),
                 wp.array([wp.vec3(0.0, 1.0, 0.0)], dtype=wp.vec3, device=device),
-                wp.array([0.01], dtype=float, device=device),
-                wp.array([0.02], dtype=float, device=device),
                 wp.array([23], dtype=int, device=device),
                 wp.array([-1], dtype=wp.int32, device=device),
                 wp.array([5, 7], dtype=int, device=device),
@@ -2171,8 +2172,6 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
                 wp.array([0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0], dtype=float, device=device),
                 wp.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6.0], dtype=float, device=device),
                 wp.array([0.25, 1.0], dtype=float, device=device),
-                0.0,
-                1,
                 0,
                 capacity,
                 active_count,
@@ -2184,15 +2183,16 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
             outputs=[
                 body_a,
                 point_a,
+                offset_a,
                 body_b,
                 point_b,
+                offset_b,
                 contact_id,
                 shape_a,
                 shape_b,
                 point_id,
                 active,
                 normal,
-                contact_distance,
                 W,
                 friction,
                 u,
@@ -2206,6 +2206,10 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
         self.assertEqual(int(body_b.numpy()[0]), 1)
         self.assertEqual(int(contact_id.numpy()[0]), 0)
         self.assertEqual(int(point_id.numpy()[0]), 23)
+        np.testing.assert_allclose(point_a.numpy()[0], np.array([0.1, 0.2, 0.3]), atol=1.0e-6)
+        np.testing.assert_allclose(offset_a.numpy()[0], np.array([0.0, 0.01, 0.0]), atol=1.0e-6)
+        np.testing.assert_allclose(point_b.numpy()[0], np.array([0.4, 0.5, 0.6]), atol=1.0e-6)
+        np.testing.assert_allclose(offset_b.numpy()[0], np.array([0.0, -0.02, 0.0]), atol=1.0e-6)
         np.testing.assert_allclose(W.numpy()[0], np.sqrt(1.5), rtol=1.0e-6)
         np.testing.assert_allclose(friction.numpy()[0], 0.5, rtol=1.0e-6)
 
@@ -2222,7 +2226,6 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
         active = wp.zeros(capacity, dtype=int, device=device)
         normal = wp.zeros(capacity, dtype=wp.vec3, device=device)
         body_sign = wp.zeros(capacity, dtype=int, device=device)
-        contact_distance = wp.zeros(capacity, dtype=float, device=device)
         W = wp.zeros(capacity, dtype=float, device=device)
         friction = wp.zeros(capacity, dtype=float, device=device)
         u = wp.zeros(capacity, dtype=wp.vec3, device=device)
@@ -2242,13 +2245,10 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
                 wp.array([0, 0, 0, 0, 0, 1], dtype=int, device=device),
                 wp.array([0, 1], dtype=int, device=device),
                 wp.array([-1, -1, -1, -1, -1, 2], dtype=int, device=device),
-                wp.array([0.0, 0.0, 0.0, 0.12], dtype=float, device=device),
                 wp.array([0.0, 0.0, 0.0, 0.0, 0.0, 10.0], dtype=float, device=device),
                 wp.array([0.0, 0.0, 0.0, 2.0], dtype=float, device=device),
                 wp.array([0.0, 0.36], dtype=float, device=device),
                 0.25,
-                0.0,
-                1,
                 capacity,
                 active_count,
                 active_count_max,
@@ -2267,7 +2267,6 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
                 active,
                 normal,
                 body_sign,
-                contact_distance,
                 W,
                 friction,
                 u,
@@ -2281,7 +2280,6 @@ class TestSolverAdmmContactKernels(unittest.TestCase):
         self.assertEqual(int(particle_id.numpy()[0]), 3)
         self.assertEqual(int(shape_id.numpy()[0]), 1)
         np.testing.assert_allclose(normal.numpy()[0], np.array([0.0, 1.0, 0.0]), atol=1.0e-6)
-        np.testing.assert_allclose(contact_distance.numpy()[0], 0.12, atol=1.0e-6)
         np.testing.assert_allclose(W.numpy()[0], np.sqrt(20.0 / 12.0), rtol=1.0e-6)
         np.testing.assert_allclose(friction.numpy()[0], 0.3, rtol=1.0e-6)
 

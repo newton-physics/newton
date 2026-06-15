@@ -19,6 +19,8 @@ import warp as wp
 import newton
 from newton._src.solvers.coupled.admm_contact_stream import AdmmContactStream, AdmmContactType
 from newton._src.solvers.coupled.admm_utils import (
+    attach_rr_accumulate_forces_kernel,
+    attach_rr_compute_Jv_kernel,
     body_gravity_compensation_kernel,
     contact_lambda_update_kernel,
     contact_pp_accumulate_forces_kernel,
@@ -146,6 +148,13 @@ class _CustomAdmmInputStateUpdateSolver(_CustomAdmmParticleCopySolver):
             wp.launch(_set_admm_particle_qd_kernel, dim=1, inputs=[state.particle_qd], device=self.model.device)
 
 
+class _GraphRefreshAdmmCopySolver(_CustomAdmmParticleCopySolver):
+    """Test solver that opts into graph-safe inertial property refresh."""
+
+    def coupling_supports_inertial_property_refresh(self) -> bool:
+        return True
+
+
 class _CustomEffectiveMassSolver(_CustomAdmmParticleCopySolver):
     """Test solver that reports a fixed effective mass for ADMM endpoints."""
 
@@ -220,6 +229,7 @@ class TestAdmmParticleParticleKernels(unittest.TestCase):
 
     def test_particle_particle_jv_and_force_signs(self):
         device = "cpu"
+        active_count = wp.array([1], dtype=int, device=device)
         particle_a = wp.array([0], dtype=int, device=device)
         particle_b = wp.array([1], dtype=int, device=device)
         particle_qd_a = wp.array([wp.vec3(3.0, 1.0, 0.0), wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
@@ -229,7 +239,7 @@ class TestAdmmParticleParticleKernels(unittest.TestCase):
         wp.launch(
             contact_pp_compute_Jv_kernel,
             dim=1,
-            inputs=[particle_a, particle_b, particle_qd_a, particle_qd_b],
+            inputs=[active_count, particle_a, particle_b, particle_qd_a, particle_qd_b],
             outputs=[Jv],
             device=device,
         )
@@ -246,7 +256,7 @@ class TestAdmmParticleParticleKernels(unittest.TestCase):
         wp.launch(
             contact_pp_accumulate_forces_kernel,
             dim=1,
-            inputs=[particle_a, particle_b, 0.0, W, lambda_, u, Jv_zero],
+            inputs=[active_count, particle_a, particle_b, 0.0, W, lambda_, u, Jv_zero],
             outputs=[particle_f_a, particle_f_b],
             device=device,
         )
@@ -256,10 +266,11 @@ class TestAdmmParticleParticleKernels(unittest.TestCase):
 
     def test_particle_particle_contact_projection_and_force_signs(self):
         device = "cpu"
+        active_count = wp.array([1], dtype=int, device=device)
         particle_a = wp.array([0], dtype=int, device=device)
         particle_b = wp.array([1], dtype=int, device=device)
         normal = wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
-        contact_distance = wp.array([0.0], dtype=float, device=device)
+        particle_radius = wp.zeros(2, dtype=float, device=device)
         q_a = wp.array([wp.vec3(-0.1, 0.0, 0.0)], dtype=wp.vec3, device=device)
         q_b = wp.array([wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
         u_min = wp.zeros(1, dtype=float, device=device)
@@ -267,11 +278,22 @@ class TestAdmmParticleParticleKernels(unittest.TestCase):
         wp.launch(
             contact_pp_compute_u_min_kernel,
             dim=1,
-            inputs=[particle_a, particle_b, normal, contact_distance, q_a, q_b, 1.0, 0.1],
+            inputs=[active_count, particle_a, particle_b, normal, q_a, q_b, particle_radius, 1.0, 0.1],
             outputs=[u_min],
             device=device,
         )
         np.testing.assert_allclose(u_min.numpy(), [1.0], atol=1.0e-6)
+
+        q_a_spec = wp.array([wp.vec3(0.05, 0.0, 0.0)], dtype=wp.vec3, device=device)
+        u_min_spec = wp.zeros(1, dtype=float, device=device)
+        wp.launch(
+            contact_pp_compute_u_min_kernel,
+            dim=1,
+            inputs=[active_count, particle_a, particle_b, normal, q_a_spec, q_b, particle_radius, 0.25, 0.1],
+            outputs=[u_min_spec],
+            device=device,
+        )
+        np.testing.assert_allclose(u_min_spec.numpy(), [-0.5], atol=1.0e-6)
 
         W = wp.array([1.0], dtype=float, device=device)
         friction = wp.zeros(1, dtype=float, device=device)
@@ -281,7 +303,7 @@ class TestAdmmParticleParticleKernels(unittest.TestCase):
         wp.launch(
             contact_u_update_kernel,
             dim=1,
-            inputs=[u_min, W, 10.0, friction, normal, lambda_, Jv],
+            inputs=[active_count, u_min, W, 10.0, friction, normal, lambda_, Jv],
             outputs=[u],
             device=device,
         )
@@ -292,7 +314,7 @@ class TestAdmmParticleParticleKernels(unittest.TestCase):
         wp.launch(
             contact_pp_accumulate_forces_kernel,
             dim=1,
-            inputs=[particle_a, particle_b, 10.0, W, lambda_, u, Jv],
+            inputs=[active_count, particle_a, particle_b, 10.0, W, lambda_, u, Jv],
             outputs=[particle_f_a, particle_f_b],
             device=device,
         )
@@ -301,6 +323,7 @@ class TestAdmmParticleParticleKernels(unittest.TestCase):
 
     def test_contact_projection_satisfies_coulomb_maximum_dissipation(self):
         device = "cpu"
+        active_count = wp.array([1], dtype=int, device=device)
         u_min = wp.array([0.0], dtype=float, device=device)
         W = wp.array([1.0], dtype=float, device=device)
         friction = wp.array([0.5], dtype=float, device=device)
@@ -312,14 +335,14 @@ class TestAdmmParticleParticleKernels(unittest.TestCase):
         wp.launch(
             contact_u_update_kernel,
             dim=1,
-            inputs=[u_min, W, 1.0, friction, normal, lambda_, Jv],
+            inputs=[active_count, u_min, W, 1.0, friction, normal, lambda_, Jv],
             outputs=[u],
             device=device,
         )
         wp.launch(
             contact_lambda_update_kernel,
             dim=1,
-            inputs=[1.0, W, u, Jv],
+            inputs=[active_count, 1.0, W, u, Jv],
             outputs=[lambda_],
             device=device,
         )
@@ -335,8 +358,9 @@ class TestAdmmParticleParticleKernels(unittest.TestCase):
         np.testing.assert_allclose(np.linalg.norm(lambda_t), 0.5 * lambda_n, atol=1.0e-6)
         self.assertLessEqual(float(np.dot(lambda_t, jv_t)), 0.0)
 
-    def test_separated_contact_releases_warm_start(self):
+    def test_inactive_contact_releases_warm_start(self):
         device = "cpu"
+        active_count = wp.array([1], dtype=int, device=device)
         u_min = wp.array([-1.0e8], dtype=float, device=device)
         W = wp.array([1.0], dtype=float, device=device)
         friction = wp.zeros(1, dtype=float, device=device)
@@ -348,14 +372,14 @@ class TestAdmmParticleParticleKernels(unittest.TestCase):
         wp.launch(
             contact_u_update_kernel,
             dim=1,
-            inputs=[u_min, W, 10.0, friction, normal, lambda_, Jv],
+            inputs=[active_count, u_min, W, 10.0, friction, normal, lambda_, Jv],
             outputs=[u],
             device=device,
         )
         wp.launch(
             contact_lambda_update_kernel,
             dim=1,
-            inputs=[10.0, W, u, Jv],
+            inputs=[active_count, 10.0, W, u, Jv],
             outputs=[lambda_],
             device=device,
         )
@@ -369,6 +393,7 @@ class TestAdmmComReference(unittest.TestCase):
 
     def test_rigid_particle_contact_anchor_uses_body_com(self):
         device = "cpu"
+        active_count = wp.array([1], dtype=int, device=device)
         body_ids = wp.array([0], dtype=int, device=device)
         point_a = wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
         particle_ids = wp.array([0], dtype=int, device=device)
@@ -390,7 +415,7 @@ class TestAdmmComReference(unittest.TestCase):
         wp.launch(
             contact_rp_compute_Jv_kernel,
             dim=1,
-            inputs=[body_ids, point_a, particle_ids, body_sign, body_q, body_com, body_qd, particle_qd],
+            inputs=[active_count, body_ids, point_a, particle_ids, body_sign, body_q, body_com, body_qd, particle_qd],
             outputs=[Jv],
             device=device,
         )
@@ -408,6 +433,7 @@ class TestAdmmComReference(unittest.TestCase):
             contact_rp_accumulate_forces_kernel,
             dim=1,
             inputs=[
+                active_count,
                 body_ids,
                 point_a,
                 particle_ids,
@@ -429,12 +455,13 @@ class TestAdmmComReference(unittest.TestCase):
 
     def test_rigid_particle_contact_force_sign(self):
         device = "cpu"
+        active_count = wp.array([1], dtype=int, device=device)
         body_ids = wp.array([0], dtype=int, device=device)
         point_body = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
         particle_ids = wp.array([0], dtype=int, device=device)
         normal = wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
         body_sign = wp.array([1], dtype=int, device=device)
-        contact_distance = wp.array([0.0], dtype=float, device=device)
+        particle_radius = wp.zeros(1, dtype=float, device=device)
         body_q = wp.array(
             [wp.transform(wp.vec3(-0.1, 0.0, 0.0), wp.quat_identity())],
             dtype=wp.transform,
@@ -448,14 +475,15 @@ class TestAdmmComReference(unittest.TestCase):
             contact_rp_compute_u_min_kernel,
             dim=1,
             inputs=[
+                active_count,
                 body_ids,
                 point_body,
                 particle_ids,
                 normal,
                 body_sign,
-                contact_distance,
                 body_q,
                 particle_q,
+                particle_radius,
                 1.0,
                 0.1,
             ],
@@ -463,6 +491,33 @@ class TestAdmmComReference(unittest.TestCase):
             device=device,
         )
         np.testing.assert_allclose(u_min.numpy(), [1.0], atol=1.0e-6)
+
+        body_q_spec = wp.array(
+            [wp.transform(wp.vec3(0.05, 0.0, 0.0), wp.quat_identity())],
+            dtype=wp.transform,
+            device=device,
+        )
+        u_min_spec = wp.zeros(1, dtype=float, device=device)
+        wp.launch(
+            contact_rp_compute_u_min_kernel,
+            dim=1,
+            inputs=[
+                active_count,
+                body_ids,
+                point_body,
+                particle_ids,
+                normal,
+                body_sign,
+                body_q_spec,
+                particle_q,
+                particle_radius,
+                0.25,
+                0.1,
+            ],
+            outputs=[u_min_spec],
+            device=device,
+        )
+        np.testing.assert_allclose(u_min_spec.numpy(), [-0.5], atol=1.0e-6)
 
         body_f = wp.zeros(1, dtype=wp.spatial_vector, device=device)
         particle_f = wp.zeros(1, dtype=wp.vec3, device=device)
@@ -474,6 +529,7 @@ class TestAdmmComReference(unittest.TestCase):
             contact_rp_accumulate_forces_kernel,
             dim=1,
             inputs=[
+                active_count,
                 body_ids,
                 point_body,
                 particle_ids,
@@ -495,12 +551,14 @@ class TestAdmmComReference(unittest.TestCase):
 
     def test_rigid_rigid_contact_force_sign(self):
         device = "cpu"
+        active_count = wp.array([1], dtype=int, device=device)
         body_a = wp.array([0], dtype=int, device=device)
         body_b = wp.array([1], dtype=int, device=device)
         point_a = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
         point_b = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+        offset_a = wp.zeros(1, dtype=wp.vec3, device=device)
+        offset_b = wp.zeros(1, dtype=wp.vec3, device=device)
         normal = wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
-        contact_distance = wp.array([0.0], dtype=float, device=device)
         body_q = wp.array(
             [
                 wp.transform(wp.vec3(-0.1, 0.0, 0.0), wp.quat_identity()),
@@ -521,7 +579,7 @@ class TestAdmmComReference(unittest.TestCase):
         Jv = wp.zeros(1, dtype=wp.vec3, device=device)
 
         wp.launch(
-            contact_rr_compute_Jv_kernel,
+            attach_rr_compute_Jv_kernel,
             dim=1,
             inputs=[body_a, point_a, body_b, point_b, body_q, body_com, body_qd, body_q, body_com, body_qd],
             outputs=[Jv],
@@ -533,11 +591,55 @@ class TestAdmmComReference(unittest.TestCase):
         wp.launch(
             contact_rr_compute_u_min_kernel,
             dim=1,
-            inputs=[body_a, point_a, body_b, point_b, normal, contact_distance, body_q, body_q, 1.0, 0.1],
+            inputs=[
+                active_count,
+                body_a,
+                point_a,
+                offset_a,
+                body_b,
+                point_b,
+                offset_b,
+                normal,
+                body_q,
+                body_q,
+                1.0,
+                0.1,
+            ],
             outputs=[u_min],
             device=device,
         )
         np.testing.assert_allclose(u_min.numpy(), [1.0], atol=1.0e-6)
+
+        body_q_spec = wp.array(
+            [
+                wp.transform(wp.vec3(0.05, 0.0, 0.0), wp.quat_identity()),
+                wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            ],
+            dtype=wp.transform,
+            device=device,
+        )
+        u_min_spec = wp.zeros(1, dtype=float, device=device)
+        wp.launch(
+            contact_rr_compute_u_min_kernel,
+            dim=1,
+            inputs=[
+                active_count,
+                body_a,
+                point_a,
+                offset_a,
+                body_b,
+                point_b,
+                offset_b,
+                normal,
+                body_q_spec,
+                body_q_spec,
+                0.25,
+                0.1,
+            ],
+            outputs=[u_min_spec],
+            device=device,
+        )
+        np.testing.assert_allclose(u_min_spec.numpy(), [-0.5], atol=1.0e-6)
 
         body_f_a = wp.zeros(2, dtype=wp.spatial_vector, device=device)
         body_f_b = wp.zeros(2, dtype=wp.spatial_vector, device=device)
@@ -546,7 +648,7 @@ class TestAdmmComReference(unittest.TestCase):
         u = wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
         Jv_zero = wp.zeros(1, dtype=wp.vec3, device=device)
         wp.launch(
-            contact_rr_accumulate_forces_kernel,
+            attach_rr_accumulate_forces_kernel,
             dim=1,
             inputs=[body_a, point_a, body_b, point_b, body_q, body_com, body_q, body_com, 10.0, W, lambda_, u, Jv_zero],
             outputs=[body_f_a, body_f_b],
@@ -555,6 +657,93 @@ class TestAdmmComReference(unittest.TestCase):
 
         np.testing.assert_allclose(body_f_a.numpy()[0], np.array([10.0, 0.0, 0.0, 0.0, 0.0, 0.0]), atol=1.0e-6)
         np.testing.assert_allclose(body_f_b.numpy()[1], np.array([-10.0, 0.0, 0.0, 0.0, 0.0, 0.0]), atol=1.0e-6)
+
+    def test_rigid_rigid_contact_uses_surface_offsets_for_anchor_math(self):
+        device = "cpu"
+        active_count = wp.array([1], dtype=int, device=device)
+        body_a = wp.array([0], dtype=int, device=device)
+        body_b = wp.array([1], dtype=int, device=device)
+        point_a = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+        point_b = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+        offset_a = wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+        offset_b = wp.zeros(1, dtype=wp.vec3, device=device)
+        body_q = wp.array(
+            [
+                wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+                wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            ],
+            dtype=wp.transform,
+            device=device,
+        )
+        body_com = wp.array([wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+        body_qd = wp.array(
+            [
+                wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 2.0),
+                wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            ],
+            dtype=wp.spatial_vector,
+            device=device,
+        )
+        Jv = wp.zeros(1, dtype=wp.vec3, device=device)
+
+        wp.launch(
+            contact_rr_compute_Jv_kernel,
+            dim=1,
+            inputs=[
+                active_count,
+                body_a,
+                point_a,
+                offset_a,
+                body_b,
+                point_b,
+                offset_b,
+                body_q,
+                body_com,
+                body_qd,
+                body_q,
+                body_com,
+                body_qd,
+            ],
+            outputs=[Jv],
+            device=device,
+        )
+
+        np.testing.assert_allclose(Jv.numpy()[0], np.array([0.0, 2.0, 0.0]), atol=1.0e-6)
+
+        body_f_a = wp.zeros(2, dtype=wp.spatial_vector, device=device)
+        body_f_b = wp.zeros(2, dtype=wp.spatial_vector, device=device)
+        W = wp.array([1.0], dtype=float, device=device)
+        lambda_ = wp.array([wp.vec3(0.0, 1.0, 0.0)], dtype=wp.vec3, device=device)
+        u = wp.zeros(1, dtype=wp.vec3, device=device)
+        Jv_zero = wp.zeros(1, dtype=wp.vec3, device=device)
+
+        wp.launch(
+            contact_rr_accumulate_forces_kernel,
+            dim=1,
+            inputs=[
+                active_count,
+                body_a,
+                point_a,
+                offset_a,
+                body_b,
+                point_b,
+                offset_b,
+                body_q,
+                body_com,
+                body_q,
+                body_com,
+                0.0,
+                W,
+                lambda_,
+                u,
+                Jv_zero,
+            ],
+            outputs=[body_f_a, body_f_b],
+            device=device,
+        )
+
+        np.testing.assert_allclose(body_f_a.numpy()[0], np.array([0.0, 1.0, 0.0, 0.0, 0.0, 1.0]), atol=1.0e-6)
+        np.testing.assert_allclose(body_f_b.numpy()[1], np.array([0.0, -1.0, 0.0, 0.0, 0.0, 0.0]), atol=1.0e-6)
 
     def test_rigid_rigid_contact_snapshot_is_cleared_before_write(self):
         device = "cpu"
@@ -782,10 +971,11 @@ def _build_two_particle_contact_scene(
     gap: float = -0.1,
     vel_a: tuple[float, float, float] = (0.0, 0.0, 0.0),
     vel_b: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    radius: float = 0.05,
 ) -> newton.Model:
     builder = newton.ModelBuilder(gravity=0.0)
-    builder.add_particle(pos=(gap, 0.0, 0.0), vel=vel_a, mass=1.0, radius=0.0)
-    builder.add_particle(pos=(0.0, 0.0, 0.0), vel=vel_b, mass=1.0, radius=0.0)
+    builder.add_particle(pos=(gap, 0.0, 0.0), vel=vel_a, mass=1.0, radius=radius)
+    builder.add_particle(pos=(0.0, 0.0, 0.0), vel=vel_b, mass=1.0, radius=radius)
     builder.color()
     model = builder.finalize(device="cpu")
     model.particle_grid = None
@@ -1103,7 +1293,6 @@ def _make_admm_inclined_plane_particle_box_solver(
                 SolverCoupledADMM.ContactPair(
                     source="plane",
                     destination="box",
-                    detection_margin=0.04,
                 )
             ],
         ),
@@ -1241,6 +1430,9 @@ def _make_collision_admm_inclined_plane_rigid_box_solver(
     friction: float,
     *,
     rigid_contact_matching: str = "disabled",
+    contact_matching_pos_threshold: float | None = None,
+    contact_matching_normal_dot_threshold: float | None = None,
+    contact_matching_force_scale: float = 1.0,
 ) -> SolverCoupledADMM:
     del friction
     return SolverCoupledADMM(
@@ -1263,6 +1455,9 @@ def _make_collision_admm_inclined_plane_rigid_box_solver(
             gamma=0.2,
             baumgarte=0.03,
             rigid_contact_matching=rigid_contact_matching,
+            contact_matching_pos_threshold=contact_matching_pos_threshold,
+            contact_matching_normal_dot_threshold=contact_matching_normal_dot_threshold,
+            contact_matching_force_scale=contact_matching_force_scale,
             contact_pairs=[
                 SolverCoupledADMM.ContactPair(
                     source="plane",
@@ -1428,7 +1623,7 @@ class TestAdmmCouplingHooks(unittest.TestCase):
             ],
             coupling=SolverCoupledADMM.Config(
                 contact_pairs=[
-                    SolverCoupledADMM.ContactPair(source="a", destination="b", contact_distance=0.1),
+                    SolverCoupledADMM.ContactPair(source="a", destination="b"),
                 ],
             ),
         )
@@ -1439,7 +1634,7 @@ class TestAdmmCouplingHooks(unittest.TestCase):
         self.assertEqual(int(group.active_count.numpy()[0]), 1)
         np.testing.assert_allclose(group.W.numpy()[:1], [expected], atol=1.0e-6)
 
-    def test_effective_mass_refresh_interval_updates_contact_weights(self):
+    def test_effective_masses_are_cached_after_setup(self):
         _CustomEffectiveMassSolver.instances.clear()
         model = _build_two_particle_contact_scene(gap=-0.08)
         solver = SolverCoupledADMM(
@@ -1458,9 +1653,8 @@ class TestAdmmCouplingHooks(unittest.TestCase):
             ],
             coupling=SolverCoupledADMM.Config(
                 iterations=1,
-                effective_mass_refresh_interval=2,
                 contact_pairs=[
-                    SolverCoupledADMM.ContactPair(source="a", destination="b", contact_distance=0.1),
+                    SolverCoupledADMM.ContactPair(source="a", destination="b"),
                 ],
             ),
         )
@@ -1483,8 +1677,7 @@ class TestAdmmCouplingHooks(unittest.TestCase):
         np.testing.assert_allclose(group.W.numpy()[:1], [old_weight], atol=1.0e-6)
 
         solver.step(state_0, state_1, control, contacts=None, dt=1.0 / 60.0)
-        new_weight = (400.0 / 41.0) ** 0.5
-        np.testing.assert_allclose(group.W.numpy()[:1], [new_weight], atol=1.0e-6)
+        np.testing.assert_allclose(group.W.numpy()[:1], [old_weight], atol=1.0e-6)
 
 
 class TestAdmmSmoke(unittest.TestCase):
@@ -1514,11 +1707,11 @@ class TestAdmmSmoke(unittest.TestCase):
 
 
 class TestAdmmProximal(unittest.TestCase):
-    """Proximal term changes the step outcome and stays stable."""
+    """Proximal terms affect constrained DOFs only."""
 
-    def test_gamma_changes_state(self):
+    def test_gamma_does_not_change_unconstrained_freefall(self):
         # Place the rigid body high so it stays in free-fall across the
-        # window and the proximal term's velocity damping is observable.
+        # window; with no ADMM constraints, gamma should not alter the result.
         model_ref, rs, re, _ = _build_cloth_rigid_scene(rigid_pos=(0.0, 0.0, 5.0))
         solver_ref = _make_solver(model_ref, rs, re, admm_iters=3, gamma=0.0)
         body_ref, part_ref = _run(solver_ref, model_ref, n_steps=5)
@@ -1527,17 +1720,62 @@ class TestAdmmProximal(unittest.TestCase):
         solver_g = _make_solver(model_g, rs, re, admm_iters=3, gamma=5.0)
         body_g, part_g = _run(solver_g, model_g, n_steps=5)
 
-        # Larger gamma slows the body's effective acceleration → the two
-        # runs' body z should diverge during free-fall.
-        dz_body = abs(body_ref[0, 2] - body_g[0, 2])
-        self.assertGreater(
-            dz_body,
-            1e-3,
-            f"gamma=5 barely affected body z: ref={body_ref[0, 2]:.5f}, g={body_g[0, 2]:.5f}",
-        )
-        self.assertFalse(np.allclose(part_ref, part_g, atol=1e-3))
+        np.testing.assert_allclose(body_ref, body_g, atol=1.0e-6)
+        np.testing.assert_allclose(part_ref, part_g, atol=1.0e-6)
         self.assertTrue(np.all(np.isfinite(body_g)))
         self.assertTrue(np.all(np.isfinite(part_g)))
+
+
+class TestAdmmGraphCapture(unittest.TestCase):
+    """CUDA graph-capture smoke tests for dynamic proximal refresh."""
+
+    @unittest.skipUnless(wp.is_cuda_available(), "CUDA graph capture requires CUDA")
+    def test_xpbd_vbd_contact_proximal_refresh_is_graph_capturable(self):
+        device = "cuda:0"
+        builder = newton.ModelBuilder(gravity=0.0)
+        builder.default_shape_cfg.density = 1000.0
+        body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+        builder.add_shape_box(body=body_a, hx=0.05, hy=0.05, hz=0.05)
+        body_b = builder.add_body(xform=wp.transform(wp.vec3(0.08, 0.0, 0.0), wp.quat_identity()))
+        builder.add_shape_box(body=body_b, hx=0.05, hy=0.05, hz=0.05)
+        builder.color()
+        model = builder.finalize(device=device)
+        solver = SolverCoupledADMM(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="xpbd",
+                    solver=lambda v: SolverXPBD(model=v, iterations=1),
+                    bodies=[body_a],
+                ),
+                SolverCoupled.Entry(
+                    name="vbd",
+                    solver=lambda v: SolverVBD(model=v, iterations=1),
+                    bodies=[body_b],
+                ),
+            ],
+            coupling=SolverCoupledADMM.Config(
+                iterations=1,
+                gamma=1.0,
+                contact_pairs=[SolverCoupledADMM.ContactPair(source="xpbd", destination="vbd")],
+            ),
+        )
+
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+
+        solver.step(state_0, state_1, control, contacts=None, dt=1.0 / 120.0)
+        state_0, state_1 = state_1, state_0
+        wp.synchronize_device(device)
+
+        with wp.ScopedCapture(device=device) as capture:
+            solver.step(state_0, state_1, control, contacts=None, dt=1.0 / 120.0)
+
+        self.assertIsNotNone(capture.graph)
+        wp.capture_launch(capture.graph)
+        q = state_1.body_q.numpy()
+        self.assertTrue(np.all(np.isfinite(q)))
 
 
 class TestAdmmModelJointInterface(unittest.TestCase):
@@ -1643,7 +1881,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
         self.assertEqual(len(solver._admm_rr_angular_groups), 0)
         self.assertEqual(len(solver._admm_rr_revolute_angular_groups), 1)
 
-    def test_joint_attachment_weights_use_local_ids_and_scaled_inertia(self):
+    def test_joint_attachment_weights_use_local_ids_and_scoped_inertia(self):
         builder = newton.ModelBuilder(gravity=0.0)
         parent_mass = 2.0
         child_mass = 5.0
@@ -1666,6 +1904,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
         model = builder.finalize(device="cpu")
 
         gamma = 2.0
+        mass_scale = 7.0
         solver = SolverCoupledADMM(
             model=model,
             entries=[
@@ -1680,7 +1919,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
                     bodies=[parent],
                 ),
             ],
-            coupling=SolverCoupledADMM.Config(gamma=gamma),
+            coupling=SolverCoupledADMM.Config(gamma=gamma, joint_proximal_mass_scale=mass_scale),
         )
 
         linear_group = solver._admm_rr_groups[0]
@@ -1729,22 +1968,36 @@ class TestAdmmModelJointInterface(unittest.TestCase):
         np.testing.assert_array_equal(friction_group.body_ids_a.numpy(), [child_local])
         np.testing.assert_array_equal(friction_group.body_ids_b.numpy(), [parent_local])
 
-        scale = 1.0 + gamma
-        child_view_mass = child_entry.view.body_mass.numpy()
-        parent_view_mass = parent_entry.view.body_mass.numpy()
-        np.testing.assert_allclose(child_view_mass[child_local], child_mass * scale, atol=1.0e-6)
-        np.testing.assert_allclose(
-            child_view_mass[int(child_entry.body_global_to_local.numpy()[parent])], parent_mass * scale, atol=1.0e-6
-        )
-        np.testing.assert_allclose(parent_view_mass[parent_local], parent_mass * scale, atol=1.0e-6)
-        np.testing.assert_allclose(
-            parent_view_mass[int(parent_entry.body_global_to_local.numpy()[child])], child_mass * scale, atol=1.0e-6
-        )
-        expected_linear = math.sqrt((child_mass * scale * parent_mass * scale) / ((child_mass + parent_mass) * scale))
-        child_angular_weight = child_inertia * scale / 3.0
-        parent_angular_weight = parent_inertia * scale / 3.0
+        expected_linear = math.sqrt((child_mass * parent_mass) / (child_mass + parent_mass))
+        child_angular_weight = child_inertia / 3.0
+        parent_angular_weight = parent_inertia / 3.0
         expected_angular = math.sqrt(
             (child_angular_weight * parent_angular_weight) / (child_angular_weight + parent_angular_weight)
+        )
+        mass_lump = gamma * solver._coupling.rho * expected_linear * expected_linear
+        child_view_mass = child_entry.view.body_mass.numpy()
+        parent_view_mass = parent_entry.view.body_mass.numpy()
+        np.testing.assert_allclose(child_view_mass[child_local], child_mass + mass_lump, atol=1.0e-6)
+        np.testing.assert_allclose(
+            child_view_mass[int(child_entry.body_global_to_local.numpy()[parent])],
+            mass_scale * parent_mass,
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(parent_view_mass[parent_local], parent_mass + mass_lump, atol=1.0e-6)
+        np.testing.assert_allclose(
+            parent_view_mass[int(parent_entry.body_global_to_local.numpy()[child])],
+            mass_scale * child_mass,
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            solver._admm_buffers["child"].body_proximal_mass.numpy()[child_local],
+            mass_lump,
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            solver._admm_buffers["parent"].body_proximal_mass.numpy()[parent_local],
+            mass_lump,
+            atol=1.0e-6,
         )
         np.testing.assert_allclose(linear_group.W.numpy(), [expected_linear], atol=1.0e-6)
         np.testing.assert_allclose(angular_group.W.numpy(), [expected_angular], atol=1.0e-6)
@@ -1848,7 +2101,7 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
 
         self.assertEqual(len(solver._admm_rp_groups), 0)
 
-    def test_notify_refreshes_attachment_weight_and_rescales_lambda(self):
+    def test_notify_keeps_cached_attachment_weight_and_lambda(self):
         model = _build_body_particle_attachment_scene()
         solver = _make_semi_body_particle_solver(model)
         group = solver._admm_rp_groups[0]
@@ -1863,13 +2116,8 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         model.body_inv_mass.assign(np.array([0.25], dtype=np.float32))
         solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
 
-        new_weight = (4.0 / 5.0) ** 0.5
-        np.testing.assert_allclose(group.W.numpy(), [new_weight], atol=1.0e-6)
-        np.testing.assert_allclose(
-            group.lambda_.numpy()[0],
-            np.array([4.0 * old_weight / new_weight, 0.0, 0.0]),
-            atol=1.0e-6,
-        )
+        np.testing.assert_allclose(group.W.numpy(), [old_weight], atol=1.0e-6)
+        np.testing.assert_allclose(group.lambda_.numpy()[0], np.array([4.0, 0.0, 0.0]), atol=1.0e-6)
 
 
 class TestAdmmExternalForces(unittest.TestCase):
@@ -1971,45 +2219,75 @@ class TestAdmmCollisionDetection(unittest.TestCase):
         self.assertEqual(group.count, 8 * len(expected_pairs))
         self.assertEqual(solver._admm_internal_contacts.rigid_contact_max, 8 * len(expected_pairs))
 
-    def test_rigid_particle_detection_margin_honors_explicit_zero(self):
+    def test_dynamic_proximal_mask_uses_detected_contact_pairs(self):
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.density = 1000.0
-        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
-        builder.add_shape_sphere(body=body, radius=0.1)
-        particle = builder.add_particle(
-            pos=(0.0, 0.0, 0.2),
-            vel=(0.0, 0.0, 0.0),
-            mass=1.0,
-            radius=0.05,
-        )
+
+        body_a0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+        shape_a0 = builder.add_shape_box(body=body_a0, hx=0.05, hy=0.05, hz=0.05)
+        body_a1 = builder.add_body(xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
+        shape_a1 = builder.add_shape_box(body=body_a1, hx=0.05, hy=0.05, hz=0.05)
+        body_b0 = builder.add_body(xform=wp.transform(wp.vec3(0.08, 0.0, 0.0), wp.quat_identity()))
+        shape_b0 = builder.add_shape_box(body=body_b0, hx=0.05, hy=0.05, hz=0.05)
+        body_b1 = builder.add_body(xform=wp.transform(wp.vec3(4.0, 0.0, 0.0), wp.quat_identity()))
+        shape_b1 = builder.add_shape_box(body=body_b1, hx=0.05, hy=0.05, hz=0.05)
+
+        builder.add_shape_collision_filter_pair(shape_a0, shape_b1)
+        builder.add_shape_collision_filter_pair(shape_a1, shape_b0)
         model = builder.finalize(device="cpu")
 
         solver = SolverCoupledADMM(
             model=model,
             entries=[
                 SolverCoupled.Entry(
-                    name="rigid",
-                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
-                    bodies=[body],
+                    name="a",
+                    solver=_GraphRefreshAdmmCopySolver,
+                    bodies=[body_a0, body_a1],
                 ),
                 SolverCoupled.Entry(
-                    name="particle",
-                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
-                    particles=[particle],
+                    name="b",
+                    solver=_GraphRefreshAdmmCopySolver,
+                    bodies=[body_b0, body_b1],
                 ),
             ],
             coupling=SolverCoupledADMM.Config(
-                contact_pairs=[
-                    SolverCoupledADMM.ContactPair(
-                        source="rigid",
-                        destination="particle",
-                        detection_margin=0.0,
-                    ),
-                ],
+                gamma=1.0,
+                contact_pairs=[SolverCoupledADMM.ContactPair(source="a", destination="b")],
             ),
         )
 
-        self.assertEqual(solver._rigid_particle_detection_margin(), 0.0)
+        state = model.state()
+        solver._refresh_collision_contact_groups(state)
+        solver._refresh_admm_proximal_masks()
+
+        entry_a = solver._entries["a"]
+        entry_b = solver._entries["b"]
+        group = solver._admm_dynamic_rr_contact_groups[0]
+        active_count = int(group.active_count.numpy()[0])
+        expected_lump = float(
+            solver._coupling.gamma * solver._coupling.rho * np.sum(group.W.numpy()[:active_count] ** 2)
+        )
+        mask_a = solver._admm_buffers["a"].body_proximal_mask.numpy()
+        mask_b = solver._admm_buffers["b"].body_proximal_mask.numpy()
+        mass_lump_a = solver._admm_buffers["a"].body_proximal_mass.numpy()
+        mass_lump_b = solver._admm_buffers["b"].body_proximal_mass.numpy()
+
+        self.assertEqual(int(mask_a[int(entry_a.body_global_to_local.numpy()[body_a0])]), 1)
+        self.assertEqual(int(mask_a[int(entry_a.body_global_to_local.numpy()[body_a1])]), 0)
+        self.assertEqual(int(mask_b[int(entry_b.body_global_to_local.numpy()[body_b0])]), 1)
+        self.assertEqual(int(mask_b[int(entry_b.body_global_to_local.numpy()[body_b1])]), 0)
+        np.testing.assert_allclose(
+            mass_lump_a[int(entry_a.body_global_to_local.numpy()[body_a0])],
+            expected_lump,
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            mass_lump_b[int(entry_b.body_global_to_local.numpy()[body_b0])],
+            expected_lump,
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(mass_lump_a[int(entry_a.body_global_to_local.numpy()[body_a1])], 0.0, atol=1.0e-6)
+        np.testing.assert_allclose(mass_lump_b[int(entry_b.body_global_to_local.numpy()[body_b1])], 0.0, atol=1.0e-6)
 
     def test_collision_rigid_rigid_contact_matching_can_be_disabled(self):
         model, plane_body, box_body = _build_collision_inclined_plane_rigid_box_scene(0.0)
@@ -2029,7 +2307,11 @@ class TestAdmmCollisionDetection(unittest.TestCase):
 
         refreshed_count = int(group.active_count.numpy()[0])
         self.assertGreater(refreshed_count, 0)
-        np.testing.assert_allclose(group.u.numpy()[:refreshed_count], 0.0, atol=1.0e-6)
+        np.testing.assert_allclose(
+            group.u.numpy()[:refreshed_count],
+            np.tile([1.25, 0.0, 0.0], (refreshed_count, 1)),
+            atol=1.0e-6,
+        )
         np.testing.assert_allclose(group.lambda_.numpy()[:refreshed_count], 0.0, atol=1.0e-6)
 
     def test_collision_rigid_rigid_contacts_warm_start_lambda_by_latest_match(self):
@@ -2056,12 +2338,44 @@ class TestAdmmCollisionDetection(unittest.TestCase):
         self.assertTrue(np.all(match_index >= 0), f"expected stable rigid contacts to match, got {match_index}")
         np.testing.assert_allclose(
             group.u.numpy()[:refreshed_count],
-            0.0,
+            np.tile([1.25, 0.0, 0.0], (refreshed_count, 1)),
             atol=1.0e-6,
         )
         np.testing.assert_allclose(
             group.lambda_.numpy()[:refreshed_count],
             np.tile([2.5, 0.0, 0.0], (refreshed_count, 1)),
+            atol=1.0e-6,
+        )
+
+    def test_collision_rigid_rigid_contact_matching_scales_force(self):
+        model, plane_body, box_body = _build_collision_inclined_plane_rigid_box_scene(0.0)
+        solver = _make_collision_admm_inclined_plane_rigid_box_solver(
+            model,
+            plane_body,
+            box_body,
+            0.0,
+            0.0,
+            rigid_contact_matching="latest",
+            contact_matching_force_scale=0.25,
+        )
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        solver._refresh_collision_contact_groups(state)
+        group = solver._admm_dynamic_rr_contact_groups[0]
+        count = int(group.active_count.numpy()[0])
+        self.assertGreater(count, 0)
+        group.lambda_.fill_(wp.vec3(2.5, 0.0, 0.0))
+
+        solver._refresh_collision_contact_groups(state)
+
+        refreshed_count = int(group.active_count.numpy()[0])
+        self.assertGreater(refreshed_count, 0)
+        match_index = solver._admm_internal_contacts.rigid_contact_match_index.numpy()[:refreshed_count]
+        self.assertTrue(np.all(match_index >= 0), f"expected stable rigid contacts to match, got {match_index}")
+        np.testing.assert_allclose(
+            group.lambda_.numpy()[:refreshed_count],
+            np.tile([0.625, 0.0, 0.0], (refreshed_count, 1)),
             atol=1.0e-6,
         )
 
@@ -2086,12 +2400,111 @@ class TestAdmmCollisionDetection(unittest.TestCase):
 
         refreshed_count = int(group.active_count.numpy()[0])
         self.assertGreater(refreshed_count, 0)
-        np.testing.assert_allclose(group.u.numpy()[:refreshed_count], 0.0, atol=1.0e-6)
+        np.testing.assert_allclose(
+            group.u.numpy()[:refreshed_count],
+            np.tile([1.25, 0.0, 0.0], (refreshed_count, 1)),
+            atol=1.0e-6,
+        )
         np.testing.assert_allclose(
             group.lambda_.numpy()[:refreshed_count],
             np.tile([2.5, 0.0, 0.0], (refreshed_count, 1)),
             atol=1.0e-6,
         )
+
+    def test_collision_rigid_rigid_contact_matching_thresholds_are_forwarded(self):
+        model, plane_body, box_body = _build_collision_inclined_plane_rigid_box_scene(0.0)
+        solver = _make_collision_admm_inclined_plane_rigid_box_solver(
+            model,
+            plane_body,
+            box_body,
+            0.0,
+            0.0,
+            rigid_contact_matching="latest",
+            contact_matching_pos_threshold=0.0125,
+            contact_matching_normal_dot_threshold=0.875,
+        )
+
+        matcher = solver._admm_collision_pipeline._contact_matcher
+        self.assertIsNotNone(matcher)
+        self.assertAlmostEqual(matcher._pos_threshold_sq, 0.0125 * 0.0125)
+        self.assertAlmostEqual(matcher._normal_dot_threshold, 0.875)
+
+    def test_collision_rigid_rigid_contact_matching_thresholds_validate(self):
+        model, plane_body, box_body = _build_collision_inclined_plane_rigid_box_scene(0.0)
+        with self.assertRaisesRegex(ValueError, "contact_matching_pos_threshold must be non-negative"):
+            _make_collision_admm_inclined_plane_rigid_box_solver(
+                model,
+                plane_body,
+                box_body,
+                0.0,
+                0.0,
+                rigid_contact_matching="latest",
+                contact_matching_pos_threshold=-1.0e-3,
+            )
+
+        with self.assertRaisesRegex(ValueError, "contact_matching_normal_dot_threshold must be in"):
+            _make_collision_admm_inclined_plane_rigid_box_solver(
+                model,
+                plane_body,
+                box_body,
+                0.0,
+                0.0,
+                rigid_contact_matching="latest",
+                contact_matching_normal_dot_threshold=1.5,
+            )
+
+    def test_collision_rigid_rigid_contact_matching_force_scale_validates(self):
+        model, plane_body, box_body = _build_collision_inclined_plane_rigid_box_scene(0.0)
+        with self.assertRaisesRegex(ValueError, "contact_matching_force_scale must be non-negative"):
+            _make_collision_admm_inclined_plane_rigid_box_solver(
+                model,
+                plane_body,
+                box_body,
+                0.0,
+                0.0,
+                rigid_contact_matching="latest",
+                contact_matching_force_scale=-0.1,
+            )
+
+    def test_collision_rigid_rigid_initializes_u_from_initial_jv(self):
+        model, plane_body, box_body = _build_collision_inclined_plane_rigid_box_scene(0.0)
+        solver = _make_collision_admm_inclined_plane_rigid_box_solver(model, plane_body, box_body, 0.0, 0.0)
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        dt = 1.0 / 360.0
+        solver._distribute_state(state, dt=dt)
+        solver._refresh_collision_contact_groups(state)
+        for name, entry in solver._entries.items():
+            buf = solver._admm_buffers[name]
+            if buf.body_q_n is not None:
+                wp.copy(buf.body_q_n, entry.state_0.body_q)
+                wp.copy(buf.body_qd_n, entry.state_0.body_qd)
+                wp.copy(buf.body_qd_k, entry.state_0.body_qd)
+            if buf.particle_q_n is not None:
+                wp.copy(buf.particle_q_n, entry.state_0.particle_q)
+                wp.copy(buf.particle_qd_n, entry.state_0.particle_qd)
+                wp.copy(buf.particle_qd_k, entry.state_0.particle_qd)
+            if buf.joint_q_n is not None:
+                wp.copy(buf.joint_q_n, entry.state_0.joint_q)
+                wp.copy(buf.joint_qd_n, entry.state_0.joint_qd)
+                wp.copy(buf.joint_qd_k, entry.state_0.joint_qd)
+
+        solver._admm_begin_step(dt)
+        group = solver._admm_dynamic_rr_contact_groups[0]
+        count = int(group.active_count.numpy()[0])
+        self.assertGreater(count, 0)
+        np.testing.assert_allclose(group.u.numpy()[:count], 0.0, atol=1.0e-6)
+
+        for name, entry in solver._entries.items():
+            solver._prepare_admm_iteration_state(entry, solver._admm_buffers[name], state, dt, iteration_restart=False)
+        solver._accumulate_admm_forces(0, dt, refresh_jv=True, initialize_contact_u=True)
+
+        u = group.u.numpy()[:count]
+        expected_u = group.u_min.numpy()[:count, None] * group.normal.numpy()[:count]
+        np.testing.assert_allclose(group.Jv.numpy()[:count], 0.0, atol=1.0e-6)
+        np.testing.assert_allclose(u, expected_u, atol=1.0e-6)
+        self.assertGreater(float(np.linalg.norm(u)), 0.0)
 
     def test_rigid_contact_detection_rejects_cross_world_pairs(self):
         builder = newton.ModelBuilder()
@@ -2154,7 +2567,7 @@ class TestAdmmCollisionDetection(unittest.TestCase):
                 rho=30.0,
                 baumgarte=0.5,
                 contact_pairs=[
-                    SolverCoupledADMM.ContactPair(source="a", destination="b", contact_distance=0.1),
+                    SolverCoupledADMM.ContactPair(source="a", destination="b"),
                 ],
             ),
         )
@@ -2182,7 +2595,7 @@ class TestAdmmCollisionDetection(unittest.TestCase):
             ],
             coupling=SolverCoupledADMM.Config(
                 contact_pairs=[
-                    SolverCoupledADMM.ContactPair(source="a", destination="b", contact_distance=0.1),
+                    SolverCoupledADMM.ContactPair(source="a", destination="b"),
                 ],
             ),
         )
@@ -2228,7 +2641,7 @@ class TestAdmmCollisionDetection(unittest.TestCase):
                 rho=30.0,
                 baumgarte=0.5,
                 contact_pairs=[
-                    SolverCoupledADMM.ContactPair(source="a", destination="b", contact_distance=0.1),
+                    SolverCoupledADMM.ContactPair(source="a", destination="b"),
                 ],
             ),
         )
@@ -2327,8 +2740,6 @@ class TestAdmmCollisionDetection(unittest.TestCase):
                     SolverCoupledADMM.ContactPair(
                         source="drop",
                         destination="tray",
-                        contact_distance=0.04,
-                        detection_margin=0.08,
                     ),
                 ],
             ),

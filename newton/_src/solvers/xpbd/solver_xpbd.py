@@ -148,6 +148,10 @@ class SolverXPBD(SolverBase, CouplingInterface):
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
 
+    @override
+    def coupling_supports_inertial_property_refresh(self) -> bool:
+        return True
+
     def copy_kinematic_body_state(self, model: Model, state_in: State, state_out: State):
         if model.body_count == 0:
             return

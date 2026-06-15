@@ -98,6 +98,9 @@ class SolverEntry:
     particle_indices: wp.array
     joint_indices: wp.array
     body_dynamics_disabled_indices: wp.array
+    body_dynamics_disabled_local_indices: wp.array
+    particle_dynamics_disabled_indices: wp.array
+    particle_dynamics_disabled_local_indices: wp.array
     joint_q_indices: wp.array
     joint_qd_indices: wp.array
     shape_indices: wp.array
@@ -233,6 +236,19 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 owner[index] = entry_idx
         return owner
 
+    def _global_indices_to_local_array(self, indices: wp.array, global_to_local: wp.array) -> wp.array:
+        if indices.shape[0] == 0:
+            return wp.zeros(0, dtype=int, device=self.model.device)
+
+        mapping = global_to_local.numpy()
+        local = []
+        for index in indices.numpy():
+            global_id = int(index)
+            local_id = int(mapping[global_id]) if 0 <= global_id < len(mapping) else -1
+            if local_id >= 0:
+                local.append(local_id)
+        return wp.array(local, dtype=int, device=self.model.device)
+
     def _build_entries(self) -> None:
         model = self.model
         device = model.device
@@ -256,6 +272,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             proxy_particle_keep: set[int] = set()
             proxy_joint_keep: set[int] = set()
             body_dynamics_disabled_indices = wp.zeros(0, dtype=int, device=device)
+            particle_dynamics_disabled_indices = wp.zeros(0, dtype=int, device=device)
 
             if any_body_owner:
                 proxy_body_keep = self._entry_proxy_body_keep_indices(cfg.name)
@@ -272,9 +289,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     i for i, owner in enumerate(self._particle_owner) if owner != idx and i not in proxy_particle_keep
                 ]
                 if to_zero:
-                    to_zero_array = wp.array(to_zero, dtype=int, device=device)
-                    view.zero_particle_mass(to_zero_array)
-                    view.disable_particles(to_zero_array)
+                    particle_dynamics_disabled_indices = wp.array(to_zero, dtype=int, device=device)
+                    view.zero_particle_mass(particle_dynamics_disabled_indices)
+                    view.disable_particles(particle_dynamics_disabled_indices)
                 if proxy_particle_keep:
                     view.mark_proxy_particles(wp.array(sorted(proxy_particle_keep), dtype=int, device=device))
 
@@ -305,6 +322,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
             self._filter_shape_contact_pairs(view)
 
             index_maps = self._build_entry_index_maps(view, index_lists)
+            body_dynamics_disabled_local_indices = self._global_indices_to_local_array(
+                body_dynamics_disabled_indices,
+                index_maps.body_global_to_local,
+            )
+            particle_dynamics_disabled_local_indices = self._global_indices_to_local_array(
+                particle_dynamics_disabled_indices,
+                index_maps.particle_global_to_local,
+            )
 
             solver = cfg.solver(view)
             self._entries[cfg.name] = SolverEntry(
@@ -316,6 +341,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 particle_indices=particle_indices,
                 joint_indices=joint_indices,
                 body_dynamics_disabled_indices=body_dynamics_disabled_indices,
+                body_dynamics_disabled_local_indices=body_dynamics_disabled_local_indices,
+                particle_dynamics_disabled_indices=particle_dynamics_disabled_indices,
+                particle_dynamics_disabled_local_indices=particle_dynamics_disabled_local_indices,
                 joint_q_indices=joint_q_indices,
                 joint_qd_indices=joint_qd_indices,
                 shape_indices=shape_indices,
@@ -2440,10 +2468,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
         """Refresh base ownership masks derived from parent body inertia."""
         if entry.body_local_to_global.shape[0] > 0:
             entry.view._refresh_body_inertial_properties(entry.body_local_to_global)
-        if entry.body_dynamics_disabled_indices.shape[0] > 0:
-            entry.view.disable_body_dynamics(
-                self._body_indices_to_local_array(entry, entry.body_dynamics_disabled_indices)
-            )
+        if entry.body_dynamics_disabled_local_indices.shape[0] > 0:
+            entry.view.disable_body_dynamics(entry.body_dynamics_disabled_local_indices)
 
     def notify_model_changed(self, flags: int) -> None:
         """Forward model change notifications to all sub-solvers."""

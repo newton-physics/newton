@@ -267,10 +267,9 @@ same custom attributes directly. Rows whose endpoints are unowned or owned by
 the same entry are ignored; only cross-solver attachments are coupled by ADMM.
 
 Contact coupling is enabled by adding one or more ``ContactPair`` values to
-``SolverCoupledADMM.Config.contact_pairs``. A contact pair names two entries and
-optionally overrides ``contact_distance`` and ``detection_margin`` for that
-interface. ``SolverCoupledADMM.auto_detect_contact_pairs(entries, ...)`` can
-build the complete pair list for every distinct entry combination.
+``SolverCoupledADMM.Config.contact_pairs``. A contact pair names two entries.
+``SolverCoupledADMM.auto_detect_contact_pairs(entries)`` can build the complete
+pair list for every distinct entry combination.
 
 For enabled contact pairs, the coupler owns private detection data and builds
 rows from solver ownership: particle-shape rows between particle entries and
@@ -295,7 +294,7 @@ The main ADMM parameters are:
 - ``baumgarte``: positional error stabilization for attachment/contact rows;
 - stiffness and damping values for model-joint and body-particle attachment
   rows;
-- per-contact-pair distance and detection margins.
+- rigid contact matching mode, thresholds, and warm-start force scale.
 
 When ``gamma`` is positive, the coupler scales owned body and particle masses in
 each entry ``ModelView``, asks sub-solvers to refresh model-derived caches, and

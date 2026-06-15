@@ -46,8 +46,8 @@ class Example:
         self.sim_substeps = 2
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.solver_type = args.solver
-        self.contact_distance = args.contact_distance
         self.track_gap = args.test
+        self.particle_radius = 0.025
 
         builder = newton.ModelBuilder(gravity=-9.81)
         (
@@ -101,20 +101,14 @@ class Example:
                         SolverCoupledADMM.ContactPair(
                             source="drop_a",
                             destination="tray",
-                            contact_distance=args.contact_distance,
-                            detection_margin=args.contact_detection_margin,
                         ),
                         SolverCoupledADMM.ContactPair(
                             source="drop_b",
                             destination="tray",
-                            contact_distance=args.contact_distance,
-                            detection_margin=args.contact_detection_margin,
                         ),
                         SolverCoupledADMM.ContactPair(
                             source="drop_a",
                             destination="drop_b",
-                            contact_distance=args.contact_distance,
-                            detection_margin=args.particle_contact_detection_margin,
                         ),
                     ]
                     if self.solver_type == "admm"
@@ -211,15 +205,11 @@ class Example:
         if self.solver_type == "admm":
             min_gap = self._min_contact_gap(particle_q)
             assert self.max_collision_contacts > 0, "Collision detection did not produce ADMM contact candidates"
-            assert self.min_observed_gap <= self.contact_distance * 1.05, (
-                f"ADMM contact did not reach the contact distance: contact_distance={self.contact_distance:.4f}, "
-                f"min_observed_gap={self.min_observed_gap:.4f}"
+            assert self.min_observed_gap <= 0.01, (
+                f"ADMM contact did not reach the contact surface: min_observed_gap={self.min_observed_gap:.4f}"
             )
             assert self.min_observed_gap > -0.02, f"ADMM contact penetrated too deeply: {self.min_observed_gap:.4f}"
-            assert min_gap > 0.5 * self.contact_distance, (
-                f"ADMM contact did not keep the pad above the tray: contact_distance={self.contact_distance:.4f}, "
-                f"final_gap={min_gap:.4f}"
-            )
+            assert min_gap > -0.01, f"ADMM contact did not keep the pad above the tray surface: final_gap={min_gap:.4f}"
             assert self.max_tray_origin_error < 0.05, (
                 f"ball-jointed tray origin drifted too far: max_error={self.max_tray_origin_error:.4f}"
             )
@@ -335,7 +325,7 @@ class Example:
                     pos=(x, y, args.drop_height),
                     vel=(vx, 0.0, 0.0),
                     mass=0.025,
-                    radius=0.025,
+                    radius=self.particle_radius,
                 )
                 if is_group_a:
                     falling_particles_a.append(particle)
@@ -346,7 +336,9 @@ class Example:
 
     def _min_contact_gap(self, particle_q: np.ndarray) -> float:
         tray_z = self._tray_origin(self.state_0.body_q.numpy())[2] if hasattr(self, "state_0") else 0.0
-        return min(float(particle_q[particle, 2] - tray_z) for particle in self.falling_particles)
+        return min(
+            float(particle_q[particle, 2] - tray_z - self.particle_radius) for particle in self.falling_particles
+        )
 
     def _tray_origin(self, body_q: np.ndarray) -> np.ndarray:
         return np.asarray(body_q[self.tray_body, :3], dtype=np.float32)
@@ -383,33 +375,15 @@ class Example:
         )
         parser.add_argument(
             "--gamma",
-            help="ADMM proximal mass rescaling",
+            help="ADMM proximal metric scale",
             type=float,
-            default=0.05,
+            default=0.001,
         )
         parser.add_argument(
             "--baumgarte",
             help="Fraction of contact penetration corrected per frame",
             type=float,
             default=0.1,
-        )
-        parser.add_argument(
-            "--contact-distance",
-            help="Minimum normal center-to-tray gap enforced by the ADMM contact rows",
-            type=float,
-            default=0.04,
-        )
-        parser.add_argument(
-            "--contact-detection-margin",
-            help="Particle-shape contact generation margin used to seed ADMM contact candidates",
-            type=float,
-            default=0.08,
-        )
-        parser.add_argument(
-            "--particle-contact-detection-margin",
-            help="Cross-owner particle-particle contact generation margin used to seed ADMM contact candidates",
-            type=float,
-            default=0.02,
         )
         parser.add_argument(
             "--particle-contact-push",

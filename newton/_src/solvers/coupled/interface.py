@@ -41,6 +41,9 @@ Supported hook signatures are:
     def coupling_notify_input_state_update(state, flags, *, iteration_restart=False, dt=0.0) -> None: ...
 
 
+    def coupling_supports_inertial_property_refresh() -> bool: ...
+
+
     def coupling_rewind_proxy_body_velocity(
         body_local_to_proxy_global, state, coupling_forces, body_gravity_acceleration, dt
     ) -> None: ...
@@ -234,6 +237,16 @@ class CouplingInterface:
         state arrays and public force-input buffers.
         """
         del state, flags, iteration_restart, dt
+
+    def coupling_supports_inertial_property_refresh(self) -> bool:
+        """Return whether inertial property refresh is safe during graph capture.
+
+        Solvers that read mass and inertia arrays directly, or can refresh
+        their derived inertial buffers with device work only, should override
+        this to return ``True`` and provide a graph-capturable implementation
+        of :meth:`notify_model_changed` for BODY_INERTIAL_PROPERTIES.
+        """
+        return False
 
     def coupling_eval_gravity_acceleration(
         self,

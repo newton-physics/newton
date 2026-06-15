@@ -399,6 +399,28 @@ class ModelView:
             device=parent.device,
         )
 
+    def _refresh_particle_mass_properties(self, particle_local_to_global: wp.array[int]) -> None:
+        """Refresh view-local particle mass properties copied from the parent model."""
+        if particle_local_to_global.shape[0] == 0:
+            return
+
+        parent = object.__getattribute__(self, "_parent")
+        mass = self._cow_array("particle_mass")
+        inv_mass = self._cow_array("particle_inv_mass")
+
+        wp.launch(
+            _copy_particle_mass_properties_kernel,
+            dim=particle_local_to_global.shape[0],
+            inputs=[
+                particle_local_to_global,
+                parent.particle_mass,
+                parent.particle_inv_mass,
+                mass,
+                inv_mass,
+            ],
+            device=parent.device,
+        )
+
     def _refresh_body_inverse_dynamics(
         self,
         body_local_to_global: wp.array[int],
@@ -495,6 +517,49 @@ class ModelView:
             _scale_body_mass_kernel,
             dim=body_indices.shape[0],
             inputs=[body_indices, float(factor), inv_mass, inv_inertia, mass, inertia],
+            device=parent.device,
+        )
+
+    def scale_body_mass_mask(self, body_mask: wp.array[int], factor: float) -> None:
+        """Scale mass and inertia for bodies whose mask entry is non-zero."""
+        if factor <= 0.0:
+            raise ValueError(f"Body mass scale factor must be > 0, got {factor}")
+
+        parent = object.__getattribute__(self, "_parent")
+        if body_mask.shape[0] == 0:
+            return
+
+        inv_mass = self._cow_array("body_inv_mass")
+        inv_inertia = self._cow_array("body_inv_inertia")
+        mass = self._cow_array("body_mass")
+        inertia = self._cow_array("body_inertia")
+
+        wp.launch(
+            _scale_body_mass_mask_kernel,
+            dim=body_mask.shape[0],
+            inputs=[body_mask, float(factor), inv_mass, inv_inertia, mass, inertia],
+            device=parent.device,
+        )
+
+    def add_body_lumped_inertia(
+        self,
+        body_mass_lump: wp.array[float],
+        body_inertia_lump: wp.array[float],
+    ) -> None:
+        """Add diagonal lumped mass and isotropic inertia to body properties."""
+        parent = object.__getattribute__(self, "_parent")
+        if body_mass_lump.shape[0] == 0:
+            return
+
+        inv_mass = self._cow_array("body_inv_mass")
+        inv_inertia = self._cow_array("body_inv_inertia")
+        mass = self._cow_array("body_mass")
+        inertia = self._cow_array("body_inertia")
+
+        wp.launch(
+            _add_body_lumped_inertia_kernel,
+            dim=body_mass_lump.shape[0],
+            inputs=[body_mass_lump, body_inertia_lump, inv_mass, inv_inertia, mass, inertia],
             device=parent.device,
         )
 
@@ -736,6 +801,41 @@ class ModelView:
                 device=parent.device,
             )
 
+    def scale_particle_mass_mask(self, particle_mask: wp.array[int], factor: float) -> None:
+        """Scale mass for particles whose mask entry is non-zero."""
+        if factor <= 0.0:
+            raise ValueError(f"Particle mass scale factor must be > 0, got {factor}")
+
+        parent = object.__getattribute__(self, "_parent")
+        if parent.particle_count == 0 or particle_mask.shape[0] == 0:
+            return
+
+        inv_mass = self._cow_array("particle_inv_mass")
+        mass = self._cow_array("particle_mass")
+
+        wp.launch(
+            _scale_particle_mass_mask_kernel,
+            dim=particle_mask.shape[0],
+            inputs=[particle_mask, float(factor), inv_mass, mass],
+            device=parent.device,
+        )
+
+    def add_particle_lumped_mass(self, particle_mass_lump: wp.array[float]) -> None:
+        """Add diagonal lumped mass to particles on this view."""
+        parent = object.__getattribute__(self, "_parent")
+        if parent.particle_count == 0 or particle_mass_lump.shape[0] == 0:
+            return
+
+        inv_mass = self._cow_array("particle_inv_mass")
+        mass = self._cow_array("particle_mass")
+
+        wp.launch(
+            _add_particle_lumped_mass_kernel,
+            dim=particle_mass_lump.shape[0],
+            inputs=[particle_mass_lump, inv_mass, mass],
+            device=parent.device,
+        )
+
     def set_particle_mass(self, particle_indices: wp.array[int], particle_mass: wp.array[float]) -> None:
         """Set mass for the given particle indices.
 
@@ -822,6 +922,20 @@ def _copy_body_inertial_properties_kernel(
     inertia[local_id] = parent_inertia[global_id]
     inv_mass[local_id] = parent_inv_mass[global_id]
     inv_inertia[local_id] = parent_inv_inertia[global_id]
+
+
+@wp.kernel(enable_backward=False)
+def _copy_particle_mass_properties_kernel(
+    local_to_global: wp.array[int],
+    parent_mass: wp.array[float],
+    parent_inv_mass: wp.array[float],
+    mass: wp.array[float],
+    inv_mass: wp.array[float],
+):
+    local_id = wp.tid()
+    global_id = local_to_global[local_id]
+    mass[local_id] = parent_mass[global_id]
+    inv_mass[local_id] = parent_inv_mass[global_id]
 
 
 @wp.kernel(enable_backward=False)
@@ -925,6 +1039,48 @@ def _scale_body_mass_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def _scale_body_mass_mask_kernel(
+    mask: wp.array[int],
+    factor: float,
+    inv_mass: wp.array[float],
+    inv_inertia: wp.array[wp.mat33],
+    mass: wp.array[float],
+    inertia: wp.array[wp.mat33],
+):
+    i = wp.tid()
+    if mask[i] == 0:
+        return
+    inv_factor = 1.0 / factor
+    inv_mass[i] = inv_mass[i] * inv_factor
+    inv_inertia[i] = inv_inertia[i] * inv_factor
+    mass[i] = mass[i] * factor
+    inertia[i] = inertia[i] * factor
+
+
+@wp.kernel(enable_backward=False)
+def _add_body_lumped_inertia_kernel(
+    mass_lump: wp.array[float],
+    inertia_lump: wp.array[float],
+    inv_mass: wp.array[float],
+    inv_inertia: wp.array[wp.mat33],
+    mass: wp.array[float],
+    inertia: wp.array[wp.mat33],
+):
+    i = wp.tid()
+    dm = mass_lump[i]
+    if dm > 0.0 and inv_mass[i] > 0.0:
+        new_mass = mass[i] + dm
+        mass[i] = new_mass
+        inv_mass[i] = 1.0 / new_mass
+
+    di = inertia_lump[i]
+    if di > 0.0 and wp.trace(inv_inertia[i]) > 0.0:
+        new_inertia = inertia[i] + wp.mat33(di, 0.0, 0.0, 0.0, di, 0.0, 0.0, 0.0, di)
+        inertia[i] = new_inertia
+        inv_inertia[i] = wp.inverse(new_inertia)
+
+
+@wp.kernel(enable_backward=False)
 def _check_body_mass_update_kernel(
     indices: wp.array[int],
     target_mass: wp.array[float],
@@ -1015,6 +1171,36 @@ def _scale_particle_mass_indices_kernel(
     inv_factor = 1.0 / factor
     inv_mass[idx] = inv_mass[idx] * inv_factor
     mass[idx] = mass[idx] * factor
+
+
+@wp.kernel(enable_backward=False)
+def _scale_particle_mass_mask_kernel(
+    mask: wp.array[int],
+    factor: float,
+    inv_mass: wp.array[float],
+    mass: wp.array[float],
+):
+    i = wp.tid()
+    if mask[i] == 0:
+        return
+    inv_factor = 1.0 / factor
+    inv_mass[i] = inv_mass[i] * inv_factor
+    mass[i] = mass[i] * factor
+
+
+@wp.kernel(enable_backward=False)
+def _add_particle_lumped_mass_kernel(
+    mass_lump: wp.array[float],
+    inv_mass: wp.array[float],
+    mass: wp.array[float],
+):
+    i = wp.tid()
+    dm = mass_lump[i]
+    if dm <= 0.0 or inv_mass[i] <= 0.0:
+        return
+    new_mass = mass[i] + dm
+    mass[i] = new_mass
+    inv_mass[i] = 1.0 / new_mass
 
 
 @wp.kernel(enable_backward=False)
