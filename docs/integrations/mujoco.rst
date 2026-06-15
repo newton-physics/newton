@@ -553,28 +553,25 @@ imported when loading an MJCF or USD asset into Newton, and that
   actuators using them are skipped at construction with a warning.
 
 Smaller limitations are documented inline where they are most relevant —
-see `Caveats`_ below for ``gap``, collision-radius, convex-hull fallback,
-and velocity limits; and the unsupported rows in `Joint types`_ and
-`Geometry types`_.
+see `Caveats`_ below for collision-radius, convex-hull fallback, and
+velocity limits (and how ``gap`` is forwarded); and the unsupported rows
+in `Joint types`_ and `Geometry types`_.
 
 
 Caveats
 -------
 
-**geom_gap is always zero.**
-  MuJoCo's ``gap`` parameter controls *inactive* contact generation —
-  contacts that are detected but do not produce constraint forces until
-  penetration exceeds the gap threshold. Newton does not use this concept:
-  when the MuJoCo collision pipeline is active it runs every step, so
-  there is no benefit to keeping inactive contacts around. Setting
-  ``geom_gap > 0`` would inflate ``geom_margin``, which disables MuJoCo's
-  multicontact and degrades contact quality. Therefore
-  :class:`~newton.solvers.SolverMuJoCo` always sets ``geom_gap = 0``
-  regardless of the Newton
-  :attr:`~newton.ModelBuilder.ShapeConfig.gap` value. MJCF/USD ``gap``
-  values are still imported into
-  :attr:`~newton.ModelBuilder.ShapeConfig.gap` on the Newton model, but
-  they are not forwarded to the MuJoCo solver.
+**Gap is forwarded to MuJoCo.**
+  Under MuJoCo 3.9 semantics, ``gap`` no longer affects force generation:
+  contacts in ``[margin, margin + gap)`` are detected and reported (for
+  sensing) but produce no constraint force. :class:`~newton.solvers.SolverMuJoCo`
+  therefore propagates the Newton model's
+  :attr:`~newton.ModelBuilder.ShapeConfig.gap` into MuJoCo's ``geom_gap`` and
+  ``pair_gap`` — at construction and after
+  :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` — so contact-detection
+  ranges authored on Newton shapes are honored by MuJoCo's broadphase. Set
+  ``shape_gap = 0`` to have MuJoCo ignore it. (Geom *margin*, by contrast, is
+  still zeroed model-wide under NATIVECCD/MULTICCD — see *Margin zeroing* above.)
 
 **shape_collision_radius is ignored.**
   MuJoCo computes bounding-sphere radii (``geom_rbound``) internally from

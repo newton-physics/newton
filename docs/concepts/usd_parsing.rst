@@ -180,9 +180,12 @@ The table below shows MuJoCo attribute remapping examples, including both direct
    * - ``mjc:armature``
      - ``armature``
      - Direct mapping
-   * - ``mjc:margin``, ``mjc:gap``
+   * - ``mjc:margin``
      - ``margin``
-     - ``margin = mjc:margin - mjc:gap``
+     - Direct mapping (identity under MuJoCo 3.9). Pass ``legacy_margin_gap=True`` to :meth:`~newton.ModelBuilder.add_usd` for the pre-3.9 ``margin = mjc:margin - mjc:gap`` translation.
+   * - ``mjc:gap``
+     - ``gap``
+     - Direct mapping
 
 **Example USD with remapped attributes:**
 
