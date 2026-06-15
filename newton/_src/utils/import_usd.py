@@ -6,7 +6,6 @@ from __future__ import annotations
 import collections
 import copy
 import datetime
-import functools
 import inspect
 import itertools
 import logging
@@ -45,7 +44,7 @@ from ..solvers.mujoco.utils import (
 )
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
-from ..usd.schemas import SchemaResolverNewton, _legacy_margin_gap_scope
+from ..usd.schemas import SchemaResolverNewton
 from .import_utils import should_show_collider
 
 logger = logging.getLogger("newton")
@@ -71,23 +70,6 @@ def _external_stacklevel() -> int:
         del frame
 
 
-def _scope_legacy_margin_gap(parse_fn):
-    """Activate the legacy MuJoCo margin/gap translation for the whole parse.
-
-    ``_mjc_margin_from_prim`` reads the scoped flag instead of taking it as an
-    argument, because the USD schema resolver registers one fixed getter per
-    attribute with no per-call channel.
-    """
-
-    @functools.wraps(parse_fn)
-    def _wrapper(*args, **kwargs):
-        with _legacy_margin_gap_scope(kwargs.get("legacy_margin_gap", False)):
-            return parse_fn(*args, **kwargs)
-
-    return _wrapper
-
-
-@_scope_legacy_margin_gap
 def parse_usd(
     builder: ModelBuilder,
     source: str | UsdStage,
@@ -2896,6 +2878,23 @@ def parse_usd(
                 )
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
+                if legacy_margin_gap:
+                    # Pre-MuJoCo-3.9 import: newton_margin = mjc_margin - mjc_gap.
+                    # Under 3.9 margin/gap match shape_margin/shape_gap, so the
+                    # resolved value above is already an identity import; only
+                    # prims that author mjc:margin need the legacy subtraction.
+                    mjc_margin = usd.get_attribute(prim, "mjc:margin")
+                    if mjc_margin is not None:
+                        mjc_gap = usd.get_attribute(prim, "mjc:gap")
+                        mjc_gap = 0.0 if mjc_gap is None else float(mjc_gap)
+                        newton_margin = float(mjc_margin) - mjc_gap
+                        if newton_margin < 0.0:
+                            warnings.warn(
+                                f"Prim '{prim.GetPath()}': legacy translation yields "
+                                f"negative margin (mjc_margin={mjc_margin}, mjc_gap={mjc_gap}).",
+                                stacklevel=2,
+                            )
+                        margin_val = newton_margin
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
                 material_props = _get_material_props_cached(prim)
