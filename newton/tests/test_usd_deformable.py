@@ -344,6 +344,92 @@ class TestUSDDeformableCableAsset(unittest.TestCase):
             self.assertTrue((np.abs(body_qd) < 5.0e2).all(), "cable body velocities diverged")
 
 
+def _add_cloth_mesh(stage, path):
+    """Author a two-triangle quad GeomMesh marked as a surface deformable (cloth)."""
+    from pxr import UsdGeom
+
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 1.0, 1.0)])
+    mesh.CreateFaceVertexCountsAttr([3, 3])
+    mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 0, 2, 3])
+    mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+    return mesh
+
+
+class TestUSDDeformableCloth(unittest.TestCase):
+    """Surface-deformable (cloth) parsing into particles + FEM triangles + bending edges."""
+
+    def test_triangle_mesh_imports_as_cloth(self):
+        """A triangle Mesh with PhysicsSurfaceDeformableSimAPI imports as cloth with per-cloth ranges."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cloth.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            _add_cloth_mesh(stage, "/World/Cloth")
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+
+            ranges = result["path_cloth_map"]["/World/Cloth"]
+            self.assertEqual(ranges["particle"], (0, 4))  # 4 quad vertices
+            self.assertEqual(ranges["tri"], (0, 2))  # 2 triangles
+            # Bending edges cover the cloth's full edge range starting at 0.
+            self.assertEqual(ranges["edge"][0], 0)
+            self.assertEqual(ranges["edge"][1], builder.edge_count)
+            self.assertGreater(builder.edge_count, 0)
+            self.assertEqual(builder.particle_count, 4)
+
+    def test_plain_mesh_without_surface_api_is_not_cloth(self):
+        """A triangle Mesh without the surface-deformable API must not produce cloth."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "plain_mesh.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            mesh = UsdGeom.Mesh.Define(stage, "/World/Mesh")
+            mesh.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0)])
+            mesh.CreateFaceVertexCountsAttr([3])
+            mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            self.assertEqual(result["path_cloth_map"], {})
+            self.assertEqual(builder.particle_count, 0)
+
+    def test_cloth_material_maps_to_triangle_and_edge_stiffness(self):
+        """Bound surface material -> tri_ke (stretch), tri_ka (shear), edge bending (bend)."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cloth_mat.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            stretch, shear, bend = 1.0e3, 5.0e2, 2.0e1
+            _bind_cable_material(
+                stage,
+                mesh.GetPrim(),
+                "/World/ClothMat",
+                stretchStiffness=stretch,
+                shearStiffness=shear,
+                bendStiffness=bend,
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            t0 = result["path_cloth_map"]["/World/Cloth"]["tri"][0]
+            e0 = result["path_cloth_map"]["/World/Cloth"]["edge"][0]
+            self.assertAlmostEqual(builder.tri_materials[t0][0], stretch, delta=stretch * 1e-3)  # tri_ke
+            self.assertAlmostEqual(builder.tri_materials[t0][1], shear, delta=shear * 1e-3)  # tri_ka
+            self.assertAlmostEqual(builder.edge_bending_properties[e0][0], bend, delta=bend * 1e-3)
+
+
 devices = get_selected_cuda_test_devices()
 add_function_test(
     TestUSDDeformableCableAsset,

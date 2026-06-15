@@ -374,6 +374,9 @@ def parse_usd(
     path_joint_map: dict[str, int] = {}
     # mapping from cable prim path to its (body indices, joint indices) from add_rod
     path_cable_map: dict[str, tuple[list[int], list[int]]] = {}
+    # mapping from cloth prim path to its particle / triangle / bending-edge ranges
+    # ([start, end)) in the model arrays, for per-cloth addressability.
+    path_cloth_map: dict[str, dict[str, tuple[int, int]]] = {}
     # DOF offset within a merged D6 joint for each original prim path (only populated for merged joints)
     merged_dof_offset: dict[str, int] = {}
     # cache for resolved material properties (keyed by prim path)
@@ -3559,6 +3562,69 @@ def parse_usd(
                 if verbose:
                     print(f"Added cable {path} with {len(cable_bodies)} segments.")
 
+    # Surface deformables (cloth): a triangle UsdGeom.Mesh carrying
+    # PhysicsSurfaceDeformableSimAPI is imported as Newton cloth (particles +
+    # FEM triangles + bending edges) via ModelBuilder.add_cloth_mesh. Discovery
+    # is metadata-based so it works without the schema registered.
+    if root_prim and root_prim.IsValid():
+        for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
+            if not prim.IsA(UsdGeom.Mesh):
+                continue
+            if not usd.has_applied_api_schema(prim, "PhysicsSurfaceDeformableSimAPI"):
+                continue
+
+            path = str(prim.GetPath())
+            if path.startswith("/Prototypes/"):
+                continue
+            if any(re.match(pattern, path) for pattern in ignore_paths):
+                continue
+
+            mesh = UsdGeom.Mesh(prim)
+            mesh_points = mesh.GetPointsAttr().Get()
+            face_counts = mesh.GetFaceVertexCountsAttr().Get()
+            face_indices = mesh.GetFaceVertexIndicesAttr().Get()
+            if not mesh_points or not face_counts or not face_indices:
+                warnings.warn(f"{path}: cloth mesh missing points / topology; skipping.", stacklevel=2)
+                continue
+            if any(int(c) != 3 for c in face_counts):
+                warnings.warn(f"{path}: cloth mesh must be triangulated (all faces size 3); skipping.", stacklevel=2)
+                continue
+
+            world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
+            cloth_pos, cloth_rot, cloth_scale = wp.transform_decompose(world_mat)
+            scale = float(cloth_scale[0]) if _is_uniform_scale(cloth_scale) else 1.0
+
+            # Surface-deformable material -> cloth stiffness. Map the membrane
+            # moduli to the triangle FEM stiffnesses (stretch -> tri_ke, shear ->
+            # tri_ka) and the bend modulus to the bending-edge stiffness.
+            cloth_mat = usd._get_surface_deformable_material(prim) or {}
+            tri_ke = cloth_mat.get("stretchStiffness")
+            tri_ka = cloth_mat.get("shearStiffness")
+            edge_ke = cloth_mat.get("bendStiffness")
+            density = cloth_mat.get("density", builder.default_shape_cfg.density)
+
+            p0, t0, e0 = builder.particle_count, builder.tri_count, builder.edge_count
+            builder.add_cloth_mesh(
+                pos=cloth_pos,
+                rot=cloth_rot,
+                scale=scale,
+                vel=wp.vec3(0.0, 0.0, 0.0),
+                vertices=[wp.vec3(float(p[0]), float(p[1]), float(p[2])) for p in mesh_points],
+                indices=[int(i) for i in face_indices],
+                density=density,
+                tri_ke=tri_ke,
+                tri_ka=tri_ka,
+                edge_ke=edge_ke,
+                label=path,
+            )
+            path_cloth_map[path] = {
+                "particle": (p0, builder.particle_count),
+                "tri": (t0, builder.tri_count),
+                "edge": (e0, builder.edge_count),
+            }
+            if verbose:
+                print(f"Added cloth {path} with {builder.particle_count - p0} particles.")
+
     # Load Gaussian splat prims that weren't already captured as children of rigid bodies.
     if load_visual_shapes:
         prims = iter(Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()))
@@ -4308,6 +4374,7 @@ def parse_usd(
         "path_body_map": path_body_map,
         "path_joint_map": path_joint_map,
         "path_cable_map": path_cable_map,
+        "path_cloth_map": path_cloth_map,
         "path_shape_map": path_shape_map,
         "path_shape_scale": path_shape_scale,
         "mass_unit": mass_unit,
