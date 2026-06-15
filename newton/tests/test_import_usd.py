@@ -249,11 +249,14 @@ def Xform "Root" (
         child_joint_idx = builder.joint_label.index("/World/ChildJoint")
         self.assertEqual(builder.joint_parent[root_joint_idx], -1)
         self.assertEqual(builder.joint_parent[child_joint_idx], builder.body_label.index("/World/Base"))
-        self.assertEqual(builder.joint_articulation, [-1, -1])
+        self.assertEqual(builder.joint_articulation[root_joint_idx], -1)
+        self.assertEqual(builder.joint_articulation[child_joint_idx], -1)
 
         model = builder.finalize(skip_validation_joints=True)
         self.assertEqual(model.articulation_count, 0)
-        self.assertEqual(model.joint_articulation.numpy().tolist(), [-1, -1])
+        model_joint_articulation = model.joint_articulation.numpy().tolist()
+        self.assertEqual(model_joint_articulation[root_joint_idx], -1)
+        self.assertEqual(model_joint_articulation[child_joint_idx], -1)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_disabled_joints_create_free_joints(self):
