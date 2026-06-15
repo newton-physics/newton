@@ -245,6 +245,38 @@ class TestUSDDeformableCable(unittest.TestCase):
                 np.testing.assert_allclose(z_world, [1.0, 0.0, 0.0], atol=1e-5)  # +Z -> tangent +X
                 np.testing.assert_allclose(y_world, [0.0, 1.0, 0.0], atol=1e-5)  # +Y -> normal
 
+    def test_cable_replication_independent_per_world(self):
+        """Replicating a cable across worlds yields independent, contiguous per-world segments (T5)."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]  # 3 segments
+            _add_cable_curve(stage, "/World/Cable", pts)
+            stage.Save()
+
+            # Parse the cable into a prototype builder, then replicate across worlds.
+            proto = newton.ModelBuilder()
+            result = proto.add_usd(str(usd_path))
+            base_bodies, _ = result["path_cable_map"]["/World/Cable"]
+            self.assertEqual(base_bodies, list(range(proto.body_count)))  # cable is the whole prototype
+
+            num_envs = 3
+            scene = newton.ModelBuilder()
+            scene.replicate(proto, world_count=num_envs)
+
+            nb = proto.body_count
+            # One independent copy per world: counts scale, articulation repeats per env.
+            self.assertEqual(scene.body_count, num_envs * nb)
+            self.assertEqual(scene.articulation_label.count("/World/Cable_articulation"), num_envs)
+            # Env e's cable segments are the contiguous block [e*nb : (e+1)*nb] - disjoint,
+            # so state can be sliced as (num_envs, num_segments, ...).
+            ranges = [list(range(e * nb, (e + 1) * nb)) for e in range(num_envs)]
+            self.assertEqual(sorted(sum(ranges, [])), list(range(scene.body_count)))
+
     def test_cable_articulation_label_survives_finalize(self):
         """The cable's articulation is labeled by prim path - the replication-durable handle."""
         from pxr import Usd, UsdPhysics
