@@ -3412,12 +3412,39 @@ def parse_usd(
                 )
 
     # Deformable cables (curve deformables): a GeomBasisCurves carrying
-    # PhysicsCurvesDeformableSimAPI is imported as a VBD cable — a chain of
+    # PhysicsCurvesDeformableSimAPI is imported as a VBD cable - a chain of
     # capsule bodies joined by JointType.CABLE joints (builder.add_rod).
     # Discovery is metadata-based (has_applied_api_schema) so it works without
     # the deformable schema being registered with the USD runtime.
-    # NOTE (scaffold): material → stiffness, normals → orientation, and rest
-    # shape are not parsed yet; defaults are used. See plan phases 1-3.
+    # Rest shape (restShapePoints / restNormals) is not parsed yet (deferred).
+    def _cable_segment_quaternions(seg_positions, seg_normals):
+        # Per-segment orientation: align local +Z to the segment tangent and
+        # local +Y to the authored (world-space) normal of that segment. A
+        # degenerate normal (zero or parallel to the tangent) falls back to a
+        # roll-free alignment.
+        from ..math import quat_between_vectors_robust  # noqa: PLC0415
+
+        z_local = wp.vec3(0.0, 0.0, 1.0)
+        y_local = wp.vec3(0.0, 1.0, 0.0)
+        eps = 1.0e-8
+        quats = []
+        for i in range(len(seg_positions) - 1):
+            seg = seg_positions[i + 1] - seg_positions[i]
+            seg_len = float(wp.length(seg))
+            if seg_len <= eps:
+                raise ValueError("cable curve has duplicate consecutive points")
+            tangent = seg / seg_len
+            q = quat_between_vectors_robust(z_local, tangent, eps)
+            n_perp = seg_normals[i] - wp.dot(seg_normals[i], tangent) * tangent
+            n_len = float(wp.length(n_perp))
+            if n_len > eps:
+                n_perp = n_perp / n_len
+                y0 = wp.quat_rotate(q, y_local)
+                roll = math.atan2(float(wp.dot(wp.cross(y0, n_perp), tangent)), float(wp.dot(y0, n_perp)))
+                q = wp.mul(wp.quat_from_axis_angle(tangent, roll), q)
+            quats.append(q)
+        return quats
+
     if root_prim and root_prim.IsValid():
         for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
             if not prim.IsA(UsdGeom.BasisCurves):
@@ -3443,7 +3470,17 @@ def parse_usd(
             w_pos, w_rot, w_scale = wp.transform_decompose(world_mat)
             world_xf = wp.transform(w_pos, w_rot)
 
-            # Curve-deformable material → cable parameters. The material moduli
+            # Authored per-vertex normals give each segment's cross-section frame
+            # (twist). Only honored when one normal is authored per point.
+            normals = curves.GetNormalsAttr().Get()
+            if normals is not None and len(normals) != len(points):
+                warnings.warn(
+                    f"{path}: normals length {len(normals)} != points {len(points)}; ignoring normals.",
+                    stacklevel=2,
+                )
+                normals = None
+
+            # Curve-deformable material -> cable parameters. The material moduli
             # are force/area; convert to per-joint stiffness with the circular
             # cross-section geometry (A = pi r^2, I = pi r^4 / 4) and the segment
             # length, mirroring create_cable_stiffness_from_elastic_moduli.
@@ -3451,6 +3488,14 @@ def parse_usd(
             radius = 0.5 * cable_mat["thickness"] if "thickness" in cable_mat else 0.05
             area = math.pi * radius * radius
             inertia = 0.25 * math.pi * radius**4
+            # Capsule mass comes from volume * density; material density overrides
+            # the builder default. Per-point `masses` (a simulation-mesh concept)
+            # do not map onto rigid capsule bodies and are not consumed here.
+            cable_cfg = (
+                replace(builder.default_shape_cfg, density=cable_mat["density"])
+                if "density" in cable_mat
+                else builder.default_shape_cfg
+            )
             if "shearStiffness" in cable_mat or "twistStiffness" in cable_mat:
                 warnings.warn(
                     f"{path}: shearStiffness / twistStiffness are not yet mapped to the VBD cable "
@@ -3462,7 +3507,8 @@ def parse_usd(
             cable_joints: list[int] = []
             offset = 0
             for ci, n in enumerate(vertex_counts):
-                local_pts = points[offset : offset + n]
+                start = offset
+                local_pts = points[start : start + n]
                 offset += n
                 # add_rod needs >= 2 segments, i.e. >= 3 centerline points.
                 if n < 3:
@@ -3474,6 +3520,14 @@ def parse_usd(
                     )
                     for p in local_pts
                 ]
+                # Authored normals -> per-segment orientation (rotated to world).
+                quaternions = None
+                if normals is not None:
+                    seg_normals = [
+                        wp.quat_rotate(w_rot, wp.vec3(float(nv[0]), float(nv[1]), float(nv[2])))
+                        for nv in normals[start : start + n]
+                    ]
+                    quaternions = _cable_segment_quaternions(positions, seg_normals)
                 # Per-joint stiffness needs a segment length; use the curve's mean.
                 seg_len = float(wp.length(positions[-1] - positions[0])) / max(1, n - 1)
                 stretch_stiffness = (
@@ -3489,7 +3543,9 @@ def parse_usd(
                 label = path if len(vertex_counts) == 1 else f"{path}_curve{ci}"
                 bodies, joints = builder.add_rod(
                     positions=positions,
+                    quaternions=quaternions,
                     radius=radius,
+                    cfg=cable_cfg,
                     stretch_stiffness=stretch_stiffness,
                     bend_stiffness=bend_stiffness,
                     closed=closed,

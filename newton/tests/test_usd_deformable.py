@@ -15,9 +15,13 @@
 
 """Tests for USD deformable (cable / curve) parsing."""
 
+import math
 import tempfile
 import unittest
 from pathlib import Path
+
+import numpy as np
+import warp as wp
 
 import newton
 
@@ -94,9 +98,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertEqual(builder.body_count, 0)
 
     def test_cable_material_maps_to_rod_stiffness(self):
-        """Bound curve-deformable material → radius + per-joint stretch/bend stiffness."""
-        import math
-
+        """Bound curve-deformable material -> radius + per-joint stretch/bend stiffness."""
         from pxr import Usd, UsdPhysics
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -165,7 +167,6 @@ class TestUSDDeformableCable(unittest.TestCase):
 
     def test_cable_body_range_matches_curve(self):
         """Each cable body origin matches the authored segment start point (map points at the right bodies)."""
-        import numpy as np
         from pxr import Usd, UsdGeom, UsdPhysics
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -187,8 +188,65 @@ class TestUSDDeformableCable(unittest.TestCase):
                 origin = np.array(builder.body_q[body][:3], dtype=np.float32)
                 np.testing.assert_allclose(origin, np.array(pts[i], dtype=np.float32), atol=1e-5)
 
+    def test_cable_density_scales_segment_mass(self):
+        """Material density maps to capsule mass: doubling density doubles segment mass."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_density.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts_a = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            pts_b = [(0.0, 1.0, 1.0), (0.1, 1.0, 1.0), (0.2, 1.0, 1.0), (0.3, 1.0, 1.0)]
+            ca = _add_cable_curve(stage, "/World/CableA", pts_a)
+            cb = _add_cable_curve(stage, "/World/CableB", pts_b)
+            _bind_cable_material(stage, ca.GetPrim(), "/World/MatA", thickness=0.02, density=1000.0)
+            _bind_cable_material(stage, cb.GetPrim(), "/World/MatB", thickness=0.02, density=2000.0)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            bodies_a, _ = result["path_cable_map"]["/World/CableA"]
+            bodies_b, _ = result["path_cable_map"]["/World/CableB"]
+
+            mass_a = builder.body_mass[bodies_a[0]]
+            mass_b = builder.body_mass[bodies_b[0]]
+            self.assertGreater(mass_a, 0.0)
+            self.assertAlmostEqual(mass_b, 2.0 * mass_a, delta=mass_a * 1e-3)
+
+    def test_cable_normals_orient_segments(self):
+        """Authored normals set each segment's cross-section frame: +Z -> tangent, +Y -> normal."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_normals.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]  # tangent +X
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            normals = curves.GetNormalsAttr()
+            if not normals:
+                normals = curves.CreateNormalsAttr()
+            normals.Set([(0.0, 1.0, 0.0)] * len(pts))  # cross-section frame: +Y
+            curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            bodies, _ = result["path_cable_map"]["/World/Cable"]
+
+            for body in bodies:
+                t = builder.body_q[body]
+                q = wp.quat(float(t[3]), float(t[4]), float(t[5]), float(t[6]))
+                z_world = np.array(wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0)), dtype=np.float32)
+                y_world = np.array(wp.quat_rotate(q, wp.vec3(0.0, 1.0, 0.0)), dtype=np.float32)
+                np.testing.assert_allclose(z_world, [1.0, 0.0, 0.0], atol=1e-5)  # +Z -> tangent +X
+                np.testing.assert_allclose(y_world, [0.0, 1.0, 0.0], atol=1e-5)  # +Y -> normal
+
     def test_cable_articulation_label_survives_finalize(self):
-        """The cable's articulation is labeled by prim path — the replication-durable handle."""
+        """The cable's articulation is labeled by prim path - the replication-durable handle."""
         from pxr import Usd, UsdPhysics
 
         with tempfile.TemporaryDirectory() as tmpdir:
