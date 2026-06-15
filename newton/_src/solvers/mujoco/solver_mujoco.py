@@ -43,6 +43,7 @@ from .constants import (
     DEFAULT_LIMIT_SOLREF,
     HINGE_CONNECT_AXIS_OFFSET,
     KINEMATIC_ARMATURE,
+    MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
@@ -5520,7 +5521,7 @@ class SolverMuJoCo(SolverBase):
                         # item I6); skipping the seed also keeps ``save_to_mjcf``
                         # idempotent — re-imported FORCE_SPACE joints recover
                         # the same MJCF_DEFAULT state instead of being frozen
-                        # into RAW by a scaled solreflimit serialisation.
+                        # into RAW by a derived solreflimit serialisation.
                         joint_params["solref_limit"] = joint_solref_limit[ai]
                     if joint_solimp_limit is not None:
                         joint_params["solimp_limit"] = joint_solimp_limit[ai]
@@ -7469,8 +7470,8 @@ class SolverMuJoCo(SolverBase):
                     # Restore MuJoCo's compiled default so a zero-gain
                     # configuration matches a fresh model with no authored
                     # ``solreflimit``. A ``(ke>0, kd=0)`` pair would otherwise
-                    # write ``(-ke·factor, 0)`` and trigger MuJoCo's
-                    # divide-by-zero in ``k_eff = 1/(τ²·ζ²)``.
+                    # produce an infinite time constant in the positive
+                    # solref conversion.
                     jnt_solref[mjc_jnt] = DEFAULT_LIMIT_SOLREF
                     continue
 
@@ -7478,7 +7479,11 @@ class SolverMuJoCo(SolverBase):
                 invw = float(self.mj_model.dof_invweight0[dof_idx])
                 dmax = float(self.mj_model.jnt_solimp[mjc_jnt][1])
                 factor = invw * (1.0 - dmax) if invw > 0.0 and dmax < 1.0 else 1.0
-                jnt_solref[mjc_jnt] = (-ke * factor, -kd * factor)
+                direct_stiffness = max(ke * factor, MJ_MINVAL)
+                direct_damping = max(kd * factor, MJ_MINVAL)
+                timeconst = 2.0 / direct_damping
+                dampratio = direct_damping / (2.0 * math.sqrt(direct_stiffness))
+                jnt_solref[mjc_jnt] = (timeconst, dampratio)
 
             self.mj_model.jnt_solref[:] = jnt_solref
             self.mjw_model.jnt_solref.assign(jnt_solref.reshape(1, njnt, 2))
