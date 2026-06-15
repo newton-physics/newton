@@ -76,6 +76,8 @@ def _as_body_indices(body_indices: Sequence[int]) -> list[int]:
         raise ValueError("body_indices must contain at least one body index")
     if any(i < 0 for i in indices):
         raise ValueError("body_indices must be non-negative")
+    if len(set(indices)) != len(indices):
+        raise ValueError("body_indices must be unique")
     return indices
 
 
