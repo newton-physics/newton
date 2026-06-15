@@ -372,6 +372,8 @@ def parse_usd(
     path_shape_scale: dict[str, wp.vec3] = {}
     # mapping from prim path to joint index in ModelBuilder
     path_joint_map: dict[str, int] = {}
+    # mapping from cable prim path to its (body indices, joint indices) from add_rod
+    path_cable_map: dict[str, tuple[list[int], list[int]]] = {}
     # DOF offset within a merged D6 joint for each original prim path (only populated for merged joints)
     merged_dof_offset: dict[str, int] = {}
     # cache for resolved material properties (keyed by prim path)
@@ -3409,6 +3411,67 @@ def parse_usd(
                     f"Added soft mesh {path} with {tetmesh.vertex_count} vertices and {tetmesh.tet_count} tetrahedra."
                 )
 
+    # Deformable cables (curve deformables): a GeomBasisCurves carrying
+    # PhysicsCurvesDeformableSimAPI is imported as a VBD cable — a chain of
+    # capsule bodies joined by JointType.CABLE joints (builder.add_rod).
+    # Discovery is metadata-based (has_applied_api_schema) so it works without
+    # the deformable schema being registered with the USD runtime.
+    # NOTE (scaffold): material → stiffness, normals → orientation, and rest
+    # shape are not parsed yet; defaults are used. See plan phases 1-3.
+    if root_prim and root_prim.IsValid():
+        for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
+            if not prim.IsA(UsdGeom.BasisCurves):
+                continue
+            if not usd.has_applied_api_schema(prim, "PhysicsCurvesDeformableSimAPI"):
+                continue
+
+            path = str(prim.GetPath())
+            if path.startswith("/Prototypes/"):
+                continue
+            if any(re.match(pattern, path) for pattern in ignore_paths):
+                continue
+
+            curves = UsdGeom.BasisCurves(prim)
+            points = curves.GetPointsAttr().Get()
+            vertex_counts = curves.GetCurveVertexCountsAttr().Get()
+            if not points or not vertex_counts:
+                warnings.warn(f"{path}: cable curve has no points / curveVertexCounts; skipping.", stacklevel=2)
+                continue
+            closed = curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic
+
+            world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
+            w_pos, w_rot, w_scale = wp.transform_decompose(world_mat)
+            world_xf = wp.transform(w_pos, w_rot)
+
+            # TODO(phase 1): read radius from thickness on the bound material.
+            radius = 0.05
+
+            cable_bodies: list[int] = []
+            cable_joints: list[int] = []
+            offset = 0
+            for ci, n in enumerate(vertex_counts):
+                local_pts = points[offset : offset + n]
+                offset += n
+                # add_rod needs >= 2 segments, i.e. >= 3 centerline points.
+                if n < 3:
+                    warnings.warn(f"{path}: curve {ci} has {n} points (need >= 3); skipping that curve.", stacklevel=2)
+                    continue
+                positions = [
+                    wp.transform_point(
+                        world_xf, wp.vec3(float(p[0]) * w_scale[0], float(p[1]) * w_scale[1], float(p[2]) * w_scale[2])
+                    )
+                    for p in local_pts
+                ]
+                label = path if len(vertex_counts) == 1 else f"{path}_curve{ci}"
+                bodies, joints = builder.add_rod(positions=positions, radius=radius, closed=closed, label=label)
+                cable_bodies.extend(bodies)
+                cable_joints.extend(joints)
+
+            if cable_bodies:
+                path_cable_map[path] = (cable_bodies, cable_joints)
+                if verbose:
+                    print(f"Added cable {path} with {len(cable_bodies)} segments.")
+
     # Load Gaussian splat prims that weren't already captured as children of rigid bodies.
     if load_visual_shapes:
         prims = iter(Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()))
@@ -4157,6 +4220,7 @@ def parse_usd(
         "up_axis": stage_up_axis,
         "path_body_map": path_body_map,
         "path_joint_map": path_joint_map,
+        "path_cable_map": path_cable_map,
         "path_shape_map": path_shape_map,
         "path_shape_scale": path_shape_scale,
         "mass_unit": mass_unit,
