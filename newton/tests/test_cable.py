@@ -314,8 +314,8 @@ def _make_straight_cable_along_y(num_elements: int, segment_length: float, z_hei
     )
 
 
-def _cable_rest_initial_pose_utils_impl(test: unittest.TestCase, device):
-    """Cable helpers preserve segment lengths when straight rest differs from curved initial pose."""
+def _cable_rest_initial_pose_geometry_impl(test: unittest.TestCase, device):
+    """Cable rest/initial geometry helpers preserve lengths and validate transforms."""
     initial_points = [
         wp.vec3(0.0, 0.0, 1.0),
         wp.vec3(0.18, 0.06, 1.04),
@@ -332,14 +332,14 @@ def _cable_rest_initial_pose_utils_impl(test: unittest.TestCase, device):
     rest_lengths = newton.utils.compute_cable_segment_lengths(rest_points)
     test.assertEqual(len(rest_quats), len(initial_points) - 1)
     np.testing.assert_allclose(rest_lengths, initial_lengths, rtol=1.0e-6, atol=1.0e-8)
-    newton.utils.validate_cable_segment_lengths_match(rest_points, initial_points)
+    newton.utils.check_matching_cable_segment_lengths(rest_points, initial_points)
 
     stretched_initial_points = list(initial_points)
     stretched_initial_points[1] = wp.vec3(0.24, 0.06, 1.04)
     with test.assertRaisesRegex(ValueError, "segment lengths differ"):
-        newton.utils.validate_cable_segment_lengths_match(rest_points, stretched_initial_points)
+        newton.utils.check_matching_cable_segment_lengths(rest_points, stretched_initial_points)
 
-    xforms = newton.utils.create_cable_body_transforms(initial_points)
+    xforms = newton.utils.create_cable_body_transforms(initial_points, body_frame_origin="start")
     test.assertEqual(len(xforms), len(initial_points) - 1)
 
     xform_np = wp.array(xforms, dtype=wp.transform, device=device).numpy()
@@ -357,6 +357,7 @@ def _cable_rest_initial_pose_utils_impl(test: unittest.TestCase, device):
         newton.utils.create_cable_body_transforms(
             initial_points,
             [wp.quat_identity() for _ in range(len(initial_points) - 1)],
+            body_frame_origin="start",
         )
 
 
@@ -390,7 +391,7 @@ def _apply_cable_body_transforms_syncs_vbd_history_impl(test: unittest.TestCase,
         wp.vec3(0.39, 0.12, 0.98),
         wp.vec3(0.60, 0.04, 1.02),
     ]
-    initial_xforms = newton.utils.create_cable_body_transforms(initial_points)
+    initial_xforms = newton.utils.create_cable_body_transforms(initial_points, body_frame_origin="start")
 
     newton.utils.apply_cable_body_transforms(
         [state0, state1],
@@ -420,7 +421,7 @@ def _apply_cable_body_transforms_syncs_vbd_history_impl(test: unittest.TestCase,
         )
 
 
-def _cable_curved_init_straight_rest_no_stretch_impl(test: unittest.TestCase, device):
+def _cable_curved_initial_straight_rest_no_stretch_impl(test: unittest.TestCase, device):
     """Curved initial pose with length-matched straight rest must not develop stretch artifacts.
 
     Locks in the guarantee that ``create_straight_cable_rest_from_initial`` paired with
@@ -455,7 +456,7 @@ def _cable_curved_init_straight_rest_no_stretch_impl(test: unittest.TestCase, de
     contacts = model.contacts()
     solver = newton.solvers.SolverVBD(model, iterations=4)
 
-    initial_xforms = newton.utils.create_cable_body_transforms(initial_points)
+    initial_xforms = newton.utils.create_cable_body_transforms(initial_points, body_frame_origin="start")
     newton.utils.apply_cable_body_transforms(
         [state_0, state_1],
         rod_bodies,
@@ -4335,8 +4336,8 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_cable_rest_initial_pose_utils",
-    _cable_rest_initial_pose_utils_impl,
+    "test_cable_rest_initial_pose_geometry",
+    _cable_rest_initial_pose_geometry_impl,
     devices=devices,
 )
 add_function_test(
@@ -4347,8 +4348,8 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_cable_curved_init_straight_rest_no_stretch",
-    _cable_curved_init_straight_rest_no_stretch_impl,
+    "test_cable_curved_initial_straight_rest_no_stretch",
+    _cable_curved_initial_straight_rest_no_stretch_impl,
     devices=devices,
 )
 add_function_test(

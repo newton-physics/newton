@@ -4,7 +4,7 @@
 
 ### Added
 
-- Add cable utilities and a `cable_rest_initial_pose` example for setting up VBD rigid cables with separate rest and initial poses.
+- Add cable utilities and a `cable_rest_initial_pose` example for separate cable rest and simulation initial poses.
 - Add `cloth_stiff_material_hanging` and `cloth_stiff_material_stretch` examples regression-guarding the new Neo-Hookean triangle material (stability under gravity at extreme stiffness, and bulk area-preservation across a Poisson-ratio sweep)
 
 ### Changed

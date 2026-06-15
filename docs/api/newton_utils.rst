@@ -25,6 +25,7 @@ newton.utils
 
    apply_cable_body_transforms
    bourke_color_map
+   check_matching_cable_segment_lengths
    color_graph
    color_linear_to_srgb
    color_srgb_to_linear
@@ -35,7 +36,7 @@ newton.utils
    create_parallel_transport_cable_quaternions
    create_straight_cable_points
    create_straight_cable_points_and_quaternions
-   create_straight_cable_points_from_lengths
+   create_straight_cable_points_from_segment_lengths
    create_straight_cable_rest_from_initial
    download_asset
    event_scope
@@ -46,6 +47,5 @@ newton.utils
    run_benchmark
    solidify_mesh
    string_to_warp
-   validate_cable_segment_lengths_match
    validate_tet_mesh
    validate_triangle_mesh
