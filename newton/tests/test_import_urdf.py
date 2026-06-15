@@ -376,6 +376,28 @@ class TestImportUrdfBasic(unittest.TestCase):
         assert builder.shape_scale[0][0] == 0.5
         assert_np_equal(builder.shape_transform[0][:], np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]))
 
+    def test_visual_material_rgba_preserves_opacity(self):
+        urdf = """
+        <robot name="rgba_test">
+            <link name="base_link">
+                <visual>
+                    <geometry>
+                        <sphere radius="0.5"/>
+                    </geometry>
+                    <material name="transparent_blue">
+                        <color rgba="0.1 0.2 0.8 0.35"/>
+                    </material>
+                </visual>
+            </link>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder)
+
+        self.assertEqual(builder.shape_count, 1)
+        np.testing.assert_allclose(builder.shape_color[0], [0.1, 0.2, 0.8], atol=1e-6, rtol=1e-6)
+        self.assertAlmostEqual(builder.shape_opacity[0], 0.35, places=6)
+
     def test_mesh_urdf(self):
         # load a urdf containing a cube mesh with 8 verts and 12 faces
         for mesh_src in ("file", "http"):

@@ -64,6 +64,13 @@ def _capsule_duplicate_vec4(in_values: wp.array[wp.vec4], out_values: wp.array[w
 
 
 @wp.kernel
+def _capsule_duplicate_float(in_values: wp.array[wp.float32], out_values: wp.array[wp.float32]):
+    # Duplicate N values into 2N values (two caps per capsule).
+    tid = wp.tid()
+    out_values[tid] = in_values[tid // 2]
+
+
+@wp.kernel
 def _capsule_build_body_scales(
     shape_scale: wp.array[wp.vec3],
     shape_indices: wp.array[wp.int32],
@@ -115,6 +122,10 @@ def _compute_shape_vbo_xforms(
     shape_world: wp.array[int],
     world_offsets: wp.array[wp.vec3],
     write_indices: wp.array[int],
+    shape_opacity: wp.array[wp.float32],
+    packed_shape_opacity: wp.array[wp.float32],
+    opacity_update_flags: wp.array[wp.int32],
+    opacity_check_enabled: int,
     out_world_xforms: wp.array[wp.transformf],
     out_vbo_xforms: wp.array[wp.mat44],
 ):
@@ -151,6 +162,15 @@ def _compute_shape_vbo_xforms(
         s = shape_scale[tid]
     else:
         s = wp.vec3(1.0, 1.0, 1.0)
+
+    if opacity_check_enabled != 0:
+        opacity = wp.clamp(shape_opacity[tid], 0.0, 1.0)
+        previous_opacity = wp.clamp(packed_shape_opacity[out_idx], 0.0, 1.0)
+        opacity_delta = opacity - previous_opacity
+        if opacity_delta < -1.0e-6 or opacity_delta > 1.0e-6:
+            wp.atomic_max(opacity_update_flags, 0, 1)
+            if (opacity < 0.999) != (previous_opacity < 0.999):
+                wp.atomic_max(opacity_update_flags, 1, 1)
 
     out_vbo_xforms[out_idx] = wp.mat44(
         R[0, 0] * s[0],
@@ -499,6 +519,8 @@ class ViewerGL(ViewerBase):
         self._packed_world_xforms = None
         self._packed_vbo_xforms = None
         self._packed_vbo_xforms_host = None
+        self._shape_opacity_update_flags = None
+        self._shape_opacity_update_flags_host = None
 
         # Clear scalar plot buffers
         self._scalar_buffers.clear()
@@ -609,6 +631,8 @@ class ViewerGL(ViewerBase):
 
         if self.model is None:
             self._packed_groups = []
+            self._shape_opacity_update_flags = None
+            self._shape_opacity_update_flags_host = None
             return
 
         shape_count = self.model.shape_count
@@ -631,6 +655,8 @@ class ViewerGL(ViewerBase):
         self._packed_groups = groups
 
         if total == 0:
+            self._shape_opacity_update_flags = None
+            self._shape_opacity_update_flags_host = None
             return
 
         # Write-index: maps model shape index → packed output position (-1 = skip)
@@ -659,6 +685,8 @@ class ViewerGL(ViewerBase):
         self._packed_world_xforms = all_world_xforms
         self._packed_vbo_xforms = wp.empty(total, dtype=wp.mat44, device=device)
         self._packed_vbo_xforms_host = wp.empty(total, dtype=wp.mat44, device="cpu", pinned=True)
+        self._shape_opacity_update_flags = wp.zeros(2, dtype=wp.int32, device=device)
+        self._shape_opacity_update_flags_host = wp.empty(2, dtype=wp.int32, device="cpu", pinned=True)
 
     def _rebuild_gl_shape_caches(self):
         """Rebuild GL-specific caches after shape instances change.
@@ -712,6 +740,49 @@ class ViewerGL(ViewerBase):
 
         self._build_packed_vbo_arrays()
 
+    def _shape_opacity_groups_changed(self) -> bool:
+        """Return True if any rendered shape crossed the opaque/transparent threshold."""
+        if (
+            self.model is None
+            or self.model.shape_opacity is None
+            or self._shape_transparent_mask is None
+            or self._shape_to_slot is None
+        ):
+            return False
+
+        opacities = np.clip(self.model.shape_opacity.numpy(), 0.0, 1.0)
+        current_mask = np.zeros_like(self._shape_transparent_mask, dtype=bool)
+        rendered_shapes = self._shape_to_slot >= 0
+        current_mask[rendered_shapes] = opacities[rendered_shapes] < 0.999
+        return bool(np.any(current_mask != self._shape_transparent_mask))
+
+    def _rebuild_shape_batches_for_opacity_groups(self):
+        """Rebuild shape batches after opacity changes move shapes between render passes."""
+        from .gl.opengl import MeshInstancerGL  # noqa: PLC0415
+
+        stale_shape_objects = [
+            k for k, v in self.objects.items() if isinstance(v, MeshInstancerGL) and k.startswith("/model/shapes/")
+        ]
+        for k in stale_shape_objects:
+            obj = self.objects.pop(k)
+            del obj
+
+        self._shape_instances = {}
+        self._gaussian_instances = []
+        self._sdf_isomesh_instances = {}
+        self._sdf_isomesh_populated = False
+        self.model_shape_color = None
+        self.model_shape_opacity = None
+        self._shape_to_slot = None
+        self._slot_to_shape = None
+        self._slot_to_shape_wp = None
+        self._shape_to_batch = None
+        self._shape_transparent_mask = None
+
+        self._populate_shapes()
+        self._rebuild_gl_shape_caches()
+        self.model_changed = True
+
     @override
     def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
         super().set_visible_worlds(worlds)
@@ -757,6 +828,7 @@ class ViewerGL(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        opacity: float | None = None,
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
@@ -773,6 +845,7 @@ class ViewerGL(ViewerBase):
             texture: Texture path/URL or image array (H, W, C).
             hidden: Whether the mesh is hidden.
             backface_culling: Enable backface culling.
+            opacity: Optional display opacity in [0, 1].
             color: Optional base color as an RGB tuple with values in
                 [0, 1]. Used when no texture is provided.
             roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
@@ -790,7 +863,7 @@ class ViewerGL(ViewerBase):
                 len(points), len(indices), self.device, hidden=hidden, backface_culling=backface_culling
             )
 
-        self.objects[name].update(points, indices, normals, uvs, texture)
+        self.objects[name].update(points, indices, normals, uvs, texture, opacity=opacity)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
 
@@ -814,6 +887,8 @@ class ViewerGL(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
+        *,
+        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
     ):
         """
@@ -826,6 +901,7 @@ class ViewerGL(ViewerBase):
             scales: Array of scales.
             colors: Array of colors.
             materials: Array of materials.
+            opacities: Array of display opacities.
             hidden: Whether the instances are hidden.
         """
         if mesh not in self.objects:
@@ -854,7 +930,7 @@ class ViewerGL(ViewerBase):
 
         needs_update = resized or not hidden
         if needs_update:
-            self.objects[name].update_from_transforms(xforms, scales, colors, materials)
+            self.objects[name].update_from_transforms(xforms, scales, colors, materials, opacities)
 
         self.objects[name].hidden = hidden
 
@@ -867,6 +943,8 @@ class ViewerGL(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
+        *,
+        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
     ):
         """
@@ -882,6 +960,7 @@ class ViewerGL(ViewerBase):
             scales: Capsule body instance scales, expected (radius, radius, half_height), length N.
             colors: Capsule instance colors (wp.vec3), length N or None (no update).
             materials: Capsule instance materials (wp.vec4), length N or None (no update).
+            opacities: Capsule display opacities (wp.float32), length N or None (no update).
             hidden: Whether the instances are hidden.
         """
         # Render capsules via instanced cylinder body + instanced sphere caps.
@@ -903,7 +982,9 @@ class ViewerGL(ViewerBase):
             self.log_instances(cap_name, sphere_mesh, None, None, None, None, hidden=True)
             return
 
-        self.log_instances(cyl_name, cylinder_mesh, xforms, scales, colors, materials, hidden=hidden)
+        self.log_instances(
+            cyl_name, cylinder_mesh, xforms, scales, colors, materials, opacities=opacities, hidden=hidden
+        )
 
         # Sphere caps: two spheres per capsule, offset by ±half_height along local +Z.
         n = len(xforms) if xforms is not None else 0
@@ -948,7 +1029,28 @@ class ViewerGL(ViewerBase):
                 record_tape=False,
             )
 
-        self.log_instances(cap_name, sphere_mesh, cap_xforms, cap_scales, cap_colors, cap_materials, hidden=hidden)
+        cap_opacities = None
+        if opacities is not None:
+            cap_opacities = wp.empty(cap_count, dtype=wp.float32, device=self.device)
+            wp.launch(
+                _capsule_duplicate_float,
+                dim=cap_count,
+                inputs=[opacities],
+                outputs=[cap_opacities],
+                device=self.device,
+                record_tape=False,
+            )
+
+        self.log_instances(
+            cap_name,
+            sphere_mesh,
+            cap_xforms,
+            cap_scales,
+            cap_colors,
+            cap_materials,
+            opacities=cap_opacities,
+            hidden=hidden,
+        )
 
     @override
     def log_lines(
@@ -1434,7 +1536,32 @@ class ViewerGL(ViewerBase):
 
         self._sync_shape_colors_from_model()
 
-        if self._packed_vbo_xforms is not None and self.device.is_cuda:
+        use_packed_cuda = (
+            self._packed_vbo_xforms is not None
+            and self.device.is_cuda
+            and self.model.shape_opacity is not None
+            and self.model_shape_opacity is not None
+            and self._shape_opacity_update_flags is not None
+            and self._shape_opacity_update_flags_host is not None
+        )
+
+        if self.model_changed:
+            if self._shape_batches_have_transparency:
+                if self._shape_opacity_groups_changed():
+                    self._rebuild_shape_batches_for_opacity_groups()
+                    return self.log_state(state)
+                self._sync_shape_opacities_from_model()
+        elif not use_packed_cuda:
+            if self._shape_opacity_groups_changed():
+                self._rebuild_shape_batches_for_opacity_groups()
+                return self.log_state(state)
+            self._sync_shape_opacities_from_model()
+
+        if use_packed_cuda:
+            opacity_check_enabled = 0 if self.model_changed and not self._shape_batches_have_transparency else 1
+            if opacity_check_enabled:
+                self._shape_opacity_update_flags.zero_()
+
             # ---- Single kernel over all model shapes, scatter-write to grouped output ----
             wp.launch(
                 _compute_shape_vbo_xforms,
@@ -1448,13 +1575,27 @@ class ViewerGL(ViewerBase):
                     self.model.shape_world,
                     self.world_offsets,
                     self._packed_write_indices,
+                    self.model.shape_opacity,
+                    self.model_shape_opacity,
+                    self._shape_opacity_update_flags,
+                    opacity_check_enabled,
                 ],
                 outputs=[self._packed_world_xforms, self._packed_vbo_xforms],
                 device=self.device,
                 record_tape=False,
             )
             wp.copy(self._packed_vbo_xforms_host, self._packed_vbo_xforms)
+            if opacity_check_enabled:
+                wp.copy(self._shape_opacity_update_flags_host, self._shape_opacity_update_flags)
             wp.synchronize()  # copy is async (pinned destination), must sync before CPU read
+
+            if opacity_check_enabled:
+                opacity_flags = self._shape_opacity_update_flags_host.numpy()
+                if int(opacity_flags[1]) != 0:
+                    self._rebuild_shape_batches_for_opacity_groups()
+                    return self.log_state(state)
+                if int(opacity_flags[0]) != 0:
+                    self._sync_shape_opacities_from_model()
 
             # ---- Upload pinned host slices to GL per instancer ----
             host_np = self._packed_vbo_xforms_host.numpy()
@@ -1462,6 +1603,11 @@ class ViewerGL(ViewerBase):
             for key, shapes, offset, count in self._packed_groups:
                 visible = self._should_show_shape(shapes.flags, shapes.static)
                 colors = shapes.colors if self.model_changed or shapes.colors_changed else None
+                opacities = (
+                    shapes.opacities
+                    if shapes.transparent and (self.model_changed or shapes.opacities_changed)
+                    else None
+                )
                 materials = shapes.materials if self.model_changed else None
 
                 if key in self._capsule_keys:
@@ -1472,6 +1618,7 @@ class ViewerGL(ViewerBase):
                         shapes.scales,
                         colors,
                         materials,
+                        opacities=opacities,
                         hidden=not visible,
                     )
                 else:
@@ -1483,9 +1630,11 @@ class ViewerGL(ViewerBase):
                             count,
                             colors,
                             materials,
+                            opacities,
                         )
 
                 shapes.colors_changed = False
+                shapes.opacities_changed = False
 
             # ---- Gaussians and non-shape rendering use standard synchronous paths ----
             self._log_gaussian_shapes(state)

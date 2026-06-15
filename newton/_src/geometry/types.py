@@ -175,6 +175,7 @@ class Mesh:
         is_solid: bool = True,
         maxhullvert: int | None = None,
         color: Vec3 | None = None,
+        opacity: float | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
         texture: str | np.ndarray | None = None,
@@ -197,6 +198,7 @@ class Mesh:
             is_solid: If True, mesh is assumed solid for inertia computation (default: True).
             maxhullvert: Max vertices for convex hull approximation (default: :attr:`~newton.Mesh.MAX_HULL_VERTICES`).
             color: Optional per-mesh base color (values in [0, 1]).
+            opacity: Optional per-mesh opacity in [0, 1].
             roughness: Optional mesh roughness in [0, 1].
             metallic: Optional mesh metallic in [0, 1].
             texture: Optional texture path/URL or image data (H, W, C).
@@ -210,6 +212,7 @@ class Mesh:
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
         self._color: Vec3 | None = None
         self.color = color
+        self._opacity = opacity
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
         self._roughness = roughness
@@ -737,6 +740,7 @@ class Mesh:
             normals=self.normals.copy() if self.normals is not None else None,
             uvs=self.uvs.copy() if self.uvs is not None else None,
             color=self.color,
+            opacity=self.opacity,
             texture=self._texture
             if isinstance(self._texture, str)
             else (self._texture.copy() if self._texture is not None else None),
@@ -1388,6 +1392,15 @@ class Mesh:
         self._color = value
 
     @property
+    def opacity(self) -> float | None:
+        """Optional display opacity with value in [0, 1]."""
+        return self._opacity
+
+    @opacity.setter
+    def opacity(self, value: float | None):
+        self._opacity = None if value is None else float(value)
+
+    @property
     def texture(self) -> str | np.ndarray | None:
         """Optional texture as a file path or a normalized RGBA array."""
         return self._texture
@@ -1581,7 +1594,7 @@ class TetMesh:
             tet_mesh = newton.TetMesh(vertices, tet_indices)
     """
 
-    _RESERVED_ATTR_KEYS = frozenset({"vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density"})
+    _RESERVED_ATTR_KEYS = frozenset({"vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density", "opacity"})
 
     def __init__(
         self,
@@ -1591,6 +1604,7 @@ class TetMesh:
         k_lambda: np.ndarray | float | None = None,
         k_damp: np.ndarray | float | None = None,
         density: float | None = None,
+        opacity: float | None = None,
         custom_attributes: (
             "dict[str, np.ndarray] | dict[str, tuple[np.ndarray, Model.AttributeFrequency]] | None"
         ) = None,
@@ -1607,6 +1621,7 @@ class TetMesh:
             k_damp: Rayleigh damping coefficient [-] (dimensionless). Scalar
                 (uniform) or per-element array of shape (tet_count,).
             density: Uniform density [kg/m^3] for mass computation.
+            opacity: Optional surface display opacity in [0, 1].
             custom_attributes: Dictionary of named custom arrays with their
                 :class:`~newton.Model.AttributeFrequency`. Each value can be
                 either a bare array (frequency auto-inferred from length) or a
@@ -1632,6 +1647,7 @@ class TetMesh:
         self._k_lambda = self._broadcast_material(k_lambda, tet_count, "k_lambda")
         self._k_damp = self._broadcast_material(k_damp, tet_count, "k_damp")
         self._density = density
+        self._opacity = None if opacity is None else float(opacity)
         # Compute surface triangles from boundary faces (before custom attrs so tri_count is available)
         self._surface_tri_indices = self._compute_surface_triangles()
         tri_count = len(self._surface_tri_indices) // 3
@@ -1808,6 +1824,15 @@ class TetMesh:
     def density(self) -> float | None:
         """Uniform density [kg/m^3] or None."""
         return self._density
+
+    @property
+    def opacity(self) -> float | None:
+        """Optional surface display opacity in [0, 1]."""
+        return self._opacity
+
+    @opacity.setter
+    def opacity(self, value: float | None):
+        self._opacity = None if value is None else float(value)
 
     # ---- Factory methods ---------------------------------------------------
 

@@ -8253,7 +8253,7 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
 
     @staticmethod
-    def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, add_visual_sphere=False):
+    def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, opacity=None, add_visual_sphere=False):
         """Create a stage with a rigid body containing a collision mesh with PBR material."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
@@ -8289,6 +8289,8 @@ def Xform "BodyWithoutVisuals" (
         shader.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f).Set(color)
         shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(roughness)
         shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(metallic)
+        if opacity is not None:
+            shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(opacity)
         material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
         UsdShade.MaterialBindingAPI.Apply(collision_mesh_prim).Bind(material)
 
@@ -8544,6 +8546,72 @@ def Xform "Body" (
         flags = builder.shape_flags[collision_shape]
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visible_collision_mesh_inherits_visual_material_opacity(self):
+        """Visible fallback collider meshes should carry resolved material opacity."""
+        stage = self._create_stage_with_pbr_collision_mesh(
+            color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75, opacity=0.42
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, hide_collision_shapes=True)
+        collision_shape = result["path_shape_map"]["/Body/CollisionMesh"]
+
+        mesh = builder.shape_source[collision_shape]
+        self.assertIsNotNone(mesh)
+        self.assertAlmostEqual(mesh.opacity, 0.42, places=6)
+        self.assertAlmostEqual(builder.shape_opacity[collision_shape], 0.42, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_display_opacity_primvar_loads_as_mesh_opacity(self):
+        """USD displayOpacity primvars should resolve into imported mesh opacity."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/VisualMesh")
+        mesh.CreatePointsAttr().Set(
+            [
+                (-0.5, 0.0, 0.0),
+                (0.5, 0.0, 0.0),
+                (0.0, 0.5, 0.0),
+                (0.0, 0.0, 0.5),
+            ]
+        )
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3, 3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3])
+        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
+        ).Set([0.33])
+
+        loaded_mesh = usd.get_mesh(mesh.GetPrim())
+
+        self.assertAlmostEqual(loaded_mesh.opacity, 0.33, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_display_opacity_primvar_loads_as_tet_mesh_opacity(self):
+        """USD displayOpacity primvars should resolve into imported TetMesh opacity."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        tet_mesh = UsdGeom.TetMesh.Define(stage, "/SoftTet")
+        tet_mesh.CreatePointsAttr().Set(
+            [
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ]
+        )
+        tet_mesh.CreateTetVertexIndicesAttr().Set([(0, 1, 2, 3)])
+        UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
+            "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
+        ).Set([0.44])
+
+        loaded_mesh = usd.get_tetmesh(tet_mesh.GetPrim())
+
+        self.assertAlmostEqual(loaded_mesh.opacity, 0.44, places=6)
+        self.assertNotIn("displayOpacity", loaded_mesh.custom_attributes)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_primitive_collider_with_roughness_only_material_stays_hidden(self):

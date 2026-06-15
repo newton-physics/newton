@@ -192,6 +192,17 @@ def repack_shape_colors(
 
 
 @wp.kernel
+def repack_shape_opacities(
+    shape_opacities: wp.array[wp.float32],
+    slot_to_shape: wp.array[wp.int32],
+    packed_shape_opacities: wp.array[wp.float32],
+):
+    """Repack model-order shape opacities into viewer batch order."""
+    tid = wp.tid()
+    packed_shape_opacities[tid] = wp.clamp(shape_opacities[slot_to_shape[tid]], 0.0, 1.0)
+
+
+@wp.kernel
 def estimate_world_extents(
     shape_transform: wp.array[wp.transform],
     shape_body: wp.array[int],

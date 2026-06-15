@@ -544,6 +544,8 @@ def parse_usd(
             mesh.texture = None
         if material_props.get("color") is not None and mesh.texture is None:
             mesh.color = material_props["color"]
+        if material_props.get("opacity") is not None:
+            mesh.opacity = material_props["opacity"]
         if material_props.get("roughness") is not None:
             mesh.roughness = material_props["roughness"]
         if material_props.get("metallic") is not None:
@@ -655,6 +657,8 @@ def parse_usd(
             submesh.color = color
         elif submesh.texture is not None:
             submesh.color = (1.0, 1.0, 1.0)
+        if material_props.get("opacity") is not None:
+            submesh.opacity = material_props["opacity"]
         if material_props.get("roughness") is not None:
             submesh.roughness = material_props["roughness"]
         if material_props.get("metallic") is not None:
@@ -744,7 +748,7 @@ def parse_usd(
 
     def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:
         # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
-        return any(material_props.get(key) is not None for key in ("texture", "roughness", "metallic"))
+        return any(material_props.get(key) is not None for key in ("texture", "opacity", "roughness", "metallic"))
 
     def _is_effectively_visible(prim: Usd.Prim) -> bool:
         """Return whether ``prim`` is effectively visible in USD.
@@ -838,6 +842,9 @@ def parse_usd(
         visual_shape_cfg_for_prim.is_visible = is_site or _is_effectively_visible(prim)
         material_props = _get_material_props_cached(prim)
         shape_color = material_props.get("color")
+        shape_visual_kwargs = {}
+        if material_props.get("opacity") is not None:
+            shape_visual_kwargs["opacity"] = material_props["opacity"]
 
         if path_name not in path_shape_map:
             if type_name == "cube":
@@ -853,6 +860,7 @@ def parse_usd(
                     color=shape_color,
                     as_site=is_site,
                     label=path_name,
+                    **shape_visual_kwargs,
                 )
             elif type_name == "sphere":
                 if not (scale[0] == scale[1] == scale[2]):
@@ -866,6 +874,7 @@ def parse_usd(
                     color=shape_color,
                     as_site=is_site,
                     label=path_name,
+                    **shape_visual_kwargs,
                 )
             elif type_name == "plane":
                 axis = usd.get_gprim_axis(prim)
@@ -882,6 +891,7 @@ def parse_usd(
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     label=path_name,
+                    **shape_visual_kwargs,
                 )
             elif type_name == "capsule":
                 axis = usd.get_gprim_axis(prim)
@@ -898,6 +908,7 @@ def parse_usd(
                     color=shape_color,
                     as_site=is_site,
                     label=path_name,
+                    **shape_visual_kwargs,
                 )
             elif type_name == "cylinder":
                 axis = usd.get_gprim_axis(prim)
@@ -914,6 +925,7 @@ def parse_usd(
                     color=shape_color,
                     as_site=is_site,
                     label=path_name,
+                    **shape_visual_kwargs,
                 )
             elif type_name == "cone":
                 axis = usd.get_gprim_axis(prim)
@@ -930,6 +942,7 @@ def parse_usd(
                     color=shape_color,
                     as_site=is_site,
                     label=path_name,
+                    **shape_visual_kwargs,
                 )
             elif type_name == "mesh":
                 subset_meshes = _get_visual_material_subset_meshes(prim)
@@ -963,6 +976,7 @@ def parse_usd(
                         cfg=visual_shape_cfg_for_prim,
                         color=shape_color,
                         label=path_name,
+                        **shape_visual_kwargs,
                     )
             elif type_name == "particlefield3dgaussiansplat":
                 gaussian = usd.get_gaussian(prim)
@@ -974,6 +988,7 @@ def parse_usd(
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     label=path_name,
+                    **shape_visual_kwargs,
                 )
             elif (
                 len(type_name) > 0
@@ -2858,6 +2873,7 @@ def parse_usd(
                 if collect_schema_attrs:
                     R.collect_prim_attrs(prim)
 
+                material_props = _get_material_props_cached(prim)
                 margin_val = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,
@@ -3127,6 +3143,11 @@ def parse_usd(
                     "custom_attributes": shape_custom_attrs,
                     "color": shape_color,
                 }
+                if collider_is_visible:
+                    if material_props.get("color") is not None and material_props.get("texture") is None:
+                        shape_params["color"] = material_props["color"]
+                    if material_props.get("opacity") is not None:
+                        shape_params["opacity"] = material_props["opacity"]
                 # print(path, shape_params)
                 if key == UsdPhysics.ObjectType.CubeShape:
                     hx, hy, hz = shape_spec.halfExtents
