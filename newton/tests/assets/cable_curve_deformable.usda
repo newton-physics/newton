@@ -1,0 +1,35 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1.0
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def PhysicsScene "PhysicsScene"
+    {
+    }
+
+    def Material "CableMat" (
+        prepend apiSchemas = ["PhysicsCurvesDeformableMaterialAPI"]
+    )
+    {
+        float omniphysics:thickness = 0.02
+        float omniphysics:stretchStiffness = 2000000
+        float omniphysics:bendStiffness = 50000
+        float omniphysics:density = 1000
+    }
+
+    def BasisCurves "Cable" (
+        prepend apiSchemas = ["PhysicsCurvesDeformableSimAPI", "MaterialBindingAPI"]
+    )
+    {
+        uniform token type = "linear"
+        uniform token wrap = "nonperiodic"
+        int[] curveVertexCounts = [6]
+        point3f[] points = [(0, 0, 1), (0.1, 0, 1), (0.2, 0, 1), (0.3, 0, 1), (0.4, 0, 1), (0.5, 0, 1)]
+        float[] widths = [0.02, 0.02, 0.02, 0.02, 0.02, 0.02]
+        rel material:binding:physics = </World/CableMat>
+    }
+}

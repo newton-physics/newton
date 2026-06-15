@@ -24,6 +24,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices
 
 
 def _add_cable_curve(stage, path, points, *, periodic=False):
@@ -275,7 +276,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             # Env e's cable segments are the contiguous block [e*nb : (e+1)*nb] - disjoint,
             # so state can be sliced as (num_envs, num_segments, ...).
             ranges = [list(range(e * nb, (e + 1) * nb)) for e in range(num_envs)]
-            self.assertEqual(sorted(sum(ranges, [])), list(range(scene.body_count)))
+            self.assertEqual(sorted(i for r in ranges for i in r), list(range(scene.body_count)))
 
     def test_cable_articulation_label_survives_finalize(self):
         """The cable's articulation is labeled by prim path - the replication-durable handle."""
@@ -292,6 +293,64 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder = newton.ModelBuilder()
             builder.add_usd(str(usd_path))
             self.assertIn("/World/Cable_articulation", builder.articulation_label)
+
+
+# Authored .usda cable asset (T7): loading it should replace the programmatic
+# cable construction used by the cable examples.
+_CABLE_ASSET = Path(__file__).parent / "assets" / "cable_curve_deformable.usda"
+
+
+class TestUSDDeformableCableAsset(unittest.TestCase):
+    """Round-trip a committed .usda cable asset through the importer and the VBD solver (T7)."""
+
+    def test_asset_parses_to_cable(self):
+        """The committed .usda cable asset imports into rod bodies + cable joints (device-free)."""
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(str(_CABLE_ASSET))
+        bodies, joints = result["path_cable_map"]["/World/Cable"]
+        # 6 points -> 5 segments -> 5 bodies, 4 cable joints (open chain).
+        self.assertEqual(len(bodies), 5)
+        self.assertEqual(len(joints), 4)
+
+    def test_asset_cable_simulates(self, device=None):
+        """After parsing, the asset cable runs through SolverVBD and stays finite (mirrors example test_final)."""
+        if device is None or not wp.get_device(device).is_cuda:
+            self.skipTest("VBD cable simulation requires a CUDA device")
+
+        with wp.ScopedDevice(device):
+            builder = newton.ModelBuilder()
+            builder.add_usd(str(_CABLE_ASSET))
+            builder.color()  # SolverVBD requires a coloring before finalize.
+            model = builder.finalize()
+
+            solver = newton.solvers.SolverVBD(model, iterations=10, rigid_body_contact_buffer_size=64)
+            state_0 = model.state()
+            state_1 = model.state()
+            control = model.control()
+            pipeline = newton.CollisionPipeline(model, contact_matching="latest")
+            contacts = model.contacts(collision_pipeline=pipeline)
+
+            dt = 1.0 / 240.0
+            for _ in range(20):
+                state_0.clear_forces()
+                model.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, dt)
+                state_0, state_1 = state_1, state_0
+
+            body_q = state_0.body_q.numpy()
+            body_qd = state_0.body_qd.numpy()
+            self.assertTrue(np.isfinite(body_q).all(), "non-finite cable body positions after stepping")
+            self.assertTrue(np.isfinite(body_qd).all(), "non-finite cable body velocities after stepping")
+            self.assertTrue((np.abs(body_qd) < 5.0e2).all(), "cable body velocities diverged")
+
+
+devices = get_selected_cuda_test_devices()
+add_function_test(
+    TestUSDDeformableCableAsset,
+    "test_asset_cable_simulates",
+    TestUSDDeformableCableAsset.test_asset_cable_simulates,
+    devices=devices,
+)
 
 
 if __name__ == "__main__":
