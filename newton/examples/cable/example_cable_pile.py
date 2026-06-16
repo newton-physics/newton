@@ -151,7 +151,7 @@ class Example:
                     radius=cable_radius,
                     cfg=cable_shape_cfg,
                     bend_stiffness=bend_stiffness,
-                    bend_damping=1.0e0,
+                    bend_damping=2.0e1,
                     label=f"cable_l{layer}_{lane}",
                 )
                 rod_bodies_all.extend(rod_bodies)
