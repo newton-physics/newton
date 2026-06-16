@@ -116,7 +116,7 @@ def _normalize_usd_cameras(cameras: Any) -> list[Any]:
     return usd_cameras
 
 
-def compute_usd_pinhole_camera_rays(
+def compute_camera_rays_usd_pinhole(
     width: int,
     height: int,
     cameras: Any | list[Any] | tuple[Any, ...],
@@ -149,7 +149,7 @@ def compute_usd_pinhole_camera_rays(
         vertical_aperture_offsets.append(float(usd_camera.GetVerticalApertureOffsetAttr().Get(time_code)))
 
     wp.launch(
-        kernel=compute_pinhole_camera_rays_from_aperture_kernel,
+        kernel=compute_camera_rays_pinhole_from_aperture_kernel,
         dim=(camera_count, height, width),
         inputs=[
             width,
@@ -365,7 +365,7 @@ def _fisheye_direction_from_theta(x: wp.float32, y: wp.float32, radius: wp.float
 
 
 @wp.kernel(enable_backward=False)
-def compute_pinhole_camera_rays(
+def compute_camera_rays_pinhole(
     width: int,
     height: int,
     camera_fovs: wp.array[wp.float32],
@@ -384,7 +384,7 @@ def compute_pinhole_camera_rays(
 
 
 @wp.kernel(enable_backward=False)
-def compute_pinhole_camera_rays_from_aperture_kernel(
+def compute_camera_rays_pinhole_from_aperture_kernel(
     width: int,
     height: int,
     focal_lengths: wp.array[wp.float32],
@@ -408,7 +408,7 @@ def compute_pinhole_camera_rays_from_aperture_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def compute_fisheye_camera_rays_opencv_kernel(
+def compute_camera_rays_fisheye_opencv_kernel(
     width: int,
     height: int,
     image_width: wp.float32,
@@ -446,7 +446,7 @@ def compute_fisheye_camera_rays_opencv_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def compute_fisheye_camera_rays_ftheta_kernel(
+def compute_camera_rays_fisheye_ftheta_kernel(
     width: int,
     height: int,
     nominal_width: wp.float32,
@@ -485,7 +485,7 @@ def compute_fisheye_camera_rays_ftheta_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def compute_fisheye_camera_rays_kannala_brandt_kernel(
+def compute_camera_rays_fisheye_kannala_brandt_kernel(
     width: int,
     height: int,
     nominal_width: wp.float32,

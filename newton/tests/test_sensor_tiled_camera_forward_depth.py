@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.sensors.warp_raytrace.camera_utils import compute_pinhole_camera_rays
+from newton._src.sensors.warp_raytrace.camera_utils import compute_camera_rays_pinhole
 from newton._src.sensors.warp_raytrace.utils import convert_ray_depth_to_forward_depth_kernel
 
 
@@ -26,7 +26,7 @@ class TestConvertRayDepthToForwardDepth(unittest.TestCase):
         camera_count = 1
         camera_rays = wp.empty((camera_count, height, width, 2), dtype=wp.vec3f, device=self.device)
         wp.launch(
-            kernel=compute_pinhole_camera_rays,
+            kernel=compute_camera_rays_pinhole,
             dim=(camera_count, height, width),
             inputs=[width, height, camera_fovs, 0, camera_rays],
             device=self.device,
@@ -37,7 +37,7 @@ class TestConvertRayDepthToForwardDepth(unittest.TestCase):
     def _expected_cos_theta(px: int, py: int, width: int, height: int, fov_rad: float) -> float:
         """Compute cos(theta) between a pixel's ray and the optical axis.
 
-        Mirrors the logic in ``compute_pinhole_camera_rays``:
+        Mirrors the logic in ``compute_camera_rays_pinhole``:
         the unnormalized ray direction is ``(u*2*h*ar, -v*2*h, -1)`` so
         ``cos(theta) = 1 / ||ray||``.
         """

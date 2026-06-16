@@ -62,7 +62,7 @@ class TestSensorCameraRays(unittest.TestCase):
     def test_opencv_fisheye_zero_distortion(self):
         utils = _make_utils()
 
-        got = utils.compute_fisheye_camera_rays_opencv(3, 3, fx=1.0, fy=1.0, cx=1.5, cy=1.5).numpy()[0, 1, 2, 1]
+        got = utils.compute_camera_rays_fisheye_opencv(3, 3, fx=1.0, fy=1.0, cx=1.5, cy=1.5).numpy()[0, 1, 2, 1]
         expected = _direction(1.0)
 
         np.testing.assert_allclose(got, expected, atol=1e-6)
@@ -71,10 +71,10 @@ class TestSensorCameraRays(unittest.TestCase):
         utils = _make_utils()
         width, height = 3, 3
         fov = math.radians(45.0)
-        expected = utils.compute_pinhole_camera_rays(width, height, fov).numpy()[0]
+        expected = utils.compute_camera_rays_pinhole(width, height, fov).numpy()[0]
         out_rays = wp.zeros((2, height, width, 2), dtype=wp.vec3f, device="cpu")
 
-        got = utils.compute_pinhole_camera_rays(width, height, fov, out_rays=out_rays, camera_index=1).numpy()
+        got = utils.compute_camera_rays_pinhole(width, height, fov, out_rays=out_rays, camera_index=1).numpy()
 
         np.testing.assert_array_equal(got[0], np.zeros_like(got[0]))
         np.testing.assert_allclose(got[1], expected, atol=1e-6)
@@ -86,21 +86,21 @@ class TestSensorCameraRays(unittest.TestCase):
         vertical_aperture = 2.0 * math.tan(fov * 0.5)
         horizontal_aperture = vertical_aperture * (width / height)
 
-        got = utils.compute_pinhole_camera_rays(
+        got = utils.compute_camera_rays_pinhole(
             width,
             height,
             focal_length=1.0,
             horizontal_aperture=horizontal_aperture,
             vertical_aperture=vertical_aperture,
         ).numpy()
-        expected = utils.compute_pinhole_camera_rays(width, height, fov).numpy()
+        expected = utils.compute_camera_rays_pinhole(width, height, fov).numpy()
 
         np.testing.assert_allclose(got, expected, atol=1e-6)
 
     def test_pinhole_aperture_offsets_shift_principal_ray(self):
         utils = _make_utils()
 
-        got = utils.compute_pinhole_camera_rays(
+        got = utils.compute_camera_rays_pinhole(
             1,
             1,
             focal_length=1.0,
@@ -125,7 +125,7 @@ class TestSensorCameraRays(unittest.TestCase):
         camera.GetVerticalApertureAttr().Set(1.0)
         camera.GetHorizontalApertureOffsetAttr().Set(0.1)
         camera.GetVerticalApertureOffsetAttr().Set(0.2)
-        expected = utils.compute_pinhole_camera_rays(
+        expected = utils.compute_camera_rays_pinhole(
             width,
             height,
             focal_length=1.5,
@@ -135,8 +135,8 @@ class TestSensorCameraRays(unittest.TestCase):
             vertical_aperture_offset=0.2,
         ).numpy()
 
-        got_prim = utils.compute_usd_pinhole_camera_rays(width, height, camera.GetPrim()).numpy()
-        got_camera = utils.compute_usd_pinhole_camera_rays(width, height, camera).numpy()
+        got_prim = utils.compute_camera_rays_usd_pinhole(width, height, camera.GetPrim()).numpy()
+        got_camera = utils.compute_camera_rays_usd_pinhole(width, height, camera).numpy()
 
         np.testing.assert_allclose(got_prim, expected, atol=1e-6)
         np.testing.assert_allclose(got_camera, expected, atol=1e-6)
@@ -147,7 +147,7 @@ class TestSensorCameraRays(unittest.TestCase):
         k1 = 0.25
         radius = theta * (1.0 + k1 * theta * theta)
 
-        got = utils.compute_fisheye_camera_rays_opencv(
+        got = utils.compute_camera_rays_fisheye_opencv(
             1,
             1,
             fx=1.0,
@@ -164,7 +164,7 @@ class TestSensorCameraRays(unittest.TestCase):
         theta = 0.4
         radius = 2.0 * theta
 
-        got = utils.compute_fisheye_camera_rays_ftheta(
+        got = utils.compute_camera_rays_fisheye_ftheta(
             1,
             1,
             optical_center_x=0.5 - radius,
@@ -179,7 +179,7 @@ class TestSensorCameraRays(unittest.TestCase):
         utils = _make_utils()
         theta = 0.4
         radius = 2.0 * theta
-        expected = utils.compute_fisheye_camera_rays_ftheta(
+        expected = utils.compute_camera_rays_fisheye_ftheta(
             1,
             1,
             optical_center_x=0.5 - radius,
@@ -189,7 +189,7 @@ class TestSensorCameraRays(unittest.TestCase):
         ).numpy()[0]
         out_rays = wp.zeros((2, 1, 1, 2), dtype=wp.vec3f, device="cpu")
 
-        got = utils.compute_fisheye_camera_rays_ftheta(
+        got = utils.compute_camera_rays_fisheye_ftheta(
             1,
             1,
             optical_center_x=0.5 - radius,
@@ -208,7 +208,7 @@ class TestSensorCameraRays(unittest.TestCase):
         theta = 0.3
         radius = 2.0 * theta
 
-        got = utils.compute_fisheye_camera_rays_kannala_brandt(
+        got = utils.compute_camera_rays_fisheye_kannala_brandt(
             1,
             1,
             optical_center_x=0.5 - radius,
@@ -222,7 +222,7 @@ class TestSensorCameraRays(unittest.TestCase):
     def test_fisheye_max_fov_masks_invalid_ray(self):
         utils = _make_utils()
 
-        got = utils.compute_fisheye_camera_rays_ftheta(
+        got = utils.compute_camera_rays_fisheye_ftheta(
             1,
             1,
             optical_center_x=-0.5,

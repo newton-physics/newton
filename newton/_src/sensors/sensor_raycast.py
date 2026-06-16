@@ -41,7 +41,7 @@ class SensorRaycast:
             from newton.sensors import SensorTiledCamera
 
             sensor = SensorTiledCamera(model)
-            rays = sensor.utils.compute_pinhole_camera_rays(width, height, fov_radians)
+            rays = sensor.utils.compute_camera_rays_pinhole(width, height, fov_radians)
             depth = sensor.utils.create_depth_image_output(width, height)
 
             # Build camera-to-world transform from position / direction / up.

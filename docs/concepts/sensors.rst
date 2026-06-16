@@ -123,7 +123,7 @@ attributes, read the attributes you use in your pipeline and pass the numeric va
    usd_camera = stage.GetPrimAtPath("/World/Camera")
 
    sensor = SensorTiledCamera(model)
-   camera_rays = sensor.utils.compute_usd_pinhole_camera_rays(640, 480, usd_camera)
+   camera_rays = sensor.utils.compute_camera_rays_usd_pinhole(640, 480, usd_camera)
    camera_transforms = sensor.utils.compute_usd_camera_transforms(usd_camera)
 
    color = sensor.utils.create_color_image_output(640, 480)
@@ -135,9 +135,9 @@ attributes, read the attributes you use in your pipeline and pass the numeric va
    )
 
 For fisheye cameras, extract the calibration values from your chosen USD attributes and call one of
-:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_fisheye_camera_rays_opencv`,
-:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_fisheye_camera_rays_ftheta`, or
-:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_fisheye_camera_rays_kannala_brandt`. Each fisheye helper builds
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_opencv`,
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_ftheta`, or
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_kannala_brandt`. Each fisheye helper builds
 rays for one camera; pass ``out_rays`` and ``camera_index`` to fill a shared ray buffer.
 
 Extended Attributes

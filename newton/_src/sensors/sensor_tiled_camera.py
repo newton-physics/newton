@@ -57,7 +57,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         ::
 
             sensor = SensorTiledCamera(model)
-            rays = sensor.utils.compute_pinhole_camera_rays(width, height, fov)
+            rays = sensor.utils.compute_camera_rays_pinhole(width, height, fov)
             color = sensor.utils.create_color_image_output(width, height)
 
             # BVHs are built for the initial state by ModelBuilder.finalize().
@@ -299,7 +299,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         vertical field of view.
 
         .. deprecated:: 1.1
-            Use ``SensorTiledCamera.utils.compute_pinhole_camera_rays`` instead.
+            Use ``SensorTiledCamera.utils.compute_camera_rays_pinhole`` instead.
 
         Args:
             width: Image width [px].
@@ -310,12 +310,12 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
             camera_rays: Shape ``(camera_count, height, width, 2)``, dtype ``vec3f``.
         """
         warnings.warn(
-            "Deprecated: SensorTiledCamera.compute_pinhole_camera_rays is deprecated, use SensorTiledCamera.utils.compute_pinhole_camera_rays instead.",
+            "Deprecated: SensorTiledCamera.compute_pinhole_camera_rays is deprecated, use SensorTiledCamera.utils.compute_camera_rays_pinhole instead.",
             category=DeprecationWarning,
             stacklevel=2,
         )
 
-        return self.__render_context.utils.compute_pinhole_camera_rays(width, height, camera_fovs)
+        return self.__render_context.utils.compute_camera_rays_pinhole(width, height, camera_fovs)
 
     def flatten_color_image_to_rgba(
         self,

@@ -367,11 +367,11 @@ class Utils:
             device=self.__render_context.device,
         )
 
-    def compute_pinhole_camera_rays(
+    def compute_camera_rays_pinhole(
         self,
         width: int,
         height: int,
-        camera_fovs: float | list[float] | np.ndarray | wp.array[wp.float32] = None,
+        camera_fovs: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
         *,
         focal_length: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
         horizontal_aperture: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
@@ -445,7 +445,7 @@ class Utils:
             )
 
             wp.launch(
-                kernel=camera_utils.compute_pinhole_camera_rays_from_aperture_kernel,
+                kernel=camera_utils.compute_camera_rays_pinhole_from_aperture_kernel,
                 dim=(camera_count, height, width),
                 inputs=[
                     width,
@@ -475,7 +475,7 @@ class Utils:
         )
 
         wp.launch(
-            kernel=camera_utils.compute_pinhole_camera_rays,
+            kernel=camera_utils.compute_camera_rays_pinhole,
             dim=(camera_count, height, width),
             inputs=[
                 width,
@@ -489,7 +489,71 @@ class Utils:
 
         return out_rays
 
-    def compute_usd_pinhole_camera_rays(
+    def compute_pinhole_camera_rays(
+        self,
+        width: int,
+        height: int,
+        camera_fovs: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
+        *,
+        focal_length: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
+        horizontal_aperture: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
+        vertical_aperture: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
+        horizontal_aperture_offset: float | list[float] | np.ndarray | wp.array[wp.float32] = 0.0,
+        vertical_aperture_offset: float | list[float] | np.ndarray | wp.array[wp.float32] = 0.0,
+        out_rays: wp.array4d[wp.vec3f] | None = None,
+        camera_index: int = 0,
+    ) -> wp.array4d[wp.vec3f]:
+        """Compute camera-space ray directions for pinhole cameras.
+
+        .. deprecated:: 1.4
+            Use :meth:`compute_camera_rays_pinhole` instead.
+
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            camera_fovs: Vertical FOV angles [rad], shape
+                ``(camera_count,)``. Required unless *focal_length*,
+                *horizontal_aperture*, and *vertical_aperture* are supplied.
+            focal_length: Focal length in the same units as the apertures.
+            horizontal_aperture: Horizontal aperture in the same units as
+                *focal_length*.
+            vertical_aperture: Vertical aperture in the same units as
+                *focal_length*.
+            horizontal_aperture_offset: Horizontal aperture offset in the same
+                units as *horizontal_aperture*.
+            vertical_aperture_offset: Vertical aperture offset in the same
+                units as *vertical_aperture*.
+            out_rays: Optional output array to write into, shape
+                ``(out_camera_count, height, width, 2)``. If ``None``,
+                allocates a new array.
+            camera_index: Camera index in *out_rays* at which to start
+                writing. Ignored when *out_rays* is ``None``.
+
+        Returns:
+            camera_rays: *out_rays* if provided, otherwise a new array with
+                shape ``(camera_count, height, width, 2)`` and dtype
+                ``vec3f``.
+        """
+        warnings.warn(
+            "``SensorTiledCamera.utils.compute_pinhole_camera_rays`` is deprecated. "
+            "Use ``SensorTiledCamera.utils.compute_camera_rays_pinhole`` instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.compute_camera_rays_pinhole(
+            width,
+            height,
+            camera_fovs,
+            focal_length=focal_length,
+            horizontal_aperture=horizontal_aperture,
+            vertical_aperture=vertical_aperture,
+            horizontal_aperture_offset=horizontal_aperture_offset,
+            vertical_aperture_offset=vertical_aperture_offset,
+            out_rays=out_rays,
+            camera_index=camera_index,
+        )
+
+    def compute_camera_rays_usd_pinhole(
         self,
         width: int,
         height: int,
@@ -502,7 +566,7 @@ class Utils:
         """Compute camera-space ray directions for USD pinhole cameras.
 
         Reads standard ``UsdGeom.Camera`` perspective attributes and forwards
-        them to :meth:`compute_pinhole_camera_rays`.
+        them to :meth:`compute_camera_rays_pinhole`.
 
         Args:
             width: Image width [px].
@@ -522,7 +586,7 @@ class Utils:
                 shape ``(camera_count, height, width, 2)`` and dtype
                 ``vec3f``.
         """
-        return camera_utils.compute_usd_pinhole_camera_rays(
+        return camera_utils.compute_camera_rays_usd_pinhole(
             width,
             height,
             cameras,
@@ -532,7 +596,7 @@ class Utils:
             camera_index=camera_index,
         )
 
-    def compute_fisheye_camera_rays_opencv(
+    def compute_camera_rays_fisheye_opencv(
         self,
         width: int,
         height: int,
@@ -587,7 +651,7 @@ class Utils:
         )
 
         wp.launch(
-            kernel=camera_utils.compute_fisheye_camera_rays_opencv_kernel,
+            kernel=camera_utils.compute_camera_rays_fisheye_opencv_kernel,
             dim=(height, width),
             inputs=[
                 width,
@@ -611,7 +675,7 @@ class Utils:
 
         return out_rays
 
-    def compute_fisheye_camera_rays_ftheta(
+    def compute_camera_rays_fisheye_ftheta(
         self,
         width: int,
         height: int,
@@ -663,7 +727,7 @@ class Utils:
         )
 
         wp.launch(
-            kernel=camera_utils.compute_fisheye_camera_rays_ftheta_kernel,
+            kernel=camera_utils.compute_camera_rays_fisheye_ftheta_kernel,
             dim=(height, width),
             inputs=[
                 width,
@@ -686,7 +750,7 @@ class Utils:
 
         return out_rays
 
-    def compute_fisheye_camera_rays_kannala_brandt(
+    def compute_camera_rays_fisheye_kannala_brandt(
         self,
         width: int,
         height: int,
@@ -739,7 +803,7 @@ class Utils:
         )
 
         wp.launch(
-            kernel=camera_utils.compute_fisheye_camera_rays_kannala_brandt_kernel,
+            kernel=camera_utils.compute_camera_rays_fisheye_kannala_brandt_kernel,
             dim=(height, width),
             inputs=[
                 width,
@@ -816,7 +880,7 @@ class Utils:
             camera_transforms: World-space camera transforms, shape
                 ``(camera_count, world_count)``.
             camera_rays: Camera-space rays from
-                :meth:`compute_pinhole_camera_rays` or the fisheye camera ray
+                :meth:`compute_camera_rays_pinhole` or the fisheye camera ray
                 helpers, shape ``(camera_count, height, width, 2)``.
             out_depth: Output forward-depth array [m] with the same shape as
                 *depth_image*. If ``None``, allocates a new one.
