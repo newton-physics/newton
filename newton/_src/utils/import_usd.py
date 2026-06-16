@@ -3619,8 +3619,10 @@ def parse_usd(
                         for nv in normals[start : start + n]
                     ]
                     quaternions = _cable_segment_quaternions(positions, seg_normals)
-                # Per-joint stiffness needs a segment length; use the curve's mean.
-                seg_len = float(wp.length(positions[-1] - positions[0])) / max(1, n - 1)
+                # Per-joint stiffness needs a per-segment rest length: the mean of the
+                # actual segment lengths (the straight-line endpoint distance would
+                # underestimate it for curved cables and inflate the stiffness).
+                seg_len = sum(float(wp.length(positions[i + 1] - positions[i])) for i in range(n - 1)) / max(1, n - 1)
                 stretch_stiffness = (
                     cable_mat["stretchStiffness"] * area / seg_len
                     if "stretchStiffness" in cable_mat and seg_len > 0.0
