@@ -50,7 +50,7 @@ class Example:
             density=1.0e3,
             k_mu=1.0e5,
             k_lambda=1.0e5,
-            k_damp=1e-3,
+            k_damp=1e2,
         )
 
         # Add cloth grid below the soft body
@@ -67,9 +67,9 @@ class Example:
             mass=0.0005,
             tri_ke=1e5,
             tri_ka=1e5,
-            tri_kd=1e-5,
+            tri_kd=1e0,
             edge_ke=0.01,
-            edge_kd=1e-2,
+            edge_kd=1e-4,
             particle_radius=0.05,
         )
 
@@ -80,7 +80,7 @@ class Example:
 
         # Contact parameters
         self.model.soft_contact_ke = 1.0e5
-        self.model.soft_contact_kd = 1e-5
+        self.model.soft_contact_kd = 1e0
         self.model.soft_contact_mu = 1.0
 
         self.solver = newton.solvers.SolverVBD(
