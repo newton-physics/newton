@@ -107,21 +107,6 @@ def advance_time(sim_time: wp.array[wp.float32], dt: float):
     sim_time[0] = sim_time[0] + dt
 
 
-@wp.kernel
-def set_body_xforms(
-    body_indices: wp.array[wp.int32],
-    body_xforms: wp.array[wp.transform],
-    body_q0: wp.array[wp.transform],
-    body_q1: wp.array[wp.transform],
-):
-    """Initialize selected body transforms in both state buffers."""
-    tid = wp.tid()
-    body = body_indices[tid]
-    xform = body_xforms[tid]
-    body_q0[body] = xform
-    body_q1[body] = xform
-
-
 def _symmetric_bounds(half_extent: float) -> tuple[float, float]:
     return (-half_extent, half_extent)
 
@@ -673,6 +658,11 @@ class Example:
             length=cable_segment_count * cable_segment_length,
             num_segments=cable_segment_count,
         )
+        initial_cable_xforms = newton.utils.create_cable_body_transforms(
+            cable_points,
+            cable_quats,
+            body_frame_origin="start",
+        )
 
         cable_cfg = builder.default_shape_cfg.copy()
         cable_cfg.density = 200.0
@@ -690,7 +680,6 @@ class Example:
             wrap_in_articulation=False,
             label="xy_table_cable",
         )
-        initial_cable_xforms = [wp.transform(cable_points[i], cable_quats[i]) for i in range(len(self.cable_bodies))]
         filter_body_group_collisions(builder, self.cable_bodies)
 
         # Ball joints close the cable loop at the table anchors.
@@ -777,26 +766,11 @@ class Example:
             device=self.model.device,
         )
         self.target_table_xy = wp.zeros(2, dtype=wp.float32, device=self.model.device)
-        cable_body_indices = wp.array(
+        newton.utils.apply_cable_body_transforms(
+            [self.state_0, self.state_1],
             self.cable_bodies,
-            dtype=wp.int32,
-            device=self.model.device,
-        )
-        cable_body_xforms = wp.array(
             initial_cable_xforms,
-            dtype=wp.transform,
-            device=self.model.device,
-        )
-        wp.launch(
-            set_body_xforms,
-            dim=cable_body_indices.shape[0],
-            inputs=[
-                cable_body_indices,
-                cable_body_xforms,
-                self.state_0.body_q,
-                self.state_1.body_q,
-            ],
-            device=self.model.device,
+            zero_velocities=False,
         )
         self.solver.body_q_prev = wp.clone(self.state_0.body_q, device=self.solver.device)
         self.sim_time_wp = wp.zeros(1, dtype=wp.float32, device=self.model.device)

@@ -314,6 +314,181 @@ def _make_straight_cable_along_y(num_elements: int, segment_length: float, z_hei
     )
 
 
+def _cable_rest_initial_pose_geometry_impl(test: unittest.TestCase, device):
+    """Cable rest/initial geometry helpers preserve lengths and validate transforms."""
+    initial_points = [
+        wp.vec3(0.0, 0.0, 1.0),
+        wp.vec3(0.18, 0.06, 1.04),
+        wp.vec3(0.38, 0.12, 0.98),
+        wp.vec3(0.60, 0.04, 1.02),
+    ]
+    initial_lengths = newton.utils.compute_cable_segment_lengths(initial_points)
+
+    rest_points, rest_quats = newton.utils.create_straight_cable_rest_from_initial(
+        initial_points,
+        start=wp.vec3(-0.3, 0.0, 1.0),
+        direction=wp.vec3(1.0, 0.0, 0.0),
+    )
+    rest_lengths = newton.utils.compute_cable_segment_lengths(rest_points)
+    test.assertEqual(len(rest_quats), len(initial_points) - 1)
+    np.testing.assert_allclose(rest_lengths, initial_lengths, rtol=1.0e-6, atol=1.0e-8)
+    newton.utils.check_matching_cable_segment_lengths(rest_points, initial_points)
+
+    stretched_initial_points = list(initial_points)
+    stretched_initial_points[1] = wp.vec3(0.24, 0.06, 1.04)
+    with test.assertRaisesRegex(ValueError, "segment lengths differ"):
+        newton.utils.check_matching_cable_segment_lengths(rest_points, stretched_initial_points)
+
+    xforms = newton.utils.create_cable_body_transforms(initial_points, body_frame_origin="start")
+    test.assertEqual(len(xforms), len(initial_points) - 1)
+
+    xform_np = wp.array(xforms, dtype=wp.transform, device=device).numpy()
+    np.testing.assert_allclose(xform_np[:, :3], np.array(initial_points[:-1], dtype=float), rtol=0.0, atol=1.0e-7)
+
+    xforms_com = newton.utils.create_cable_body_transforms(initial_points, body_frame_origin="com")
+    xform_com_np = wp.array(xforms_com, dtype=wp.transform, device=device).numpy()
+    expected_com = 0.5 * (np.array(initial_points[:-1], dtype=float) + np.array(initial_points[1:], dtype=float))
+    np.testing.assert_allclose(xform_com_np[:, :3], expected_com, rtol=0.0, atol=1.0e-7)
+
+    with test.assertRaisesRegex(ValueError, "body_frame_origin"):
+        newton.utils.create_cable_body_transforms(initial_points, body_frame_origin="bad")
+
+    with test.assertRaisesRegex(ValueError, "align local \\+Z"):
+        newton.utils.create_cable_body_transforms(
+            initial_points,
+            [wp.quat_identity() for _ in range(len(initial_points) - 1)],
+            body_frame_origin="start",
+        )
+
+
+def _apply_cable_body_transforms_syncs_vbd_history_impl(test: unittest.TestCase, device):
+    """Applying a cable initial pose updates states and VBD previous-pose storage consistently."""
+    builder = newton.ModelBuilder()
+    rest_points, rest_quats = newton.utils.create_straight_cable_points_and_quaternions(
+        start=wp.vec3(0.0, 0.0, 1.0),
+        direction=wp.vec3(1.0, 0.0, 0.0),
+        length=0.6,
+        num_segments=3,
+    )
+    rod_bodies, _rod_joints = builder.add_rod(
+        positions=rest_points,
+        quaternions=rest_quats,
+        radius=0.02,
+        stretch_stiffness=1.0e5,
+        bend_stiffness=10.0,
+        label="ut_rest_init_pose",
+    )
+
+    builder.color()
+    model = builder.finalize(device=device)
+    state0 = model.state()
+    state1 = model.state()
+    solver = newton.solvers.SolverVBD(model, iterations=1)
+
+    initial_points = [
+        wp.vec3(0.0, 0.0, 1.0),
+        wp.vec3(0.18, 0.08, 1.03),
+        wp.vec3(0.39, 0.12, 0.98),
+        wp.vec3(0.60, 0.04, 1.02),
+    ]
+    initial_xforms = newton.utils.create_cable_body_transforms(initial_points, body_frame_origin="start")
+
+    newton.utils.apply_cable_body_transforms(
+        [state0, state1],
+        rod_bodies,
+        initial_xforms,
+        body_q_prev=solver.body_q_prev,
+    )
+
+    expected = wp.array(initial_xforms, dtype=wp.transform, device=device).numpy()
+    np.testing.assert_allclose(state0.body_q.numpy()[rod_bodies], expected, rtol=0.0, atol=1.0e-7)
+    np.testing.assert_allclose(state1.body_q.numpy()[rod_bodies], expected, rtol=0.0, atol=1.0e-7)
+    np.testing.assert_allclose(solver.body_q_prev.numpy()[rod_bodies], expected, rtol=0.0, atol=1.0e-7)
+    np.testing.assert_allclose(state0.body_qd.numpy()[rod_bodies], 0.0, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(state1.body_qd.numpy()[rod_bodies], 0.0, rtol=0.0, atol=0.0)
+
+    with test.assertRaisesRegex(ValueError, "body_indices contain index"):
+        newton.utils.apply_cable_body_transforms(
+            state0,
+            [state0.body_q.shape[0]],
+            [initial_xforms[0]],
+        )
+    with test.assertRaisesRegex(TypeError, "integer body index"):
+        newton.utils.apply_cable_body_transforms(
+            state0,
+            [0.5],
+            [initial_xforms[0]],
+        )
+
+
+def _cable_curved_initial_straight_rest_no_stretch_impl(test: unittest.TestCase, device):
+    """Curved initial pose with length-matched straight rest must not develop stretch artifacts.
+
+    Locks in the guarantee that ``create_straight_cable_rest_from_initial`` paired with
+    ``apply_cable_body_transforms`` avoids first-frame teleportation and accumulates no
+    spurious stretch under zero gravity. Bend stiffness is intentionally weak so the cable
+    relaxes slowly and any per-segment length drift (stretch creep) would dominate.
+    """
+    initial_points = [
+        wp.vec3(0.0, 0.0, 1.0),
+        wp.vec3(0.20, 0.05, 1.02),
+        wp.vec3(0.42, 0.08, 0.98),
+        wp.vec3(0.60, 0.02, 1.01),
+    ]
+    rest_points, rest_quats = newton.utils.create_straight_cable_rest_from_initial(initial_points)
+    expected_lengths = newton.utils.compute_cable_segment_lengths(initial_points)
+
+    builder = newton.ModelBuilder(gravity=0.0)
+    rod_bodies, _ = builder.add_rod(
+        positions=rest_points,
+        quaternions=rest_quats,
+        radius=0.02,
+        stretch_stiffness=1.0e5,
+        bend_stiffness=1.0,
+        label="ut_no_stretch",
+    )
+
+    builder.color()
+    model = builder.finalize(device=device)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    contacts = model.contacts()
+    solver = newton.solvers.SolverVBD(model, iterations=4)
+
+    initial_xforms = newton.utils.create_cable_body_transforms(initial_points, body_frame_origin="start")
+    newton.utils.apply_cable_body_transforms(
+        [state_0, state_1],
+        rod_bodies,
+        initial_xforms,
+        body_q_prev=solver.body_q_prev,
+    )
+
+    dt = 1.0 / 240.0
+    for _ in range(60):  # 0.25 s under zero gravity
+        state_0.clear_forces()
+        solver.step(state_0, state_1, control, contacts, dt)
+        state_0, state_1 = state_1, state_0
+
+    positions = state_0.body_q.numpy()[rod_bodies, :3]
+    test.assertTrue(np.isfinite(positions).all(), "non-finite cable positions after simulation")
+
+    # add_rod creates one body per segment (N-1 bodies for N points), each placed at the
+    # segment's start point. Inter-body distances measure the first N-2 segment lengths;
+    # the final segment ends past the last body, so it isn't measurable from body_q alone.
+    for i in range(len(rod_bodies) - 1):
+        measured = float(np.linalg.norm(positions[i + 1] - positions[i]))
+        expected = expected_lengths[i]
+        rel_err = abs(measured - expected) / expected
+        test.assertLess(
+            rel_err,
+            0.01,
+            msg=(
+                f"Segment {i} stretch drift {rel_err:.4%} after 60 steps: measured={measured:.6f}, rest={expected:.6f}"
+            ),
+        )
+
+
 # -----------------------------------------------------------------------------
 # Model builders
 # -----------------------------------------------------------------------------
@@ -4158,6 +4333,24 @@ add_function_test(
     TestCable,
     "test_cable_chain_connectivity",
     _cable_chain_connectivity_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_rest_initial_pose_geometry",
+    _cable_rest_initial_pose_geometry_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_apply_cable_body_transforms_syncs_vbd_history",
+    _apply_cable_body_transforms_syncs_vbd_history_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_curved_initial_straight_rest_no_stretch",
+    _cable_curved_initial_straight_rest_no_stretch_impl,
     devices=devices,
 )
 add_function_test(

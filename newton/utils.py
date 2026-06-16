@@ -61,17 +61,29 @@ __all__ += [
 # cable utils
 # ==================================================================================
 from ._src.utils.cable import (  # noqa: E402
+    apply_cable_body_transforms,
+    check_matching_cable_segment_lengths,
+    compute_cable_segment_lengths,
+    create_cable_body_transforms,
     create_cable_stiffness_from_elastic_moduli,
     create_parallel_transport_cable_quaternions,
     create_straight_cable_points,
     create_straight_cable_points_and_quaternions,
+    create_straight_cable_points_from_segment_lengths,
+    create_straight_cable_rest_from_initial,
 )
 
 __all__ += [
+    "apply_cable_body_transforms",
+    "check_matching_cable_segment_lengths",
+    "compute_cable_segment_lengths",
+    "create_cable_body_transforms",
     "create_cable_stiffness_from_elastic_moduli",
     "create_parallel_transport_cable_quaternions",
     "create_straight_cable_points",
     "create_straight_cable_points_and_quaternions",
+    "create_straight_cable_points_from_segment_lengths",
+    "create_straight_cable_rest_from_initial",
 ]
 
 # ==================================================================================
