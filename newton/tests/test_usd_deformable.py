@@ -570,6 +570,25 @@ class TestUSDDeformableCloth(unittest.TestCase):
         self.assertGreater(m_no_t, 0.0)
         self.assertAlmostEqual(m_with_t / m_no_t, 0.01, places=4)
 
+    def test_cloth_non_uniform_scale_bakes_into_vertices(self):
+        """A non-uniform xformOp:scale on a cloth mesh is baked into the particle positions."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cloth_scaled.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)  # avoid Y->Z axis conversion
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")  # points (0,0,1)(1,0,1)(1,1,1)(0,1,1)
+            UsdGeom.Xformable(mesh).AddScaleOp().Set(Gf.Vec3d(2.0, 3.0, 4.0))
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            builder.add_usd(str(usd_path))
+            pq = np.array([list(builder.particle_q[i]) for i in range(builder.particle_count)])
+            expected = np.array([(0.0, 0.0, 4.0), (2.0, 0.0, 4.0), (2.0, 3.0, 4.0), (0.0, 3.0, 4.0)])
+            np.testing.assert_allclose(pq, expected, atol=1e-4)
+
     def test_cloth_simulates(self, device=None):
         """After parsing, a cloth runs through SolverVBD and stays finite."""
         from pxr import Usd, UsdPhysics
@@ -855,6 +874,29 @@ class TestUSDDeformableMass(unittest.TestCase):
             result = builder.add_usd(str(usd_path))
             bodies, _ = result["path_cable_map"]["/World/Cable"]
             self.assertAlmostEqual(sum(builder.body_mass[b] for b in bodies), 2.5, places=4)
+
+    def test_cable_masses_length_mismatch_is_ignored(self):
+        """A physics:masses array whose length != curve points warns and is ignored."""
+        from pxr import Sdf, Usd, UsdPhysics
+
+        def total_cable_mass(masses=None):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                usd_path = Path(tmpdir) / "cable.usda"
+                stage = Usd.Stage.CreateNew(str(usd_path))
+                UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+                pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]  # 4 points
+                curves = _add_cable_curve(stage, "/World/Cable", pts)
+                if masses is not None:
+                    curves.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(masses)
+                stage.Save()
+                builder = newton.ModelBuilder()
+                bodies, _ = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
+                return sum(builder.body_mass[b] for b in bodies)
+
+        baseline = total_cable_mass()
+        with self.assertWarns(UserWarning):
+            mismatched = total_cable_mass(masses=[1.0, 2.0, 3.0])  # length 3 != 4 points
+        self.assertAlmostEqual(mismatched, baseline, places=6)
 
 
 devices = get_selected_cuda_test_devices()

@@ -250,6 +250,12 @@ def parse_usd(
               - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
             * - ``"path_shape_scale"``
               - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+            * - ``"path_cable_map"``
+              - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` in :class:`~newton.ModelBuilder`
+            * - ``"path_cloth_map"``
+              - Mapping from prim path (str) of a surface deformable (cloth) to a dict of its ``particle`` / ``tri`` / ``edge`` ``(start, end)`` index ranges
+            * - ``"path_soft_map"``
+              - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to a dict of its ``particle`` / ``tet`` ``(start, end)`` index ranges
             * - ``"mass_unit"``
               - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
             * - ``"linear_unit"``
@@ -3407,11 +3413,18 @@ def parse_usd(
                 for i in range(p0, p1):
                     builder.particle_mass[i] *= scale
 
-    def _apply_cable_masses(prim, body_ids):
+    def _apply_cable_masses(prim, body_ids, num_points):
         # The rigid capsule chain can't carry per-point masses; collapse them (or take
         # the body mass) to a total and rescale segment mass + inertia.
         point_masses = usd._get_deformable_point_masses(prim, deformable_compat_ns)
         body_mass, _ = usd._get_deformable_body_overrides(prim, deformable_compat_ns)
+        if point_masses is not None and len(point_masses) != num_points:
+            warnings.warn(
+                f"{prim.GetPath()}: physics:masses length {len(point_masses)} != {num_points} curve points; "
+                f"ignoring per-point masses.",
+                stacklevel=2,
+            )
+            point_masses = None
         if point_masses is not None:
             target = float(sum(point_masses))
             warnings.warn(
@@ -3647,7 +3660,7 @@ def parse_usd(
                 cable_joints.extend(joints)
 
             if cable_bodies:
-                _apply_cable_masses(prim, cable_bodies)
+                _apply_cable_masses(prim, cable_bodies, len(points))
                 path_cable_map[path] = (cable_bodies, cable_joints)
                 if verbose:
                     print(f"Added cable {path} with {len(cable_bodies)} segments.")
@@ -3679,7 +3692,15 @@ def parse_usd(
 
             world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
             cloth_pos, cloth_rot, cloth_scale = wp.transform_decompose(world_mat)
-            scale = float(cloth_scale[0]) if _is_uniform_scale(cloth_scale) else 1.0
+            # add_cloth_mesh takes a single uniform scale; bake a non-uniform scale
+            # into the vertices so it is not silently dropped.
+            if _is_uniform_scale(cloth_scale):
+                scale = float(cloth_scale[0])
+                cloth_vertices = [wp.vec3(float(p[0]), float(p[1]), float(p[2])) for p in mesh_points]
+            else:
+                scale = 1.0
+                sx, sy, sz = float(cloth_scale[0]), float(cloth_scale[1]), float(cloth_scale[2])
+                cloth_vertices = [wp.vec3(float(p[0]) * sx, float(p[1]) * sy, float(p[2]) * sz) for p in mesh_points]
 
             # Surface moduli -> tri_ke (stretch) / tri_ka (shear) / bending-edge ke (bend).
             cloth_mat = usd._get_surface_deformable_material(prim, deformable_compat_ns) or {}
@@ -3702,7 +3723,7 @@ def parse_usd(
                 rot=cloth_rot,
                 scale=scale,
                 vel=wp.vec3(0.0, 0.0, 0.0),
-                vertices=[wp.vec3(float(p[0]), float(p[1]), float(p[2])) for p in mesh_points],
+                vertices=cloth_vertices,
                 indices=[int(i) for i in face_indices],
                 density=density,
                 tri_ke=tri_ke,
