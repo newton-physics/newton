@@ -3377,9 +3377,8 @@ def parse_usd(
                     for shape2 in builder.body_shapes[body2]:
                         builder.add_shape_collision_filter_pair(shape1, shape2)
 
-    # Mass precedence (proposal "Mass Distribution"): per-point physics:masses >
-    # PhysicsDeformableBodyAPI.mass > body density > material density. Per-element
-    # weighting is delegated to the add_* builders.
+    # Mass precedence (proposal): per-point physics:masses > body mass > body density
+    # > material density; per-element weighting is left to the add_* builders.
     def _resolve_deformable_density(prim, material_density):
         _, body_density = usd._get_deformable_body_overrides(prim, deformable_compat_ns)
         return body_density if body_density is not None else material_density
@@ -3409,8 +3408,8 @@ def parse_usd(
                     builder.particle_mass[i] *= scale
 
     def _apply_cable_masses(prim, body_ids):
-        # The rigid capsule chain can't carry per-point masses, so they collapse to a
-        # total; PhysicsDeformableBodyAPI.mass is the total. Both rescale mass + inertia.
+        # The rigid capsule chain can't carry per-point masses; collapse them (or take
+        # the body mass) to a total and rescale segment mass + inertia.
         point_masses = usd._get_deformable_point_masses(prim, deformable_compat_ns)
         body_mass, _ = usd._get_deformable_body_overrides(prim, deformable_compat_ns)
         if point_masses is not None:
@@ -3435,9 +3434,8 @@ def parse_usd(
             builder.body_inv_mass[b] = (1.0 / m) if m > 0.0 else 0.0
             builder.body_inv_inertia[b] = wp.inverse(builder.body_inertia[b]) if m > 0.0 else wp.mat33(0.0)
 
-    # Volume deformables: a UsdGeom.TetMesh imports as a soft body. One tagged
-    # PhysicsVolumeDeformableSimAPI (or under a PhysicsDeformableBodyAPI) takes the
-    # deformable mass precedence; a bare TetMesh keeps the legacy material-density import.
+    # Volume deformables (TetMesh -> soft body). PhysicsVolumeDeformableSimAPI (or a
+    # PhysicsDeformableBodyAPI) opts into the mass precedence; a bare TetMesh stays legacy.
     root_prim = stage.GetPrimAtPath(root_path)
     if root_prim and root_prim.IsValid():
         for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
@@ -3481,8 +3479,7 @@ def parse_usd(
                 "mesh": tetmesh_for_builder,
                 "label": path,
             }
-            # PhysicsDeformableBodyAPI.density overrides the material density read
-            # into the TetMesh; otherwise add_soft_mesh uses the mesh density.
+            # Body density overrides the TetMesh's material density.
             if is_volume_deformable:
                 resolved_density = _resolve_deformable_density(prim, tetmesh_for_builder.density)
                 if resolved_density is not None:
@@ -3508,11 +3505,9 @@ def parse_usd(
                     f"Added soft mesh {path} with {tetmesh.vertex_count} vertices and {tetmesh.tet_count} tetrahedra."
                 )
 
-    # Deformable cables: a GeomBasisCurves tagged PhysicsCurvesDeformableSimAPI is
-    # imported as a VBD cable (capsule chain + JointType.CABLE joints via add_rod).
-    # Rest shape (restShapePoints / restNormals) is not parsed yet. Newton-specific
-    # curve params (damping, articulation wrapping) are left to a future
-    # NewtonCurvesDeformable*API extension read via the schema resolver (see #3178).
+    # Deformable cables (PhysicsCurvesDeformableSimAPI GeomBasisCurves -> VBD cable via
+    # add_rod). Rest shape not parsed yet; Newton-specific params (damping, wrapping) are
+    # deferred to a future NewtonCurvesDeformable*API extension (see #3178).
     def _cable_segment_quaternions(seg_positions, seg_normals):
         # Per-segment frame: local +Z to the segment tangent, +Y to the authored
         # (world-space) normal; degenerate normals fall back to roll-free.
@@ -3569,8 +3564,8 @@ def parse_usd(
             w_pos, w_rot, w_scale = wp.transform_decompose(world_mat)
             world_xf = wp.transform(w_pos, w_rot)
 
-            # Authored per-vertex normals give each segment's cross-section frame
-            # (twist). Only honored when one normal is authored per point.
+            # Per-vertex normals give each segment's cross-section frame (twist),
+            # honored only when one normal is authored per point.
             normals = curves.GetNormalsAttr().Get()
             if normals is not None and len(normals) != len(points):
                 warnings.warn(
@@ -3657,8 +3652,7 @@ def parse_usd(
                 if verbose:
                     print(f"Added cable {path} with {len(cable_bodies)} segments.")
 
-    # Surface deformables (cloth): a triangulated UsdGeom.Mesh tagged
-    # PhysicsSurfaceDeformableSimAPI is imported as cloth via add_cloth_mesh.
+    # Surface deformables (PhysicsSurfaceDeformableSimAPI triangle Mesh -> cloth via add_cloth_mesh).
     if root_prim and root_prim.IsValid():
         for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
             if not prim.IsA(UsdGeom.Mesh):
