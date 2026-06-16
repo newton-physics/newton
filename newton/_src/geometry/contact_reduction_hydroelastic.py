@@ -398,6 +398,8 @@ def _create_accumulate_moments_kernel(normal_matching: bool = True):
         total_normal_reduced: wp.array[wp.vec3],
         agg_moment_reduced: wp.array[wp.float32],
         agg_moment2_reduced: wp.array[wp.float32],
+        shape_pairs: wp.array[wp.vec2i],
+        shape_material_k_hydro: wp.array[wp.float32],
         total_num_threads: int,
     ):
         """Accumulate reduced friction moments per normal bin."""
@@ -453,7 +455,11 @@ def _create_accumulate_moments_kernel(normal_matching: bool = True):
                 if wp.static(normal_matching):
                     nbin_agg_force = agg_force[nbin_idx]
                     nbin_agg_mag = wp.length(nbin_agg_force)
-                    if nbin_agg_mag > EPS_LARGE:
+                    # Same rescale as the export kernel: keep the EPS_LARGE gate
+                    # independent of the pressure-law magnitude.
+                    pair = shape_pairs[contact_id]
+                    nbin_direction_mag = nbin_agg_mag / _pressure_to_depth_scale(shape_material_k_hydro[pair[1]])
+                    if nbin_direction_mag > EPS_LARGE:
                         nbin_nsum = total_normal_reduced[nbin_idx]
                         rot_q = _compute_normal_matching_rotation(nbin_nsum, nbin_agg_force, nbin_agg_mag)
                         rotated_normal = wp.normalize(wp.quat_rotate(rot_q, contact_normal))
@@ -1205,6 +1211,8 @@ class HydroelasticContactReduction:
                     self.reducer.total_normal_reduced,
                     self.reducer.agg_moment_reduced,
                     self.reducer.agg_moment2_reduced,
+                    self.reducer.shape_pairs,
+                    shape_material_k_hydro,
                     grid_size,
                 ],
                 device=self.device,
