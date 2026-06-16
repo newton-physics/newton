@@ -367,6 +367,12 @@ def parse_usd(
     # import parses the AOUSD proposal as written.
     deformable_compat_ns = R.compat_attr_namespaces()
 
+    # Newton-specific deformable controls (a future NewtonCurvesDeformable*API
+    # extension) are honored only when the Newton resolver owns the newton:
+    # namespace, mirroring how physx vendor attributes require SchemaResolverPhysx.
+    # The base parser otherwise reads only the public schema.
+    newton_resolver_active = any(r.name == "newton" for r in R.resolvers)
+
     # Validate solver-specific custom attributes are registered
     for resolver in schema_resolvers:
         resolver.validate_custom_attributes(builder)
@@ -3554,12 +3560,10 @@ def parse_usd(
                 continue
             closed = curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic
 
-            # Optional Newton control: by default each cable is wrapped in its own
-            # articulation. Authoring newton:cableWrapInArticulation=false leaves the
-            # cable joints unwrapped so the caller can place them (e.g. close a loop
-            # with extra joints, or attach the cable to other bodies) before finalize.
-            wrap_attr = prim.GetAttribute("newton:cableWrapInArticulation")
-            wrap_in_articulation = bool(wrap_attr.Get()) if wrap_attr and wrap_attr.HasAuthoredValue() else True
+            # Newton-extension control, gated on the Newton resolver (see helper docstring).
+            wrap_in_articulation = (
+                usd._get_newton_curve_wrap_in_articulation(prim) if newton_resolver_active else True
+            )
 
             world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
             w_pos, w_rot, w_scale = wp.transform_decompose(world_mat)

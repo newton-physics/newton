@@ -1459,6 +1459,23 @@ def _get_surface_deformable_material(prim: Usd.Prim, compat_namespaces: Sequence
     return out
 
 
+def _get_newton_curve_wrap_in_articulation(prim: Usd.Prim) -> bool:
+    """Read the Newton-specific ``newton:cableWrapInArticulation`` control.
+
+    This is not part of the public AOUSD curve-deformable schema; it anticipates a
+    Newton extension (``NewtonCurvesDeformableSimAPI``) and is read only when the
+    Newton schema resolver is active (the caller gates on that). When ``false``,
+    the imported cable joints are left unwrapped so the caller can place them
+    (e.g. close a loop or attach to other bodies) before ``finalize()``.
+
+    Returns:
+        The authored value, or ``True`` (wrap each cable in its own articulation)
+        when unauthored.
+    """
+    attr = prim.GetAttribute("newton:cableWrapInArticulation")
+    return bool(attr.Get()) if attr and attr.HasAuthoredValue() else True
+
+
 def _find_deformable_body_prim(prim: Usd.Prim) -> Usd.Prim | None:
     """Find the ``PhysicsDeformableBodyAPI`` prim governing a simulation geometry.
 
