@@ -1028,6 +1028,8 @@ class ModelBuilder:
         # triangles
         self.tri_indices: list[tuple[int, int, int]] = []
         """Triangle connectivity accumulated for :attr:`Model.tri_indices`."""
+        self.tri_edge_indices: np.ndarray = np.empty((0, 3), dtype=np.int32)
+        """Triangle-to-edge adjacency rows accumulated for :attr:`Model.soft_mesh_adjacency`."""
         self.tri_poses: list[Mat22] = []
         """Triangle rest-pose 2x2 matrices accumulated for :attr:`Model.tri_poses`."""
         self.tri_activations: list[float] = []
@@ -1040,6 +1042,8 @@ class ModelBuilder:
         # edges (bending)
         self.edge_indices: list[tuple[int, int, int, int]] = []
         """Bending-edge connectivity accumulated for :attr:`Model.edge_indices`."""
+        self.edge_tri_indices: np.ndarray = np.empty((0, 2), dtype=np.int32)
+        """Edge-to-triangle adjacency rows accumulated for :attr:`Model.soft_mesh_adjacency`."""
         self.edge_rest_angle: list[float] = []
         """Edge rest angles [rad] accumulated for :attr:`Model.edge_rest_angle`."""
         self.edge_rest_length: list[float] = []
@@ -3388,8 +3392,26 @@ class ModelBuilder:
             self.edge_indices.extend(edge_indices.tolist())
         if builder.tri_count:
             self.tri_indices.extend((np.array(builder.tri_indices, dtype=np.int32) + start_particle_idx).tolist())
+            tri_edge_indices = MeshAdjacency.complete_tri_edge_indices(
+                getattr(builder, "tri_edge_indices", None),
+                builder.tri_count,
+            )
+            valid_edge_refs = tri_edge_indices != -1
+            tri_edge_indices[valid_edge_refs] += start_edge_idx
+            self._append_missing_tri_edge_rows(start_triangle_idx + builder.tri_count)
+            self.tri_edge_indices[start_triangle_idx : start_triangle_idx + builder.tri_count] = tri_edge_indices
         if builder.tet_count:
             self.tet_indices.extend((np.array(builder.tet_indices, dtype=np.int32) + start_particle_idx).tolist())
+
+        if builder.edge_count:
+            edge_tri_indices = MeshAdjacency.complete_edge_tri_indices(
+                getattr(builder, "edge_tri_indices", None),
+                builder.edge_count,
+            )
+            valid_triangle_refs = edge_tri_indices != -1
+            edge_tri_indices[valid_triangle_refs] += start_triangle_idx
+            self._append_missing_edge_tri_rows(start_edge_idx + builder.edge_count)
+            self.edge_tri_indices[start_edge_idx : start_edge_idx + builder.edge_count] = edge_tri_indices
 
         builder_coloring_translated = [group + start_particle_idx for group in builder.particle_color_groups]
         self.particle_color_groups = combine_independent_particle_coloring(
@@ -8313,6 +8335,87 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.EDGE,
             )
 
+    def _append_missing_tri_edge_rows(self, tri_count: int) -> None:
+        """Grow ``tri_edge_indices`` so triangle-id slice writes are valid.
+
+        Existing rows are preserved. New rows are ``-1`` placeholders until a
+        topology helper patches the triangle-to-edge mapping.
+        """
+        missing_count = tri_count - self.tri_edge_indices.shape[0]
+        if missing_count <= 0:
+            return
+
+        missing_rows = np.full((missing_count, 3), -1, dtype=np.int32)
+        self.tri_edge_indices = np.concatenate((self.tri_edge_indices, missing_rows), axis=0)
+
+    def _append_missing_edge_tri_rows(self, edge_count: int) -> None:
+        """Grow ``edge_tri_indices`` so edge-id slice writes are valid.
+
+        Existing rows are preserved. New rows are ``-1`` placeholders until a
+        topology helper patches the edge-to-triangle mapping.
+        """
+        missing_count = edge_count - self.edge_tri_indices.shape[0]
+        if missing_count <= 0:
+            return
+
+        missing_rows = np.full((missing_count, 2), -1, dtype=np.int32)
+        self.edge_tri_indices = np.concatenate((self.edge_tri_indices, missing_rows), axis=0)
+
+    @staticmethod
+    def _expand_edge_parameter(values: float | Sequence[float] | np.ndarray | None, count: int):
+        """Broadcast scalar edge parameters while preserving sequences and None."""
+        if values is None:
+            return None
+        if np.isscalar(values):
+            return [float(values)] * count
+        return values
+
+    def _add_soft_mesh_edges_from_triangles(
+        self,
+        start_tri: int,
+        end_tri: int,
+        *,
+        edge_ke: float | Sequence[float] | np.ndarray | None = None,
+        edge_kd: float | Sequence[float] | np.ndarray | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> range:
+        """Derive bending edges and adjacency for a triangle range."""
+        edge_start = len(self.edge_indices)
+        if end_tri <= start_tri:
+            return range(edge_start, edge_start)
+
+        edge_indices, edge_tri_indices, tri_edge_indices = MeshAdjacency.compute_edge_adjacency(
+            self.tri_indices[start_tri:end_tri],
+            tri_start=start_tri,
+        )
+        edge_count = edge_indices.shape[0]
+        if edge_count == 0:
+            self._append_missing_tri_edge_rows(end_tri)
+            self.tri_edge_indices[start_tri:end_tri] = tri_edge_indices
+            return range(edge_start, edge_start)
+
+        self.add_edges(
+            edge_indices[:, 0],
+            edge_indices[:, 1],
+            edge_indices[:, 2],
+            edge_indices[:, 3],
+            edge_ke=self._expand_edge_parameter(edge_ke, edge_count),
+            edge_kd=self._expand_edge_parameter(edge_kd, edge_count),
+            custom_attributes=custom_attributes,
+        )
+
+        edge_end = len(self.edge_indices)
+        self._append_missing_tri_edge_rows(end_tri)
+        self._append_missing_edge_tri_rows(edge_end)
+
+        tri_edge_global = tri_edge_indices.copy()
+        valid_edge_refs = tri_edge_global != -1
+        tri_edge_global[valid_edge_refs] += edge_start
+
+        self.tri_edge_indices[start_tri:end_tri] = tri_edge_global
+        self.edge_tri_indices[edge_start:edge_end] = edge_tri_indices
+        return range(edge_start, edge_end)
+
     def add_cloth_grid(
         self,
         pos: Vec3,
@@ -8561,21 +8664,14 @@ class ModelBuilder:
 
         end_tri = len(self.tri_indices)
 
-        adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
-
-        edge_indices = np.fromiter(
-            (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
-            int,
-        ).reshape(-1, 4)
-        self.add_edges(
-            edge_indices[:, 0],
-            edge_indices[:, 1],
-            edge_indices[:, 2],
-            edge_indices[:, 3],
-            edge_ke=[edge_ke] * len(edge_indices),
-            edge_kd=[edge_kd] * len(edge_indices),
+        edge_range = self._add_soft_mesh_edges_from_triangles(
+            start_tri,
+            end_tri,
+            edge_ke=edge_ke,
+            edge_kd=edge_kd,
             custom_attributes=custom_attributes_edges,
         )
+        edge_indices = np.asarray(self.edge_indices[edge_range.start : edge_range.stop], dtype=np.int32)
 
         if add_springs:
             spring_indices = set()
@@ -8854,15 +8950,7 @@ class ModelBuilder:
         if add_surface_mesh_edges:
             # add surface mesh edges (for collision)
             if end_tri > start_tri:
-                adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
-                edge_indices = np.fromiter(
-                    (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
-                    int,
-                ).reshape(-1, 4)
-                if len(edge_indices) > 0:
-                    # Add edges with specified stiffness/damping (for collision)
-                    for o1, o2, v1, v2 in edge_indices:
-                        self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
+                self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
 
     def add_soft_mesh(
         self,
@@ -9079,15 +9167,7 @@ class ModelBuilder:
         if add_surface_mesh_edges:
             # add surface mesh edges (for collision)
             if end_tri > start_tri:
-                adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
-                edge_indices = np.fromiter(
-                    (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
-                    int,
-                ).reshape(-1, 4)
-                if len(edge_indices) > 0:
-                    # Add edges with specified stiffness/damping (for collision)
-                    for o1, o2, v1, v2 in edge_indices:
-                        self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
+                self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
@@ -10350,6 +10430,28 @@ class ModelBuilder:
                     f"expected final index {total_count}, found {world_start_array[-1]}."
                 )
 
+    def _build_soft_mesh_adjacency(
+        self, edge_indices: wp.array[wp.int32] | None, device: Devicelike | None
+    ) -> MeshAdjacency:
+        """Pack builder soft-mesh adjacency into Warp arrays for the model."""
+        adjacency = MeshAdjacency()
+        adjacency.edge_indices = (
+            edge_indices if edge_indices is not None else wp.empty((0, 4), dtype=wp.int32, device=device)
+        )
+        adjacency.edge_tri_indices = wp.array(
+            MeshAdjacency.complete_edge_tri_indices(self.edge_tri_indices, self.edge_count),
+            dtype=wp.int32,
+            device=device,
+        )
+        adjacency.tri_edge_indices = wp.array(
+            MeshAdjacency.complete_tri_edge_indices(self.tri_edge_indices, self.tri_count),
+            dtype=wp.int32,
+            device=device,
+        )
+
+        adjacency.init_empty_vertex_adjacency(device=device)
+        return adjacency
+
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -11058,6 +11160,7 @@ class ModelBuilder:
             m.edge_bending_properties = _to_wp_array(
                 self.edge_bending_properties, wp.float32, requires_grad=requires_grad
             )
+            m.soft_mesh_adjacency = self._build_soft_mesh_adjacency(m.edge_indices, device)
 
             # ---------------------
             # tetrahedra

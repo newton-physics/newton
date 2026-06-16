@@ -15,6 +15,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
+from ..utils.mesh import MeshAdjacency
 from .contacts import Contacts
 from .control import Control
 from .state import State
@@ -442,6 +443,8 @@ class Model:
         Components: [0] stiffness [N·m/rad], [1] damping [N·s]."""
         self.edge_constraint_lambdas: wp.array[wp.float32] | None = None
         """Lagrange multipliers for edge constraints (internal use)."""
+        self.soft_mesh_adjacency: MeshAdjacency | None = None
+        """Soft mesh topology and solver adjacency, or ``None`` before finalization."""
 
         self.tet_indices: wp.array[wp.int32] | None = None
         """Tetrahedral element indices, shape [tet_count*4], int."""

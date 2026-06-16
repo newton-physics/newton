@@ -1,6 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+import numpy as np
+
 # ==================================================================================
 # sim utils
 # ==================================================================================
@@ -16,11 +22,50 @@ __all__ = [
 # ==================================================================================
 from ._src.geometry.utils import remesh_mesh
 from ._src.utils.mesh import (
-    MeshAdjacency,
+    MeshAdjacency as _SoftMeshAdjacency,
+)
+from ._src.utils.mesh import (
     solidify_mesh,
     validate_tet_mesh,
     validate_triangle_mesh,
 )
+
+
+class MeshAdjacency:
+    """Deprecated triangle-mesh edge adjacency helper.
+
+    Use :attr:`newton.Model.soft_mesh_adjacency` for simulation adjacency data.
+
+    This thin compatibility wrapper reproduces the legacy ``.edges`` dict by
+    delegating edge extraction to the refactored soft-mesh adjacency in
+    :mod:`newton._src.utils.mesh`, so a single edge-walking implementation backs
+    both the deprecated public helper and the internal simulation path.
+    """
+
+    @dataclass(slots=True)
+    class Edge:
+        v0: int
+        v1: int
+        o0: int
+        o1: int
+        f0: int
+        f1: int
+
+    def __init__(self, indices: Sequence[Sequence[int]] | np.ndarray):
+        warnings.warn(
+            "newton.utils.MeshAdjacency is deprecated; use Model.soft_mesh_adjacency for simulation data.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.indices = indices
+        edge_indices, edge_tri_indices, _ = _SoftMeshAdjacency.compute_edge_adjacency(indices)
+        self.edges: dict[tuple[int, int], MeshAdjacency.Edge] = {
+            (min(int(v0), int(v1)), max(int(v0), int(v1))): MeshAdjacency.Edge(
+                int(v0), int(v1), int(o0), int(o1), int(f0), int(f1)
+            )
+            for (o0, o1, v0, v1), (f0, f1) in zip(edge_indices, edge_tri_indices, strict=True)
+        }
+
 
 __all__ += [
     "MeshAdjacency",
