@@ -85,13 +85,15 @@ jobs:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           path: head
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Checkout base branch
+      - name: Checkout base branch history
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: base
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
@@ -99,12 +101,25 @@ jobs:
         with:
           python-version-file: "base/.python-version"
 
+      - name: Checkout PR merge base
+        id: merge_base
+        run: |
+          script_path="${RUNNER_TEMP}/detect_api_changes.py"
+          git -C base show "${{ github.event.pull_request.base.sha }}:.github/scripts/detect_api_changes.py" > "$script_path"
+
+          git -C base fetch --no-tags ../head HEAD:refs/remotes/pr/head
+          merge_base=$(git -C base merge-base HEAD refs/remotes/pr/head)
+          git -C base checkout --detach "$merge_base"
+
+          echo "script_path=$script_path" >> "$GITHUB_OUTPUT"
+          echo "merge_base=$merge_base" >> "$GITHUB_OUTPUT"
+
       - name: Detect API changes
         id: detect
         env:
           API_COMMENT_PATH: ${{ runner.temp }}/api-comment.md
         run: |
-          output=$(python base/.github/scripts/detect_api_changes.py base head)
+          output=$(python "${{ steps.merge_base.outputs.script_path }}" base head)
           has_changes=$(printf '%s' "$output" | python -c "import sys, json; print(str(json.load(sys.stdin)['diff']['has_changes']).lower())")
           echo "has_changes=$has_changes" >> "$GITHUB_OUTPUT"
 

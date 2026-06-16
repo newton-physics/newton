@@ -13,7 +13,6 @@ Safety: only stdlib ``ast`` parsing is used; no user code is imported or execute
 from __future__ import annotations
 
 import ast
-import html
 import json
 import sys
 from pathlib import Path
@@ -78,12 +77,15 @@ def _make_symbol(
     *,
     value: str | None = None,
     source_module: str | None = None,
+    instance_attribute: bool = False,
 ) -> dict:
     symbol = {"kind": kind, "signature": signature}
     if value is not None:
         symbol["value"] = value
     if source_module is not None:
         symbol["source_module"] = source_module
+    if instance_attribute:
+        symbol["instance_attribute"] = True
     return symbol
 
 
@@ -509,14 +511,23 @@ class _InitAttributeVisitor(ast.NodeVisitor):
         for target in node.targets:
             for name, value in _iter_self_attribute_assignments(target, node.value):
                 if _is_public_name(name):
-                    self.defs[name] = _make_symbol("attribute", value=_format_value(value))
+                    self.defs[name] = _make_symbol(
+                        "attribute",
+                        value=_format_value(value),
+                        instance_attribute=True,
+                    )
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         name = _self_attribute_name(node.target)
         if name is None or not _is_public_name(name):
             return
         annotation = _format_annotation(node.annotation)
-        self.defs[name] = _make_symbol("attribute", f"{name}: {annotation}", value=_format_value(node.value))
+        self.defs[name] = _make_symbol(
+            "attribute",
+            f"{name}: {annotation}",
+            value=_format_value(node.value),
+            instance_attribute=True,
+        )
 
 
 def _extract_init_attribute_defs(node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, dict]:
@@ -1000,22 +1011,23 @@ def compare_symbols(
             diffs: list[dict] = []
             if base["kind"] != head["kind"]:
                 diffs.append({"field": "kind", "before": base["kind"], "after": head["kind"]})
-            if base.get("signature") != head.get("signature"):
-                diffs.append(
-                    {
-                        "field": "signature",
-                        "before": base.get("signature"),
-                        "after": head.get("signature"),
-                    }
-                )
-            if base.get("value") != head.get("value"):
-                diffs.append(
-                    {
-                        "field": "value",
-                        "before": base.get("value"),
-                        "after": head.get("value"),
-                    }
-                )
+            if _compare_symbol_details(base, head):
+                if base.get("signature") != head.get("signature"):
+                    diffs.append(
+                        {
+                            "field": "signature",
+                            "before": base.get("signature"),
+                            "after": head.get("signature"),
+                        }
+                    )
+                if base.get("value") != head.get("value"):
+                    diffs.append(
+                        {
+                            "field": "value",
+                            "before": base.get("value"),
+                            "after": head.get("value"),
+                        }
+                    )
             if diffs:
                 changed.append({"path": path, "kind": head["kind"], "changes": diffs})
 
@@ -1034,7 +1046,12 @@ def compare_symbols(
 
 
 def _report_symbol(symbol: dict) -> dict:
-    return {key: value for key, value in symbol.items() if key != "source_module"}
+    return {key: value for key, value in symbol.items() if key not in {"source_module", "instance_attribute"}}
+
+
+def _compare_symbol_details(base: dict, head: dict) -> bool:
+    """Return whether signature/value changes are meaningful for a matched symbol."""
+    return not (base.get("instance_attribute") or head.get("instance_attribute"))
 
 
 def _symbol_depends_on_skipped_module(
@@ -1087,7 +1104,8 @@ def format_comment(diff: dict, skipped_modules: dict[str, list[dict]] | None = N
         lines.append("")
         for item in diff["added"]:
             sig = _format_reported_symbol(item)
-            lines.append(f"- `{_escape_report_text(item['path'])}` ({_escape_report_text(item['kind'])}): `{sig}`")
+            lines.append(f"- {_format_code_span(item['path'])} ({_escape_report_text(item['kind'])}):")
+            lines.extend(_format_python_block(sig, indent="  "))
         lines.append("")
 
     if diff["removed"]:
@@ -1095,26 +1113,30 @@ def format_comment(diff: dict, skipped_modules: dict[str, list[dict]] | None = N
         lines.append("")
         for item in diff["removed"]:
             sig = _format_reported_symbol(item)
-            lines.append(f"- `{_escape_report_text(item['path'])}` ({_escape_report_text(item['kind'])}): `{sig}`")
+            lines.append(f"- {_format_code_span(item['path'])} ({_escape_report_text(item['kind'])}):")
+            lines.extend(_format_python_block(sig, indent="  "))
         lines.append("")
 
     if diff["changed"]:
         lines.append("### Modified")
         lines.append("")
         for item in diff["changed"]:
-            lines.append(f"- `{_escape_report_text(item['path'])}` ({_escape_report_text(item['kind'])})")
+            lines.append(f"- {_format_code_span(item['path'])} ({_escape_report_text(item['kind'])})")
             for change in item["changes"]:
                 if change["field"] == "signature":
-                    if change["before"]:
-                        lines.append(f"  - before: `{_escape_report_text(change['before'])}`")
-                    if change["after"]:
-                        lines.append(f"  - after: `{_escape_report_text(change['after'])}`")
+                    before, after = _compact_signature_change(change.get("before"), change.get("after"))
+                    if before:
+                        lines.append("  - before:")
+                        lines.extend(_format_python_block(before, indent="    "))
+                    if after:
+                        lines.append("  - after:")
+                        lines.extend(_format_python_block(after, indent="    "))
                 else:
-                    lines.append(
-                        f"  - {_escape_report_text(change['field'])}: "
-                        f"`{_escape_report_text(change['before'])}` -> "
-                        f"`{_escape_report_text(change['after'])}`"
-                    )
+                    lines.append(f"  - {_escape_report_text(change['field'])}:")
+                    lines.append("    - before:")
+                    lines.extend(_format_python_block(change["before"], indent="      "))
+                    lines.append("    - after:")
+                    lines.extend(_format_python_block(change["after"], indent="      "))
         lines.append("")
 
     if warning_entries:
@@ -1130,8 +1152,8 @@ def format_comment(diff: dict, skipped_modules: dict[str, list[dict]] | None = N
         )
         for side, item in warning_entries:
             lines.append(
-                f"- {side}: `{_escape_report_text(item['path'])}` "
-                f"(`{_escape_report_text(item['module'])}`): `{_escape_report_text(item['reason'])}`"
+                f"- {side}: {_format_code_span(item['path'])} "
+                f"({_format_code_span(item['module'])}): {_format_code_span(item['reason'])}"
             )
         lines.append("")
 
@@ -1144,18 +1166,202 @@ def _format_warning_entries(skipped_modules: dict[str, list[dict]] | None) -> li
     return [(side, item) for side, items in skipped_modules.items() for item in items]
 
 
+def _compact_signature_change(before: object, after: object) -> tuple[object, object]:
+    if not isinstance(before, str) or not isinstance(after, str):
+        return before, after
+
+    compact = _compact_callable_signatures(before, after)
+    if compact is None:
+        return before, after
+    return compact
+
+
+def _compact_callable_signatures(before: str, after: str) -> tuple[str, str] | None:
+    before_parts = _split_callable_signature(before)
+    after_parts = _split_callable_signature(after)
+    if before_parts is None or after_parts is None:
+        return None
+
+    before_prefix, before_args, before_suffix = before_parts
+    after_prefix, after_args, after_suffix = after_parts
+    if before_prefix != after_prefix:
+        return None
+
+    original_len = max(len(before), len(after))
+    if original_len < 160:
+        return None
+
+    prefix_count = 0
+    for before_arg, after_arg in zip(before_args, after_args, strict=False):
+        if before_arg != after_arg:
+            break
+        prefix_count += 1
+
+    suffix_count = 0
+    max_suffix_count = min(len(before_args) - prefix_count, len(after_args) - prefix_count)
+    while (
+        suffix_count < max_suffix_count
+        and before_args[len(before_args) - suffix_count - 1] == after_args[len(after_args) - suffix_count - 1]
+    ):
+        suffix_count += 1
+
+    if prefix_count + suffix_count < 3 and before_args != after_args:
+        return None
+
+    if before_args == after_args:
+        compact_before = _render_compact_signature(before_prefix, before_args, before_suffix, 0, 0)
+        compact_after = _render_compact_signature(after_prefix, after_args, after_suffix, 0, 0)
+    else:
+        context = 1
+        before_start = max(prefix_count - context, 0)
+        after_start = max(prefix_count - context, 0)
+        before_end = min(len(before_args) - suffix_count + context, len(before_args))
+        after_end = min(len(after_args) - suffix_count + context, len(after_args))
+        compact_before = _render_compact_signature(
+            before_prefix,
+            before_args,
+            before_suffix,
+            before_start,
+            before_end,
+        )
+        compact_after = _render_compact_signature(
+            after_prefix,
+            after_args,
+            after_suffix,
+            after_start,
+            after_end,
+        )
+
+    compact_len = max(len(compact_before), len(compact_after))
+    if compact_len > original_len - 40:
+        return None
+    return compact_before, compact_after
+
+
+def _split_callable_signature(signature: str) -> tuple[str, list[str], str] | None:
+    open_index = signature.find("(")
+    if open_index < 0:
+        return None
+
+    close_index = _find_matching_paren(signature, open_index)
+    if close_index is None:
+        return None
+
+    args = _split_top_level_args(signature[open_index + 1 : close_index])
+    return signature[: open_index + 1], args, signature[close_index:]
+
+
+def _find_matching_paren(text: str, open_index: int) -> int | None:
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(text[open_index:], start=open_index):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+
+        if char in {"'", '"'}:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _split_top_level_args(text: str) -> list[str]:
+    if not text.strip():
+        return []
+
+    args: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(text):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+
+        if char in {"'", '"'}:
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(depth - 1, 0)
+        elif char == "," and depth == 0:
+            args.append(text[start:index].strip())
+            start = index + 1
+
+    args.append(text[start:].strip())
+    return args
+
+
+def _render_compact_signature(prefix: str, args: list[str], suffix: str, start: int, end: int) -> str:
+    rendered_args: list[str] = []
+    if start > 0:
+        rendered_args.append("...")
+    rendered_args.extend(args[start:end])
+    if end < len(args):
+        rendered_args.append("...")
+    return f"{prefix}{', '.join(rendered_args)}{suffix}"
+
+
+def _format_code_span(value: object) -> str:
+    text = _escape_report_text(value)
+    if "`" not in text:
+        return f"`{text}`"
+
+    fence = _make_backtick_fence(text)
+    return f"{fence} {text} {fence}"
+
+
+def _format_python_block(value: object, *, indent: str = "") -> list[str]:
+    text = _escape_report_text(value)
+    fence = _make_backtick_fence(text)
+    lines = [f"{indent}{fence}python"]
+    lines.extend(f"{indent}{line}" for line in text.splitlines() or [""])
+    lines.append(f"{indent}{fence}")
+    return lines
+
+
+def _make_backtick_fence(text: str) -> str:
+    longest_run = 0
+    current_run = 0
+    for char in text:
+        if char == "`":
+            current_run += 1
+            longest_run = max(longest_run, current_run)
+        else:
+            current_run = 0
+    return "`" * max(3, longest_run + 1)
+
+
 def _escape_report_text(value: object) -> str:
-    return html.escape(str(value).replace("\r", "\\r").replace("\n", "\\n"), quote=False)
+    text = str(value).replace("\r", "\\r").replace("\n", "\\n")
+    return text.replace("&", "&amp;").replace("<", "&lt;")
 
 
 def _format_reported_symbol(item: dict) -> str:
-    signature = _escape_report_text(item.get("signature")) if item.get("signature") is not None else None
-    value = _escape_report_text(item.get("value")) if item.get("value") is not None else None
+    signature = str(item.get("signature")) if item.get("signature") is not None else None
+    value = str(item.get("value")) if item.get("value") is not None else None
     if value is None:
-        return signature or _escape_report_text(item["path"].rsplit(".", 1)[-1])
+        return signature or str(item["path"].rsplit(".", 1)[-1])
     if signature:
         return f"{signature} = {value}"
-    return f"{_escape_report_text(item['path'].rsplit('.', 1)[-1])} = {value}"
+    return f"{item['path'].rsplit('.', 1)[-1]} = {value}"
 
 
 def main() -> int:

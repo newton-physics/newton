@@ -151,6 +151,52 @@ class ActuatorParsed:
                 "__init__(self: ActuatorParsed, path: str, name: str)",
             )
 
+    def test_compare_ignores_instance_attribute_initializer_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = root / "base"
+            head = root / "head"
+
+            shared_init = "from ._src.builder import ModelBuilder\nfrom .constants import FOO\n"
+            _write_package(
+                base,
+                {
+                    "newton/__init__.py": shared_init,
+                    "newton/constants.py": "FOO = 1\n",
+                    "newton/_src/builder.py": """
+class ModelBuilder:
+    def __init__(self):
+        self.shape_collision_filter_pairs: list[tuple[int, int]] = []
+""",
+                },
+            )
+            _write_package(
+                head,
+                {
+                    "newton/__init__.py": shared_init,
+                    "newton/constants.py": "FOO = 2\n",
+                    "newton/_src/builder.py": """
+class _BuilderShapeCollisionFilterPairs:
+    pass
+
+
+class ModelBuilder:
+    def __init__(self):
+        self.shape_collision_filter_pairs = _BuilderShapeCollisionFilterPairs()
+""",
+                },
+            )
+
+            diff = detector.compare_symbols(
+                detector.extract_api_symbols(base),
+                detector.extract_api_symbols(head),
+            )
+
+            changed_paths = {item["path"] for item in diff["changed"]}
+            self.assertIn("newton.FOO", changed_paths)
+            self.assertIn("newton.constants.FOO", changed_paths)
+            self.assertNotIn("newton.ModelBuilder.shape_collision_filter_pairs", changed_paths)
+
     def test_main_reports_skipped_modules_without_false_removals(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -243,6 +289,68 @@ class ActuatorParsed:
             self.assertIn("UnicodeDecodeError", report["skipped_modules"]["head"][0]["reason"])
             self.assertIn("WARNING: skipping newton/bad.py", warnings.getvalue())
 
+    def test_format_comment_compacts_long_signature_changes(self):
+        before = (
+            "add_shape(self: ModelBuilder, *, body: int, type: int, xform: Transform | None = None, "
+            "cfg: ShapeConfig | None = None, scale: Vec3 | None = None, "
+            "src: Mesh | Gaussian | Heightfield | Any | None = None, is_static: bool = False, "
+            "color: Vec3 | None = None, label: str | None = None, "
+            "custom_attributes: dict[str, Any] | None = None) -> int"
+        )
+        after = (
+            "add_shape(self: ModelBuilder, *, body: int, type: int, xform: Transform | None = None, "
+            "cfg: ShapeConfig | None = None, scale: Vec3 | None = None, "
+            "src: Mesh | Gaussian | Heightfield | Any | None = None, is_static: bool = False, "
+            "color: Vec3 | None = None, opacity: float | None = None, label: str | None = None, "
+            "custom_attributes: dict[str, Any] | None = None) -> int"
+        )
+
+        comment = detector.format_comment(
+            {
+                "has_changes": True,
+                "summary": {
+                    "added_count": 0,
+                    "removed_count": 0,
+                    "changed_count": 1,
+                    "total": 1,
+                },
+                "added": [],
+                "removed": [],
+                "changed": [
+                    {
+                        "path": "newton.ModelBuilder.add_shape",
+                        "kind": "method",
+                        "changes": [
+                            {
+                                "field": "signature",
+                                "before": before,
+                                "after": after,
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+        self.assertNotIn("src: Mesh | Gaussian", comment)
+        self.assertNotIn("-&gt;", comment)
+        self.assertIn(
+            "  - before:\n"
+            "    ```python\n"
+            "    add_shape(..., color: Vec3 | None = None, label: str | None = None, ...) -> int\n"
+            "    ```",
+            comment,
+        )
+        self.assertIn(
+            "  - after:\n"
+            "    ```python\n"
+            "    add_shape(..., color: Vec3 | None = None, opacity: float | None = None, "
+            "label: str | None = None, ...) -> int\n"
+            "    ```",
+            comment,
+        )
+        self.assertNotIn("`add_shape", comment)
+
     def test_format_comment_escapes_markdown_control_characters(self):
         comment = detector.format_comment(
             {
@@ -269,7 +377,9 @@ class ActuatorParsed:
         self.assertNotIn("</details>", comment)
         self.assertNotIn("<img", comment)
         self.assertNotIn("\n### injected", comment)
-        self.assertIn("&lt;/details&gt;", comment)
+        self.assertIn("```python", comment)
+        self.assertIn("&lt;/details>", comment)
+        self.assertIn("&lt;img src=x>", comment)
         self.assertIn("\\n### injected", comment)
         self.assertIn("`tick`", comment)
 
