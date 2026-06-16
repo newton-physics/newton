@@ -16,8 +16,7 @@ from newton._src.geometry.kernels import (
     triangle_closest_point_barycentric,
     vertex_adjacent_to_triangle,
 )
-from newton._src.solvers.vbd.particle_vbd_kernels import leq_n_ring_vertices
-from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector
+from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector, leq_n_ring_vertices
 from newton.solvers import SolverVBD
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, assert_np_equal, get_test_devices
 
@@ -936,11 +935,13 @@ def test_collision_filtering(test, device):
             particle_external_edge_contact_filtering_map=e_e_collision_filtering_map,
         )
 
-        v_adj_edges = vbd.particle_adjacency.v_adj_edges.numpy()
-        v_adj_edges_offsets = vbd.particle_adjacency.v_adj_edges_offsets.numpy()
+        v_adj_hinges = vbd.particle_adjacency.v_adj_hinges.numpy()
+        v_adj_hinges_offsets = vbd.particle_adjacency.v_adj_hinges_offsets.numpy()
 
-        vertex_triangle_filtering_list = vbd.particle_vertex_triangle_contact_filtering_list.numpy()
-        vertex_triangle_filtering_list_offsets = vbd.particle_vertex_triangle_contact_filtering_list_offsets.numpy()
+        vertex_triangle_filtering_list = vbd.trimesh_collision_detector.vertex_triangle_filtering_list.numpy()
+        vertex_triangle_filtering_list_offsets = (
+            vbd.trimesh_collision_detector.vertex_triangle_filtering_list_offsets.numpy()
+        )
 
         def is_sorted(a):
             return np.all(a[:-1] <= a[1:])
@@ -960,7 +961,7 @@ def test_collision_filtering(test, device):
                 # remove the extern filter set to check only the topological one
                 filter_set.difference_update(v_t_collision_filtering_map[v_idx])
             # see if the topological distance holds
-            v_n_ring = leq_n_ring_vertices(v_idx, edges, ring, v_adj_edges, v_adj_edges_offsets)
+            v_n_ring = leq_n_ring_vertices(v_idx, edges, ring, v_adj_hinges, v_adj_hinges_offsets)
 
             for t in filter_set:
                 for t_v_counter in range(3):
@@ -968,8 +969,8 @@ def test_collision_filtering(test, device):
 
                     test.assertTrue(tv in v_n_ring)
 
-        edge_edge_filtering_list = vbd.particle_edge_edge_contact_filtering_list.numpy()
-        edge_edge_filtering_list_offsets = vbd.particle_edge_edge_contact_filtering_list_offsets.numpy()
+        edge_edge_filtering_list = vbd.trimesh_collision_detector.edge_filtering_list.numpy()
+        edge_edge_filtering_list_offsets = vbd.trimesh_collision_detector.edge_filtering_list_offsets.numpy()
         for e_idx in range(0, model.edge_count):
             # slice this edge's filter list
             filter_array = edge_edge_filtering_list[
@@ -993,8 +994,8 @@ def test_collision_filtering(test, device):
             # lies within the < ring vertex neighborhood of one of e_idx's endpoints
             v0, v1 = edges[e_idx, 2:]
 
-            v0_n_ring = set(leq_n_ring_vertices(v0, edges, ring - 1, v_adj_edges, v_adj_edges_offsets))
-            v1_n_ring = set(leq_n_ring_vertices(v1, edges, ring - 1, v_adj_edges, v_adj_edges_offsets))
+            v0_n_ring = set(leq_n_ring_vertices(v0, edges, ring - 1, v_adj_hinges, v_adj_hinges_offsets))
+            v1_n_ring = set(leq_n_ring_vertices(v1, edges, ring - 1, v_adj_hinges, v_adj_hinges_offsets))
 
             for e2 in filter_set:
                 u, v = edges[e2, 2:]
