@@ -6381,6 +6381,7 @@ class ModelBuilder:
 
     def add_ground_plane(
         self,
+        *,
         height: float = 0.0,
         cfg: ShapeConfig | None = None,
         color: Vec3 | None = _DEFAULT_GROUND_PLANE_COLOR,

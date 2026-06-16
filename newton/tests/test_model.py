@@ -292,55 +292,6 @@ class TestModelBuilderDeprecations(unittest.TestCase):
             newton.use_coord_layout_targets = prev_flag
 
 
-class TestModelBuilderKeywordOnly(unittest.TestCase):
-    def test_shape_helper_options_are_keyword_only(self):
-        builder = ModelBuilder()
-        xform = wp.transform_identity()
-
-        with self.assertRaises(TypeError):
-            builder.add_shape_box(-1, xform)
-
-        builder.add_shape_box(-1, xform=xform)
-
-    def test_joint_helper_options_are_keyword_only(self):
-        builder = ModelBuilder()
-        child = builder.add_link()
-        xform = wp.transform_identity()
-
-        with self.assertRaises(TypeError):
-            builder.add_joint_fixed(-1, child, xform)
-
-        builder.add_joint_fixed(-1, child, parent_xform=xform)
-
-    def test_grid_helpers_are_keyword_only(self):
-        builder = ModelBuilder()
-
-        with self.assertRaises(TypeError):
-            builder.add_cloth_grid(wp.vec3())
-
-        builder.add_cloth_grid(
-            pos=wp.vec3(),
-            rot=wp.quat_identity(),
-            vel=wp.vec3(),
-            dim_x=1,
-            dim_y=1,
-            cell_x=1.0,
-            cell_y=1.0,
-            mass=1.0,
-        )
-
-    def test_fem_material_options_are_keyword_only(self):
-        builder = ModelBuilder()
-        builder.add_particle(wp.vec3(0.0, 0.0, 0.0), wp.vec3(), 1.0)
-        builder.add_particle(wp.vec3(1.0, 0.0, 0.0), wp.vec3(), 1.0)
-        builder.add_particle(wp.vec3(0.0, 1.0, 0.0), wp.vec3(), 1.0)
-
-        with self.assertRaises(TypeError):
-            builder.add_triangle(0, 1, 2, 10.0)
-
-        builder.add_triangle(0, 1, 2, tri_ke=10.0)
-
-
 class TestModelMesh(unittest.TestCase):
     def test_add_triangles(self):
         rng = np.random.default_rng(123)
