@@ -1005,6 +1005,7 @@ class HydroelasticSDF:
             grid_size=self.grid_size,
         )
         self.contact_reduction.export(
+            shape_material_k_hydro=self.shape_material_kh,
             shape_gap=shape_gap,
             shape_transform=shape_transform,
             writer_data=writer_data,
