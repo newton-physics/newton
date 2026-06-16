@@ -3371,11 +3371,9 @@ def parse_usd(
                     for shape2 in builder.body_shapes[body2]:
                         builder.add_shape_collision_filter_pair(shape1, shape2)
 
-    # Deformable mass distribution (proposal "Mass Distribution"). Precedence:
-    # per-point physics:masses > PhysicsDeformableBodyAPI.mass > body density >
-    # material density. Per-element volume/area weighting is delegated to the
-    # builder's add_* helpers; here we only resolve which source wins and apply
-    # the total-mass / per-point overrides on top of the density-derived masses.
+    # Mass precedence (proposal "Mass Distribution"): per-point physics:masses >
+    # PhysicsDeformableBodyAPI.mass > body density > material density. Per-element
+    # weighting is delegated to the add_* builders.
     def _resolve_deformable_density(prim, material_density):
         _, body_density = usd._get_deformable_body_overrides(prim, deformable_compat_ns)
         return body_density if body_density is not None else material_density
@@ -3405,9 +3403,8 @@ def parse_usd(
                     builder.particle_mass[i] *= scale
 
     def _apply_cable_masses(prim, body_ids):
-        # A rigid capsule chain cannot carry arbitrary per-point masses, so per-point
-        # physics:masses are honored only as a total; PhysicsDeformableBodyAPI.mass is
-        # the total directly. Either rescales the density-derived body masses + inertia.
+        # The rigid capsule chain can't carry per-point masses, so they collapse to a
+        # total; PhysicsDeformableBodyAPI.mass is the total. Both rescale mass + inertia.
         point_masses = usd._get_deformable_point_masses(prim, deformable_compat_ns)
         body_mass, _ = usd._get_deformable_body_overrides(prim, deformable_compat_ns)
         if point_masses is not None:
@@ -3432,12 +3429,9 @@ def parse_usd(
             builder.body_inv_mass[b] = (1.0 / m) if m > 0.0 else 0.0
             builder.body_inv_inertia[b] = wp.inverse(builder.body_inertia[b]) if m > 0.0 else wp.mat33(0.0)
 
-    # Volume deformables: a UsdGeom.TetMesh is imported as a soft body. The
-    # AOUSD proposal marks the simulation geometry with PhysicsVolumeDeformableSimAPI
-    # (directly or as the sim child of a PhysicsDeformableBodyAPI); such meshes get
-    # the deformable mass precedence (body mass/density, per-point physics:masses).
-    # A bare TetMesh with no deformable markers keeps the legacy material-density
-    # import so existing assets continue to load.
+    # Volume deformables: a UsdGeom.TetMesh imports as a soft body. One tagged
+    # PhysicsVolumeDeformableSimAPI (or under a PhysicsDeformableBodyAPI) takes the
+    # deformable mass precedence; a bare TetMesh keeps the legacy material-density import.
     root_prim = stage.GetPrimAtPath(root_path)
     if root_prim and root_prim.IsValid():
         for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
@@ -3508,23 +3502,14 @@ def parse_usd(
                     f"Added soft mesh {path} with {tetmesh.vertex_count} vertices and {tetmesh.tet_count} tetrahedra."
                 )
 
-    # Deformable cables (curve deformables): a GeomBasisCurves carrying
-    # PhysicsCurvesDeformableSimAPI is imported as a VBD cable - a chain of
-    # capsule bodies joined by JointType.CABLE joints (builder.add_rod).
-    # Discovery is metadata-based (has_applied_api_schema) so it works without
-    # the deformable schema being registered with the USD runtime.
-    # Rest shape (restShapePoints / restNormals) is not parsed yet (deferred).
-    #
-    # This block parses only the public AOUSD base schema. Genuinely Newton-specific
-    # curve parameters (e.g. cable damping, articulation wrapping) are intentionally
-    # left to a future NewtonCurvesDeformable{Sim,Material}API extension layered via a
-    # schema resolver (see #3178 / newton-usd-schemas#70); the resolver-driven
-    # namespace handling above is the seam through which those would be read.
+    # Deformable cables: a GeomBasisCurves tagged PhysicsCurvesDeformableSimAPI is
+    # imported as a VBD cable (capsule chain + JointType.CABLE joints via add_rod).
+    # Rest shape (restShapePoints / restNormals) is not parsed yet. Newton-specific
+    # curve params (damping, articulation wrapping) are left to a future
+    # NewtonCurvesDeformable*API extension read via the schema resolver (see #3178).
     def _cable_segment_quaternions(seg_positions, seg_normals):
-        # Per-segment orientation: align local +Z to the segment tangent and
-        # local +Y to the authored (world-space) normal of that segment. A
-        # degenerate normal (zero or parallel to the tangent) falls back to a
-        # roll-free alignment.
+        # Per-segment frame: local +Z to the segment tangent, +Y to the authored
+        # (world-space) normal; degenerate normals fall back to roll-free.
         from ..math import quat_between_vectors_robust  # noqa: PLC0415
 
         z_local = wp.vec3(0.0, 0.0, 1.0)
@@ -3583,17 +3568,13 @@ def parse_usd(
                 )
                 normals = None
 
-            # Curve-deformable material -> cable parameters. The material moduli
-            # are force/area; convert to per-joint stiffness with the circular
-            # cross-section geometry (A = pi r^2, I = pi r^4 / 4) and the segment
-            # length, mirroring create_cable_stiffness_from_elastic_moduli.
+            # Curve material moduli (force/area) -> per-joint stiffness via the circular
+            # cross-section (A = pi r^2, I = pi r^4 / 4) and segment length.
             cable_mat = usd._get_curve_deformable_material(prim, deformable_compat_ns) or {}
             radius = 0.5 * cable_mat["thickness"] if "thickness" in cable_mat else 0.05
             area = math.pi * radius * radius
             inertia = 0.25 * math.pi * radius**4
-            # Capsule mass comes from volume * density. Density precedence:
-            # PhysicsDeformableBodyAPI.density > material density > builder default.
-            # Total-mass / per-point overrides are applied after add_rod below.
+            # Density precedence resolved here; total-mass/per-point overrides applied after add_rod.
             cable_density = _resolve_deformable_density(prim, cable_mat.get("density"))
             cable_cfg = (
                 replace(builder.default_shape_cfg, density=cable_density)
@@ -3664,10 +3645,8 @@ def parse_usd(
                 if verbose:
                     print(f"Added cable {path} with {len(cable_bodies)} segments.")
 
-    # Surface deformables (cloth): a triangle UsdGeom.Mesh carrying
-    # PhysicsSurfaceDeformableSimAPI is imported as Newton cloth (particles +
-    # FEM triangles + bending edges) via ModelBuilder.add_cloth_mesh. Discovery
-    # is metadata-based so it works without the schema registered.
+    # Surface deformables (cloth): a triangulated UsdGeom.Mesh tagged
+    # PhysicsSurfaceDeformableSimAPI is imported as cloth via add_cloth_mesh.
     if root_prim and root_prim.IsValid():
         for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
             if not prim.IsA(UsdGeom.Mesh):
@@ -3696,16 +3675,13 @@ def parse_usd(
             cloth_pos, cloth_rot, cloth_scale = wp.transform_decompose(world_mat)
             scale = float(cloth_scale[0]) if _is_uniform_scale(cloth_scale) else 1.0
 
-            # Surface-deformable material -> cloth stiffness. Map the membrane
-            # moduli to the triangle FEM stiffnesses (stretch -> tri_ke, shear ->
-            # tri_ka) and the bend modulus to the bending-edge stiffness.
+            # Surface moduli -> tri_ke (stretch) / tri_ka (shear) / bending-edge ke (bend).
             cloth_mat = usd._get_surface_deformable_material(prim, deformable_compat_ns) or {}
             tri_ke = cloth_mat.get("stretchStiffness")
             tri_ka = cloth_mat.get("shearStiffness")
             edge_ke = cloth_mat.get("bendStiffness")
-            # Newton cloth uses an areal density; the material density is volumetric,
-            # so convert with the surface thickness (proposal: thickness is required
-            # to derive surface masses). Body density overrides the material density.
+            # Newton cloth density is areal; convert the volumetric material density with the
+            # surface thickness (required for surface mass per the proposal). Body density overrides.
             vol_density = _resolve_deformable_density(prim, cloth_mat.get("density"))
             if vol_density is None:
                 density = builder.default_shape_cfg.density
