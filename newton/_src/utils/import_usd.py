@@ -3371,6 +3371,67 @@ def parse_usd(
                     for shape2 in builder.body_shapes[body2]:
                         builder.add_shape_collision_filter_pair(shape1, shape2)
 
+    # Deformable mass distribution (proposal "Mass Distribution"). Precedence:
+    # per-point physics:masses > PhysicsDeformableBodyAPI.mass > body density >
+    # material density. Per-element volume/area weighting is delegated to the
+    # builder's add_* helpers; here we only resolve which source wins and apply
+    # the total-mass / per-point overrides on top of the density-derived masses.
+    def _resolve_deformable_density(prim, material_density):
+        _, body_density = usd._get_deformable_body_overrides(prim, deformable_compat_ns)
+        return body_density if body_density is not None else material_density
+
+    def _apply_particle_masses(prim, p0, p1):
+        n = p1 - p0
+        if n <= 0:
+            return
+        point_masses = usd._get_deformable_point_masses(prim, deformable_compat_ns)
+        if point_masses is not None:
+            if len(point_masses) != n:
+                warnings.warn(
+                    f"{prim.GetPath()}: physics:masses length {len(point_masses)} != {n} simulation points; "
+                    f"ignoring per-point masses.",
+                    stacklevel=2,
+                )
+            else:
+                for i in range(n):
+                    builder.particle_mass[p0 + i] = point_masses[i]
+                return
+        body_mass, _ = usd._get_deformable_body_overrides(prim, deformable_compat_ns)
+        if body_mass is not None:
+            current = float(sum(builder.particle_mass[p0:p1]))
+            if current > 0.0:
+                scale = body_mass / current
+                for i in range(p0, p1):
+                    builder.particle_mass[i] *= scale
+
+    def _apply_cable_masses(prim, body_ids):
+        # A rigid capsule chain cannot carry arbitrary per-point masses, so per-point
+        # physics:masses are honored only as a total; PhysicsDeformableBodyAPI.mass is
+        # the total directly. Either rescales the density-derived body masses + inertia.
+        point_masses = usd._get_deformable_point_masses(prim, deformable_compat_ns)
+        body_mass, _ = usd._get_deformable_body_overrides(prim, deformable_compat_ns)
+        if point_masses is not None:
+            target = float(sum(point_masses))
+            warnings.warn(
+                f"{prim.GetPath()}: per-point physics:masses are not representable on the rigid cable "
+                f"model; applying their sum as the total cable mass.",
+                stacklevel=2,
+            )
+        elif body_mass is not None:
+            target = body_mass
+        else:
+            return
+        current = float(sum(builder.body_mass[b] for b in body_ids))
+        if current <= 0.0:
+            return
+        scale = target / current
+        for b in body_ids:
+            m = builder.body_mass[b] * scale
+            builder.body_mass[b] = m
+            builder.body_inertia[b] = builder.body_inertia[b] * scale
+            builder.body_inv_mass[b] = (1.0 / m) if m > 0.0 else 0.0
+            builder.body_inv_inertia[b] = wp.inverse(builder.body_inertia[b]) if m > 0.0 else wp.mat33(0.0)
+
     root_prim = stage.GetPrimAtPath(root_path)
     if root_prim and root_prim.IsValid():
         for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
@@ -3409,6 +3470,11 @@ def parse_usd(
                 "mesh": tetmesh_for_builder,
                 "label": path,
             }
+            # PhysicsDeformableBodyAPI.density overrides the material density read
+            # into the TetMesh; otherwise add_soft_mesh uses the mesh density.
+            resolved_density = _resolve_deformable_density(prim, tetmesh_for_builder.density)
+            if resolved_density is not None:
+                add_soft_mesh_kwargs["density"] = resolved_density
             if _is_uniform_scale(soft_mesh_scale):
                 add_soft_mesh_kwargs["scale"] = float(np.array(soft_mesh_scale, dtype=np.float32)[0])
             else:
@@ -3418,6 +3484,7 @@ def parse_usd(
 
             soft_p0, soft_t0 = builder.particle_count, builder.tet_count
             builder.add_soft_mesh(**add_soft_mesh_kwargs)
+            _apply_particle_masses(prim, soft_p0, builder.particle_count)
             path_soft_map[path] = {
                 "particle": (soft_p0, builder.particle_count),
                 "tet": (soft_t0, builder.tet_count),
@@ -3505,12 +3572,13 @@ def parse_usd(
             radius = 0.5 * cable_mat["thickness"] if "thickness" in cable_mat else 0.05
             area = math.pi * radius * radius
             inertia = 0.25 * math.pi * radius**4
-            # Capsule mass comes from volume * density; material density overrides
-            # the builder default. Per-point `masses` (a simulation-mesh concept)
-            # do not map onto rigid capsule bodies and are not consumed here.
+            # Capsule mass comes from volume * density. Density precedence:
+            # PhysicsDeformableBodyAPI.density > material density > builder default.
+            # Total-mass / per-point overrides are applied after add_rod below.
+            cable_density = _resolve_deformable_density(prim, cable_mat.get("density"))
             cable_cfg = (
-                replace(builder.default_shape_cfg, density=cable_mat["density"])
-                if "density" in cable_mat
+                replace(builder.default_shape_cfg, density=cable_density)
+                if cable_density is not None
                 else builder.default_shape_cfg
             )
             if "shearStiffness" in cable_mat or "twistStiffness" in cable_mat:
@@ -3572,6 +3640,7 @@ def parse_usd(
                 cable_joints.extend(joints)
 
             if cable_bodies:
+                _apply_cable_masses(prim, cable_bodies)
                 path_cable_map[path] = (cable_bodies, cable_joints)
                 if verbose:
                     print(f"Added cable {path} with {len(cable_bodies)} segments.")
@@ -3615,7 +3684,16 @@ def parse_usd(
             tri_ke = cloth_mat.get("stretchStiffness")
             tri_ka = cloth_mat.get("shearStiffness")
             edge_ke = cloth_mat.get("bendStiffness")
-            density = cloth_mat.get("density", builder.default_shape_cfg.density)
+            # Newton cloth uses an areal density; the material density is volumetric,
+            # so convert with the surface thickness (proposal: thickness is required
+            # to derive surface masses). Body density overrides the material density.
+            vol_density = _resolve_deformable_density(prim, cloth_mat.get("density"))
+            if vol_density is None:
+                density = builder.default_shape_cfg.density
+            elif "thickness" in cloth_mat:
+                density = vol_density * cloth_mat["thickness"]
+            else:
+                density = vol_density
 
             p0, t0, e0 = builder.particle_count, builder.tri_count, builder.edge_count
             builder.add_cloth_mesh(
@@ -3631,6 +3709,7 @@ def parse_usd(
                 edge_ke=edge_ke,
                 label=path,
             )
+            _apply_particle_masses(prim, p0, builder.particle_count)
             path_cloth_map[path] = {
                 "particle": (p0, builder.particle_count),
                 "tri": (t0, builder.tri_count),

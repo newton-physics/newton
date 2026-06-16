@@ -1336,6 +1336,11 @@ def get_tetmesh(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> TetMes
             continue
         if name.startswith("primvars:") or name.startswith("xformOp:"):
             continue
+        # Deformable physics schema attributes (e.g. physics:masses,
+        # physics:restShapePoints) are consumed by the deformable importer, not
+        # carried as generic per-vertex/per-tet custom mesh data.
+        if name.startswith(("physics:", "omniphysics:", "physxDeformableBody:")):
+            continue
         if not attr.HasAuthoredValue():
             continue
         val = attr.Get()
@@ -1452,6 +1457,56 @@ def _get_surface_deformable_material(prim: Usd.Prim, compat_namespaces: Sequence
         if math.isfinite(val) and val > 0.0:
             out[name] = val
     return out
+
+
+def _find_deformable_body_prim(prim: Usd.Prim) -> Usd.Prim | None:
+    """Find the ``PhysicsDeformableBodyAPI`` prim governing a simulation geometry.
+
+    The deformable proposal allows the body API on the simulation geometry itself
+    or on an ancestor ``Xform`` whose direct child is the simulation geometry, so
+    this walks up the prim hierarchy until it finds the body API (or runs out).
+    """
+    p = prim
+    while p and p.IsValid():
+        if has_applied_api_schema(p, "PhysicsDeformableBodyAPI"):
+            return p
+        p = p.GetParent()
+    return None
+
+
+def _get_deformable_body_overrides(
+    prim: Usd.Prim, compat_namespaces: Sequence[str] = ()
+) -> tuple[float | None, float | None]:
+    """Read ``PhysicsDeformableBodyAPI`` ``mass`` / ``density`` overrides.
+
+    Both default to 0 in the schema, meaning "ignore for mass distribution"; only
+    positive authored values are returned. ``density`` here overrides the bound
+    material's density (see the precedence in :meth:`ModelBuilder.add_usd`).
+
+    Returns:
+        ``(mass, density)`` with each entry ``None`` when unset / non-positive.
+    """
+    body_prim = _find_deformable_body_prim(prim)
+    if body_prim is None:
+        return None, None
+    mass = _read_physics_attr(body_prim, "mass", compat_namespaces)
+    density = _read_physics_attr(body_prim, "density", compat_namespaces)
+    mass = float(mass) if mass is not None and float(mass) > 0.0 else None
+    density = float(density) if density is not None and float(density) > 0.0 else None
+    return mass, density
+
+
+def _get_deformable_point_masses(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> list[float] | None:
+    """Read the simulation API's per-point ``physics:masses`` array.
+
+    Per-point masses take precedence over body and material mass/density (proposal
+    "Simulation Geometry and Rest Shape"). Returns ``None`` when unauthored/empty.
+    """
+    val = _read_physics_attr(prim, "masses", compat_namespaces)
+    if val is None:
+        return None
+    masses = [float(x) for x in val]
+    return masses or None
 
 
 def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:

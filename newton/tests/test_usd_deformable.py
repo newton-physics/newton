@@ -519,6 +519,119 @@ class TestUSDDeformableVolume(unittest.TestCase):
             self.assertEqual(builder.particle_count, 8)
 
 
+def _author_unit_tet(stage, path):
+    """Author a single-tetrahedron TetMesh (volume 1/6) at the given path."""
+    from pxr import UsdGeom
+
+    tet = UsdGeom.TetMesh.Define(stage, path)
+    tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
+    tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+    return tet
+
+
+def _apply_deformable_body_api(prim, *, mass=None, density=None):
+    """Apply PhysicsDeformableBodyAPI with optional mass / density overrides."""
+    from pxr import Sdf
+
+    prim.AddAppliedSchema("PhysicsDeformableBodyAPI")
+    if mass is not None:
+        prim.CreateAttribute("physics:mass", Sdf.ValueTypeNames.Float).Set(mass)
+    if density is not None:
+        prim.CreateAttribute("physics:density", Sdf.ValueTypeNames.Float).Set(density)
+
+
+class TestUSDDeformableMass(unittest.TestCase):
+    """Mass-distribution precedence (proposal "Mass Distribution")."""
+
+    def _build_soft(self, author_fn):
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "soft.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            author_fn(stage)
+            stage.Save()
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            return builder, result
+
+    def test_per_point_masses_take_precedence(self):
+        """physics:masses on the simulation geometry overrides body/material mass."""
+        from pxr import Sdf
+
+        def author(stage):
+            tet = _author_unit_tet(stage, "/World/Soft")
+            # Body mass + material density are present but per-point masses win.
+            _apply_deformable_body_api(tet.GetPrim(), mass=99.0)
+            tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(
+                [1.0, 2.0, 3.0, 4.0]
+            )
+
+        builder, _ = self._build_soft(author)
+        self.assertEqual([builder.particle_mass[i] for i in range(4)], [1.0, 2.0, 3.0, 4.0])
+
+    def test_body_mass_sets_total(self):
+        """PhysicsDeformableBodyAPI.mass rescales the distribution to that total."""
+
+        def author(stage):
+            tet = _author_unit_tet(stage, "/World/Soft")
+            _apply_deformable_body_api(tet.GetPrim(), mass=10.0)
+
+        builder, _ = self._build_soft(author)
+        self.assertAlmostEqual(sum(builder.particle_mass[:4]), 10.0, places=4)
+
+    def test_body_density_overrides_material_density(self):
+        """PhysicsDeformableBodyAPI.density takes precedence over the bound material."""
+
+        def author_material_only(stage):
+            tet = _author_unit_tet(stage, "/World/Soft")
+            _bind_cable_material(stage, tet.GetPrim(), "/World/Mat", density=100.0)
+
+        def author_with_override(stage):
+            tet = _author_unit_tet(stage, "/World/Soft")
+            _bind_cable_material(stage, tet.GetPrim(), "/World/Mat", density=100.0)
+            _apply_deformable_body_api(tet.GetPrim(), density=500.0)
+
+        builder_mat, _ = self._build_soft(author_material_only)
+        builder_ovr, _ = self._build_soft(author_with_override)
+        total_mat = sum(builder_mat.particle_mass[:4])
+        total_ovr = sum(builder_ovr.particle_mass[:4])
+        self.assertGreater(total_mat, 0.0)
+        self.assertAlmostEqual(total_ovr / total_mat, 5.0, places=4)
+
+    def test_body_api_on_ancestor_is_found(self):
+        """PhysicsDeformableBodyAPI on an ancestor Xform governs a child sim geometry."""
+        from pxr import UsdGeom
+
+        def author(stage):
+            UsdGeom.Xform.Define(stage, "/World/Body")
+            _author_unit_tet(stage, "/World/Body/Soft")
+            _apply_deformable_body_api(stage.GetPrimAtPath("/World/Body"), mass=7.0)
+
+        builder, _ = self._build_soft(author)
+        self.assertAlmostEqual(sum(builder.particle_mass[:4]), 7.0, places=4)
+
+    def test_cable_body_mass_rescales_total(self):
+        """PhysicsDeformableBodyAPI.mass rescales the rigid cable's segment masses."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_mass.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            _apply_deformable_body_api(curves.GetPrim(), mass=2.5)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            self.assertAlmostEqual(sum(builder.body_mass[b] for b in bodies), 2.5, places=4)
+
+
 devices = get_selected_cuda_test_devices()
 add_function_test(
     TestUSDDeformableCableAsset,
