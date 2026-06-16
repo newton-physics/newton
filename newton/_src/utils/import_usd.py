@@ -3622,7 +3622,14 @@ def parse_usd(
                     )
                     for p in local_pts
                 ]
-                # Authored normals -> per-segment orientation (rotated to world).
+                # For a periodic curve the closing segment (v[-1] -> v[0]) is a real
+                # segment: close the polyline so add_rod builds a body for it (add_rod
+                # makes len(positions) - 1 bodies; closed=True then adds the loop joint).
+                if closed:
+                    positions = [*positions, positions[0]]
+                num_seg = len(positions) - 1
+                # Authored normals -> per-segment orientation (rotated to world). The
+                # normal at vertex i orients its outgoing segment, including the wrap.
                 quaternions = None
                 if normals is not None:
                     seg_normals = [
@@ -3633,7 +3640,7 @@ def parse_usd(
                 # Per-joint stiffness needs a per-segment rest length: the mean of the
                 # actual segment lengths (the straight-line endpoint distance would
                 # underestimate it for curved cables and inflate the stiffness).
-                seg_len = sum(float(wp.length(positions[i + 1] - positions[i])) for i in range(n - 1)) / max(1, n - 1)
+                seg_len = sum(float(wp.length(positions[i + 1] - positions[i])) for i in range(num_seg)) / max(1, num_seg)
                 stretch_stiffness = (
                     cable_mat["stretchStiffness"] * area / seg_len
                     if "stretchStiffness" in cable_mat and seg_len > 0.0
@@ -4279,6 +4286,18 @@ def parse_usd(
                 new_id = body_id
 
             path_body_map[path] = new_id
+
+        # Cable bodies/joints are addressed by index (not prim path), so remap them
+        # through the collapse maps to keep path_cable_map valid after collapsing.
+        if path_cable_map:
+            joint_remap = collapse_results["joint_remap"]
+            path_cable_map = {
+                path: (
+                    [body_remap.get(b, b) for b in bodies],
+                    [joint_remap.get(j, j) for j in joints],
+                )
+                for path, (bodies, joints) in path_cable_map.items()
+            }
 
         # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
         # First rebuild the canonical label→index map, then re-add merged joint aliases.

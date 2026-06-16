@@ -371,6 +371,55 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder.add_usd(str(usd_path), schema_resolvers=[SchemaResolverPhysx()])
             self.assertIn("/World/Cable_articulation", builder.articulation_label)
 
+    def test_periodic_cable_imports_closing_segment(self):
+        """A periodic curve builds a body for the closing v[-1] -> v[0] segment."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "loop.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            # 4 vertices -> 4 segments for a closed loop (incl. the wrap segment).
+            pts = [(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 1.0, 1.0)]
+            _add_cable_curve(stage, "/World/Cable", pts, periodic=True)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            bodies, joints = result["path_cable_map"]["/World/Cable"]
+            self.assertEqual(len(bodies), 4, "expected one body per segment, incl. the closing segment")
+            self.assertEqual(len(joints), 4, "expected 3 chain joints + 1 loop joint")
+
+    def test_path_cable_map_remapped_after_collapse(self):
+        """path_cable_map indices still point at cable bodies after fixed-joint collapse."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "mixed.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            # Two rigid bodies joined by a fixed joint -> collapsed, reindexing all
+            # bodies; these parse before the cable so the cable indices would shift.
+            for name in ("A", "B"):
+                body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+            fixed = UsdPhysics.FixedJoint.Define(stage, "/World/Fix")
+            fixed.CreateBody0Rel().SetTargets(["/World/A"])
+            fixed.CreateBody1Rel().SetTargets(["/World/B"])
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            _add_cable_curve(stage, "/World/Cable", pts)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path), collapse_fixed_joints=True)
+            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            self.assertTrue(all(0 <= b < builder.body_count for b in bodies), "cable body index out of range")
+            self.assertTrue(
+                all("/World/Cable" in builder.body_label[b] for b in bodies),
+                "remapped cable indices point at non-cable bodies",
+            )
+
 
 # Authored .usda cable asset (T7): loading it should replace the programmatic
 # cable construction used by the cable examples.
