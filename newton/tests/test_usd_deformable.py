@@ -613,6 +613,34 @@ class TestUSDDeformableMass(unittest.TestCase):
         builder, _ = self._build_soft(author)
         self.assertAlmostEqual(sum(builder.particle_mass[:4]), 7.0, places=4)
 
+    def test_volume_sim_api_enables_per_point_masses(self):
+        """A TetMesh marked PhysicsVolumeDeformableSimAPI honors physics:masses."""
+        from pxr import Sdf
+
+        def author(stage):
+            tet = _author_unit_tet(stage, "/World/Soft")
+            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+            tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(
+                [2.0, 4.0, 6.0, 8.0]
+            )
+
+        builder, _ = self._build_soft(author)
+        self.assertEqual([builder.particle_mass[i] for i in range(4)], [2.0, 4.0, 6.0, 8.0])
+
+    def test_bare_tetmesh_ignores_per_point_masses(self):
+        """A bare TetMesh (no deformable markers) keeps the legacy import; masses ignored."""
+        from pxr import Sdf
+
+        def author(stage):
+            tet = _author_unit_tet(stage, "/World/Soft")
+            tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(
+                [2.0, 4.0, 6.0, 8.0]
+            )
+
+        builder, _ = self._build_soft(author)
+        # Legacy mass distribution (density-derived), not the authored per-point values.
+        self.assertNotEqual([builder.particle_mass[i] for i in range(4)], [2.0, 4.0, 6.0, 8.0])
+
     def test_cable_body_mass_rescales_total(self):
         """PhysicsDeformableBodyAPI.mass rescales the rigid cable's segment masses."""
         from pxr import Usd, UsdPhysics

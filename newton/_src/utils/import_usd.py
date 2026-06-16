@@ -3432,6 +3432,12 @@ def parse_usd(
             builder.body_inv_mass[b] = (1.0 / m) if m > 0.0 else 0.0
             builder.body_inv_inertia[b] = wp.inverse(builder.body_inertia[b]) if m > 0.0 else wp.mat33(0.0)
 
+    # Volume deformables: a UsdGeom.TetMesh is imported as a soft body. The
+    # AOUSD proposal marks the simulation geometry with PhysicsVolumeDeformableSimAPI
+    # (directly or as the sim child of a PhysicsDeformableBodyAPI); such meshes get
+    # the deformable mass precedence (body mass/density, per-point physics:masses).
+    # A bare TetMesh with no deformable markers keeps the legacy material-density
+    # import so existing assets continue to load.
     root_prim = stage.GetPrimAtPath(root_path)
     if root_prim and root_prim.IsValid():
         for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
@@ -3443,6 +3449,11 @@ def parse_usd(
                 continue
             if any(re.match(pattern, path) for pattern in ignore_paths):
                 continue
+
+            is_volume_deformable = (
+                usd.has_applied_api_schema(prim, "PhysicsVolumeDeformableSimAPI")
+                or usd._find_deformable_body_prim(prim) is not None
+            )
 
             if collect_schema_attrs:
                 R.collect_prim_attrs(prim)
@@ -3472,9 +3483,10 @@ def parse_usd(
             }
             # PhysicsDeformableBodyAPI.density overrides the material density read
             # into the TetMesh; otherwise add_soft_mesh uses the mesh density.
-            resolved_density = _resolve_deformable_density(prim, tetmesh_for_builder.density)
-            if resolved_density is not None:
-                add_soft_mesh_kwargs["density"] = resolved_density
+            if is_volume_deformable:
+                resolved_density = _resolve_deformable_density(prim, tetmesh_for_builder.density)
+                if resolved_density is not None:
+                    add_soft_mesh_kwargs["density"] = resolved_density
             if _is_uniform_scale(soft_mesh_scale):
                 add_soft_mesh_kwargs["scale"] = float(np.array(soft_mesh_scale, dtype=np.float32)[0])
             else:
@@ -3484,7 +3496,8 @@ def parse_usd(
 
             soft_p0, soft_t0 = builder.particle_count, builder.tet_count
             builder.add_soft_mesh(**add_soft_mesh_kwargs)
-            _apply_particle_masses(prim, soft_p0, builder.particle_count)
+            if is_volume_deformable:
+                _apply_particle_masses(prim, soft_p0, builder.particle_count)
             path_soft_map[path] = {
                 "particle": (soft_p0, builder.particle_count),
                 "tet": (soft_t0, builder.tet_count),
