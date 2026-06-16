@@ -3514,6 +3514,12 @@ def parse_usd(
     # Discovery is metadata-based (has_applied_api_schema) so it works without
     # the deformable schema being registered with the USD runtime.
     # Rest shape (restShapePoints / restNormals) is not parsed yet (deferred).
+    #
+    # This block parses only the public AOUSD base schema. Genuinely Newton-specific
+    # curve parameters (e.g. cable damping, articulation wrapping) are intentionally
+    # left to a future NewtonCurvesDeformable{Sim,Material}API extension layered via a
+    # schema resolver (see #3178 / newton-usd-schemas#70); the resolver-driven
+    # namespace handling above is the seam through which those would be read.
     def _cable_segment_quaternions(seg_positions, seg_normals):
         # Per-segment orientation: align local +Z to the segment tangent and
         # local +Y to the authored (world-space) normal of that segment. A

@@ -565,9 +565,7 @@ class TestUSDDeformableMass(unittest.TestCase):
             tet = _author_unit_tet(stage, "/World/Soft")
             # Body mass + material density are present but per-point masses win.
             _apply_deformable_body_api(tet.GetPrim(), mass=99.0)
-            tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(
-                [1.0, 2.0, 3.0, 4.0]
-            )
+            tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([1.0, 2.0, 3.0, 4.0])
 
         builder, _ = self._build_soft(author)
         self.assertEqual([builder.particle_mass[i] for i in range(4)], [1.0, 2.0, 3.0, 4.0])
@@ -620,9 +618,7 @@ class TestUSDDeformableMass(unittest.TestCase):
         def author(stage):
             tet = _author_unit_tet(stage, "/World/Soft")
             tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
-            tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(
-                [2.0, 4.0, 6.0, 8.0]
-            )
+            tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([2.0, 4.0, 6.0, 8.0])
 
         builder, _ = self._build_soft(author)
         self.assertEqual([builder.particle_mass[i] for i in range(4)], [2.0, 4.0, 6.0, 8.0])
@@ -633,9 +629,7 @@ class TestUSDDeformableMass(unittest.TestCase):
 
         def author(stage):
             tet = _author_unit_tet(stage, "/World/Soft")
-            tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(
-                [2.0, 4.0, 6.0, 8.0]
-            )
+            tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([2.0, 4.0, 6.0, 8.0])
 
         builder, _ = self._build_soft(author)
         # Legacy mass distribution (density-derived), not the authored per-point values.

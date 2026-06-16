@@ -6,7 +6,8 @@
 
 - Import USD curve deformables (cables) in `ModelBuilder.add_usd()`. A `GeomBasisCurves` carrying `PhysicsCurvesDeformableSimAPI` is built as a VBD cable (capsule bodies + cable joints) via `add_rod`, reading geometry, per-vertex normals (segment orientation), and the bound curve-deformable material (thickness, stretch/bend stiffness, density). The returned dict gains `path_cable_map` mapping each cable prim path to its body/joint indices.
 - Import USD surface deformables (cloth) in `ModelBuilder.add_usd()`. A triangulated `GeomMesh` carrying `PhysicsSurfaceDeformableSimAPI` is built as Newton cloth (particles + FEM triangles + bending edges) via `add_cloth_mesh`, reading the bound surface-deformable material (stretch/shear/bend stiffness, density). The returned dict gains `path_cloth_map` mapping each cloth prim path to its particle / triangle / bending-edge ranges.
-- Record per-soft-body addressability for imported `UsdGeom.TetMesh` volume deformables: `ModelBuilder.add_usd()` returns `path_soft_map` mapping each prim path to its particle / tetrahedron ranges.
+- Record per-soft-body addressability for imported `UsdGeom.TetMesh` volume deformables: `ModelBuilder.add_usd()` returns `path_soft_map` mapping each prim path to its particle / tetrahedron ranges. A `TetMesh` marked with `PhysicsVolumeDeformableSimAPI` (or governed by a `PhysicsDeformableBodyAPI`) is treated as a volume deformable; a bare `TetMesh` keeps the existing material-density import.
+- Apply the deformable mass-distribution precedence on USD import across cable, cloth, and volume deformables: per-point `physics:masses` override `PhysicsDeformableBodyAPI` `mass`, which overrides the body/material density driving the builder's element-weighted mass distribution.
 - Add `cloth_stiff_material_hanging` and `cloth_stiff_material_stretch` examples regression-guarding the new Neo-Hookean triangle material (stability under gravity at extreme stiffness, and bulk area-preservation across a Poisson-ratio sweep)
 - Add user-defined pressure laws to hydroelastic SDF contact via `HydroelasticSDF.Config.pressure_func` (a `@wp.func` mapping `(signed_depth, shape_idx, data) -> pressure`) and `pressure_data` (a `@wp.struct` carrying per-shape state). The contact patch is the iso-pressure surface `p_a == p_b`; the default linear law `pressure = -kh * signed_depth` is preserved when no callback is supplied.
 - Add `--render-fps` to cap example rendering rate without changing simulation frame timing
@@ -17,6 +18,7 @@
 - Change `SolverKamino.reset(world_mask=...)` to accept `wp.bool` arrays instead of `wp.int32`; callers passing `wp.int32` masks must switch to `wp.bool` (e.g. `wp.array([False, True, False], dtype=wp.bool)` or `wp.ones((num_worlds,), dtype=wp.bool)`). (#2934)
 - Change VBD Neo-Hookean membrane/tet damping to an objective metric based on the rate of `C = FᵀF`, so rigid-body rotations no longer generate damping force.
 - Change VBD spring damping to act only along the spring axis (damping edge-length rate), so transverse and rigid-rotational motion is no longer damped by springs.
+- Read USD deformable material and geometry attributes from the canonical `physics:` namespace (the AOUSD deformable proposal as written), affecting `newton.usd.get_tetmesh()` and deformable imports in `ModelBuilder.add_usd()`. Vendor namespaces such as `omniphysics:` are now an opt-in fallback declared by a schema resolver (e.g. pass `schema_resolvers=[SchemaResolverPhysx()]`) instead of being read by default.
 
 ### Fixed
 
