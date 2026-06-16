@@ -583,7 +583,13 @@ class TestUSDDeformableCloth(unittest.TestCase):
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             mesh = _add_cloth_mesh(stage, "/World/Cloth")
             _bind_cable_material(
-                stage, mesh.GetPrim(), "/World/ClothMat", stretchStiffness=1.0e3, shearStiffness=1.0e3, bendStiffness=1.0e1, density=1.0
+                stage,
+                mesh.GetPrim(),
+                "/World/ClothMat",
+                stretchStiffness=1.0e3,
+                shearStiffness=1.0e3,
+                bendStiffness=1.0e1,
+                density=1.0,
             )
             stage.Save()
 
@@ -699,8 +705,14 @@ def _author_tet_cube(stage, path, z0=0.0):
     from pxr import UsdGeom
 
     c = [
-        (0.0, 0.0, z0), (1.0, 0.0, z0), (1.0, 1.0, z0), (0.0, 1.0, z0),
-        (0.0, 0.0, z0 + 1.0), (1.0, 0.0, z0 + 1.0), (1.0, 1.0, z0 + 1.0), (0.0, 1.0, z0 + 1.0),
+        (0.0, 0.0, z0),
+        (1.0, 0.0, z0),
+        (1.0, 1.0, z0),
+        (0.0, 1.0, z0),
+        (0.0, 0.0, z0 + 1.0),
+        (1.0, 0.0, z0 + 1.0),
+        (1.0, 1.0, z0 + 1.0),
+        (0.0, 1.0, z0 + 1.0),
     ]
     tets = [(0, 1, 3, 4), (1, 2, 3, 6), (1, 3, 4, 6), (1, 4, 5, 6), (3, 4, 6, 7)]
     tet = UsdGeom.TetMesh.Define(stage, path)

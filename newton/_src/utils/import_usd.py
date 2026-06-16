@@ -3556,9 +3556,7 @@ def parse_usd(
             closed = curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic
 
             # Newton-extension control, gated on the Newton resolver (see helper docstring).
-            wrap_in_articulation = (
-                usd._get_newton_curve_wrap_in_articulation(prim) if newton_resolver_active else True
-            )
+            wrap_in_articulation = usd._get_newton_curve_wrap_in_articulation(prim) if newton_resolver_active else True
 
             world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
             w_pos, w_rot, w_scale = wp.transform_decompose(world_mat)
