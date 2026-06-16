@@ -48,7 +48,7 @@ class Example:
         builder = newton.ModelBuilder()
 
         contact_ke = 1.0e2
-        contact_kd = 1.0e0
+        contact_kd = 1.0e2
         contact_mu = 1.5
         builder.default_shape_cfg.ke = contact_ke
         builder.default_shape_cfg.kd = contact_kd
@@ -63,9 +63,9 @@ class Example:
             density=0.02,
             tri_ke=5.0e1,
             tri_ka=5.0e1,
-            tri_kd=1.0e-1,
+            tri_kd=5.0e0,
             edge_ke=1.0e1,
-            edge_kd=1.0e0,
+            edge_kd=1.0e1,
         )
 
         builder.color(include_bending=True)

@@ -13,11 +13,7 @@ from newton.sensors import SensorTiledCamera
 
 
 class TestSensorTiledCameraHeightfield(unittest.TestCase):
-    """The tiled camera must render heightfield (HFIELD) shapes.
-
-    SensorRaycast (deprecated in favor of SensorTiledCamera) supports
-    heightfields, so the replacement must too.
-    """
+    """The tiled camera must render heightfield (HFIELD) shapes."""
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_renders_flat_heightfield_from_above(self):

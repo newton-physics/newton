@@ -236,9 +236,9 @@ class ModelBuilder:
         density: float = 1000.0
         """The density of the shape material."""
         ke: float = 2.5e3
-        """The contact elastic stiffness. Used by SemiImplicit, Featherstone, MuJoCo."""
+        """The contact elastic stiffness [N/m]. Used by SemiImplicit, Featherstone, MuJoCo, VBD."""
         kd: float = 100.0
-        """The contact damping coefficient. Used by SemiImplicit, Featherstone, MuJoCo."""
+        """The contact damping coefficient [N·s/m]. Used by SemiImplicit, Featherstone, MuJoCo, VBD."""
         kf: float = 1000.0
         """The friction damping coefficient. Used by SemiImplicit, Featherstone."""
         ka: float = 0.0
@@ -477,7 +477,8 @@ class ModelBuilder:
             self.limit_ke = limit_ke
             """The elastic stiffness of the joint axis limits. Defaults to 1e4."""
             self.limit_kd = limit_kd
-            """The damping stiffness of the joint axis limits. Defaults to 1e1."""
+            """The damping coefficient of the joint axis limits
+            [N·s/m or N·m·s/rad, depending on joint type]. Defaults to 1e1."""
             self.target_pos = target_pos
             """The target position of the joint axis.
             If the initial `target_pos` is outside the limits,
@@ -860,7 +861,7 @@ class ModelBuilder:
         """Default second Lame parameter [Pa] for tetrahedral elements."""
 
         self.default_tet_k_damp = 0.0
-        """Default damping stiffness for tetrahedral elements."""
+        """Default viscous damping coefficient [Pa·s] for tetrahedral elements."""
 
         self.default_tet_density = 1.0
         """Default density [kg/m^3] for tetrahedral soft bodies."""
@@ -4916,24 +4917,19 @@ class ModelBuilder:
                 translation is the attachment point and its local ``+Z`` axis is the child-side material
                 tangent.
             stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e5.
-            stretch_damping: Cable stretch damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
-                this is a dimensionless (Rayleigh-style) coefficient. If None,
+            stretch_damping: Cable stretch damping [N·s/m] (stored as ``target_kd``). If None,
                 defaults to 0.0.
             shear_stiffness: Optional transverse shear stiffness [N/m]. If None,
                 defaults to ``stretch_stiffness``.
-            shear_damping: Optional transverse shear damping, using the same dimensionless VBD Rayleigh
-                convention as ``stretch_damping``. If None, defaults to
+            shear_damping: Optional transverse shear damping [N·s/m]. If None, defaults to
                 ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise
                 defaults to 0.0.
             bend_stiffness: Cable bend stiffness (stored as ``target_ke``) [N*m]
                 (torque per radian). If None, defaults to 0.0.
-            bend_damping: Cable bend damping (stored as ``target_kd``). In
-                :class:`newton.solvers.SolverVBD` this is a dimensionless
-                (Rayleigh-style) coefficient. If None, defaults to 0.0.
+            bend_damping: Cable bend damping [N·m·s/rad] (stored as ``target_kd``). If None, defaults to 0.0.
             twist_stiffness: Optional twist stiffness [N*m] (torque per radian). If None,
                 defaults to ``bend_stiffness``.
-            twist_damping: Optional twist damping, using the same dimensionless VBD Rayleigh convention as
-                ``bend_damping``. If None, defaults to ``bend_damping`` only when
+            twist_damping: Optional twist damping [N·m·s/rad]. If None, defaults to ``bend_damping`` only when
                 both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
@@ -6474,16 +6470,11 @@ class ModelBuilder:
         color: Vec3 | None = None,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
-        **kwargs,
     ) -> int:
         """Adds an ellipsoid collision shape or site to a body.
 
         The ellipsoid is centered at its local origin as defined by `xform`, with semi-axes
         `rx`, `ry`, `rz` along the local X, Y, Z axes respectively.
-
-        .. deprecated:: 1.1
-            The ``a``, ``b``, ``c`` parameter names are deprecated; use
-            ``rx``, ``ry``, ``rz`` instead.
 
         Note:
             Ellipsoid collision is handled by the GJK/MPR collision pipeline,
@@ -6523,26 +6514,6 @@ class ModelBuilder:
                 # A sphere is a special case where rx = ry = rz
                 builder.add_shape_ellipsoid(body=body, rx=0.5, ry=0.5, rz=0.5)
         """
-        # Backward compat: accept deprecated a, b, c parameter names
-        _deprecated_map = {"a": ("rx", rx, 1.0), "b": ("ry", ry, 0.75), "c": ("rz", rz, 0.5)}
-        for old_name, (new_name, new_val, default) in _deprecated_map.items():
-            if old_name in kwargs:
-                if new_val != default:
-                    raise TypeError(f"Cannot specify both '{old_name}' and '{new_name}'")
-                warnings.warn(
-                    f"Parameter '{old_name}' is deprecated, use '{new_name}' instead.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-        if "a" in kwargs:
-            rx = kwargs.pop("a")
-        if "b" in kwargs:
-            ry = kwargs.pop("b")
-        if "c" in kwargs:
-            rz = kwargs.pop("c")
-        if kwargs:
-            raise TypeError(f"Unexpected keyword arguments: {set(kwargs)}")
-
         if cfg is None:
             cfg = self.default_site_cfg if as_site else self.default_shape_cfg
         elif as_site:
@@ -7416,23 +7387,19 @@ class ModelBuilder:
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, defaults to 1.0e5.
-            stretch_damping: Stretch damping for the cable joints, stored as a dimensionless VBD Rayleigh
-                coefficient (applied per-joint; not length-normalized). If None,
+            stretch_damping: Stretch damping [N·s/m] for the cable joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
             shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
                 ``stretch_stiffness``.
-            shear_damping: Optional per-joint transverse shear damping, using the same dimensionless VBD Rayleigh
-                convention as ``stretch_damping``. If None, defaults to
+            shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
                 ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
             bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N*m]
                 (torque per radian). If None, defaults to 0.0.
-            bend_damping: Bend damping for the cable joints, stored as a dimensionless VBD Rayleigh coefficient
-                (applied per-joint; not length-normalized). If None,
+            bend_damping: Bend damping [N·m·s/rad] for the cable joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
             twist_stiffness: Optional per-joint cable twist stiffness [N*m]. If None, defaults to
                 ``bend_stiffness``.
-            twist_damping: Optional per-joint cable twist damping, using the same dimensionless VBD Rayleigh
-                convention as ``bend_damping``. If None, defaults to ``bend_damping``
+            twist_damping: Optional per-joint cable twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
@@ -7635,21 +7602,17 @@ class ModelBuilder:
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
                 Defaults to 1.0e5.
-            stretch_damping: Stretch damping, stored as a dimensionless VBD Rayleigh coefficient
-                (per joint). Defaults to 0.0.
+            stretch_damping: Stretch damping [N·s/m] (per joint). Defaults to 0.0.
             shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
                 ``stretch_stiffness``.
-            shear_damping: Optional per-joint transverse shear damping, using the same dimensionless VBD Rayleigh
-                convention as ``stretch_damping``. If None, defaults to
+            shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
                 ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
             bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N*m].
                 Defaults to 0.0.
-            bend_damping: Bend damping, stored as a dimensionless VBD Rayleigh coefficient
-                (per joint). Defaults to 0.0.
+            bend_damping: Bend damping [N·m·s/rad] (per joint). Defaults to 0.0.
             twist_stiffness: Optional per-joint cable twist stiffness [N*m]. If None, defaults to
                 ``bend_stiffness``.
-            twist_damping: Optional per-joint cable twist damping, using the same dimensionless VBD Rayleigh
-                convention as ``bend_damping``. If None, defaults to ``bend_damping``
+            twist_damping: Optional per-joint cable twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             label: Optional label prefix for bodies, shapes, joints, and articulations.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
@@ -8089,7 +8052,7 @@ class ModelBuilder:
             i: The index of the first particle
             j: The index of the second particle
             ke: The elastic stiffness of the spring
-            kd: The damping stiffness of the spring
+            kd: The damping coefficient of the spring [N·s/m].
             control: The actuation level of the spring
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -8145,7 +8108,7 @@ class ModelBuilder:
             k: The index of the third particle.
             tri_ke: The elastic stiffness of the triangle. If None, the default value (:attr:`default_tri_ke`) is used.
             tri_ka: The area stiffness of the triangle. If None, the default value (:attr:`default_tri_ka`) is used.
-            tri_kd: The damping stiffness of the triangle. If None, the default value (:attr:`default_tri_kd`) is used.
+            tri_kd: The damping coefficient of the triangle. If None, the default value (:attr:`default_tri_kd`) is used.
             tri_drag: The drag coefficient of the triangle. If None, the default value (:attr:`default_tri_drag`) is used.
             tri_lift: The lift coefficient of the triangle. If None, the default value (:attr:`default_tri_lift`) is used.
             custom_attributes: Dictionary of custom attribute names to values.
@@ -8228,7 +8191,7 @@ class ModelBuilder:
             k: The indices of the third particle
             tri_ke: The elastic stiffness of the triangles. If None, the default value (:attr:`default_tri_ke`) is used.
             tri_ka: The area stiffness of the triangles. If None, the default value (:attr:`default_tri_ka`) is used.
-            tri_kd: The damping stiffness of the triangles. If None, the default value (:attr:`default_tri_kd`) is used.
+            tri_kd: The damping coefficient of the triangles. If None, the default value (:attr:`default_tri_kd`) is used.
             tri_drag: The drag coefficient of the triangles. If None, the default value (:attr:`default_tri_drag`) is used.
             tri_lift: The lift coefficient of the triangles. If None, the default value (:attr:`default_tri_lift`) is used.
             custom_attributes: Dictionary of custom attribute names to values.
@@ -8341,7 +8304,7 @@ class ModelBuilder:
             l: The index of the fourth particle
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
-            k_damp: The element's damping stiffness
+            k_damp: The element's viscous damping coefficient [Pa·s].
             custom_attributes: Dictionary of custom attribute names to values.
 
         Return:
@@ -8984,7 +8947,7 @@ class ModelBuilder:
             density: The density of each particle
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
-            k_damp: The damping stiffness
+            k_damp: The viscous damping coefficient [Pa·s].
             fix_left: Make the left-most edge of particles kinematic (fixed in place)
             fix_right: Make the right-most edge of particles kinematic
             fix_top: Make the top-most edge of particles kinematic
@@ -9154,7 +9117,7 @@ class ModelBuilder:
             k_lambda: The second elastic Lame parameter [Pa]. Scalar or
                 per-element array. Overrides ``mesh.k_lambda`` if both are
                 provided.
-            k_damp: The damping stiffness. Scalar or per-element array.
+            k_damp: The viscous damping coefficient [Pa·s]. Scalar or per-element array.
                 Overrides ``mesh.k_damp`` if both are provided.
             tri_ke: Stiffness for surface mesh triangles. Defaults to 0.0.
             tri_ka: Area stiffness for surface mesh triangles. Defaults to 0.0.

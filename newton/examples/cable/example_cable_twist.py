@@ -177,8 +177,8 @@ class Example:
                 stretch_stiffness=stretch_stiffness,
                 bend_stiffness=angular_stiffness,
                 twist_stiffness=angular_stiffness,
-                bend_damping=1.0e-2,
-                twist_damping=1.0e-2,
+                bend_damping=1.0e-2 * angular_stiffness,
+                twist_damping=1.0e-2 * angular_stiffness,
                 label=f"cable_{i}",
             )
 

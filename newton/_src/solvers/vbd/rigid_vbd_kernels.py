@@ -574,10 +574,10 @@ def evaluate_angular_constraint_force_hessian(
 
         dkappa_dt_vec = compute_kappa_dot(J_world, omega_p_world, omega_c_world)
         dkappa_perp = P * dkappa_dt_vec
-        f_damp_local = (damping * penalty_k) * dkappa_perp
+        f_damp_local = damping * dkappa_perp
         f_local = f_local + f_damp_local
 
-        k_damp = (damping * inv_dt) * penalty_k
+        k_damp = damping * inv_dt
         H_local = H_local + k_damp * P
 
     H_aa = J_world * (H_local * wp.transpose(J_world))
@@ -693,18 +693,16 @@ def evaluate_linear_constraint_force_hessian(
     # P_lin rotates per call -> must re-project lambda_lin (see build_joint_projectors).
     f_attachment = penalty_k * C_perp + P * lambda_lin
 
-    # Fold damping into effective stiffness: K_eff = k*(1 + d/dt)*P
+    K_eff = penalty_k * P
     if damping > 0.0:
         inv_dt = 1.0 / dt
-        K_eff = penalty_k * (1.0 + damping * inv_dt) * P
 
         x_p_prev = wp.transform_get_translation(X_wp_prev)
         x_c_prev = wp.transform_get_translation(X_wc_prev)
         C_vec_prev = x_c_prev - x_p_prev
         dC_dt_perp = P * ((C_vec - C_vec_prev) * inv_dt)
-        f_attachment = f_attachment + (damping * penalty_k) * dC_dt_perp
-    else:
-        K_eff = penalty_k * P
+        f_attachment = f_attachment + damping * dC_dt_perp
+        K_eff = K_eff + (damping * inv_dt) * P
 
     rx = wp.skew(r)
     H_ll = K_eff
@@ -894,25 +892,41 @@ def evaluate_rigid_contact_from_collision(
     x_com_a_now = wp.transform_point(X_wa, body_a_com_local)
     x_com_b_now = wp.transform_point(X_wb, body_b_com_local)
 
+    # Normal response uses geometric (skeleton) points; friction uses the surface anchor.
+    x_s_a_now = wp.transform_point(X_wa, contact_point_a_local)
+    x_s_b_now = wp.transform_point(X_wb, contact_point_b_local)
+    x_s_a_prev = wp.transform_point(X_wa_prev, contact_point_a_local)
+    x_s_b_prev = wp.transform_point(X_wb_prev, contact_point_b_local)
+
     x_c_a_now = contact_surface_point(X_wa, contact_point_a_local, contact_offset_a_local)
     x_c_b_now = contact_surface_point(X_wb, contact_point_b_local, contact_offset_b_local)
     x_c_a_prev = contact_surface_point(X_wa_prev, contact_point_a_local, contact_offset_a_local)
     x_c_b_prev = contact_surface_point(X_wb_prev, contact_point_b_local, contact_offset_b_local)
 
     n_outer = wp.outer(contact_normal, contact_normal)
+    I3 = wp.identity(n=3, dtype=float)
 
-    v_rel = (x_c_b_now - x_c_b_prev - x_c_a_now + x_c_a_prev) / dt
-    v_dot_n = wp.dot(contact_normal, v_rel)
+    # Normal approach rate from the geometric points (not the rotating anchor).
+    v_rel_n = (x_s_b_now - x_s_b_prev - x_s_a_now + x_s_a_prev) / dt
+    v_dot_n = wp.dot(contact_normal, v_rel_n)
+
+    # Tangential slip from the surface anchor (required for finite-radius friction).
+    v_rel_t = (x_c_b_now - x_c_b_prev - x_c_a_now + x_c_a_prev) / dt
+    v_t = v_rel_t - contact_normal * wp.dot(contact_normal, v_rel_t)
+
+    # Normal block (force + optional approach damping), applied at the geometric lever.
+    f_n_vec = contact_normal * f_n
+    K_n = contact_ke * n_outer
+
+    # Tangential friction block, applied at the surface-anchor lever.
+    f_t_vec = wp.vec3(0.0)
+    K_t = wp.mat33(0.0)
 
     if hard_contact == 1:
-        f_total = contact_normal * f_n
-        K_total = contact_ke * n_outer
-
         if friction_mu > 0.0 and f_n > 0.0:
             # ALM tangential friction with Coulomb cone clamping.
             # Tangential constraint: rel_disp + friction_c0
             # (friction_c0 = (1 - alpha) * C0_t, pre-scaled by the caller).
-            v_t = v_rel - contact_normal * v_dot_n
             tangential_disp = -(v_t * dt)
             lam_t = contact_lam - contact_normal * lam_n
             f_t_vec = contact_ke_t * (tangential_disp + friction_c0) + lam_t
@@ -921,48 +935,50 @@ def evaluate_rigid_contact_from_collision(
             if f_t_len > cone_limit and f_t_len > 0.0:
                 cone_ratio = cone_limit / f_t_len
                 f_t_vec = f_t_vec * cone_ratio
-            f_total = f_total + f_t_vec
-            I3 = wp.identity(n=3, dtype=float)
-            K_total = K_total + contact_ke_t * (I3 - n_outer)
+            K_t = contact_ke_t * (I3 - n_outer)
     else:
-        # Soft contact: normal penalty + IPC velocity-based friction
-        f_total = contact_normal * f_n
-        K_total = contact_ke * n_outer
-
+        # Soft contact: IPC velocity-based friction.
         if friction_mu > 0.0 and f_n > 0.0:
-            v_t = v_rel - contact_normal * v_dot_n
             f_friction, K_friction = compute_projected_isotropic_friction(
                 friction_mu, f_n, contact_normal, v_t * dt, friction_epsilon * dt
             )
-            f_total = f_total + f_friction
-            K_total = K_total + K_friction
+            f_t_vec = f_friction
+            K_t = K_friction
 
     if contact_kd > 0.0 and v_dot_n < 0.0 and f_n > 0.0:
-        damping_coeff = contact_kd * contact_ke
-        f_total = f_total - damping_coeff * v_dot_n * contact_normal
-        K_total = K_total + (damping_coeff / dt) * n_outer
+        f_n_vec = f_n_vec - contact_kd * v_dot_n * contact_normal
+        K_n = K_n + (contact_kd / dt) * n_outer
 
-    r_a = x_c_a_now - x_com_a_now
-    r_b = x_c_b_now - x_com_b_now
+    f_total = f_n_vec + f_t_vec
+    K_total = K_n + K_t
 
-    r_a_skew = wp.skew(r_a)
-    r_a_skew_T_K = wp.transpose(r_a_skew) * K_total
-    h_aa_a = r_a_skew_T_K * r_a_skew
-    h_al_a = -r_a_skew_T_K
+    # Geometric lever for the normal block, surface-anchor lever for friction.
+    r_s_a = x_s_a_now - x_com_a_now
+    r_c_a = x_c_a_now - x_com_a_now
+    r_s_b = x_s_b_now - x_com_b_now
+    r_c_b = x_c_b_now - x_com_b_now
 
-    r_b_skew = wp.skew(r_b)
-    r_b_skew_T_K = wp.transpose(r_b_skew) * K_total
-    h_aa_b = r_b_skew_T_K * r_b_skew
-    h_al_b = -r_b_skew_T_K
+    r_s_a_skew_T = wp.transpose(wp.skew(r_s_a))
+    r_c_a_skew_T = wp.transpose(wp.skew(r_c_a))
+    h_al_a = -(r_s_a_skew_T * K_n + r_c_a_skew_T * K_t)
+    h_aa_a = r_s_a_skew_T * K_n * wp.skew(r_s_a) + r_c_a_skew_T * K_t * wp.skew(r_c_a)
+
+    r_s_b_skew_T = wp.transpose(wp.skew(r_s_b))
+    r_c_b_skew_T = wp.transpose(wp.skew(r_c_b))
+    h_al_b = -(r_s_b_skew_T * K_n + r_c_b_skew_T * K_t)
+    h_aa_b = r_s_b_skew_T * K_n * wp.skew(r_s_b) + r_c_b_skew_T * K_t * wp.skew(r_c_b)
+
+    torque_a = wp.cross(r_s_a, -f_n_vec) + wp.cross(r_c_a, -f_t_vec)
+    torque_b = wp.cross(r_s_b, f_n_vec) + wp.cross(r_c_b, f_t_vec)
 
     return (
         -f_total,
-        wp.cross(r_a, -f_total),
+        torque_a,
         K_total,
         h_al_a,
         h_aa_a,
         f_total,
-        wp.cross(r_b, f_total),
+        torque_b,
         K_total,
         h_al_b,
         h_aa_b,
@@ -991,8 +1007,7 @@ def _compute_body_particle_contact_force(
     hessian = ke * wp.outer(n, n)
 
     if wp.dot(n, relative_translation) < 0.0:
-        damping_coeff = kd * ke
-        damping_hessian = (damping_coeff / dt) * wp.outer(n, n)
+        damping_hessian = (kd / dt) * wp.outer(n, n)
         hessian = hessian + damping_hessian
         force = force - damping_hessian * relative_translation
 
@@ -1393,12 +1408,16 @@ def evaluate_joint_force_hessian(
         total_H_al = wp.mat33(0.0)
         total_H_aa = wp.mat33(0.0)
 
-        bend_active = k_bend > 0.0
-        twist_active = k_twist > 0.0
+        bend_stiff = k_bend > 0.0
+        twist_stiff = k_twist > 0.0
+        bend_active = bend_stiff or kd_bend > 0.0
+        twist_active = twist_stiff or kd_twist > 0.0
         if bend_active or twist_active:
             K_elastic_diag = wp.vec3(k_bend, k_bend, k_twist)
-            K_damp_diag = wp.vec3(kd_bend * k_bend, kd_bend * k_bend, kd_twist * k_twist)
-            damping_active = (kd_bend > 0.0 and k_bend > 0.0) or (kd_twist > 0.0 and k_twist > 0.0)
+            kd_bend_eff = kd_bend if bend_active else 0.0
+            kd_twist_eff = kd_twist if twist_active else 0.0
+            K_damp_diag = wp.vec3(kd_bend_eff, kd_bend_eff, kd_twist_eff)
+            damping_active = kd_bend_eff > 0.0 or kd_twist_eff > 0.0
 
             sigma = wp.vec3(0.0)
             H_fric_diag = wp.vec3(0.0)
@@ -1406,8 +1425,8 @@ def evaluate_joint_force_hessian(
             C0_force = wp.vec3(0.0)
             dahl_sigma = joint_sigma_start[joint_index]
             dahl_fric = joint_C_fric[joint_index]
-            bend_hard = bend_active and joint_is_hard[bend_idx] == 1
-            twist_hard = twist_active and joint_is_hard[twist_idx] == 1
+            bend_hard = bend_stiff and joint_is_hard[bend_idx] == 1
+            twist_hard = twist_stiff and joint_is_hard[twist_idx] == 1
             lambda_ang = wp.vec3(0.0)
             C0_ang = wp.vec3(0.0)
             if bend_hard or twist_hard:
@@ -1417,14 +1436,14 @@ def evaluate_joint_force_hessian(
             if bend_hard:
                 lambda_projected = lambda_projected + wp.vec3(lambda_ang[0], lambda_ang[1], 0.0)
                 C0_force = C0_force + (k_bend * avbd_alpha) * wp.vec3(C0_ang[0], C0_ang[1], 0.0)
-            elif bend_active:
+            elif bend_stiff:
                 sigma = sigma + wp.vec3(dahl_sigma[0], dahl_sigma[1], 0.0)
                 H_fric_diag = H_fric_diag + wp.vec3(dahl_fric[0], dahl_fric[1], 0.0)
 
             if twist_hard:
                 lambda_projected = lambda_projected + wp.vec3(0.0, 0.0, lambda_ang[2])
                 C0_force = C0_force + (k_twist * avbd_alpha) * wp.vec3(0.0, 0.0, C0_ang[2])
-            elif twist_active:
+            elif twist_stiff:
                 sigma = sigma + wp.vec3(0.0, 0.0, dahl_sigma[2])
                 H_fric_diag = H_fric_diag + wp.vec3(0.0, 0.0, dahl_fric[2])
 
@@ -1447,8 +1466,10 @@ def evaluate_joint_force_hessian(
             total_torque = total_torque + cable_torque
             total_H_aa = total_H_aa + cable_H_aa
 
-        stretch_active = k_stretch > 0.0
-        shear_active = k_shear > 0.0
+        stretch_stiff = k_stretch > 0.0
+        shear_stiff = k_shear > 0.0
+        stretch_active = stretch_stiff or kd_stretch > 0.0
+        shear_active = shear_stiff or kd_shear > 0.0
         if stretch_active or shear_active:
             t_world = _quat_rotate_local_z(q_wp)
             P_stretch = wp.outer(t_world, t_world)
@@ -1456,15 +1477,15 @@ def evaluate_joint_force_hessian(
 
             # K = k_shear I + (k_stretch - k_shear) t t^T.
             K_linear = k_shear * P_I + (k_stretch - k_shear) * P_stretch
-            k_damp_stretch = kd_stretch * k_stretch
-            k_damp_shear = kd_shear * k_shear
+            k_damp_stretch = kd_stretch if stretch_active else 0.0
+            k_damp_shear = kd_shear if shear_active else 0.0
             K_damp = k_damp_shear * P_I + (k_damp_stretch - k_damp_shear) * P_stretch
-            damping_active = (kd_stretch > 0.0 and k_stretch > 0.0) or (kd_shear > 0.0 and k_shear > 0.0)
+            damping_active = k_damp_stretch > 0.0 or k_damp_shear > 0.0
 
             lambda_projected = wp.vec3(0.0)
             C0_force = wp.vec3(0.0)
-            stretch_hard = stretch_active and joint_is_hard[stretch_idx] == 1
-            shear_hard = shear_active and joint_is_hard[shear_idx] == 1
+            stretch_hard = stretch_stiff and joint_is_hard[stretch_idx] == 1
+            shear_hard = shear_stiff and joint_is_hard[shear_idx] == 1
             if stretch_hard or shear_hard:
                 lambda_lin = joint_lambda_lin[joint_index]
                 C0_lin = joint_C0_lin[joint_index]
@@ -1682,7 +1703,7 @@ def evaluate_joint_force_hessian(
         model_limit_ke = joint_limit_ke[dof_idx]
         lim_kd = joint_limit_kd[dof_idx]
 
-        has_drive = model_drive_ke > 0.0
+        has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
         has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
 
         avbd_ke = joint_penalty_k[c_start + 2]
@@ -1709,14 +1730,12 @@ def evaluate_joint_force_hessian(
             f_scalar = float(0.0)
             H_scalar = float(0.0)
             if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                lim_d = lim_kd * lim_ke
-                f_scalar = lim_ke * err_pos + lim_d * dtheta_dt
-                H_scalar = lim_ke + lim_d * inv_dt
+                f_scalar = lim_ke * err_pos + lim_kd * dtheta_dt
+                H_scalar = lim_ke + lim_kd * inv_dt
             elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                drive_d = drive_kd * drive_ke
                 vel_err = dtheta_dt - target_vel
-                f_scalar = drive_ke * err_pos + drive_d * vel_err
-                H_scalar = drive_ke + drive_d * inv_dt
+                f_scalar = drive_ke * err_pos + drive_kd * vel_err
+                H_scalar = drive_ke + drive_kd * inv_dt
 
             if H_scalar > 0.0:
                 tau_drive, Haa_drive = apply_angular_drive_limit_torque(a, J_world, is_parent_body, f_scalar, H_scalar)
@@ -1793,7 +1812,7 @@ def evaluate_joint_force_hessian(
         model_limit_ke = joint_limit_ke[dof_idx]
         lim_kd = joint_limit_kd[dof_idx]
 
-        has_drive = model_drive_ke > 0.0
+        has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
         has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
 
         avbd_ke = joint_penalty_k[c_start + 2]
@@ -1819,14 +1838,12 @@ def evaluate_joint_force_hessian(
             f_scalar = float(0.0)
             H_scalar = float(0.0)
             if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                lim_d = lim_kd * lim_ke
-                f_scalar = lim_ke * err_pos + lim_d * dd_dt
-                H_scalar = lim_ke + lim_d * inv_dt
+                f_scalar = lim_ke * err_pos + lim_kd * dd_dt
+                H_scalar = lim_ke + lim_kd * inv_dt
             elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                drive_d = drive_kd * drive_ke
                 vel_err = dd_dt - target_vel
-                f_scalar = drive_ke * err_pos + drive_d * vel_err
-                H_scalar = drive_ke + drive_d * inv_dt
+                f_scalar = drive_ke * err_pos + drive_kd * vel_err
+                H_scalar = drive_ke + drive_kd * inv_dt
 
             if H_scalar > 0.0:
                 if is_parent_body:
@@ -1960,7 +1977,7 @@ def evaluate_joint_force_hessian(
                     model_limit_ke = joint_limit_ke[dof_idx]
                     lim_kd = joint_limit_kd[dof_idx]
 
-                    has_drive = model_drive_ke > 0.0
+                    has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
                     has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
 
                     avbd_ke = joint_penalty_k[c_start + 2 + li]
@@ -1978,14 +1995,12 @@ def evaluate_joint_force_hessian(
                         f_scalar = float(0.0)
                         H_scalar = float(0.0)
                         if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                            lim_d = lim_kd * lim_ke
-                            f_scalar = lim_ke * err_pos + lim_d * dd_dt
-                            H_scalar = lim_ke + lim_d * inv_dt
+                            f_scalar = lim_ke * err_pos + lim_kd * dd_dt
+                            H_scalar = lim_ke + lim_kd * inv_dt
                         elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                            drive_d = drive_kd * drive_ke
                             vel_err = dd_dt - target_vel
-                            f_scalar = drive_ke * err_pos + drive_d * vel_err
-                            H_scalar = drive_ke + drive_d * inv_dt
+                            f_scalar = drive_ke * err_pos + drive_kd * vel_err
+                            H_scalar = drive_ke + drive_kd * inv_dt
 
                         if H_scalar > 0.0:
                             force_drive, torque_drive, Hll_drive, Hal_drive, Haa_drive = apply_linear_drive_limit_force(
@@ -2026,7 +2041,7 @@ def evaluate_joint_force_hessian(
                     model_limit_ke = joint_limit_ke[dof_idx]
                     lim_kd = joint_limit_kd[dof_idx]
 
-                    has_drive = model_drive_ke > 0.0
+                    has_drive = model_drive_ke > 0.0 or drive_kd > 0.0
                     has_limits = model_limit_ke > 0.0 and (lim_lower > -MAXVAL or lim_upper < MAXVAL)
 
                     avbd_ke = joint_penalty_k[c_start + 2 + lin_count + ai]
@@ -2045,14 +2060,12 @@ def evaluate_joint_force_hessian(
                         f_scalar = float(0.0)
                         H_scalar = float(0.0)
                         if mode == _DRIVE_LIMIT_MODE_LIMIT_LOWER or mode == _DRIVE_LIMIT_MODE_LIMIT_UPPER:
-                            lim_d = lim_kd * lim_ke
-                            f_scalar = lim_ke * err_pos + lim_d * dtheta_dt
-                            H_scalar = lim_ke + lim_d * inv_dt
+                            f_scalar = lim_ke * err_pos + lim_kd * dtheta_dt
+                            H_scalar = lim_ke + lim_kd * inv_dt
                         elif mode == _DRIVE_LIMIT_MODE_DRIVE:
-                            drive_d = drive_kd * drive_ke
                             vel_err = dtheta_dt - target_vel
-                            f_scalar = drive_ke * err_pos + drive_d * vel_err
-                            H_scalar = drive_ke + drive_d * inv_dt
+                            f_scalar = drive_ke * err_pos + drive_kd * vel_err
+                            H_scalar = drive_ke + drive_kd * inv_dt
 
                         if H_scalar > 0.0:
                             tau_drive, Haa_drive = apply_angular_drive_limit_torque(
@@ -2926,6 +2939,7 @@ def accumulate_body_body_contacts_per_body(
     body_inv_mass: wp.array[float],
     friction_epsilon: float,
     contact_penalty_k: wp.array[float],
+    contact_material_ke: wp.array[float],
     contact_material_kd: wp.array[float],
     contact_material_mu: wp.array[float],
     contact_lambda: wp.array[wp.vec3],
@@ -3112,6 +3126,7 @@ def compute_rigid_contact_forces(
     body_com: wp.array[wp.vec3],
     # Contact material properties (per-contact)
     contact_penalty_k: wp.array[float],
+    contact_material_ke: wp.array[float],
     contact_material_kd: wp.array[float],
     contact_material_mu: wp.array[float],
     contact_lambda: wp.array[wp.vec3],
@@ -3252,6 +3267,7 @@ def accumulate_body_particle_contacts_per_body(
     # AVBD body-particle soft contact penalties and material properties
     friction_epsilon: float,
     body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_ke: wp.array[float],
     body_particle_contact_material_kd: wp.array[float],
     body_particle_contact_material_mu: wp.array[float],
     # Soft contact data (body-particle)
