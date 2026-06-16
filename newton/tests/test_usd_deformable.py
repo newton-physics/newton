@@ -166,18 +166,42 @@ class TestUSDDeformableCable(unittest.TestCase):
             )
             stage.Save()
 
-            # Default resolvers: omniphysics:thickness is ignored -> builder default radius (0.05).
-            # Capsule radius is shape_scale[shape][0].
+            def cable_radius(builder):
+                return builder.shape_scale[builder.body_shapes[0][0]][0]  # capsule radius
+
+            # Default resolvers: omniphysics:thickness is ignored, so the radius is the
+            # builder default, not the authored thickness / 2.
             builder_default = newton.ModelBuilder()
             builder_default.add_usd(str(usd_path))
-            default_radius = builder_default.shape_scale[builder_default.body_shapes[0][0]][0]
-            self.assertAlmostEqual(default_radius, 0.05, places=5)
+            default_radius = cable_radius(builder_default)
 
             # With the PhysX resolver active, omniphysics:thickness is honored (radius = thickness / 2).
             builder_compat = newton.ModelBuilder()
             builder_compat.add_usd(str(usd_path), schema_resolvers=[SchemaResolverPhysx()])
-            compat_radius = builder_compat.shape_scale[builder_compat.body_shapes[0][0]][0]
-            self.assertAlmostEqual(compat_radius, 0.01, places=5)
+            self.assertAlmostEqual(cable_radius(builder_compat), 0.5 * 0.02, places=5)
+            self.assertNotAlmostEqual(default_radius, 0.5 * 0.02, places=5)
+
+    def test_deformable_ignores_generic_physx_namespaces(self):
+        """Deformable material reads only deformable vendor namespaces, not generic PhysX ones."""
+        from pxr import Usd, UsdPhysics
+
+        def cable_radius(namespace):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                usd_path = Path(tmpdir) / "cable.usda"
+                stage = Usd.Stage.CreateNew(str(usd_path))
+                UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+                pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+                curves = _add_cable_curve(stage, "/World/Cable", pts)
+                _bind_cable_material(stage, curves.GetPrim(), "/World/Mat", namespace=namespace, thickness=0.02)
+                stage.Save()
+                builder = newton.ModelBuilder()
+                builder.add_usd(str(usd_path), schema_resolvers=[SchemaResolverPhysx()])
+                return builder.shape_scale[builder.body_shapes[0][0]][0]
+
+        # omniphysics is a deformable vendor namespace -> thickness honored.
+        self.assertAlmostEqual(cable_radius("omniphysics"), 0.5 * 0.02, places=5)
+        # physxScene is a generic resolver namespace -> NOT read as deformable material.
+        self.assertNotAlmostEqual(cable_radius("physxScene"), 0.5 * 0.02, places=5)
 
     def test_two_cables_have_disjoint_body_ranges(self):
         """Two cables in one stage map to disjoint body/joint index ranges (addressability)."""

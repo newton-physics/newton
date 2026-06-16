@@ -371,7 +371,7 @@ def parse_usd(
     # fallback to the canonical physics: deformable schema. Empty unless a
     # resolver declaring them (e.g. SchemaResolverPhysx) is active, so a default
     # import parses the AOUSD proposal as written.
-    deformable_compat_ns = R.compat_attr_namespaces()
+    deformable_compat_ns = R.deformable_compat_namespaces()
 
     # Newton-specific deformable controls (a future NewtonCurvesDeformable*API
     # extension) are honored only when the Newton resolver owns the newton:

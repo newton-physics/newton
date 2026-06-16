@@ -75,6 +75,12 @@ class SchemaResolver:
     # extra_attr_namespaces is a list of additional USD attribute namespaces in which the schema attributes may be authored.
     extra_attr_namespaces: ClassVar[list[str]] = []
 
+    # deformable_attr_namespaces lists vendor namespaces that carry the deformable
+    # material/geometry attributes (parsed as a fallback to the canonical physics:
+    # schema). Kept separate from extra_attr_namespaces so generic rigid-body
+    # namespaces are never read as deformable attributes.
+    deformable_attr_namespaces: ClassVar[list[str]] = []
+
     def __init__(self) -> None:
         # Precompute the full set of USD attribute names referenced by this resolver's mapping.
         names: set[str] = set()
@@ -265,20 +271,22 @@ class SchemaResolverManager:
             print(error_message)
         return None
 
-    def compat_attr_namespaces(self) -> list[str]:
-        """Vendor attribute namespaces declared by the active resolvers.
+    def deformable_compat_namespaces(self) -> list[str]:
+        """Deformable vendor attribute namespaces declared by the active resolvers.
 
-        Returns the union of every resolver's ``extra_attr_namespaces``, in
-        resolver priority order. Used to accept attributes authored under vendor
-        namespaces (e.g. ``omniphysics:``, ``physxDeformableBody:``) as a
-        compatibility fallback to the canonical ``physics:`` schema, mirroring how
-        rigid-body attributes are remapped. Empty by default, so a default import
-        reads only the canonical schema as written.
+        Returns the union of every resolver's ``deformable_attr_namespaces``, in
+        resolver priority order. Used to accept deformable material/geometry
+        attributes authored under vendor namespaces (e.g. ``omniphysics:``,
+        ``physxDeformableBody:``) as a fallback to the canonical ``physics:``
+        schema. This is deliberately separate from the generic
+        ``extra_attr_namespaces`` so unrelated namespaces (``physxScene``,
+        ``drive``, ``state``, ...) are never read as deformable schema attributes.
+        Empty by default, so a default import reads only the canonical schema.
         """
         seen: set[str] = set()
         namespaces: list[str] = []
         for r in self.resolvers:
-            for ns in r.extra_attr_namespaces:
+            for ns in r.deformable_attr_namespaces:
                 if ns not in seen:
                     seen.add(ns)
                     namespaces.append(ns)

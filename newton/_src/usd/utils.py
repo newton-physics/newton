@@ -1383,7 +1383,7 @@ def _read_physics_attr(prim: Usd.Prim, name: str, compat_namespaces: Sequence[st
     The AOUSD deformable proposal authors under ``physics:``; this is parsed as
     written. ``compat_namespaces`` lists vendor namespaces (e.g. ``omniphysics``,
     ``physxDeformableBody``) accepted as a fallback, sourced from the active
-    schema resolvers (see :meth:`SchemaResolverManager.compat_attr_namespaces`),
+    schema resolvers (see :meth:`SchemaResolverManager.deformable_compat_namespaces`),
     so a default import reads only the canonical schema.
     """
     for prefix in ("physics", *compat_namespaces):
