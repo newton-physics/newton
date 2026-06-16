@@ -132,6 +132,7 @@ class SolverFeatherstone(SolverBase):
     def __init__(
         self,
         model: Model,
+        *,
         angular_damping: float = 0.05,
         update_mass_matrix_interval: int = 1,
         friction_smoothing: float = 1.0,

@@ -85,15 +85,15 @@ class SolverKamino(SolverBase):
     Example
     -------
 
-    .. code-block:: python
+        .. code-block:: python
 
-        config = newton.solvers.SolverKamino.Config()
-        solver = newton.solvers.SolverKamino(model, config)
+            config = newton.solvers.SolverKamino.Config()
+            solver = newton.solvers.SolverKamino(model, config=config)
 
-        # simulation loop
-        for i in range(100):
-            solver.step(state_in, state_out, control, contacts, dt)
-            state_in, state_out = state_out, state_in
+            # simulation loop
+            for i in range(100):
+                solver.step(state_in, state_out, control, contacts, dt)
+                state_in, state_out = state_out, state_in
     """
 
     @dataclass
@@ -368,6 +368,7 @@ class SolverKamino(SolverBase):
     def __init__(
         self,
         model: Model,
+        *,
         config: Config | None = None,
     ):
         """

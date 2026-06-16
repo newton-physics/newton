@@ -69,6 +69,7 @@ class SolverSemiImplicit(SolverBase):
     def __init__(
         self,
         model: Model,
+        *,
         angular_damping: float = 0.05,
         friction_smoothing: float = 1.0,
         joint_attach_ke: float = 1.0e4,

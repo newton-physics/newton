@@ -96,6 +96,7 @@ class SolverXPBD(SolverBase):
     def __init__(
         self,
         model: Model,
+        *,
         iterations: int = 2,
         soft_body_relaxation: float = 0.9,
         soft_contact_relaxation: float = 0.9,

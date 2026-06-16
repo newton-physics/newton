@@ -102,6 +102,7 @@ class SolverStyle3D(SolverBase):
     def __init__(
         self,
         model: Model,
+        *,
         iterations: int = 10,
         linear_iterations: int = 10,
         drag_spring_stiff: float = 1e2,

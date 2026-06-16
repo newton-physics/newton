@@ -199,6 +199,7 @@ class SolverVBD(SolverBase):
     def __init__(
         self,
         model: Model,
+        *,
         # Common parameters
         iterations: int = 10,
         friction_epsilon: float = 1e-2,
