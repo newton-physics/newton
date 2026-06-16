@@ -5,6 +5,7 @@
 ### Added
 
 - Add `cloth_stiff_material_hanging` and `cloth_stiff_material_stretch` examples regression-guarding the new Neo-Hookean triangle material (stability under gravity at extreme stiffness, and bulk area-preservation across a Poisson-ratio sweep)
+- Add user-defined pressure laws to hydroelastic SDF contact via `HydroelasticSDF.Config.pressure_func` (a `@wp.func` mapping `(signed_depth, shape_idx, data) -> pressure`) and `pressure_data` (a `@wp.struct` carrying per-shape state). The contact patch is the iso-pressure surface `p_a == p_b`; the default linear law `pressure = -kh * signed_depth` is preserved when no callback is supplied.
 - Add `--render-fps` to cap example rendering rate without changing simulation frame timing
 
 ### Changed
@@ -16,17 +17,20 @@
 
 ### Fixed
 
+- Fix `SolverVBD` rigid contact injecting kinetic energy for yawed finite-radius contacts (e.g. small-radius cables blowing up). The normal response now acts at the geometric skeleton point rather than the rotating surface anchor, which was non-conservative under reorientation; friction still uses the surface anchor to preserve finite-radius slip. (#3125)
 - Fix `SolverKamino` contact filtering and constraint stabilization so gap/margin contacts are handled consistently, positive-distance contacts can be filtered as configured, and converted contact forces/wrenches populate matching Newton contact slots for `SensorContact`. (#2908)
 - Fix mesh inertia computation to produce deterministic results across repeated CUDA runs. (#3136)
 - Fix VBD collision damping to use relative normal gap rate so uniform contact-stencil motion and tangential sliding do not create artificial normal damping.
 - Fix MJCF `euler` producing wrong orientations for multi-component angles by treating angles as intrinsic rotations. (#3030)
 - Fix MJCF parsing so attributes from multiple `<compiler>` elements, including `<include>`-expanded children, are merged in document order. (#3030)
 - Fix MJCF worldbody static geoms bypassing the visual/collider class filter, so `parse_visuals=False` drops visual-class geoms attached directly to `<worldbody>` too. (#3030)
+- Fix `cable_cross_slide_table` example stability so the cable-driven table reliably tracks its rectangular path and catches drift during regression runs.
 - Fix URDF `package://` mesh fallback resolution without `resolve-robotics-uri-py` so package names only match full path components instead of unrelated directory-name substrings
 
 ### Removed
 
 - Remove the deprecated Style3D `CollisionHandler`; use `Collision` instead
+- Remove the deprecated `SensorRaycast`; use `SensorTiledCamera` (`SensorTiledCamera.utils.compute_pinhole_camera_rays()` and `create_depth_image_output()` for single-camera depth) instead
 - Remove the deprecated `max_worlds` parameter of `ViewerBase.set_model()`; call `ViewerBase.set_visible_worlds()` after `set_model()` instead
 - Remove the deprecated `a`, `b`, `c` parameters of `ModelBuilder.add_shape_ellipsoid()` (deprecated in 1.1.0); use `rx`, `ry`, `rz` instead
 
