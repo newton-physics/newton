@@ -37,6 +37,39 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 * Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
+Deformable Bodies
+-----------------
+
+:meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the AOUSD
+UsdPhysics Deformables proposal, across three families:
+
+* **Curve / cable** -- a linear ``GeomBasisCurves`` with ``PhysicsCurvesDeformableSimAPI`` is
+  built as a VBD rod (a chain of capsule bodies joined by cable joints). A ``wrap=periodic``
+  curve also gets a body for the closing segment.
+* **Surface / cloth** -- a triangulated ``GeomMesh`` with ``PhysicsSurfaceDeformableSimAPI``
+  is built as FEM triangles with bending edges.
+* **Volume** -- a ``GeomTetMesh`` with ``PhysicsVolumeDeformableSimAPI`` (or one governed by a
+  ``PhysicsDeformableBodyAPI``) is built as a soft body. A bare ``GeomTetMesh`` keeps the legacy
+  material-density import.
+
+Material attributes are read from the canonical ``physics:`` namespace (the proposal as written).
+Vendor namespaces (``omniphysics:``, ``physxDeformableBody:``) are an opt-in fallback, declared by
+a schema resolver (e.g. ``SchemaResolverPhysx``) and consulted only for deformable attributes.
+
+**Mass distribution** follows the proposal's precedence: per-point ``physics:masses`` on the
+simulation geometry override ``PhysicsDeformableBodyAPI`` ``mass`` (a target total), which overrides
+the body/material density; per-element volume/area weighting is delegated to the builder.
+
+Each imported deformable is addressable through the :meth:`~newton.ModelBuilder.add_usd` return dict:
+``path_cable_map`` (prim path -> ``(body_indices, joint_indices)``), ``path_cloth_map`` and
+``path_soft_map`` (prim path -> ``particle`` / element ``(start, end)`` index ranges). The cable map
+is remapped if ``collapse_fixed_joints`` reindexes bodies.
+
+.. note::
+
+   Solver tuning that is not part of the AOUSD schema (e.g. damping) is not imported; supply it
+   on the builder or model after import.
+
 Material Color Spaces
 ---------------------
 

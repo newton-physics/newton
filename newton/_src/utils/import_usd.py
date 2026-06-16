@@ -3640,7 +3640,9 @@ def parse_usd(
                 # Per-joint stiffness needs a per-segment rest length: the mean of the
                 # actual segment lengths (the straight-line endpoint distance would
                 # underestimate it for curved cables and inflate the stiffness).
-                seg_len = sum(float(wp.length(positions[i + 1] - positions[i])) for i in range(num_seg)) / max(1, num_seg)
+                seg_len = sum(float(wp.length(positions[i + 1] - positions[i])) for i in range(num_seg)) / max(
+                    1, num_seg
+                )
                 stretch_stiffness = (
                     cable_mat["stretchStiffness"] * area / seg_len
                     if "stretchStiffness" in cable_mat and seg_len > 0.0
