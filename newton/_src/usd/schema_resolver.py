@@ -265,6 +265,25 @@ class SchemaResolverManager:
             print(error_message)
         return None
 
+    def compat_attr_namespaces(self) -> list[str]:
+        """Vendor attribute namespaces declared by the active resolvers.
+
+        Returns the union of every resolver's ``extra_attr_namespaces``, in
+        resolver priority order. Used to accept attributes authored under vendor
+        namespaces (e.g. ``omniphysics:``, ``physxDeformableBody:``) as a
+        compatibility fallback to the canonical ``physics:`` schema, mirroring how
+        rigid-body attributes are remapped. Empty by default, so a default import
+        reads only the canonical schema as written.
+        """
+        seen: set[str] = set()
+        namespaces: list[str] = []
+        for r in self.resolvers:
+            for ns in r.extra_attr_namespaces:
+                if ns not in seen:
+                    seen.add(ns)
+                    namespaces.append(ns)
+        return namespaces
+
     def collect_prim_attrs(self, prim: Usd.Prim) -> None:
         """
         Collect and accumulate schema attributes for a single prim.

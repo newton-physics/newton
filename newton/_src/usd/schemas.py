@@ -178,6 +178,11 @@ class SchemaResolverPhysx(SchemaResolver):
 
     name: ClassVar[str] = "physx"
     extra_attr_namespaces: ClassVar[list[str]] = [
+        # Deformable bodies (AOUSD deformable proposal). The public schema authors
+        # under ``physics:``; these vendor namespaces carry the same parameters in
+        # existing content and are remapped here, as for the rigid namespaces below.
+        "omniphysics",
+        "physxDeformableBody",
         # Scene and rigid body
         "physxScene",
         "physxRigidBody",

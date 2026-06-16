@@ -18,8 +18,8 @@ def Xform "World" ()
 
     def Material "PhysicsMaterial"
     {
-        float omniphysics:density = 40
-        float omniphysics:youngsModulus = 300000
-        float omniphysics:poissonsRatio = 0.3
+        float physics:density = 40
+        float physics:youngsModulus = 300000
+        float physics:poissonsRatio = 0.3
     }
 }

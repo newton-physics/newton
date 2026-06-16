@@ -25,6 +25,7 @@ import warp as wp
 
 import newton
 from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices
+from newton.usd import SchemaResolverPhysx
 
 
 def _add_cable_curve(stage, path, points, *, periodic=False):
@@ -42,13 +43,18 @@ def _add_cable_curve(stage, path, points, *, periodic=False):
     return curves
 
 
-def _bind_cable_material(stage, prim, mat_path, **attrs):
-    """Author a curve-deformable material under omniphysics: and bind it to a prim."""
+def _bind_cable_material(stage, prim, mat_path, *, namespace="physics", **attrs):
+    """Author a deformable material and bind it to a prim.
+
+    Authors under the canonical ``physics:`` namespace by default; pass
+    ``namespace`` to author under a vendor namespace (e.g. ``omniphysics``) to
+    exercise the schema-resolver compatibility path.
+    """
     from pxr import Sdf, UsdShade
 
     mat = UsdShade.Material.Define(stage, mat_path)
     for name, value in attrs.items():
-        mat.GetPrim().CreateAttribute(f"omniphysics:{name}", Sdf.ValueTypeNames.Float).Set(value)
+        mat.GetPrim().CreateAttribute(f"{namespace}:{name}", Sdf.ValueTypeNames.Float).Set(value)
     binding = UsdShade.MaterialBindingAPI.Apply(prim)
     binding.Bind(mat, materialPurpose="physics")
     return mat
@@ -139,6 +145,39 @@ class TestUSDDeformableCable(unittest.TestCase):
             ke = builder.joint_target_ke
             self.assertAlmostEqual(ke[dof0], expected_stretch, delta=expected_stretch * 1e-3)
             self.assertAlmostEqual(ke[dof0 + 1], expected_bend, delta=expected_bend * 1e-3)
+
+    def test_vendor_namespace_material_needs_resolver(self):
+        """Vendor-namespaced (omniphysics:) material is read only with a compat resolver.
+
+        The base parser targets the canonical ``physics:`` schema as written; the
+        omniphysics fallback is opt-in via a schema resolver that declares it
+        (mirroring how rigid-body vendor namespaces are remapped).
+        """
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_omni.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            _bind_cable_material(
+                stage, curves.GetPrim(), "/World/CableMat", namespace="omniphysics", thickness=0.02, density=1234.0
+            )
+            stage.Save()
+
+            # Default resolvers: omniphysics:thickness is ignored -> builder default radius (0.05).
+            # Capsule radius is shape_scale[shape][0].
+            builder_default = newton.ModelBuilder()
+            builder_default.add_usd(str(usd_path))
+            default_radius = builder_default.shape_scale[builder_default.body_shapes[0][0]][0]
+            self.assertAlmostEqual(default_radius, 0.05, places=5)
+
+            # With the PhysX resolver active, omniphysics:thickness is honored (radius = thickness / 2).
+            builder_compat = newton.ModelBuilder()
+            builder_compat.add_usd(str(usd_path), schema_resolvers=[SchemaResolverPhysx()])
+            compat_radius = builder_compat.shape_scale[builder_compat.body_shapes[0][0]][0]
+            self.assertAlmostEqual(compat_radius, 0.01, places=5)
 
     def test_two_cables_have_disjoint_body_ranges(self):
         """Two cables in one stage map to disjoint body/joint index ranges (addressability)."""

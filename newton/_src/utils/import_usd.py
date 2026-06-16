@@ -361,6 +361,12 @@ def parse_usd(
     # Initialize schema resolver according to precedence
     R = SchemaResolverManager(schema_resolvers)
 
+    # Vendor namespaces (e.g. omniphysics, physxDeformableBody) accepted as a
+    # fallback to the canonical physics: deformable schema. Empty unless a
+    # resolver declaring them (e.g. SchemaResolverPhysx) is active, so a default
+    # import parses the AOUSD proposal as written.
+    deformable_compat_ns = R.compat_attr_namespaces()
+
     # Validate solver-specific custom attributes are registered
     for resolver in schema_resolvers:
         resolver.validate_custom_attributes(builder)
@@ -742,7 +748,7 @@ def parse_usd(
         """Load and cache TetMesh data to avoid repeated USD extraction."""
         prim_path = str(prim.GetPath())
         if prim_path not in tetmesh_cache:
-            tetmesh_cache[prim_path] = usd.get_tetmesh(prim)
+            tetmesh_cache[prim_path] = usd.get_tetmesh(prim, deformable_compat_ns)
         return tetmesh_cache[prim_path]
 
     def _is_uniform_scale(scale: wp.vec3) -> bool:
@@ -3495,7 +3501,7 @@ def parse_usd(
             # are force/area; convert to per-joint stiffness with the circular
             # cross-section geometry (A = pi r^2, I = pi r^4 / 4) and the segment
             # length, mirroring create_cable_stiffness_from_elastic_moduli.
-            cable_mat = usd._get_curve_deformable_material(prim) or {}
+            cable_mat = usd._get_curve_deformable_material(prim, deformable_compat_ns) or {}
             radius = 0.5 * cable_mat["thickness"] if "thickness" in cable_mat else 0.05
             area = math.pi * radius * radius
             inertia = 0.25 * math.pi * radius**4
@@ -3605,7 +3611,7 @@ def parse_usd(
             # Surface-deformable material -> cloth stiffness. Map the membrane
             # moduli to the triangle FEM stiffnesses (stretch -> tri_ke, shear ->
             # tri_ka) and the bend modulus to the bending-edge stiffness.
-            cloth_mat = usd._get_surface_deformable_material(prim) or {}
+            cloth_mat = usd._get_surface_deformable_material(prim, deformable_compat_ns) or {}
             tri_ke = cloth_mat.get("stretchStiffness")
             tri_ka = cloth_mat.get("shearStiffness")
             edge_ke = cloth_mat.get("bendStiffness")

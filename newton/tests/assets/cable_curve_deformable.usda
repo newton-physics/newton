@@ -15,10 +15,10 @@ def Xform "World"
         prepend apiSchemas = ["PhysicsCurvesDeformableMaterialAPI"]
     )
     {
-        float omniphysics:thickness = 0.02
-        float omniphysics:stretchStiffness = 2000000
-        float omniphysics:bendStiffness = 50000
-        float omniphysics:density = 1000
+        float physics:thickness = 0.02
+        float physics:stretchStiffness = 2000000
+        float physics:bendStiffness = 50000
+        float physics:density = 1000
     }
 
     def BasisCurves "Cable" (

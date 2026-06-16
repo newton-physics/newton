@@ -1217,14 +1217,14 @@ _TETMESH_SCHEMA_ATTRS = frozenset(
 )
 
 
-def get_tetmesh(prim: Usd.Prim) -> TetMesh:
+def get_tetmesh(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> TetMesh:
     """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
     Reads vertex positions from the ``points`` attribute and tetrahedral
     connectivity from ``tetVertexIndices``. If a physics material is bound
     to the prim (via ``material:binding:physics``) and contains
-    ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes
-    (under the ``omniphysics:`` or ``physxDeformableBody:`` namespaces),
+    ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes (canonical
+    ``physics:`` namespace, with ``compat_namespaces`` as a fallback),
     those values are read and converted to Lame parameters (``k_mu``,
     ``k_lambda``) and density on the returned TetMesh. Material properties
     are set to ``None`` if not present.
@@ -1245,6 +1245,8 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
 
     Args:
         prim: The USD prim to load the tetrahedral mesh from.
+        compat_namespaces: Vendor attribute namespaces accepted as a fallback to
+            the canonical ``physics:`` material attributes.
 
     Returns:
         TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
@@ -1278,9 +1280,9 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
 
     material_prim = _find_physics_material_prim(prim)
     if material_prim is not None:
-        youngs = _read_physics_attr(material_prim, "youngsModulus")
-        poissons = _read_physics_attr(material_prim, "poissonsRatio")
-        density_val = _read_physics_attr(material_prim, "density")
+        youngs = _read_physics_attr(material_prim, "youngsModulus", compat_namespaces)
+        poissons = _read_physics_attr(material_prim, "poissonsRatio", compat_namespaces)
+        density_val = _read_physics_attr(material_prim, "density", compat_namespaces)
 
         if youngs is not None and poissons is not None:
             E = float(youngs)
@@ -1370,25 +1372,33 @@ def _find_physics_material_prim(prim: Usd.Prim):
     return None
 
 
-def _read_physics_attr(prim: Usd.Prim, name: str):
-    """Read a physics attribute from a prim, trying known namespaces."""
-    for prefix in ("omniphysics:", "physxDeformableBody:", "physics:"):
-        attr = prim.GetAttribute(f"{prefix}{name}")
+def _read_physics_attr(prim: Usd.Prim, name: str, compat_namespaces: Sequence[str] = ()):
+    """Read a deformable physics attribute, canonical ``physics:`` namespace first.
+
+    The AOUSD deformable proposal authors under ``physics:``; this is parsed as
+    written. ``compat_namespaces`` lists vendor namespaces (e.g. ``omniphysics``,
+    ``physxDeformableBody``) accepted as a fallback, sourced from the active
+    schema resolvers (see :meth:`SchemaResolverManager.compat_attr_namespaces`),
+    so a default import reads only the canonical schema.
+    """
+    for prefix in ("physics", *compat_namespaces):
+        attr = prim.GetAttribute(f"{prefix}:{name}")
         if attr and attr.HasAuthoredValue():
             return attr.Get()
     return None
 
 
-def _get_curve_deformable_material(prim: Usd.Prim) -> dict[str, float] | None:
+def _get_curve_deformable_material(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> dict[str, float] | None:
     """Read curve-deformable (cable) material parameters bound to a prim.
 
     Resolves the physics material bound via ``material:binding:physics`` (on the
     prim or an ancestor) and reads the ``PhysicsCurvesDeformableMaterialAPI``
-    attributes under the ``omniphysics:`` / ``physxDeformableBody:`` /
-    ``physics:`` namespaces.
+    attributes from the canonical ``physics:`` namespace, falling back to
+    ``compat_namespaces`` (see :func:`_read_physics_attr`).
 
     Args:
         prim: The curve prim whose bound physics material is read.
+        compat_namespaces: Vendor namespaces accepted as a fallback.
 
     Returns:
         A dict of authored, finite, positive values among ``thickness``,
@@ -1402,7 +1412,7 @@ def _get_curve_deformable_material(prim: Usd.Prim) -> dict[str, float] | None:
         return None
     out: dict[str, float] = {}
     for name in ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "twistStiffness", "density"):
-        val = _read_physics_attr(material_prim, name)
+        val = _read_physics_attr(material_prim, name, compat_namespaces)
         if val is None:
             continue
         val = float(val)
@@ -1411,16 +1421,17 @@ def _get_curve_deformable_material(prim: Usd.Prim) -> dict[str, float] | None:
     return out
 
 
-def _get_surface_deformable_material(prim: Usd.Prim) -> dict[str, float] | None:
+def _get_surface_deformable_material(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> dict[str, float] | None:
     """Read surface-deformable (cloth) material parameters bound to a prim.
 
     Resolves the physics material bound via ``material:binding:physics`` (on the
     prim or an ancestor) and reads the ``PhysicsSurfaceDeformableMaterialAPI``
-    attributes under the ``omniphysics:`` / ``physxDeformableBody:`` /
-    ``physics:`` namespaces.
+    attributes from the canonical ``physics:`` namespace, falling back to
+    ``compat_namespaces`` (see :func:`_read_physics_attr`).
 
     Args:
         prim: The surface (triangle mesh) prim whose bound physics material is read.
+        compat_namespaces: Vendor namespaces accepted as a fallback.
 
     Returns:
         A dict of authored, finite, positive values among ``thickness``,
@@ -1434,7 +1445,7 @@ def _get_surface_deformable_material(prim: Usd.Prim) -> dict[str, float] | None:
         return None
     out: dict[str, float] = {}
     for name in ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "density"):
-        val = _read_physics_attr(material_prim, name)
+        val = _read_physics_attr(material_prim, name, compat_namespaces)
         if val is None:
             continue
         val = float(val)
