@@ -506,6 +506,106 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertAlmostEqual(builder.tri_materials[t0][1], shear, delta=shear * 1e-3)  # tri_ka
             self.assertAlmostEqual(builder.edge_bending_properties[e0][0], bend, delta=bend * 1e-3)
 
+    def test_two_cloths_have_disjoint_ranges(self):
+        """Two surface deformables map to disjoint, covering particle / triangle ranges."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cloths.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            _add_cloth_mesh(stage, "/World/ClothA")
+            _add_cloth_mesh(stage, "/World/ClothB")
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            a = result["path_cloth_map"]["/World/ClothA"]
+            b = result["path_cloth_map"]["/World/ClothB"]
+            self.assertEqual(a["particle"], (0, 4))
+            self.assertEqual(b["particle"], (4, 8))
+            self.assertEqual(a["tri"], (0, 2))
+            self.assertEqual(b["tri"], (2, 4))
+            self.assertEqual(builder.particle_count, 8)
+
+    def test_cloth_per_point_masses_take_precedence(self):
+        """physics:masses authored on the cloth Mesh sets the particle masses directly."""
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cloth_masses.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            _bind_cable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0)
+            mesh.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([1.0, 2.0, 3.0, 4.0])
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            builder.add_usd(str(usd_path))
+            self.assertEqual([builder.particle_mass[i] for i in range(4)], [1.0, 2.0, 3.0, 4.0])
+
+    def test_cloth_thickness_scales_areal_density(self):
+        """Surface thickness converts the volumetric material density to an areal density."""
+        from pxr import Usd, UsdPhysics
+
+        def total_mass(thickness=None):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                usd_path = Path(tmpdir) / "cloth.usda"
+                stage = Usd.Stage.CreateNew(str(usd_path))
+                UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+                mesh = _add_cloth_mesh(stage, "/World/Cloth")
+                attrs = {"density": 1000.0}
+                if thickness is not None:
+                    attrs["thickness"] = thickness
+                _bind_cable_material(stage, mesh.GetPrim(), "/World/ClothMat", **attrs)
+                stage.Save()
+                builder = newton.ModelBuilder()
+                builder.add_usd(str(usd_path))
+                return sum(builder.particle_mass[:4])
+
+        # Without thickness the density is used as areal; with thickness it scales by thickness.
+        m_no_t = total_mass()
+        m_with_t = total_mass(thickness=0.01)
+        self.assertGreater(m_no_t, 0.0)
+        self.assertAlmostEqual(m_with_t / m_no_t, 0.01, places=4)
+
+    def test_cloth_simulates(self, device=None):
+        """After parsing, a cloth runs through SolverVBD and stays finite."""
+        from pxr import Usd, UsdPhysics
+
+        if device is None or not wp.get_device(device).is_cuda:
+            self.skipTest("VBD cloth simulation requires a CUDA device")
+
+        with wp.ScopedDevice(device), tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cloth.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            _bind_cable_material(
+                stage, mesh.GetPrim(), "/World/ClothMat", stretchStiffness=1.0e3, shearStiffness=1.0e3, bendStiffness=1.0e1, density=1.0
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            builder.add_usd(str(usd_path))
+            builder.add_ground_plane()
+            builder.color()
+            model = builder.finalize()
+
+            solver = newton.solvers.SolverVBD(model, iterations=10)
+            state_0, state_1, control = model.state(), model.state(), model.control()
+            contacts = model.contacts()
+            dt = 1.0 / 240.0
+            for _ in range(20):
+                state_0.clear_forces()
+                model.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, dt)
+                state_0, state_1 = state_1, state_0
+
+            pq = state_0.particle_q.numpy()
+            self.assertTrue(np.isfinite(pq).all(), "non-finite cloth particle positions after stepping")
+
 
 class TestUSDDeformableVolume(unittest.TestCase):
     """Volume (TetMesh) soft-body addressability (REQ #3038)."""
@@ -555,6 +655,59 @@ class TestUSDDeformableVolume(unittest.TestCase):
             self.assertEqual(ra, (0, 4))
             self.assertEqual(rb, (4, 8))
             self.assertEqual(builder.particle_count, 8)
+
+    def test_soft_simulates(self, device=None):
+        """After parsing, a tet soft body runs through SolverVBD and stays finite."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        if device is None or not wp.get_device(device).is_cuda:
+            self.skipTest("VBD soft-body simulation requires a CUDA device")
+
+        with wp.ScopedDevice(device), tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "soft.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            tet = _author_tet_cube(stage, "/World/Soft", z0=1.0)
+            _bind_cable_material(
+                stage, tet.GetPrim(), "/World/SoftMat", youngsModulus=1.0e5, poissonsRatio=0.3, density=1000.0
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            builder.add_usd(str(usd_path))
+            builder.add_ground_plane()
+            builder.color()
+            model = builder.finalize()
+
+            solver = newton.solvers.SolverVBD(model, iterations=10)
+            state_0, state_1, control = model.state(), model.state(), model.control()
+            contacts = model.contacts()
+            dt = 1.0 / 240.0
+            for _ in range(20):
+                state_0.clear_forces()
+                model.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, dt)
+                state_0, state_1 = state_1, state_0
+
+            pq = state_0.particle_q.numpy()
+            self.assertTrue(np.isfinite(pq).all(), "non-finite soft-body particle positions after stepping")
+
+
+def _author_tet_cube(stage, path, z0=0.0):
+    """Author a unit-cube TetMesh (8 vertices, 5 tetrahedra) with its base at ``z0``."""
+    from pxr import UsdGeom
+
+    c = [
+        (0.0, 0.0, z0), (1.0, 0.0, z0), (1.0, 1.0, z0), (0.0, 1.0, z0),
+        (0.0, 0.0, z0 + 1.0), (1.0, 0.0, z0 + 1.0), (1.0, 1.0, z0 + 1.0), (0.0, 1.0, z0 + 1.0),
+    ]
+    tets = [(0, 1, 3, 4), (1, 2, 3, 6), (1, 3, 4, 6), (1, 4, 5, 6), (3, 4, 6, 7)]
+    tet = UsdGeom.TetMesh.Define(stage, path)
+    tet.CreatePointsAttr(c)
+    tet.CreateTetVertexIndicesAttr(tets)
+    tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+    return tet
 
 
 def _author_unit_tet(stage, path):
@@ -697,6 +850,18 @@ add_function_test(
     TestUSDDeformableCableAsset,
     "test_asset_cable_simulates",
     TestUSDDeformableCableAsset.test_asset_cable_simulates,
+    devices=devices,
+)
+add_function_test(
+    TestUSDDeformableCloth,
+    "test_cloth_simulates",
+    TestUSDDeformableCloth.test_cloth_simulates,
+    devices=devices,
+)
+add_function_test(
+    TestUSDDeformableVolume,
+    "test_soft_simulates",
+    TestUSDDeformableVolume.test_soft_simulates,
     devices=devices,
 )
 
