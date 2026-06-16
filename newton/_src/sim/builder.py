@@ -4921,8 +4921,9 @@ class ModelBuilder:
                 defaults to 0.0.
             shear_stiffness: Optional transverse shear stiffness [N/m]. If None,
                 defaults to ``stretch_stiffness``.
-            shear_damping: Optional transverse shear damping. If None, defaults to
-                ``stretch_damping`` only when both shear parameters are omitted. Otherwise
+            shear_damping: Optional transverse shear damping, using the same dimensionless VBD Rayleigh
+                convention as ``stretch_damping``. If None, defaults to
+                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise
                 defaults to 0.0.
             bend_stiffness: Cable bend stiffness (stored as ``target_ke``) [N*m]
                 (torque per radian). If None, defaults to 0.0.
@@ -4931,8 +4932,9 @@ class ModelBuilder:
                 (Rayleigh-style) coefficient. If None, defaults to 0.0.
             twist_stiffness: Optional twist stiffness [N*m] (torque per radian). If None,
                 defaults to ``bend_stiffness``.
-            twist_damping: Optional twist damping. If None, defaults to ``bend_damping`` only when
-                both twist parameters are omitted. Otherwise defaults to 0.0.
+            twist_damping: Optional twist damping, using the same dimensionless VBD Rayleigh convention as
+                ``bend_damping``. If None, defaults to ``bend_damping`` only when
+                both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
@@ -7414,20 +7416,24 @@ class ModelBuilder:
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, defaults to 1.0e5.
-            stretch_damping: Stretch damping for the cable joints (applied per-joint; not length-normalized). If None,
+            stretch_damping: Stretch damping for the cable joints, stored as a dimensionless VBD Rayleigh
+                coefficient (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
             shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
                 ``stretch_stiffness``.
-            shear_damping: Optional per-joint transverse shear damping. If None, defaults to
-                ``stretch_damping`` only when both shear parameters are omitted. Otherwise defaults to 0.0.
+            shear_damping: Optional per-joint transverse shear damping, using the same dimensionless VBD Rayleigh
+                convention as ``stretch_damping``. If None, defaults to
+                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
             bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N*m]
                 (torque per radian). If None, defaults to 0.0.
-            bend_damping: Bend damping for the cable joints (applied per-joint; not length-normalized). If None,
+            bend_damping: Bend damping for the cable joints, stored as a dimensionless VBD Rayleigh coefficient
+                (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
             twist_stiffness: Optional per-joint cable twist stiffness [N*m]. If None, defaults to
                 ``bend_stiffness``.
-            twist_damping: Optional per-joint cable twist damping. If None, defaults to ``bend_damping``
-                only when both twist parameters are omitted. Otherwise defaults to 0.0.
+            twist_damping: Optional per-joint cable twist damping, using the same dimensionless VBD Rayleigh
+                convention as ``bend_damping``. If None, defaults to ``bend_damping``
+                only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
             label: Optional label prefix for bodies, shapes, and joints.
@@ -7629,18 +7635,22 @@ class ModelBuilder:
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
                 Defaults to 1.0e5.
-            stretch_damping: Stretch damping (per joint). Defaults to 0.0.
+            stretch_damping: Stretch damping, stored as a dimensionless VBD Rayleigh coefficient
+                (per joint). Defaults to 0.0.
             shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
                 ``stretch_stiffness``.
-            shear_damping: Optional per-joint transverse shear damping. If None, defaults to
-                ``stretch_damping`` only when both shear parameters are omitted. Otherwise defaults to 0.0.
+            shear_damping: Optional per-joint transverse shear damping, using the same dimensionless VBD Rayleigh
+                convention as ``stretch_damping``. If None, defaults to
+                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
             bend_stiffness: Per-joint cable bend stiffness, stored directly as ``target_ke`` [N*m].
                 Defaults to 0.0.
-            bend_damping: Bend damping (per joint). Defaults to 0.0.
+            bend_damping: Bend damping, stored as a dimensionless VBD Rayleigh coefficient
+                (per joint). Defaults to 0.0.
             twist_stiffness: Optional per-joint cable twist stiffness [N*m]. If None, defaults to
                 ``bend_stiffness``.
-            twist_damping: Optional per-joint cable twist damping. If None, defaults to ``bend_damping``
-                only when both twist parameters are omitted. Otherwise defaults to 0.0.
+            twist_damping: Optional per-joint cable twist damping, using the same dimensionless VBD Rayleigh
+                convention as ``bend_damping``. If None, defaults to ``bend_damping``
+                only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
             label: Optional label prefix for bodies, shapes, joints, and articulations.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
                 per connected component.

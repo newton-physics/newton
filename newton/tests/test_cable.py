@@ -4972,7 +4972,7 @@ def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
         joint_constraint_start = wp.array([0, 4], dtype=wp.int32, device=device)
         joint_penalty_k = wp.array([0.0, 0.0, 10.0, 2.0, 0.0, 0.0, 10.0, 2.0], dtype=float, device=device)
         joint_is_hard = wp.array([0, 0, 0, 0, 0, 0, 0, 0], dtype=wp.int32, device=device)
-        joint_cable_kb_rest_local = wp.zeros(2, dtype=wp.vec3, device=device)
+        joint_cable_rest_bend_twist_local = wp.zeros(2, dtype=wp.vec3, device=device)
 
         q_bend = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.1)
         q_twist = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.1)
@@ -5003,7 +5003,7 @@ def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
                 joint_constraint_start,
                 joint_penalty_k,
                 joint_is_hard,
-                joint_cable_kb_rest_local,
+                joint_cable_rest_bend_twist_local,
                 body_q,
                 zero_vec3,
                 zero_vec3,

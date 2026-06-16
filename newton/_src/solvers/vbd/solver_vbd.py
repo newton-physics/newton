@@ -197,7 +197,8 @@ class SolverVBD(SolverBase):
         # Non-cable structural slots.
         LINEAR = 0
         ANGULAR = 1
-        # Cable structural slots; STRETCH/SHEAR reuse slots 0/1 with cable semantics.
+        # Cable structural slots (all four are linear/angular cable constraints;
+        # they are not the non-cable LINEAR/ANGULAR despite STRETCH sharing index 0).
         STRETCH = 0
         SHEAR = 1
         BEND = 2
@@ -744,8 +745,10 @@ class SolverVBD(SolverBase):
                 self.joint_dahl_tau = wp.zeros(model.joint_count, dtype=float, device=self.device)
                 self.enable_dahl_friction = False
 
+            # Per-joint rest Korner/Audoly angular deformation [bend_x, bend_y, twist_z]
+            # in the joint frame, refreshed per step (see _refresh_cable_rest_bend_twist_cache).
             # Split cables use local +Z as the material tangent (a SolverVBD convention).
-            self.joint_cable_kb_rest_local = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
+            self.joint_cable_rest_bend_twist_local = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
             self._refresh_cable_rest_bend_twist_cache()
 
         # -------------------------------------------------------------
@@ -869,7 +872,7 @@ class SolverVBD(SolverBase):
                 self.model.body_q,
             ],
             outputs=[
-                self.joint_cable_kb_rest_local,
+                self.joint_cable_rest_bend_twist_local,
             ],
             device=self.device,
         )
@@ -1625,11 +1628,15 @@ class SolverVBD(SolverBase):
 
             if slot is not None:
                 if slot < 0 or slot >= structural_count:
+                    if joint_type == int(JointType.CABLE):
+                        names = "STRETCH=0, SHEAR=1, BEND=2, TWIST=3"
+                    elif structural_count == 1:
+                        names = "LINEAR=0"
+                    else:
+                        names = "LINEAR=0, ANGULAR=1"
                     raise ValueError(
-                        f"Cannot set hard mode on slot={slot}. "
-                        "Only structural slots support hard mode "
-                        "(non-cable LINEAR=0/ANGULAR=1; cable STRETCH=0, "
-                        "SHEAR=1, BEND=2, TWIST=3 when present)."
+                        f"Cannot set hard mode on slot={slot}: this joint has "
+                        f"{structural_count} structural slot(s) ({names})."
                     )
                 is_hard_np[c0 + slot] = val
             else:
@@ -2094,7 +2101,7 @@ class SolverVBD(SolverBase):
                         model.joint_child,
                         model.joint_X_p,
                         model.joint_X_c,
-                        self.joint_cable_kb_rest_local,
+                        self.joint_cable_rest_bend_twist_local,
                         self.body_q_prev,
                         model.body_q,
                         self.joint_constraint_start,
@@ -2129,7 +2136,7 @@ class SolverVBD(SolverBase):
                         self.joint_constraint_start,
                         self.joint_penalty_k_max,
                         self.joint_is_hard,
-                        self.joint_cable_kb_rest_local,
+                        self.joint_cable_rest_bend_twist_local,
                         self.body_q_prev,
                         self.joint_sigma_prev,
                         self.joint_kappa_prev,
@@ -2568,7 +2575,7 @@ class SolverVBD(SolverBase):
                     model.joint_X_p,
                     model.joint_X_c,
                     model.joint_axis,
-                    self.joint_cable_kb_rest_local,
+                    self.joint_cable_rest_bend_twist_local,
                     model.joint_qd_start,
                     model.joint_target_q_start,
                     self.joint_constraint_start,
@@ -2675,7 +2682,7 @@ class SolverVBD(SolverBase):
                     model.joint_X_p,
                     model.joint_X_c,
                     model.joint_axis,
-                    self.joint_cable_kb_rest_local,
+                    self.joint_cable_rest_bend_twist_local,
                     model.joint_qd_start,
                     model.joint_target_q_start,
                     self.joint_constraint_start,
@@ -2896,7 +2903,7 @@ class SolverVBD(SolverBase):
                     self.joint_constraint_start,
                     self.joint_penalty_k_max,
                     self.joint_is_hard,
-                    self.joint_cable_kb_rest_local,
+                    self.joint_cable_rest_bend_twist_local,
                     state_out.body_q,
                     self.joint_dahl_eps_max,
                     self.joint_dahl_tau,

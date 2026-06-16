@@ -112,11 +112,10 @@ def create_cable_stiffness_from_elastic_moduli(
       term. The result both unpacks as a 3-tuple and exposes named
       fields ``.stretch``, ``.bend``, ``.twist``.
 
-    The 2-tuple has no twist (torsion needs ``G``, not derivable from ``E``).
-    Passed through the builder without an explicit ``twist_stiffness``, twist
-    defaults to ``bend`` (the previous combined-stiffness model). For
-    material-consistent torsion ``twist / bend = G * J / (E * I) = 1 / (1 + nu)``,
-    pass ``poissons_ratio`` or ``shear_modulus``.
+    When the 2-tuple is passed through the builder without an explicit
+    ``twist_stiffness``, twist defaults to ``bend`` (the combined-stiffness model).
+    For material-consistent torsion ``twist / bend = G * J / (E * I) = 1 / (1 + nu)``,
+    pass ``poissons_ratio`` or ``shear_modulus`` to get the third term.
 
     Args:
         youngs_modulus: Young's modulus ``E`` [Pa = N/m^2]. Must be finite
