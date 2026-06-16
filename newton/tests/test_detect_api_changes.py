@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
 import contextlib
 import importlib.util
 import io
@@ -186,6 +187,33 @@ class ActuatorParsed:
             self.assertFalse(report["diff"]["has_changes"])
             self.assertIn("Analysis warnings", report["comment"])
             self.assertIn("WARNING: skipping newton/bad.py", warnings.getvalue())
+
+    def test_copy_symbol_preserves_existing_source_module(self):
+        symbol = detector._copy_symbol(
+            {
+                "kind": "class",
+                "signature": "class Public",
+                "source_module": "newton.pkg.leaf",
+            },
+            source_module="newton.pkg",
+        )
+
+        self.assertEqual(symbol["source_module"], "newton.pkg.leaf")
+
+    def test_init_reexport_propagation_records_source_module(self):
+        tree = ast.parse("from .leaf import Public\n")
+        all_definitions = {
+            "newton.pkg": {},
+            "newton.pkg.leaf": {
+                "Public": detector._make_symbol("class", "class Public"),
+                "Public.method": detector._make_symbol("method", "method(self: Public) -> int"),
+            },
+        }
+
+        self.assertTrue(detector._propagate_init_reexports("newton.pkg", tree, all_definitions))
+
+        self.assertEqual(all_definitions["newton.pkg"]["Public"]["source_module"], "newton.pkg.leaf")
+        self.assertEqual(all_definitions["newton.pkg"]["Public.method"]["source_module"], "newton.pkg.leaf")
 
     def test_main_reports_decode_failures(self):
         with tempfile.TemporaryDirectory() as tmp:

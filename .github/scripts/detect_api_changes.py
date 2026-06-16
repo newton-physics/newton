@@ -89,7 +89,7 @@ def _make_symbol(
 
 def _copy_symbol(defn: dict, *, source_module: str | None = None) -> dict:
     symbol = dict(defn)
-    if source_module is not None:
+    if source_module is not None and "source_module" not in symbol:
         symbol["source_module"] = source_module
     return symbol
 
@@ -593,7 +593,7 @@ def _propagate_init_reexports(
             source_def = source_defs.get(alias.name)
             if source_def:
                 if exported_name not in pkg_defs:
-                    pkg_defs[exported_name] = dict(source_def)
+                    pkg_defs[exported_name] = _copy_symbol(source_def, source_module=source_module)
                     changed = True
                 if source_def["kind"] in ("class", "enum"):
                     prefix = f"{alias.name}."
@@ -602,10 +602,16 @@ def _propagate_init_reexports(
                             member_name = key[len(prefix) :]
                             new_key = f"{exported_name}.{member_name}"
                             if new_key not in pkg_defs:
-                                pkg_defs[new_key] = dict(defn)
+                                pkg_defs[new_key] = _copy_symbol(defn, source_module=source_module)
                                 changed = True
                 elif source_def["kind"] == "module":
-                    changed |= _copy_module_child_definitions(alias.name, exported_name, source_defs, pkg_defs)
+                    changed |= _copy_module_child_definitions(
+                        alias.name,
+                        exported_name,
+                        source_defs,
+                        pkg_defs,
+                        source_module=source_def.get("source_module", source_module),
+                    )
             else:
                 module_name = _resolve_module_alias(source_module, alias.name, all_definitions)
                 if module_name is None:
@@ -639,7 +645,7 @@ def _copy_module_definitions(
     for key, defn in source_defs.items():
         target_key = f"{target_name}.{key}"
         if target_key not in target_defs:
-            target_defs[target_key] = dict(defn)
+            target_defs[target_key] = _copy_symbol(defn, source_module=source_module)
             changed = True
     return changed
 
@@ -649,6 +655,8 @@ def _copy_module_child_definitions(
     target_name: str,
     source_defs: dict[str, dict],
     target_defs: dict[str, dict],
+    *,
+    source_module: str,
 ) -> bool:
     prefix = f"{source_name}."
     changed = False
@@ -658,7 +666,7 @@ def _copy_module_child_definitions(
         member_name = key[len(prefix) :]
         target_key = f"{target_name}.{member_name}"
         if target_key not in target_defs:
-            target_defs[target_key] = dict(defn)
+            target_defs[target_key] = _copy_symbol(defn, source_module=source_module)
             changed = True
     return changed
 
