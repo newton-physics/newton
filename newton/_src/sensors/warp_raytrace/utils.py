@@ -557,9 +557,9 @@ class Utils:
         self,
         width: int,
         height: int,
-        cameras: Any | list[Any] | tuple[Any, ...],
+        cameras: camera_utils.UsdCameraInput,
         *,
-        time: Any | None = None,
+        time: camera_utils.UsdTime | None = None,
         out_rays: wp.array4d[wp.vec3f] | None = None,
         camera_index: int = 0,
     ) -> wp.array4d[wp.vec3f]:
@@ -827,9 +827,9 @@ class Utils:
 
     def compute_usd_camera_transforms(
         self,
-        cameras: Any | list[Any] | tuple[Any, ...] | list[list[Any]] | tuple[tuple[Any, ...], ...],
+        cameras: camera_utils.UsdCameraGridInput,
         *,
-        time: Any | None = None,
+        time: camera_utils.UsdTime | None = None,
     ) -> wp.array2d[wp.transformf]:
         """Compute camera-to-world transforms from USD camera prims.
 

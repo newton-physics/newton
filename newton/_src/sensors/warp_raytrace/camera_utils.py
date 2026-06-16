@@ -5,10 +5,27 @@ from __future__ import annotations
 
 import math
 import numbers
-from typing import Any
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import numpy as np
 import warp as wp
+
+if TYPE_CHECKING:
+    from pxr import Usd, UsdGeom
+
+    UsdCameraLike: TypeAlias = Usd.Prim | UsdGeom.Camera
+    UsdTime: TypeAlias = Usd.TimeCode | float
+else:
+    UsdCameraLike: TypeAlias = Any
+    UsdTime: TypeAlias = Any
+
+UsdCameraInput: TypeAlias = UsdCameraLike | Sequence[UsdCameraLike]
+UsdCameraGridInput: TypeAlias = UsdCameraInput | Sequence[Sequence[UsdCameraLike]]
+
+
+def _is_camera_sequence(cameras: Any) -> bool:
+    return isinstance(cameras, Sequence) and not isinstance(cameras, (str, bytes, bytearray))
 
 
 def _camera_param_count(param: Any) -> int:
@@ -85,13 +102,13 @@ def _coerce_usd_time(time: Any) -> Any:
     return Usd.TimeCode(float(time))
 
 
-def _normalize_usd_cameras(cameras: Any) -> list[Any]:
+def _normalize_usd_cameras(cameras: UsdCameraInput) -> list[Any]:
     try:
         from pxr import UsdGeom
     except ImportError as e:
         raise ImportError("USD camera ray helpers require the pxr USD Python modules.") from e
 
-    if isinstance(cameras, (list, tuple)):
+    if _is_camera_sequence(cameras):
         camera_items = list(cameras)
     else:
         camera_items = [cameras]
@@ -119,10 +136,10 @@ def _normalize_usd_cameras(cameras: Any) -> list[Any]:
 def compute_camera_rays_usd_pinhole(
     width: int,
     height: int,
-    cameras: Any | list[Any] | tuple[Any, ...],
+    cameras: UsdCameraInput,
     *,
     device: wp.Device,
-    time: Any | None = None,
+    time: UsdTime | None = None,
     out_rays: wp.array4d[wp.vec3f] | None = None,
     camera_index: int = 0,
 ) -> wp.array4d[wp.vec3f]:
@@ -169,12 +186,12 @@ def compute_camera_rays_usd_pinhole(
 
 
 def compute_usd_camera_transforms(
-    cameras: Any | list[Any] | tuple[Any, ...] | list[list[Any]] | tuple[tuple[Any, ...], ...],
+    cameras: UsdCameraGridInput,
     *,
     world_count: int,
     device: wp.Device,
     target_up_axis: Any | None = None,
-    time: Any | None = None,
+    time: UsdTime | None = None,
 ) -> wp.array2d[wp.transformf]:
     try:
         from pxr import UsdGeom
@@ -195,7 +212,7 @@ def compute_usd_camera_transforms(
             transform = axis_xform * transform
         return transform
 
-    is_per_world = isinstance(cameras, (list, tuple)) and len(cameras) > 0 and isinstance(cameras[0], (list, tuple))
+    is_per_world = _is_camera_sequence(cameras) and len(cameras) > 0 and _is_camera_sequence(cameras[0])
 
     if is_per_world:
         if len(cameras) != world_count:
