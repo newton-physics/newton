@@ -157,7 +157,7 @@ class Example:
             "rigid_joint_angular_k_start": 1.0e1,
             "rigid_joint_linear_ke": 1.0e9,
             "rigid_joint_angular_ke": 1.0e9,
-            "rigid_joint_linear_kd": 1.0e-2,
+            "rigid_joint_linear_kd": 1.0e2,
             "rigid_joint_angular_kd": 0.0,
         }
 
@@ -278,6 +278,8 @@ class Example:
 
     def _emit_cloth(self, builder: newton.ModelBuilder):
         """Add a cloth sheet at z=1.0, fixed at left and right edges."""
+        tri_ke = 1.0e5
+        edge_ke = 0.01
         builder.add_cloth_grid(
             pos=wp.vec3(-0.5, -0.5, 1.0),
             rot=wp.quat_identity(),
@@ -289,11 +291,11 @@ class Example:
             cell_x=1.0 / 30.0,
             cell_y=1.0 / 30.0,
             mass=0.1,
-            tri_ke=1e5,
-            tri_ka=1e5,
-            tri_kd=1e-2,
-            edge_ke=0.01,
-            edge_kd=1e-2,
+            tri_ke=tri_ke,
+            tri_ka=tri_ke,
+            tri_kd=1.0e-2 * tri_ke,
+            edge_ke=edge_ke,
+            edge_kd=1.0e-2 * edge_ke,
             particle_radius=0.01,
         )
 
@@ -363,7 +365,7 @@ class Example:
                 density=density,
                 k_mu=stiffness,
                 k_lambda=stiffness,
-                k_damp=1e-3,
+                k_damp=1.0e-3 * stiffness,
                 particle_radius=0.025,
             )
 

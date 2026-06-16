@@ -312,6 +312,8 @@ class Example:
         )
 
     def _emit_vbd_cable(self, builder: newton.ModelBuilder) -> tuple[list[int], list[int]]:
+        stretch_stiffness = 2.0e5
+        bend_stiffness = 0.08
         cable_cfg = newton.ModelBuilder.ShapeConfig(
             density=1400.0,
             ke=5.0e4,
@@ -332,10 +334,10 @@ class Example:
             quaternions=quats,
             radius=self.payload_radius,
             cfg=cable_cfg,
-            stretch_stiffness=2.0e5,
+            stretch_stiffness=stretch_stiffness,
             stretch_damping=2.0e-2,
-            bend_stiffness=0.08,
-            bend_damping=2.0e-2,
+            bend_stiffness=bend_stiffness,
+            bend_damping=2.0e-2 * bend_stiffness,
             label="vbd_cable",
         )
 

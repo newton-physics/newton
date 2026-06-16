@@ -61,7 +61,7 @@ class Example:
         self.model = builder.finalize()
         self.model.particle_mu = 0.6
         self.model.soft_contact_ke = 5.0e4
-        self.model.soft_contact_kd = 1.0e-2
+        self.model.soft_contact_kd = 1.0e-2 * self.model.soft_contact_ke
         self.model.soft_contact_mu = 0.6
 
         xpbd_kwargs = {
@@ -172,6 +172,7 @@ class Example:
 
     def _emit_vbd_cloth(self, builder: newton.ModelBuilder, args) -> list[int]:
         particle_start = builder.particle_count
+        cloth_damping = args.cloth_damping
         builder.add_cloth_grid(
             pos=wp.vec3(-0.35, -0.35, 0.38),
             rot=wp.quat_identity(),
@@ -185,12 +186,12 @@ class Example:
             mass=0.02,
             add_springs=True,
             spring_ke=args.cloth_stiffness,
-            spring_kd=args.cloth_damping,
+            spring_kd=cloth_damping * args.cloth_stiffness,
             tri_ke=args.cloth_stiffness,
             tri_ka=args.cloth_stiffness,
-            tri_kd=args.cloth_damping * 0.05,
+            tri_kd=cloth_damping * 0.05 * args.cloth_stiffness,
             edge_ke=args.cloth_bending,
-            edge_kd=args.cloth_damping * 0.05,
+            edge_kd=cloth_damping * 0.05 * args.cloth_bending,
             particle_radius=0.025,
         )
         return list(range(particle_start, builder.particle_count))
@@ -265,7 +266,7 @@ class Example:
         )
         parser.add_argument(
             "--cloth-damping",
-            help="VBD cloth damping coefficient",
+            help="VBD cloth damping multiplier converted to absolute damping coefficients",
             type=float,
             default=0.005,
         )

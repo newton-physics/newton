@@ -115,6 +115,8 @@ class Example:
         dim = 11
         cloth_z = 2.0
         particle_start = builder.particle_count
+        cloth_tri_ke = 1.0e3
+        cloth_edge_ke = 0.01
         builder.add_cloth_grid(
             pos=wp.vec3(-0.5, -0.5, cloth_z),
             rot=wp.quat_identity(),
@@ -126,11 +128,11 @@ class Example:
             cell_x=0.1,
             cell_y=0.1,
             mass=0.05,
-            tri_ke=1.0e3,
-            tri_ka=1.0e3,
-            tri_kd=1e-2,
-            edge_ke=0.01,
-            edge_kd=1e-2,
+            tri_ke=cloth_tri_ke,
+            tri_ka=cloth_tri_ke,
+            tri_kd=1.0e-2 * cloth_tri_ke,
+            edge_ke=cloth_edge_ke,
+            edge_kd=1.0e-2 * cloth_edge_ke,
             particle_radius=0.01,
         )
 

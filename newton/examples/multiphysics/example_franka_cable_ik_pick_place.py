@@ -46,6 +46,8 @@ FRANKA_Q = [
 # Cable: 19 capsule segments spaced 0.02 m (20 nodes), radius 0.005 m, per IsaacLab.
 CABLE_CENTER = wp.vec3(0.5, 0.0, 0.256)
 CABLE_LENGTH = 0.38
+CABLE_CONTACT_KE = 1.0e4
+CABLE_CONTACT_KD = 1.0e-5 * CABLE_CONTACT_KE
 
 # Top-down gripper orientation: 180 deg about world x flips the hand z-axis to -z.
 GRIPPER_DOWN = (1.0, 0.0, 0.0, 0.0)  # (qx, qy, qz, qw)
@@ -56,7 +58,7 @@ GRIPPER_DOWN = (1.0, 0.0, 0.0, 0.0)  # (qx, qy, qz, qw)
 # under the cable radius) so the fingers pinch firmly without ratcheting past it.
 GRIP_OPEN = 0.04
 GRIP_CLOSE = 0.0
-GRIP_HOLD = 0.004  # held finger position once grasped; tuned to the default cable radius
+GRIP_HOLD = 0.0  # held finger position once grasped
 GRIP_FORCE = 1500.0  # gripper effort limit [N] (IsaacLab panda_hand)
 GRIP_STIFFNESS = 1000.0  # finger PD stiffness [N/m] (IsaacLab panda_hand)
 
@@ -168,7 +170,9 @@ class Example:
         self._expand_world_indices(bodies_per_world, joints_per_world, shapes_per_world)
 
         # Working surface (cable rests on it).
-        plane_cfg = newton.ModelBuilder.ShapeConfig(ke=1.0e4, kd=1.0e-5, mu=1.0, margin=0.0, gap=0.01)
+        plane_cfg = newton.ModelBuilder.ShapeConfig(
+            ke=CABLE_CONTACT_KE, kd=CABLE_CONTACT_KD, mu=1.0, margin=0.0, gap=0.01
+        )
         self.ground_shapes = [
             builder.add_ground_plane(
                 height=self.surface_z,
@@ -182,8 +186,8 @@ class Example:
         self.device = self.model.device
 
         # Uniform rigid contact material across all shapes (IsaacLab NewtonModelCfg).
-        self.model.shape_material_ke.fill_(1.0e4)
-        self.model.shape_material_kd.fill_(1.0e-5)
+        self.model.shape_material_ke.fill_(CABLE_CONTACT_KE)
+        self.model.shape_material_kd.fill_(CABLE_CONTACT_KD)
         self.model.shape_material_mu.fill_(1.0)
 
         # Build keyframe sequence now that the cable pose is known.
@@ -225,8 +229,8 @@ class Example:
         payload_shape_start = builder.shape_count
         cable_cfg = newton.ModelBuilder.ShapeConfig(
             density=100.0,
-            ke=1.0e4,
-            kd=1.0e-5,
+            ke=CABLE_CONTACT_KE,
+            kd=CABLE_CONTACT_KD,
             mu=1.0,
             margin=0.0,
             gap=0.01,
@@ -238,15 +242,17 @@ class Example:
             num_segments=self.payload_segments,
             twist_total=0.0,
         )
+        stretch_stiffness = 1.0e6
+        bend_stiffness = 5.0e-4
         builder.add_rod(
             positions=points,
             quaternions=quats,
             radius=self.payload_radius,
             cfg=cable_cfg,
-            stretch_stiffness=1.0e6,
+            stretch_stiffness=stretch_stiffness,
             stretch_damping=1.0e-1,
-            bend_stiffness=5.0e-3,
-            bend_damping=2.0e-3,
+            bend_stiffness=bend_stiffness,
+            bend_damping=2.0e-3 * bend_stiffness,
             label="vbd_cable",
         )
         self.payload_bodies = list(range(payload_body_start, builder.body_count))
@@ -516,7 +522,7 @@ class Example:
         newton.examples.add_coupled_view_args(parser)
         newton.examples.add_world_count_arg(parser)
         parser.add_argument("--substeps", type=int, default=10, help="Coupled substeps per rendered frame.")
-        parser.add_argument("--proxy-iterations", type=int, default=4, help="Proxy relaxation passes per substep.")
+        parser.add_argument("--proxy-iterations", type=int, default=1, help="Proxy relaxation passes per substep.")
         parser.add_argument("--mass-scale", type=float, default=1.0, help="Proxy body mass scale in VBD.")
         parser.add_argument(
             "--coupling-mode",
@@ -537,7 +543,7 @@ class Example:
         parser.add_argument(
             "--vbd-rigid-contact-k-start",
             type=float,
-            default=1.0e2,
+            default=1.0e3,
             help="VBD body-particle contact penalty seed when AVBD ramping is enabled.",
         )
         parser.add_argument("--mujoco-iterations", type=int, default=100, help="MuJoCo solver iterations.")

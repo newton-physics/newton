@@ -129,7 +129,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
         self.model.soft_contact_ke = 5.0e4
-        self.model.soft_contact_kd = 1.0e-3
+        self.model.soft_contact_kd = 1.0e-3 * self.model.soft_contact_ke
         self.model.soft_contact_mu = 0.8
 
         mpm_config = SolverImplicitMPM.Config()
@@ -236,6 +236,9 @@ class Example:
 
     def _emit_softbody(self, builder: newton.ModelBuilder) -> list[int]:
         particle_start = builder.particle_count
+        k_mu = 2.0e4
+        k_lambda = 2.0e4
+        edge_ke = 1.0e-2
         builder.add_soft_grid(
             pos=wp.vec3(-0.22, -0.22, 1.02),
             rot=wp.quat_identity(),
@@ -247,14 +250,14 @@ class Example:
             cell_y=0.11,
             cell_z=0.11,
             density=420.0,
-            k_mu=2.0e4,
-            k_lambda=2.0e4,
-            k_damp=2.0e-3,
+            k_mu=k_mu,
+            k_lambda=k_lambda,
+            k_damp=2.0e-3 * k_mu,
             tri_ke=0.0,
             tri_ka=0.0,
             tri_kd=0.0,
-            edge_ke=1.0e-2,
-            edge_kd=1.0e-3,
+            edge_ke=edge_ke,
+            edge_kd=1.0e-3 * edge_ke,
             particle_radius=0.035,
         )
         return list(range(particle_start, builder.particle_count))
