@@ -811,6 +811,27 @@ class TestModelMesh(unittest.TestCase):
         contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
         self.assertEqual(contact_pairs, {(ground, 1), (ground, 2), (ground, 3), (ground, 4), (ground, 5), (ground, 6)})
 
+    def test_add_builder_collision_filter_template_cache_tracks_mutations(self):
+        """Source-builder filter cache should invalidate when pair contents change."""
+
+        source = ModelBuilder()
+        body0 = source.add_body()
+        shape0 = source.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = source.add_body()
+        shape1 = source.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        body2 = source.add_body()
+        shape2 = source.add_shape_box(body=body2, hx=0.5, hy=0.5, hz=0.5)
+        source.shape_collision_filter_pairs.append((shape0, shape1))
+
+        builder = ModelBuilder()
+        builder.add_builder(source)
+        source.shape_collision_filter_pairs[0] = (shape0, shape2)
+        builder.add_builder(source)
+
+        self.assertIn((0, 1), builder.shape_collision_filter_pairs)
+        self.assertIn((3, 5), builder.shape_collision_filter_pairs)
+        self.assertNotIn((3, 4), builder.shape_collision_filter_pairs)
+
     def test_compact_replicated_collision_filters_allow_residual_filters(self):
         """Residual global filters should not force large replicated filters to materialize."""
 
@@ -843,6 +864,33 @@ class TestModelMesh(unittest.TestCase):
 
         contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
         self.assertEqual(contact_pairs, {(ground, 2), (ground, 4), (ground, 6)})
+
+        builder.shape_collision_filter_pairs.append((ground, 2))
+        self.assertNotIn((ground, 2), filters)
+
+    def test_compact_collision_filter_blocks_invalidate_after_mutation(self):
+        """Mutating compact filters should avoid stale block metadata."""
+
+        robot = ModelBuilder()
+        body0 = robot.add_body()
+        shape0 = robot.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = robot.add_body()
+        shape1 = robot.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        robot.shape_collision_filter_pairs.append((shape0, shape1))
+
+        builder = ModelBuilder()
+        builder.add_ground_plane()
+        builder.replicate(robot, 3)
+        builder.shape_collision_filter_pairs[0] = (1, 3)
+
+        with mock.patch.object(ModelBuilder, "_SHAPE_COLLISION_FILTER_PAIR_SET_LIMIT", 1, create=True):
+            model = builder.finalize()
+
+        self.assertIsInstance(model.shape_collision_filter_pairs, set)
+
+        contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+        self.assertIn((1, 2), contact_pairs)
+        self.assertEqual(len(contact_pairs), 7)
 
     def test_collision_filter_fixed_to_world(self):
         """Bodies fixed to world via add_joint_fixed(parent=-1) should auto-filter
