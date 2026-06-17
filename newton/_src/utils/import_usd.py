@@ -3539,7 +3539,9 @@ def parse_usd(
                 "tet": (soft_t0, builder.tet_count),
             }
             path_soft_attrs[path] = {
-                "resolved_density": add_soft_mesh_kwargs.get("density"),
+                # The density actually used: the resolved override if present, else the
+                # TetMesh's own material density.
+                "resolved_density": add_soft_mesh_kwargs.get("density", tetmesh_for_builder.density),
             }
 
             if verbose:
@@ -3632,11 +3634,8 @@ def parse_usd(
             inertia = 0.25 * math.pi * radius**4
             # Density precedence resolved here; total-mass/per-point overrides applied after add_rod.
             cable_density = _resolve_deformable_density(prim, cable_mat.get("density"))
-            cable_cfg = (
-                replace(builder.default_shape_cfg, density=cable_density)
-                if cable_density is not None
-                else builder.default_shape_cfg
-            )
+            resolved_cable_density = cable_density if cable_density is not None else builder.default_shape_cfg.density
+            cable_cfg = replace(builder.default_shape_cfg, density=resolved_cable_density)
             if "shearStiffness" in cable_mat or "twistStiffness" in cable_mat:
                 warnings.warn(
                     f"{path}: shearStiffness / twistStiffness are not yet mapped to the VBD cable "
@@ -3646,6 +3645,7 @@ def parse_usd(
 
             cable_bodies: list[int] = []
             cable_joints: list[int] = []
+            imported_point_count = 0
             offset = 0
             for ci, n in enumerate(vertex_counts):
                 start = offset
@@ -3655,6 +3655,7 @@ def parse_usd(
                 if n < 3:
                     warnings.warn(f"{path}: curve {ci} has {n} points (need >= 3); skipping that curve.", stacklevel=2)
                     continue
+                imported_point_count += n
                 positions = [
                     wp.transform_point(
                         world_xf, wp.vec3(float(p[0]) * w_scale[0], float(p[1]) * w_scale[1], float(p[2]) * w_scale[2])
@@ -3709,11 +3710,11 @@ def parse_usd(
                 cable_joints.extend(joints)
 
             if cable_bodies:
-                _apply_cable_masses(prim, cable_bodies, len(points))
+                _apply_cable_masses(prim, cable_bodies, imported_point_count)
                 path_cable_map[path] = (cable_bodies, cable_joints)
                 path_cable_attrs[path] = {
                     "material": dict(cable_mat),
-                    "resolved_density": cable_density,
+                    "resolved_density": resolved_cable_density,
                     "closed": closed,
                 }
                 if verbose:
@@ -3765,12 +3766,11 @@ def parse_usd(
             # Newton cloth density is areal; convert the volumetric material density with the
             # surface thickness (required for surface mass per the proposal). Body density overrides.
             vol_density = _resolve_deformable_density(prim, cloth_mat.get("density"))
-            if vol_density is None:
-                density = builder.default_shape_cfg.density
-            elif "thickness" in cloth_mat:
-                density = vol_density * cloth_mat["thickness"]
-            else:
-                density = vol_density
+            resolved_cloth_density = vol_density if vol_density is not None else builder.default_shape_cfg.density
+            # The areal value is builder-specific; keep it local to add_cloth_mesh.
+            density = (
+                resolved_cloth_density * cloth_mat["thickness"] if "thickness" in cloth_mat else resolved_cloth_density
+            )
 
             p0, t0, e0 = builder.particle_count, builder.tri_count, builder.edge_count
             builder.add_cloth_mesh(
@@ -3794,7 +3794,7 @@ def parse_usd(
             }
             path_cloth_attrs[path] = {
                 "material": dict(cloth_mat),
-                "resolved_density": density,
+                "resolved_density": resolved_cloth_density,
             }
             if verbose:
                 print(f"Added cloth {path} with {builder.particle_count - p0} particles.")
@@ -4343,9 +4343,20 @@ def parse_usd(
         # through the collapse maps to keep path_cable_map valid after collapsing.
         if path_cable_map:
             joint_remap = collapse_results["joint_remap"]
+
+            def _remap_collapsed_body(body_id):
+                # Mirror the path_body_map handling above: a reindexed body is in
+                # body_remap; a body merged away is resolved via its merge parent.
+                if body_id in body_remap:
+                    return body_remap[body_id]
+                if body_id in body_merged_parent:
+                    parent = body_merged_parent[body_id]
+                    return body_remap.get(parent, parent)
+                return body_id
+
             path_cable_map = {
                 path: (
-                    [body_remap.get(b, b) for b in bodies],
+                    [_remap_collapsed_body(b) for b in bodies],
                     [joint_remap.get(j, j) for j in joints],
                 )
                 for path, (bodies, joints) in path_cable_map.items()

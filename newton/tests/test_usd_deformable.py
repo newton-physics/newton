@@ -195,6 +195,51 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertEqual(result["path_cable_map"], {})
             self.assertEqual(builder.body_count, 0)
 
+    def test_cable_resolved_density_reports_default_when_unauthored(self):
+        """resolved_density reports the density actually used (the builder default), not None."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_nodensity.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)  # no density
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            attrs = result["path_cable_attrs"]["/World/Cable"]
+            self.assertEqual(attrs["resolved_density"], builder.default_shape_cfg.density)
+
+    def test_skipped_curve_excluded_from_cable_mass_count(self):
+        """Points from a skipped (too-short) curve are excluded from the per-point mass-count check."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "multi_curve.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            curves = UsdGeom.BasisCurves.Define(stage, "/World/Cable")
+            curves.CreateTypeAttr().Set(UsdGeom.Tokens.linear)
+            # A valid 4-point curve plus a 2-point curve that the importer skips.
+            curves.CreatePointsAttr(
+                [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0), (0.0, 1.0, 1.0), (0.1, 1.0, 1.0)]
+            )
+            curves.CreateCurveVertexCountsAttr([4, 2])
+            curves.GetPrim().AddAppliedSchema("PhysicsCurvesDeformableSimAPI")
+            # Masses authored for all 6 points; only 4 are imported, so the count check
+            # validates against 4 (not 6) and rejects the array instead of applying
+            # mass from the skipped curve's points.
+            curves.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([1.0] * 6)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, r"!= 4 curve points"):
+                builder.add_usd(str(usd_path))
+
     def test_vendor_namespace_material_needs_resolver(self):
         """Vendor-namespaced (omniphysics:) material is read only with a compat resolver.
 
@@ -753,6 +798,23 @@ class TestUSDDeformableCloth(unittest.TestCase):
         m_with_t = total_mass(thickness=0.01)
         self.assertGreater(m_no_t, 0.0)
         self.assertAlmostEqual(m_with_t / m_no_t, 0.01, places=4)
+
+    def test_cloth_resolved_density_is_volumetric_not_areal(self):
+        """path_cloth_attrs.resolved_density is the solver-neutral volumetric density, not the areal value."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cloth_density.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            _bind_cable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0, thickness=0.01)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            # Volumetric density (1000), not the areal 1000 * 0.01 passed to add_cloth_mesh.
+            self.assertEqual(result["path_cloth_attrs"]["/World/Cloth"]["resolved_density"], 1000.0)
 
     def test_cloth_non_uniform_scale_bakes_into_vertices(self):
         """A non-uniform xformOp:scale on a cloth mesh is baked into the particle positions."""
