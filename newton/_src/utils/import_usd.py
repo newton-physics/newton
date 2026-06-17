@@ -3401,6 +3401,18 @@ def parse_usd(
         _, body_density = usd._get_deformable_body_overrides(prim, deformable_compat_ns)
         return body_density if body_density is not None else material_density
 
+    def _warn_unsupported_rest_shape(prim, path, names):
+        # Rest-shape import is not implemented yet; warn rather than silently drop an
+        # authored rest configuration (see issue #3178's "unsupported fields" criterion).
+        for name in names:
+            if usd._read_physics_attr(prim, name, deformable_compat_ns) is not None:
+                warnings.warn(
+                    f"{path}: 'physics:{name}' (deformable rest shape) is authored but not "
+                    f"yet imported; it is ignored.",
+                    stacklevel=2,
+                )
+                return
+
     def _apply_particle_masses(prim, p0, p1):
         n = p1 - p0
         if n <= 0:
@@ -3477,6 +3489,8 @@ def parse_usd(
                 usd.has_applied_api_schema(prim, "PhysicsVolumeDeformableSimAPI")
                 or usd._find_deformable_body_prim(prim) is not None
             )
+            if is_volume_deformable:
+                _warn_unsupported_rest_shape(prim, path, ("restShapePoints",))
 
             if collect_schema_attrs:
                 R.collect_prim_attrs(prim)
@@ -3576,12 +3590,22 @@ def parse_usd(
                 continue
 
             curves = UsdGeom.BasisCurves(prim)
+            # The proposal scopes curve deformables to linear basis curves; the
+            # importer treats the points as a segment polyline, so a non-linear
+            # (e.g. cubic) curve would be misinterpreted.
+            if curves.GetTypeAttr().Get() != UsdGeom.Tokens.linear:
+                warnings.warn(
+                    f"{path}: only linear BasisCurves import as cables; skipping non-linear curve.",
+                    stacklevel=2,
+                )
+                continue
             points = curves.GetPointsAttr().Get()
             vertex_counts = curves.GetCurveVertexCountsAttr().Get()
             if not points or not vertex_counts:
                 warnings.warn(f"{path}: cable curve has no points / curveVertexCounts; skipping.", stacklevel=2)
                 continue
             closed = curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic
+            _warn_unsupported_rest_shape(prim, path, ("restWrapPoints",))
 
             # Newton-extension control, gated on the Newton resolver (see helper docstring).
             wrap_in_articulation = usd._get_newton_curve_wrap_in_articulation(prim) if newton_resolver_active else True
@@ -3719,6 +3743,7 @@ def parse_usd(
             if any(int(c) != 3 for c in face_counts):
                 warnings.warn(f"{path}: cloth mesh must be triangulated (all faces size 3); skipping.", stacklevel=2)
                 continue
+            _warn_unsupported_rest_shape(prim, path, ("restShapePoints",))
 
             world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
             cloth_pos, cloth_rot, cloth_scale = wp.transform_decompose(world_mat)

@@ -146,6 +146,55 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertAlmostEqual(ke[dof0], expected_stretch, delta=expected_stretch * 1e-3)
             self.assertAlmostEqual(ke[dof0 + 1], expected_bend, delta=expected_bend * 1e-3)
 
+    def test_cable_zero_stiffness_is_preserved(self):
+        """Authored zero stiffness (range [0, inf)) is kept, not replaced by add_rod's default."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_zero.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            _bind_cable_material(
+                stage,
+                curves.GetPrim(),
+                "/World/CableMat",
+                thickness=0.02,
+                stretchStiffness=0.0,
+                bendStiffness=3.0e5,
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            _bodies, joints = result["path_cable_map"]["/World/Cable"]
+            # Stretch DOF target_ke is the authored 0.0, not add_rod's 1.0e5 default.
+            dof0 = builder.joint_qd_start[joints[0]]
+            self.assertEqual(builder.joint_target_ke[dof0], 0.0)
+            self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"]["stretchStiffness"], 0.0)
+
+    def test_non_linear_curve_is_skipped(self):
+        """A non-linear (cubic) curve-deformable warns and is skipped (cable import is linear-only)."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cubic.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            curves = UsdGeom.BasisCurves.Define(stage, "/World/Cubic")
+            curves.CreateTypeAttr().Set(UsdGeom.Tokens.cubic)
+            curves.CreatePointsAttr([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)])
+            curves.CreateCurveVertexCountsAttr([4])
+            curves.GetPrim().AddAppliedSchema("PhysicsCurvesDeformableSimAPI")
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "non-linear"):
+                result = builder.add_usd(str(usd_path))
+            self.assertEqual(result["path_cable_map"], {})
+            self.assertEqual(builder.body_count, 0)
+
     def test_vendor_namespace_material_needs_resolver(self):
         """Vendor-namespaced (omniphysics:) material is read only with a compat resolver.
 
@@ -617,6 +666,30 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertAlmostEqual(builder.tri_materials[t0][1], shear, delta=shear * 1e-3)  # tri_ka
             self.assertAlmostEqual(builder.edge_bending_properties[e0][0], bend, delta=bend * 1e-3)
 
+    def test_cloth_zero_stiffness_is_preserved(self):
+        """Authored zero stretch stiffness (range [0, inf)) maps to tri_ke = 0, not a default."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cloth_zero.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            _bind_cable_material(
+                stage,
+                mesh.GetPrim(),
+                "/World/ClothMat",
+                stretchStiffness=0.0,
+                bendStiffness=2.0e1,
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            t0 = result["path_cloth_map"]["/World/Cloth"]["tri"][0]
+            self.assertEqual(builder.tri_materials[t0][0], 0.0)  # tri_ke (stretch)
+            self.assertEqual(result["path_cloth_attrs"]["/World/Cloth"]["material"]["stretchStiffness"], 0.0)
+
     def test_two_cloths_have_disjoint_ranges(self):
         """Two surface deformables map to disjoint, covering particle / triangle ranges."""
         from pxr import Usd, UsdPhysics
@@ -766,6 +839,25 @@ class TestUSDDeformableVolume(unittest.TestCase):
             self.assertEqual(ranges["particle"], (0, 4))  # 4 tet vertices
             self.assertEqual(ranges["tet"], (0, 1))  # 1 tetrahedron
             self.assertEqual(builder.particle_count, 4)
+
+    def test_rest_shape_points_warns(self):
+        """An authored but unsupported physics:restShapePoints warns instead of being silently dropped."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "rest.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            tet = _author_tet_cube(stage, "/World/Soft")
+            tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+                [(0.0, 0.0, 0.0)] * 8
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "rest shape"):
+                builder.add_usd(str(usd_path))
 
     def test_two_tetmeshes_have_disjoint_soft_ranges(self):
         """Two TetMesh soft bodies map to disjoint, covering particle ranges."""

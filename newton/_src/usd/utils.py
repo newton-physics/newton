@@ -1336,9 +1336,10 @@ def get_tetmesh(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> TetMes
             continue
         if name.startswith("primvars:") or name.startswith("xformOp:"):
             continue
-        # Deformable physics schema attributes (e.g. physics:masses,
-        # physics:restShapePoints) are consumed by the deformable importer, not
-        # carried as generic per-vertex/per-tet custom mesh data.
+        # Deformable physics-schema attributes are handled by the deformable importer
+        # where supported (e.g. physics:masses) or intentionally skipped (e.g.
+        # physics:restShapePoints, whose rest-shape import is not yet supported and is
+        # warned about by the importer); none are carried as generic mesh data here.
         if name.startswith(("physics:", "omniphysics:", "physxDeformableBody:")):
             continue
         if not attr.HasAuthoredValue():
@@ -1406,11 +1407,13 @@ def _get_curve_deformable_material(prim: Usd.Prim, compat_namespaces: Sequence[s
         compat_namespaces: Vendor namespaces accepted as a fallback.
 
     Returns:
-        A dict of authored, finite, positive values among ``thickness``,
+        A dict of authored, finite values among ``thickness``,
         ``stretchStiffness``, ``shearStiffness``, ``bendStiffness``,
         ``twistStiffness`` and ``density``; or ``None`` if no physics material is
-        bound. The schema's ``-inf`` "simulator default" sentinel and any
-        non-positive value are dropped so the caller falls back to its defaults.
+        bound. Stiffness fields keep an authored zero (the proposal's range is
+        ``[0, inf)``); ``thickness`` and ``density`` must be positive. The
+        schema's ``-inf`` "simulator default" sentinel (and any out-of-range
+        value) is dropped so the caller falls back to its defaults.
     """
     material_prim = _find_physics_material_prim(prim)
     if material_prim is None:
@@ -1421,7 +1424,14 @@ def _get_curve_deformable_material(prim: Usd.Prim, compat_namespaces: Sequence[s
         if val is None:
             continue
         val = float(val)
-        if math.isfinite(val) and val > 0.0:
+        if not math.isfinite(val):
+            continue  # drops the -inf "simulator default" sentinel
+        # Stiffness range is [0, inf): preserve an authored zero. thickness / density
+        # are strictly positive.
+        if name in ("thickness", "density"):
+            if val > 0.0:
+                out[name] = val
+        elif val >= 0.0:
             out[name] = val
     return out
 
@@ -1439,11 +1449,13 @@ def _get_surface_deformable_material(prim: Usd.Prim, compat_namespaces: Sequence
         compat_namespaces: Vendor namespaces accepted as a fallback.
 
     Returns:
-        A dict of authored, finite, positive values among ``thickness``,
+        A dict of authored, finite values among ``thickness``,
         ``stretchStiffness``, ``shearStiffness``, ``bendStiffness`` and
-        ``density``; or ``None`` if no physics material is bound. The schema's
-        ``-inf`` "simulator default" sentinel and any non-positive value are
-        dropped so the caller falls back to its defaults.
+        ``density``; or ``None`` if no physics material is bound. Stiffness fields
+        keep an authored zero (the proposal's range is ``[0, inf)``); ``thickness``
+        and ``density`` must be positive. The schema's ``-inf`` "simulator default"
+        sentinel (and any out-of-range value) is dropped so the caller falls back
+        to its defaults.
     """
     material_prim = _find_physics_material_prim(prim)
     if material_prim is None:
@@ -1454,7 +1466,14 @@ def _get_surface_deformable_material(prim: Usd.Prim, compat_namespaces: Sequence
         if val is None:
             continue
         val = float(val)
-        if math.isfinite(val) and val > 0.0:
+        if not math.isfinite(val):
+            continue  # drops the -inf "simulator default" sentinel
+        # Stiffness range is [0, inf): preserve an authored zero. thickness / density
+        # are strictly positive.
+        if name in ("thickness", "density"):
+            if val > 0.0:
+                out[name] = val
+        elif val >= 0.0:
             out[name] = val
     return out
 
