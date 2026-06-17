@@ -4322,7 +4322,7 @@ class ModelBuilder:
         for _ in range(cts_count):
             self.joint_cts.append(0.0)
 
-        if joint_type == JointType.FREE or joint_type == JointType.DISTANCE or joint_type == JointType.BALL:
+        if joint_type in (JointType.FREE, JointType.DISTANCE, JointType.BALL, JointType.CABLE):
             # ensure that a valid quaternion is used for the angular dofs
             self.joint_q[-1] = 1.0
 
@@ -4350,6 +4350,12 @@ class ModelBuilder:
                 for i, dim in enumerate(angular_axes):
                     self.joint_target_q[quat_offset + i] = dim.target_pos
                 self.joint_target_q[quat_offset + 3] = 1.0
+        elif joint_type == JointType.CABLE:
+            # CABLE position coordinates are a relative anchor pose (like FREE),
+            # so its target is an identity pose: zero translation (already set)
+            # with a valid identity quaternion. Cable drives act through stiffness
+            # (target_ke), not a pose target.
+            self.joint_target_q[target_q_offset + 6] = 1.0
         elif joint_type != JointType.FIXED:
             for i, dim in enumerate(linear_axes):
                 self.joint_target_q[target_q_offset + i] = dim.target_pos
@@ -4359,6 +4365,17 @@ class ModelBuilder:
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
         self.joint_cts_start.append(self.joint_constraint_count)
+
+        if joint_type == JointType.CABLE:
+            # Seed joint_q with the current relative anchor pose X_j = inv(X_wpj) *
+            # X_wcj so eval_fk reconstructs the rod exactly as built. Same formula
+            # as eval_ik, and the analog of add_joint_free seeding its child pose.
+            q_start = self.joint_q_start[-1]
+            X_wp = self.body_q[parent] if parent != -1 else wp.transform_identity()
+            X_wpj = wp.transform_multiply(X_wp, parent_xform)
+            X_wcj = wp.transform_multiply(self.body_q[child], child_xform)
+            X_j = wp.transform_multiply(wp.transform_inverse(X_wpj), X_wcj)
+            self.joint_q[q_start : q_start + 7] = list(X_j)
 
         self.joint_dof_count += dof_count
         self.joint_coord_count += coord_count
@@ -4883,11 +4900,10 @@ class ModelBuilder:
 
         .. note::
 
-            Cable joints are represented in the joint data model, but their two entries
-            are VBD stretch and bend/twist constraint slots rather than
-            ``joint_q`` coordinates. Cable body transforms are integrated directly by
-            :class:`newton.solvers.SolverVBD`; they are not reconstructed by
-            :func:`newton.eval_fk`.
+            Cable joints use two DOF-indexed VBD stretch and bend/twist slots,
+            while ``joint_q`` stores the full relative anchor pose. This lets
+            :func:`newton.eval_fk` reconstruct cable bodies like other joints;
+            :class:`newton.solvers.SolverVBD` advances the cable dynamics.
 
         Args:
             parent: The index of the parent body.

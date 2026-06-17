@@ -3442,8 +3442,15 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
     _assert_bodies_above_ground(test, qf, rod_bodies, context="y-junction", margin=0.25 * cable_width)
 
 
-def _cable_eval_fk_preserves_body_state_impl(test: unittest.TestCase, device):
-    """eval_fk should not reconstruct CABLE child poses from unsupported joint coordinates."""
+def _cable_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device):
+    """eval_fk reconstructs CABLE child poses from their relative-pose joint_q.
+
+    CABLE joints carry a full relative anchor pose in ``joint_q`` (3 translation +
+    4 quaternion), so forward kinematics rebuilds the rod just like any other
+    joint. As with all joints under a maximal-coordinate solver, this is the
+    construction-time ``joint_q -> body_q`` conversion; SolverVBD owns the cable
+    dynamics afterwards.
+    """
     builder = newton.ModelBuilder()
     rod_bodies, rod_joints = builder.add_rod_graph(
         node_positions=[
@@ -3468,30 +3475,115 @@ def _cable_eval_fk_preserves_body_state_impl(test: unittest.TestCase, device):
 
     child_body = int(rod_bodies[1])
 
-    body_q = state.body_q.numpy().copy()
+    # The as-built pose is the configuration encoded in joint_q at construction.
+    built_body_q = state.body_q.numpy().copy()
+    built_body_qd = state.body_qd.numpy().copy()
+
+    # Perturb the child away from its built pose while leaving joint_q unchanged.
+    body_q = built_body_q.copy()
     body_q[child_body, 0] += 1.0
     body_q[child_body, 2] -= 0.7
     state.body_q.assign(body_q)
 
-    body_qd = state.body_qd.numpy().copy()
+    body_qd = built_body_qd.copy()
     body_qd[child_body] = np.array([0.3, -0.2, 0.1, 0.4, -0.5, 0.6], dtype=body_qd.dtype)
     state.body_qd.assign(body_qd)
 
+    # eval_fk rebuilds the rod from joint_q, restoring the built child state.
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
+    test.assertFalse(
+        np.allclose(state.body_q.numpy()[child_body], body_q[child_body], atol=1.0e-4),
+        msg="eval_fk should overwrite the perturbed CABLE pose, not keep it",
+    )
     np.testing.assert_allclose(
         state.body_q.numpy()[child_body],
-        body_q[child_body],
+        built_body_q[child_body],
         rtol=0.0,
-        atol=1.0e-6,
-        err_msg="eval_fk should preserve VBD-owned CABLE body transform",
+        atol=1.0e-5,
+        err_msg="eval_fk should reconstruct the CABLE body transform from joint_q",
     )
     np.testing.assert_allclose(
         state.body_qd.numpy()[child_body],
-        body_qd[child_body],
+        built_body_qd[child_body],
         rtol=0.0,
         atol=1.0e-6,
-        err_msg="eval_fk should preserve VBD-owned CABLE body velocity",
+        err_msg="eval_fk should overwrite the CABLE body velocity from kinematic recurrence",
+    )
+
+
+def _cable_eval_ik_fk_roundtrip_impl(test: unittest.TestCase, device):
+    """CABLE round-trips body_q -> joint_q (eval_ik) -> body_q (eval_fk).
+
+    Mirrors the contract for every other joint: eval_ik recovers the relative
+    anchor pose into joint_q, and eval_fk reconstructs the rod from it. This does
+    not rely on the builder's joint_q seeding (joint_q is zeroed first).
+    """
+    # Build a curved open rod.
+    num_segments = 10
+    seg = 0.2
+    pts = [wp.vec3(0.0, 0.0, 0.0)]
+    angle = 0.0
+    for _ in range(num_segments):
+        angle += 0.17
+        d = wp.normalize(wp.vec3(float(np.cos(angle)), float(np.sin(angle)), 0.1))
+        pts.append(pts[-1] + d * seg)
+    quats = newton.utils.create_parallel_transport_cable_quaternions(pts)
+
+    # Avoid list[Vec3] invariance issues in static checking.
+    pts_any: list[Any] = pts
+    quats_any: list[Any] = quats
+
+    builder = newton.ModelBuilder()
+    _rod_bodies, rod_joints = builder.add_rod(
+        positions=pts_any,
+        quaternions=quats_any,
+        radius=0.02,
+        bend_stiffness=10.0,
+        label="ut_cable_roundtrip",
+    )
+    test.assertEqual(len(rod_joints), num_segments - 1)
+    builder.color()
+    model = builder.finalize(device=device)
+    state = model.state()
+
+    joint_types = model.joint_type.numpy()
+    test.assertTrue(np.all(joint_types == int(newton.JointType.CABLE)), msg="expected only CABLE joints")
+
+    built_body_q = state.body_q.numpy().copy()
+
+    # Wipe joint_q so the round-trip can't lean on the builder's seeding.
+    state.joint_q.zero_()
+
+    # eval_ik: recover joint_q (relative anchor pose) from the built body_q.
+    newton.eval_ik(model, state, state.joint_q, state.joint_qd)
+
+    jq = state.joint_q.numpy()
+    test.assertTrue(np.any(np.abs(jq) > 1.0e-6), msg="eval_ik should populate CABLE joint_q")
+
+    # Scramble every non-root body, then rebuild purely from the recovered joint_q.
+    body_q = built_body_q.copy()
+    body_q[1:, 0:3] += 3.0
+    body_q[1:, 3:7] = np.array([0.0, 0.0, 0.0, 1.0], dtype=body_q.dtype)
+    state.body_q.assign(body_q)
+
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    fk = state.body_q.numpy()
+    np.testing.assert_allclose(
+        fk[:, 0:3],
+        built_body_q[:, 0:3],
+        rtol=0.0,
+        atol=1.0e-4,
+        err_msg="eval_ik -> eval_fk should reproduce the cable centerline",
+    )
+    quat_dots = np.abs(np.sum(fk[:, 3:7] * built_body_q[:, 3:7], axis=1))
+    np.testing.assert_allclose(
+        quat_dots,
+        np.ones_like(quat_dots),
+        rtol=0.0,
+        atol=1.0e-4,
+        err_msg="eval_ik -> eval_fk should reproduce cable body orientations",
     )
 
 
@@ -4282,8 +4374,14 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_cable_eval_fk_preserves_body_state",
-    _cable_eval_fk_preserves_body_state_impl,
+    "test_cable_eval_fk_reconstructs_body_state",
+    _cable_eval_fk_reconstructs_body_state_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_eval_ik_fk_roundtrip",
+    _cable_eval_ik_fk_roundtrip_impl,
     devices=devices,
 )
 add_function_test(

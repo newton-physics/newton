@@ -220,9 +220,6 @@ def eval_single_articulation_fk(
 
         # compute transform across the joint
         type = joint_type[i]
-        if type == JointType.CABLE:
-            # CABLE joints are skipped by generic forward kinematics.
-            continue
 
         X_pj = joint_X_p[i]
         X_cj = joint_X_c[i]
@@ -261,19 +258,21 @@ def eval_single_articulation_fk(
             X_j = wp.transform(wp.vec3(), r)
             v_j = wp.spatial_vector(wp.vec3(), w)
 
-        if type == JointType.FREE or type == JointType.DISTANCE:
-            t = wp.transform(
+        # FREE, DISTANCE, and CABLE all store a full relative anchor pose
+        # (3 translation + 4 quaternion) in joint_q, so they share the same
+        # position reconstruction. They differ only in velocity: FREE/DISTANCE
+        # carry a 6-DoF twist, while CABLE's two DOFs are VBD stretch/bend slots
+        # (not a twist), so its kinematic velocity contribution is zero.
+        if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.CABLE:
+            X_j = wp.transform(
                 wp.vec3(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2]),
                 wp.quat(joint_q[q_start + 3], joint_q[q_start + 4], joint_q[q_start + 5], joint_q[q_start + 6]),
             )
-
-            v = wp.spatial_vector(
-                wp.vec3(joint_qd[qd_start + 0], joint_qd[qd_start + 1], joint_qd[qd_start + 2]),
-                wp.vec3(joint_qd[qd_start + 3], joint_qd[qd_start + 4], joint_qd[qd_start + 5]),
-            )
-
-            X_j = t
-            v_j = v
+            if type != JointType.CABLE:
+                v_j = wp.spatial_vector(
+                    wp.vec3(joint_qd[qd_start + 0], joint_qd[qd_start + 1], joint_qd[qd_start + 2]),
+                    wp.vec3(joint_qd[qd_start + 3], joint_qd[qd_start + 4], joint_qd[qd_start + 5]),
+                )
 
         if type == JointType.D6:
             pos = wp.vec3(0.0)
@@ -468,8 +467,11 @@ def eval_fk(
 
     .. note::
 
-        :attr:`~newton.JointType.CABLE` body transforms are not changed by
-        :func:`newton.eval_fk`; they are advanced directly by
+        :attr:`~newton.JointType.CABLE` joints store their relative anchor pose
+        (3 translation + 4 quaternion) in :attr:`~newton.Model.joint_q`, so
+        :func:`newton.eval_fk` reconstructs cable body transforms like a FREE
+        joint. Their velocity contribution is zero (the two cable DOFs are VBD
+        stretch/bend slots); cable dynamics are advanced by
         :class:`newton.solvers.SolverVBD`.
 
     Args:
@@ -735,16 +737,14 @@ def eval_articulation_ik(
     if type == JointType.FIXED:
         return
 
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.CABLE:
+        # FREE, DISTANCE, and CABLE share a full relative-pose position
+        # coordinate: translation in the parent anchor frame plus the relative
+        # quaternion, i.e. X_j = inv(X_wpj) * X_wcj. They differ only in
+        # velocity: FREE/DISTANCE recover a 6-DoF twist, while CABLE's two DOFs
+        # are VBD stretch/bend slots (not a twist), so joint_qd is left untouched.
         q_pc = wp.quat_inverse(q_p) * q_c
-
         x_err_c = wp.quat_rotate_inv(q_p, x_err)
-        x_child_com_world = wp.transform_point(X_wc, body_com[child])
-        v_com_err = wp.spatial_top(v_wc)
-        if parent >= 0:
-            v_com_err = v_com_err - com_twist_to_point_velocity(v_wp, X_wp, body_com[parent], x_child_com_world)
-        v_err_c = wp.quat_rotate_inv(q_p, v_com_err)
-        w_err_c = wp.quat_rotate_inv(q_p, w_err)
 
         joint_q[q_start + 0] = x_err_c[0]
         joint_q[q_start + 1] = x_err_c[1]
@@ -755,13 +755,21 @@ def eval_articulation_ik(
         joint_q[q_start + 5] = q_pc[2]
         joint_q[q_start + 6] = q_pc[3]
 
-        joint_qd[qd_start + 0] = v_err_c[0]
-        joint_qd[qd_start + 1] = v_err_c[1]
-        joint_qd[qd_start + 2] = v_err_c[2]
+        if type != JointType.CABLE:
+            x_child_com_world = wp.transform_point(X_wc, body_com[child])
+            v_com_err = wp.spatial_top(v_wc)
+            if parent >= 0:
+                v_com_err = v_com_err - com_twist_to_point_velocity(v_wp, X_wp, body_com[parent], x_child_com_world)
+            v_err_c = wp.quat_rotate_inv(q_p, v_com_err)
+            w_err_c = wp.quat_rotate_inv(q_p, w_err)
 
-        joint_qd[qd_start + 3] = w_err_c[0]
-        joint_qd[qd_start + 4] = w_err_c[1]
-        joint_qd[qd_start + 5] = w_err_c[2]
+            joint_qd[qd_start + 0] = v_err_c[0]
+            joint_qd[qd_start + 1] = v_err_c[1]
+            joint_qd[qd_start + 2] = v_err_c[2]
+
+            joint_qd[qd_start + 3] = w_err_c[0]
+            joint_qd[qd_start + 4] = w_err_c[1]
+            joint_qd[qd_start + 5] = w_err_c[2]
 
         return
 

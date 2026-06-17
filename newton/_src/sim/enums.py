@@ -132,7 +132,7 @@ class JointType(IntEnum):
     """6-DoF joint: Generic joint with up to 3 translational and 3 rotational degrees of freedom."""
 
     CABLE = 7
-    """Cable joint: two DOF slots for linear stretch and angular bend/twist."""
+    """Cable joint: two velocity DOF slots for linear stretch and angular bend/twist, with a full relative anchor pose in its position coordinates (7 coordinates) for forward kinematics."""
 
     def dof_count(self, num_axes: int) -> tuple[int, int]:
         """
@@ -152,6 +152,7 @@ class JointType(IntEnum):
             - For BALL joints, dof_count is 3 (angular velocity), coord_count is 4 (quaternion).
             - For FREE and DISTANCE joints, dof_count is 6 (3 translation + 3 rotation), coord_count is 7 (3 position + 4 quaternion).
             - For FIXED joints, both values are 0.
+            - For CABLE joints, dof_count is 2 (stretch + bend/twist stiffness slots), coord_count is 7 (relative anchor pose: 3 position + 4 quaternion).
         """
         dof_count = num_axes
         coord_count = num_axes
@@ -164,6 +165,12 @@ class JointType(IntEnum):
         elif self == JointType.FIXED:
             dof_count = 0
             coord_count = 0
+        elif self == JointType.CABLE:
+            # DOF entries stay as VBD stretch + bend/twist slots, while position
+            # coordinates hold the full relative anchor pose (3 translation + 4
+            # quaternion) so forward kinematics can reconstruct the rod.
+            dof_count = num_axes
+            coord_count = 7
         return dof_count, coord_count
 
     def constraint_count(self, num_axes: int) -> int:
