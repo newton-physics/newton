@@ -7182,7 +7182,7 @@ class ModelBuilder:
                         if method == "coacd":
                             cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
                             coacd_settings = {
-                                "threshold": 0.5,
+                                "threshold": 0.05,
                                 "mcts_nodes": 20,
                                 "mcts_iterations": 5,
                                 "mcts_max_depth": 1,
