@@ -1901,6 +1901,19 @@ def forward_step_rigid_bodies(
 
 
 @wp.kernel
+def initialize_body_forces_and_torques(
+    body_f: wp.array[wp.spatial_vector],
+    body_forces: wp.array[wp.vec3],
+    body_torques: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+    body_index = tid
+    f = body_f[body_index]
+    body_forces[body_index] = wp.spatial_top(f)
+    body_torques[body_index] = wp.spatial_bottom(f)
+
+
+@wp.kernel
 def build_body_body_contact_lists(
     rigid_contact_count: wp.array[int],
     rigid_contact_shape0: wp.array[int],
