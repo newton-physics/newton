@@ -113,7 +113,7 @@ class Example:
         # finalize model
         self.model = scene.finalize()
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=200, nconmax=50)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=512, nconmax=192)
 
         self.viewer = viewer
 
