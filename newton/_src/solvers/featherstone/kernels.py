@@ -284,10 +284,8 @@ def jcalc_motion(
             S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             v_j_s += S_s * joint_qd[qd_start + 2]
             joint_S_s[qd_start + 2] = S_s
-        # Angular DOFs use axes transported through the preceding angular
-        # rotations, matching jcalc_transform / compute_*_rotational_dofs so the
-        # velocity and motion subspace stay consistent with FK for multi-angular
-        # D6 joints at non-identity configurations.
+        # Use the FK-transported axes (transform_*_rotational_axes), not the raw joint
+        # axes, so velocity and motion subspace stay consistent with FK for multi-angular D6 joints.
         iqd = qd_start + lin_axis_count
         iq = q_start + lin_axis_count
         if ang_axis_count == 1:

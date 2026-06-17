@@ -163,10 +163,8 @@ def compute_3d_rotational_dofs(
     """
     Computes the rotation quaternion and 3D angular velocity given the joint axes, coordinates and velocities.
 
-    Treats the three axes as an intrinsic-Euler chain: ``rot = R(axis_0, q0) * R(axis_1, q1) * R(axis_2, q2)``.
-    Each axis after the first is transported through the rotations applied before it, so the result is
-    correct for any orthogonal axis triple — including left-handed bases such as the (X, Z, Y) hip
-    convention used by ``nv_humanoid.xml``.
+    Correct for any orthogonal axis triple, including left-handed bases such as the (X, Z, Y) hip
+    convention in ``nv_humanoid.xml``.
     """
     axis_0_w, axis_1_w, axis_2_w = transform_3d_rotational_axes(axis_0, axis_1, axis_2, q0, q1)
 
