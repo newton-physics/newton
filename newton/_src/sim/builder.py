@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import ctypes
+import inspect
 import math
 import warnings
 from collections import Counter, deque
@@ -200,6 +201,22 @@ class ModelBuilder:
         if color is None:
             return None
         return (float(color[0]), float(color[1]), float(color[2]))
+
+    @staticmethod
+    def _external_warning_stacklevel() -> int:
+        frame = inspect.currentframe()
+        if frame is None:
+            return 2
+
+        frame = frame.f_back
+        stacklevel = 1
+        try:
+            while frame is not None and frame.f_code.co_filename == __file__:
+                frame = frame.f_back
+                stacklevel += 1
+            return stacklevel
+        finally:
+            del frame
 
     @classmethod
     def _resolve_rod_body_frame_origin(
