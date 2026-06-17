@@ -2879,10 +2879,8 @@ def parse_usd(
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
                 if legacy_margin_gap:
-                    # Pre-MuJoCo-3.9 import: newton_margin = mjc_margin - mjc_gap.
-                    # Under 3.9 margin/gap match shape_margin/shape_gap, so the
-                    # resolved value above is already an identity import; only
-                    # prims that author mjc:margin need the legacy subtraction.
+                    # Legacy pre-3.9 import: newton_margin = mjc_margin - mjc_gap.
+                    # Only prims that author mjc:margin need the subtraction.
                     mjc_margin = usd.get_attribute(prim, "mjc:margin")
                     if mjc_margin is not None:
                         mjc_gap = usd.get_attribute(prim, "mjc:gap")

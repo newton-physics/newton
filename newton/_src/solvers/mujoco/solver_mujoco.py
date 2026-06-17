@@ -2368,10 +2368,8 @@ class SolverMuJoCo(SolverBase):
             authored_margin = float(pair_margin[i]) if pair_margin is not None else 0.0
             authored_gap = float(pair_gap[i]) if pair_gap is not None else 0.0
             if self._zero_margins_for_native_ccd:
-                # mujoco_warp's NATIVECCD/MULTICCD pipelines reject non-zero
-                # margin at put_model() time (#2106). gap is unrestricted
-                # under MuJoCo 3.9 (gap no longer affects force generation),
-                # so we forward authored values.
+                # NATIVECCD/MULTICCD reject non-zero margin at put_model (#2106);
+                # gap is unrestricted under MuJoCo 3.9, so forward it.
                 pair_kwargs["margin"] = 0.0
                 if pair_gap is not None:
                     pair_kwargs["gap"] = authored_gap
@@ -7533,13 +7531,9 @@ class SolverMuJoCo(SolverBase):
         pair_solref = getattr(mujoco_attrs, "pair_solref", None)
         pair_solreffriction = getattr(mujoco_attrs, "pair_solreffriction", None)
         pair_solimp = getattr(mujoco_attrs, "pair_solimp", None)
-        # Restore pair margin/gap at runtime so per-world variance reaches MuJoCo
-        # (spec-level values only carry template-world data; MuJoCo replicates the
-        # template pair across worlds). pair_margin is only suppressed when the
-        # NATIVECCD/MULTICCD upstream restriction is active (#2106); otherwise
-        # runtime updates flow through. pair_gap is always forwarded under
-        # MuJoCo 3.9 semantics (gap is accepted by put_model and used by the
-        # broadphase / CCD detection envelope).
+        # Restore pair margin/gap at runtime: the spec carries only template-world
+        # values, so per-world variance must be reapplied. margin is suppressed only
+        # under NATIVECCD/MULTICCD (#2106); gap is always forwarded (MuJoCo 3.9).
         pair_margin = (
             None
             if (self._use_mujoco_contacts and self._zero_margins_for_native_ccd)

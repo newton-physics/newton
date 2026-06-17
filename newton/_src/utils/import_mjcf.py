@@ -765,13 +765,8 @@ def parse_mjcf(
                 if geom_kd is not None:
                     shape_cfg.kd = geom_kd
 
-            # Parse MJCF margin and gap for collision (MuJoCo 3.9 semantics:
-            # margin = surface thickness / force-generation threshold;
-            # gap = additional contact-detection cushion).  Newton's
-            # shape_margin / shape_gap use the same definitions, so import
-            # is an identity translation.  legacy_margin_gap=True restores
-            # the pre-3.9 translation `newton_margin = mj_margin - mj_gap`
-            # for files authored against MuJoCo <= 3.8.
+            # MuJoCo 3.9 margin/gap match shape_margin/shape_gap (identity import).
+            # legacy_margin_gap=True restores the pre-3.9 mj_margin - mj_gap form.
             mj_gap = float(geom_attrib.get("gap", "0")) * scale
             if "margin" in geom_attrib:
                 mj_margin = float(geom_attrib["margin"]) * scale
