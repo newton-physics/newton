@@ -3860,8 +3860,8 @@ class ModelBuilder:
 
     def add_link(
         self,
-        xform: Transform | None = None,
         *,
+        xform: Transform | None = None,
         com: Vec3 | None = None,
         inertia: Mat33 | None = None,
         mass: float = 0.0,
@@ -3945,8 +3945,8 @@ class ModelBuilder:
 
     def add_body(
         self,
-        xform: Transform | None = None,
         *,
+        xform: Transform | None = None,
         com: Vec3 | None = None,
         inertia: Mat33 | None = None,
         mass: float = 0.0,
