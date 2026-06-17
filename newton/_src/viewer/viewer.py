@@ -6,7 +6,6 @@ from __future__ import annotations
 import enum
 import os
 import sys
-import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from typing import Any
@@ -1900,41 +1899,6 @@ class ViewerBase(ABC):
         # Finalize all SDF isomesh batches
         for batch in self._sdf_isomesh_instances.values():
             batch.finalize()
-
-    def update_shape_colors(self, shape_colors: dict[int, wp.vec3 | tuple[float, float, float]]):
-        """
-        Set colors for a set of shapes at runtime.
-
-        .. deprecated:: 1.1
-            Write to :attr:`Model.shape_color` instead.
-
-        Args:
-            shape_colors: mapping from shape index -> color
-        """
-        warnings.warn(
-            "Viewer.update_shape_colors() is deprecated. Write to model.shape_color instead.",
-            category=DeprecationWarning,
-            stacklevel=2,
-        )
-
-        if self._shape_to_slot is None or self._shape_to_batch is None:
-            return
-
-        for s_idx, col in shape_colors.items():
-            if s_idx < 0 or s_idx >= len(self._shape_to_slot):
-                raise ValueError(f"Shape index {s_idx} out of bounds")
-
-            if self.model is not None and self.model.shape_color is not None:
-                self.model.shape_color[s_idx : s_idx + 1].fill_(wp.vec3(col))
-
-            slot = int(self._shape_to_slot[s_idx])
-            if slot < 0:
-                continue
-            if self.model_shape_color is not None:
-                self.model_shape_color[slot : slot + 1].fill_(wp.vec3(col))
-            batch_ref = self._shape_to_batch[s_idx]
-            if batch_ref is not None:
-                batch_ref.colors_changed = True
 
     def _log_inertia_boxes(self, state: newton.State):
         """Render inertia boxes as wireframe lines."""
