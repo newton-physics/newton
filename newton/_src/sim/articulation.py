@@ -989,8 +989,6 @@ def jcalc_motion_subspace(
             axis = joint_axis[qd_start + 2]
             S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 2] = S_s
-        # Angular DOFs must use the same transported axes as FK so the Jacobian
-        # columns match d(body_qd)/d(joint_qd) for multi-angular D6 joints.
         iqd = qd_start + lin_axis_count
         iq = q_start + lin_axis_count
         if ang_axis_count == 1:

@@ -409,9 +409,9 @@ def test_featherstone_d6_three_angular_body_qd_matches_fk(
     """SolverFeatherstone's reported body_qd should match eval_fk for a D6 joint
     with three angular DOFs at a non-identity configuration.
 
-    End-to-end guard for FK consolidation (issue #12): the Featherstone state
-    update and the public eval_fk must agree on the world-frame angular velocity,
-    which is the transported-axis sum rather than the raw joint_qd.
+    The Featherstone state update and the public eval_fk must agree on the
+    world-frame angular velocity, which is the transported-axis sum rather than
+    the raw joint_qd.
     """
     cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
     builder = newton.ModelBuilder(gravity=0.0)
