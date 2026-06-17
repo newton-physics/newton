@@ -185,6 +185,19 @@ class ModelBuilder:
         (238, 153, 51),  # orange
         (0, 153, 136),  # teal
     )
+    # Use one quiet default for dense cable/rod examples; callers can pass color=
+    # when per-rod or per-scene coloring matters.
+    _DEFAULT_ROD_COLOR = (
+        _SHAPE_COLOR_PALETTE[0][0] / 255.0,
+        _SHAPE_COLOR_PALETTE[0][1] / 255.0,
+        _SHAPE_COLOR_PALETTE[0][2] / 255.0,
+    )
+    _ROD_BODY_FRAME_ORIGIN_DEPRECATION_MESSAGE = (
+        "Omitting body_frame_origin when creating cable rods is deprecated because the implicit default "
+        "will change from 'start' to 'com' in a future release. Pass body_frame_origin='start' to "
+        "preserve the existing start-node body frame, or body_frame_origin='com' to opt into "
+        "COM-centered capsule body frames."
+    )
     _BODY_ARMATURE_ARG_DEPRECATION_MESSAGE = (
         "ModelBuilder.add_link(..., armature=...) and ModelBuilder.add_body(..., armature=...) "
         "are deprecated and will be removed in a future release. "
@@ -205,6 +218,23 @@ class ModelBuilder:
         if color is None:
             return None
         return (float(color[0]), float(color[1]), float(color[2]))
+
+    @classmethod
+    def _resolve_rod_body_frame_origin(
+        cls,
+        method_name: str,
+        body_frame_origin: Literal["start", "com"] | None,
+    ) -> Literal["start", "com"]:
+        if body_frame_origin is None:
+            warnings.warn(
+                cls._ROD_BODY_FRAME_ORIGIN_DEPRECATION_MESSAGE,
+                DeprecationWarning,
+                stacklevel=cls._external_warning_stacklevel(),
+            )
+            return "start"
+        if body_frame_origin not in ("start", "com"):
+            raise ValueError(f"{method_name}: body_frame_origin must be 'start' or 'com', got {body_frame_origin!r}")
+        return body_frame_origin
 
     @dataclass
     class ActuatorEntry:
@@ -236,9 +266,9 @@ class ModelBuilder:
         density: float = 1000.0
         """The density of the shape material."""
         ke: float = 2.5e3
-        """The contact elastic stiffness. Used by SemiImplicit, Featherstone, MuJoCo."""
+        """The contact elastic stiffness [N/m]. Used by SemiImplicit, Featherstone, MuJoCo, VBD."""
         kd: float = 100.0
-        """The contact damping coefficient. Used by SemiImplicit, Featherstone, MuJoCo."""
+        """The contact damping coefficient [N·s/m]. Used by SemiImplicit, Featherstone, MuJoCo, VBD."""
         kf: float = 1000.0
         """The friction damping coefficient. Used by SemiImplicit, Featherstone."""
         ka: float = 0.0
@@ -477,7 +507,8 @@ class ModelBuilder:
             self.limit_ke = limit_ke
             """The elastic stiffness of the joint axis limits. Defaults to 1e4."""
             self.limit_kd = limit_kd
-            """The damping stiffness of the joint axis limits. Defaults to 1e1."""
+            """The damping coefficient of the joint axis limits
+            [N·s/m or N·m·s/rad, depending on joint type]. Defaults to 1e1."""
             self.target_pos = target_pos
             """The target position of the joint axis.
             If the initial `target_pos` is outside the limits,
@@ -680,7 +711,7 @@ class ModelBuilder:
 
         def build_array(
             self, count: int, device: Devicelike | None = None, requires_grad: bool = False
-        ) -> wp.array | list:
+        ) -> wp.array[Any] | list:
             """Build wp.array (or list for string dtype) from count, dtype, default and overrides.
 
             For string dtype, returns a Python list[str] instead of a Warp array.
@@ -860,7 +891,7 @@ class ModelBuilder:
         """Default second Lame parameter [Pa] for tetrahedral elements."""
 
         self.default_tet_k_damp = 0.0
-        """Default damping stiffness for tetrahedral elements."""
+        """Default viscous damping coefficient [Pa·s] for tetrahedral elements."""
 
         self.default_tet_density = 1.0
         """Default density [kg/m^3] for tetrahedral soft bodies."""
@@ -2188,7 +2219,7 @@ class ModelBuilder:
         return result
 
     @staticmethod
-    def _build_index_array(indices: list[int], device: Devicelike) -> wp.array:
+    def _build_index_array(indices: list[int], device: Devicelike) -> wp.array[wp.uint32]:
         """Build a 1-D warp index array from a flat list of DOF indices.
 
         Args:
@@ -4896,13 +4927,11 @@ class ModelBuilder:
             child_xform: The transform from the child body frame to the joint child anchor frame; its
                 translation is the attachment point.
             stretch_stiffness: Cable stretch stiffness (stored as ``target_ke``) [N/m]. If None, defaults to 1.0e5.
-            stretch_damping: Cable stretch damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
-                this is a dimensionless (Rayleigh-style) coefficient. If None,
+            stretch_damping: Cable stretch damping [N·s/m] (stored as ``target_kd``). If None,
                 defaults to 0.0.
             bend_stiffness: Cable bend/twist stiffness (stored as ``target_ke``) [N*m] (torque per radian). If None,
                 defaults to 0.0.
-            bend_damping: Cable bend/twist damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
-                this is a dimensionless (Rayleigh-style) coefficient. If None,
+            bend_damping: Cable bend/twist damping [N·m·s/rad] (stored as ``target_kd``). If None,
                 defaults to 0.0.
             label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
@@ -7153,7 +7182,7 @@ class ModelBuilder:
                         if method == "coacd":
                             cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
                             coacd_settings = {
-                                "threshold": 0.5,
+                                "threshold": 0.05,
                                 "mcts_nodes": 20,
                                 "mcts_iterations": 5,
                                 "mcts_max_depth": 1,
@@ -7316,6 +7345,8 @@ class ModelBuilder:
         closed: bool = False,
         label: str | None = None,
         wrap_in_articulation: bool = True,
+        color: Vec3 | None = None,
+        body_frame_origin: Literal["start", "com"] | None = None,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by cable joints.
 
@@ -7326,8 +7357,8 @@ class ModelBuilder:
 
         Args:
             positions: Centerline node positions (segment endpoints) in world space. These are the
-                tip/end points of the capsules, with one extra point so that for ``N`` segments there
-                are ``N+1`` positions.
+                cylindrical centerline endpoints of the capsules, with one extra point so that for
+                ``N`` segments there are ``N+1`` positions.
             quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
                 must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
                 local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
@@ -7336,17 +7367,26 @@ class ModelBuilder:
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, defaults to 1.0e5.
-            stretch_damping: Stretch damping for the cable joints (applied per-joint; not length-normalized). If None,
+            stretch_damping: Stretch damping [N·s/m] for the cable joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
-            bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke`` [N*m]
+            bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke``
                 (torque per radian). If None, defaults to 0.0.
-            bend_damping: Bend/twist damping for the cable joints (applied per-joint; not length-normalized). If None,
+            bend_damping: Bend/twist damping [N·m·s/rad] for the cable joints (applied per-joint; not length-normalized). If None,
                 defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
             label: Optional label prefix for bodies, shapes, and joints.
             wrap_in_articulation: If True, the created joints are automatically wrapped into a single
                 articulation. Defaults to True to ensure valid simulation models.
+            color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
+                capsule shapes. If None, the rod uses the default rod color.
+            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
+                the legacy convention where the body origin is at the segment start position
+                (``positions[i]`` for segment ``i``), and the COM/shape are offset by half the
+                segment length. ``"com"`` places the body origin at the segment midpoint so the
+                body origin and COM coincide. If None, preserves ``"start"`` for now with a
+                :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
+                pass ``"start"`` or ``"com"`` explicitly.
 
         Returns:
             A pair ``(body_indices, joint_indices)``. For an open chain,
@@ -7362,16 +7402,20 @@ class ModelBuilder:
         Raises:
             ValueError: If ``positions`` and ``quaternions`` lengths are incompatible.
             ValueError: If the rod has fewer than 2 segments.
+            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
 
         Note:
             - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e5;
               pass a larger value when neighboring capsules should remain nearly inextensible.
             - Stretch, bend, and damping values are passed through as provided per joint.
-            - Each segment is implemented as a capsule primitive. The segment's body transform is
-              placed at the start point ``positions[i]`` with a local center-of-mass offset of
-              ``(0, 0, half_height)`` so that the COM lies at the segment midpoint. The capsule shape
-              is added with a local transform of ``(0, 0, half_height)`` so it spans from the start to
-              the end along local +Z.
+            - Each segment is implemented as a capsule primitive. ``half_height`` is the half-length of
+              the cylindrical centerline, excluding the hemispherical caps.
+            - With ``body_frame_origin="start"``, the body origin is at the first centerline endpoint,
+              the COM and shape are at local ``(0, 0, half_height)``, and the second centerline endpoint
+              is at local ``(0, 0, 2 * half_height)``.
+            - With ``body_frame_origin="com"``, the body origin and COM coincide at the segment
+              midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
+              ``(0, 0, half_height)``.
         """
         if cfg is None:
             cfg = self.default_shape_cfg
@@ -7387,6 +7431,7 @@ class ModelBuilder:
         # Input validation
         if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
             raise ValueError("add_rod: stretch_stiffness and bend_stiffness must be >= 0")
+        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
 
         num_segments = len(positions) - 1
         if num_segments < 1:
@@ -7430,6 +7475,8 @@ class ModelBuilder:
             label=label,
             wrap_in_articulation=False,
             quaternions=quaternions,
+            color=color,
+            body_frame_origin=body_frame_origin,
         )
 
         # Wrap all joints into an articulation if requested.
@@ -7459,8 +7506,16 @@ class ModelBuilder:
                 if L_last <= min_segment_length:
                     L_last = min_segment_length
 
-                parent_xform = wp.transform(wp.vec3(0.0, 0.0, L_last), wp.quat_identity())
-                child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+                L_first = float(wp.length(positions_wp[1] - positions_wp[0]))
+                if L_first <= min_segment_length:
+                    L_first = min_segment_length
+
+                if body_frame_origin == "com":
+                    parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.5 * L_last), wp.quat_identity())
+                    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * L_first), wp.quat_identity())
+                else:
+                    parent_xform = wp.transform(wp.vec3(0.0, 0.0, L_last), wp.quat_identity())
+                    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
                 loop_joint_label = f"{label}_cable_{len(link_joints) + 1}" if label else None
                 j_loop = self.add_joint_cable(
@@ -7494,6 +7549,8 @@ class ModelBuilder:
         wrap_in_articulation: bool = True,
         quaternions: list[Quat] | None = None,
         junction_collision_filter: bool = True,
+        color: Vec3 | None = None,
+        body_frame_origin: Literal["start", "com"] | None = None,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod/cable *graph* (supports junctions) from nodes + edges.
 
@@ -7502,8 +7559,7 @@ class ModelBuilder:
         Representation:
 
         - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
-          ``node_positions[v]`` (body frame is placed at the start node ``u`` and local +Z points
-          toward ``v``).
+          ``node_positions[v]`` (local +Z points toward ``v``).
         - Cable joints are created between edge-bodies that share a node, using a spanning-tree
           traversal so that each body has a single parent when wrapped into an articulation.
 
@@ -7527,10 +7583,11 @@ class ModelBuilder:
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint cable stretch stiffness, stored directly as ``target_ke`` [N/m].
                 Defaults to 1.0e5.
-            stretch_damping: Stretch damping (per joint). Defaults to 0.0.
-            bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke`` [N*m].
+            stretch_damping: Stretch damping [N·s/m] (per joint). Defaults to 0.0.
+            bend_stiffness: Per-joint cable bend/twist stiffness, stored directly as ``target_ke``
+                (torque per radian).
                 Defaults to 0.0.
-            bend_damping: Bend/twist damping (per joint). Defaults to 0.0.
+            bend_damping: Bend/twist damping [N·m·s/rad] (per joint). Defaults to 0.0.
             label: Optional label prefix for bodies, shapes, joints, and articulations.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
                 per connected component.
@@ -7542,10 +7599,22 @@ class ModelBuilder:
                 bodies that are incident to a junction node (degree >= 3). This prevents immediate
                 self-collision impulses at welded junctions, even though the joint set is a spanning
                 tree (so not all incident body pairs are directly jointed).
+            color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
+                capsule shapes. If None, the graph uses the default rod color.
+            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
+                the legacy convention where the body origin is at the edge start node
+                (``node_positions[u]`` for edge ``(u, v)``), and the COM/shape are offset by half
+                the edge length. ``"com"`` places the body origin at the edge midpoint so the body
+                origin and COM coincide. If None, preserves ``"start"`` for now with a
+                :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
+                pass ``"start"`` or ``"com"`` explicitly.
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to
             edges in the same order as ``edges``.
+
+        Raises:
+            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
         """
         if cfg is None:
             cfg = self.default_shape_cfg
@@ -7560,6 +7629,7 @@ class ModelBuilder:
 
         if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
             raise ValueError("add_rod_graph: stretch_stiffness and bend_stiffness must be >= 0")
+        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod_graph", body_frame_origin)
         if len(node_positions) < 2:
             raise ValueError("add_rod_graph: node_positions must contain at least 2 nodes")
         if len(edges) < 1:
@@ -7588,6 +7658,8 @@ class ModelBuilder:
         edge_v: list[int] = []
         edge_len: list[float] = []
         edge_bodies: list[int] = []
+        rod_color = color if color is not None else ModelBuilder._DEFAULT_ROD_COLOR
+        use_com_origin = body_frame_origin == "com"
 
         # Create all edge bodies first.
         for e_idx, (u, v) in enumerate(edges):
@@ -7627,17 +7699,22 @@ class ModelBuilder:
                     )
             half_height = 0.5 * seg_length
 
-            # Position body at start node, with COM offset to segment center
-            body_q = wp.transform(p0, q)
-            com_offset = wp.vec3(0.0, 0.0, half_height)
+            if use_com_origin:
+                # Opt-in convention: place body origin at the segment center so origin and COM coincide.
+                center = p0 + seg_vec * 0.5
+                body_q = wp.transform(center, q)
+                com_offset = wp.vec3(0.0)
+                capsule_xform = wp.transform()
+            else:
+                # Legacy convention: body origin is at node u, with COM and shape offset to the segment center.
+                body_q = wp.transform(p0, q)
+                com_offset = wp.vec3(0.0, 0.0, half_height)
+                capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
 
             body_label = f"{label}_edge_body_{e_idx}" if label else None
             shape_label = f"{label}_edge_capsule_{e_idx}" if label else None
 
             body_id = self.add_link(xform=body_q, com=com_offset, label=body_label)
-
-            # Place capsule so it spans from start to end along +Z
-            capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
 
             self.add_shape_capsule(
                 body_id,
@@ -7646,6 +7723,7 @@ class ModelBuilder:
                 half_height=half_height,
                 cfg=cfg,
                 label=shape_label,
+                color=rod_color,
             )
 
             edge_u.append(u)
@@ -7657,11 +7735,10 @@ class ModelBuilder:
             node_incidence[v].append(e_idx)
 
         def _edge_anchor_xform(e_idx: int, node_idx: int) -> wp.transform:
-            # Body frame is at start node u; end node v is at local z = edge_len.
             if node_idx == edge_u[e_idx]:
-                z = 0.0
+                z = -0.5 * edge_len[e_idx] if use_com_origin else 0.0
             elif node_idx == edge_v[e_idx]:
-                z = edge_len[e_idx]
+                z = 0.5 * edge_len[e_idx] if use_com_origin else edge_len[e_idx]
             else:
                 raise RuntimeError("add_rod_graph: internal error (node not incident to edge)")
             return wp.transform(wp.vec3(0.0, 0.0, float(z)), wp.quat_identity())
@@ -7957,7 +8034,7 @@ class ModelBuilder:
             i: The index of the first particle
             j: The index of the second particle
             ke: The elastic stiffness of the spring
-            kd: The damping stiffness of the spring
+            kd: The damping coefficient of the spring [N·s/m].
             control: The actuation level of the spring
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -8013,7 +8090,7 @@ class ModelBuilder:
             k: The index of the third particle.
             tri_ke: The elastic stiffness of the triangle. If None, the default value (:attr:`default_tri_ke`) is used.
             tri_ka: The area stiffness of the triangle. If None, the default value (:attr:`default_tri_ka`) is used.
-            tri_kd: The damping stiffness of the triangle. If None, the default value (:attr:`default_tri_kd`) is used.
+            tri_kd: The damping coefficient of the triangle. If None, the default value (:attr:`default_tri_kd`) is used.
             tri_drag: The drag coefficient of the triangle. If None, the default value (:attr:`default_tri_drag`) is used.
             tri_lift: The lift coefficient of the triangle. If None, the default value (:attr:`default_tri_lift`) is used.
             custom_attributes: Dictionary of custom attribute names to values.
@@ -8096,7 +8173,7 @@ class ModelBuilder:
             k: The indices of the third particle
             tri_ke: The elastic stiffness of the triangles. If None, the default value (:attr:`default_tri_ke`) is used.
             tri_ka: The area stiffness of the triangles. If None, the default value (:attr:`default_tri_ka`) is used.
-            tri_kd: The damping stiffness of the triangles. If None, the default value (:attr:`default_tri_kd`) is used.
+            tri_kd: The damping coefficient of the triangles. If None, the default value (:attr:`default_tri_kd`) is used.
             tri_drag: The drag coefficient of the triangles. If None, the default value (:attr:`default_tri_drag`) is used.
             tri_lift: The lift coefficient of the triangles. If None, the default value (:attr:`default_tri_lift`) is used.
             custom_attributes: Dictionary of custom attribute names to values.
@@ -8209,7 +8286,7 @@ class ModelBuilder:
             l: The index of the fourth particle
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
-            k_damp: The element's damping stiffness
+            k_damp: The element's viscous damping coefficient [Pa·s].
             custom_attributes: Dictionary of custom attribute names to values.
 
         Return:
@@ -8852,7 +8929,7 @@ class ModelBuilder:
             density: The density of each particle
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
-            k_damp: The damping stiffness
+            k_damp: The viscous damping coefficient [Pa·s].
             fix_left: Make the left-most edge of particles kinematic (fixed in place)
             fix_right: Make the right-most edge of particles kinematic
             fix_top: Make the top-most edge of particles kinematic
@@ -9022,7 +9099,7 @@ class ModelBuilder:
             k_lambda: The second elastic Lame parameter [Pa]. Scalar or
                 per-element array. Overrides ``mesh.k_lambda`` if both are
                 provided.
-            k_damp: The damping stiffness. Scalar or per-element array.
+            k_damp: The viscous damping coefficient [Pa·s]. Scalar or per-element array.
                 Overrides ``mesh.k_damp`` if both are provided.
             tri_ke: Stiffness for surface mesh triangles. Defaults to 0.0.
             tri_ka: Area stiffness for surface mesh triangles. Defaults to 0.0.

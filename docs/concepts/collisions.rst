@@ -1556,6 +1556,58 @@ When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates
 
 The ``kh`` parameter on each shape controls area-dependent contact stiffness. For a pair, the effective stiffness is computed as the harmonic mean: ``k_eff = 2 * k_a * k_b / (k_a + k_b)``. Tune this for desired penetration behavior.
 
+**Custom pressure laws:**
+
+The contact patch is the iso-pressure surface ``p_a == p_b``. ``signed_depth``
+follows the SDF sign convention: negative inside the shape, positive outside.
+The default linear law ``p = -kh * signed_depth`` is positive when penetrating
+and continues with negative pressure values just outside the surface. Supply
+``pressure_func`` and ``pressure_data`` on :class:`~geometry.HydroelasticSDF.Config`
+to use a different law, for example a stiffer-with-depth response.
+
+The callback is evaluated on both sides of the contact boundary during
+iso-voxel pruning and marching-cubes interpolation, so it must be finite and
+monotone non-increasing for every ``signed_depth`` value that can be sampled.
+Do not clip the non-contact side to zero with ``wp.max(-signed_depth, 0.0)``.
+When two shapes have different stiffnesses, the pressure-balance surface can
+pass through a thin outside region; a flat zero-pressure segment can move or
+remove that crossing. Extend the law into the non-contact side instead:
+
+.. code-block:: python
+
+    @wp.struct
+    class PowerPressureData:
+        shape_kh: wp.array[wp.float32]
+        depth_ref_m: wp.float32
+        exponent: wp.float32
+
+    @wp.func
+    def power_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: PowerPressureData) -> wp.float32:
+        kh = data.shape_kh[shape_idx]
+        if signed_depth >= 0.0:
+            return -kh * signed_depth
+        depth = -signed_depth
+        return kh * data.depth_ref_m * wp.pow(depth / data.depth_ref_m, data.exponent)
+
+    model = builder.finalize()
+    data = PowerPressureData()
+    data.shape_kh = model.shape_material_kh
+    data.depth_ref_m = 0.001
+    data.exponent = 2.0
+    config = HydroelasticSDF.Config(pressure_func=power_pressure, pressure_data=data)
+
+If ``pressure_data`` stores finalized model arrays such as
+``model.shape_material_kh``, build the config after ``builder.finalize()``.
+The ``shape_idx`` argument passed to the callback indexes those finalized model
+shape arrays directly. For simple power laws, avoid fitting both ``kh`` and an
+additional gain unless you intentionally want a redundant parameterization: only
+their product affects the resulting pressure.
+When contact reduction is enabled, Newton reduces contacts after evaluating the
+same pressure law on the hydroelastic faces; no separate linear stiffness law is
+applied to reduced penetrating contacts.
+
+See :github:`newton/examples/contacts/example_nut_bolt_hydro.py` for a worked example.
+
 Contact reduction options for hydroelastic contacts are configured via :class:`~geometry.HydroelasticSDF.Config` (see :ref:`Contact Reduction`).
 
 Hydroelastic memory can be tuned with ``buffer_fraction`` on
