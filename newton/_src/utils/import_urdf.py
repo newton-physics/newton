@@ -831,7 +831,7 @@ def parse_urdf(
             created_joint_idx = builder.add_joint_d6(
                 linear_axes=[
                     ModelBuilder.JointDofConfig(
-                        u,
+                        axis=u,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_damping,
@@ -839,7 +839,7 @@ def parse_urdf(
                         actuator_mode=actuator_mode,
                     ),
                     ModelBuilder.JointDofConfig(
-                        v,
+                        axis=v,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_damping,

@@ -138,6 +138,7 @@ class Contacts:
         self,
         rigid_contact_max: int,
         soft_contact_max: int,
+        *,
         requires_grad: bool = False,
         device: Devicelike = None,
         per_contact_shape_properties: bool = False,

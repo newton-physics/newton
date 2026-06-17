@@ -504,6 +504,7 @@ class ArticulationView:
         self,
         model: Model,
         pattern: str,
+        *,
         include_joints: list[str] | list[int] | None = None,
         exclude_joints: list[str] | list[int] | None = None,
         include_links: list[str] | list[int] | None = None,

@@ -257,7 +257,7 @@ class ModelBuilder:
         delay_args: list[dict[str, Any]]  # Per-actuator delay params (empty if no delay)
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
 
-    @dataclass
+    @dataclass(kw_only=True)
     class ShapeConfig:
         """
         Represents the properties of a collision shape used in simulation.
@@ -482,6 +482,7 @@ class ModelBuilder:
 
         def __init__(
             self,
+            *,
             axis: AxisType | Vec3 = Axis.X,
             limit_lower: float = -MAXVAL,
             limit_upper: float = MAXVAL,
@@ -4038,6 +4039,7 @@ class ModelBuilder:
     def add_link(
         self,
         xform: Transform | None = None,
+        *,
         armature: float | None = None,
         com: Vec3 | None = None,
         inertia: Mat33 | None = None,
@@ -4135,6 +4137,7 @@ class ModelBuilder:
     def add_body(
         self,
         xform: Transform | None = None,
+        *,
         armature: float | None = None,
         com: Vec3 | None = None,
         inertia: Mat33 | None = None,
@@ -6875,6 +6878,7 @@ class ModelBuilder:
     def add_shape_gaussian(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         gaussian: Gaussian | None = None,
         scale: Vec3 | None = None,
