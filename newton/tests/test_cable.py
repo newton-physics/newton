@@ -27,6 +27,15 @@ devices = get_test_devices()
 # -----------------------------------------------------------------------------
 
 
+def _transform_row_point(body_q_row: np.ndarray, local: wp.vec3) -> np.ndarray:
+    """Transform a local point by a numpy body transform row."""
+    with wp.ScopedDevice("cpu"):
+        pos = wp.vec3(body_q_row[0], body_q_row[1], body_q_row[2])
+        rot = wp.quat(body_q_row[3], body_q_row[4], body_q_row[5], body_q_row[6])
+        world = pos + wp.quat_rotate(rot, local)
+        return np.array([world[0], world[1], world[2]], dtype=float)
+
+
 def _assert_bodies_above_ground(
     test: unittest.TestCase,
     body_q: np.ndarray,
@@ -58,22 +67,13 @@ def _assert_capsule_attachments(
     checks that their separation is small relative to the rest capsule length.
     """
     tol = tol_ratio * segment_length
+    half_length = 0.5 * segment_length
     for i in range(len(body_ids) - 1):
         idx_p = body_ids[i]
         idx_c = body_ids[i + 1]
 
-        p_pos = body_q[idx_p, :3]
-        c_pos = body_q[idx_c, :3]
-
-        dir_vec = c_pos - p_pos
-        seg_len = np.linalg.norm(dir_vec)
-        if seg_len > 1.0e-6:
-            dir_hat = dir_vec / seg_len
-        else:
-            dir_hat = np.array([1.0, 0.0, 0.0], dtype=float)
-
-        parent_end = p_pos + dir_hat * segment_length
-        child_start = c_pos
+        parent_end = _transform_row_point(body_q[idx_p], wp.vec3(0.0, 0.0, half_length))
+        child_start = _transform_row_point(body_q[idx_c], wp.vec3(0.0, 0.0, -half_length))
         gap = np.linalg.norm(parent_end - child_start)
 
         test.assertLessEqual(
@@ -90,9 +90,10 @@ def _assert_surface_attachment(
     child_body: int,
     context: str,
     parent_anchor_local: wp.vec3,
+    child_anchor_local: wp.vec3,
     tol: float = 1.0e-3,
 ) -> None:
-    """Assert that the child body origin lies on the anchor-frame attachment point.
+    """Assert that the child anchor lies on the parent anchor-frame attachment point.
 
     Intended attach point (world):
         x_expected = x_anchor + R_anchor * parent_anchor_local
@@ -104,7 +105,9 @@ def _assert_surface_attachment(
         )
         x_expected = x_anchor + wp.quat_rotate(q_anchor, parent_anchor_local)
 
-        x_child = wp.vec3(body_q[child_body][0], body_q[child_body][1], body_q[child_body][2])
+        x_child_body = wp.vec3(body_q[child_body][0], body_q[child_body][1], body_q[child_body][2])
+        q_child = wp.quat(body_q[child_body][3], body_q[child_body][4], body_q[child_body][5], body_q[child_body][6])
+        x_child = x_child_body + wp.quat_rotate(q_child, child_anchor_local)
         err = float(wp.length(x_child - x_expected))
         test.assertLess(
             err,
@@ -364,6 +367,7 @@ def _build_cable_chain(
         bend_stiffness=bend_stiffness,
         bend_damping=bend_damping,
         label="test_cable_chain",
+        body_frame_origin="com",
     )
 
     if pin_first and len(rod_bodies) > 0:
@@ -415,6 +419,7 @@ def _build_cable_loop(device, num_links: int = 6):
         bend_damping=1.0e-1,
         closed=True,
         label="test_cable_loop",
+        body_frame_origin="com",
     )
 
     builder.color()
@@ -758,6 +763,7 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
             bend_stiffness=k,
             bend_damping=1.0e1 * k,
             label=f"bend_stiffness_{k:.0e}",
+            body_frame_origin="com",
         )
 
         # Pin the first body of each cable.
@@ -904,6 +910,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
         bend_stiffness=5.0e4,
         bend_damping=0.0,
         label="twist_chain_orthogonal",
+        body_frame_origin="com",
     )
 
     # Pin the first body (anchored capsule)
@@ -980,12 +987,12 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     # twisting 180 degrees about the +X axis should reflect the free capsule across the X-Z plane:
     # its Y coordinate should change sign while X and Z remain approximately the same.
 
-    # We check the tip of the capsule, because the body origin is at the pivot (which doesn't move).
+    # Check the free capsule's positive-Z endpoint, not just its COM.
     def get_tip_pos(body_idx, q_all):
         p = q_all[body_idx, :3]
         q = q_all[body_idx, 3:]  # x, y, z, w
         rot = wp.quat(q[0], q[1], q[2], q[3])
-        v = wp.vec3(0.0, 0.0, segment_length)
+        v = wp.vec3(0.0, 0.0, 0.5 * segment_length)
         v_rot = wp.quat_rotate(rot, v)
         return np.array([p[0] + v_rot[0], p[1] + v_rot[1], p[2] + v_rot[2]])
 
@@ -1113,6 +1120,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
                 bend_stiffness=bend_stiffness,
                 bend_damping=2.0e3,
                 label=f"pile_l{layer}_{lane}",
+                body_frame_origin="com",
             )
             cable_bodies.extend(rod_bodies)
 
@@ -1252,10 +1260,11 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
         bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_ball_joint_attach",
+        body_frame_origin="com",
     )
 
-    # `add_rod()` convention: rod body origin is at `positions[i]` (segment start), so the start endpoint is at z=0 local.
-    child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
+    # `add_rod()` convention: rod body origin is at the segment midpoint.
+    child_anchor_local = wp.vec3(0.0, 0.0, -0.5 * segment_length)
     j_ball = builder.add_joint_ball(
         parent=anchor,
         child=rod_bodies[0],
@@ -1326,6 +1335,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
         child_body=rod_bodies[0],
         context="Cable BALL joint attachment",
         parent_anchor_local=parent_anchor_local,
+        child_anchor_local=child_anchor_local,
     )
 
     _assert_bodies_above_ground(
@@ -1384,7 +1394,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     rod_radius = 0.01
     cable_width = 2.0 * rod_radius
     attach_offset = wp.float32(anchor_radius + rod_radius)
-    child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
+    child_anchor_local = wp.vec3(0.0, 0.0, -0.5 * segment_length)
 
     # --- Cable X (+X direction) ---
     points_x, edge_q_x = _make_straight_cable_along_x(num_elements, segment_length, z_height=anchor_pos[2])
@@ -1402,6 +1412,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_fixed_joint_attach_x",
+        body_frame_origin="com",
     )
 
     j_fixed_x = builder.add_joint_fixed(
@@ -1428,6 +1439,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_fixed_joint_attach_y",
+        body_frame_origin="com",
     )
 
     j_fixed_y = builder.add_joint_fixed(
@@ -1503,6 +1515,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         child_body=rod_bodies_x[0],
         context="Cable FIXED joint attachment (X cable)",
         parent_anchor_local=parent_anchor_local_x,
+        child_anchor_local=child_anchor_local,
     )
     _assert_surface_attachment(
         test,
@@ -1511,6 +1524,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         child_body=rod_bodies_y[0],
         context="Cable FIXED joint attachment (Y cable)",
         parent_anchor_local=parent_anchor_local_y,
+        child_anchor_local=child_anchor_local,
     )
 
     _assert_bodies_above_ground(
@@ -1571,7 +1585,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
     rod_radius = 0.01
     cable_width = 2.0 * rod_radius
     attach_offset = wp.float32(anchor_radius + rod_radius)
-    child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
+    child_anchor_local = wp.vec3(0.0, 0.0, -0.5 * segment_length)
 
     # --- Cable X (+X direction) ---
     points_x, edge_q_x = _make_straight_cable_along_x(num_elements, segment_length, z_height=anchor_pos[2])
@@ -1589,6 +1603,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
         bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_revolute_joint_attach_x",
+        body_frame_origin="com",
     )
 
     # Revolute axis: Y in joint frame -> world Y free (edge_q_x[0] maps local Z->world X,
@@ -1618,6 +1633,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
         bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_revolute_joint_attach_y",
+        body_frame_origin="com",
     )
 
     # Revolute axis: Z in joint frame -> world Y free.
@@ -1697,6 +1713,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
         child_body=rod_bodies_x[0],
         context="Cable REVOLUTE joint attachment (X cable)",
         parent_anchor_local=parent_anchor_local_x,
+        child_anchor_local=child_anchor_local,
     )
     _assert_surface_attachment(
         test,
@@ -1705,6 +1722,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
         child_body=rod_bodies_y[0],
         context="Cable REVOLUTE joint attachment (Y cable)",
         parent_anchor_local=parent_anchor_local_y,
+        child_anchor_local=child_anchor_local,
     )
 
     _assert_bodies_above_ground(
@@ -1788,6 +1806,7 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
         bend_damping=2.0e0,
         wrap_in_articulation=False,
         label="test_cable_revolute_drive",
+        body_frame_origin="com",
     )
 
     target_angle = 0.4  # rad
@@ -1795,7 +1814,7 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
     drive_kd = 100.0
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
-    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * segment_length), wp.quat_identity())
 
     j_revolute = builder.add_joint_revolute(
         parent=anchor,
@@ -1912,6 +1931,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
         bend_damping=2.0e0,
         wrap_in_articulation=False,
         label="test_cable_revolute_drive_limit",
+        body_frame_origin="com",
     )
 
     target_angle = 1.5  # rad -- beyond limits
@@ -1920,7 +1940,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     drive_kd = 100.0
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
-    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * segment_length), wp.quat_identity())
 
     j_revolute = builder.add_joint_revolute(
         parent=anchor,
@@ -2049,12 +2069,13 @@ def _cable_prismatic_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, d
         bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_prismatic_joint_attach",
+        body_frame_origin="com",
     )
 
     # Prismatic axis: Y in joint frame. edge_q[0] maps local Z->world X and
     # preserves local Y->world Y. So axis (0,1,0) gives free sliding along world Y
     # -- perpendicular to both the cable (+X) and gravity (-Z).
-    child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
+    child_anchor_local = wp.vec3(0.0, 0.0, -0.5 * segment_length)
     j_prismatic = builder.add_joint_prismatic(
         parent=anchor,
         child=rod_bodies[0],
@@ -2188,6 +2209,7 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
         bend_damping=2.0e0,
         wrap_in_articulation=False,
         label="test_cable_prismatic_drive",
+        body_frame_origin="com",
     )
 
     target_displacement = 0.1  # m
@@ -2195,7 +2217,7 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
     drive_kd = 200.0
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
-    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * segment_length), wp.quat_identity())
 
     j_prismatic = builder.add_joint_prismatic(
         parent=anchor,
@@ -2312,6 +2334,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
         bend_damping=2.0e0,
         wrap_in_articulation=False,
         label="test_cable_prismatic_drive_limit",
+        body_frame_origin="com",
     )
 
     target_displacement = 0.5  # m -- beyond limits
@@ -2320,7 +2343,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     drive_kd = 200.0
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
-    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * segment_length), wp.quat_identity())
 
     j_prismatic = builder.add_joint_prismatic(
         parent=anchor,
@@ -2455,10 +2478,11 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
         bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_d6_joint_attach",
+        body_frame_origin="com",
     )
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
-    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * segment_length), wp.quat_identity())
 
     j_d6 = builder.add_joint_d6(
         parent=anchor,
@@ -2606,10 +2630,11 @@ def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
         bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_d6_all_locked",
+        body_frame_origin="com",
     )
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
-    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * segment_length), wp.quat_identity())
 
     j_d6 = builder.add_joint_d6(
         parent=anchor,
@@ -2736,10 +2761,11 @@ def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
         bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_cable_d6_locked_x",
+        body_frame_origin="com",
     )
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
-    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * segment_length), wp.quat_identity())
 
     # Free Y and Z linear (in joint frame), locked X. All angular locked.
     # For -Z cable: joint-frame X = world -X, Y = world Y, Z = world -Z.
@@ -2895,6 +2921,7 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
         bend_damping=2.0e0,
         wrap_in_articulation=False,
         label="test_cable_d6_drive",
+        body_frame_origin="com",
     )
 
     target_displacement = 0.1  # m
@@ -2907,7 +2934,7 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     JointDofConfig = newton.ModelBuilder.JointDofConfig
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
-    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * segment_length), wp.quat_identity())
 
     j_d6 = builder.add_joint_d6(
         parent=anchor,
@@ -3035,6 +3062,7 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
         bend_damping=2.0e0,
         wrap_in_articulation=False,
         label="test_cable_d6_drive_limit",
+        body_frame_origin="com",
     )
 
     # Drive targets are intentionally beyond the limit bounds.
@@ -3046,7 +3074,7 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device):
     JointDofConfig = newton.ModelBuilder.JointDofConfig
 
     parent_xform = wp.transform(wp.vec3(0.0, 0.0, -anchor_radius), rod_quats[0])
-    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * segment_length), wp.quat_identity())
 
     j_d6 = builder.add_joint_d6(
         parent=anchor,
@@ -3361,6 +3389,7 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
         bend_damping=5.0e0,
         label="ut_cable_graph_y",
         wrap_in_articulation=True,
+        body_frame_origin="com",
     )
 
     test.assertEqual(len(rod_bodies), len(edges))
@@ -3464,6 +3493,7 @@ def _cable_eval_fk_preserves_body_state_impl(test: unittest.TestCase, device):
         radius=0.01,
         wrap_in_articulation=True,
         label="ut_cable_eval_fk",
+        body_frame_origin="start",
     )
     test.assertEqual(len(rod_bodies), 2)
     test.assertEqual(len(rod_joints), 1)
@@ -3535,6 +3565,7 @@ def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device)
         closed=True,
         label="ut_cable_rod_ring_closed",
         wrap_in_articulation=True,
+        body_frame_origin="com",
     )
 
     test.assertEqual(len(rod_bodies), num_segments)
@@ -3611,6 +3642,7 @@ def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
         label="ut_cable_graph_quat",
         wrap_in_articulation=True,
         quaternions=None,
+        body_frame_origin="com",
     )
     test.assertEqual(len(rod_bodies), 1)
     test.assertEqual(len(rod_joints), 0)
@@ -3626,6 +3658,97 @@ def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
     d_hat = wp.normalize(p1 - p0)
     dot = float(wp.dot(z_world, d_hat))
     test.assertGreater(dot, 0.999, msg=f"Default quaternion does not align +Z with edge direction (dot={dot:.6f})")
+
+
+def _cable_rod_default_origin_matches_start_impl(test: unittest.TestCase, device):
+    """Omitting body_frame_origin should warn while preserving the legacy start-node frame."""
+    builder = newton.ModelBuilder()
+
+    num_elements = 2
+    segment_length = 0.2
+    points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
+
+    with test.assertWarnsRegex(DeprecationWarning, "body_frame_origin"):
+        rod_bodies, rod_joints = builder.add_rod(
+            positions=points,
+            quaternions=edge_q,
+            radius=0.01,
+            bend_stiffness=1.0,
+            label="ut_cable_start_origin",
+        )
+
+    builder.color()
+    model = builder.finalize(device=device)
+
+    body_q = model.body_q.numpy()
+    body_com = model.body_com.numpy()
+    shape_body = model.shape_body.numpy()
+    shape_transform = model.shape_transform.numpy()
+    joint_X_p = model.joint_X_p.numpy()
+    joint_X_c = model.joint_X_c.numpy()
+
+    for i, body_id in enumerate(rod_bodies):
+        p0 = np.array([points[i][0], points[i][1], points[i][2]], dtype=float)
+
+        np.testing.assert_allclose(body_q[body_id, :3], p0, atol=1.0e-6)
+        np.testing.assert_allclose(body_com[body_id], np.array([0.0, 0.0, 0.5 * segment_length]), atol=1.0e-6)
+
+        shape_ids = np.where(shape_body == body_id)[0]
+        test.assertEqual(len(shape_ids), 1)
+        shape_tf = shape_transform[shape_ids[0]]
+        np.testing.assert_allclose(shape_tf[:3], np.array([0.0, 0.0, 0.5 * segment_length]), atol=1.0e-6)
+        np.testing.assert_allclose(shape_tf[3:], np.array([0.0, 0.0, 0.0, 1.0]), atol=1.0e-6)
+
+    test.assertEqual(len(rod_joints), 1)
+    np.testing.assert_allclose(joint_X_p[rod_joints[0], :3], np.array([0.0, 0.0, segment_length]), atol=1.0e-6)
+    np.testing.assert_allclose(joint_X_c[rod_joints[0], :3], np.zeros(3), atol=1.0e-6)
+
+
+def _cable_rod_origin_matches_com_impl(test: unittest.TestCase, device):
+    """Cable rods should support opt-in COM-centered body frames."""
+    builder = newton.ModelBuilder()
+
+    num_elements = 2
+    segment_length = 0.2
+    points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
+
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=points,
+        quaternions=edge_q,
+        radius=0.01,
+        bend_stiffness=1.0,
+        label="ut_cable_com_origin",
+        body_frame_origin="com",
+    )
+
+    builder.color()
+    model = builder.finalize(device=device)
+
+    body_q = model.body_q.numpy()
+    body_com = model.body_com.numpy()
+    shape_body = model.shape_body.numpy()
+    shape_transform = model.shape_transform.numpy()
+    joint_X_p = model.joint_X_p.numpy()
+    joint_X_c = model.joint_X_c.numpy()
+
+    for i, body_id in enumerate(rod_bodies):
+        p0 = np.array([points[i][0], points[i][1], points[i][2]], dtype=float)
+        p1 = np.array([points[i + 1][0], points[i + 1][1], points[i + 1][2]], dtype=float)
+        expected_center = 0.5 * (p0 + p1)
+
+        np.testing.assert_allclose(body_q[body_id, :3], expected_center, atol=1.0e-6)
+        np.testing.assert_allclose(body_com[body_id], np.zeros(3), atol=1.0e-6)
+
+        shape_ids = np.where(shape_body == body_id)[0]
+        test.assertEqual(len(shape_ids), 1)
+        shape_tf = shape_transform[shape_ids[0]]
+        np.testing.assert_allclose(shape_tf[:3], np.zeros(3), atol=1.0e-6)
+        np.testing.assert_allclose(shape_tf[3:], np.array([0.0, 0.0, 0.0, 1.0]), atol=1.0e-6)
+
+    test.assertEqual(len(rod_joints), 1)
+    half_length = 0.5 * segment_length
+    np.testing.assert_allclose(joint_X_p[rod_joints[0], :3], np.array([0.0, 0.0, half_length]), atol=1.0e-6)
+    np.testing.assert_allclose(joint_X_c[rod_joints[0], :3], np.array([0.0, 0.0, -half_length]), atol=1.0e-6)
 
 
 def _cable_graph_collision_filter_pairs_impl(test: unittest.TestCase, device):
@@ -3667,6 +3790,7 @@ def _cable_graph_collision_filter_pairs_impl(test: unittest.TestCase, device):
         bend_damping=0.0,
         label="ut_cable_graph_y_filter",
         wrap_in_articulation=True,
+        body_frame_origin="com",
     )
     test.assertEqual(len(rod_bodies), 3)
     test.assertEqual(len(rod_joints), 2)
@@ -3801,9 +3925,10 @@ def _cable_world_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
             bend_damping=2.0e-2,
             wrap_in_articulation=False,
             label=f"test_cable_world_{joint_kind}",
+            body_frame_origin="com",
         )
 
-        child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
+        child_anchor_local = wp.vec3(0.0, 0.0, -0.5 * segment_length)
         parent_xform = wp.transform(attach_pos, wp.quat_identity())
         child_xform = wp.transform(child_anchor_local, wp.quat_identity())
 
@@ -3975,11 +4100,12 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device):
         bend_damping=2.0e0,
         wrap_in_articulation=False,
         label="test_joint_enabled_cable",
+        body_frame_origin="com",
     )
 
     # BALL joint: anchor sphere -> first rod body.
     parent_anchor_local = wp.vec3(0.0, 0.0, -attach_offset)
-    child_anchor_local = wp.vec3(0.0, 0.0, 0.0)
+    child_anchor_local = wp.vec3(0.0, 0.0, -0.5 * segment_length)
     j = builder.add_joint_ball(
         parent=anchor,
         child=rod_bodies[0],
@@ -4072,13 +4198,14 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
         bend_damping=2.0e-2,
         wrap_in_articulation=False,
         label="test_kinematic_track",
+        body_frame_origin="com",
     )
 
     j_fixed = builder.add_joint_fixed(
         parent=anchor,
         child=rod_bodies[0],
         parent_xform=wp.transform(parent_anchor_local, edge_q[0]),
-        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.5 * segment_length), wp.quat_identity()),
     )
     builder.add_articulation([*rod_joints, j_fixed])
 
@@ -5851,6 +5978,18 @@ add_function_test(
     TestCable,
     "test_cable_graph_default_quat_aligns_z",
     _cable_graph_default_quat_aligns_z_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_rod_default_origin_matches_start",
+    _cable_rod_default_origin_matches_start_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_rod_origin_matches_com",
+    _cable_rod_origin_matches_com_impl,
     devices=devices,
 )
 add_function_test(

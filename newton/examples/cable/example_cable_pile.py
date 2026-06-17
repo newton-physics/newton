@@ -53,13 +53,14 @@ class Example:
         segment_length = 0.05
         self.cable_length = self.num_elements * segment_length
         cable_radius = 0.012
+        stretch_stiffness = 5.0e5
         bend_stiffness = 2.0e1
 
         # Layers and lanes
         self.layers = layers
         self.lanes_per_layer = lanes_per_layer
         lane_spacing = max(8.0 * cable_radius, 0.15)
-        layer_gap = cable_radius * 6.0
+        layer_gap = cable_radius * 3.0
 
         builder = newton.ModelBuilder()
         builder.rigid_gap = 0.0
@@ -156,9 +157,11 @@ class Example:
                     quaternions=edge_q,
                     radius=cable_radius,
                     cfg=cable_shape_cfg,
+                    stretch_stiffness=stretch_stiffness,
                     bend_stiffness=bend_stiffness,
                     bend_damping=2.0e1,
                     label=f"cable_l{layer}_{lane}",
+                    body_frame_origin="com",
                 )
                 rod_bodies_all.extend(rod_bodies)
 
@@ -180,12 +183,14 @@ class Example:
         self.contacts = self.model.contacts(collision_pipeline=pipeline)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_picking_linear_only_bodies(rod_bodies_all)
 
-        if hasattr(self.viewer, "picking"):
-            ps = self.viewer.picking.pick_state.numpy()
-            ps[0]["pick_stiffness"] = 20.0
+        picking = getattr(self.viewer, "picking", None)
+        if picking is not None:
+            ps = picking.pick_state.numpy()
+            ps[0]["pick_stiffness"] = 100.0
             ps[0]["pick_damping"] = 0.0
-            self.viewer.picking.pick_state.assign(ps)
+            picking.pick_state.assign(ps)
 
         self.capture()
 

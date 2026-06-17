@@ -201,6 +201,7 @@ class Example:
 
         # Create bundle cross-section layout
         bundle_positions = self.bundle_start_offsets_yz(self.num_cables, self.cable_radius, self.cable_gap_multiplier)
+        cable_body_ids: list[int] = []
 
         # Build each cable in the bundle
         for i in range(self.num_cables):
@@ -215,14 +216,16 @@ class Example:
                 twist_total=0.0,
             )
 
-            _rod_bodies, _rod_joints = builder.add_rod(
+            rod_bodies, _rod_joints = builder.add_rod(
                 positions=points,
                 quaternions=quats,
                 radius=self.cable_radius,
                 bend_stiffness=bend_stiffness,
                 bend_damping=bend_damping,
                 label=f"bundle_cable_{i}",
+                body_frame_origin="com",
             )
+            cable_body_ids.extend(rod_bodies)
 
         # Create moving obstacles (capsules arranged along X axis)
         obstacle_cfg = newton.ModelBuilder.ShapeConfig(
@@ -298,6 +301,7 @@ class Example:
 
         self.contacts = self.model.contacts()
         self.viewer.set_model(self.model)
+        self.viewer.set_picking_linear_only_bodies(cable_body_ids)
 
         # Obstacle kinematics parameters
         self.obstacle_bodies_wp = wp.array(self.obstacle_bodies, dtype=int, device=self.solver.device)

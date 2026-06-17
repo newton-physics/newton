@@ -151,6 +151,7 @@ class Example:
             twist_damping=self.TWIST_DAMPING,
             label="plectoneme",
             wrap_in_articulation=False,
+            body_frame_origin="com",
         )
         self.bodies = list(map(int, bodies))
         self.joints = list(map(int, joints))
