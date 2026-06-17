@@ -1644,7 +1644,9 @@ class SolverVBD(SolverBase):
 
             if slot is not None:
                 if slot < 0 or slot >= structural_count:
-                    if joint_type == int(JointType.CABLE):
+                    if structural_count == 0:
+                        names = "no structural slots"
+                    elif joint_type == int(JointType.CABLE):
                         names = "STRETCH=0, SHEAR=1, BEND=2, TWIST=3"
                     elif structural_count == 1:
                         names = "LINEAR=0"

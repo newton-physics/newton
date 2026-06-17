@@ -1545,6 +1545,23 @@ def _d6_fully_free_structural_slots_are_inactive(test, device):
     np.testing.assert_array_equal(solver.joint_is_hard.numpy()[start : start + 2], [0, 0])
 
 
+def _free_joint_constraint_mode_reports_no_structural_slots(test, device):
+    """Free joints should report that they have no structural slots."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    body = builder.add_link()
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    joint = builder.add_joint_free(body)
+    builder.add_articulation([joint])
+
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model)
+
+    test.assertEqual(int(solver.joint_constraint_dim.numpy()[joint]), 0)
+    with test.assertRaisesRegex(ValueError, r"0 structural slot\(s\) \(no structural slots\)"):
+        solver.set_joint_constraint_mode(joint, hard=True, slot=newton.solvers.SolverVBD.JointSlot.LINEAR)
+
+
 def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
     del device
 
@@ -2094,6 +2111,12 @@ add_function_test(
     TestSolverVBD,
     "test_d6_fully_free_structural_slots_are_inactive",
     _d6_fully_free_structural_slots_are_inactive,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_free_joint_constraint_mode_reports_no_structural_slots",
+    _free_joint_constraint_mode_reports_no_structural_slots,
     devices=devices,
 )
 add_function_test(
