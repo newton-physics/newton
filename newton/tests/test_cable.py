@@ -3556,10 +3556,17 @@ def _cable_eval_ik_fk_roundtrip_impl(test: unittest.TestCase, device):
     state.joint_q.zero_()
 
     # eval_ik: recover joint_q (relative anchor pose) from the built body_q.
+    # CABLE joint_qd must be left untouched (its DOFs are stiffness slots, not a twist).
+    joint_qd_before = state.joint_qd.numpy().copy()
     newton.eval_ik(model, state, state.joint_q, state.joint_qd)
 
     jq = state.joint_q.numpy()
     test.assertTrue(np.any(np.abs(jq) > 1.0e-6), msg="eval_ik should populate CABLE joint_q")
+    np.testing.assert_array_equal(
+        state.joint_qd.numpy(),
+        joint_qd_before,
+        err_msg="eval_ik must not modify joint_qd for CABLE joints",
+    )
 
     # Scramble every non-root body, then rebuild purely from the recovered joint_q.
     body_q = built_body_q.copy()

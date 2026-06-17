@@ -166,9 +166,6 @@ class JointType(IntEnum):
             dof_count = 0
             coord_count = 0
         elif self == JointType.CABLE:
-            # DOF entries stay as VBD stretch + bend/twist slots, while position
-            # coordinates hold the full relative anchor pose (3 translation + 4
-            # quaternion) so forward kinematics can reconstruct the rod.
             dof_count = num_axes
             coord_count = 7
         return dof_count, coord_count
