@@ -43,13 +43,13 @@ Deformable Bodies
 :meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the AOUSD
 UsdPhysics Deformables proposal, across three families:
 
-* **Curve / cable** -- a linear ``GeomBasisCurves`` with ``PhysicsCurvesDeformableSimAPI`` is
+* **Curve / cable** -- a linear ``UsdGeom.BasisCurves`` with ``PhysicsCurvesDeformableSimAPI`` is
   built as a VBD rod (a chain of capsule bodies joined by cable joints). A ``wrap=periodic``
   curve also gets a body for the closing segment.
-* **Surface / cloth** -- a triangulated ``GeomMesh`` with ``PhysicsSurfaceDeformableSimAPI``
+* **Surface / cloth** -- a triangulated ``UsdGeom.Mesh`` with ``PhysicsSurfaceDeformableSimAPI``
   is built as FEM triangles with bending edges.
-* **Volume** -- a ``GeomTetMesh`` with ``PhysicsVolumeDeformableSimAPI`` (or one governed by a
-  ``PhysicsDeformableBodyAPI``) is built as a soft body. A bare ``GeomTetMesh`` keeps the legacy
+* **Volume** -- a ``UsdGeom.TetMesh`` with ``PhysicsVolumeDeformableSimAPI`` (or one governed by a
+  ``PhysicsDeformableBodyAPI``) is built as a soft body. A bare ``UsdGeom.TetMesh`` keeps the legacy
   material-density import.
 
 Material attributes are read from the canonical ``physics:`` namespace (the proposal as written).
