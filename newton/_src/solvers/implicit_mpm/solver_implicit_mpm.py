@@ -917,8 +917,8 @@ class SolverImplicitMPM(SolverBase):
     def __init__(
         self,
         model: newton.Model,
-        *,
         config: Config,
+        *,
         temporary_store: fem.TemporaryStore | None = None,
         verbose: bool | None = None,
         enable_timers: bool = False,

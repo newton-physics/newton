@@ -368,7 +368,6 @@ class SolverKamino(SolverBase):
     def __init__(
         self,
         model: Model,
-        *,
         config: Config | None = None,
     ):
         """
