@@ -60,6 +60,7 @@ class RobotComposerSim:
         scene.add_ground_plane()
 
         self.model = scene.finalize(device=device)
+        self.model.shape_gap.zero_()
 
         # Initialize states and control
         self.state_0 = self.model.state()
