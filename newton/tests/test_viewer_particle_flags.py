@@ -17,13 +17,15 @@ class _LogPointsProbe(ViewerNull):
         self.logged_points = None
         self.logged_radii = None
         self.logged_hidden = None
+        self.logged_as_spheres = None
         self.log_points_called = False
 
-    def log_points(self, name, points, radii=None, colors=None, hidden=False):
+    def log_points(self, name, points, radii=None, colors=None, hidden=False, as_spheres=False):
         self.log_points_called = True
         self.logged_points = points
         self.logged_radii = radii
         self.logged_hidden = hidden
+        self.logged_as_spheres = as_spheres
 
 
 class TestViewerParticleFlags(unittest.TestCase):
@@ -56,6 +58,7 @@ class TestViewerParticleFlags(unittest.TestCase):
 
         self.assertTrue(viewer.log_points_called)
         self.assertEqual(len(viewer.logged_points), 3)
+        self.assertTrue(viewer.logged_as_spheres)
 
     def test_mixed_active_inactive_filters(self):
         """Only ACTIVE particles should be passed to log_points."""
@@ -71,6 +74,7 @@ class TestViewerParticleFlags(unittest.TestCase):
         self.assertEqual(len(viewer.logged_points), 3)
         points_np = viewer.logged_points.numpy()
         np.testing.assert_allclose(points_np[:, 0], [0.0, 2.0, 4.0], atol=1e-6)
+        self.assertTrue(viewer.logged_as_spheres)
 
     def test_all_inactive_clears_particles(self):
         """When no particles are ACTIVE, log_points should clear the point cloud."""
@@ -84,6 +88,7 @@ class TestViewerParticleFlags(unittest.TestCase):
         self.assertTrue(viewer.log_points_called)
         self.assertIsNone(viewer.logged_points)
         self.assertTrue(viewer.logged_hidden)
+        self.assertTrue(viewer.logged_as_spheres)
 
     def test_no_flags_renders_all(self):
         """When particle_flags is None, all particles should be rendered."""
@@ -98,6 +103,7 @@ class TestViewerParticleFlags(unittest.TestCase):
 
         self.assertTrue(viewer.log_points_called)
         self.assertEqual(len(viewer.logged_points), 2)
+        self.assertTrue(viewer.logged_as_spheres)
 
 
 if __name__ == "__main__":

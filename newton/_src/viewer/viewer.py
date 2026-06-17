@@ -1230,6 +1230,7 @@ class ViewerBase(ABC):
         radii: wp.array[wp.float32] | float | None = None,
         colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
+        as_spheres: bool = False,
     ):
         """
         Log a point cloud for rendering.
@@ -1240,6 +1241,9 @@ class ViewerBase(ABC):
             radii: Optional per-point radii array or a single radius value.
             colors: Optional per-point colors or a single RGB triplet.
             hidden: Whether the points should be hidden.
+            as_spheres: Whether to render each point as a 3D sphere instance
+                rather than a flat splat. Only affects backends that support
+                instanced sphere rendering (e.g. :class:`ViewerUSD`).
         """
         pass
 
@@ -2308,7 +2312,7 @@ class ViewerBase(ABC):
                 # Slice to transfer only the last element instead of the full array.
                 active_count = int(offsets[-1:].numpy()[0]) + int(mask[-1:].numpy()[0])
                 if active_count == 0:
-                    self.log_points(name="/model/particles", points=None, hidden=True)
+                    self.log_points(name="/model/particles", points=None, hidden=True, as_spheres=True)
                     return
                 if active_count < n:
                     points_out = wp.empty(active_count, dtype=wp.vec3, device=self.device)
@@ -2330,6 +2334,7 @@ class ViewerBase(ABC):
                 radii=radii,
                 colors=colors,
                 hidden=not self.show_particles,
+                as_spheres=True,
             )
 
     @staticmethod

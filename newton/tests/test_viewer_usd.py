@@ -119,6 +119,22 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(interpolation, UsdGeom.Tokens.constant)
         np.testing.assert_allclose(widths, np.array([0.2], dtype=np.float32), atol=1e-6)
 
+    def test_log_points_as_spheres_none_hides_instancer(self):
+        viewer = self._make_viewer()
+
+        points = wp.array([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]], dtype=wp.vec3)
+
+        # First call: create the PointInstancer with live points.
+        viewer.begin_frame(0.0)
+        path = viewer.log_points("/particles", points, radii=0.01, as_spheres=True)
+        instancer = UsdGeom.PointInstancer.Get(viewer.stage, path)
+        self.assertTrue(instancer)
+        self.assertEqual(instancer.GetVisibilityAttr().Get(viewer._frame_index), "inherited")
+
+        # Second call: points=None should hide the existing PointInstancer.
+        viewer.log_points("/particles", None, as_spheres=True, hidden=True)
+        self.assertEqual(instancer.GetVisibilityAttr().Get(viewer._frame_index), "invisible")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -217,6 +217,7 @@ class ViewerNull(ViewerBase):
         radii: wp.array[wp.float32] | float | None = None,
         colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
+        as_spheres: bool = False,
     ):
         """
         No-op implementation for logging points.
@@ -227,6 +228,7 @@ class ViewerNull(ViewerBase):
             radii: Point radii.
             colors: Point colors.
             hidden: Whether the points are hidden.
+            as_spheres: Ignored — null viewer discards all rendering.
         """
         pass
 
