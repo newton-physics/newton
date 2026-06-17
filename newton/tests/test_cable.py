@@ -5494,10 +5494,11 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
         radius=0.010,
         stretch_stiffness=1.0e6,
         bend_stiffness=bend_stiffness,
-        bend_damping=1.0,
+        bend_damping=10.0,
         twist_stiffness=twist_stiffness,
-        twist_damping=1.0,
+        twist_damping=10.0,
         label="kinematic_arc",
+        body_frame_origin="start",
     )
 
     for body_idx in (int(rod_bodies[0]), int(rod_bodies[-1])):
