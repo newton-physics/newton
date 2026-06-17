@@ -9,8 +9,9 @@ coupling via proxy bodies or proxy particles:
 1. **Sync** -- copy poses/velocities from the driving solver to proxy bodies.
 2. **Smooth teleportation** -- encode position jumps as velocity corrections
    to avoid discontinuities in penetration-free solvers.
-3. **Velocity rewind** -- remove previously applied coupling forces, external
-   force inputs, and gravity from proxy velocities to prevent double-counting.
+3. **Feedback cancellation** -- remove previously applied coupling forces,
+   external force inputs, and gravity from proxy dynamics to prevent
+   double-counting.
 4. **Harvest feedback** -- accumulate proxy feedback from destination solver
    momentum changes.
 """

@@ -799,13 +799,17 @@ class SolverVBD(SolverBase, CouplingInterface):
     ) -> None:
         """Convert input body pose updates into VBD-compatible history updates."""
         flags = StateFlags(flags)
+
         if (
-            dt <= 0.0
-            or not (flags & StateFlags.BODY_Q)
+            not (flags & StateFlags.BODY_Q)
             or state.body_q is None
             or state.body_qd is None
             or not self._coupling_has_rigid_avbd_state
         ):
+            return
+
+        if dt <= 0.0:
+            wp.copy(dest=self.body_q_prev, src=state.body_q)
             return
 
         if iteration_restart:
@@ -836,43 +840,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         contacts_freshly_detected: bool = False,
     ) -> Contacts | None:
         """Update rigid history cadence for proxy contacts."""
-        del state
+        # Do not call super(); we can keep proxy-proxy collisions as we
+        # are using a custom force harvesting hook
         self.set_rigid_history_update(bool(contacts_freshly_detected))
         return contacts
-
-    def coupling_rewind_proxy_body_velocity(
-        self,
-        body_local_to_proxy_global: wp.array[int],
-        state: State,
-        coupling_forces: wp.array[wp.spatial_vector],
-        body_gravity_acceleration: wp.array[wp.vec3],
-        dt: float,
-    ) -> None:
-        coupling_forces.zero_()
-        super().coupling_rewind_proxy_body_velocity(
-            body_local_to_proxy_global,
-            state,
-            coupling_forces,
-            body_gravity_acceleration,
-            dt,
-        )
-
-    def coupling_rewind_proxy_particle_velocity(
-        self,
-        particle_local_to_proxy_global: wp.array[int],
-        state: State,
-        coupling_forces: wp.array[wp.vec3],
-        particle_gravity_acceleration: wp.array[wp.vec3],
-        dt: float,
-    ) -> None:
-        coupling_forces.zero_()
-        super().coupling_rewind_proxy_particle_velocity(
-            particle_local_to_proxy_global,
-            state,
-            coupling_forces,
-            particle_gravity_acceleration,
-            dt,
-        )
 
     def coupling_harvest_proxy_wrenches(
         self,
