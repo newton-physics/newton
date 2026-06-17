@@ -44,12 +44,12 @@ Supported hook signatures are:
     def coupling_supports_inertial_property_refresh() -> bool: ...
 
 
-    def coupling_rewind_proxy_body_velocity(
+    def coupling_rewind_proxy_body(
         body_local_to_proxy_global, state, coupling_forces, body_gravity_acceleration, dt
     ) -> None: ...
 
 
-    def coupling_rewind_proxy_particle_velocity(
+    def coupling_rewind_proxy_particle(
         particle_local_to_proxy_global, state, coupling_forces, particle_gravity_acceleration, dt
     ) -> None: ...
 
@@ -94,7 +94,7 @@ from .proxy_utils import (
     filter_proxy_rigid_contacts_kernel,
     harvest_proxy_momentum_forces_kernel,
     harvest_proxy_particle_momentum_forces_kernel,
-    subtract_proxy_forces_kernel,
+    subtract_proxy_body_forces_kernel,
     subtract_proxy_particle_forces_kernel,
 )
 
@@ -282,7 +282,7 @@ class CouplingInterface:
                 device=model.device,
             )
 
-    def coupling_rewind_proxy_body_velocity(
+    def coupling_rewind_proxy_body(
         self,
         body_local_to_proxy_global: wp.array[int],
         state: State,
@@ -290,36 +290,31 @@ class CouplingInterface:
         body_gravity_acceleration: wp.array[wp.vec3],
         dt: float,
     ) -> None:
-        """Remove velocity-level feedback, public forces, and gravity from proxy velocities.
+        """Rewind lagged proxy-body feedback, gravity acceleration and external forces
+        before the destination solve, so those are not double-counted.
 
-        The default proxy feedback is harvested from destination momentum
-        change, so ``coupling_forces`` are treated as lagged velocity-level
-        response and rewound before the destination solve. Solvers whose
-        feedback is position-dependent, such as barrier-style contact, should
-        override this hook and leave ``coupling_forces`` in the synced velocity.
+        Implementations may update either ``state.body_qd`` or ``state.body_f``.
         """
-        if body_local_to_proxy_global.shape[0] == 0 or state.body_qd is None:
+        del dt
+        if body_local_to_proxy_global.shape[0] == 0 or state.body_f is None:
             return
 
         model = self.model
         wp.launch(
-            subtract_proxy_forces_kernel,
+            subtract_proxy_body_forces_kernel,
             dim=body_local_to_proxy_global.shape[0],
             inputs=[
-                float(dt),
                 body_gravity_acceleration,
-                state.body_q,
                 state.body_f,
                 coupling_forces,
                 body_local_to_proxy_global,
+                model.body_mass,
                 model.body_inv_mass,
-                model.body_inv_inertia,
-                state.body_qd,
             ],
             device=model.device,
         )
 
-    def coupling_rewind_proxy_particle_velocity(
+    def coupling_rewind_proxy_particle(
         self,
         particle_local_to_proxy_global: wp.array[int],
         state: State,
@@ -327,13 +322,10 @@ class CouplingInterface:
         particle_gravity_acceleration: wp.array[wp.vec3],
         dt: float,
     ) -> None:
-        """Remove velocity-level feedback, public forces, and gravity from proxy velocities.
+        """Rewind lagged proxy-body feedback, gravity acceleration and external forces
+        before the destination solve, so those are not double-counted.
 
-        The default proxy feedback is harvested from destination momentum
-        change, so ``coupling_forces`` are treated as lagged velocity-level
-        response and rewound before the destination solve. Solvers whose
-        feedback is position-dependent, such as barrier-style contact, should
-        override this hook and leave ``coupling_forces`` in the synced velocity.
+        Implementations may update either ``state.particle_qd`` or ``state.particle_f``.
         """
         if particle_local_to_proxy_global.shape[0] == 0 or state.particle_qd is None:
             return

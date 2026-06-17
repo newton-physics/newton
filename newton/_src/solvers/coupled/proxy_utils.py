@@ -134,62 +134,41 @@ def smooth_proxy_teleportation_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def subtract_proxy_forces_kernel(
-    dt: float,
+def subtract_proxy_body_forces_kernel(
     body_gravity_acceleration: wp.array[wp.vec3],
-    dst_body_q: wp.array[wp.transform],
     dst_body_f: wp.array[wp.spatial_vector],
     coupling_forces: wp.array[wp.spatial_vector],
     body_local_to_proxy_global: wp.array[int],
+    dst_body_mass: wp.array[float],
     dst_body_inv_mass: wp.array[float],
-    dst_body_inv_inertia: wp.array[wp.mat33],
-    dst_body_qd: wp.array[wp.spatial_vector],
 ):
-    """Subtract default velocity-level feedback, force inputs, and gravity.
-
-    The generic proxy path treats ``coupling_forces`` as lagged momentum or
-    velocity-level feedback, so they are rewound before the destination solve.
-    Position-dependent feedback, such as barrier-style contact, should use a
-    solver-specific rewind hook that preserves ``coupling_forces``.
-    Destination external force inputs and gravity are also subtracted because
-    the synced proxy velocity came from a driving solver that already accounted
-    for those contributions.
+    """Subtract lagged proxy feedback and gravity from destination body force inputs.
 
     Args:
-        dt: Substep time step [s].
         body_gravity_acceleration: Per-body acceleration applied internally by
             the destination solver's gravity-like forces [m/s^2].
-        dst_body_q: Destination body transforms (for rotating inertia).
-        dst_body_f: Destination body force inputs.
+        dst_body_f: Destination body force inputs (written in-place).
         coupling_forces: Spatial forces previously applied to the driving solver,
             indexed by global proxy body id.
         body_local_to_proxy_global: Dense map from local body id to global
             proxy body id. ``-1`` entries are skipped.
+        dst_body_mass: Destination body masses [kg].
         dst_body_inv_mass: Destination inverse masses.
-        dst_body_inv_inertia: Destination inverse inertia tensors.
-        dst_body_qd: Destination body velocities (modified in-place).
     """
     local_id = wp.tid()
     global_id = body_local_to_proxy_global[local_id]
     if global_id < 0:
         return
 
-    f = coupling_forces[global_id] + dst_body_f[local_id]
+    f = coupling_forces[global_id]# + dst_body_f[local_id]
 
     inv_m = dst_body_inv_mass[local_id]
-    r = wp.transform_get_rotation(dst_body_q[local_id])
-    inv_I = dst_body_inv_inertia[local_id]
-
-    delta_v = dt * inv_m * wp.spatial_top(f)
-    delta_w = dt * wp.quat_rotate(r, inv_I * wp.quat_rotate_inv(r, wp.spatial_bottom(f)))
-
-    # Subtract solver-applied gravity-like acceleration (driving solver already applied it).
     g = body_gravity_acceleration[local_id]
-    delta_v_grav = wp.vec3(0.0, 0.0, 0.0)
+    f_grav = wp.vec3(0.0, 0.0, 0.0)
     if inv_m > 0.0:
-        delta_v_grav = dt * g
+        f_grav = dst_body_mass[local_id] * g
 
-    dst_body_qd[local_id] = dst_body_qd[local_id] - wp.spatial_vector(delta_v + delta_v_grav, delta_w)
+    dst_body_f[local_id] = - f - wp.spatial_vector(f_grav, wp.vec3(0.0, 0.0, 0.0))
 
 
 @wp.kernel(enable_backward=False)

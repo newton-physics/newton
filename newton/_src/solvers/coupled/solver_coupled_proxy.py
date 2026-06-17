@@ -871,14 +871,14 @@ class SolverCoupledProxy(SolverCoupled):
                 if is_staggered:
                     proxy.coupling_forces.zero_()
 
-                dst.solver.coupling_rewind_proxy_body_velocity(
+                dst.solver.coupling_rewind_proxy_body(
                     proxy.destination_local_to_proxy_global,
                     dst.state_0,
                     proxy.coupling_forces,
                     dst.body_gravity_acceleration,
                     dt,
                 )
-                self._notify_input_state_update(dst, StateFlags.BODY_QD, dt=dt)
+                self._notify_input_state_update(dst, StateFlags.BODY_QD | StateFlags.BODY_F, dt=dt)
 
             for proxy in particle_proxies:
                 is_staggered = int(proxy.mode) == int(_ProxyMode.STAGGERED)
@@ -908,7 +908,7 @@ class SolverCoupledProxy(SolverCoupled):
                 if is_staggered:
                     continue
 
-                dst.solver.coupling_rewind_proxy_particle_velocity(
+                dst.solver.coupling_rewind_proxy_particle(
                     proxy.destination_local_to_proxy_global,
                     dst.state_0,
                     proxy.coupling_forces,

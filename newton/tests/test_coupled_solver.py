@@ -160,7 +160,7 @@ class _ProxyParticleHookSolver(SolverBase, CouplingInterface):
         self.harvest_calls = 0
         self.instances.append(self)
 
-    def coupling_rewind_proxy_particle_velocity(
+    def coupling_rewind_proxy_particle(
         self,
         particle_local_to_proxy_global,
         state,
