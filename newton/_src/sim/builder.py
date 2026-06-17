@@ -3018,6 +3018,12 @@ class ModelBuilder:
                   - Mapping from prim path (str) of a surface deformable (cloth) to a dict of its ``particle`` / ``tri`` / ``edge`` ``(start, end)`` index ranges
                 * - ``"path_soft_map"``
                   - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to a dict of its ``particle`` / ``tet`` ``(start, end)`` index ranges
+                * - ``"path_cable_attrs"``
+                  - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the VBD build ignores (e.g. shear / twist)
+                * - ``"path_cloth_attrs"``
+                  - Mapping from prim path (str) of a surface deformable (cloth) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``)
+                * - ``"path_soft_attrs"``
+                  - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to its as-authored, solver-neutral attributes (``resolved_density``)
                 * - ``"mass_unit"``
                   - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
                 * - ``"linear_unit"``

@@ -256,6 +256,12 @@ def parse_usd(
               - Mapping from prim path (str) of a surface deformable (cloth) to a dict of its ``particle`` / ``tri`` / ``edge`` ``(start, end)`` index ranges
             * - ``"path_soft_map"``
               - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to a dict of its ``particle`` / ``tet`` ``(start, end)`` index ranges
+            * - ``"path_cable_attrs"``
+              - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the VBD build ignores (e.g. shear / twist)
+            * - ``"path_cloth_attrs"``
+              - Mapping from prim path (str) of a surface deformable (cloth) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``)
+            * - ``"path_soft_attrs"``
+              - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to its as-authored, solver-neutral attributes (``resolved_density``)
             * - ``"mass_unit"``
               - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
             * - ``"linear_unit"``
@@ -398,6 +404,12 @@ def parse_usd(
     # mapping from volume (TetMesh) soft-body prim path to its particle / tet
     # ranges ([start, end)), for per-soft-body addressability.
     path_soft_map: dict[str, dict[str, tuple[int, int]]] = {}
+    # as-authored, solver-neutral deformable attributes per prim path (the parsed
+    # material moduli, incl. ones the VBD build ignores, and the resolved density),
+    # so a non-VBD consumer can rebuild the deformable without re-parsing the stage.
+    path_cable_attrs: dict[str, dict[str, Any]] = {}
+    path_cloth_attrs: dict[str, dict[str, Any]] = {}
+    path_soft_attrs: dict[str, dict[str, Any]] = {}
     # DOF offset within a merged D6 joint for each original prim path (only populated for merged joints)
     merged_dof_offset: dict[str, int] = {}
     # cache for resolved material properties (keyed by prim path)
@@ -3512,6 +3524,9 @@ def parse_usd(
                 "particle": (soft_p0, builder.particle_count),
                 "tet": (soft_t0, builder.tet_count),
             }
+            path_soft_attrs[path] = {
+                "resolved_density": add_soft_mesh_kwargs.get("density"),
+            }
 
             if verbose:
                 print(
@@ -3672,6 +3687,11 @@ def parse_usd(
             if cable_bodies:
                 _apply_cable_masses(prim, cable_bodies, len(points))
                 path_cable_map[path] = (cable_bodies, cable_joints)
+                path_cable_attrs[path] = {
+                    "material": dict(cable_mat),
+                    "resolved_density": cable_density,
+                    "closed": closed,
+                }
                 if verbose:
                     print(f"Added cable {path} with {len(cable_bodies)} segments.")
 
@@ -3746,6 +3766,10 @@ def parse_usd(
                 "particle": (p0, builder.particle_count),
                 "tri": (t0, builder.tri_count),
                 "edge": (e0, builder.edge_count),
+            }
+            path_cloth_attrs[path] = {
+                "material": dict(cloth_mat),
+                "resolved_density": density,
             }
             if verbose:
                 print(f"Added cloth {path} with {builder.particle_count - p0} particles.")
@@ -4513,6 +4537,9 @@ def parse_usd(
         "path_cable_map": path_cable_map,
         "path_cloth_map": path_cloth_map,
         "path_soft_map": path_soft_map,
+        "path_cable_attrs": path_cable_attrs,
+        "path_cloth_attrs": path_cloth_attrs,
+        "path_soft_attrs": path_soft_attrs,
         "path_shape_map": path_shape_map,
         "path_shape_scale": path_shape_scale,
         "mass_unit": mass_unit,

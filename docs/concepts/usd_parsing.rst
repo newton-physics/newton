@@ -65,6 +65,12 @@ Each imported deformable is addressable through the :meth:`~newton.ModelBuilder.
 ``path_soft_map`` (prim path -> ``particle`` / element ``(start, end)`` index ranges). The cable map
 is remapped if ``collapse_fixed_joints`` reindexes bodies.
 
+The same return dict also carries ``path_cable_attrs``, ``path_cloth_attrs`` and ``path_soft_attrs``,
+mapping each prim path to its as-authored, solver-neutral attributes (the parsed ``material`` moduli and
+the ``resolved_density``). These preserve moduli that the default VBD build does not consume -- e.g. cable
+``shearStiffness`` / ``twistStiffness`` -- so a solver with a different cable or surface representation can
+rebuild the deformable from the import without re-parsing the stage.
+
 .. note::
 
    Solver tuning that is not part of the AOUSD schema (e.g. damping) is not imported; supply it

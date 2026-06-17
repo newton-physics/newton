@@ -254,6 +254,42 @@ class TestUSDDeformableCable(unittest.TestCase):
                 midpoint = 0.5 * (np.array(pts[i]) + np.array(pts[i + 1]))
                 np.testing.assert_allclose(origin, midpoint.astype(np.float32), atol=1e-5)
 
+    def test_cable_attrs_surface_authored_material_including_dropped_moduli(self):
+        """path_cable_attrs exposes the as-authored material - including the shear /
+        twist moduli the VBD rod ignores - so a non-VBD solver can consume them."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_attrs.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curve = _add_cable_curve(stage, "/World/Cable", pts)
+            _bind_cable_material(
+                stage,
+                curve.GetPrim(),
+                "/World/Mat",
+                thickness=0.02,
+                density=1000.0,
+                bendStiffness=10.0,
+                shearStiffness=3.0,
+                twistStiffness=4.0,
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+
+            attrs = result["path_cable_attrs"]["/World/Cable"]
+            mat = attrs["material"]
+            # shear / twist are not mapped into the VBD rod but are preserved here.
+            self.assertAlmostEqual(mat["shearStiffness"], 3.0, places=5)
+            self.assertAlmostEqual(mat["twistStiffness"], 4.0, places=5)
+            self.assertAlmostEqual(mat["bendStiffness"], 10.0, places=5)
+            self.assertFalse(attrs["closed"])
+            self.assertIsNotNone(attrs["resolved_density"])
+
     def test_cable_density_scales_segment_mass(self):
         """Material density maps to capsule mass: doubling density doubles segment mass."""
         from pxr import Usd, UsdGeom, UsdPhysics
