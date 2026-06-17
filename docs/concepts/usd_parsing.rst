@@ -40,8 +40,10 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 Deformable Bodies
 -----------------
 
-:meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the AOUSD
-UsdPhysics Deformables proposal, across three families:
+:meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the `AOUSD UsdPhysics
+Deformables proposal
+<https://github.com/andrewkaufman/OpenUSD-proposals/blob/50a48457043e46af1bf2f9a685f67aed759150f1/proposals/physics_deformables/wp_deformable_physics_temp_2026_06_12.md>`_,
+across three families:
 
 * **Curve / cable** -- a linear ``UsdGeom.BasisCurves`` with ``PhysicsCurvesDeformableSimAPI`` is
   built as a VBD rod (a chain of capsule bodies joined by cable joints). A ``wrap=periodic``
