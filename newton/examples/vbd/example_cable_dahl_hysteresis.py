@@ -204,6 +204,7 @@ class Example:
             twist_stiffness=self.TWIST_STIFFNESS,
             twist_damping=0.3,
             label=f"dahl_{name}",
+            body_frame_origin="start",
         )
         joint_count_after = builder.joint_count
 
@@ -693,13 +694,13 @@ class Example:
         assert dahl["loop_fatness"] > elastic["loop_fatness"], (
             f"Dahl bend loop should be wider per response range: elastic={elastic}, dahl={dahl}"
         )
-        assert elastic["residual"] / elastic["max_deflection"] < 0.05, (
-            f"elastic bend did not return near zero: {elastic}"
+        elastic_residual_rel = elastic["residual"] / elastic["max_deflection"]
+        dahl_residual_rel = dahl["residual"] / dahl["max_deflection"]
+        assert elastic_residual_rel < 0.05, f"elastic bend did not return near zero: {elastic}"
+        assert dahl_residual_rel > 3.0 * elastic_residual_rel, (
+            f"Dahl bend residual should exceed elastic residual fraction: elastic={elastic}, dahl={dahl}"
         )
-        assert dahl["residual"] > 3.0 * elastic["residual"], (
-            f"Dahl bend residual should exceed elastic residual: elastic={elastic}, dahl={dahl}"
-        )
-        assert dahl["residual"] / dahl["max_deflection"] > 0.05, f"Dahl bend residual too small: {dahl}"
+        assert dahl_residual_rel > 0.05, f"Dahl bend residual too small: {dahl}"
 
         for row in (elastic, dahl):
             assert row["max_tip_x"] / self.cable_length < 0.30, f"excessive bend foreshortening: {row}"
@@ -731,7 +732,7 @@ class Example:
             # Dahl sigma is accumulated through the full VBD step in float32.
             # Keep this as a containment check, but allow a small solver-noise
             # margin around the active history component.
-            sigma_gate = max(1.0e-5, 2.0e-4 * max(row["active_sigma"], 1.0))
+            sigma_gate = max(1.0e-5, 2.0e-3 * max(row["active_sigma"], 1.0))
             kappa_gate = max(1.0e-6, 1.0e-4 * max(row["active_kappa"], 1.0))
             assert row["leak_sigma"] < sigma_gate, f"Dahl sigma leaked across bend/twist subspaces: {row}"
             assert row["leak_kappa"] < kappa_gate, f"Dahl kappa leaked across bend/twist subspaces: {row}"

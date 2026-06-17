@@ -171,6 +171,7 @@ class Example:
             twist_damping=self.TWIST_DAMPING,
             label="twist_buckling",
             wrap_in_articulation=False,
+            body_frame_origin="start",
         )
 
         self.bodies = list(map(int, bodies))

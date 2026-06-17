@@ -110,6 +110,7 @@ class Example:
                 closed=True,
                 label=f"michell_threshold_{label}",
                 wrap_in_articulation=True,
+                body_frame_origin="start",
             )
             is_dynamic = factor > 1.0
             if not is_dynamic:

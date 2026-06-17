@@ -100,6 +100,7 @@ class Example:
                 twist_stiffness=bend_stiffness * 0.77,
                 twist_damping=1.0,
                 label=f"cantilever_k{int(bend_stiffness)}",
+                body_frame_origin="start",
             )
 
             # Zero mass + zero inertia in Newton's VBD makes the root kinematic.

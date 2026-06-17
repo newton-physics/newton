@@ -102,6 +102,7 @@ class Example:
                 twist_damping=1.0,
                 label=f"twist_transfer_{label}",
                 wrap_in_articulation=False,
+                body_frame_origin="start",
             )
 
             root_body = int(bodies[0])

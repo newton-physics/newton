@@ -161,6 +161,7 @@ class Example:
             twist_damping=4.0,
             label="torsion_material_mapping",
             wrap_in_articulation=True,
+            body_frame_origin="start",
         )
 
         self.bodies = list(map(int, bodies))

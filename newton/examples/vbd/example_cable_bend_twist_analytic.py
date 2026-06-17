@@ -207,6 +207,7 @@ class Example:
             twist_damping=1.0,
             label=label,
             wrap_in_articulation=False,
+            body_frame_origin="start",
         )
         return list(bodies), list(joints)
 
