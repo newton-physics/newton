@@ -3664,6 +3664,7 @@ def parse_usd(
                     closed=closed,
                     label=label,
                     wrap_in_articulation=wrap_in_articulation,
+                    body_frame_origin="com",
                 )
                 cable_bodies.extend(bodies)
                 cable_joints.extend(joints)

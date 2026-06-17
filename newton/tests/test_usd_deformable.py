@@ -230,7 +230,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertEqual(sorted(bodies_a + bodies_b), list(range(builder.body_count)))
 
     def test_cable_body_range_matches_curve(self):
-        """Each cable body origin matches the authored segment start point (map points at the right bodies)."""
+        """Each cable body origin matches its authored segment midpoint (map points at the right bodies)."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -247,10 +247,12 @@ class TestUSDDeformableCable(unittest.TestCase):
             result = builder.add_usd(str(usd_path))
             bodies, _ = result["path_cable_map"]["/World/Cable"]
 
-            # Body i origin sits at segment start points[i] (origin == start on main).
+            # The importer builds rods with body_frame_origin="com", so body i origin sits
+            # at the midpoint of segment i (between authored points[i] and points[i + 1]).
             for i, body in enumerate(bodies):
                 origin = np.array(builder.body_q[body][:3], dtype=np.float32)
-                np.testing.assert_allclose(origin, np.array(pts[i], dtype=np.float32), atol=1e-5)
+                midpoint = 0.5 * (np.array(pts[i]) + np.array(pts[i + 1]))
+                np.testing.assert_allclose(origin, midpoint.astype(np.float32), atol=1e-5)
 
     def test_cable_density_scales_segment_mass(self):
         """Material density maps to capsule mass: doubling density doubles segment mass."""
