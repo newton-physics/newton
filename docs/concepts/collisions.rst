@@ -1665,7 +1665,7 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
      - :attr:`~ModelBuilder.ShapeConfig.kd`
      - :attr:`~Model.shape_material_kd`
    * - ``kf``
-     - Friction damping coefficient
+     - Contact friction gain
      - SemiImplicit, Featherstone
      - 1000.0
      - :attr:`~ModelBuilder.ShapeConfig.kf`

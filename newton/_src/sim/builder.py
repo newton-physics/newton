@@ -262,7 +262,7 @@ class ModelBuilder:
         kd: float = 100.0
         """The contact damping coefficient [N·s/m]. Used by SemiImplicit, Featherstone, MuJoCo, VBD."""
         kf: float = 1000.0
-        """The friction damping coefficient. Used by SemiImplicit, Featherstone."""
+        """The contact friction gain [N·s/m]. Used by SemiImplicit, Featherstone."""
         ka: float = 0.0
         """The contact adhesion distance. Used by SemiImplicit, Featherstone."""
         mu: float = 1.0
@@ -962,7 +962,7 @@ class ModelBuilder:
         self.shape_material_kd: list[float] = []
         """Contact damping values accumulated for :attr:`Model.shape_material_kd`."""
         self.shape_material_kf: list[float] = []
-        """Friction stiffness values accumulated for :attr:`Model.shape_material_kf`."""
+        """Contact friction gain values [N·s/m] accumulated for :attr:`Model.shape_material_kf`."""
         self.shape_material_ka: list[float] = []
         """Adhesion distances [m] accumulated for :attr:`Model.shape_material_ka`."""
         self.shape_material_mu: list[float] = []
