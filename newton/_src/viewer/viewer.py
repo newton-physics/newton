@@ -6,9 +6,8 @@ from __future__ import annotations
 import enum
 import os
 import sys
-import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 import numpy as np
@@ -208,6 +207,26 @@ class ViewerBase(ABC):
             # Auto-compute world offsets if not already set
             if self.world_offsets is None:
                 self._auto_compute_world_offsets()
+
+    def set_picking_linear_only_bodies(self, body_ids: Iterable[int] | None) -> None:
+        """Configure bodies that receive no torque from mouse picking.
+
+        Args:
+            body_ids: Iterable of body indices into ``model.body_q``. Pass
+                ``None`` to restore normal picking torque for every body.
+
+        Raises:
+            ValueError: If any ``body_id`` falls outside the model body range.
+        """
+        picking = getattr(self, "picking", None)
+        if picking is not None:
+            picking.set_linear_only_bodies(body_ids)
+
+    def clear_picking_linear_only_bodies(self) -> None:
+        """Restore normal mouse picking torque for all bodies."""
+        picking = getattr(self, "picking", None)
+        if picking is not None:
+            picking.clear_linear_only_bodies()
 
     def _should_render_world(self, world_idx: int) -> bool:
         """Check if a world should be rendered based on visible worlds."""
@@ -1880,41 +1899,6 @@ class ViewerBase(ABC):
         # Finalize all SDF isomesh batches
         for batch in self._sdf_isomesh_instances.values():
             batch.finalize()
-
-    def update_shape_colors(self, shape_colors: dict[int, wp.vec3 | tuple[float, float, float]]):
-        """
-        Set colors for a set of shapes at runtime.
-
-        .. deprecated:: 1.1
-            Write to :attr:`Model.shape_color` instead.
-
-        Args:
-            shape_colors: mapping from shape index -> color
-        """
-        warnings.warn(
-            "Viewer.update_shape_colors() is deprecated. Write to model.shape_color instead.",
-            category=DeprecationWarning,
-            stacklevel=2,
-        )
-
-        if self._shape_to_slot is None or self._shape_to_batch is None:
-            return
-
-        for s_idx, col in shape_colors.items():
-            if s_idx < 0 or s_idx >= len(self._shape_to_slot):
-                raise ValueError(f"Shape index {s_idx} out of bounds")
-
-            if self.model is not None and self.model.shape_color is not None:
-                self.model.shape_color[s_idx : s_idx + 1].fill_(wp.vec3(col))
-
-            slot = int(self._shape_to_slot[s_idx])
-            if slot < 0:
-                continue
-            if self.model_shape_color is not None:
-                self.model_shape_color[slot : slot + 1].fill_(wp.vec3(col))
-            batch_ref = self._shape_to_batch[s_idx]
-            if batch_ref is not None:
-                batch_ref.colors_changed = True
 
     def _log_inertia_boxes(self, state: newton.State):
         """Render inertia boxes as wireframe lines."""
