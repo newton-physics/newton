@@ -35,7 +35,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.vbd._viewer import set_viewer_camera
+from newton.examples.vbd._viewer import node_xyz, set_viewer_camera
 
 
 def _cable_coplanarity(points) -> float:
@@ -90,6 +90,7 @@ class Example:
 
         builder = newton.ModelBuilder(gravity=0.0)
         self.cases = []
+        self.cable_bodies: list[int] = []
         x_offsets = self._case_offsets(len(self.TWIST_TO_BEND_RATIOS))
         for twist_to_bend, x_offset in zip(self.TWIST_TO_BEND_RATIOS, x_offsets, strict=True):
             twist_stiffness = self.BEND_STIFFNESS * float(twist_to_bend)
@@ -110,8 +111,9 @@ class Example:
                 closed=True,
                 label=f"michell_threshold_{label}",
                 wrap_in_articulation=True,
-                body_frame_origin="start",
+                body_frame_origin="com",
             )
+            self.cable_bodies.extend(int(b) for b in bodies)
             is_dynamic = factor > 1.0
             if not is_dynamic:
                 self._make_bodies_kinematic(builder, bodies)
@@ -138,11 +140,15 @@ class Example:
 
         body_q = self.state_0.body_q.numpy()
         for case in self.cases:
-            case["rest_pos"] = np.asarray([body_q[b][:3] for b in case["bodies"]], dtype=np.float64)
+            case["rest_pos"] = np.asarray(
+                [node_xyz(body_q[b], self._ring_segment_length()) for b in case["bodies"]],
+                dtype=np.float64,
+            )
             case["rest_q"] = [np.asarray(body_q[b][3:7], dtype=np.float64) for b in case["bodies"]]
 
         self._apply_initial_twist_and_seed()
         self.viewer.set_model(self.model)
+        self.viewer.set_picking_linear_only_bodies(self.cable_bodies)
         set_viewer_camera(
             self.viewer,
             pos=wp.vec3(0.0, -7.2, 2.35),
@@ -161,6 +167,10 @@ class Example:
     def _case_offsets(cls, count: int) -> list[float]:
         center = 0.5 * float(count - 1)
         return [(float(i) - center) * cls.CASE_SPACING for i in range(count)]
+
+    @classmethod
+    def _ring_segment_length(cls) -> float:
+        return 2.0 * cls.RING_RADIUS * math.sin(math.pi / cls.NUM_SEGMENTS)
 
     @classmethod
     def _expected_outcome(cls, critical_twist_factor: float) -> str:
@@ -314,7 +324,8 @@ class Example:
 
     def _current_points(self, case: dict) -> np.ndarray:
         body_q = self.state_0.body_q.numpy()
-        return np.asarray([body_q[b][:3] for b in case["bodies"]], dtype=np.float64)
+        segment_length = self._ring_segment_length()
+        return np.asarray([node_xyz(body_q[b], segment_length) for b in case["bodies"]], dtype=np.float64)
 
     @staticmethod
     def _best_fit_plane_offsets(points: np.ndarray) -> np.ndarray:

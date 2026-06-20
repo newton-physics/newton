@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
@@ -40,7 +40,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.vbd._viewer import set_viewer_camera
+from newton.examples.vbd._viewer import node_xyz, set_viewer_camera
 
 
 class Example:
@@ -76,6 +76,7 @@ class Example:
 
         self.tip_bodies: list[int] = []
         self.tip_rest_z: list[float] = []
+        self.cable_bodies: list[int] = []
 
         for i, bend_stiffness in enumerate(self.BEND_STIFFNESS_VALUES):
             y_pos = (i - (self.num_cables - 1) * 0.5) * self.Y_SEPARATION
@@ -88,20 +89,25 @@ class Example:
             )
             quats = newton.utils.create_parallel_transport_cable_quaternions(points)
 
+            # Twist != bend exercises the split stiffness path while the applied
+            # load remains pure bending.
+            twist_stiffness = bend_stiffness * 0.77
+            bend_damping = bend_stiffness
+            twist_damping = twist_stiffness
+
             rod_bodies, _ = builder.add_rod(
                 positions=points,
                 quaternions=quats,
                 radius=self.CABLE_RADIUS,
                 stretch_stiffness=1.0e6,
                 bend_stiffness=bend_stiffness,
-                bend_damping=1.0,
-                # Twist != bend exercises the split stiffness path while the
-                # applied load remains pure bending.
-                twist_stiffness=bend_stiffness * 0.77,
-                twist_damping=1.0,
+                bend_damping=bend_damping,
+                twist_stiffness=twist_stiffness,
+                twist_damping=twist_damping,
                 label=f"cantilever_k{int(bend_stiffness)}",
-                body_frame_origin="start",
+                body_frame_origin="com",
             )
+            self.cable_bodies.extend(int(b) for b in rod_bodies)
 
             # Zero mass + zero inertia in Newton's VBD makes the root kinematic.
             root_body = rod_bodies[0]
@@ -125,11 +131,13 @@ class Example:
         self._tip_rest_y: list[float] = []
         body_q = self.state_0.body_q.numpy()
         for tip in self.tip_bodies:
-            self._tip_rest_x.append(float(body_q[tip][0]))
-            self._tip_rest_y.append(float(body_q[tip][1]))
-            self.tip_rest_z.append(float(body_q[tip][2]))
+            node = node_xyz(body_q[tip], self.SEGMENT_LENGTH)
+            self._tip_rest_x.append(float(node[0]))
+            self._tip_rest_y.append(float(node[1]))
+            self.tip_rest_z.append(float(node[2]))
 
         self.viewer.set_model(self.model)
+        self.viewer.set_picking_linear_only_bodies(self.cable_bodies)
         set_viewer_camera(
             self.viewer,
             pos=wp.vec3(0.5 * self.cable_length, -3.1, 0.85),
@@ -249,7 +257,7 @@ class Example:
         body_q = self.state_0.body_q.numpy()
         out = []
         for i in range(self.num_cables):
-            tip_pos = body_q[self.tip_bodies[i]][:3]
+            tip_pos = node_xyz(body_q[self.tip_bodies[i]], self.SEGMENT_LENGTH)
             dz = self.tip_rest_z[i] - float(tip_pos[2])
             dx = float(tip_pos[0] - self._tip_rest_x[i])
             dy = float(tip_pos[1] - self._tip_rest_y[i])

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
@@ -34,7 +34,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.vbd._viewer import set_viewer_camera
+from newton.examples.vbd._viewer import node_xyz, set_viewer_camera
 
 
 @wp.kernel
@@ -61,6 +61,8 @@ class Example:
     STRETCH_STIFFNESS = 1.0e6
     BEND_STIFFNESS = 250.0
     TWIST_STIFFNESS = 250.0
+    BEND_DAMPING = 75.0
+    TWIST_DAMPING = 75.0
 
     TIP_FORCE_MAX = 0.50  # N
     TWIST_TARGET_MAX = math.radians(45.0)
@@ -99,6 +101,7 @@ class Example:
         newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
 
         self.cases: list[dict] = []
+        self.cable_bodies: list[int] = []
         for name, mode, has_dahl in (
             ("bend_elastic", "bend", False),
             ("bend_dahl", "bend", True),
@@ -130,8 +133,10 @@ class Example:
 
         body_q = self.state_0.body_q.numpy()
         for case in self.cases:
-            case["rest_pos"] = np.asarray([body_q[b][:3] for b in case["bodies"]], dtype=np.float64)
+            case["rest_pos"] = np.asarray([node_xyz(body_q[b], self.SEGMENT_LENGTH) for b in case["bodies"]], dtype=np.float64)
             case["rest_q"] = [np.asarray(body_q[b][3:7], dtype=np.float64) for b in case["bodies"]]
+            # COM-origin transform drives the kinematic twist tip directly (twist about the
+            # tangent leaves the COM fixed), so this stays in body-frame (COM) coordinates.
             case["tip_rest_pos"] = np.asarray(body_q[case["tip_body"]][:3], dtype=np.float64)
             case["tip_rest_q"] = np.asarray(body_q[case["tip_body"]][3:7], dtype=np.float64)
 
@@ -152,6 +157,7 @@ class Example:
         self._kinematic_rot = wp.array(self._kinematic_rot_np, dtype=wp.quat)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_picking_linear_only_bodies(self.cable_bodies)
         set_viewer_camera(
             self.viewer,
             pos=wp.vec3(0.5 * self.cable_length, -3.5, 1.05),
@@ -200,12 +206,13 @@ class Example:
             stretch_stiffness=self.STRETCH_STIFFNESS,
             stretch_damping=0.0,
             bend_stiffness=self.BEND_STIFFNESS,
-            bend_damping=0.3,
+            bend_damping=self.BEND_DAMPING,
             twist_stiffness=self.TWIST_STIFFNESS,
-            twist_damping=0.3,
+            twist_damping=self.TWIST_DAMPING,
             label=f"dahl_{name}",
-            body_frame_origin="start",
+            body_frame_origin="com",
         )
+        self.cable_bodies.extend(int(b) for b in rod_bodies)
         joint_count_after = builder.joint_count
 
         # Root is fixed for every cantilever. Twist cases also prescribe the
@@ -355,8 +362,8 @@ class Example:
         self._record_subspace_state()
 
         for case in self.cases:
-            tip_pos = np.asarray(body_q[case["tip_body"]][:3], dtype=np.float64)
-            tip_delta = tip_pos - case["tip_rest_pos"]
+            tip_pos = node_xyz(body_q[case["tip_body"]], self.SEGMENT_LENGTH)
+            tip_delta = tip_pos - case["rest_pos"][-1]
             self.max_tip_x_disp[case["name"]] = max(self.max_tip_x_disp[case["name"]], abs(float(tip_delta[0])))
             self.max_tip_y_disp[case["name"]] = max(self.max_tip_y_disp[case["name"]], abs(float(tip_delta[1])))
             if case["mode"] == "bend":
@@ -427,7 +434,7 @@ class Example:
 
     def _current_points(self, case: dict) -> np.ndarray:
         body_q = self.state_0.body_q.numpy()
-        return np.asarray([body_q[b][:3] for b in case["bodies"]], dtype=np.float64)
+        return np.asarray([node_xyz(body_q[b], self.SEGMENT_LENGTH) for b in case["bodies"]], dtype=np.float64)
 
     @staticmethod
     def _loop_area(xs: list[float] | np.ndarray, ys: list[float] | np.ndarray) -> float:

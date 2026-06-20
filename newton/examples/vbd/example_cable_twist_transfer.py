@@ -35,7 +35,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.vbd._viewer import set_viewer_camera
+from newton.examples.vbd._viewer import node_xyz, set_viewer_camera
 
 
 @wp.kernel
@@ -69,6 +69,8 @@ class Example:
     STRETCH_STIFFNESS = 1.0e6
     BEND_STIFFNESS = 5.0e3
     TWIST_STIFFNESS = 2.0e2
+    BEND_DAMPING = 5.0e3
+    TWIST_DAMPING = 2.0e2
 
     def __init__(self, viewer, args=None):
         self.viewer = viewer
@@ -82,6 +84,7 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.cases: list[dict] = []
+        self.cable_bodies: list[int] = []
 
         builder = newton.ModelBuilder(gravity=0.0)
 
@@ -92,18 +95,20 @@ class Example:
         ]
 
         for label, points in path_builders:
+            points_np = self._points_array(points)
             bodies, joints = builder.add_rod(
                 positions=points,
                 radius=self.CABLE_RADIUS,
                 stretch_stiffness=self.STRETCH_STIFFNESS,
                 bend_stiffness=self.BEND_STIFFNESS,
-                bend_damping=1.0,
+                bend_damping=self.BEND_DAMPING,
                 twist_stiffness=self.TWIST_STIFFNESS,
-                twist_damping=1.0,
+                twist_damping=self.TWIST_DAMPING,
                 label=f"twist_transfer_{label}",
                 wrap_in_articulation=False,
-                body_frame_origin="start",
+                body_frame_origin="com",
             )
+            self.cable_bodies.extend(int(b) for b in bodies)
 
             root_body = int(bodies[0])
             tip_body = int(bodies[-1])
@@ -114,7 +119,13 @@ class Example:
                 builder.body_inv_inertia[body] = wp.mat33(0.0)
 
             builder.add_articulation(list(joints), label=f"twist_transfer_{label}_articulation")
-            self.cases.append({"label": label, "bodies": list(map(int, bodies)), "points": points})
+            self.cases.append(
+                {
+                    "label": label,
+                    "bodies": list(map(int, bodies)),
+                    "segment_length": self._polyline_length(points_np) / self.NUM_ELEMENTS,
+                }
+            )
 
         builder.color()
         self.model = builder.finalize()
@@ -126,7 +137,10 @@ class Example:
 
         body_q = self.state_0.body_q.numpy()
         for case in self.cases:
-            case["rest_pos"] = np.asarray([body_q[b][:3] for b in case["bodies"]], dtype=np.float64)
+            case["rest_pos"] = np.asarray(
+                [node_xyz(body_q[b], case["segment_length"]) for b in case["bodies"]],
+                dtype=np.float64,
+            )
             case["rest_q"] = [np.asarray(body_q[b][3:7], dtype=np.float64) for b in case["bodies"]]
             case["arc_length"] = self._polyline_length(case["rest_pos"])
 
@@ -136,6 +150,7 @@ class Example:
         self._twist_rate_wp = wp.array(self._twist_rate_np, dtype=float)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_picking_linear_only_bodies(self.cable_bodies)
         set_viewer_camera(
             self.viewer,
             pos=wp.vec3(4.4, 0.0, 1.45),
@@ -185,6 +200,10 @@ class Example:
     @staticmethod
     def _polyline_length(points: np.ndarray) -> float:
         return float(np.sum(np.linalg.norm(np.diff(points, axis=0), axis=1)))
+
+    @staticmethod
+    def _points_array(points: list[wp.vec3]) -> np.ndarray:
+        return np.asarray([[float(p[0]), float(p[1]), float(p[2])] for p in points], dtype=np.float64)
 
     @staticmethod
     def _quat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -277,7 +296,7 @@ class Example:
 
     def _current_points(self, case: dict) -> np.ndarray:
         body_q = self.state_0.body_q.numpy()
-        return np.asarray([body_q[b][:3] for b in case["bodies"]], dtype=np.float64)
+        return np.asarray([node_xyz(body_q[b], case["segment_length"]) for b in case["bodies"]], dtype=np.float64)
 
     def _log_twist_ticks(self, case: dict, twists: np.ndarray, color: tuple[float, float, float]) -> None:
         body_q = self.state_0.body_q.numpy()
@@ -285,7 +304,7 @@ class Example:
         ends = []
         tick_len = 0.12
         for body, rest_q, twist in zip(case["bodies"], case["rest_q"], twists, strict=True):
-            p = np.asarray(body_q[body][:3], dtype=np.float64)
+            p = node_xyz(body_q[body], case["segment_length"])
             tangent = self._quat_rotate(rest_q, np.array([0.0, 0.0, 1.0], dtype=np.float64))
             normal = self._quat_rotate(rest_q, np.array([1.0, 0.0, 0.0], dtype=np.float64))
             q_twist = np.array(

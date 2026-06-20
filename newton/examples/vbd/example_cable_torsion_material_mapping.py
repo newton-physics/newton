@@ -44,7 +44,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.vbd._viewer import set_viewer_camera
+from newton.examples.vbd._viewer import node_xyz, set_viewer_camera
 
 
 @wp.kernel
@@ -137,6 +137,10 @@ class Example:
             poissons_ratio=self.POISSONS_RATIO,
         )
 
+        self.stretch_damping = self.stretch_stiffness
+        self.bend_damping = 4.0 * self.bend_stiffness
+        self.twist_damping = 4.0 * self.twist_stiffness
+
         self.shear_modulus = self.YOUNGS_MODULUS / (2.0 * (1.0 + self.POISSONS_RATIO))
         self.polar_inertia = 0.5 * math.pi * self.CABLE_RADIUS**4
 
@@ -154,17 +158,18 @@ class Example:
             quaternions=quats,
             radius=self.CABLE_RADIUS,
             stretch_stiffness=self.stretch_stiffness,
-            stretch_damping=1.0,
+            stretch_damping=self.stretch_damping,
             bend_stiffness=self.bend_stiffness,
-            bend_damping=4.0,
+            bend_damping=self.bend_damping,
             twist_stiffness=self.twist_stiffness,
-            twist_damping=4.0,
+            twist_damping=self.twist_damping,
             label="torsion_material_mapping",
             wrap_in_articulation=True,
-            body_frame_origin="start",
+            body_frame_origin="com",
         )
 
         self.bodies = list(map(int, bodies))
+        self.cable_bodies = list(map(int, bodies))
         self.root_body = self.bodies[0]
         self.tip_body = self.bodies[-1]
 
@@ -182,13 +187,14 @@ class Example:
         self.control = self.model.control()
 
         body_q = self.state_0.body_q.numpy()
-        self.rest_pos = np.asarray([body_q[b][:3] for b in self.bodies], dtype=np.float64)
+        self.rest_pos = np.asarray([node_xyz(body_q[b], self.SEGMENT_LENGTH) for b in self.bodies], dtype=np.float64)
         self.rest_q = [np.asarray(body_q[b][3:7], dtype=np.float64) for b in self.bodies]
         self._twist_rate = self.TARGET_TIP_TWIST / self.RAMP_TIME
         self._twist_rate_np = np.zeros(1, dtype=np.float32)
         self._twist_rate_wp = wp.array(self._twist_rate_np, dtype=float)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_picking_linear_only_bodies(self.cable_bodies)
         set_viewer_camera(
             self.viewer,
             pos=wp.vec3(0.0, -3.4, 1.15),
@@ -374,7 +380,7 @@ class Example:
 
     def _current_pos(self) -> np.ndarray:
         body_q = self.state_0.body_q.numpy()
-        return np.asarray([body_q[b][:3] for b in self.bodies], dtype=np.float64)
+        return np.asarray([node_xyz(body_q[b], self.SEGMENT_LENGTH) for b in self.bodies], dtype=np.float64)
 
     @staticmethod
     def _log_polyline(viewer, name: str, points: np.ndarray, color: tuple[float, float, float], width: float) -> None:

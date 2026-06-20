@@ -32,7 +32,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.vbd._viewer import set_viewer_camera
+from newton.examples.vbd._viewer import node_xyz, set_viewer_camera
 
 
 @wp.kernel
@@ -79,7 +79,7 @@ class Example:
     SEGMENT_LENGTH = 0.075
     CABLE_RADIUS = 0.014
 
-    TWIST_TURNS = 10.0
+    TWIST_TURNS = 9.0
 
     SETTLE_TIME = 1.5
     TWIST_TIME = 5.0
@@ -122,6 +122,8 @@ class Example:
         params = self._resolve_params(args)
         self.bend_stiffness = params["bend_stiffness"]
         self.twist_stiffness = params["twist_stiffness"]
+        self.bend_damping = self.BEND_DAMPING * self.bend_stiffness
+        self.twist_damping = self.TWIST_DAMPING * self.twist_stiffness
         self.twist_turns = params["twist_turns"]
         self.seed_offset = params["seed_offset"]
         self.contact_mode = str(params["contact_mode"])
@@ -166,15 +168,16 @@ class Example:
             stretch_stiffness=self.STRETCH_STIFFNESS,
             stretch_damping=0.0,
             bend_stiffness=self.bend_stiffness,
-            bend_damping=self.BEND_DAMPING,
+            bend_damping=self.bend_damping,
             twist_stiffness=self.twist_stiffness,
-            twist_damping=self.TWIST_DAMPING,
+            twist_damping=self.twist_damping,
             label="twist_buckling",
             wrap_in_articulation=False,
-            body_frame_origin="start",
+            body_frame_origin="com",
         )
 
         self.bodies = list(map(int, bodies))
+        self.cable_bodies = list(map(int, bodies))
         self.joints = list(map(int, joints))
         if self.contact_enabled:
             self._filter_near_rod_collision_pairs(builder, self.bodies, self.CONTACT_TOPOLOGICAL_FILTER_SPAN)
@@ -213,7 +216,7 @@ class Example:
             self.contacts = self.model.contacts()
 
         body_q = self.state_0.body_q.numpy()
-        self.rest_pos = np.asarray([body_q[b][:3] for b in self.bodies], dtype=np.float64)
+        self.rest_pos = np.asarray([node_xyz(body_q[b], self.SEGMENT_LENGTH) for b in self.bodies], dtype=np.float64)
         self.rest_q = [np.asarray(body_q[b][3:7], dtype=np.float64) for b in self.bodies]
         self.root_rest_pos = self.rest_pos[0].copy()
         self.tip_rest_pos = np.asarray(body_q[self.tip_body][:3], dtype=np.float64)
@@ -235,6 +238,7 @@ class Example:
         self.twist_angles = wp.array(self.twist_angles_np, dtype=wp.float32, device=self.model.device)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_picking_linear_only_bodies(self.cable_bodies)
         set_viewer_camera(
             self.viewer,
             pos=wp.vec3(0.50 * self.cable_length, -6.20, 1.05),
@@ -358,7 +362,7 @@ class Example:
 
     def current_points(self) -> np.ndarray:
         body_q = self.state_0.body_q.numpy()
-        return np.asarray([body_q[b][:3] for b in self.bodies], dtype=np.float64)
+        return np.asarray([node_xyz(body_q[b], self.SEGMENT_LENGTH) for b in self.bodies], dtype=np.float64)
 
     @staticmethod
     def _quat_rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:

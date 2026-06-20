@@ -51,7 +51,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.vbd._viewer import set_viewer_camera
+from newton.examples.vbd._viewer import com_from_node, node_xyz, set_viewer_camera
 
 
 @wp.kernel
@@ -108,6 +108,7 @@ class Example:
 
         self.bend_cases = []
         self.twist_cases = []
+        self.cable_bodies: list[int] = []
         mode = getattr(args, "cable_analytic_mode", "all")
         if mode not in ("all", "bend", "twist", "twist_max"):
             raise ValueError(f"Unknown cable_analytic_mode: {mode}")
@@ -156,7 +157,7 @@ class Example:
 
         body_q = self.state_0.body_q.numpy()
         for case in self.bend_cases + self.twist_cases:
-            case["rest_points"] = np.asarray([body_q[b][:3] for b in case["bodies"]], dtype=np.float64)
+            case["rest_points"] = np.asarray([node_xyz(body_q[b], self.SEGMENT_LENGTH) for b in case["bodies"]], dtype=np.float64)
             case["rest_q"] = [np.asarray(body_q[b][3:7], dtype=np.float64) for b in case["bodies"]]
             case["tip_rest_q"] = np.asarray(body_q[case["tip"]][3:7], dtype=np.float64)
 
@@ -170,6 +171,7 @@ class Example:
         self._kinematic_rot = wp.array(self._kinematic_rot_np, dtype=wp.quat)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_picking_linear_only_bodies(self.cable_bodies)
         set_viewer_camera(
             self.viewer,
             pos=wp.vec3(0.5 * self.cable_length + 4.2, 0.0, 1.35),
@@ -196,19 +198,22 @@ class Example:
             num_segments=self.NUM_ELEMENTS,
         )
         quats = newton.utils.create_parallel_transport_cable_quaternions(points)
+        bend_damping = bend_stiffness
+        twist_damping = twist_stiffness
         bodies, joints = builder.add_rod(
             positions=points,
             quaternions=quats,
             radius=self.CABLE_RADIUS,
             stretch_stiffness=self.STRETCH_STIFFNESS,
             bend_stiffness=bend_stiffness,
-            bend_damping=1.0,
+            bend_damping=bend_damping,
             twist_stiffness=twist_stiffness,
-            twist_damping=1.0,
+            twist_damping=twist_damping,
             label=label,
             wrap_in_articulation=False,
-            body_frame_origin="start",
+            body_frame_origin="com",
         )
+        self.cable_bodies.extend(int(b) for b in bodies)
         return list(bodies), list(joints)
 
     def _make_kinematic(self, builder, body_index: int) -> None:
@@ -294,7 +299,7 @@ class Example:
             points = self._analytic_bend_points(case["rest_points"], case["target"], scale)
             q_bend = self._axis_quat(np.array([0.0, 1.0, 0.0]), target)
             rot = self._quat_mul(q_bend, case["tip_rest_q"])
-            self._kinematic_pos_np[row] = points[-1].astype(np.float32)
+            self._kinematic_pos_np[row] = com_from_node(points[-1], rot, self.SEGMENT_LENGTH).astype(np.float32)
             self._kinematic_rot_np[row] = rot.astype(np.float32)
             row += 1
 
@@ -302,7 +307,7 @@ class Example:
             target = case["target"] * scale
             q_twist = self._axis_quat(np.array([1.0, 0.0, 0.0]), target)
             rot = self._quat_mul(q_twist, case["tip_rest_q"])
-            self._kinematic_pos_np[row] = case["rest_points"][-1].astype(np.float32)
+            self._kinematic_pos_np[row] = com_from_node(case["rest_points"][-1], rot, self.SEGMENT_LENGTH).astype(np.float32)
             self._kinematic_rot_np[row] = rot.astype(np.float32)
             row += 1
 
@@ -343,7 +348,7 @@ class Example:
 
     def _rod_points(self, bodies: list[int]) -> np.ndarray:
         body_q = self.state_0.body_q.numpy()
-        return np.asarray([body_q[b][:3] for b in bodies], dtype=np.float64)
+        return np.asarray([node_xyz(body_q[b], self.SEGMENT_LENGTH) for b in bodies], dtype=np.float64)
 
     def _measure_case_angles(self, case: dict, axis_index: int) -> np.ndarray:
         body_q = self.state_0.body_q.numpy()
@@ -389,7 +394,7 @@ class Example:
         rest_normal_world = np.array([0.0, 0.0, 1.0], dtype=np.float64)
         for body, rest_q, twist in zip(case["bodies"], case["rest_q"], twists, strict=True):
             q_now = np.asarray(body_q[body][3:7], dtype=np.float64)
-            p = np.asarray(body_q[body][:3], dtype=np.float64)
+            p = node_xyz(body_q[body], self.SEGMENT_LENGTH)
 
             rest_local_normal = self._quat_rotate(self._quat_conj(rest_q), rest_normal_world)
             sim_normal = self._quat_rotate(q_now, rest_local_normal)
