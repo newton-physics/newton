@@ -3770,7 +3770,8 @@ def parse_usd(
                 if verbose:
                     print(f"Added cable {path} with {len(cable_bodies)} segments.")
 
-    # Surface deformables (PhysicsSurfaceDeformableSimAPI triangle Mesh -> cloth via add_cloth_mesh).
+    # Surface deformables (PhysicsSurfaceDeformableSimAPI polygon Mesh -> cloth via add_cloth_mesh;
+    # n-gon faces are fan-triangulated below, so the source need not be pre-triangulated).
     if root_prim and root_prim.IsValid():
         for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
             if not prim.IsA(UsdGeom.Mesh):
