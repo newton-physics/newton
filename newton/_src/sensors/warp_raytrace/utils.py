@@ -906,16 +906,6 @@ class Utils:
         world_and_camera_count = self.__render_context.world_count * camera_count
         if worlds_per_row is None:
             worlds_per_row = math.ceil(math.sqrt(world_and_camera_count))
-        elif worlds_per_row == 0:
-            # Older callers passed 0 to mean "auto layout" because the original
-            # check was a falsy test. Preserve that behavior with a deprecation
-            # warning so we can require >=1 in a future release.
-            warnings.warn(
-                "worlds_per_row=0 is deprecated; pass None for auto layout.",
-                category=DeprecationWarning,
-                stacklevel=3,
-            )
-            worlds_per_row = math.ceil(math.sqrt(world_and_camera_count))
         elif worlds_per_row < 1:
             raise ValueError(f"worlds_per_row must be >= 1, got {worlds_per_row}")
         worlds_per_col = math.ceil(world_and_camera_count / worlds_per_row)

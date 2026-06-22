@@ -219,7 +219,7 @@ class RenderContext:
         if has_shapes or has_particles or self.has_triangle_mesh or self.has_gaussians:
             if self.has_triangle_mesh:
                 if self.triangle_mesh is None:
-                    self.triangle_mesh = wp.Mesh(self.triangle_points, self.triangle_indices, device=self.device)
+                    self.triangle_mesh = wp.Mesh(self.triangle_points, self.triangle_indices)
                 else:
                     self.triangle_mesh.refit()
 
