@@ -365,13 +365,17 @@ class Example:
         shape_names = self.params["shape_names"]
         elev = self.params["bag_elevation"]
 
+        stable = 0
         for i, bi in enumerate(body_indices):
             z = body_q[bi][2]
             name = shape_names[i]
             if np.isnan(z) or z < elev * 0.5:
                 print(f"  UNSTABLE: {name} (body {bi}) z={z:.4f}")
             else:
+                stable += 1
                 print(f"  ok: {name} (body {bi}) z={z:.4f}")
+
+        assert stable >= len(body_indices) - 1, f"Only {stable}/{len(body_indices)} rigid bodies remained stable"
 
     @staticmethod
     def create_parser():
