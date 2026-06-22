@@ -10,6 +10,7 @@ import warp as wp
 from warp.types import is_array
 
 from ..sim import Control, JointType, Model, State, eval_fk, eval_jacobian, eval_mass_matrix
+from .deprecation import deprecate_nonkeyword_arguments
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
@@ -500,6 +501,7 @@ class ArticulationView:
         verbose (bool | None): If True, prints selection summary.
     """
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,

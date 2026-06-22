@@ -52,6 +52,7 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
+from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.mesh import MeshAdjacency
 from .enums import (
     BodyFlags,
@@ -480,6 +481,7 @@ class ModelBuilder:
         Describes a joint axis (a single degree of freedom) that can have limits and be driven towards a target.
         """
 
+        @deprecate_nonkeyword_arguments
         def __init__(
             self,
             *,
@@ -4036,10 +4038,11 @@ class ModelBuilder:
         self._warn_default_body_armature_deprecated()
         self._default_body_armature = value
 
+    @deprecate_nonkeyword_arguments
     def add_link(
         self,
-        xform: Transform | None = None,
         *,
+        xform: Transform | None = None,
         armature: float | None = None,
         com: Vec3 | None = None,
         inertia: Mat33 | None = None,
@@ -4134,10 +4137,11 @@ class ModelBuilder:
 
         return body_id
 
+    @deprecate_nonkeyword_arguments
     def add_body(
         self,
-        xform: Transform | None = None,
         *,
+        xform: Transform | None = None,
         armature: float | None = None,
         com: Vec3 | None = None,
         inertia: Mat33 | None = None,
@@ -4209,6 +4213,7 @@ class ModelBuilder:
 
     # region joints
 
+    @deprecate_nonkeyword_arguments
     def add_joint(
         self,
         joint_type: JointType,
@@ -4418,6 +4423,7 @@ class ModelBuilder:
 
         return joint_index
 
+    @deprecate_nonkeyword_arguments
     def add_joint_revolute(
         self,
         parent: int,
@@ -4515,6 +4521,7 @@ class ModelBuilder:
             **kwargs,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_joint_prismatic(
         self,
         parent: int,
@@ -4610,6 +4617,7 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_joint_ball(
         self,
         parent: int,
@@ -4684,6 +4692,7 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_joint_fixed(
         self,
         parent: int,
@@ -4731,6 +4740,7 @@ class ModelBuilder:
 
         return joint_index
 
+    @deprecate_nonkeyword_arguments
     def add_joint_free(
         self,
         child: int,
@@ -4788,6 +4798,7 @@ class ModelBuilder:
         self.joint_q[q_start : q_start + 7] = list(self.body_q[child])
         return joint_id
 
+    @deprecate_nonkeyword_arguments
     def add_joint_distance(
         self,
         parent: int,
@@ -4848,6 +4859,7 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_joint_d6(
         self,
         parent: int,
@@ -4902,6 +4914,7 @@ class ModelBuilder:
             **kwargs,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_joint_cable(
         self,
         parent: int,
@@ -6316,6 +6329,7 @@ class ModelBuilder:
 
         return shape
 
+    @deprecate_nonkeyword_arguments
     def add_shape_plane(
         self,
         plane: Vec4 | None = (0.0, 0.0, 1.0, 0.0),
@@ -6382,6 +6396,7 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_ground_plane(
         self,
         *,
@@ -6410,6 +6425,7 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_sphere(
         self,
         body: int,
@@ -6455,6 +6471,7 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_ellipsoid(
         self,
         body: int,
@@ -6530,6 +6547,7 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_box(
         self,
         body: int,
@@ -6581,6 +6599,7 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_capsule(
         self,
         body: int,
@@ -6635,6 +6654,7 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_cylinder(
         self,
         body: int,
@@ -6689,6 +6709,7 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_cone(
         self,
         body: int,
@@ -6744,6 +6765,7 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_mesh(
         self,
         body: int,
@@ -6786,6 +6808,7 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_convex_hull(
         self,
         body: int,
@@ -6828,6 +6851,7 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_heightfield(
         self,
         *,
@@ -6875,6 +6899,7 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_gaussian(
         self,
         body: int,
@@ -6981,6 +7006,7 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_site(
         self,
         body: int,
@@ -7357,6 +7383,7 @@ class ModelBuilder:
 
         return remeshed_shapes
 
+    @deprecate_nonkeyword_arguments
     def add_rod(
         self,
         positions: list[Vec3],
@@ -7561,6 +7588,7 @@ class ModelBuilder:
 
         return link_bodies, link_joints
 
+    @deprecate_nonkeyword_arguments
     def add_rod_graph(
         self,
         node_positions: list[Vec3],
@@ -8094,6 +8122,7 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.SPRING,
             )
 
+    @deprecate_nonkeyword_arguments
     def add_triangle(
         self,
         i: int,
@@ -8178,6 +8207,7 @@ class ModelBuilder:
                 )
             return area
 
+    @deprecate_nonkeyword_arguments
     def add_triangles(
         self,
         i: list[int] | np.ndarray,
@@ -8359,6 +8389,7 @@ class ModelBuilder:
 
         return volume
 
+    @deprecate_nonkeyword_arguments
     def add_edge(
         self,
         i: int,
@@ -8431,6 +8462,7 @@ class ModelBuilder:
 
         return edge_index
 
+    @deprecate_nonkeyword_arguments
     def add_edges(
         self,
         i: list[int],
@@ -8529,6 +8561,7 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.EDGE,
             )
 
+    @deprecate_nonkeyword_arguments
     def add_cloth_grid(
         self,
         *,
@@ -8655,6 +8688,7 @@ class ModelBuilder:
                 self.particle_mass[start_vertex + vertex_id] = particle_mass
                 vertex_id = vertex_id + 1
 
+    @deprecate_nonkeyword_arguments
     def add_cloth_mesh(
         self,
         *,
@@ -8811,6 +8845,7 @@ class ModelBuilder:
             for i, j in spring_indices:
                 self.add_spring(i, j, spring_ke, spring_kd, control=0.0, custom_attributes=custom_attributes_springs)
 
+    @deprecate_nonkeyword_arguments
     def add_particle_grid(
         self,
         *,
@@ -8914,6 +8949,7 @@ class ModelBuilder:
             custom_attributes=broadcast_custom_attrs,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_soft_grid(
         self,
         *,
@@ -9093,6 +9129,7 @@ class ModelBuilder:
                     for o1, o2, v1, v2 in edge_indices:
                         self.add_edge(o1, o2, v1, v2, rest=None, edge_ke=edge_ke, edge_kd=edge_kd)
 
+    @deprecate_nonkeyword_arguments
     def add_soft_mesh(
         self,
         *,
@@ -11837,3 +11874,6 @@ class ModelBuilder:
 
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)
+
+
+ModelBuilder.ShapeConfig.__init__ = deprecate_nonkeyword_arguments(ModelBuilder.ShapeConfig.__init__)

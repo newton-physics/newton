@@ -19,6 +19,7 @@ from ...sim import (
     ModelFlags,
     State,
 )
+from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..solver import SolverBase
 from ..xpbd.kernels import apply_joint_forces
 from .particle_vbd_kernels import (
@@ -196,6 +197,7 @@ class SolverVBD(SolverBase):
         STRETCH = 0
         BEND = 1
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,

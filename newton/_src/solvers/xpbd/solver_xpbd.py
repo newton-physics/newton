@@ -5,6 +5,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelFlags, State
+from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..solver import SolverBase
 from .kernels import (
     accumulate_weighted_contact_impulse,
@@ -93,6 +94,7 @@ class SolverXPBD(SolverBase):
 
     """
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,

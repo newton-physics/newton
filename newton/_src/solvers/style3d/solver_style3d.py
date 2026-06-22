@@ -7,6 +7,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelBuilder, State
+from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..solver import SolverBase
 from .builder import PDMatrixBuilder
 from .collision import Collision
@@ -99,6 +100,7 @@ class SolverStyle3D(SolverBase):
 
     """
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,
