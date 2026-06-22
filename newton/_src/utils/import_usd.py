@@ -3580,9 +3580,8 @@ def parse_usd(
         quats = []
         for i in range(len(seg_positions) - 1):
             seg = seg_positions[i + 1] - seg_positions[i]
+            # The caller skips curves with zero-length segments, so seg_len > eps here.
             seg_len = float(wp.length(seg))
-            if seg_len <= eps:
-                raise ValueError("cable curve has duplicate consecutive points")
             tangent = seg / seg_len
             q = quat_between_vectors_robust(z_local, tangent, eps)
             n_perp = seg_normals[i] - wp.dot(seg_normals[i], tangent) * tangent
@@ -3674,7 +3673,6 @@ def parse_usd(
                 if n < 3:
                     warnings.warn(f"{path}: curve {ci} has {n} points (need >= 3); skipping that curve.", stacklevel=2)
                     continue
-                imported_point_count += n
                 positions = [
                     wp.transform_point(
                         world_xf, wp.vec3(float(p[0]) * w_scale[0], float(p[1]) * w_scale[1], float(p[2]) * w_scale[2])
@@ -3687,6 +3685,17 @@ def parse_usd(
                 if closed:
                     positions = [*positions, positions[0]]
                 num_seg = len(positions) - 1
+                # A zero-length segment (duplicate consecutive points) can't be oriented or
+                # sized; warn and skip just this curve rather than aborting the whole import.
+                seg_lengths = [float(wp.length(positions[i + 1] - positions[i])) for i in range(num_seg)]
+                if min(seg_lengths, default=0.0) <= 1.0e-8:
+                    warnings.warn(
+                        f"{path}: curve {ci} has duplicate consecutive points (zero-length segment); "
+                        f"skipping that curve.",
+                        stacklevel=2,
+                    )
+                    continue
+                imported_point_count += n
                 # Authored normals -> per-segment orientation (rotated to world). The
                 # normal at vertex i orients its outgoing segment, including the wrap.
                 quaternions = None
@@ -3699,9 +3708,7 @@ def parse_usd(
                 # Per-joint stiffness needs a per-segment rest length: the mean of the
                 # actual segment lengths (the straight-line endpoint distance would
                 # underestimate it for curved cables and inflate the stiffness).
-                seg_len = sum(float(wp.length(positions[i + 1] - positions[i])) for i in range(num_seg)) / max(
-                    1, num_seg
-                )
+                seg_len = sum(seg_lengths) / max(1, num_seg)
                 stretch_stiffness = (
                     cable_mat["stretchStiffness"] * area / seg_len
                     if "stretchStiffness" in cable_mat and seg_len > 0.0

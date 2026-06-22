@@ -290,6 +290,40 @@ class TestUSDDeformableCable(unittest.TestCase):
             with self.assertWarnsRegex(UserWarning, r"!= 4 curve points"):
                 builder.add_usd(str(usd_path))
 
+    def test_duplicate_consecutive_points_skips_curve(self):
+        """A curve with a zero-length segment is warned and skipped, not aborting the import."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "dup.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            curves = UsdGeom.BasisCurves.Define(stage, "/World/Cable")
+            curves.CreateTypeAttr().Set(UsdGeom.Tokens.linear)
+            # A valid 4-point curve, then a 3-point curve with a duplicate consecutive point.
+            curves.CreatePointsAttr(
+                [
+                    (0.0, 0.0, 1.0),
+                    (0.1, 0.0, 1.0),
+                    (0.2, 0.0, 1.0),
+                    (0.3, 0.0, 1.0),
+                    (0.0, 1.0, 1.0),
+                    (0.0, 1.0, 1.0),
+                    (0.2, 1.0, 1.0),
+                ]
+            )
+            curves.CreateCurveVertexCountsAttr([4, 3])
+            curves.GetPrim().AddAppliedSchema("PhysicsCurvesDeformableSimAPI")
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "duplicate consecutive points"):
+                result = builder.add_usd(str(usd_path))
+            # The valid curve still imports (4 points -> 3 bodies); the degenerate one is skipped.
+            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            self.assertEqual(len(bodies), 3)
+
     def test_vendor_namespace_material_needs_resolver(self):
         """Vendor-namespaced (omniphysics:) material is read only with a compat resolver.
 
