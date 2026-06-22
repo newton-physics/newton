@@ -3771,9 +3771,21 @@ def parse_usd(
             if not mesh_points or not face_counts or not face_indices:
                 warnings.warn(f"{path}: cloth mesh missing points / topology; skipping.", stacklevel=2)
                 continue
-            if any(int(c) != 3 for c in face_counts):
-                warnings.warn(f"{path}: cloth mesh must be triangulated (all faces size 3); skipping.", stacklevel=2)
+            face_counts = [int(c) for c in face_counts]
+            face_indices = [int(i) for i in face_indices]
+            if any(c < 3 for c in face_counts):
+                warnings.warn(f"{path}: cloth mesh has a face with fewer than 3 vertices; skipping.", stacklevel=2)
                 continue
+            # Fan-triangulate faces so n-gons (commonly quads) import as triangles. Exact
+            # for convex faces; a concave or strongly non-planar n-gon may triangulate
+            # imperfectly. Vertex indices are preserved so each mesh point stays one particle.
+            tri_vertex_indices: list[int] = []
+            face_offset = 0
+            for count in face_counts:
+                face = face_indices[face_offset : face_offset + count]
+                face_offset += count
+                for k in range(1, count - 1):
+                    tri_vertex_indices += [face[0], face[k], face[k + 1]]
             _warn_unsupported_rest_fields(
                 prim, path, ("restShapePoints", "restBendAngles", "restAdjTriPairs", "restBendAnglesDefault")
             )
@@ -3812,7 +3824,7 @@ def parse_usd(
                 scale=scale,
                 vel=wp.vec3(0.0, 0.0, 0.0),
                 vertices=cloth_vertices,
-                indices=[int(i) for i in face_indices],
+                indices=tri_vertex_indices,
                 density=density,
                 tri_ke=tri_ke,
                 tri_ka=tri_ka,

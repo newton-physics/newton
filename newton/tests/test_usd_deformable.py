@@ -720,6 +720,28 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertGreater(builder.edge_count, 0)
             self.assertEqual(builder.particle_count, 4)
 
+    def test_cloth_quad_mesh_is_triangulated(self):
+        """A quad-faced cloth mesh is fan-triangulated on import (n-gons are supported)."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "quad_cloth.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            mesh = UsdGeom.Mesh.Define(stage, "/World/Cloth")
+            mesh.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 1.0, 1.0)])
+            mesh.CreateFaceVertexCountsAttr([4])  # single quad face
+            mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+            mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            ranges = result["path_cloth_map"]["/World/Cloth"]
+            self.assertEqual(ranges["particle"], (0, 4))  # 4 quad vertices stay 1:1 with particles
+            self.assertEqual(ranges["tri"], (0, 2))  # quad fan-triangulates to 2 triangles
+            self.assertEqual(builder.particle_count, 4)
+
     def test_plain_mesh_without_surface_api_is_not_cloth(self):
         """A triangle Mesh without the surface-deformable API must not produce cloth."""
         from pxr import Usd, UsdGeom, UsdPhysics

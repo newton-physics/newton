@@ -55,8 +55,8 @@ across three families:
 * **Curve / cable** -- a linear ``UsdGeom.BasisCurves`` with ``PhysicsCurvesDeformableSimAPI`` is
   built as a VBD rod (a chain of capsule bodies joined by cable joints). A ``wrap=periodic``
   curve also gets a body for the closing segment.
-* **Surface / cloth** -- a triangulated ``UsdGeom.Mesh`` with ``PhysicsSurfaceDeformableSimAPI``
-  is built as FEM triangles with bending edges.
+* **Surface / cloth** -- a ``UsdGeom.Mesh`` with ``PhysicsSurfaceDeformableSimAPI`` is built as
+  FEM triangles with bending edges; polygonal faces (e.g. quads) are fan-triangulated on import.
 * **Volume** -- a ``UsdGeom.TetMesh`` with ``PhysicsVolumeDeformableSimAPI`` (or one governed by a
   ``PhysicsDeformableBodyAPI``) is built as a soft body. A bare ``UsdGeom.TetMesh`` keeps the legacy
   material-density import.
