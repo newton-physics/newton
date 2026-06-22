@@ -4165,31 +4165,34 @@ class ModelBuilder:
                 f"but current world is {self.current_world}"
             )
 
+        has_parallel_joint = False
+        parallel_free = False
         for existing_parent, existing_joint_idx in self.joint_parents.get(child, ()):
             if existing_parent == parent:
-                existing_type = self.joint_type[existing_joint_idx]
-                involves_free = existing_type == JointType.FREE or joint_type == JointType.FREE
-                if involves_free:
-                    warnings.warn(
-                        f"Adding a {joint_type.name} joint between parent {parent} and "
-                        f"child {child} (label: {self.body_label[child]!r}), but a "
-                        f"{existing_type.name} joint already connects these bodies. "
-                        f"A FREE joint parallel to another joint is inconsistent. Use add_link() "
-                        f"with the appropriate joint type instead of add_body().",
-                        UserWarning,
-                        stacklevel=2,
-                    )
-                else:
-                    warnings.warn(
-                        f"Adding a {joint_type.name} joint between parent {parent} and "
-                        f"child {child} (label: {self.body_label[child]!r}), but a "
-                        f"{existing_type.name} joint already connects these bodies. "
-                        f"Parallel joints between the same pair of bodies have "
-                        f"undefined semantics and may not behave as expected.",
-                        UserWarning,
-                        stacklevel=2,
-                    )
-                break
+                has_parallel_joint = True
+                parallel_free = joint_type == JointType.FREE or self.joint_type[existing_joint_idx] == JointType.FREE
+                if parallel_free:
+                    break
+
+        if has_parallel_joint:
+            if parallel_free:
+                warnings.warn(
+                    f"Adding a {joint_type.name} joint between parent {parent} and "
+                    f"child {child} (label: {self.body_label[child]!r}), but another joint already connects these "
+                    f"bodies. A FREE joint parallel to another joint is inconsistent. Use add_link() "
+                    f"with the appropriate joint type instead of add_body().",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            else:
+                warnings.warn(
+                    f"Adding a {joint_type.name} joint between parent {parent} and "
+                    f"child {child} (label: {self.body_label[child]!r}), but another joint already connects these "
+                    f"bodies. Parallel joints between the same pair of bodies have undefined semantics and may not "
+                    f"behave as expected.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         self.joint_type.append(joint_type)
         joint_idx = self.joint_count - 1
