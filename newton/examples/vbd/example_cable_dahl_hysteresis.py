@@ -133,7 +133,9 @@ class Example:
 
         body_q = self.state_0.body_q.numpy()
         for case in self.cases:
-            case["rest_pos"] = np.asarray([node_xyz(body_q[b], self.SEGMENT_LENGTH) for b in case["bodies"]], dtype=np.float64)
+            case["rest_pos"] = np.asarray(
+                [node_xyz(body_q[b], self.SEGMENT_LENGTH) for b in case["bodies"]], dtype=np.float64
+            )
             case["rest_q"] = [np.asarray(body_q[b][3:7], dtype=np.float64) for b in case["bodies"]]
             # COM-origin transform drives the kinematic twist tip directly (twist about the
             # tangent leaves the COM fixed), so this stays in body-frame (COM) coordinates.

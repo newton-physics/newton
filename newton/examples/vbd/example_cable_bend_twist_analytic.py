@@ -157,7 +157,9 @@ class Example:
 
         body_q = self.state_0.body_q.numpy()
         for case in self.bend_cases + self.twist_cases:
-            case["rest_points"] = np.asarray([node_xyz(body_q[b], self.SEGMENT_LENGTH) for b in case["bodies"]], dtype=np.float64)
+            case["rest_points"] = np.asarray(
+                [node_xyz(body_q[b], self.SEGMENT_LENGTH) for b in case["bodies"]], dtype=np.float64
+            )
             case["rest_q"] = [np.asarray(body_q[b][3:7], dtype=np.float64) for b in case["bodies"]]
             case["tip_rest_q"] = np.asarray(body_q[case["tip"]][3:7], dtype=np.float64)
 
@@ -307,7 +309,9 @@ class Example:
             target = case["target"] * scale
             q_twist = self._axis_quat(np.array([1.0, 0.0, 0.0]), target)
             rot = self._quat_mul(q_twist, case["tip_rest_q"])
-            self._kinematic_pos_np[row] = com_from_node(case["rest_points"][-1], rot, self.SEGMENT_LENGTH).astype(np.float32)
+            self._kinematic_pos_np[row] = com_from_node(case["rest_points"][-1], rot, self.SEGMENT_LENGTH).astype(
+                np.float32
+            )
             self._kinematic_rot_np[row] = rot.astype(np.float32)
             row += 1
 
