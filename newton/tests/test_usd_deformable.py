@@ -227,6 +227,24 @@ class TestUSDDeformableCable(unittest.TestCase):
             dof0 = builder.joint_qd_start[joints[0]]
             self.assertEqual(builder.joint_target_ke[dof0], 1.0e5)  # add_rod default stretch stiffness
 
+    def test_material_attr_authored_on_geometry_warns(self):
+        """Deformable material moduli authored on the geometry (not the material) warn and are ignored."""
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_misplaced.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            # stretchStiffness belongs on the bound material, not the curve geometry.
+            curves.GetPrim().CreateAttribute("physics:stretchStiffness", Sdf.ValueTypeNames.Float).Set(5.0e5)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "authored on the geometry"):
+                builder.add_usd(str(usd_path))
+
     def test_cable_resolved_density_reports_default_when_unauthored(self):
         """resolved_density reports the density actually used (the builder default), not None."""
         from pxr import Usd, UsdPhysics

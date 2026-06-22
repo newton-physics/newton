@@ -3409,6 +3409,26 @@ def parse_usd(
                 )
                 return
 
+    def _warn_geometry_authored_material_attrs(prim, path, material_api):
+        # The proposal scopes these moduli to the deformable material APIs, so authoring
+        # them on the geometry has no effect; warn rather than drop them silently. density
+        # is excluded since it may legitimately sit on the body (PhysicsDeformableBodyAPI).
+        for name in (
+            "youngsModulus",
+            "poissonsRatio",
+            "stretchStiffness",
+            "shearStiffness",
+            "bendStiffness",
+            "twistStiffness",
+            "thickness",
+        ):
+            if deformable_read(prim, name) is not None:
+                warnings.warn(
+                    f"{path}: deformable material attribute 'physics:{name}' is authored on the geometry; "
+                    f"it belongs on the bound material ({material_api}) and is ignored.",
+                    stacklevel=2,
+                )
+
     def _apply_particle_masses(prim, p0, p1):
         n = p1 - p0
         if n <= 0:
@@ -3487,6 +3507,7 @@ def parse_usd(
             )
             if is_volume_deformable:
                 _warn_unsupported_rest_shape(prim, path, ("restShapePoints",))
+                _warn_geometry_authored_material_attrs(prim, path, "PhysicsVolumeDeformableMaterialAPI")
 
             if collect_schema_attrs:
                 R.collect_prim_attrs(prim)
@@ -3604,6 +3625,7 @@ def parse_usd(
                 continue
             closed = curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic
             _warn_unsupported_rest_shape(prim, path, ("restWrapPoints",))
+            _warn_geometry_authored_material_attrs(prim, path, "PhysicsCurvesDeformableMaterialAPI")
 
             world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
             w_pos, w_rot, w_scale = wp.transform_decompose(world_mat)
@@ -3742,6 +3764,7 @@ def parse_usd(
                 warnings.warn(f"{path}: cloth mesh must be triangulated (all faces size 3); skipping.", stacklevel=2)
                 continue
             _warn_unsupported_rest_shape(prim, path, ("restShapePoints",))
+            _warn_geometry_authored_material_attrs(prim, path, "PhysicsSurfaceDeformableMaterialAPI")
 
             world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
             cloth_pos, cloth_rot, cloth_scale = wp.transform_decompose(world_mat)
