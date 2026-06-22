@@ -525,6 +525,28 @@ class TestUSDDeformableCable(unittest.TestCase):
                 np.testing.assert_allclose(z_world, [1.0, 0.0, 0.0], atol=1e-5)  # +Z -> tangent +X
                 np.testing.assert_allclose(y_world, [0.0, 1.0, 0.0], atol=1e-5)  # +Y -> normal
 
+    def test_cable_non_per_point_normals_ignored(self):
+        """Cable normals with non-per-point interpolation are warned and ignored, not misapplied."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_const_normals.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            curves.CreateNormalsAttr([(0.0, 1.0, 0.0)])
+            curves.SetNormalsInterpolation(UsdGeom.Tokens.constant)  # not per-point
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "not per-point"):
+                result = builder.add_usd(str(usd_path))
+            # The cable still imports (normals ignored, default segment orientation used).
+            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            self.assertEqual(len(bodies), 3)
+
     def test_cable_replication_independent_per_world(self):
         """Replicating a cable across worlds yields independent, contiguous per-world segments (T5)."""
         from pxr import Usd, UsdGeom, UsdPhysics
