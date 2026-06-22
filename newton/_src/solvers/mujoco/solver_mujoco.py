@@ -7481,9 +7481,8 @@ class SolverMuJoCo(SolverBase):
                 factor = invw * (1.0 - dmax) if invw > 0.0 and dmax < 1.0 else 1.0
                 direct_stiffness = max(ke * factor, MJ_MINVAL)
                 direct_damping = max(kd * factor, MJ_MINVAL)
-                timeconst = 2.0 / direct_damping
-                dampratio = direct_damping / (2.0 * math.sqrt(direct_stiffness))
-                jnt_solref[mjc_jnt] = (timeconst, dampratio)
+                solref = convert_solref(direct_stiffness, direct_damping, 1.0, 1.0)
+                jnt_solref[mjc_jnt] = (float(solref[0]), float(solref[1]))
 
             self.mj_model.jnt_solref[:] = jnt_solref
             self.mjw_model.jnt_solref.assign(jnt_solref.reshape(1, njnt, 2))
