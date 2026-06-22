@@ -9,6 +9,7 @@
 - Add `viewer.set_picking_linear_only_bodies()` and `viewer.clear_picking_linear_only_bodies()` to mark bodies that should receive only the linear component of mouse-picking force, suppressing offset-induced torque.
 - Add opt-in `body_frame_origin="com"` to `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()` for COM-centered cable capsule body frames.
 - Add user-defined pressure laws to hydroelastic SDF contact via `HydroelasticSDF.Config.pressure_func` (a `@wp.func` mapping `(signed_depth, shape_idx, data) -> pressure`) and `pressure_data` (a `@wp.struct` carrying per-shape state). The contact patch is the iso-pressure surface `p_a == p_b`; the default linear law `pressure = -kh * signed_depth` is preserved when no callback is supplied.
+- Add an SDF nut/bolt tunneling benchmark sweep and contact-metric options to `example_nut_bolt_sdf`.
 - Add `--render-fps` to cap example rendering rate without changing simulation frame timing
 
 ### Changed

@@ -79,6 +79,118 @@ class FastExampleContactSdfDefaults:
         wp.synchronize_device()
 
 
+class FastExampleContactSdfTunnelingSweep:
+    """Track SDF nut-bolt tunneling sensitivity across contact settings."""
+
+    _CONFIGS = {
+        "baseline_substeps4": {
+            "sim_substeps": 4,
+        },
+        "baseline_substeps8": {
+            "sim_substeps": 8,
+        },
+        "baseline_substeps12": {
+            "sim_substeps": 12,
+        },
+        "collide_substeps4": {
+            "sim_substeps": 4,
+            "collide_every_substep": True,
+        },
+        "sticky_substeps4": {
+            "sim_substeps": 4,
+            "contact_matching": "sticky",
+        },
+        "large_hash_substeps4": {
+            "sim_substeps": 4,
+            "contact_reduction_hashtable_size_factor": 1.0,
+        },
+        "no_reduction_substeps4": {
+            "sim_substeps": 4,
+            "reduce_contacts": False,
+        },
+        "gap_10mm_substeps4": {
+            "sim_substeps": 4,
+            "shape_gap": 0.01,
+        },
+    }
+
+    params = (list(_CONFIGS),)
+    param_names = ["config"]
+    repeat = 1
+    number = 1
+    num_frames = 120
+    world_count = 4
+
+    def setup_cache(self):
+        _download_external_git_folder(ISAACGYM_ENVS_REPO_URL, ISAACGYM_NUT_BOLT_FOLDER)
+
+    def setup(self, config):
+        example_cls = _import_example_class(
+            [
+                "newton.examples.contacts.example_nut_bolt_sdf",
+            ]
+        )
+        args = newton.examples.default_args(example_cls.create_parser())
+        cfg = self._CONFIGS[config]
+        args.world_count = self.world_count
+        args.num_per_world = 1
+        args.sim_substeps = cfg["sim_substeps"]
+        args.collide_every_substep = cfg.get("collide_every_substep", False)
+        args.track_contact_metrics = True
+        args.reduce_contacts = cfg.get("reduce_contacts", True)
+        args.contact_matching = cfg.get("contact_matching", "disabled")
+        args.contact_reduction_hashtable_size_factor = cfg.get("contact_reduction_hashtable_size_factor", 0.25)
+        args.shape_gap = cfg.get("shape_gap", 0.005)
+        args.rigid_contact_max = 500 * self.world_count
+        args.max_triangle_pairs = 1_000_000
+        args.broad_phase = "sap"
+        self.example = example_cls(ViewerNull(num_frames=self.num_frames), args)
+        self._metrics = None
+
+    def _run(self):
+        if self._metrics is not None:
+            return self._metrics
+
+        for _ in range(self.num_frames):
+            self.example.step()
+        wp.synchronize_device()
+
+        metrics = self.example.get_metrics()
+        if not metrics:
+            raise RuntimeError("SDF nut-bolt metrics were not collected")
+        self._metrics = metrics
+        return metrics
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_simulate(self, config):
+        self._run()
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_tunneling_depth(self, config):
+        metrics = self._run()
+        return max(0.0, -metrics["min_nut_center_z_relative_to_bolt"])
+
+    track_tunneling_depth.unit = "m"
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_max_nut_drop(self, config):
+        return self._run()["max_nut_drop"]
+
+    track_max_nut_drop.unit = "m"
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_max_bolt_displacement(self, config):
+        return self._run()["max_bolt_displacement"]
+
+    track_max_bolt_displacement.unit = "m"
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_max_contact_count(self, config):
+        return self._run()["max_contact_count"]
+
+    track_max_contact_count.unit = "contacts"
+
+
 class FastExampleContactHydroWorkingDefaults:
     """Benchmark the hydroelastic nut-bolt example default configuration."""
 
@@ -152,6 +264,7 @@ if __name__ == "__main__":
 
     benchmark_list = {
         "FastExampleContactSdfDefaults": FastExampleContactSdfDefaults,
+        "FastExampleContactSdfTunnelingSweep": FastExampleContactSdfTunnelingSweep,
         "FastExampleContactHydroWorkingDefaults": FastExampleContactHydroWorkingDefaults,
         "FastExampleContactPyramidDefaults": FastExampleContactPyramidDefaults,
     }

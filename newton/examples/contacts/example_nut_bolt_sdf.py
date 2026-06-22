@@ -11,6 +11,7 @@
 ###########################################################################
 
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -94,13 +95,16 @@ class Example:
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 5
+        self.sim_substeps = args.sim_substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
+        self.collide_every_substep = args.collide_every_substep
 
         self.world_count = args.world_count
         self.viewer = viewer
         self.solver_type = args.solver
         self.test_mode = args.test
+        self.track_contact_metrics = args.track_contact_metrics or self.test_mode
+        self.shape_gap = args.shape_gap
 
         # XPBD contact correction (0.0 = no correction, 1.0 = full correction)
         self.xpbd_contact_relaxation = 0.8
@@ -118,10 +122,18 @@ class Example:
 
         # Maximum number of rigid contacts to allocate (limits memory usage).
         # Use a per-world budget so default world_count=100 scales appropriately.
-        self.rigid_contact_max = 500 * self.world_count
+        self.rigid_contact_max = args.rigid_contact_max or 500 * self.world_count
+        self.max_triangle_pairs = args.max_triangle_pairs
+        self.reduce_contacts = args.reduce_contacts
+        self.contact_reduction_hashtable_size_factor = args.contact_reduction_hashtable_size_factor
+        self.contact_matching = args.contact_matching
+        self.contact_matching_pos_threshold = args.contact_matching_pos_threshold
+        self.contact_matching_normal_dot_threshold = args.contact_matching_normal_dot_threshold
+        self.deterministic_contacts = args.deterministic_contacts
+        self.contact_report = args.contact_report
 
         # Broad phase mode: NXN (O(N²)), SAP (O(N log N)), EXPLICIT (precomputed pairs)
-        self.broad_phase = "sap"
+        self.broad_phase = args.broad_phase
 
         world_builder = self._build_nut_bolt_scene()
 
@@ -145,9 +157,16 @@ class Example:
 
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            reduce_contacts=True,
+            reduce_contacts=self.reduce_contacts,
             rigid_contact_max=self.rigid_contact_max,
             broad_phase=self.broad_phase,
+            max_triangle_pairs=self.max_triangle_pairs,
+            deterministic=self.deterministic_contacts,
+            contact_matching=self.contact_matching,
+            contact_matching_pos_threshold=self.contact_matching_pos_threshold,
+            contact_matching_normal_dot_threshold=self.contact_matching_normal_dot_threshold,
+            contact_report=self.contact_report,
+            contact_reduction_hashtable_size_factor=self.contact_reduction_hashtable_size_factor,
         )
 
         # Create solver based on user choice
@@ -204,8 +223,9 @@ class Example:
 
         bolt_file = str(asset_path / f"factory_bolt_{ASSEMBLY_STR}.obj")
         nut_file = str(asset_path / f"factory_nut_{ASSEMBLY_STR}_subdiv_3x.obj")
-        bolt_mesh, bolt_center = load_mesh_with_sdf(bolt_file, shape_cfg=SHAPE_CFG, center_origin=True)
-        nut_mesh, nut_center = load_mesh_with_sdf(nut_file, shape_cfg=SHAPE_CFG, center_origin=True)
+        shape_cfg = replace(SHAPE_CFG, gap=self.shape_gap)
+        bolt_mesh, bolt_center = load_mesh_with_sdf(bolt_file, shape_cfg=shape_cfg, center_origin=True)
+        nut_mesh, nut_center = load_mesh_with_sdf(nut_file, shape_cfg=shape_cfg, center_origin=True)
 
         # Spacing between assemblies in the grid
         spacing = 0.1 * self.scene_scale
@@ -228,7 +248,7 @@ class Example:
                     world_builder,
                     bolt_mesh,
                     bolt_xform,
-                    SHAPE_CFG,
+                    shape_cfg,
                     label=f"bolt_{i}_{j}",
                     center_vec=bolt_center * self.scene_scale,
                     scale=self.scene_scale,
@@ -243,7 +263,7 @@ class Example:
                     world_builder,
                     nut_mesh,
                     nut_xform,
-                    SHAPE_CFG,
+                    shape_cfg,
                     label=f"nut_{i}_{j}",
                     center_vec=nut_center * self.scene_scale,
                     scale=self.scene_scale,
@@ -261,12 +281,14 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        self.collision_pipeline.collide(self.state_0, self.contacts)
+        if not self.collide_every_substep:
+            self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             self.viewer.apply_forces(self.state_0)
-            # self.collision_pipeline.collide(self.state_0, self.contacts)
+            if self.collide_every_substep:
+                self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -290,7 +312,7 @@ class Example:
 
     def _init_test_tracking(self):
         """Initialize tracking data for test validation."""
-        if not self.test_mode:
+        if not self.track_contact_metrics:
             self.bolt_body_indices = None
             self.nut_body_indices = None
             return
@@ -317,13 +339,15 @@ class Example:
         # Track maximum rotation change and z displacement for nuts
         self.nut_max_rotation_change = [0.0] * len(self.nut_body_indices)
         self.nut_min_z = [body_q[idx][2] for idx in self.nut_body_indices]
+        self.contact_count_max = 0
 
     def _track_test_data(self):
         """Track transforms for test validation (called each step in test mode)."""
-        if not self.test_mode:
+        if not self.track_contact_metrics:
             return
 
         body_q = self.state_0.body_q.numpy()
+        self.contact_count_max = max(self.contact_count_max, int(self.contacts.rigid_contact_count.numpy()[0]))
 
         # Track nut rotation and z position
         for i, nut_idx in enumerate(self.nut_body_indices):
@@ -341,6 +365,37 @@ class Example:
 
             # Track minimum z (nuts should move down)
             self.nut_min_z[i] = min(self.nut_min_z[i], current_q[2])
+
+    def get_metrics(self) -> dict[str, float | int]:
+        """Return stability metrics for focused contact benchmarks."""
+        if not self.bolt_body_indices or not self.nut_body_indices:
+            return {}
+
+        body_q = self.state_0.body_q.numpy()
+
+        max_bolt_displacement = 0.0
+        for i, bolt_idx in enumerate(self.bolt_body_indices):
+            current_pos = body_q[bolt_idx][:3]
+            initial_pos = self.bolt_initial_transforms[i][:3]
+            max_bolt_displacement = max(max_bolt_displacement, float(np.linalg.norm(current_pos - initial_pos)))
+
+        min_nut_center_z = min(float(z) for z in self.nut_min_z)
+        min_bolt_initial_z = min(float(q[2]) for q in self.bolt_initial_transforms)
+        max_nut_drop = max(
+            float(initial_q[2] - min_z)
+            for initial_q, min_z in zip(self.nut_initial_transforms, self.nut_min_z, strict=True)
+        )
+        max_nut_rotation = max(float(angle) for angle in self.nut_max_rotation_change)
+
+        return {
+            "max_bolt_displacement": max_bolt_displacement,
+            "max_nut_drop": max_nut_drop,
+            "max_nut_rotation": max_nut_rotation,
+            "min_nut_center_z": min_nut_center_z,
+            "min_nut_center_z_relative_to_bolt": min_nut_center_z - min_bolt_initial_z,
+            "max_contact_count": self.contact_count_max,
+            "final_contact_count": int(self.contacts.rigid_contact_count.numpy()[0]),
+        }
 
     def test_final(self):
         """Verify simulation state after example completes.
@@ -381,9 +436,12 @@ class Example:
 
     @staticmethod
     def create_parser():
+        import argparse  # noqa: PLC0415
+
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
-        parser.set_defaults(world_count=100)
+        newton.examples.add_broad_phase_arg(parser)
+        parser.set_defaults(world_count=100, broad_phase="sap")
         parser.add_argument(
             "--solver",
             type=str,
@@ -392,6 +450,80 @@ class Example:
             help="Solver to use: 'xpbd' (Extended Position-Based Dynamics) or 'mujoco' (MuJoCo constraint solver).",
         )
         parser.add_argument("--num-per-world", type=int, default=1, help="Number of assemblies per world.")
+        parser.add_argument("--sim-substeps", type=int, default=5, help="Number of solver substeps per frame.")
+        parser.add_argument(
+            "--collide-every-substep",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Refresh Newton contacts before every solver substep instead of once per frame.",
+        )
+        parser.add_argument(
+            "--track-contact-metrics",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Track nut/bolt contact stability metrics for tests and benchmarks.",
+        )
+        parser.add_argument(
+            "--shape-gap",
+            type=float,
+            default=SHAPE_CFG.gap,
+            help="Additional SDF mesh contact detection gap [m].",
+        )
+        parser.add_argument(
+            "--rigid-contact-max",
+            type=int,
+            default=None,
+            help="Maximum rigid contacts allocated by the collision pipeline.",
+        )
+        parser.add_argument(
+            "--max-triangle-pairs",
+            type=int,
+            default=1_000_000,
+            help="Maximum mesh triangle pairs allocated by the narrow phase.",
+        )
+        parser.add_argument(
+            "--reduce-contacts",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="Reduce mesh contacts before passing them to the solver.",
+        )
+        parser.add_argument(
+            "--contact-reduction-hashtable-size-factor",
+            type=float,
+            default=0.25,
+            help="Hashtable size factor used by global contact reduction.",
+        )
+        parser.add_argument(
+            "--contact-matching",
+            type=str,
+            choices=["disabled", "latest", "sticky"],
+            default="disabled",
+            help="Frame-to-frame contact matching mode.",
+        )
+        parser.add_argument(
+            "--contact-matching-pos-threshold",
+            type=float,
+            default=0.0005,
+            help="World-space contact matching position threshold [m].",
+        )
+        parser.add_argument(
+            "--contact-matching-normal-dot-threshold",
+            type=float,
+            default=0.995,
+            help="Contact matching normal dot-product threshold.",
+        )
+        parser.add_argument(
+            "--deterministic-contacts",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Sort rigid contacts deterministically after narrow phase.",
+        )
+        parser.add_argument(
+            "--contact-report",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Track new and broken contacts when contact matching is enabled.",
+        )
         return parser
 
 
