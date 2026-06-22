@@ -192,18 +192,10 @@ def _initial_material(manifest, *, per_cylinder_area: bool = False) -> Foundatio
         ogden_alpha=float(manifest.fit.get("initial_ogden_alpha", 2.0)),
         lock_strain=float(manifest.fit.get("initial_lock_strain", 0.65)),
         damping_pa_s=float(manifest.fit.get("initial_damping_pa_s", 1.0e4)),
-        damping_power=float(manifest.fit.get("initial_damping_power", 1.0)),
-        per_cylinder_area=per_cylinder_area,
         prony_stiffness_pa=prony_stiffness,
         prony_damping_pa_s=prony_damping,
+        per_cylinder_area=per_cylinder_area,
         state_warmup_cycles=int(manifest.fit.get("state_warmup_cycles", 0)),
-        pasternak_stiffness_n_per_m=float(
-            manifest.fit.get(
-                "initial_pasternak_stiffness_n_per_m",
-                manifest.fit.get("initial_shear_modulus_pa", 0.0),
-            )
-        ),
-        spatial_slope=float(manifest.fit.get("initial_spatial_slope", 0.0)),
     )
 
 
@@ -1688,13 +1680,10 @@ def _material_from_history_row(row: dict[str, float]) -> FoundationMaterial:
         ogden_alpha=float(row["ogden_alpha"]),
         lock_strain=float(row["lock_strain"]),
         damping_pa_s=float(row["damping_pa_s"]),
-        damping_power=float(row["damping_power"]),
         per_cylinder_area=True,
         prony_stiffness_pa=prony_stiffness,
         prony_damping_pa_s=prony_damping,
         state_warmup_cycles=int(row["state_warmup_cycles"]),
-        pasternak_stiffness_n_per_m=float(row.get("pasternak_stiffness_n_per_m", row.get("shear_modulus_pa", 0.0))),
-        spatial_slope=float(row.get("spatial_slope", 0.0)),
     )
 
 

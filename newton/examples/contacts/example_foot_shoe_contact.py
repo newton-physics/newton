@@ -87,13 +87,12 @@ def _compute_pressures(
 
         laplacian = (val_left + val_right + val_bottom + val_top - 4.0 * comp) / h2
 
-    elastic_stress = ogden_stress - material.pasternak_stiffness_n_per_m * laplacian
+    elastic_stress = ogden_stress
 
     # 3. Viscous stress
     damping_strain = np.maximum(strain, 1.0e-8)
-    damping_weight = np.power(damping_strain, max(material.damping_power, 0.0))
     compression_velocity = -velocities
-    viscous_stress = material.damping_pa_s * damping_weight * compression_velocity
+    viscous_stress = material.damping_pa_s * damping_strain * compression_velocity
 
     pressures_pa = np.maximum(elastic_stress + viscous_stress, 0.0)
     return pressures_pa

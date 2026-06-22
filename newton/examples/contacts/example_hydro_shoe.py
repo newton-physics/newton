@@ -66,20 +66,14 @@ PARAM_STIFFNESS_OR_BULK = 0
 PARAM_ALPHA = 1
 PARAM_LOCK_STRAIN = 2
 PARAM_DAMPING = 3
-PARAM_DAMPING_POWER = 4
-PARAM_CONTACT_LAW = 5
-PARAM_LOWER_BULK = 6
-PARAM_LOWER_ALPHA = 7
-PARAM_UPPER_FRACTION = 8
-PARAM_HYDRO_FORCE_SCALE = 9
-PARAM_PASTERNAK_STIFFNESS = 10
-PARAM_SPATIAL_SLOPE = 11
-PARAM_LONGITUDINAL_AXIS = 12
-PARAM_AXIS_MIN = 13
-PARAM_AXIS_SPAN = 14
-PARAM_PRONY_STIFFNESS = 15
-PARAM_PRONY_DAMPING = 16
-PARAM_CELL_AREA = 17
+PARAM_CONTACT_LAW = 4
+PARAM_LOWER_BULK = 5
+PARAM_LOWER_ALPHA = 6
+PARAM_UPPER_FRACTION = 7
+PARAM_HYDRO_FORCE_SCALE = 8
+PARAM_PRONY_STIFFNESS = 9
+PARAM_PRONY_DAMPING = 10
+PARAM_CELL_AREA = 11
 STATS_LAST_FORCE_N = 0
 STATS_PEAK_FORCE_N = 1
 STATS_LAST_ELASTIC_ENERGY_J = 2
@@ -99,7 +93,6 @@ def _kim_material_to_foundation(material: KimHyperfoamMaterial, damping_pa_s: fl
         ogden_alpha=material.alpha1,
         lock_strain=0.99,
         damping_pa_s=damping_pa_s,
-        damping_power=1.0,
     )
 
 
@@ -326,7 +319,7 @@ def evaluate_elastic_contact_stress(strain: float, params: wp.array[float]) -> f
 @wp.func
 def evaluate_viscous_contact_stress(strain: float, comp_vel: float, params: wp.array[float]) -> float:
     """Evaluate the signed viscous pressure contribution."""
-    damping_weight = wp.pow(wp.max(strain, 1.0e-8), wp.max(params[PARAM_DAMPING_POWER], 0.0))
+    damping_weight = wp.max(strain, 1.0e-8)
     return params[PARAM_DAMPING] * damping_weight * comp_vel
 
 
@@ -380,8 +373,6 @@ def update_stack_material_state_kernel(
     spring_count: int,
     coupled_surface_state: wp.array[float],
     params: wp.array[float],
-    neighbors: wp.array2d[wp.int32],
-    spacing_m: float,
     sim_dt: float,
     prony_state: wp.array[float],
     stack_stress_pa_out: wp.array[float],
@@ -416,48 +407,6 @@ def update_stack_material_state_kernel(
     elastic_stress = evaluate_elastic_contact_stress(strain, params)
 
     if int(params[PARAM_CONTACT_LAW]) == CONTACT_LAW_CALIBRATED_OGDEN:
-        xy = grid_xy[spring]
-        coord = float(0.0)
-        if int(params[PARAM_LONGITUDINAL_AXIS]) == 0:
-            coord = xy[0] - params[PARAM_AXIS_MIN]
-        else:
-            coord = xy[1] - params[PARAM_AXIS_MIN]
-        bar_x = coord / wp.max(params[PARAM_AXIS_SPAN], 1.0e-5)
-        spatial_scale = wp.max(1.0 + params[PARAM_SPATIAL_SLOPE] * bar_x, 0.01)
-        elastic_stress = elastic_stress * spatial_scale
-
-        h2 = spacing_m * spacing_m
-        laplacian = float(0.0)
-        if h2 > 1.0e-12:
-            n_left = neighbors[spring, 0]
-            n_right = neighbors[spring, 1]
-            n_bottom = neighbors[spring, 2]
-            n_top = neighbors[spring, 3]
-
-            val_left = stack_displacement
-            val_right = stack_displacement
-            val_bottom = stack_displacement
-            val_top = stack_displacement
-            if n_left != -1:
-                val_left = stack_displacement_from_surface_state(
-                    n_left, coupled_surface_state, slack_length_m[n_left], params
-                )
-            if n_right != -1:
-                val_right = stack_displacement_from_surface_state(
-                    n_right, coupled_surface_state, slack_length_m[n_right], params
-                )
-            if n_bottom != -1:
-                val_bottom = stack_displacement_from_surface_state(
-                    n_bottom, coupled_surface_state, slack_length_m[n_bottom], params
-                )
-            if n_top != -1:
-                val_top = stack_displacement_from_surface_state(
-                    n_top, coupled_surface_state, slack_length_m[n_top], params
-                )
-            laplacian = (val_left + val_right + val_bottom + val_top - 4.0 * stack_displacement) / h2
-
-        elastic_stress = elastic_stress - wp.max(params[PARAM_PASTERNAK_STIFFNESS], 0.0) * laplacian
-
         prony_stiffness = wp.max(params[PARAM_PRONY_STIFFNESS], 0.0)
         prony_damping = wp.max(params[PARAM_PRONY_DAMPING], 0.0)
         if prony_stiffness > 0.0 and prony_damping > 0.0:
@@ -1114,28 +1063,11 @@ def _compute_pressures(
     alpha = max(material.ogden_alpha, 1.0e-4)
     ogden_stress = material.stiffness_pa * (np.power(1.0 - normalized, -alpha) - 1.0) / alpha
 
-    h2 = spacing_m * spacing_m
-    laplacian = np.zeros_like(comp)
-    if h2 > 1.0e-12 and neighbors is not None:
-        n_indices = neighbors.copy()
-        self_indices = np.arange(len(comp))
-        for col in range(4):
-            mask = n_indices[:, col] == -1
-            n_indices[mask, col] = self_indices[mask]
-
-        val_left = comp[n_indices[:, 0]]
-        val_right = comp[n_indices[:, 1]]
-        val_bottom = comp[n_indices[:, 2]]
-        val_top = comp[n_indices[:, 3]]
-
-        laplacian = (val_left + val_right + val_bottom + val_top - 4.0 * comp) / h2
-
-    elastic_stress = ogden_stress - material.pasternak_stiffness_n_per_m * laplacian
+    elastic_stress = ogden_stress
 
     damping_strain = np.maximum(strain, 1.0e-8)
-    damping_weight = np.power(damping_strain, max(material.damping_power, 0.0))
     compression_velocity = -velocities
-    viscous_stress = material.damping_pa_s * damping_weight * compression_velocity
+    viscous_stress = material.damping_pa_s * damping_strain * compression_velocity
 
     pressures_pa = np.maximum(elastic_stress + viscous_stress, 0.0)
     return pressures_pa
@@ -1341,9 +1273,6 @@ class Example:
                     self.kinematic_peak_displacement_m = preferred
 
         self.neighbors = compute_grid_neighbors(self.spring_grid.grid_uv_m, self.spring_grid.spacing_m)
-        self.longitudinal_axis, self.axis_min_m, self.axis_span_m = _infer_longitudinal_axis_and_span(
-            self.spring_grid.grid_uv_m
-        )
         self.max_display_pressure_kpa = 800.0
         self.min_bottom_m = np.min(self.spring_grid.bottom_m)
         self.start_z = -self.min_bottom_m + 0.005
@@ -1366,8 +1295,6 @@ class Example:
                 "[material] contact_law=calibrated-ogden "
                 f"stiffness={self.material.stiffness_pa:.3g}Pa alpha={self.material.ogden_alpha:.3g} "
                 f"lock_strain={self.material.lock_strain:.3g} "
-                f"pasternak={self.material.pasternak_stiffness_n_per_m:.3g}N/m "
-                f"spatial_slope={self.material.spatial_slope:.3g} "
                 f"prony=({self.material.prony_stiffness_pa:.3g}Pa, {self.material.prony_damping_pa_s:.3g}Pa*s) "
                 f"stroke={self.kinematic_peak_displacement_m * 1000.0:.3g}mm"
             )
@@ -1714,7 +1641,6 @@ class Example:
         self.wp_spring_slack = wp.array(self.spring_grid.slack_length_m, dtype=float, device=self.device)
         self.wp_spring_top = wp.array(self.spring_grid.top_m, dtype=float, device=self.device)
         self.wp_spring_bottom = wp.array(self.spring_grid.bottom_m, dtype=float, device=self.device)
-        self.wp_neighbors = wp.array2d(self.neighbors.astype(np.int32), dtype=wp.int32, device=self.device)
         self.wp_foot_sole_z = wp.array(np.nan_to_num(self.foot_sole_z_m, nan=0.0), dtype=float, device=self.device)
         self.wp_foot_contact_valid = wp.array(
             self.foot_contact_valid.astype(np.int32),
@@ -1775,17 +1701,11 @@ class Example:
                 upper_alpha,
                 self.material.lock_strain,
                 self.material.damping_pa_s,
-                self.material.damping_power,
                 float(law_mode),
                 lower_bulk,
                 lower_alpha,
                 upper_fraction,
                 self.hydro_force_scale,
-                self.material.pasternak_stiffness_n_per_m,
-                self.material.spatial_slope,
-                float(self.longitudinal_axis),
-                self.axis_min_m,
-                self.axis_span_m,
                 self.material.prony_stiffness_pa,
                 self.material.prony_damping_pa_s,
                 float(self.spring_grid.cell_area_m2),
@@ -2153,8 +2073,6 @@ class Example:
                         self.num_springs,
                         self.wp_coupled_surface_state,
                         self.wp_params,
-                        self.wp_neighbors,
-                        float(self.spring_grid.spacing_m),
                         float(self.sim_dt),
                         self.wp_prony_state_pa,
                         self.wp_stack_stress_pa,
@@ -2202,8 +2120,6 @@ class Example:
                         self.num_springs,
                         self.wp_coupled_surface_state,
                         self.wp_params,
-                        self.wp_neighbors,
-                        float(self.spring_grid.spacing_m),
                         float(self.sim_dt),
                         self.wp_prony_state_pa,
                         self.wp_stack_stress_pa,

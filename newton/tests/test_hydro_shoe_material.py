@@ -131,7 +131,7 @@ class TestHydroShoeMaterial(unittest.TestCase):
         valid = wp.array([1, 1], dtype=wp.int32, device=device)
         slack = wp.array([0.02, 0.02], dtype=float, device=device)
         params = wp.array(
-            [material.bulk_modulus_pa, material.alpha1, 0.99, 0.0, 1.0, float(CONTACT_LAW_KIM_HYPERFOAM)],
+            [material.bulk_modulus_pa, material.alpha1, 0.99, 0.0, float(CONTACT_LAW_KIM_HYPERFOAM)],
             dtype=float,
             device=device,
         )
@@ -180,7 +180,6 @@ class TestHydroShoeMaterial(unittest.TestCase):
                 upper.alpha1,
                 0.99,
                 0.0,
-                1.0,
                 float(CONTACT_LAW_KIM_LAYERED),
                 lower.bulk_modulus_pa,
                 lower.alpha1,
@@ -267,7 +266,6 @@ class TestHydroShoeMaterial(unittest.TestCase):
                 material.alpha1,
                 0.99,
                 0.0,
-                1.0,
                 float(CONTACT_LAW_KIM_HYPERFOAM),
                 0.0,
                 0.0,
@@ -379,7 +377,6 @@ class TestHydroShoeMaterial(unittest.TestCase):
                 material.alpha1,
                 0.99,
                 0.0,
-                1.0,
                 float(CONTACT_LAW_KIM_HYPERFOAM),
                 0.0,
                 0.0,
@@ -467,24 +464,17 @@ class TestHydroShoeMaterial(unittest.TestCase):
         coupled_np[6 + SURFACE_GROUND_AREA] = area
         coupled_np[6 + SURFACE_GROUND_DISP_AREA] = 0.005 * area
         coupled_state.assign(coupled_np)
-        neighbors = wp.array([[-1, 1, -1, -1], [0, -1, -1, -1]], dtype=wp.int32, device=device)
         params = wp.array(
             [
                 50000.0,  # stiffness
                 0.5,  # alpha
                 0.8,  # lock strain
                 0.0,  # damping
-                1.0,
                 float(CONTACT_LAW_CALIBRATED_OGDEN),
-                50000.0,
-                0.5,
-                1.0,
-                1.0,
-                100.0,  # pasternak stiffness
-                -0.5,  # spatial slope
-                0.0,  # longitudinal x axis
-                0.0,  # axis min
-                0.01,  # axis span
+                1.0,  # lower bulk
+                0.5,  # lower alpha
+                1.0,  # upper fraction
+                1.0,  # hydro force scale
                 1000.0,  # prony stiffness
                 100.0,  # prony damping
             ],
@@ -506,8 +496,6 @@ class TestHydroShoeMaterial(unittest.TestCase):
                 2,
                 coupled_state,
                 params,
-                neighbors,
-                0.01,
                 0.001,
                 prony_state,
                 stress_out,
@@ -524,15 +512,11 @@ class TestHydroShoeMaterial(unittest.TestCase):
         strain1 = displacement1 / 0.02
         ogden0 = 50000.0 * ((1.0 - strain0 / 0.8) ** -0.5 - 1.0) / 0.5
         ogden1 = 50000.0 * ((1.0 - strain1 / 0.8) ** -0.5 - 1.0) / 0.5
-        lap0 = (displacement1 + displacement0 + displacement0 + displacement0 - 4.0 * displacement0) / (0.01 * 0.01)
-        lap1 = (displacement0 + displacement1 + displacement1 + displacement1 - 4.0 * displacement1) / (0.01 * 0.01)
-        elastic0 = ogden0 - 100.0 * lap0
-        elastic1 = ogden1 * 0.5 - 100.0 * lap1
         beta = 1000.0 / 50000.0
         tau = 100.0 / 1000.0
         relax = 1.0 - np.exp(-0.001 / tau)
-        expected0 = elastic0 * (1.0 - beta * relax)
-        expected1 = max(elastic1 * (1.0 - beta * relax), 0.0)
+        expected0 = ogden0 * (1.0 - beta * relax)
+        expected1 = max(ogden1 * (1.0 - beta * relax), 0.0)
 
         result = stress_out.numpy()
         np.testing.assert_allclose(result, [expected0, expected1], rtol=5.0e-5, atol=1.0e-5)
@@ -563,13 +547,10 @@ class TestHydroShoeMaterial(unittest.TestCase):
                 "ogden_alpha": 0.104,
                 "lock_strain": 0.557,
                 "damping_pa_s": 10115.5,
-                "damping_power": 0.982,
                 "per_cylinder_area": True,
                 "prony_stiffness_pa": 17339.8,
                 "prony_damping_pa_s": 621.8,
                 "state_warmup_cycles": 5,
-                "pasternak_stiffness_n_per_m": 881.2,
-                "spatial_slope": -0.026,
             },
         }
         with tempfile.TemporaryDirectory() as tmp:
@@ -581,7 +562,6 @@ class TestHydroShoeMaterial(unittest.TestCase):
 
         self.assertAlmostEqual(material.stiffness_pa, 141138.0)
         self.assertTrue(material.per_cylinder_area)
-        self.assertAlmostEqual(material.pasternak_stiffness_n_per_m, 881.2)
 
     def test_calibrated_hydro_shoe_stroke_uses_two_sided_envelope(self):
         artifact = {

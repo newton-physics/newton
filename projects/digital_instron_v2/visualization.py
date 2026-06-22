@@ -151,15 +151,8 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
         ogden_alpha=float(manifest.fit.get("initial_ogden_alpha", 2.0)),
         lock_strain=float(manifest.fit.get("initial_lock_strain", 0.85)),
         damping_pa_s=float(manifest.fit.get("initial_damping_pa_s", 1.0e4)),
-        damping_power=float(manifest.fit.get("initial_damping_power", 1.0)),
         prony_stiffness_pa=prony_stiffness,
         prony_damping_pa_s=prony_damping,
-        pasternak_stiffness_n_per_m=float(
-            manifest.fit.get(
-                "initial_pasternak_stiffness_n_per_m",
-                manifest.fit.get("initial_shear_modulus_pa", 0.0),
-            )
-        ),
     )
 
     plane = vertices[:, frame.plane_axes]
