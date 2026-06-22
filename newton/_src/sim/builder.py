@@ -5742,10 +5742,11 @@ class ModelBuilder:
         self.joint_constraint_count = len(self.joint_cts)
 
         # Remap equality constraint body/joint indices and transform anchors for merged bodies.
-        # Each ``*_values`` is the dense ``list`` backing the string-frequency CustomAttribute;
-        # the ``mujoco:equality_constraint`` ``add_custom_values`` path populates all twelve in
-        # lockstep so indexed access is safe for every ``i`` in
-        # ``range(self._equality_constraint_count)``.
+        # Each ``*_values`` is the ``list`` backing the string-frequency CustomAttribute. These
+        # lists are sparse: ``add_custom_values`` only populates the fields that were supplied,
+        # so an omitted optional field can be ``None``, shorter than the row count, or absent
+        # entirely. Reads go through ``_at`` (default fallback), and writes pad the list to the
+        # row index before assignment.
         body1_attr = self._eq_attr("equality_constraint_body1")
         body2_attr = self._eq_attr("equality_constraint_body2")
         type_attr = self._eq_attr("equality_constraint_type")
@@ -5757,8 +5758,12 @@ class ModelBuilder:
         body1_values = body1_attr.values or []
         body2_values = body2_attr.values or []
         type_values = type_attr.values or []
-        anchor_values = anchor_attr.values or []
-        relpose_values = relpose_attr.values or []
+        if anchor_attr.values is None:
+            anchor_attr.values = []
+        anchor_values = anchor_attr.values
+        if relpose_attr.values is None:
+            relpose_attr.values = []
+        relpose_values = relpose_attr.values
         joint1_values = joint1_attr.values or []
         joint2_values = joint2_attr.values or []
         if enabled_attr.values is None:
@@ -5787,15 +5792,23 @@ class ModelBuilder:
                 merge_xform = body_merged_transform[old_body1]
                 if constraint_type == EqType.CONNECT:
                     anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
+                    while len(anchor_values) <= i:
+                        anchor_values.append(None)
                     anchor_values[i] = wp.transform_point(merge_xform, anchor)
                 if constraint_type == EqType.WELD:
                     relpose = _at(relpose_values, i, relpose_attr.default)
+                    while len(relpose_values) <= i:
+                        relpose_values.append(None)
                     relpose_values[i] = merge_xform * relpose
 
             if body2_was_merged and constraint_type == EqType.WELD:
                 merge_xform = body_merged_transform[old_body2]
                 anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
                 relpose = _at(relpose_values, i, relpose_attr.default)
+                while len(anchor_values) <= i:
+                    anchor_values.append(None)
+                while len(relpose_values) <= i:
+                    relpose_values.append(None)
                 anchor_values[i] = wp.transform_point(merge_xform, anchor)
                 relpose_values[i] = relpose * wp.transform_inverse(merge_xform)
 
