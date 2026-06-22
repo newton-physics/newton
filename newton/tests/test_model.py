@@ -292,6 +292,107 @@ class TestModelBuilderDeprecations(unittest.TestCase):
             newton.use_coord_layout_targets = prev_flag
 
 
+class TestParallelJointWarning(unittest.TestCase):
+    """Warn on parallel joints between the same pair of bodies (gh-2803)."""
+
+    # -- FREE parallel warnings (strong) --
+
+    def test_add_body_then_revolute_from_world_warns_free(self):
+        builder = ModelBuilder()
+        body = builder.add_body(mass=1.0)
+
+        with self.assertWarnsRegex(UserWarning, r"FREE.*inconsistent"):
+            builder.add_joint_revolute(parent=-1, child=body)
+
+    def test_manual_free_then_revolute_same_parent_warns_free(self):
+        builder = ModelBuilder()
+        link = builder.add_link(mass=1.0)
+        builder.add_joint_free(parent=-1, child=link)
+
+        with self.assertWarnsRegex(UserWarning, r"FREE.*inconsistent"):
+            builder.add_joint_revolute(parent=-1, child=link)
+
+    def test_revolute_then_free_same_parent_warns_free(self):
+        builder = ModelBuilder()
+        link = builder.add_link(mass=1.0)
+        builder.add_joint_revolute(parent=-1, child=link)
+
+        with self.assertWarnsRegex(UserWarning, r"FREE.*inconsistent"):
+            builder.add_joint_free(parent=-1, child=link)
+
+    def test_add_body_internal_free_joint_does_not_warn(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder = ModelBuilder()
+            builder.add_body(mass=1.0)
+
+        user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+        self.assertEqual(len(user_warnings), 0)
+
+    def test_free_warning_mentions_body_label(self):
+        builder = ModelBuilder()
+        body = builder.add_body(mass=1.0, label="Sun")
+
+        with self.assertWarnsRegex(UserWarning, r"Sun.*inconsistent"):
+            builder.add_joint_revolute(parent=-1, child=body)
+
+    # -- Non-FREE parallel warnings (undefined semantics) --
+
+    def test_two_revolutes_same_parent_warns_undefined(self):
+        builder = ModelBuilder()
+        link = builder.add_link(mass=1.0)
+        builder.add_joint_revolute(parent=-1, child=link)
+
+        with self.assertWarnsRegex(UserWarning, "undefined"):
+            builder.add_joint_revolute(parent=-1, child=link)
+
+    def test_revolute_plus_prismatic_same_parent_warns_undefined(self):
+        builder = ModelBuilder()
+        link = builder.add_link(mass=1.0)
+        builder.add_joint_revolute(parent=-1, child=link)
+
+        with self.assertWarnsRegex(UserWarning, "undefined"):
+            builder.add_joint_prismatic(parent=-1, child=link)
+
+    # -- No warning cases --
+
+    def test_loop_closure_different_parent_no_warning(self):
+        builder = ModelBuilder()
+        body_a = builder.add_body(mass=1.0)
+        body_b = builder.add_link(mass=1.0)
+        builder.add_joint_revolute(parent=body_a, child=body_b)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_joint_distance(parent=body_b, child=body_a)
+
+        user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+        self.assertEqual(len(user_warnings), 0)
+
+    def test_add_joint_to_fresh_link_no_warning(self):
+        builder = ModelBuilder()
+        link = builder.add_link(mass=1.0)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_joint_revolute(parent=-1, child=link)
+
+        user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+        self.assertEqual(len(user_warnings), 0)
+
+    def test_add_builder_propagates_free_parallel_warning(self):
+        sub = ModelBuilder()
+        sub.add_body(mass=1.0)  # carries an implicit FREE joint from world
+
+        main = ModelBuilder()
+        main.add_link(mass=1.0)  # occupy index 0 so the merged body lands at a nonzero offset
+        merged_body = main.body_count  # index the sub-builder's body will occupy after merge
+        main.add_builder(sub)
+
+        with self.assertWarnsRegex(UserWarning, r"FREE.*inconsistent"):
+            main.add_joint_revolute(parent=-1, child=merged_body)
+
+
 class TestModelMesh(unittest.TestCase):
     def test_add_triangles(self):
         rng = np.random.default_rng(123)

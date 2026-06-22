@@ -4123,6 +4123,12 @@ class ModelBuilder:
 
         Returns:
             The index of the added joint.
+
+        .. note::
+            Avoid creating two joints between the same ``parent`` and ``child``, as this is ambiguous and
+            may be handled differently by different solvers. Bodies created with :meth:`add_body` are
+            implicitly connected to the world by a free joint; to connect a body to the world with a
+            different joint type, use :meth:`add_link` instead.
         """
         if linear_axes is None:
             linear_axes = []
@@ -4158,6 +4164,32 @@ class ModelBuilder:
                 f"Cannot create joint: child body {child} belongs to world {self.body_world[child]}, "
                 f"but current world is {self.current_world}"
             )
+
+        for existing_parent, existing_joint_idx in self.joint_parents.get(child, ()):
+            if existing_parent == parent:
+                existing_type = self.joint_type[existing_joint_idx]
+                involves_free = existing_type == JointType.FREE or joint_type == JointType.FREE
+                if involves_free:
+                    warnings.warn(
+                        f"Adding a {joint_type.name} joint between parent {parent} and "
+                        f"child {child} (label: {self.body_label[child]!r}), but a "
+                        f"{existing_type.name} joint already connects these bodies. "
+                        f"A FREE joint parallel to another joint is inconsistent. Use add_link() "
+                        f"with the appropriate joint type instead of add_body().",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                else:
+                    warnings.warn(
+                        f"Adding a {joint_type.name} joint between parent {parent} and "
+                        f"child {child} (label: {self.body_label[child]!r}), but a "
+                        f"{existing_type.name} joint already connects these bodies. "
+                        f"Parallel joints between the same pair of bodies have "
+                        f"undefined semantics and may not behave as expected.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                break
 
         self.joint_type.append(joint_type)
         joint_idx = self.joint_count - 1
