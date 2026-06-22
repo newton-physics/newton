@@ -292,6 +292,11 @@ class SchemaResolverManager:
                     namespaces.append(ns)
         return namespaces
 
+    def read_deformable_attr(self, prim: Usd.Prim, name: str) -> Any:
+        """Read a deformable physics attribute: canonical ``physics:`` first, then the
+        resolver-declared vendor namespaces. The first authored value, or ``None``."""
+        return usd._read_physics_attr(prim, name, self.deformable_compat_namespaces())
+
     def collect_prim_attrs(self, prim: Usd.Prim) -> None:
         """
         Collect and accumulate schema attributes for a single prim.

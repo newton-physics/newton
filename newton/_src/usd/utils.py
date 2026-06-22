@@ -7,7 +7,7 @@ import logging
 import math
 import os
 import warnings
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
@@ -1392,17 +1392,19 @@ def _read_physics_attr(prim: Usd.Prim, name: str, compat_namespaces: Sequence[st
     return None
 
 
-def _get_curve_deformable_material(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> dict[str, float] | None:
+def _get_curve_deformable_material(
+    prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]
+) -> dict[str, float] | None:
     """Read curve-deformable (cable) material parameters bound to a prim.
 
-    Resolves the physics material bound via ``material:binding:physics`` (on the
-    prim or an ancestor) and reads the ``PhysicsCurvesDeformableMaterialAPI``
-    attributes from the canonical ``physics:`` namespace, falling back to
-    ``compat_namespaces`` (see :func:`_read_physics_attr`).
+    Resolves the physics material bound via ``material:binding:physics`` and reads
+    the ``PhysicsCurvesDeformableMaterialAPI`` attributes through ``read_attr`` (the
+    resolver's single-source namespace read, see
+    :meth:`SchemaResolverManager.read_deformable_attr`).
 
     Args:
         prim: The curve prim whose bound physics material is read.
-        compat_namespaces: Vendor namespaces accepted as a fallback.
+        read_attr: Resolver read ``(prim, name) -> value`` for a deformable attribute.
 
     Returns:
         A dict of authored, finite values among ``thickness``,
@@ -1419,7 +1421,7 @@ def _get_curve_deformable_material(prim: Usd.Prim, compat_namespaces: Sequence[s
         return None
     out: dict[str, float] = {}
     for name in ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "twistStiffness", "density"):
-        val = _read_physics_attr(material_prim, name, compat_namespaces)
+        val = read_attr(material_prim, name)
         if val is None:
             continue
         val = float(val)
@@ -1435,17 +1437,19 @@ def _get_curve_deformable_material(prim: Usd.Prim, compat_namespaces: Sequence[s
     return out
 
 
-def _get_surface_deformable_material(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> dict[str, float] | None:
+def _get_surface_deformable_material(
+    prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]
+) -> dict[str, float] | None:
     """Read surface-deformable (cloth) material parameters bound to a prim.
 
-    Resolves the physics material bound via ``material:binding:physics`` (on the
-    prim or an ancestor) and reads the ``PhysicsSurfaceDeformableMaterialAPI``
-    attributes from the canonical ``physics:`` namespace, falling back to
-    ``compat_namespaces`` (see :func:`_read_physics_attr`).
+    Resolves the physics material bound via ``material:binding:physics`` and reads
+    the ``PhysicsSurfaceDeformableMaterialAPI`` attributes through ``read_attr`` (the
+    resolver's single-source namespace read, see
+    :meth:`SchemaResolverManager.read_deformable_attr`).
 
     Args:
         prim: The surface (triangle mesh) prim whose bound physics material is read.
-        compat_namespaces: Vendor namespaces accepted as a fallback.
+        read_attr: Resolver read ``(prim, name) -> value`` for a deformable attribute.
 
     Returns:
         A dict of authored, finite values among ``thickness``,
@@ -1462,7 +1466,7 @@ def _get_surface_deformable_material(prim: Usd.Prim, compat_namespaces: Sequence
         return None
     out: dict[str, float] = {}
     for name in ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "density"):
-        val = _read_physics_attr(material_prim, name, compat_namespaces)
+        val = read_attr(material_prim, name)
         if val is None:
             continue
         val = float(val)
@@ -1494,7 +1498,7 @@ def _find_deformable_body_prim(prim: Usd.Prim) -> Usd.Prim | None:
 
 
 def _get_deformable_body_overrides(
-    prim: Usd.Prim, compat_namespaces: Sequence[str] = ()
+    prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]
 ) -> tuple[float | None, float | None]:
     """Read ``PhysicsDeformableBodyAPI`` ``mass`` / ``density`` overrides.
 
@@ -1508,20 +1512,20 @@ def _get_deformable_body_overrides(
     body_prim = _find_deformable_body_prim(prim)
     if body_prim is None:
         return None, None
-    mass = _read_physics_attr(body_prim, "mass", compat_namespaces)
-    density = _read_physics_attr(body_prim, "density", compat_namespaces)
+    mass = read_attr(body_prim, "mass")
+    density = read_attr(body_prim, "density")
     mass = float(mass) if mass is not None and float(mass) > 0.0 else None
     density = float(density) if density is not None and float(density) > 0.0 else None
     return mass, density
 
 
-def _get_deformable_point_masses(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> list[float] | None:
+def _get_deformable_point_masses(prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]) -> list[float] | None:
     """Read the simulation API's per-point ``physics:masses`` array.
 
     Per-point masses take precedence over body and material mass/density (proposal
     "Simulation Geometry and Rest Shape"). Returns ``None`` when unauthored/empty.
     """
-    val = _read_physics_attr(prim, "masses", compat_namespaces)
+    val = read_attr(prim, "masses")
     if val is None:
         return None
     masses = [float(x) for x in val]

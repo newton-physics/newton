@@ -378,6 +378,8 @@ def parse_usd(
     # resolver declaring them (e.g. SchemaResolverPhysx) is active, so a default
     # import parses the AOUSD proposal as written.
     deformable_compat_ns = R.deformable_compat_namespaces()
+    # Resolver-owned deformable read (physics: first, then opted-in vendor namespaces).
+    deformable_read = R.read_deformable_attr
 
     # Validate solver-specific custom attributes are registered
     for resolver in schema_resolvers:
@@ -3392,14 +3394,14 @@ def parse_usd(
     # Mass precedence (proposal): per-point physics:masses > body mass > body density
     # > material density; per-element weighting is left to the add_* builders.
     def _resolve_deformable_density(prim, material_density):
-        _, body_density = usd._get_deformable_body_overrides(prim, deformable_compat_ns)
+        _, body_density = usd._get_deformable_body_overrides(prim, deformable_read)
         return body_density if body_density is not None else material_density
 
     def _warn_unsupported_rest_shape(prim, path, names):
         # Rest-shape import is not implemented yet; warn rather than silently drop an
         # authored rest configuration (see issue #3178's "unsupported fields" criterion).
         for name in names:
-            if usd._read_physics_attr(prim, name, deformable_compat_ns) is not None:
+            if deformable_read(prim, name) is not None:
                 warnings.warn(
                     f"{path}: 'physics:{name}' (deformable rest shape) is authored but not "
                     f"yet imported; it is ignored.",
@@ -3411,7 +3413,7 @@ def parse_usd(
         n = p1 - p0
         if n <= 0:
             return
-        point_masses = usd._get_deformable_point_masses(prim, deformable_compat_ns)
+        point_masses = usd._get_deformable_point_masses(prim, deformable_read)
         if point_masses is not None:
             if len(point_masses) != n:
                 warnings.warn(
@@ -3423,7 +3425,7 @@ def parse_usd(
                 for i in range(n):
                     builder.particle_mass[p0 + i] = point_masses[i]
                 return
-        body_mass, _ = usd._get_deformable_body_overrides(prim, deformable_compat_ns)
+        body_mass, _ = usd._get_deformable_body_overrides(prim, deformable_read)
         if body_mass is not None:
             current = float(sum(builder.particle_mass[p0:p1]))
             if current > 0.0:
@@ -3434,8 +3436,8 @@ def parse_usd(
     def _apply_cable_masses(prim, body_ids, num_points):
         # The rigid capsule chain can't carry per-point masses; collapse them (or take
         # the body mass) to a total and rescale segment mass + inertia.
-        point_masses = usd._get_deformable_point_masses(prim, deformable_compat_ns)
-        body_mass, _ = usd._get_deformable_body_overrides(prim, deformable_compat_ns)
+        point_masses = usd._get_deformable_point_masses(prim, deformable_read)
+        body_mass, _ = usd._get_deformable_body_overrides(prim, deformable_read)
         if point_masses is not None and len(point_masses) != num_points:
             warnings.warn(
                 f"{prim.GetPath()}: physics:masses length {len(point_masses)} != {num_points} curve points; "
@@ -3619,7 +3621,7 @@ def parse_usd(
 
             # Curve material moduli (force/area) -> per-joint stiffness via the circular
             # cross-section (A = pi r^2, I = pi r^4 / 4) and segment length.
-            cable_mat = usd._get_curve_deformable_material(prim, deformable_compat_ns) or {}
+            cable_mat = usd._get_curve_deformable_material(prim, deformable_read) or {}
             radius = 0.5 * cable_mat["thickness"] if "thickness" in cable_mat else 0.05
             area = math.pi * radius * radius
             inertia = 0.25 * math.pi * radius**4
@@ -3754,7 +3756,7 @@ def parse_usd(
                 cloth_vertices = [wp.vec3(float(p[0]) * sx, float(p[1]) * sy, float(p[2]) * sz) for p in mesh_points]
 
             # Surface moduli -> tri_ke (stretch) / tri_ka (shear) / bending-edge ke (bend).
-            cloth_mat = usd._get_surface_deformable_material(prim, deformable_compat_ns) or {}
+            cloth_mat = usd._get_surface_deformable_material(prim, deformable_read) or {}
             tri_ke = cloth_mat.get("stretchStiffness")
             tri_ka = cloth_mat.get("shearStiffness")
             edge_ke = cloth_mat.get("bendStiffness")
