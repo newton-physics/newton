@@ -5742,10 +5742,11 @@ class ModelBuilder:
         self.joint_constraint_count = len(self.joint_cts)
 
         # Remap equality constraint body/joint indices and transform anchors for merged bodies.
-        # Each ``*_values`` is the dense ``list`` backing the string-frequency CustomAttribute;
-        # the ``mujoco:equality_constraint`` ``add_custom_values`` path populates all twelve in
-        # lockstep so indexed access is safe for every ``i`` in
-        # ``range(self._equality_constraint_count)``.
+        # Each ``*_values`` is the ``list`` backing the string-frequency CustomAttribute. These
+        # lists are sparse: ``add_custom_values`` only populates the fields that were supplied,
+        # so an omitted optional field can be ``None``, shorter than the row count, or absent
+        # entirely. Reads go through ``_at`` (default fallback), and writes pad the list to the
+        # row index before assignment.
         body1_attr = self._eq_attr("equality_constraint_body1")
         body2_attr = self._eq_attr("equality_constraint_body2")
         type_attr = self._eq_attr("equality_constraint_type")
