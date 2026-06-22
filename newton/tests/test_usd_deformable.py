@@ -974,6 +974,33 @@ class TestUSDDeformableCloth(unittest.TestCase):
         self.assertGreater(m_no_t, 0.0)
         self.assertAlmostEqual(m_with_t / m_no_t, 0.01, places=4)
 
+    def test_cloth_thickness_falls_back_to_shell_mass_model(self):
+        """When the material omits thickness, a NewtonMassAPI shell thickness is used to areal-scale density."""
+        from pxr import Sdf, Usd, UsdPhysics
+
+        def total_mass(apply_shell):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                usd_path = Path(tmpdir) / "cloth_shell.usda"
+                stage = Usd.Stage.CreateNew(str(usd_path))
+                UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+                mesh = _add_cloth_mesh(stage, "/World/Cloth")
+                # Material density only -- thickness is left to the shell mass model below.
+                _bind_cable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0)
+                if apply_shell:
+                    mesh.GetPrim().AddAppliedSchema("NewtonMassAPI")
+                    mesh.GetPrim().CreateAttribute("newton:massModel", Sdf.ValueTypeNames.Token).Set("shell")
+                    mesh.GetPrim().CreateAttribute("newton:shellThickness", Sdf.ValueTypeNames.Float).Set(0.01)
+                stage.Save()
+                builder = newton.ModelBuilder()
+                builder.add_usd(str(usd_path))
+                return sum(builder.particle_mass[:4])
+
+        m_no_shell = total_mass(apply_shell=False)
+        m_shell = total_mass(apply_shell=True)
+        self.assertGreater(m_no_shell, 0.0)
+        # Shell thickness 0.01 scales the areal density relative to the unscaled fallback.
+        self.assertAlmostEqual(m_shell / m_no_shell, 0.01, places=4)
+
     def test_cloth_resolved_density_is_volumetric_not_areal(self):
         """path_cloth_attrs.resolved_density is the solver-neutral volumetric density, not the areal value."""
         from pxr import Usd, UsdPhysics

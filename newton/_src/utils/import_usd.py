@@ -3824,14 +3824,21 @@ def parse_usd(
             tri_ke = cloth_mat.get("stretchStiffness")
             tri_ka = cloth_mat.get("shearStiffness")
             edge_ke = cloth_mat.get("bendStiffness")
+            # Surface thickness: prefer the material's authored value; otherwise fall back to a
+            # shell mass model's thickness (NewtonMassAPI massModel="shell" / shellThickness,
+            # resolved across Newton / MuJoCo like the rigid shape path above).
+            thickness = cloth_mat.get("thickness")
+            if thickness is None and R.get_value(prim, PrimType.SHAPE, "mass_model", default="solid") == "shell":
+                shell_thickness_val = R.get_value(prim, PrimType.SHAPE, "shell_thickness")
+                if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)):
+                    if float(shell_thickness_val) > 0.0:
+                        thickness = float(shell_thickness_val)
             # Newton cloth density is areal; convert the volumetric material density with the
             # surface thickness (required for surface mass per the proposal). Body density overrides.
             vol_density = _resolve_deformable_density(prim, cloth_mat.get("density"))
             resolved_cloth_density = vol_density if vol_density is not None else builder.default_shape_cfg.density
             # The areal value is builder-specific; keep it local to add_cloth_mesh.
-            density = (
-                resolved_cloth_density * cloth_mat["thickness"] if "thickness" in cloth_mat else resolved_cloth_density
-            )
+            density = resolved_cloth_density * thickness if thickness is not None else resolved_cloth_density
 
             p0, t0, e0 = builder.particle_count, builder.tri_count, builder.edge_count
             builder.add_cloth_mesh(
