@@ -16,7 +16,9 @@ def Xform "World" ()
         rel material:binding:physics = </World/PhysicsMaterial>
     }
 
-    def Material "PhysicsMaterial"
+    def Material "PhysicsMaterial" (
+        prepend apiSchemas = ["PhysicsVolumeDeformableMaterialAPI"]
+    )
     {
         float physics:density = 40
         float physics:youngsModulus = 300000

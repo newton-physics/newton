@@ -1279,7 +1279,9 @@ def get_tetmesh(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> TetMes
     density = None
 
     material_prim = _find_physics_material_prim(prim)
-    if material_prim is not None:
+    # Moduli are scoped to the volume deformable material API, so don't read them
+    # off an unrelated physics material.
+    if material_prim is not None and has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI"):
         youngs = _read_physics_attr(material_prim, "youngsModulus", compat_namespaces)
         poissons = _read_physics_attr(material_prim, "poissonsRatio", compat_namespaces)
         density_val = _read_physics_attr(material_prim, "density", compat_namespaces)
@@ -1364,18 +1366,14 @@ def get_tetmesh(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> TetMes
 
 
 def _find_physics_material_prim(prim: Usd.Prim):
-    """Find the physics material prim bound to a prim or its ancestors."""
-    p = prim
-    while p and p.IsValid():
-        binding_api = UsdShade.MaterialBindingAPI(p)
-        rel = binding_api.GetDirectBindingRel("physics")
-        if rel and rel.GetTargets():
-            mat_path = rel.GetTargets()[0]
-            mat_prim = prim.GetStage().GetPrimAtPath(mat_path)
-            if mat_prim and mat_prim.IsValid():
-                return mat_prim
-        p = p.GetParent()
-    return None
+    """Resolve the ``physics``-purpose bound material prim (or ``None``).
+
+    Via :meth:`UsdShade.MaterialBindingAPI.ComputeBoundMaterial`, honoring inherited,
+    collection-based, and strength-resolved (``bindMaterialAs``) bindings.
+    """
+    material, _rel = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial("physics")
+    mat_prim = material.GetPrim()
+    return mat_prim if mat_prim and mat_prim.IsValid() else None
 
 
 def _read_physics_attr(prim: Usd.Prim, name: str, compat_namespaces: Sequence[str] = ()):
@@ -1409,14 +1407,15 @@ def _get_curve_deformable_material(prim: Usd.Prim, compat_namespaces: Sequence[s
     Returns:
         A dict of authored, finite values among ``thickness``,
         ``stretchStiffness``, ``shearStiffness``, ``bendStiffness``,
-        ``twistStiffness`` and ``density``; or ``None`` if no physics material is
-        bound. Stiffness fields keep an authored zero (the proposal's range is
+        ``twistStiffness`` and ``density``; or ``None`` if the bound material does
+        not declare ``PhysicsCurvesDeformableMaterialAPI``. Stiffness fields keep an
+        authored zero (the proposal's range is
         ``[0, inf)``); ``thickness`` and ``density`` must be positive. The
         schema's ``-inf`` "simulator default" sentinel (and any out-of-range
         value) is dropped so the caller falls back to its defaults.
     """
     material_prim = _find_physics_material_prim(prim)
-    if material_prim is None:
+    if material_prim is None or not has_applied_api_schema(material_prim, "PhysicsCurvesDeformableMaterialAPI"):
         return None
     out: dict[str, float] = {}
     for name in ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "twistStiffness", "density"):
@@ -1451,14 +1450,15 @@ def _get_surface_deformable_material(prim: Usd.Prim, compat_namespaces: Sequence
     Returns:
         A dict of authored, finite values among ``thickness``,
         ``stretchStiffness``, ``shearStiffness``, ``bendStiffness`` and
-        ``density``; or ``None`` if no physics material is bound. Stiffness fields
-        keep an authored zero (the proposal's range is ``[0, inf)``); ``thickness``
+        ``density``; or ``None`` if the bound material does not declare
+        ``PhysicsSurfaceDeformableMaterialAPI``. Stiffness fields keep an authored
+        zero (the proposal's range is ``[0, inf)``); ``thickness``
         and ``density`` must be positive. The schema's ``-inf`` "simulator default"
         sentinel (and any out-of-range value) is dropped so the caller falls back
         to its defaults.
     """
     material_prim = _find_physics_material_prim(prim)
-    if material_prim is None:
+    if material_prim is None or not has_applied_api_schema(material_prim, "PhysicsSurfaceDeformableMaterialAPI"):
         return None
     out: dict[str, float] = {}
     for name in ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "density"):

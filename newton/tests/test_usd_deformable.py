@@ -50,9 +50,16 @@ def _bind_cable_material(stage, prim, mat_path, *, namespace="physics", **attrs)
     ``namespace`` to author under a vendor namespace (e.g. ``omniphysics``) to
     exercise the schema-resolver compatibility path.
     """
-    from pxr import Sdf, UsdShade
+    from pxr import Sdf, UsdGeom, UsdShade
 
     mat = UsdShade.Material.Define(stage, mat_path)
+    # Declare the per-family deformable material API the importer's readers gate on.
+    if prim.IsA(UsdGeom.BasisCurves):
+        mat.GetPrim().AddAppliedSchema("PhysicsCurvesDeformableMaterialAPI")
+    elif prim.IsA(UsdGeom.TetMesh):
+        mat.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableMaterialAPI")
+    elif prim.IsA(UsdGeom.Mesh):
+        mat.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableMaterialAPI")
     for name, value in attrs.items():
         mat.GetPrim().CreateAttribute(f"{namespace}:{name}", Sdf.ValueTypeNames.Float).Set(value)
     binding = UsdShade.MaterialBindingAPI.Apply(prim)
@@ -194,6 +201,31 @@ class TestUSDDeformableCable(unittest.TestCase):
                 result = builder.add_usd(str(usd_path))
             self.assertEqual(result["path_cable_map"], {})
             self.assertEqual(builder.body_count, 0)
+
+    def test_cable_material_without_family_api_is_ignored(self):
+        """A physics-bound material lacking PhysicsCurvesDeformableMaterialAPI is not read as a cable material."""
+        from pxr import Sdf, Usd, UsdPhysics, UsdShade
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_no_api.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            # Material carries cable-shaped attributes but does NOT declare the family API.
+            mat = UsdShade.Material.Define(stage, "/World/Mat")
+            mat.GetPrim().CreateAttribute("physics:stretchStiffness", Sdf.ValueTypeNames.Float).Set(2.0e6)
+            mat.GetPrim().CreateAttribute("physics:thickness", Sdf.ValueTypeNames.Float).Set(0.02)
+            UsdShade.MaterialBindingAPI.Apply(curves.GetPrim()).Bind(mat, materialPurpose="physics")
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            # Without the family API the material is ignored: no attrs, default rod stiffness.
+            self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"], {})
+            _bodies, joints = result["path_cable_map"]["/World/Cable"]
+            dof0 = builder.joint_qd_start[joints[0]]
+            self.assertEqual(builder.joint_target_ke[dof0], 1.0e5)  # add_rod default stretch stiffness
 
     def test_cable_resolved_density_reports_default_when_unauthored(self):
         """resolved_density reports the density actually used (the builder default), not None."""
