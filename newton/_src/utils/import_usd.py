@@ -379,12 +379,6 @@ def parse_usd(
     # import parses the AOUSD proposal as written.
     deformable_compat_ns = R.deformable_compat_namespaces()
 
-    # Newton-specific deformable controls (a future NewtonCurvesDeformable*API
-    # extension) are honored only when the Newton resolver owns the newton:
-    # namespace, mirroring how physx vendor attributes require SchemaResolverPhysx.
-    # The base parser otherwise reads only the public schema.
-    newton_resolver_active = any(r.name == "newton" for r in R.resolvers)
-
     # Validate solver-specific custom attributes are registered
     for resolver in schema_resolvers:
         resolver.validate_custom_attributes(builder)
@@ -3609,9 +3603,6 @@ def parse_usd(
             closed = curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic
             _warn_unsupported_rest_shape(prim, path, ("restWrapPoints",))
 
-            # Newton-extension control, gated on the Newton resolver (see helper docstring).
-            wrap_in_articulation = usd._get_newton_curve_wrap_in_articulation(prim) if newton_resolver_active else True
-
             world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
             w_pos, w_rot, w_scale = wp.transform_decompose(world_mat)
             world_xf = wp.transform(w_pos, w_rot)
@@ -3694,6 +3685,10 @@ def parse_usd(
                     else None
                 )
                 label = path if len(vertex_counts) == 1 else f"{path}_curve{ci}"
+                # Imported cables are left unwrapped (wrap_in_articulation=False): the
+                # caller wraps the returned joints via add_articulation() before
+                # finalize(), so articulation topology (e.g. closing a loop with extra
+                # joints, or attaching the cable to other bodies) stays a caller choice.
                 bodies, joints = builder.add_rod(
                     positions=positions,
                     quaternions=quaternions,
@@ -3703,7 +3698,7 @@ def parse_usd(
                     bend_stiffness=bend_stiffness,
                     closed=closed,
                     label=label,
-                    wrap_in_articulation=wrap_in_articulation,
+                    wrap_in_articulation=False,
                     body_frame_origin="com",
                 )
                 cable_bodies.extend(bodies)

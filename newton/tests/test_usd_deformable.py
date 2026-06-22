@@ -457,8 +457,11 @@ class TestUSDDeformableCable(unittest.TestCase):
             # Parse the cable into a prototype builder, then replicate across worlds.
             proto = newton.ModelBuilder()
             result = proto.add_usd(str(usd_path))
-            base_bodies, _ = result["path_cable_map"]["/World/Cable"]
+            base_bodies, base_joints = result["path_cable_map"]["/World/Cable"]
             self.assertEqual(base_bodies, list(range(proto.body_count)))  # cable is the whole prototype
+            # Imported cables are unwrapped; the caller wraps them into an articulation,
+            # which replicate() then copies per world.
+            proto.add_articulation(base_joints, label="/World/Cable_articulation")
 
             num_envs = 3
             scene = newton.ModelBuilder()
@@ -473,8 +476,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             ranges = [list(range(e * nb, (e + 1) * nb)) for e in range(num_envs)]
             self.assertEqual(sorted(i for r in ranges for i in r), list(range(scene.body_count)))
 
-    def test_cable_articulation_label_survives_finalize(self):
-        """The cable's articulation is labeled by prim path - the replication-durable handle."""
+    def test_imported_cable_is_unwrapped_until_caller_wraps(self):
+        """add_usd imports cable joints unwrapped; wrapping into an articulation is the caller's job."""
         from pxr import Usd, UsdPhysics
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -486,45 +489,13 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            builder.add_usd(str(usd_path))
-            self.assertIn("/World/Cable_articulation", builder.articulation_label)
+            _bodies, joints = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
+            # The importer does not impose an articulation; the cable joints are unwrapped.
+            self.assertEqual(len(builder.articulation_label), 0)
 
-    def test_cable_wrap_in_articulation_false(self):
-        """newton:cableWrapInArticulation=false leaves the cable joints unwrapped for the caller."""
-        from pxr import Sdf, Usd, UsdPhysics
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            usd_path = Path(tmpdir) / "cable_unwrapped.usda"
-            stage = Usd.Stage.CreateNew(str(usd_path))
-            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
-            curves = _add_cable_curve(stage, "/World/Cable", pts)
-            curves.GetPrim().CreateAttribute("newton:cableWrapInArticulation", Sdf.ValueTypeNames.Bool).Set(False)
-            stage.Save()
-
-            builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            # Cable bodies/joints still created, but not wrapped in an articulation.
-            bodies, joints = result["path_cable_map"]["/World/Cable"]
-            self.assertEqual((len(bodies), len(joints)), (3, 2))
-            self.assertNotIn("/World/Cable_articulation", builder.articulation_label)
-
-    def test_cable_wrap_flag_ignored_without_newton_resolver(self):
-        """The Newton-specific wrap flag is honored only when the Newton resolver is active."""
-        from pxr import Sdf, Usd, UsdPhysics
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            usd_path = Path(tmpdir) / "cable_unwrapped.usda"
-            stage = Usd.Stage.CreateNew(str(usd_path))
-            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
-            curves = _add_cable_curve(stage, "/World/Cable", pts)
-            curves.GetPrim().CreateAttribute("newton:cableWrapInArticulation", Sdf.ValueTypeNames.Bool).Set(False)
-            stage.Save()
-
-            # No Newton resolver -> the newton: control is ignored -> cable is wrapped.
-            builder = newton.ModelBuilder()
-            builder.add_usd(str(usd_path), schema_resolvers=[SchemaResolverPhysx()])
+            # The caller wraps the returned joints before finalize() (an unwrapped cable
+            # would otherwise fail finalize with orphan joints).
+            builder.add_articulation(joints, label="/World/Cable_articulation")
             self.assertIn("/World/Cable_articulation", builder.articulation_label)
 
     def test_periodic_cable_imports_closing_segment(self):
@@ -601,7 +572,8 @@ class TestUSDDeformableCableAsset(unittest.TestCase):
 
         with wp.ScopedDevice(device):
             builder = newton.ModelBuilder()
-            builder.add_usd(str(_CABLE_ASSET))
+            _bodies, joints = builder.add_usd(str(_CABLE_ASSET))["path_cable_map"]["/World/Cable"]
+            builder.add_articulation(joints)  # imported cables are unwrapped; the caller wraps them.
             builder.color()  # SolverVBD requires a coloring before finalize.
             model = builder.finalize()
 

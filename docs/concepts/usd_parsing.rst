@@ -67,6 +67,12 @@ Each imported deformable is addressable through the :meth:`~newton.ModelBuilder.
 ``path_soft_map`` (prim path -> ``particle`` / element ``(start, end)`` index ranges). The cable map
 is remapped if ``collapse_fixed_joints`` reindexes bodies.
 
+Imported cables are **unwrapped**: the cable joints are not placed in an articulation, so the caller
+wraps the returned ``joint_indices`` with :meth:`~newton.ModelBuilder.add_articulation` before
+:meth:`~newton.ModelBuilder.finalize` (which otherwise reports the joints as orphaned). This keeps
+articulation topology -- closing a loop with extra joints, attaching the cable to other bodies -- a
+caller decision rather than something the importer imposes.
+
 The same return dict also carries ``path_cable_attrs``, ``path_cloth_attrs`` and ``path_soft_attrs``,
 mapping each prim path to its as-authored, solver-neutral attributes. The cable and cloth maps expose the
 parsed ``material`` moduli and the ``resolved_density``; the volume map exposes the ``resolved_density``
