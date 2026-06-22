@@ -3496,7 +3496,9 @@ def parse_usd(
                 continue
 
             path = str(prim.GetPath())
-            if path.startswith("/Prototypes/"):
+            # Skip prims inside an instancing prototype; the per-instance proxies are
+            # imported instead (via TraverseInstanceProxies above).
+            if prim.IsInPrototype():
                 continue
             if any(re.match(pattern, path) for pattern in ignore_paths):
                 continue
@@ -3602,7 +3604,9 @@ def parse_usd(
                 continue
 
             path = str(prim.GetPath())
-            if path.startswith("/Prototypes/"):
+            # Skip prims inside an instancing prototype; the per-instance proxies are
+            # imported instead (via TraverseInstanceProxies above).
+            if prim.IsInPrototype():
                 continue
             if any(re.match(pattern, path) for pattern in ignore_paths):
                 continue
@@ -3775,7 +3779,9 @@ def parse_usd(
                 continue
 
             path = str(prim.GetPath())
-            if path.startswith("/Prototypes/"):
+            # Skip prims inside an instancing prototype; the per-instance proxies are
+            # imported instead (via TraverseInstanceProxies above).
+            if prim.IsInPrototype():
                 continue
             if any(re.match(pattern, path) for pattern in ignore_paths):
                 continue

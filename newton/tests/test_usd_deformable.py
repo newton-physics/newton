@@ -578,6 +578,29 @@ class TestUSDDeformableCable(unittest.TestCase):
                 # +Y comes from primvars:normals; if the schema +Z had won it would be ~[0,0,1].
                 np.testing.assert_allclose(y_world, [0.0, 1.0, 0.0], atol=1e-5)
 
+    def test_instanced_cable_imports_proxies_not_prototype(self):
+        """Instanced cables import once per instance proxy; the prototype master is skipped."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "instanced.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            stage.CreateClassPrim("/Proto")  # template in a class, not the rendered scene
+            _add_cable_curve(stage, "/Proto/Cable", pts)
+            for name in ("A", "B"):
+                inst = UsdGeom.Xform.Define(stage, f"/World/{name}")
+                inst.GetPrim().GetReferences().AddInternalReference("/Proto")
+                inst.GetPrim().SetInstanceable(True)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            # Two instance proxies import; the prototype master (/__Prototype_*) is not.
+            self.assertEqual(set(result["path_cable_map"]), {"/World/A/Cable", "/World/B/Cable"})
+
     def test_cable_replication_independent_per_world(self):
         """Replicating a cable across worlds yields independent, contiguous per-world segments (T5)."""
         from pxr import Usd, UsdGeom, UsdPhysics
