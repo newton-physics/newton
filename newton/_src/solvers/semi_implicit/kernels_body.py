@@ -242,15 +242,9 @@ def eval_body_joints(
         axis_0 = wp.transform_vector(X_wp, joint_axis[qd_start + 0])
         axis_1 = wp.transform_vector(X_wp, joint_axis[qd_start + 1])
         axis_2 = wp.transform_vector(X_wp, joint_axis[qd_start + 2])
-        t_total += axis_0 * (
-            -joint_f[qd_start + 0] + joint_damping[qd_start + 0] * wp.dot(axis_0, w_err)
-        )
-        t_total += axis_1 * (
-            -joint_f[qd_start + 1] + joint_damping[qd_start + 1] * wp.dot(axis_1, w_err)
-        )
-        t_total += axis_2 * (
-            -joint_f[qd_start + 2] + joint_damping[qd_start + 2] * wp.dot(axis_2, w_err)
-        )
+        t_total += axis_0 * (-joint_f[qd_start + 0] + joint_damping[qd_start + 0] * wp.dot(axis_0, w_err))
+        t_total += axis_1 * (-joint_f[qd_start + 1] + joint_damping[qd_start + 1] * wp.dot(axis_1, w_err))
+        t_total += axis_2 * (-joint_f[qd_start + 2] + joint_damping[qd_start + 2] * wp.dot(axis_2, w_err))
 
     if type == JointType.D6:
         pos = wp.vec3(0.0)
