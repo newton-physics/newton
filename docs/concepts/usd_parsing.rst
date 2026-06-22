@@ -40,6 +40,13 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 Deformable Bodies
 -----------------
 
+.. experimental::
+
+   Deformable-body import targets the **proposed** AOUSD UsdPhysics Deformables schema,
+   which is not yet registered in any USD distribution. This is pre-release coverage:
+   the schema, its attribute names, and the import behavior may change without notice as
+   the proposal evolves.
+
 :meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the `AOUSD UsdPhysics
 Deformables proposal
 <https://github.com/andrewkaufman/OpenUSD-proposals/blob/50a48457043e46af1bf2f9a685f67aed759150f1/proposals/physics_deformables/wp_deformable_physics_temp_2026_06_12.md>`_,
