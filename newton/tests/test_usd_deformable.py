@@ -547,6 +547,37 @@ class TestUSDDeformableCable(unittest.TestCase):
             bodies, _ = result["path_cable_map"]["/World/Cable"]
             self.assertEqual(len(bodies), 3)
 
+    def test_cable_primvars_normals_take_precedence(self):
+        """Indexed primvars:normals take precedence over the schema normals attribute."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_pvnormals.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]  # tangent +X
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            # Schema normals say +Z; the indexed primvars:normals (+Y) must win.
+            curves.CreateNormalsAttr([(0.0, 0.0, 1.0)] * len(pts))
+            curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+            pv = UsdGeom.PrimvarsAPI(curves.GetPrim()).CreatePrimvar(
+                "normals", Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.vertex
+            )
+            pv.Set([(0.0, 1.0, 0.0)])  # one unique value...
+            pv.SetIndices(Vt.IntArray([0, 0, 0, 0]))  # ...indexed to all 4 points
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            for body in bodies:
+                t = builder.body_q[body]
+                q = wp.quat(float(t[3]), float(t[4]), float(t[5]), float(t[6]))
+                y_world = np.array(wp.quat_rotate(q, wp.vec3(0.0, 1.0, 0.0)), dtype=np.float32)
+                # +Y comes from primvars:normals; if the schema +Z had won it would be ~[0,0,1].
+                np.testing.assert_allclose(y_world, [0.0, 1.0, 0.0], atol=1e-5)
+
     def test_cable_replication_independent_per_world(self):
         """Replicating a cable across worlds yields independent, contiguous per-world segments (T5)."""
         from pxr import Usd, UsdGeom, UsdPhysics

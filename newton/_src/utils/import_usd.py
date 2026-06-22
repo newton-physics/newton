@@ -3630,11 +3630,18 @@ def parse_usd(
             w_pos, w_rot, w_scale = wp.transform_decompose(world_mat)
             world_xf = wp.transform(w_pos, w_rot)
 
-            # Per-point normals give each segment's cross-section frame (twist). They are
-            # honored only when authored per point: interpolation must be vertex/varying
-            # (one normal per control point) and the count must match the points.
-            normals = curves.GetNormalsAttr().Get()
-            normals_interp = curves.GetNormalsInterpolation()
+            # Per-point normals give each segment's cross-section frame (twist).
+            # ``primvars:normals`` takes precedence over the schema ``normals`` attribute and
+            # may be indexed (flattened here); either way the normals are honored only when
+            # authored per point: interpolation must be vertex/varying (one normal per control
+            # point) and the count must match the points.
+            normals_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("normals")
+            if normals_primvar.HasValue():
+                normals = normals_primvar.ComputeFlattened()
+                normals_interp = normals_primvar.GetInterpolation()
+            else:
+                normals = curves.GetNormalsAttr().Get()
+                normals_interp = curves.GetNormalsInterpolation()
             if normals is not None and normals_interp not in (UsdGeom.Tokens.vertex, UsdGeom.Tokens.varying):
                 warnings.warn(
                     f"{path}: normals interpolation '{normals_interp}' is not per-point (vertex/varying); "
