@@ -15,15 +15,17 @@ from .geometry import BakedMidsoleGeometry
 
 @dataclass(frozen=True, init=False)
 class FoundationMaterial:
-    """Shared vertical foundation material parameters (6-parameter model).
+    """Shared vertical foundation material parameters (8-parameter model).
 
     Parameters (fitted):
-        stiffness_pa: Ogden elastic amplitude ``[Pa]``.
-        ogden_alpha: Ogden nonlinearity exponent (controls lock-up curvature).
+        stiffness_pa: Ogden term-1 elastic amplitude ``[Pa]`` (toe region).
+        ogden_alpha: Ogden term-1 nonlinearity exponent (low-strain curvature).
         lock_strain: Strain at which stress → ∞ (foam bottoms out).
-        damping_pa_s: Velocity dashpot amplitude ``[Pa·s]`` (rate dependence).
+        damping_pa_s: Kelvin-Voigt dashpot coefficient ``[Pa·s]`` (rate dependence).
         prony_stiffness_pa: Relaxation magnitude ``β × μ`` ``[Pa]`` (hysteresis).
         prony_damping_pa_s: Relaxation timescale ``τ`` ``[Pa·s]`` (hysteresis speed).
+        ogden2_stiffness_pa: Ogden term-2 elastic amplitude ``[Pa]`` (lock-up region).
+        ogden2_alpha: Ogden term-2 nonlinearity exponent (high-strain lock-up curvature).
     """
 
     stiffness_pa: float
@@ -32,6 +34,8 @@ class FoundationMaterial:
     damping_pa_s: float
     prony_stiffness_pa: float = 0.0
     prony_damping_pa_s: float = 0.0
+    ogden2_stiffness_pa: float = 0.0
+    ogden2_alpha: float = 0.0
     per_cylinder_area: bool = False
     state_warmup_cycles: int = 0
 
@@ -43,6 +47,8 @@ class FoundationMaterial:
         damping_pa_s: float,
         prony_stiffness_pa: float = 0.0,
         prony_damping_pa_s: float = 0.0,
+        ogden2_stiffness_pa: float = 0.0,
+        ogden2_alpha: float = 0.0,
         per_cylinder_area: bool = False,
         state_warmup_cycles: int = 0,
     ):
@@ -52,6 +58,8 @@ class FoundationMaterial:
         object.__setattr__(self, "damping_pa_s", float(damping_pa_s))
         object.__setattr__(self, "prony_stiffness_pa", float(prony_stiffness_pa))
         object.__setattr__(self, "prony_damping_pa_s", float(prony_damping_pa_s))
+        object.__setattr__(self, "ogden2_stiffness_pa", float(ogden2_stiffness_pa))
+        object.__setattr__(self, "ogden2_alpha", float(ogden2_alpha))
         object.__setattr__(self, "per_cylinder_area", bool(per_cylinder_area))
         object.__setattr__(self, "state_warmup_cycles", int(state_warmup_cycles))
 
@@ -151,13 +159,16 @@ def _foundation_lengths_kernel(
     comp = wp.max(slack - current_length_m[i], 0.0)
     strain = comp / slack
     lock = wp.max(params[2], 1.0e-4)
-    normalized = wp.min(strain / lock, 0.999)
+    normalized = wp.min(strain / lock, 0.95)
     alpha = wp.max(params[1], 1.0e-4)
     ogden_stress = params[0] * (wp.pow(1.0 - normalized, -alpha) - 1.0) / alpha
+    mu2 = wp.max(params[6], 0.0)
+    alpha2 = wp.max(params[7], 1.0e-4)
+    ogden_stress = ogden_stress + mu2 * (wp.pow(1.0 - normalized, -alpha2) - 1.0) / alpha2
 
     # QLV Prony Viscoelastic Stress
     ep = wp.max(params[4], 0.0)
-    e0 = wp.max(params[0], 1.0e-4)
+    e0 = wp.max(params[0] + mu2, 1.0e-4)
     beta = wp.min(ep / e0, 0.99)
     etap = wp.max(params[5], 0.0)
     tau = wp.max(etap / wp.max(ep, 1.0e-6), 1.0e-6)
@@ -169,10 +180,15 @@ def _foundation_lengths_kernel(
 
     viscoelastic_stress = ogden_stress - curr_state
 
-    damping_strain = wp.max(strain, 1.0e-8)
-    compression_velocity = -velocity_mps[i]
-    viscous_stress = params[3] * damping_strain * compression_velocity
-    fz = cell_area_m2[i] * wp.max(viscoelastic_stress + viscous_stress, 0.0)
+    comp_vel = float(0.0)
+    if comp > 0.0:
+        comp_vel = -velocity_mps[i]
+    strain_rate = comp_vel / slack
+    viscous_stress = params[3] * strain_rate
+
+    static_fz = cell_area_m2[i] * wp.max(viscoelastic_stress, 0.0)
+    viscous_fz = cell_area_m2[i] * viscous_stress
+    fz = wp.max(static_fz + viscous_fz, 0.0)
     xy = xy_m[i]
     wp.atomic_add(force_out, 0, fz)
     wp.atomic_add(wrench_out, 2, fz)
@@ -197,14 +213,22 @@ def _foundation_lengths_batch_kernel(
     comp = wp.max(slack - current_length_m[tid], 0.0)
     strain = comp / slack
     lock = wp.max(params[2], 1.0e-4)
-    normalized = wp.min(strain / lock, 0.999)
+    normalized = wp.min(strain / lock, 0.95)
     alpha = wp.max(params[1], 1.0e-4)
     ogden_stress = params[0] * (wp.pow(1.0 - normalized, -alpha) - 1.0) / alpha
+    mu2 = wp.max(params[6], 0.0)
+    alpha2 = wp.max(params[7], 1.0e-4)
+    ogden_stress = ogden_stress + mu2 * (wp.pow(1.0 - normalized, -alpha2) - 1.0) / alpha2
 
-    damping_strain = wp.max(strain, 1.0e-8)
-    compression_velocity = -velocity_mps[tid]
-    viscous_stress = params[3] * damping_strain * compression_velocity
-    fz = cell_area_m2[spring] * wp.max(ogden_stress + viscous_stress, 0.0)
+    comp_vel = float(0.0)
+    if comp > 0.0:
+        comp_vel = -velocity_mps[tid]
+    strain_rate = comp_vel / slack
+    viscous_stress = params[3] * strain_rate
+
+    static_fz = cell_area_m2[spring] * wp.max(ogden_stress, 0.0)
+    viscous_fz = cell_area_m2[spring] * viscous_stress
+    fz = wp.max(static_fz + viscous_fz, 0.0)
     frame = tid / spring_count
     wp.atomic_add(force_out, frame, fz)
 
@@ -228,7 +252,8 @@ def _foundation_lengths_stateful_batch_kernel(
     slack = wp.max(slack_length_m[spring], 1.0e-6)
     total_cycles = warmup_cycles + 1
     ep = wp.max(params[4], 0.0)
-    e0 = wp.max(params[0], 1.0e-4)
+    mu2_static = wp.max(params[6], 0.0)
+    e0 = wp.max(params[0] + mu2_static, 1.0e-4)
     beta = wp.min(ep / e0, 0.99)
     etap = wp.max(params[5], 0.0)
     tau = wp.max(etap / wp.max(ep, 1.0e-6), 1.0e-6)
@@ -240,9 +265,11 @@ def _foundation_lengths_stateful_batch_kernel(
             comp = wp.max(slack - current_length_m[offset], 0.0)
             strain = comp / slack
             lock = wp.max(params[2], 1.0e-4)
-            normalized = wp.min(strain / lock, 0.999)
+            normalized = wp.min(strain / lock, 0.95)
             ogden_alpha = wp.max(params[1], 1.0e-4)
             ogden_stress = params[0] * (wp.pow(1.0 - normalized, -ogden_alpha) - 1.0) / ogden_alpha
+            alpha2 = wp.max(params[7], 1.0e-4)
+            ogden_stress = ogden_stress + mu2_static * (wp.pow(1.0 - normalized, -alpha2) - 1.0) / alpha2
 
             decay = wp.exp(-wp.max(dt_s[frame], 0.0) / tau)
             prev_state = float(0.0)
@@ -254,10 +281,15 @@ def _foundation_lengths_stateful_batch_kernel(
             if cycle == warmup_cycles:
                 viscoelastic_stress = ogden_stress - curr_state
 
-                damping_strain = wp.max(strain, 1.0e-8)
-                compression_velocity = -velocity_mps[offset]
-                viscous_stress = params[3] * damping_strain * compression_velocity
-                fz = cell_area_m2[spring] * wp.max(viscoelastic_stress + viscous_stress, 0.0)
+                comp_vel = float(0.0)
+                if comp > 0.0:
+                    comp_vel = -velocity_mps[offset]
+                strain_rate = comp_vel / slack
+                viscous_stress = params[3] * strain_rate
+
+                static_fz = cell_area_m2[spring] * wp.max(viscoelastic_stress, 0.0)
+                viscous_fz = cell_area_m2[spring] * viscous_stress
+                fz = wp.max(static_fz + viscous_fz, 0.0)
                 wp.atomic_add(force_out, frame, fz)
 
 
@@ -538,7 +570,7 @@ def evaluate_foundation_lengths_batch(
         trial=batch.name,
         predicted_force_n=force_out.numpy().astype(np.float64),
         loss=float(loss_out.numpy()[0]),
-        gradient=np.zeros(6, dtype=np.float64),
+        gradient=np.zeros(8, dtype=np.float64),
     )
 
 
@@ -551,6 +583,8 @@ def _material_to_array(material: FoundationMaterial, include_state: bool = False
             material.damping_pa_s,
             material.prony_stiffness_pa,
             material.prony_damping_pa_s,
+            material.ogden2_stiffness_pa,
+            material.ogden2_alpha,
         ],
         dtype=np.float64,
     )
@@ -563,6 +597,8 @@ def _array_to_material(params: np.ndarray, base: FoundationMaterial | None = Non
     stiffness_pa = float(max(params[0], 50000.0))
     prony_stiffness_pa = float(np.clip(params[4], 0.0, stiffness_pa))
     prony_damping_pa_s = float(max(params[5], 0.0))
+    ogden2_stiffness_pa = float(max(params[6], 0.0)) if len(params) > 6 else 0.0
+    ogden2_alpha = float(max(params[7], 1.0e-4)) if len(params) > 7 else 1.0e-4
 
     return FoundationMaterial(
         stiffness_pa=stiffness_pa,
@@ -571,6 +607,8 @@ def _array_to_material(params: np.ndarray, base: FoundationMaterial | None = Non
         damping_pa_s=float(max(params[3], 0.0)),
         prony_stiffness_pa=prony_stiffness_pa,
         prony_damping_pa_s=prony_damping_pa_s,
+        ogden2_stiffness_pa=ogden2_stiffness_pa,
+        ogden2_alpha=ogden2_alpha,
         per_cylinder_area=per_cylinder_area,
         state_warmup_cycles=state_warmup_cycles,
     )
@@ -584,12 +622,14 @@ def fit_foundation_material_baked_batches_autodiff(
     *,
     initial_material: FoundationMaterial,
     iterations: int = 25,
-    learning_rates: tuple[float, float, float, float, float, float] = (
+    learning_rates: tuple[float, ...] = (
         5.0e-2,
         1.0e-2,
         1.0e-2,
         5.0e-2,
         1.0e-2,
+        1.0e-2,
+        5.0e-2,
         1.0e-2,
     ),
     per_cylinder_area: bool = True,
@@ -611,7 +651,8 @@ def fit_foundation_material_baked_batches_autodiff(
 
     params = _material_to_array(initial_material, include_state=True)
 
-    rates = np.zeros(6, dtype=np.float64)
+    n_params = len(params)
+    rates = np.zeros(n_params, dtype=np.float64)
     rates[: len(learning_rates)] = learning_rates
 
     bounds_phys = [
@@ -621,9 +662,11 @@ def fit_foundation_material_baked_batches_autodiff(
         (1.0, 1.0e6),  # damping_pa_s
         (1.0, 1.0e7),  # prony_stiffness_pa
         (1.0, 1.0e6),  # prony_damping_pa_s
+        (0.0, 1.0e6),  # ogden2_stiffness_pa
+        (0.5, 10.0),  # ogden2_alpha
     ]
 
-    for i in range(6):
+    for i in range(n_params):
         if rates[i] == 0.0:
             val = float(params[i])
             bounds_phys[i] = (val, val)
@@ -650,7 +693,7 @@ def fit_foundation_material_baked_batches_autodiff(
 
         material = _array_to_material(x, initial_material)
         loss_sum = 0.0
-        grad_sum_x = np.zeros(6, dtype=np.float64)
+        grad_sum_x = np.zeros(n_params, dtype=np.float64)
         force_sum = 0.0
         frame_sum = 0
 
@@ -701,6 +744,8 @@ def fit_foundation_material_baked_batches_autodiff(
                 "damping_pa_s": float(material.damping_pa_s),
                 "prony_stiffness_pa": float(material.prony_stiffness_pa),
                 "prony_damping_pa_s": float(material.prony_damping_pa_s),
+                "ogden2_stiffness_pa": float(material.ogden2_stiffness_pa),
+                "ogden2_alpha": float(material.ogden2_alpha),
                 "state_warmup_cycles": float(material.state_warmup_cycles),
                 "grad_stiffness_pa": float(mean_grad_x[0]),
                 "grad_ogden_alpha": float(mean_grad_x[1]),
@@ -708,6 +753,8 @@ def fit_foundation_material_baked_batches_autodiff(
                 "grad_damping_pa_s": float(mean_grad_x[3]),
                 "grad_prony_stiffness_pa": float(mean_grad_x[4]),
                 "grad_prony_damping_pa_s": float(mean_grad_x[5]),
+                "grad_ogden2_stiffness_pa": float(mean_grad_x[6]),
+                "grad_ogden2_alpha": float(mean_grad_x[7]),
             }
         )
         return mean_loss, mean_grad_y
@@ -735,6 +782,8 @@ def fit_foundation_material_baked_batches_autodiff(
         per_cylinder_area=per_cylinder_area,
         prony_stiffness_pa=best_material.prony_stiffness_pa,
         prony_damping_pa_s=best_material.prony_damping_pa_s,
+        ogden2_stiffness_pa=best_material.ogden2_stiffness_pa,
+        ogden2_alpha=best_material.ogden2_alpha,
         state_warmup_cycles=best_material.state_warmup_cycles,
     )
     return FoundationFitResult(material=result_material, history=tuple(history))
@@ -901,21 +950,24 @@ def _foundation_baked_batch_kernel(
 
     lock = wp.max(params[2], 1.0e-4)
     alpha = wp.max(params[1], 1.0e-4)
-    normalized = wp.min(strain / lock, 0.999)
+    normalized = wp.min(strain / lock, 0.95)
     ogden_stress = params[0] * (wp.pow(1.0 - normalized, -alpha) - 1.0) / alpha
-
-    damping_strain = wp.max(strain, 1.0e-8)
+    mu2 = wp.max(params[6], 0.0)
+    alpha2 = wp.max(params[7], 1.0e-4)
+    ogden_stress = ogden_stress + mu2 * (wp.pow(1.0 - normalized, -alpha2) - 1.0) / alpha2
 
     comp_vel = float(0.0)
     if comp > 0.0:
         comp_vel = disp_vel
-
-    viscous_stress = params[3] * damping_strain * comp_vel
+    strain_rate = comp_vel / slack
+    viscous_stress = params[3] * strain_rate
 
     coverage = float(1.0)
     if use_subcell_coverage != 0:
         coverage = wp.clamp(ind_val, 0.0, 1.0)
-    fz = coverage * cell_area_m2 * wp.max(ogden_stress + viscous_stress, 0.0)
+    static_fz = coverage * cell_area_m2 * wp.max(ogden_stress, 0.0)
+    viscous_fz = coverage * cell_area_m2 * viscous_stress
+    fz = wp.max(static_fz + viscous_fz, 0.0)
 
     wp.atomic_add(force_out, frame, fz)
 
@@ -961,7 +1013,8 @@ def _foundation_baked_stateful_batch_kernel(
 
     total_cycles = warmup_cycles + 1
     ep = wp.max(params[4], 0.0)
-    e0 = wp.max(params[0], 1.0e-4)
+    mu2_static = wp.max(params[6], 0.0)
+    e0 = wp.max(params[0] + mu2_static, 1.0e-4)
     beta = wp.min(ep / e0, 0.99)
     etap = wp.max(params[5], 0.0)
     tau = wp.max(etap / wp.max(ep, 1.0e-6), 1.0e-6)
@@ -989,9 +1042,11 @@ def _foundation_baked_stateful_batch_kernel(
             )
             strain = comp / slack
             lock = wp.max(params[2], 1.0e-4)
-            normalized = wp.min(strain / lock, 0.999)
+            normalized = wp.min(strain / lock, 0.95)
             ogden_alpha = wp.max(params[1], 1.0e-4)
             ogden_stress = params[0] * (wp.pow(1.0 - normalized, -ogden_alpha) - 1.0) / ogden_alpha
+            alpha2 = wp.max(params[7], 1.0e-4)
+            ogden_stress = ogden_stress + mu2_static * (wp.pow(1.0 - normalized, -alpha2) - 1.0) / alpha2
 
             decay = wp.exp(-wp.max(dt_s[frame], 0.0) / tau)
             prev_state = float(0.0)
@@ -1003,17 +1058,18 @@ def _foundation_baked_stateful_batch_kernel(
             if cycle == warmup_cycles:
                 viscoelastic_stress = ogden_stress - curr_state
 
-                damping_strain = wp.max(strain, 1.0e-8)
-
                 comp_vel = float(0.0)
                 if comp > 0.0:
                     comp_vel = disp_vel
+                strain_rate = comp_vel / slack
+                viscous_stress = params[3] * strain_rate
 
-                viscous_stress = params[3] * damping_strain * comp_vel
                 coverage = float(1.0)
                 if use_subcell_coverage != 0:
                     coverage = wp.clamp(ind_val, 0.0, 1.0)
-                fz = coverage * cell_area_m2 * wp.max(viscoelastic_stress + viscous_stress, 0.0)
+                static_fz = coverage * cell_area_m2 * wp.max(viscoelastic_stress, 0.0)
+                viscous_fz = coverage * cell_area_m2 * viscous_stress
+                fz = wp.max(static_fz + viscous_fz, 0.0)
                 wp.atomic_add(force_out, frame, fz)
 
 
@@ -1058,7 +1114,8 @@ def _foundation_baked_pressure_field_kernel(
 
     total_cycles = warmup_cycles + 1
     ep = wp.max(params[4], 0.0)
-    e0 = wp.max(params[0], 1.0e-4)
+    mu2_static = wp.max(params[6], 0.0)
+    e0 = wp.max(params[0] + mu2_static, 1.0e-4)
     beta = wp.min(ep / e0, 0.99)
     etap = wp.max(params[5], 0.0)
     tau = wp.max(etap / wp.max(ep, 1.0e-6), 1.0e-6)
@@ -1086,9 +1143,11 @@ def _foundation_baked_pressure_field_kernel(
             )
             strain = comp / slack
             lock = wp.max(params[2], 1.0e-4)
-            normalized = wp.min(strain / lock, 0.999)
+            normalized = wp.min(strain / lock, 0.95)
             ogden_alpha = wp.max(params[1], 1.0e-4)
             ogden_stress = params[0] * (wp.pow(1.0 - normalized, -ogden_alpha) - 1.0) / ogden_alpha
+            alpha2 = wp.max(params[7], 1.0e-4)
+            ogden_stress = ogden_stress + mu2_static * (wp.pow(1.0 - normalized, -alpha2) - 1.0) / alpha2
 
             decay = wp.exp(-wp.max(dt_s[frame], 0.0) / tau)
             prev_state = float(0.0)
@@ -1100,17 +1159,18 @@ def _foundation_baked_pressure_field_kernel(
             if cycle == warmup_cycles:
                 viscoelastic_stress = ogden_stress - curr_state
 
-                damping_strain = wp.max(strain, 1.0e-8)
-
                 comp_vel = float(0.0)
                 if comp > 0.0:
                     comp_vel = disp_vel
+                strain_rate = comp_vel / slack
+                viscous_stress = params[3] * strain_rate
 
-                viscous_stress = params[3] * damping_strain * comp_vel
                 coverage = float(1.0)
                 if use_subcell_coverage != 0:
                     coverage = wp.clamp(ind_val, 0.0, 1.0)
-                fz = coverage * cell_area_m2 * wp.max(viscoelastic_stress + viscous_stress, 0.0)
+                static_fz = coverage * cell_area_m2 * wp.max(viscoelastic_stress, 0.0)
+                viscous_fz = coverage * cell_area_m2 * viscous_stress
+                fz = wp.max(static_fz + viscous_fz, 0.0)
                 cell_force_out[frame, spring] = fz
 
 
@@ -1363,7 +1423,7 @@ def evaluate_foundation_baked_batch(
         trial=batch.name,
         predicted_force_n=force_out.numpy().astype(np.float64),
         loss=float(loss_out.numpy()[0]),
-        gradient=np.zeros(6, dtype=np.float64),
+        gradient=np.zeros(8, dtype=np.float64),
     )
 
 

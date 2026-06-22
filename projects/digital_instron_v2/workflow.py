@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import warp as wp
@@ -57,6 +58,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cycle-phase-count", type=int, default=501, help="Phase samples per generated cycle trace")
     parser.add_argument("--autodiff-iterations", type=int, default=25, help="Iterations for --step fit-autodiff")
+    parser.add_argument(
+        "--initial-sweep-count",
+        type=int,
+        default=0,
+        help="Number of initial material seeds to try before the final fit; 0 disables the sweep",
+    )
+    parser.add_argument(
+        "--initial-sweep-iterations",
+        type=int,
+        default=5,
+        help="Short L-BFGS-B iterations per initial material seed before selecting the final seed",
+    )
+    parser.add_argument(
+        "--initial-sweep-scale",
+        type=float,
+        default=1.0,
+        help="Log-space standard deviation for initial material perturbations",
+    )
+    parser.add_argument(
+        "--initial-sweep-seed",
+        type=int,
+        default=0,
+        help="Random seed for deterministic initial material perturbations",
+    )
     parser.add_argument("--loop-weight", type=float, default=None, help="Override fit.loop_weight for autodiff fitting")
     parser.add_argument(
         "--shape-weight",
@@ -173,6 +198,21 @@ def run_qc(args: argparse.Namespace) -> dict[str, object]:
     return report
 
 
+_AUTODIFF_MATERIAL_BOUNDS: dict[str, tuple[float, float]] = {
+    "stiffness_pa": (50000.0, 1.0e7),
+    "ogden_alpha": (0.0001, 5.0),
+    "lock_strain": (0.1, 0.99),
+    "damping_pa_s": (1.0, 1.0e6),
+    "prony_stiffness_pa": (1.0, 1.0e7),
+    "prony_damping_pa_s": (1.0, 1.0e6),
+    "ogden2_stiffness_pa": (0.0, 1.0e6),
+    "ogden2_alpha": (0.5, 10.0),
+}
+
+
+_MATERIAL_SWEEP_FIELDS = tuple(_AUTODIFF_MATERIAL_BOUNDS)
+
+
 def _initial_material(manifest, *, per_cylinder_area: bool = False) -> FoundationMaterial:
     stiffness = float(manifest.fit.get("initial_stiffness_pa", 2.0e6))
     if "initial_prony_stiffness_pa" in manifest.fit:
@@ -194,9 +234,107 @@ def _initial_material(manifest, *, per_cylinder_area: bool = False) -> Foundatio
         damping_pa_s=float(manifest.fit.get("initial_damping_pa_s", 1.0e4)),
         prony_stiffness_pa=prony_stiffness,
         prony_damping_pa_s=prony_damping,
+        ogden2_stiffness_pa=float(manifest.fit.get("initial_ogden2_stiffness_pa", 0.0)),
+        ogden2_alpha=float(manifest.fit.get("initial_ogden2_alpha", 3.0)),
         per_cylinder_area=per_cylinder_area,
         state_warmup_cycles=int(manifest.fit.get("state_warmup_cycles", 0)),
     )
+
+
+def _clamp_autodiff_material(material: FoundationMaterial, *, per_cylinder_area: bool = True) -> FoundationMaterial:
+    values = {}
+    for field in _MATERIAL_SWEEP_FIELDS:
+        low, high = _AUTODIFF_MATERIAL_BOUNDS[field]
+        values[field] = float(np.clip(getattr(material, field), low, high))
+    values["prony_stiffness_pa"] = min(values["prony_stiffness_pa"], values["stiffness_pa"])
+    return FoundationMaterial(
+        **values,
+        per_cylinder_area=per_cylinder_area,
+        state_warmup_cycles=material.state_warmup_cycles,
+    )
+
+
+def _logit_unit(value: float) -> float:
+    value = float(np.clip(value, 1.0e-6, 1.0 - 1.0e-6))
+    return float(np.log(value / (1.0 - value)))
+
+
+def _sigmoid(value: float) -> float:
+    return float(1.0 / (1.0 + np.exp(-value)))
+
+
+def _material_to_sweep_space(material: FoundationMaterial) -> np.ndarray:
+    values = []
+    for field in _MATERIAL_SWEEP_FIELDS:
+        low, high = _AUTODIFF_MATERIAL_BOUNDS[field]
+        value = float(getattr(material, field))
+        if field == "lock_strain":
+            normalized = (float(np.clip(value, low, high)) - low) / (high - low)
+            values.append(_logit_unit(normalized))
+        else:
+            values.append(float(np.log(max(value, low, 1.0e-5))))
+    return np.asarray(values, dtype=np.float64)
+
+
+def _sweep_space_to_material(
+    values: np.ndarray,
+    base: FoundationMaterial,
+    *,
+    per_cylinder_area: bool = True,
+) -> FoundationMaterial:
+    params = {}
+    for index, field in enumerate(_MATERIAL_SWEEP_FIELDS):
+        low, high = _AUTODIFF_MATERIAL_BOUNDS[field]
+        if field == "lock_strain":
+            value = low + (high - low) * _sigmoid(float(values[index]))
+        else:
+            value = float(np.exp(values[index]))
+        params[field] = float(np.clip(value, low, high))
+    params["prony_stiffness_pa"] = min(params["prony_stiffness_pa"], params["stiffness_pa"])
+    return FoundationMaterial(
+        **params,
+        per_cylinder_area=per_cylinder_area,
+        state_warmup_cycles=base.state_warmup_cycles,
+    )
+
+
+def _initial_material_sweep_candidates(
+    initial_material: FoundationMaterial,
+    *,
+    count: int,
+    scale: float,
+    seed: int,
+    per_cylinder_area: bool = True,
+) -> list[FoundationMaterial]:
+    if count <= 0:
+        return []
+    base = _clamp_autodiff_material(initial_material, per_cylinder_area=per_cylinder_area)
+    candidates = [base]
+    if count == 1:
+        return candidates
+
+    rng = np.random.default_rng(int(seed))
+    base_values = _material_to_sweep_space(base)
+    low_values = _material_to_sweep_space(
+        FoundationMaterial(
+            **{field: _AUTODIFF_MATERIAL_BOUNDS[field][0] for field in _MATERIAL_SWEEP_FIELDS},
+            per_cylinder_area=per_cylinder_area,
+            state_warmup_cycles=base.state_warmup_cycles,
+        )
+    )
+    high_values = _material_to_sweep_space(
+        FoundationMaterial(
+            **{field: _AUTODIFF_MATERIAL_BOUNDS[field][1] for field in _MATERIAL_SWEEP_FIELDS},
+            per_cylinder_area=per_cylinder_area,
+            state_warmup_cycles=base.state_warmup_cycles,
+        )
+    )
+    perturb_scale = max(float(scale), 0.0)
+    for _ in range(count - 1):
+        perturb = rng.normal(loc=0.0, scale=perturb_scale, size=len(_MATERIAL_SWEEP_FIELDS))
+        values = np.clip(base_values + perturb, low_values, high_values)
+        candidates.append(_sweep_space_to_material(values, base, per_cylinder_area=per_cylinder_area))
+    return candidates
 
 
 def _load_midsole_mesh(manifest, output_dir: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -1683,6 +1821,8 @@ def _material_from_history_row(row: dict[str, float]) -> FoundationMaterial:
         per_cylinder_area=True,
         prony_stiffness_pa=prony_stiffness,
         prony_damping_pa_s=prony_damping,
+        ogden2_stiffness_pa=float(row.get("ogden2_stiffness_pa", 0.0)),
+        ogden2_alpha=float(row.get("ogden2_alpha", 3.0)),
         state_warmup_cycles=int(row["state_warmup_cycles"]),
     )
 
@@ -1844,53 +1984,125 @@ def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
     fit_xy_m = spring_grid.xy_m if spring_grid is not None else None
     surface_map_plot_path = None
 
-    if use_baked:
-        baked_spacing = float(manifest.grid.get("baked_spacing_m", 0.002))
-        baked_geometry = build_baked_midsole_geometry(
-            vertices,
-            faces,
-            spacing_m=baked_spacing,
-            thickness_axis=manifest.grid.get("force_thickness_axis"),
-        )
-        surface_map_plot_path = _write_surface_map_plot(output_dir, baked_geometry)
-        baked_uv_m, _baked_xy_m, baked_cell_area_m2 = _baked_quadrature(baked_geometry)
-        fit_xy_m = baked_uv_m
-        batches = _with_baked_cell_area(batches, baked_cell_area_m2, baked_geometry.spacing_m)
-        indenter_maps_by_trial = {}
-        for batch in batches:
-            trial = next(t for t in manifest.trials if t.name == batch.name)
-            ind_map, ind_valid_map = bake_indenter_maps(
-                baked_geometry,
-                trial,
-                manifest,
-                vertices,
-                baked_spacing,
-            )
-            indenter_maps_by_trial[batch.name] = (ind_map, ind_valid_map)
-
-        result = fit_foundation_material_baked_batches_autodiff(
-            fit_xy_m,
+    baked_spacing = float(manifest.grid.get("baked_spacing_m", 0.002))
+    baked_geometry = build_baked_midsole_geometry(
+        vertices,
+        faces,
+        spacing_m=baked_spacing,
+        thickness_axis=manifest.grid.get("force_thickness_axis"),
+    )
+    surface_map_plot_path = _write_surface_map_plot(output_dir, baked_geometry)
+    baked_uv_m, _baked_xy_m, baked_cell_area_m2 = _baked_quadrature(baked_geometry)
+    fit_xy_m = baked_uv_m
+    batches = _with_baked_cell_area(batches, baked_cell_area_m2, baked_geometry.spacing_m)
+    indenter_maps_by_trial = {}
+    for batch in batches:
+        trial = next(t for t in manifest.trials if t.name == batch.name)
+        ind_map, ind_valid_map = bake_indenter_maps(
             baked_geometry,
-            indenter_maps_by_trial,
-            batches,
-            initial_material=_initial_material(manifest),
-            iterations=int(args.autodiff_iterations),
+            trial,
+            manifest,
+            vertices,
+            baked_spacing,
+        )
+        indenter_maps_by_trial[batch.name] = (ind_map, ind_valid_map)
+
+    initial_material = _initial_material(manifest, per_cylinder_area=True)
+    initial_sweep: dict[str, object] | None = None
+    final_initial_material = _clamp_autodiff_material(initial_material, per_cylinder_area=True)
+    sweep_count = max(int(getattr(args, "initial_sweep_count", 0)), 0)
+    if sweep_count > 1:
+        sweep_iterations = int(getattr(args, "initial_sweep_iterations", 5))
+        if sweep_iterations <= 0:
+            raise SystemExit("--initial-sweep-iterations must be positive when --initial-sweep-count is greater than 1")
+        candidates = _initial_material_sweep_candidates(
+            initial_material,
+            count=sweep_count,
+            scale=float(getattr(args, "initial_sweep_scale", 1.0)),
+            seed=int(getattr(args, "initial_sweep_seed", 0)),
             per_cylinder_area=True,
-            loop_weight=loop_weight,
-            use_equilibrium=use_equilibrium,
-            use_subcell_coverage=use_subcell_coverage,
-            device=device,
         )
-        selected_material, selected_history = _select_history_material(
-            fit_xy_m,
-            batches,
-            list(result.history),
-            device=device,
-            baked_geometry=baked_geometry,
-            indenter_maps_by_trial=indenter_maps_by_trial,
-            use_equilibrium=use_equilibrium,
-            use_subcell_coverage=use_subcell_coverage,
-        )
+        sweep_results = []
+        best_sweep_score = np.inf
+        best_sweep_index = 0
+        print(f"Running initial material sweep: {len(candidates)} seeds, {sweep_iterations} short iterations each")
+        for seed_index, candidate in enumerate(candidates):
+            short_result = fit_foundation_material_baked_batches_autodiff(
+                fit_xy_m,
+                baked_geometry,
+                indenter_maps_by_trial,
+                batches,
+                initial_material=candidate,
+                iterations=sweep_iterations,
+                per_cylinder_area=True,
+                loop_weight=loop_weight,
+                use_equilibrium=use_equilibrium,
+                use_subcell_coverage=use_subcell_coverage,
+                device=device,
+            )
+            sweep_material, sweep_selection = _select_history_material(
+                fit_xy_m,
+                batches,
+                list(short_result.history),
+                device=device,
+                baked_geometry=baked_geometry,
+                indenter_maps_by_trial=indenter_maps_by_trial,
+                use_equilibrium=use_equilibrium,
+                use_subcell_coverage=use_subcell_coverage,
+            )
+            sweep_score = float(cast(Any, sweep_selection["score"]))
+            if sweep_score < best_sweep_score:
+                best_sweep_score = sweep_score
+                best_sweep_index = seed_index
+                final_initial_material = sweep_material
+            sweep_results.append(
+                {
+                    "seed_index": seed_index,
+                    "seed_material": candidate.__dict__,
+                    "selected_material": sweep_material.__dict__,
+                    "selected_iteration": int(cast(Any, sweep_selection["iteration"])),
+                    "selected_loss": float(cast(Any, sweep_selection["loss"])),
+                    "selected_score": sweep_score,
+                    "selected_score_trials": sweep_selection["trials"],
+                    "history": list(short_result.history),
+                }
+            )
+            print(f"  seed {seed_index}: selected_score={sweep_score:.6g}")
+        initial_sweep = {
+            "count": len(candidates),
+            "iterations_per_seed": sweep_iterations,
+            "scale": float(getattr(args, "initial_sweep_scale", 1.0)),
+            "random_seed": int(getattr(args, "initial_sweep_seed", 0)),
+            "best_seed_index": best_sweep_index,
+            "best_score": best_sweep_score,
+            "best_material": final_initial_material.__dict__,
+            "candidates": sweep_results,
+        }
+        print(f"Selected sweep seed {best_sweep_index} with score={best_sweep_score:.6g}")
+
+    result = fit_foundation_material_baked_batches_autodiff(
+        fit_xy_m,
+        baked_geometry,
+        indenter_maps_by_trial,
+        batches,
+        initial_material=final_initial_material,
+        iterations=int(args.autodiff_iterations),
+        per_cylinder_area=True,
+        loop_weight=loop_weight,
+        use_equilibrium=use_equilibrium,
+        use_subcell_coverage=use_subcell_coverage,
+        device=device,
+    )
+    selected_material, selected_history = _select_history_material(
+        fit_xy_m,
+        batches,
+        list(result.history),
+        device=device,
+        baked_geometry=baked_geometry,
+        indenter_maps_by_trial=indenter_maps_by_trial,
+        use_equilibrium=use_equilibrium,
+        use_subcell_coverage=use_subcell_coverage,
+    )
 
     loss_plot_path = _write_autodiff_loss_plot(output_dir, list(result.history))
     hysteresis = _write_autodiff_hysteresis_plot(
@@ -1904,13 +2116,14 @@ def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
         use_equilibrium=use_equilibrium,
         use_subcell_coverage=use_subcell_coverage,
     )
+    acceptance = cast(dict[str, object], hysteresis["acceptance"])
     material_artifact_path = _write_foundation_material_artifact(
         output_dir,
         manifest,
         spring_grid,
         selected_material,
         hysteresis,
-        hysteresis["acceptance"],
+        acceptance,
         use_baked=use_baked,
         baked_geometry=baked_geometry,
     )
@@ -1928,18 +2141,17 @@ def run_fit_autodiff(args: argparse.Namespace) -> dict[str, object]:
         },
         "autodiff_device": device,
         "spring_grid_cells": 0 if spring_grid is None else int(len(spring_grid.xy_m)),
-        "surface_map_cells": 0
-        if baked_geometry is None or baked_geometry.grid_uv_m is None
-        else int(len(baked_geometry.grid_uv_m)),
+        "surface_map_cells": 0 if baked_geometry.grid_uv_m is None else int(len(baked_geometry.grid_uv_m)),
         "surface_map_plot": surface_map_plot_path,
+        "initial_sweep": initial_sweep,
         "material": selected_material.__dict__,
         "foundation_material_json": str(material_artifact_path),
-        "acceptance": hysteresis["acceptance"],
+        "acceptance": acceptance,
         "contact_diagnostics": contact_diagnostics,
         "loss_plot": loss_plot_path,
-        "selected_iteration": int(selected_history["iteration"]),
-        "selected_loss": float(selected_history["loss"]),
-        "selected_score": float(selected_history["score"]),
+        "selected_iteration": int(cast(Any, selected_history["iteration"])),
+        "selected_loss": float(cast(Any, selected_history["loss"])),
+        "selected_score": float(cast(Any, selected_history["score"])),
         "selected_score_trials": selected_history["trials"],
         "history": list(result.history),
         "hysteresis": hysteresis,

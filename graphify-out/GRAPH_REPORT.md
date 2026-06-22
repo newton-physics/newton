@@ -1,16 +1,16 @@
-# Graph Report - newton  (2026-06-09)
+# Graph Report - newton  (2026-06-22)
 
 ## Corpus Check
-- 679 files · ~2,047,984 words
+- 679 files · ~2,047,406 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 22465 nodes · 55470 edges · 663 communities (588 shown, 75 thin omitted)
-- Extraction: 85% EXTRACTED · 15% INFERRED · 0% AMBIGUOUS · INFERRED: 8255 edges (avg confidence: 0.54)
+- 22469 nodes · 55476 edges · 664 communities (590 shown, 74 thin omitted)
+- Extraction: 85% EXTRACTED · 15% INFERRED · 0% AMBIGUOUS · INFERRED: 8254 edges (avg confidence: 0.54)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `307fb475`
+- Built from commit: `513dbe68`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -665,6 +665,7 @@
 - [[_COMMUNITY_Community 656|Community 656]]
 - [[_COMMUNITY_Community 657|Community 657]]
 - [[_COMMUNITY_Community 658|Community 658]]
+- [[_COMMUNITY_Community 663|Community 663]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `vec6f` - 250 edges
@@ -679,16 +680,16 @@
 10. `Mesh` - 162 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `FoundationMaterial` --uses--> `FoundationMaterial`  [INFERRED]
-  scratch/contact_anim.py → projects/digital_instron_v2/foundation.py
-- `FoundationMaterial` --uses--> `FoundationMaterial`  [INFERRED]
-  scratch/contact_field_check.py → projects/digital_instron_v2/foundation.py
-- `FoundationMaterial` --uses--> `FoundationMaterial`  [INFERRED]
-  scratch/contact_scene.py → projects/digital_instron_v2/foundation.py
-- `FoundationMaterial` --uses--> `FoundationMaterial`  [INFERRED]
-  scratch/curve_check.py → projects/digital_instron_v2/foundation.py
+- `FastExampleCablePile` --uses--> `Example`  [INFERRED]
+  asv/benchmarks/simulation/bench_cable.py → newton/examples/cable/example_cable_pile.py
+- `condition_midsole_mesh()` --calls--> `remesh_mesh()`  [INFERRED]
+  projects/digital_instron_v2/geometry.py → newton/_src/geometry/utils.py
+- `collision_weight_field()` --calls--> `Trial`  [INFERRED]
+  newton/_src/solvers/implicit_mpm/implicit_mpm_solver_kernels.py → projects/digital_instron_v2/manifest.py
 - `ndarray` --uses--> `FoundationMaterial`  [INFERRED]
-  scratch/curve_check.py → projects/digital_instron_v2/foundation.py
+  newton/examples/contacts/example_foot_shoe_contact.py → projects/digital_instron_v2/foundation.py
+- `FoundationMaterial` --uses--> `FoundationMaterial`  [INFERRED]
+  newton/examples/contacts/example_foot_shoe_contact.py → projects/digital_instron_v2/foundation.py
 
 ## Import Cycles
 - 1-file cycle: `newton/__init__.py -> newton/__init__.py`
@@ -709,67 +710,67 @@
 - 4-file cycle: `newton/_src/geometry/support_function.py -> newton/_src/geometry/types.py -> newton/_src/sim/model.py -> newton/_src/utils/heightfield.py -> newton/_src/geometry/support_function.py`
 - 5-file cycle: `newton/_src/solvers/kamino/_src/core/builder.py -> newton/_src/solvers/kamino/_src/core/model.py -> newton/_src/solvers/kamino/_src/core/data.py -> newton/_src/solvers/kamino/_src/core/control.py -> newton/_src/solvers/kamino/_src/core/conversions.py -> newton/_src/solvers/kamino/_src/core/builder.py`
 
-## Communities (663 total, 75 thin omitted)
+## Communities (664 total, 74 thin omitted)
 
 ### Community 0 - "Community 0"
-Cohesion: 0.02
-Nodes (182): build_box_on_plane(), build_box_pendulum(), build_box_pendulum_vertical(), build_boxes_fourbar(), build_boxes_hinged(), build_boxes_nunchaku(), build_boxes_nunchaku_vertical(), build_cartpole() (+174 more)
+Cohesion: 0.07
+Nodes (69): JointDofConfig, Axis, GeoType, JointTargetMode, mat33, ModelBuilder, ShapeConfig, vec3 (+61 more)
 
 ### Community 1 - "Community 1"
-Cohesion: 0.05
-Nodes (33): ModelBuilder, Test that floating=True creates a free joint for the root body., Test that floating=False creates a fixed joint for the root body., Test that base_joint dict with linear and angular axes creates a D6 joint., Test that base_joint dict with JointType.REVOLUTE creates a revolute joint with, Test that specifying both base_joint and floating raises an error., Test that base joints (parent == -1) correctly use the import xform., Test that base joints inside frames correctly use the frame transform. (+25 more)
+Cohesion: 0.04
+Nodes (34): ModelBuilder, Test that floating=True creates a free joint for the root body., Test that floating=False creates a fixed joint for the root body., Test that base_joint dict with linear and angular axes creates a D6 joint., Test that base_joint dict with JointType.REVOLUTE creates a revolute joint with, Test that specifying both base_joint and floating raises an error., Test that base joints (parent == -1) correctly use the import xform., Test that base joints inside frames correctly use the frame transform. (+26 more)
 
 ### Community 2 - "Community 2"
-Cohesion: 0.05
-Nodes (171): An SoA-based container to hold time-invariant model data of a set of rigid body, A container to describe a single rigid body in the model builder.      Attribu, RigidBodiesModel, RigidBodyDescriptor, # NOTE: This is a conservative estimate based on the maximum per-world geom-pair, # NOTE: k=1 skips diagonal entries to exclude self-collisions, Add a new world to the model.          Args:             name (str): The name, Add a rigid body entity to the model using explicit specifications.          A (+163 more)
+Cohesion: 0.03
+Nodes (214): An SoA-based container to hold time-invariant model data of a set of rigid body, A container to describe a single rigid body in the model builder.      Attribu, RigidBodiesModel, RigidBodyDescriptor, # NOTE: This is a conservative estimate based on the maximum per-world geom-pair, # NOTE: k=1 skips diagonal entries to exclude self-collisions, Add a new world to the model.          Args:             name (str): The name, Add a rigid body entity to the model using explicit specifications.          A (+206 more)
 
 ### Community 3 - "Community 3"
 Cohesion: 0.02
-Nodes (131): Any, array, Mesh, Quat, Transform, Vec3, JointDofConfig, ModelBuilder (+123 more)
+Nodes (110): Any, Mesh, Quat, Transform, Vec3, ModelBuilder, Add a collision filter pair in canonical order.          Args:             sh, Default ``collision_filter_parent``: ``False`` for non-fixed joints to world; `` (+102 more)
 
 ### Community 4 - "Community 4"
-Cohesion: 0.04
-Nodes (112): QuantizationMode, Quantization modes for subgrid SDF data., Sparse SDF stored in 3D CUDA textures with indirection array.      Uses a two-, TextureSDFData, check_tile_occupied_mesh_kernel(), compute_isomesh(), compute_mesh_signed_volume(), compute_mesh_signed_volume_kernel() (+104 more)
+Cohesion: 0.07
+Nodes (73): apply_stress_delta_jacobi(), apply_stress_gs(), apply_velocity_delta(), batched_scatter(), build_batch_transpose_offsets(), build_flat_color_offsets(), build_flat_offsets(), build_strain_to_batch() (+65 more)
 
 ### Community 5 - "Community 5"
-Cohesion: 0.04
-Nodes (53): get_examples_output_path(), Run the simulation in headless mode for a fixed number of steps., run_headless(), uint64, array, GeometryDescriptor, int32, quatf (+45 more)
+Cohesion: 0.01
+Nodes (209): add_ground_box(), build_usd(), make_homogeneous_builder(), Offsets the initial poses of all rigid bodies existing in the builder uniformly, Offsets the initial twists of all rigid bodies existing in the builder uniformly, Imports a USD model and optionally adds a ground plane.      Each call creates, Utility factory function to create a multi-world builder with identical worlds r, Adds a static box geometry to a given builder to represent a flat ground with fi (+201 more)
 
 ### Community 6 - "Community 6"
-Cohesion: 0.05
-Nodes (141): aabb_to_unscaled(), check_infinite_plane_bsphere_overlap(), compute_bounding_sphere_from_aabb(), compute_plane_normal_from_contacts(), compute_tight_aabb_from_support(), convert_infinite_plane_to_cube(), create_compute_gjk_mpr_contacts(), create_find_contacts() (+133 more)
+Cohesion: 0.03
+Nodes (188): create_solve_convex_multi_contact(), create_solve_convex_single_contact(), Factory: fused MPR+GJK single-contact solver with shared support code., Factory: fused MPR+GJK multi-contact solver with shared support code., aabb_to_unscaled(), check_infinite_plane_bsphere_overlap(), compute_bounding_sphere_from_aabb(), compute_plane_normal_from_contacts() (+180 more)
 
 ### Community 7 - "Community 7"
 Cohesion: 0.06
-Nodes (82): create_texture_sdf_from_mesh(), Create texture SDF from a Warp mesh.      This is the main entry point for tex, array, Mesh, SDFData, TextureSDFData, uint64, vec3 (+74 more)
+Nodes (85): create_texture_sdf_from_mesh(), create_texture_sdf_from_volume(), Create texture SDF from a Warp mesh.      This is the main entry point for tex, Create texture SDF from existing NanoVDB sparse and coarse volumes.      Sampl, ndarray, Texture3D, Volume, array (+77 more)
 
 ### Community 8 - "Community 8"
 Cohesion: 0.05
-Nodes (107): compute_body_pose_update_with_logmap(), compute_body_twist_update_with_eom(), contact_wrench_matrix_from_points(), G_of(), H_of(), quat_apply(), quat_box_plus(), quat_conj() (+99 more)
+Nodes (82): JointCorrectionMode, compute_and_write_joint_implicit_dynamics(), compute_joint_pose_and_relative_motion(), correct_joint_coord_cartesian(), correct_joint_coord_cylindrical(), correct_joint_coord_free(), correct_joint_coord_gimbal(), correct_joint_coord_prismatic() (+74 more)
 
 ### Community 9 - "Community 9"
-Cohesion: 0.03
-Nodes (133): project_point_onto_plane(), Project a point onto a plane defined by a point and normal.      Args:, compute_voxel_index(), float_flip(), get_slot(), get_spatial_direction_2d(), _clear_active_kernel(), compute_effective_radius() (+125 more)
+Cohesion: 0.08
+Nodes (28): Initialize the global contact reducer.          Args:             capacity: M, HashTable, Generic hash table for concurrent key-to-index mapping.      Uses open address, Initialize an empty hash table.          Args:             capacity: Maximum, Clear all entries in the hash table., Clear only the active entries. CUDA graph capture compatible.          Uses tw, Test that atomic max correctly keeps the maximum value., Test inserting multiple different keys. (+20 more)
 
 ### Community 10 - "Community 10"
 Cohesion: 0.03
-Nodes (131): AttributeFrequency, BroadPhaseAllPairs, BroadPhaseExplicit, CollisionPipeline, ColoringAlgorithm, flag_to_int(), Converts a flag (Warp constant) to an integer., mat33 (+123 more)
+Nodes (133): AttributeFrequency, BroadPhaseAllPairs, BroadPhaseExplicit, CollisionPipeline, ColoringAlgorithm, mat33, AxisType, Clamping (+125 more)
 
 ### Community 11 - "Community 11"
-Cohesion: 0.04
-Nodes (73): Forward Kinematics solver class, CollisionDetector, Provides a Collision Detection (CD) front-end for Kamino.      This class is r, Returns the device on which the CollisionDetector data is allocated and executes, Returns the total maximum number of contacts allocated for the model across all, Returns the maximum number of contacts allocated for each world., CollisionDetectorConfig, ConfigBase (+65 more)
+Cohesion: 0.14
+Nodes (29): Forward Kinematics solver class, CollisionDetectorConfig, ConfigBase, ConstrainedDynamicsConfig, ConstraintStabilizationConfig, PADMMSolverConfig, Validates the current values held by the :class:`CollisionDetectorConfig` instan, A container to hold configurations for global constraint stabilization parameter (+21 more)
 
 ### Community 12 - "Community 12"
-Cohesion: 0.04
-Nodes (46): check_contact_position_midpoint_spheres(), check_normal_direction(), check_surface_reconstruction(), distance_point_to_box(), distance_point_to_ellipsoid(), _NarrowPhaseSetupMixin, Test plane-box collision when box is resting on plane., Test plane-capsule collision with small overlap. (+38 more)
+Cohesion: 0.02
+Nodes (91): Runs narrow-phase collision detection to generate contacts.          Args:, vec3, NarrowPhase, _geom_dist(), Tests for GJK distance computation using the new simplex solver., Test distance between two separated spheres., Test two touching spheres have zero distance., Test overlapping spheres return collision=True and distance=0. (+83 more)
 
 ### Community 13 - "Community 13"
-Cohesion: 0.07
-Nodes (47): SchemaResolver, Test MuJoCo per-geom solref wins over material when MuJoCo resolver has priority, Test mjc:damping attributes are parsed via SchemaResolverMjc., Test PhysX joint armature attribute resolution and priority handling., Test that both Newton and MuJoCo custom attributes are correctly parsed and coll, Test that custom attributes with namespaces are isolated from default namespace, Test ARTICULATION frequency attributes from USD import.          Uses ant_mixe, Test margin resolution: newton:contactMargin, physx restOffset, mjc:margin prior (+39 more)
+Cohesion: 0.06
+Nodes (50): SchemaResolver, Joint mjc:solreflimit on MjcJointAPI must populate joint_limit_ke / joint_limit_, Joint mjc:solreflimit on a revolute joint must produce per-radian limit_ke/_kd., Test MuJoCo->Newton conversion when both mjc:margin and mjc:gap are authored., Test MuJoCo per-geom solref wins over material when MuJoCo resolver has priority, Test mjc:damping attributes are parsed via SchemaResolverMjc., Test PhysX joint armature attribute resolution and priority handling., Test that both Newton and MuJoCo custom attributes are correctly parsed and coll (+42 more)
 
 ### Community 14 - "Community 14"
-Cohesion: 0.02
-Nodes (182): # NOTE: We also clamp the final control forces to avoid exceeding actuator limit, # TODO: Add support for other control types, # TODO: Add support for other control types, ControlKamino, Allocate the coord-space side buffer used to interface with a         :class:`n, Adopt arrays from a :class:`newton.Control`. Aliases directly when         poss, Write back into a :class:`newton.Control`. Aliases directly when         possib, Time-varying control data for a :class:`ModelKamino`.      Time-varying contro (+174 more)
+Cohesion: 0.07
+Nodes (20): Returns the host-side cache of the maximum number of contacts allocated across a, Returns the host-side cache of the maximum number of contacts allocated per worl, Returns the number of active contacts per model.\n         Shape of ``(1,)`` an, Returns the number of active contacts detected across all worlds in the model.\n, Returns the maximum number of contacts pre-allocated for each world.\n, Returns the number of active contacts detected in each world.\n         Shape o, Returns the world index of each active contact.\n         Shape of ``(model_max, Returns the contact index of each active contact w.r.t its world.\n         Sha (+12 more)
 
 ### Community 15 - "Community 15"
 Cohesion: 0.03
@@ -780,48 +781,48 @@ Cohesion: 0.03
 Nodes (82): ContactSurfaceData, Any, array, Axis, Contacts, Device, float32, Gaussian (+74 more)
 
 ### Community 17 - "Community 17"
-Cohesion: 0.13
-Nodes (21): _convert_base_origin_to_com(), _convert_body_origin_to_com(), _convert_geom_offset_origin_to_com(), make_symmetric(), An SoA-based container to hold time-varying data of a set of rigid body entities, Clears all body wrenches, total and components, setting them to zeros., Clears all constraint wrenches, setting them to zeros., Clears actuation wrenches, setting them to zeros. (+13 more)
+Cohesion: 0.07
+Nodes (26): detect_active_dof_limit(), _detect_active_joint_configuration_limits(), Returns the maximum number of limits allocated across all worlds., Returns the maximum number of limits allocated per world., Returns the total number of maximum limits for the model.\n         Shape of ``, Returns the total number of active limits for the model.\n         Shape of ``(, Returns the total number of maximum limits per world.\n         Shape of ``(num, Returns the total number of active limits per world.\n         Shape of ``(num_ (+18 more)
 
 ### Community 18 - "Community 18"
-Cohesion: 0.03
-Nodes (79): array, Mesh, ndarray, create_box_mesh(), create_sphere_mesh(), _create_torus_mesh(), invert_mesh_winding(), Create a sphere mesh by subdividing an icosahedron. (+71 more)
+Cohesion: 0.02
+Nodes (221): get_mc_tables(), Create marching cubes lookup tables on the specified device.      Returns:, compute_isomesh_from_texture_sdf(), QuantizationMode, Extract an isosurface mesh from a texture SDF via marching cubes.      Iterate, Quantization modes for subgrid SDF data., Sparse SDF stored in 3D CUDA textures with indirection array.      Uses a two-, TextureSDFData (+213 more)
 
 ### Community 19 - "Community 19"
-Cohesion: 0.03
-Nodes (133): Returns the number of passive joint coordinates contained in the model., A kernel to update poses of geometry entities in world     coordinates from the, Launches a kernel to update poses of geometry entities in     world coordinates, _update_geometries_state(), Returns the normalized direction vector of gravity., Sets the normalized direction vector of gravity., Returns the effective gravity vector and enabled flag compactly as a :class:`vec, Initialize the gravity descriptor.          Args:             enabled (bool): (+125 more)
+Cohesion: 0.02
+Nodes (199): convert_model_gravity(), Returns the normalized direction vector of gravity., Sets the normalized direction vector of gravity., Returns the gravity direction and acceleration as compactly as a :class:`vec4f`., Returns the effective gravity vector and enabled flag compactly as a :class:`vec, # TODO: Re-implement using kernels, Converts the gravity representation from the Newton model to the Kamino format., Initialize the gravity descriptor.          Args:             enabled (bool): (+191 more)
 
 ### Community 20 - "Community 20"
-Cohesion: 0.06
-Nodes (78): GlobalContactReducerData, Register buffered contacts in the hashtable for reduction.      Uses the fixed, Struct for passing GlobalContactReducer arrays to kernels.      This struct bu, Get a GlobalContactReducerData struct for passing to kernels.          Returns, _compute_normal_matching_rotation(), _effective_stiffness(), HydroelasticContactReduction, HydroelasticReductionConfig (+70 more)
+Cohesion: 0.04
+Nodes (138): ContactData, Internal contact representation for collision detection.      This struct stor, decode_oct(), GlobalContactReducerData, make_contact_key(), Register buffered contacts in the hashtable for reduction.      Uses the fixed, Create a kernel that exports reduced contacts using a custom writer function., Create a hashtable key from shape pair and bin.      Args:         shape_a: F (+130 more)
 
 ### Community 21 - "Community 21"
-Cohesion: 0.04
-Nodes (46): JointSpacePIDController, ModelBuilderKamino, Simulator, array, CollisionDetector, ControlKamino, DeviceLike, ModelBuilderKamino (+38 more)
+Cohesion: 0.06
+Nodes (34): material_average(), material_max(), material_min(), # TODO: Switch to vec3f for anisotropic+torsional friction?, # TODO: Switch to vec3f for anisotropic+torsional friction?, # TODO: Switch to vec3f for anisotropic+torsional friction?, # TODO: Switch to vec3f for anisotropic+torsional friction?, Computes the average of two material property values.      Args:         valu (+26 more)
 
 ### Community 22 - "Community 22"
 Cohesion: 0.03
 Nodes (60): Any, array, float32, int32, ndarray, number, Path, State (+52 more)
 
 ### Community 23 - "Community 23"
-Cohesion: 0.03
-Nodes (111): apply_stress_delta_jacobi(), apply_stress_gs(), apply_velocity_delta(), batched_scatter(), build_batch_transpose_offsets(), build_flat_color_offsets(), build_flat_offsets(), build_strain_to_batch() (+103 more)
+Cohesion: 0.05
+Nodes (37): make_gs_solve_kernel(), make_jacobi_solve_kernel(), make_reordered_gs_solve_kernel(), Return a GS solve kernel using entry-major SoA strain matrix layout.      The, Return a Jacobi-style per-node stress solve kernel specialized for the given fea, Return a Gauss-Seidel colored-block stress solve kernel specialized for the give, apply_rigidity_operator(), ArraySquaredNorm (+29 more)
 
 ### Community 24 - "Community 24"
-Cohesion: 0.05
-Nodes (45): _as_2d_array(), ImplicitMPMScratchpad, LastStepData, _make_pic_basis_space(), Configure collider geometry and material properties.          By default, coll, Advance the simulation by one time step.          Transfers particle data to t, Collect current collider impulses and their application positions.          Re, Array mapping collider indices to body indices.          Returns: (+37 more)
+Cohesion: 0.04
+Nodes (93): Geometry, GeometryDomain, _apply_shape_transforms(), _compute_particle_volume_density(), _create_body_collider_mesh(), _get_body_collision_shapes(), _get_shape_collision_materials(), _get_shape_mesh() (+85 more)
 
 ### Community 25 - "Community 25"
 Cohesion: 0.03
-Nodes (32): Test that solimplimit attribute is parsed correctly from MJCF., Test importing limit_margin from MJCF., Test that solreffriction attribute is parsed correctly from MJCF., Test that solimpfriction attribute is parsed correctly from MJCF., Test granular control over sites and visual shapes loading., Test that parse_sites parameter works and maintains backward compatibility., Test the distinction between parse_visuals (loading) and hide_visuals (visibilit, Test MJCF friction parsing with 1, 2, and 3 element vectors. (+24 more)
+Nodes (36): Test that solimplimit attribute is parsed correctly from MJCF., Test importing limit_margin from MJCF., Test that solreffriction attribute is parsed correctly from MJCF., Test that solimpfriction attribute is parsed correctly from MJCF., Test granular control over sites and visual shapes loading., Test that parse_sites parameter works and maintains backward compatibility., Test the distinction between parse_visuals (loading) and hide_visuals (visibilit, Test MJCF friction parsing with 1, 2, and 3 element vectors. (+28 more)
 
 ### Community 26 - "Community 26"
-Cohesion: 0.05
-Nodes (76): DelassusOperator, A container to represent the Delassus matrix operator., Returns the number of worlds represented by the Delassus operator.         This, Returns the maximum size of the Delassus matrix across all worlds.         This, _apply_dual_preconditioner_to_matrix(), _apply_dual_preconditioner_to_vector(), _build_dual_preconditioner_all_constraints(), _build_dual_preconditioner_all_constraints_sparse() (+68 more)
+Cohesion: 0.09
+Nodes (29): _build_free_velocity(), Config, DualProblem, DualProblemData, A container to hold, manage and operate a dynamics dual problem., Configuration class for :class:`DualProblem`., Validates the current values held by the :class:`DualProblem.Config` instance., Post-initialization to validate config. (+21 more)
 
 ### Community 27 - "Community 27"
-Cohesion: 0.13
-Nodes (69): CollisionCandidatesData, make_get_material_pair_properties(), Generates a Warp function to retrieve material pair     properties based on the, make_contact_frame_znorm(), Check for buffer overflows in the collision pipeline., verify_narrow_phase_buffers(), array, ContactsKaminoData (+61 more)
+Cohesion: 0.14
+Nodes (60): CollisionCandidatesData, array, ContactsKaminoData, DataKamino, float32, int32, ModelKamino, quatf (+52 more)
 
 ### Community 28 - "Community 28"
 Cohesion: 0.06
@@ -833,71 +834,71 @@ Nodes (112): array, float32, int32, Model, ndarray, quat, spatial_vector, TestCa
 
 ### Community 30 - "Community 30"
 Cohesion: 0.05
-Nodes (63): ActuatorParsed, _camel_to_snake(), ComponentKind, Validate neural-control kwargs and return the concrete controller class., Canonical USD tokens from ``newton-usd-schemas``, Register a USD API schema for actuator parsing.      Args:         schema_nam, Classification of actuator component schemas., Result of parsing a USD actuator prim.      Each detected API schema produces (+55 more)
+Nodes (68): Delay, Per-DOF command input delay for actuators.      Delays command inputs (control, Resolve user-provided arguments with defaults.          Args:             arg, Called by :class:`Actuator` after construction.          Args:             de, ActuatorParsed, _camel_to_snake(), ComponentKind, Validate neural-control kwargs and return the concrete controller class. (+60 more)
 
 ### Community 31 - "Community 31"
-Cohesion: 0.06
-Nodes (31): ArticulationView, Gaussian, mat44, Model, number, transformf, Any, Log a :class:`newton.Gaussian` as a point cloud of spheres.          Args: (+23 more)
+Cohesion: 0.05
+Nodes (33): ArticulationView, int32, mat44, Model, number, uint32, vec2, Any (+25 more)
 
 ### Community 32 - "Community 32"
-Cohesion: 0.05
-Nodes (45): array, ContactsKamino, DataKamino, DualProblem, LimitsKamino, ModelKamino, Fused kernel: compute projection argument and project to feasible set.      Co, PADMMSolver (+37 more)
+Cohesion: 0.04
+Nodes (67): array, Config, ContactsKamino, DataKamino, DeviceLike, DualProblem, LimitsKamino, ModelKamino (+59 more)
 
 ### Community 33 - "Community 33"
 Cohesion: 0.06
-Nodes (110): apply_mjc_body_f_kernel(), apply_mjc_control_kernel(), apply_mjc_free_joint_f_to_body_f_kernel(), apply_mjc_qfrc_kernel(), build_ref_q_kernel(), contact_params(), convert_body_xforms_to_warp_kernel(), convert_mj_coords_to_warp_kernel() (+102 more)
+Nodes (112): apply_mjc_body_f_kernel(), apply_mjc_control_kernel(), apply_mjc_free_joint_f_to_body_f_kernel(), apply_mjc_qfrc_kernel(), build_ref_q_kernel(), contact_params(), convert_body_xforms_to_warp_kernel(), convert_mj_coords_to_warp_kernel() (+104 more)
 
 ### Community 34 - "Community 34"
 Cohesion: 0.04
-Nodes (54): Any, Axis, array, A descendant FREE-joint world force should stay aligned with the commanded world, Test that a force applied at the CoM causes linear acceleration without rotation, Test combined force and torque with non-zero CoM offset.      When both force, test_3d_articulation(), test_combined_force_torque() (+46 more)
+Nodes (60): Any, A descendant FREE-joint world force should stay aligned with the commanded world, Test that a force applied at the CoM causes linear acceleration without rotation, Test combined force and torque with non-zero CoM offset.      When both force, test_3d_articulation(), test_combined_force_torque(), test_descendant_free_joint_f_world_force_under_rotated_parent(), test_floating_body() (+52 more)
 
 ### Community 35 - "Community 35"
-Cohesion: 0.04
-Nodes (94): ndarray, JointType, Enumeration of joint types supported in Newton., Returns the number of degrees of freedom (DoF) in velocity and the number of coo, Returns the number of velocity-level bilateral kinematic constraints for this jo, # TODO: Remove this workaround once Newton's MJCF parser supports timestep extra, Base class for MJCF-based tests: Newton loads directly from MJCF., AgileX PIPER bimanual arm. (+86 more)
+Cohesion: 0.05
+Nodes (93): JointType, Enumeration of joint types supported in Newton., Returns the number of degrees of freedom (DoF) in velocity and the number of coo, Returns the number of velocity-level bilateral kinematic constraints for this jo, # TODO: Remove this workaround once Newton's MJCF parser supports timestep extra, Base class for MJCF-based tests: Newton loads directly from MJCF., AgileX PIPER bimanual arm., Dynamixel 2R simple arm. (+85 more)
 
 ### Community 36 - "Community 36"
 Cohesion: 0.05
 Nodes (54): Any, array, float32, Heightfield, int32, Mesh, ndarray, number (+46 more)
 
 ### Community 37 - "Community 37"
-Cohesion: 0.04
-Nodes (75): Element, quat_between_axes(), Compute the rotation between a sequence of axes.      This function returns a, mjc_add_equality_loop_joint(), mjc_add_equality_mimic(), mjc_eq_custom_attrs(), mjc_eq_solimp(), mjc_eq_solref() (+67 more)
+Cohesion: 0.18
+Nodes (18): mjc_add_equality_loop_joint(), mjc_add_equality_mimic(), mjc_eq_custom_attrs(), mjc_eq_solimp(), mjc_eq_solref(), mjc_loop_joint_xforms(), Add a Newton loop joint and its authoritative MuJoCo equality row., Add a Newton mimic constraint and its authoritative MuJoCo equality row. (+10 more)
 
 ### Community 38 - "Community 38"
-Cohesion: 0.05
-Nodes (96): quat_velocity(), Approximate angular velocity from successive world quaternions (world frame)., array, array2d, int32, mat33, quat, spatial_vector (+88 more)
+Cohesion: 0.06
+Nodes (93): array, array2d, int32, mat33, quat, spatial_vector, transform, vec3 (+85 more)
 
 ### Community 39 - "Community 39"
 Cohesion: 0.04
-Nodes (53): Any, array, ndarray, transform, vec3, Real-time ray-traced viewer using NVIDIA OVRTX.      Builds a USD scene during, Check whether a key is currently pressed.          Args:             key: Eit, Log a gizmo GUI element for the given name and transform.          Args: (+45 more)
+Nodes (42): Real-time ray-traced viewer using NVIDIA OVRTX.      Builds a USD scene during, Check whether a key is currently pressed.          Args:             key: Eit, Update the viewer with the given state of the simulation.          Args:, Apply viewer-driven forces (picking, wind) to the model.          Args:, Initialize the OVRTX-backed real-time ray-tracing viewer.          Args:, Begin a new frame.          Args:             time: Current simulation time [, Finish rendering the current frame.          On the first call, the RTX render, Log line segments for rendering.          Args:             name: Unique iden (+34 more)
 
 ### Community 40 - "Community 40"
-Cohesion: 0.04
-Nodes (47): ControllerNeuralLSTM, LSTM hidden and cell state., LSTM-based neural network controller, ONNX-backed.      Uses a pre-trained LST, State, _assemble_net_input_kernel(), _compute_errors_and_zero_history_kernel(), ControllerNeuralMLP, Read the leading ``count`` entries of ``src`` (row-major) and scale them. (+39 more)
+Cohesion: 0.05
+Nodes (56): _extract_metadata(), _LegacyLstmTorchAdapter, load_checkpoint(), _load_legacy_lstm_torch_checkpoint(), load_metadata(), _load_torch_checkpoint(), _load_torch_metadata(), _load_torch_raw() (+48 more)
 
 ### Community 41 - "Community 41"
 Cohesion: 0.03
-Nodes (118): Hello Robot Stretch 3., TestMenagerie_HelloRobotStretch3, TestMenagerie_ShadowHand, Base class for USD-based tests: Newton loads pre-converted USD.      Subclasse, Unitree H1 humanoid: USD vs native MuJoCo simulation equivalence., Unitree G1 29-DOF with hands: USD vs native MuJoCo simulation equivalence., Shadow Hand (left): USD vs native MuJoCo simulation equivalence., Apptronik Apollo humanoid: USD vs native MuJoCo simulation equivalence. (+110 more)
+Nodes (135): Base class for MuJoCo Menagerie integration tests.      Subclasses must define, Hello Robot Stretch 3., Unitree A1 quadruped., Unitree Go1 quadruped., TestMenagerie_HelloRobotStretch3, TestMenagerie_ShadowHand, TestMenagerie_UnitreeG1, TestMenagerieBase (+127 more)
 
 ### Community 42 - "Community 42"
-Cohesion: 0.05
-Nodes (38): Example, Model, array, Contacts, Control, Device, int32, mat33 (+30 more)
+Cohesion: 0.13
+Nodes (17): array, Contacts, Control, int32, mat33, Model, spatial_vector, State (+9 more)
 
 ### Community 43 - "Community 43"
-Cohesion: 0.07
-Nodes (77): _add_regularizer_to_diagonal(), _apply_line_search_step(), block_type, _correct_actuator_coords(), _correct_joint_angle(), _correct_joint_quaternion(), create_2d_tile_based_kernels(), create_eval_min_num_iterations_kernel() (+69 more)
+Cohesion: 0.06
+Nodes (81): _add_regularizer_to_diagonal(), _apply_line_search_step(), block_type, _correct_actuator_coords(), _correct_joint_angle(), _correct_joint_quaternion(), create_1d_tile_based_kernels(), create_2d_tile_based_kernels() (+73 more)
 
 ### Community 44 - "Community 44"
 Cohesion: 0.09
 Nodes (31): Measures contact forces on a set of **sensing objects** (bodies or shapes)., SensorContact, create_contacts(), _make_two_world_model(), Build a 2-world model with bodies A (world 0) and B (world 1).      Each body, Test that sensing object transforms are computed correctly., Test transforms for shape-type sensing objects, including ground shapes., sensing_obj_idx and counterpart_indices are flat lists. (+23 more)
 
 ### Community 45 - "Community 45"
-Cohesion: 0.06
-Nodes (46): Performs the sparse matrix-transpose-vector product `x = D^T @ y`.          No, Performs a BLAS-like generalized sparse matrix-vector product `y = alpha * D @ x, _cg_kernel_1(), _cg_kernel_2(), check_termination(), ConjugateSolver, _cr_kernel_1(), _cr_kernel_2() (+38 more)
+Cohesion: 0.05
+Nodes (58): Performs the sparse matrix-transpose-vector product `x = D^T @ y`.          No, Performs a BLAS-like generalized sparse matrix-vector product `y = alpha * D @ x, BatchedLinearOperator, _cg_kernel_1(), _cg_kernel_2(), CGSolver, check_termination(), ConjugateSolver (+50 more)
 
 ### Community 46 - "Community 46"
-Cohesion: 0.06
-Nodes (80): kernel, Config, Function, State, array, Config, float32, Function (+72 more)
+Cohesion: 0.07
+Nodes (68): kernel, Config, Function, State, array, Config, float32, Function (+60 more)
 
 ### Community 47 - "Community 47"
 Cohesion: 0.04
@@ -905,23 +906,23 @@ Nodes (26): Verify dampratio on position actuator shortcuts produces correct bia
 
 ### Community 48 - "Community 48"
 Cohesion: 0.05
-Nodes (42): Actuator, _F, array, ndarray, _build_lstm_onnx(), _build_mlp_onnx(), _onnx_modules(), Verify per-element analytic gradient against autodiff for ``grad_param``. (+34 more)
+Nodes (38): _F, array, Verify per-element analytic gradient against autodiff for ``grad_param``., Actuator with command-input delay — delay buffer, reset, graph capture, and grad, State buffers have correct shape (buf_depth, N)., Walk the three read regimes of :class:`Delay` with the same step call., delay=0 DOFs pass through current targets; delay=1 DOFs lag by one step., Push data into 4-DOF delay buffer, reset DOFs 1 and 3, verify others untouched. (+30 more)
 
 ### Community 49 - "Community 49"
 Cohesion: 0.08
 Nodes (73): _convert_body_com_to_origin(), accumulate_free_distance_joint_f_to_body_force(), adj_dense_cholesky(), adj_dense_solve(), compute_body_parent_f(), compute_com_transforms(), compute_link_transform(), compute_link_velocity() (+65 more)
 
 ### Community 50 - "Community 50"
-Cohesion: 0.07
-Nodes (49): build_bvh_shape(), compute_box_bounds(), compute_bvh_group_roots(), compute_capsule_bounds(), compute_cone_bounds(), compute_cylinder_bounds(), compute_ellipsoid_bounds(), compute_enabled_shapes() (+41 more)
+Cohesion: 0.31
+Nodes (21): compute_box_bounds(), compute_bvh_group_roots(), compute_capsule_bounds(), compute_cone_bounds(), compute_cylinder_bounds(), compute_ellipsoid_bounds(), compute_enabled_shapes(), compute_gaussian_bounds() (+13 more)
 
 ### Community 51 - "Community 51"
 Cohesion: 0.05
 Nodes (54): _box_terrain(), _combine_meshes(), _create_box(), create_mesh_heightfield(), _flat_terrain(), _gap_terrain(), _heightfield_terrain(), _pyramid_stairs_terrain() (+46 more)
 
 ### Community 52 - "Community 52"
-Cohesion: 0.07
-Nodes (39): BlockSparseLinearOperators, ColMajorSparseConstraintJacobians, ColMajorSparseConstraintJacobians, DenseSystemJacobians, Container to hold time-varying Jacobians of the system., Creates a :class:`DenseSystemJacobians` container and allocates the Jacobian dat, Builds the system DoF and constraint Jacobians for the given         data of th, Container to hold time-varying Jacobians of the system in block-sparse format. (+31 more)
+Cohesion: 0.14
+Nodes (14): ColMajorSparseConstraintJacobians, ContactsKamino, DenseSystemJacobians, LimitsKamino, SparseSystemJacobians, ContactsKamino, DenseSystemJacobians, LimitsKamino (+6 more)
 
 ### Community 53 - "Community 53"
 Cohesion: 0.09
@@ -933,19 +934,19 @@ Nodes (42): ModelBuilder, Test namespaced custom attributes with hierarchical or
 
 ### Community 55 - "Community 55"
 Cohesion: 0.03
-Nodes (85): ForwardKinematicsSolver, # NOTE: `Config.from_model` will default-initialize if no relevant custom attrib, # TODO: We need to fix this logic to properly handle the case where the collisio, # TODO: fix brittle in-place update of arrays after conversion, A physics solver for simulating constrained multi-body systems containing kinema, # NOTE: These should produce zero-copy views/references, Tensor, array (+77 more)
+Nodes (102): ForwardKinematicsSolver, # NOTE: `Config.from_model` will default-initialize if no relevant custom attrib, # TODO: We need to fix this logic to properly handle the case where the collisio, # TODO: fix brittle in-place update of arrays after conversion, # NOTE: These should produce zero-copy views/references, Writes joint state into ``dst_q`` and ``dst_q_p`` from ``src_q``, and optionally, Reset the given `state_out` container to the initial state defined     in the m, Resets the state of all bodies in the selected worlds based on their provided st (+94 more)
 
 ### Community 56 - "Community 56"
-Cohesion: 0.06
-Nodes (44): Any, ndarray, T, ArrayCache, depointer_as_key(), deserialize(), deserialize_ndarray(), extract_last_type_name() (+36 more)
+Cohesion: 0.05
+Nodes (45): Any, ndarray, T, ArrayCache, depointer_as_key(), deserialize(), deserialize_ndarray(), extract_last_type_name() (+37 more)
 
 ### Community 57 - "Community 57"
-Cohesion: 0.03
-Nodes (33): World mask ``(num_worlds,)`` int32 for selective resets., Return the index of the body with the given *name*.          Raises ``ValueErr, Return indices for a list of body *names*., Generic Kamino rigid body simulator for RL.      Features:         * USD mode, Extract joint/body names, actuated DOF indices, and joint limits from the Kamino, Render the current frame if viewer exists., Capture and save the current rendered frame as a PNG.          If ``render_wid, Generate MP4 video from recorded PNG frames using imageio-ffmpeg.          Arg (+25 more)
+Cohesion: 0.02
+Nodes (62): array, float32, int32, quat, vec3, CollisionDetector, Config, SolverKaminoImpl (+54 more)
 
 ### Community 58 - "Community 58"
 Cohesion: 0.07
-Nodes (50): array, array2d, array3d, array4d, float32, int32, ndarray, transformf (+42 more)
+Nodes (49): array, array2d, array3d, array4d, float32, int32, ndarray, transformf (+41 more)
 
 ### Community 59 - "Community 59"
 Cohesion: 0.03
@@ -960,20 +961,20 @@ Cohesion: 0.09
 Nodes (68): GeometryPartition, MaterialParameters, Convenience struct for passing material parameters to kernels., advect_particles(), allocate_by_voxels(), average_elastic_parameters(), average_yield_parameters(), clamp_coordinates() (+60 more)
 
 ### Community 62 - "Community 62"
-Cohesion: 0.07
-Nodes (38): array, Contacts, Control, Model, ModelBuilder, State, init_body_particle_contacts(), Cold-start body-particle contact penalties and cache material properties. (+30 more)
+Cohesion: 0.05
+Nodes (68): array, Contacts, Control, Model, ModelBuilder, State, array, array2d (+60 more)
 
 ### Community 63 - "Community 63"
 Cohesion: 0.07
 Nodes (75): intersect_ray(), map_ray_to_local(), map_ray_to_local_scaled(), Compute the closest hit along a (unit-length) ray against a sphere defined direc, Computes ray-ellipsoid intersection.      The ellipsoid is defined by semi-axe, Computes ray-box intersection.      Args:         geom_to_world: The world tr, Computes ray-capsule intersection.      Args:         geom_to_world: The worl, Computes ray-cylinder intersection.      Args:         geom_to_world: The wor (+67 more)
 
 ### Community 64 - "Community 64"
-Cohesion: 0.05
-Nodes (38): quat_between_axes(), Parses a UsdGeom geometry prim and returns a GeometryDescriptor., Parses a UsdPhysics geometry prim and returns a GeometryDescriptor., Parses an OpenUSD file., Retrieves the name of the prim from its path., Retrieves the name of the prim from its path., Retrieves the name of the prim from its path., Queries the custom data for a unique identifier (UID). (+30 more)
+Cohesion: 0.08
+Nodes (16): Parses a UsdGeom geometry prim and returns a GeometryDescriptor., Parses a UsdPhysics geometry prim and returns a GeometryDescriptor., Retrieves the name of the prim from its path., Retrieves the name of the prim from its path., Retrieves the name of the prim from its path., Queries the custom data for a unique identifier (UID)., Queries the custom data for a unique identifier (UID)., Queries the custom data for the max contacts hint. (+8 more)
 
 ### Community 65 - "Community 65"
-Cohesion: 0.05
-Nodes (71): array, Config, transform, _build_cube_cube_scene(), _build_cube_sphere_scene(), build_stacked_cubes_scene(), _build_two_box_hydro_pipeline(), _compute_force_weighted_anchor() (+63 more)
+Cohesion: 0.10
+Nodes (37): array, Config, transform, build_stacked_cubes_scene(), ``HydroelasticSDF.Config.mc_edge_clamp_min`` validates its range at construction, View stacked primitive cubes simulation with hydroelastic contacts., View stacked mesh cubes simulation with hydroelastic contacts., Verify marching cubes produces no zero-area triangles and fewer than 2% near-deg (+29 more)
 
 ### Community 66 - "Community 66"
 Cohesion: 0.04
@@ -984,32 +985,32 @@ Cohesion: 0.03
 Nodes (35): Test custom attributes flow from TetMesh through add_soft_mesh into the finalize, Test that add_usd filters TetMesh custom attributes without mutating the loaded, Test Mesh.create_from_file with an OBJ file., Test Mesh.create_from_file raises on missing file., Test TetMesh.create_from_file raises on missing file., Helper: 5 vertices, 2 tets sharing face (1,2,3)., Test add_soft_mesh accepts a TetMesh and populates the builder., Test that explicit density overrides TetMesh density. (+27 more)
 
 ### Community 68 - "Community 68"
-Cohesion: 0.08
-Nodes (40): GeometriesData, GeometriesModel, ContactsKamino, DataKamino, DeviceLike, ModelKamino, ndarray, StateKamino (+32 more)
+Cohesion: 0.07
+Nodes (20): Check if the ret_dict contains any joints., Queries the custom data for a DoF type hints., A class to parse OpenUSD files and extract relevant data., Attempts to import the necessary USD modules.         Raises ImportError if the, USDImporter, array, float32, int32 (+12 more)
 
 ### Community 69 - "Community 69"
-Cohesion: 0.07
-Nodes (29): number, State, Verify packed color slots can be mapped back to model shape indices., Verify runtime color sync repacks model colors into packed viewer order., ViewerBase.should_step() defaults to not self.is_paused()., TestViewerBaseShouldStep, Test that auto-computed world offsets respect the model's up axis., Test that auto-compute ignores shapes with unreasonably large collision radii. (+21 more)
+Cohesion: 0.05
+Nodes (43): number, State, FastExampleCablePile, _supports_cable_pile_size_args(), ViewerBase.should_step() defaults to not self.is_paused()., TestViewerBaseShouldStep, _build_multi_world_model(), max_worlds param in set_model still works with deprecation warning. (+35 more)
 
 ### Community 70 - "Community 70"
 Cohesion: 0.08
-Nodes (62): array, vec6, YieldParamVec, check_flow_rule_invariants(), check_yield_normal_alignment(), eval_flow_rule_residual(), _eval_shear_yield(), _eval_shear_yield_camclay() (+54 more)
+Nodes (63): array, vec6, YieldParamVec, check_flow_rule_invariants(), check_yield_normal_alignment(), eval_flow_rule_residual(), _eval_shear_yield(), _eval_shear_yield_camclay() (+55 more)
 
 ### Community 71 - "Community 71"
-Cohesion: 0.07
-Nodes (51): BlockSparseMatrixFreeDelassusOperator, DataKamino, DelassusOperator, ModelKamino, SparseSystemJacobians, array, BlockSparseMatrixFreeDelassusOperator, ContactsKamino (+43 more)
+Cohesion: 0.08
+Nodes (47): BlockSparseMatrixFreeDelassusOperator, DataKamino, DelassusOperator, ModelKamino, SparseSystemJacobians, array, BlockSparseMatrixFreeDelassusOperator, DataKamino (+39 more)
 
 ### Community 72 - "Community 72"
-Cohesion: 0.05
-Nodes (47): Any, SolverMuJoCo, backfill_model_from_native(), compare_compiled_model_fields(), compare_geom_fields_unordered(), compare_inertia_tensors(), compare_jnt_range(), compare_mjdata_field() (+39 more)
+Cohesion: 0.06
+Nodes (35): Any, ndarray, compare_compiled_model_fields(), compare_geom_fields_unordered(), compare_inertia_tensors(), compare_jnt_range(), compare_mjw_models(), compare_models() (+27 more)
 
 ### Community 73 - "Community 73"
-Cohesion: 0.19
-Nodes (19): _gather_best_seed(), IKSolver, _pull_seed(), High-level inverse-kinematics front end with optional multi-seed sampling., Solve all base problems and write the best result for each one.          Args:, Reset optimizer state, selected seeds, and the sampler RNG., Expanded joint-coordinate buffer that stores all sampled seeds., Expanded per-seed objective costs from the most recent solve. (+11 more)
+Cohesion: 0.06
+Nodes (53): Enum, IKJacobianType, Specifies the backend used for Jacobian computation in inverse kinematics., Build a specialized IKOptimizerLBFGS subclass with tiled kernels for given dimen, _accept_reject(), BatchCtx, IKOptimizerLM, Allocate any per-objective buffers that must live on ``self.device``. (+45 more)
 
 ### Community 74 - "Community 74"
-Cohesion: 0.04
-Nodes (56): Any, ndarray, SolverMuJoCo, _actuator_target_name(), build_actuator_index_map(), build_body_index_map(), build_dof_index_map(), build_jnt_index_map() (+48 more)
+Cohesion: 0.03
+Nodes (62): Any, ndarray, SolverMuJoCo, Robotiq 2F-85 gripper v4., TestMenagerie_Robotiq2f85V4, _actuator_target_name(), build_actuator_index_map(), build_body_index_map() (+54 more)
 
 ### Community 75 - "Community 75"
 Cohesion: 0.11
@@ -1017,63 +1018,63 @@ Nodes (38): array, IKJacobianType, Model, ndarray, vec3, _add_free_distance_join
 
 ### Community 76 - "Community 76"
 Cohesion: 0.03
-Nodes (34): Test that custom frequency counts increment for prims with no authored custom at, Test that custom frequency parsing traverses instance proxy prims.          Re, Test that floating=True creates a free joint for the root body., Test that usd_attribute_name='*' calls the usd_value_transformer for every match, Test that floating=False creates a fixed joint for the root body., Test that usd_attribute_name='*' without a usd_value_transformer raises ValueErr, Test that usd_entry_expander can emit multiple rows per matched prim., Test that base_joint dict with linear and angular axes creates a D6 joint. (+26 more)
+Nodes (31): Test that custom frequency counts increment for prims with no authored custom at, Test that custom frequency parsing traverses instance proxy prims.          Re, Test that floating=True creates a free joint for the root body., Test that usd_attribute_name='*' calls the usd_value_transformer for every match, Test that usd_attribute_name='*' without a usd_value_transformer raises ValueErr, Test that usd_entry_expander can emit multiple rows per matched prim., Test that base_joint dict with linear and angular axes creates a D6 joint., Test that base_joint dict with JointType.REVOLUTE creates a revolute joint with (+23 more)
 
 ### Community 77 - "Community 77"
 Cohesion: 0.08
-Nodes (70): Any, array, float32, int32, vec2f, vec3f, _apply_dual_preconditioner_to_solution(), _compute_desaxce_correction() (+62 more)
+Nodes (68): Any, array, float32, int32, vec2f, vec3f, _apply_dual_preconditioner_to_solution(), _apply_dual_preconditioner_to_state() (+60 more)
 
 ### Community 78 - "Community 78"
-Cohesion: 0.07
-Nodes (40): make_get_array_offset_ptr_func(), make_llt_blocked_factorize_kernel(), make_llt_blocked_solve_inplace_kernel(), make_llt_blocked_solve_kernel(), # TODO: Rename this to be clearer that this is the number of threads per TILE bl, Creates a function to get the offset pointer of a warp array., make_llt_blocked_rcm_factorize_kernel(), make_llt_blocked_rcm_fused_permute_and_tp_kernel() (+32 more)
+Cohesion: 0.09
+Nodes (27): llt_blocked_rcm_permute_vector(), make_llt_blocked_rcm_factorize_kernel(), make_llt_blocked_rcm_fused_permute_and_tp_kernel(), make_llt_blocked_rcm_permute_vector_kernel(), make_llt_blocked_rcm_solve_inplace_kernel(), make_llt_blocked_rcm_solve_kernel(), make_llt_blocked_rcm_symbolic_fill_in_kernel(), Fused kernel: builds ``inv_P``, permutes ``A -> A_hat``, and reduces     ``|A_h (+19 more)
 
 ### Community 79 - "Community 79"
 Cohesion: 0.08
 Nodes (43): ForwardKinematicsSolver, Internal evaluator, converting actuator and base coordinates of the main model,, Internal evaluator, updating the incremental target for actuator coordinates by, Internal evaluator for position control transformations, from actuated coordinat, Internal evaluator for the kinematic constraints vector, from body poses and pos, Internal evaluator for the maximal absolute residual in each world, from either, Internal evaluator for the kinematic constraints Jacobian with respect to body p, Internal evaluator for the sparse kinematic constraints Jacobian with respect to (+35 more)
 
 ### Community 80 - "Community 80"
-Cohesion: 0.05
-Nodes (71): JointDofConfig, Example, # NOTE: This only has an effect on GPU devices, Example, # NOTE: This only has an effect on GPU devices, ViewerBase, ViewerBase, Axis (+63 more)
+Cohesion: 0.25
+Nodes (3): Example, # NOTE: This only has an effect on GPU devices, ViewerBase
 
 ### Community 81 - "Community 81"
-Cohesion: 0.04
-Nodes (76): MjData, MjWarpData, MjWarpModel, create_convert_mjw_contacts_to_newton_kernel(), Create contact conversion kernel; deferred so ``wp.static`` doesn't import mujoc, _installed_version(), _make_nonplanar_mujoco_mesh(), _mujoco_mesh_vertices_are_planar() (+68 more)
+Cohesion: 0.03
+Nodes (105): MjData, MjModel, MjWarpData, MjWarpModel, create_convert_mjw_contacts_to_newton_kernel(), Create contact conversion kernel; deferred so ``wp.static`` doesn't import mujoc, CtrlSource, CtrlType (+97 more)
 
 ### Community 82 - "Community 82"
 Cohesion: 0.04
-Nodes (115): BroadPhaseSAP, binary_search(), check_aabb_overlap(), is_pair_excluded(), precompute_world_map(), Test if two collision groups should interact.      Args:         group_a: Fir, Test if two entities should collide based on world indices and collision groups., Precompute an index map that groups shapes by world ID with shared shapes. (+107 more)
+Nodes (126): BroadPhaseSAP, binary_search(), check_aabb_overlap(), is_pair_excluded(), precompute_world_map(), Test if two collision groups should interact.      Args:         group_a: Fir, Test if two entities should collide based on world indices and collision groups., Precompute an index map that groups shapes by world ID with shared shapes. (+118 more)
 
 ### Community 83 - "Community 83"
-Cohesion: 0.05
-Nodes (43): ABC, BatchedLinearOperator, Returns the numerical bound imposed by the correction mode., Converts a string to a JointCorrectionMode enum value., Returns the joint's generalized coordinates in its neutral position., Sets a uniform discrete time-step for all worlds.          Args:, DenseLinearOperatorData, A data structure for encapsulating a multi-linear matrix operator.      This o (+35 more)
+Cohesion: 0.06
+Nodes (30): BatchedLinearOperator, ConjugateGradientSolver, ConjugateResidualSolver, DirectSolver, IterativeSolver, LinearSolver, LLTSequentialSolver, Ingest a linear operator and allocate any necessary internal memory         bas (+22 more)
 
 ### Community 84 - "Community 84"
-Cohesion: 0.06
-Nodes (58): create_solve_convex_multi_contact(), create_solve_convex_single_contact(), Factory: fused MPR+GJK single-contact solver with shared support code., Factory: fused MPR+GJK multi-contact solver with shared support code., contact_passes_gap_check(), Check if a contact passes the gap threshold check and should be written., create_solve_mpr(), create_support_map_function() (+50 more)
+Cohesion: 0.10
+Nodes (34): add_avoid_duplicates_vec2(), approx_max_quadrilateral_area_with_calipers(), body_projector_project(), BodyProjector, compute_line_segment_projector_normal(), create_body_projectors(), excess_normal_deviation(), IncrementalPlaneTracker (+26 more)
 
 ### Community 85 - "Community 85"
 Cohesion: 0.04
-Nodes (59): Model, number, State, _compare_serialized_data(), Test ViewerFile with RingBuffer-backed history., Test that ViewerFile keeps backward-compatible unlimited history behavior., Test ViewerFile with RingBuffer save/load functionality., Test ViewerFile load_recording, load_model, and load_state for playback. (+51 more)
+Nodes (58): Model, number, State, _compare_serialized_data(), Test ViewerFile with RingBuffer-backed history., Test that ViewerFile keeps backward-compatible unlimited history behavior., Test ViewerFile with RingBuffer save/load functionality., Test ViewerFile load_recording, load_model, and load_state for playback. (+50 more)
 
 ### Community 86 - "Community 86"
-Cohesion: 0.08
-Nodes (31): _accumulate_gradients(), _apply_residual_mask(), BatchCtx, _fan_out_problem_idx(), _generate_candidates_velocity(), IKOptimizerLBFGS, Generate candidate configurations and compute their costs and gradients, # NOTE: _gradient_at also computes residuals (needed for costs) (+23 more)
+Cohesion: 0.09
+Nodes (26): _accumulate_gradients(), _apply_residual_mask(), BatchCtx, _fan_out_problem_idx(), _generate_candidates_velocity(), IKOptimizerLBFGS, Generate candidate configurations and compute their costs and gradients, # NOTE: _gradient_at also computes residuals (needed for costs) (+18 more)
 
 ### Community 87 - "Community 87"
-Cohesion: 0.03
-Nodes (117): concat6d(), expand6d(), Expands a 3x3 rotation matrix to a 6x6 matrix operator by filling     the upper, Concatenates two 3x3 rotation matrix as diagonal blocks of a 6x6 matrix., _build_contact_jacobians_dense(), _build_contact_jacobians_sparse(), _build_joint_jacobians_dense(), _build_joint_jacobians_sparse() (+109 more)
+Cohesion: 0.07
+Nodes (72): concat6d(), expand6d(), Expands a 3x3 rotation matrix to a 6x6 matrix operator by filling     the upper, Concatenates two 3x3 rotation matrix as diagonal blocks of a 6x6 matrix., _build_contact_jacobians_dense(), _build_contact_jacobians_sparse(), _build_joint_jacobians_dense(), _build_joint_jacobians_sparse() (+64 more)
 
 ### Community 88 - "Community 88"
 Cohesion: 0.06
 Nodes (61): IKObjectiveJointLimit, IKObjectivePosition, IKObjectiveRotation, _limit_jac_analytic(), _limit_jac_fill(), _limit_residuals(), _pos_jac_analytic(), _pos_jac_fill() (+53 more)
 
 ### Community 89 - "Community 89"
-Cohesion: 0.07
-Nodes (66): block_sparse_ATA_blockwise_3_4_inv_diagonal_2d(), block_sparse_ATA_diagonal_3_4_blocks_kernel_2d(), block_sparse_ATA_inv_diagonal_2d(), block_sparse_gemv(), block_sparse_matvec(), block_sparse_transpose_gemv(), block_sparse_transpose_matvec(), _blockwise_diag_3_4_gemv_kernel_2d() (+58 more)
+Cohesion: 0.08
+Nodes (63): block_sparse_ATA_blockwise_3_4_inv_diagonal_2d(), block_sparse_ATA_diagonal_3_4_blocks_kernel_2d(), block_sparse_ATA_inv_diagonal_2d(), block_sparse_gemv(), block_sparse_matvec(), block_sparse_transpose_gemv(), block_sparse_transpose_matvec(), _blockwise_diag_3_4_gemv_kernel_2d() (+55 more)
 
 ### Community 90 - "Community 90"
 Cohesion: 0.06
-Nodes (40): Controller, Controller, _masked_zero_1d(), Return True if this controller maintains internal state., Return True if compute() can be captured in a CUDA graph., Create and return a new state object, or None if stateless., Advance internal state after a compute step.          Args:             curre, Base class for actuator control laws.      Control laws compute actuator outpu (+32 more)
+Nodes (36): Controller, _masked_zero_1d(), Return True if this controller maintains internal state., Return True if compute() can be captured in a CUDA graph., Create and return a new state object, or None if stateless., Advance internal state after a compute step.          Args:             curre, Base class for actuator control laws.      Control laws compute actuator outpu, Base state for controllers.          Subclass this in concrete controllers tha (+28 more)
 
 ### Community 91 - "Community 91"
 Cohesion: 0.06
@@ -1084,8 +1085,8 @@ Cohesion: 0.09
 Nodes (52): array, float32, mat33, matrix, vec2, vec3, vec4, vector (+44 more)
 
 ### Community 93 - "Community 93"
-Cohesion: 0.02
-Nodes (85): CapsuleShape, ConeShape, CylinderShape, EllipsoidShape, EmptyShape, HFieldShape, MeshShape, PlaneShape (+77 more)
+Cohesion: 0.01
+Nodes (183): build_box_on_plane(), build_box_pendulum(), build_box_pendulum_vertical(), build_boxes_fourbar(), build_boxes_hinged(), build_boxes_nunchaku(), build_boxes_nunchaku_vertical(), build_cartpole() (+175 more)
 
 ### Community 94 - "Community 94"
 Cohesion: 0.11
@@ -1093,18 +1094,18 @@ Nodes (24): EdgeRedundancyResult, EdgeRedundancyResult, EdgeResolutionResult, fi
 
 ### Community 95 - "Community 95"
 Cohesion: 0.04
-Nodes (58): _add_free_distance_joint(), _build_dynamic_and_kinematic_single_joint_model(), eval_fk_mujoco_kernel(), origin_velocity_from_body_qd(), Recover body-origin velocity from COM-referenced `body_qd`., Evaluate the duplicated MuJoCo FK kernel directly., Test eval_fk with articulation indices parameter, Test eval_ik with articulation indices parameter (+50 more)
+Nodes (51): array, Orphan body-to-world fixed joints must FK to env-origin + spawn xform., Test that floating=False creates a fixed joint for the root body., Test that base joints (parent == -1) correctly use the import xform., Test deterministic custom-frequency ordering for producer/consumer dependencies., _add_free_distance_joint(), _build_dynamic_and_kinematic_single_joint_model(), eval_fk_mujoco_kernel() (+43 more)
 
 ### Community 96 - "Community 96"
-Cohesion: 0.17
+Cohesion: 0.16
 Nodes (41): Evaluate the linear velocity of an offset point on a rigid body.      In Newto, velocity_at_point(), array, array2d, int32, mat33, quat, spatial_vector (+33 more)
 
 ### Community 97 - "Community 97"
-Cohesion: 0.14
-Nodes (44): vec8f, Defines the broad-phase collision detection modes supported in Kamino., array, float32, int32, transformf, vec2i, vec3f (+36 more)
+Cohesion: 0.12
+Nodes (52): vec8f, GeometriesData, Defines the broad-phase collision detection modes supported in Kamino., array, float32, GeometriesModel, int32, transformf (+44 more)
 
 ### Community 98 - "Community 98"
-Cohesion: 0.07
+Cohesion: 0.08
 Nodes (24): _as_np(), _assert_vec_close(), TestViewerCameraOrbit, Camera, Set the orbit pivot without changing the current view direction., Place the orbit pivot along the current view direction.          Args:, Point the camera at a world-space target and set it as the pivot., Translate the camera and pivot by the same world-space offset [m]. (+16 more)
 
 ### Community 99 - "Community 99"
@@ -1112,16 +1113,16 @@ Cohesion: 0.07
 Nodes (44): add_guided_pulley(), add_kinematic_guided_pulley(), add_passive_guided_pulley(), add_pulley_rotation_dot(), add_visual_bar(), advance_time(), append_arc_xy(), append_segment() (+36 more)
 
 ### Community 100 - "Community 100"
-Cohesion: 0.08
-Nodes (38): ContactSorter, _clear_prev_claim_kernel(), _collect_broken_contacts_kernel(), _collect_new_contacts_kernel(), _float_flip(), _lower_bound_int64(), _match_contacts_kernel(), _MatchData (+30 more)
+Cohesion: 0.04
+Nodes (101): ContactSorter, _clear_prev_claim_kernel(), _collect_broken_contacts_kernel(), _collect_new_contacts_kernel(), ContactMatcher, _float_flip(), _lower_bound_int64(), _match_contacts_kernel() (+93 more)
 
 ### Community 101 - "Community 101"
-Cohesion: 0.03
-Nodes (67): Mesh, Detach and release the currently attached SDF.          Also drops the simplif, Represents a triangle mesh for collision and simulation.      This class encap, Content-based hash of the assigned texture.          Returns a stable integer, Compute a hash of the mesh data for use in caching.          The hash consider, Create a UV sphere mesh.          Args:             radius [m]: Sphere radius, Generate a proxy collision :class:`Mesh` from Gaussian positions.          Arg, Create a UV ellipsoid mesh.          Args:             rx [m]: Semi-axis leng (+59 more)
+Cohesion: 0.06
+Nodes (48): Create a UV ellipsoid mesh.          Args:             rx [m]: Semi-axis leng, Create a box mesh from half-extents.          Args:             hx [m]: Half-, Create a rectangular plane mesh.          The plane lies in the XY plane and f, Create a procedural terrain mesh from terrain blocks.          Args:, array, array2d, DeviceLike, int32 (+40 more)
 
 ### Community 102 - "Community 102"
 Cohesion: 0.05
-Nodes (66): llt_blocked_factorize(), llt_blocked_solve(), llt_blocked_solve_inplace(), Launches the blocked Cholesky factorization kernel for a block partitioned matri, Launches the blocked Cholesky solve kernel for a block partitioned matrix., Launches the blocked Cholesky in-place solve kernel for a block partitioned matr, llt_blocked_rcm_factorize(), llt_blocked_rcm_fused_permute_and_tp() (+58 more)
+Nodes (71): llt_blocked_factorize(), llt_blocked_solve(), llt_blocked_solve_inplace(), make_get_array_offset_ptr_func(), make_llt_blocked_factorize_kernel(), make_llt_blocked_solve_inplace_kernel(), make_llt_blocked_solve_kernel(), # TODO: Rename this to be clearer that this is the number of threads per TILE bl (+63 more)
 
 ### Community 103 - "Community 103"
 Cohesion: 0.06
@@ -1137,11 +1138,11 @@ Nodes (28): Test that cylinder geometries are properly imported as cylinders, no
 
 ### Community 106 - "Community 106"
 Cohesion: 0.12
-Nodes (52): ArgumentParser, _infer_longitudinal_axis_and_span(), _add_positive_hysteresis_loss_kernel(), _array_to_material(), _as_vec2_array(), _baked_compression(), _baked_min_bottom(), _cell_area_array() (+44 more)
+Nodes (50): ArgumentParser, _infer_longitudinal_axis_and_span(), _add_positive_hysteresis_loss_kernel(), _array_to_material(), _as_vec2_array(), _baked_compression(), _baked_min_bottom(), _cell_area_array() (+42 more)
 
 ### Community 107 - "Community 107"
-Cohesion: 0.13
-Nodes (36): make_write_joint_data(), Generates functions to store the joint state according to the     constraint an, Reset the body constraint wrenches of the selected worlds given an array of per-, Resets the joint constraint reaction forces/torques to zero.      This functio, Writes joint state into ``dst_q`` and ``dst_q_p`` from ``src_q``, and optionally, Reset the given `state_out` container to the initial state defined     in the m, Resets the state of all bodies in the selected worlds based on their provided st, Resets the state of all bodies in the selected worlds based on the state of thei (+28 more)
+Cohesion: 0.09
+Nodes (40): AssetPath, Attribute, Material, Any, PathLike, Shader, TestUsdMaterialColorSpaces, _coerce_color() (+32 more)
 
 ### Community 108 - "Community 108"
 Cohesion: 0.06
@@ -1149,19 +1150,19 @@ Nodes (28): _add_collision_mesh(), _add_rigid_body(), Shapes without SDF attribu
 
 ### Community 109 - "Community 109"
 Cohesion: 0.07
-Nodes (91): build_baked_midsole_geometry(), Raycast midsole mesh to build dense 2D thickness, top height, and bottom height, load_manifest(), Load and validate a v2 trial manifest.      Paths inside the manifest are reso, _load_ascii_stl(), _load_binary_stl(), _load_stl_mesh(), _acceptance_summary() (+83 more)
+Nodes (95): build_baked_midsole_geometry(), Raycast midsole mesh to build dense 2D thickness, top height, and bottom height, load_manifest(), Load and validate a v2 trial manifest.      Paths inside the manifest are reso, _acceptance_summary(), _autodiff_batches(), bake_indenter_maps(), _baked_quadrature() (+87 more)
 
 ### Community 110 - "Community 110"
-Cohesion: 0.05
-Nodes (54): _add_armature_regularization_preconditioned_sparse(), _add_armature_regularization_sparse(), _add_joint_armature_diagonal_regularization_dense(), _add_matrix_diag_product(), BlockSparseMatrixFreeDelassusOperator, _build_delassus_elementwise_dense(), _build_delassus_elementwise_sparse(), _compute_block_sparse_delassus_diagonal() (+46 more)
+Cohesion: 0.08
+Nodes (20): BlockSparseMatrixFreeDelassusOperator, _make_block_sparse_gemv_regularization_kernel(), _make_merge_preconditioner_kernel(), Runs Delassus pre-computation operations in preparation for linear systems solve, Solves the linear system D * x = v using the Cholesky factorization., Solves the linear system D * x = v in-place.\n         This modifies the input, A matrix-free Delassus operator for representing and operating on multiple indep, Updates any internal data structures that depend on the model, limits, contacts, (+12 more)
 
 ### Community 111 - "Community 111"
-Cohesion: 0.06
-Nodes (55): triangle_closest_point_barycentric(), Contacts, Control, State, array, array2d, Control, Model (+47 more)
+Cohesion: 0.05
+Nodes (72): triangle_closest_point_barycentric(), array, int32, Contacts, Control, State, array, array2d (+64 more)
 
 ### Community 112 - "Community 112"
 Cohesion: 0.06
-Nodes (44): integrate_euler_semi_implicit(), DataKamino, DualProblem, ndarray, PADMMData, DeviceLike, DualProblem, ModelKamino (+36 more)
+Nodes (42): integrate_euler_semi_implicit(), DataKamino, DualProblem, ndarray, PADMMData, DeviceLike, DualProblem, ModelKamino (+34 more)
 
 ### Community 113 - "Community 113"
 Cohesion: 0.15
@@ -1172,36 +1173,36 @@ Cohesion: 0.05
 Nodes (49): _build_descendant_free_with_rotated_parent(), _build_free_body_with_com(), _build_translated_prismatic_chain(), _diagonal_inertia(), _floating_base_pendulum_mass_matrix(), _kinetic_energy_from_body_twists(), Return a diagonal inertia tensor in the body COM frame., Analytical mass matrix for a free base with one revolute pendulum child. (+41 more)
 
 ### Community 115 - "Community 115"
-Cohesion: 0.08
-Nodes (28): Model, State, Initialize the SensorFrameTransform.          Args:             model: The mo, Update sensor measurements based on current state.          Reads ``state.body, Sensor that measures transforms of shapes/sites relative to reference sites., SensorFrameTransform, Test error when reference index is not a site., Test error when reference indices don't match shape indices. (+20 more)
+Cohesion: 0.09
+Nodes (26): State, Update sensor measurements based on current state.          Reads ``state.body, Sensor that measures transforms of shapes/sites relative to reference sites., SensorFrameTransform, Test error when reference index is not a site., Test error when reference indices don't match shape indices., Test measuring site relative to another site on same body., Test SensorFrameTransform functionality. (+18 more)
 
 ### Community 116 - "Community 116"
 Cohesion: 0.08
-Nodes (26): Control, Model, State, ArticulationView, Alias for `link_names`., Alias for `link_shapes`., Alias for `link_template_labels`., Get an attribute from the source (Model, State, or Control).          Args: (+18 more)
+Nodes (27): Control, Model, State, ArticulationView, Alias for `link_names`., Alias for `link_shapes`., Alias for `link_template_labels`., Get an attribute from the source (Model, State, or Control).          Args: (+19 more)
 
 ### Community 117 - "Community 117"
-Cohesion: 0.08
-Nodes (25): ndarray, vec3, check_aabb_overlap_host(), find_overlapping_pairs_np(), Test SAP broad phase with multiple worlds using segmented sort., Test SAP broad phase with multiple worlds using tile sort., Test SAP broad phase with ShapeFlags filtering.          This test verifies th, Test SAP broad phase with ShapeFlags using segmented sort. (+17 more)
+Cohesion: 0.09
+Nodes (26): ndarray, vec3, check_aabb_overlap_host(), find_overlapping_pairs_np(), Test SAP broad phase with multiple worlds using segmented sort., Test SAP broad phase with multiple worlds using tile sort., Test SAP broad phase with ShapeFlags filtering.          This test verifies th, Test SAP broad phase with ShapeFlags using segmented sort. (+18 more)
 
 ### Community 118 - "Community 118"
 Cohesion: 0.02
 Nodes (131): buffer_mult_contact, buffer_mult_iso, contact_evaluation_rate_hz, contact_mean_dt_s, contact_reduction_enabled, contact_sample_count, equal_weight_objective, fixture_mujoco_nconmax (+123 more)
 
 ### Community 119 - "Community 119"
-Cohesion: 0.06
-Nodes (40): dispatch(), gh(), main(), Poll a workflow run until it reaches ``completed`` status.      Polls every :d, Entry point: parse arguments, dispatch, poll, and write outputs., Run a ``gh`` CLI command and return the completed process.      If the command, Write a key-value pair to the GitHub Actions step-output file.      Args:, Dispatch a workflow via the GitHub REST API.      Args:         repo: Reposit (+32 more)
+Cohesion: 0.08
+Nodes (29): Any, array, array2d, Device, ndarray, _decode_attrs(), _elu_kernel(), _exec_lstm() (+21 more)
 
 ### Community 120 - "Community 120"
-Cohesion: 0.08
-Nodes (41): boltzmann(), leaky_max(), leaky_min(), Compute a numerically stable, differentiable approximation of `min(a, b)`., Compute the elementwise minimum of two 3D vectors.      Args:         a: The, Compute the elementwise maximum of two 3D vectors.      Args:         a: The, Compute the elementwise "leaky" minimum of two 3D vectors.      This uses `lea, Compute the elementwise "leaky" maximum of two 3D vectors.      This uses `lea (+33 more)
+Cohesion: 0.07
+Nodes (50): boltzmann(), leaky_max(), leaky_min(), Compute a numerically stable, differentiable approximation of `min(a, b)`., Compute the elementwise minimum of two 3D vectors.      Args:         a: The, Compute the elementwise maximum of two 3D vectors.      Args:         a: The, Compute the elementwise "leaky" minimum of two 3D vectors.      This uses `lea, Compute the elementwise "leaky" maximum of two 3D vectors.      This uses `lea (+42 more)
 
 ### Community 121 - "Community 121"
-Cohesion: 0.05
-Nodes (49): build_bvh_particle(), Build the particle BVH stored on *model*.      Allocates :attr:`~newton.Model., Refit the particle BVH stored on *model* for the current *state*.      Require, refit_bvh_particle(), ViewerGL, array, array2d, array3d (+41 more)
+Cohesion: 0.04
+Nodes (62): build_bvh_particle(), build_bvh_shape(), _compute_particle_bvh_bounds_launch(), _compute_shape_bvh_bounds_launch(), _compute_shape_world_transforms_launch(), Launch the shape BVH bounds kernel into the provided ``lowers``/``uppers``/``gro, Populate ``model.bvh_shape_world_transforms`` from body poses in *state*., Build the shape BVH stored on *model*.      Allocates :attr:`~newton.Model.bvh (+54 more)
 
 ### Community 122 - "Community 122"
-Cohesion: 0.09
-Nodes (54): quat_decompose(), Decompose a quaternion into wrapped XYZ Euler coordinates.      This wrapper c, eval_articulation_fk(), array, array2d, array3d, int32, Model (+46 more)
+Cohesion: 0.10
+Nodes (51): eval_articulation_fk(), array, array2d, array3d, int32, Model, quat, spatial_matrix (+43 more)
 
 ### Community 123 - "Community 123"
 Cohesion: 0.09
@@ -1228,24 +1229,24 @@ Cohesion: 0.05
 Nodes (30): SolverMuJoCo, Verify ref offset in coordinate conversion.          With a hinge joint at ref, Tests for qpos0, qpos_spring, ref/springref coordinate conversion, and FK correc, Verify free joint qpos0 contains body position and identity quaternion., Verify hinge joint qpos0 equals ref in radians.          A hinge with ref=90 d, Verify slide joint qpos0 equals ref value.          A slide joint with ref=0.1, Verify ball joint qpos0 is an identity quaternion.          A ball joint shoul, Verify hinge joint without ref has qpos0 of zero. (+22 more)
 
 ### Community 129 - "Community 129"
-Cohesion: 0.09
-Nodes (41): build_cycle_window_trace(), CycleWindowTrace, _frame_from_config(), infer_cycle_column(), _infer_cycle_time_column(), _interp_cycle(), Build an averaged trace for a raw CSV cycle window., Averaged trace generated from a raw cycle window. (+33 more)
+Cohesion: 0.13
+Nodes (28): build_cycle_window_trace(), CycleWindowTrace, _frame_from_config(), infer_cycle_column(), _infer_cycle_time_column(), _interp_cycle(), Build an averaged trace for a raw CSV cycle window., Averaged trace generated from a raw cycle window. (+20 more)
 
 ### Community 130 - "Community 130"
-Cohesion: 0.07
-Nodes (40): IKJacobianType, Specifies the backend used for Jacobian computation in inverse kinematics., Build a specialized IKOptimizerLBFGS subclass with tiled kernels for given dimen, _accept_reject(), BatchCtx, IKOptimizerLM, Allocate any per-objective buffers that must live on ``self.device``., Allocate per-objective Warp streams and sync events. (+32 more)
+Cohesion: 0.04
+Nodes (41): DeviceLike, ModelBuilderKamino, TestCase, Test the collision detector with the unified pipeline         on multiple world, Test making default collision detector config., Test making collision detector config with string arguments., Test the collision detector with the primitive pipeline         on multiple wor, TestCollisionDetectorConfig (+33 more)
 
 ### Community 131 - "Community 131"
 Cohesion: 0.06
-Nodes (83): _accumulate_subgrid_linearity_error_kernel(), _apply_subgrid_linearity_kernel(), apply_subgrid_sdf_scale(), _build_coarse_sdf_from_mesh_kernel(), build_sparse_sdf_from_mesh(), _CellLookup, _check_subgrid_occupied_kernel(), compute_isomesh_from_texture_sdf() (+75 more)
+Nodes (78): _accumulate_subgrid_linearity_error_kernel(), _apply_subgrid_linearity_kernel(), apply_subgrid_sdf_scale(), _build_coarse_sdf_from_mesh_kernel(), build_sparse_sdf_from_mesh(), _CellLookup, _check_subgrid_occupied_kernel(), _count_isomesh_faces_texture_kernel() (+70 more)
 
 ### Community 132 - "Community 132"
 Cohesion: 0.04
 Nodes (52): bounds_m, extents_m, path, rotation_rpy_deg, triangles, vertices, watertight, winding_consistent (+44 more)
 
 ### Community 133 - "Community 133"
-Cohesion: 0.09
-Nodes (37): _colors_from_compression(), Example, _line_segments_from_neighbors(), FoundationMaterial, Shared vertical foundation material parameters., Deprecated alias for ``pasternak_stiffness_n_per_m``., Raycast-derived spring grid over the midsole footprint., SpringSurfaceGrid (+29 more)
+Cohesion: 0.13
+Nodes (31): FoundationMaterial, Shared vertical foundation material parameters (8-parameter model).      Param, Raycast-derived spring grid over the midsole footprint., SpringSurfaceGrid, Resolved v2 Digital Instron manifest., TrialManifest, _load_conditioned_mesh(), _load_trial_impact_trace() (+23 more)
 
 ### Community 134 - "Community 134"
 Cohesion: 0.05
@@ -1257,7 +1258,7 @@ Nodes (44): _build_simple_scene(), _collide_once(), Identity match must hold acr
 
 ### Community 136 - "Community 136"
 Cohesion: 0.08
-Nodes (22): _get_relationship_targets(), parse_actuator_prim(), Get relationship target paths from a USD prim., Parse a USD Actuator prim into a composed actuator specification.      Each de, Any, Exercise the ``NewtonActuator`` USD schema and     :func:`parse_actuator_prim`., Author ``newton:<name>`` with an :class:`Sdf.ValueTypeName` inferred         fr, Build a minimal in-memory stage with one ``NewtonActuator`` prim.          Bui (+14 more)
+Nodes (22): _get_relationship_targets(), parse_actuator_prim(), Get relationship target paths from a USD prim., Parse a USD Actuator prim into a composed actuator specification.      Each de, Any, _build_lstm_onnx(), Build an ONNX LSTM model with random weights, layout=0.      Inputs : ``input`, Exercise the ``NewtonActuator`` USD schema and     :func:`parse_actuator_prim`. (+14 more)
 
 ### Community 137 - "Community 137"
 Cohesion: 0.10
@@ -1265,15 +1266,15 @@ Nodes (12): assign_to_warp_int32_array(), _check_int32_range(), Convert ``data``
 
 ### Community 138 - "Community 138"
 Cohesion: 0.08
-Nodes (26): array, array2d, float32, int32, quat, transform, vec3, ControlStrategy (+18 more)
+Nodes (19): backfill_model_from_native(), compare_mjdata_field(), ControlStrategy, _disable_collisions(), Copy computed model fields from native MuJoCo to Newton's mjw_model.      This, Base class for control generation strategies., Backfill computed model fields from native and re-run kinematics/RNE., Initialize with the ctrl arrays that will be filled.          Args: (+11 more)
 
 ### Community 139 - "Community 139"
-Cohesion: 0.07
-Nodes (32): IntEnum, MjModel, CtrlSource, CtrlType, _mesh_scale_key(), Control source for MuJoCo actuators.          Determines where an actuator get, Control type for MuJoCo actuators.          For :attr:`~newton.solvers.SolverM, Transmission type values for MuJoCo actuators. (+24 more)
+Cohesion: 0.14
+Nodes (15): _compute_kim_pressures(), _kim_layered_pressure_pa(), _kim_pressure_pa(), KimHyperfoamMaterial, load_calibrated_foundation_material(), preferred_calibrated_hydro_shoe_stroke_m(), Load a Digital Instron v2 material artifact for the calibrated contact law., Return the one-body shoe stroke suggested by a two-sided calibration artifact. (+7 more)
 
 ### Community 140 - "Community 140"
-Cohesion: 0.08
-Nodes (15): ParallelJunitTestResult, Write a JUnit XML from our report data      The report file is needed for GitL, write_junit_results(), _coverage(), initialize_test_process(), _iter_class_suites(), _iter_module_suites(), _iter_test_cases() (+7 more)
+Cohesion: 0.11
+Nodes (14): Write a JUnit XML from our report data      The report file is needed for GitL, write_junit_results(), _coverage(), initialize_test_process(), _iter_class_suites(), _iter_module_suites(), _iter_test_cases(), main() (+6 more)
 
 ### Community 141 - "Community 141"
 Cohesion: 0.07
@@ -1281,15 +1282,15 @@ Nodes (25): Mesh, Test parsing MJCF file with hfield asset., Test parsing MJCF w
 
 ### Community 142 - "Community 142"
 Cohesion: 0.05
-Nodes (32): DenseRectangularMultiLinearInfo, DenseSquareMultiLinearInfo, make_dtype_tolerance(), Constructs and allocates the data of the rectangular multi-linear system info on, Assigns the data of the square multi-linear system info from externally allocate, Checks if the provided matrix data array is compatible with the specified info s, Checks if the provided rhs vector data array is compatible with the specified in, Checks if the provided input vector data array is compatible with the specified (+24 more)
+Nodes (37): DenseRectangularMultiLinearInfo, DenseSquareMultiLinearInfo, make_dtype_tolerance(), Constructs and allocates the data of the rectangular multi-linear system info on, Assigns the data of the square multi-linear system info from externally allocate, Checks if the provided matrix data array is compatible with the specified info s, Checks if the provided rhs vector data array is compatible with the specified in, Checks if the provided input vector data array is compatible with the specified (+29 more)
 
 ### Community 143 - "Community 143"
 Cohesion: 0.03
 Nodes (96): ModelBuilder, _build_box_on_heightfield(), _build_heightfield_terrain(), _build_mixed_scene(), _build_multi_world_heightfield(), _build_sphere_on_heightfield(), _build_sphere_on_mesh_box(), _finalize_and_get_kamino() (+88 more)
 
 ### Community 144 - "Community 144"
-Cohesion: 0.04
-Nodes (116): AssetPath, Attribute, Load a Mesh from a USD prim with the ``UsdGeom.Mesh`` schema.          This is, Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema., Load Gaussian splat data from a USD prim.          Reads positions from attrib, Material, Any, Axis (+108 more)
+Cohesion: 0.05
+Nodes (82): Load a Mesh from a USD prim with the ``UsdGeom.Mesh`` schema.          This is, Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema., Load Gaussian splat data from a USD prim.          Reads positions from attrib, Axis, AxisType, CustomAttribute, Gaussian, mat44 (+74 more)
 
 ### Community 145 - "Community 145"
 Cohesion: 0.07
@@ -1300,12 +1301,12 @@ Cohesion: 0.06
 Nodes (21): CPU and Warp backends must agree for each joint-limit ``solref`` branch., ``jnt_solref`` for joint limits must be scaled by ``dof_invweight0 * (1 - dmax)`, Changing inertia and notifying the solver must recompute the ``invweight0`` fact, MJCF joints without ``solreflimit`` must keep the sentinel so ``limit_ke`` updat, Once imported MJCF default gains are edited, later default-valued gains stay for, Authored MJCF ``solreflimit`` still bypasses Newton force-space gain scaling., Authored MJCF ``solreflimit="0 0"`` must not be confused with the sentinel., Force-space joints get the scaled ``jnt_solref`` in ``MjModel`` but no ``solrefl (+13 more)
 
 ### Community 147 - "Community 147"
-Cohesion: 0.05
-Nodes (82): JointCorrectionMode, compute_and_write_joint_implicit_dynamics(), compute_joint_pose_and_relative_motion(), correct_joint_coord_cartesian(), correct_joint_coord_cylindrical(), correct_joint_coord_free(), correct_joint_coord_gimbal(), correct_joint_coord_prismatic() (+74 more)
+Cohesion: 0.40
+Nodes (5): _make_typed_joint_transform_to_coords_func(), Factory returning a function extracting joint coords from joint transform, for a, get_joint_coords_mapping_function(), Retrieves the function to map joint relative poses to     joint coordinates bas, JointDoFType
 
 ### Community 148 - "Community 148"
-Cohesion: 0.06
-Nodes (32): _advance_animation_frame(), AnimationJointReference, AnimationJointReferenceData, _extract_animation_references(), A kernel to advance the animation frame index for each world     based on time, # TODO: Make the 2D arrays as flattened 1D arrays to handle arbitrary layouts, A kernel to extract the active joint-space references from the animation data., A module for managing and operating joint-space references from an animation. (+24 more)
+Cohesion: 0.07
+Nodes (27): _advance_animation_frame(), AnimationJointReference, _extract_animation_references(), A kernel to advance the animation frame index for each world     based on time, A kernel to extract the active joint-space references from the animation data., A module for managing and operating joint-space references from an animation., Initialize the animation joint reference interface.          Args:, The device used for allocations and execution. (+19 more)
 
 ### Community 149 - "Community 149"
 Cohesion: 0.13
@@ -1313,7 +1314,7 @@ Nodes (29): feature_type type:         TRI_CONTACT_FEATURE_VERTEX_A         TRI_
 
 ### Community 150 - "Community 150"
 Cohesion: 0.03
-Nodes (65): ModelBuilderKamino, get_asset(), get_asset_directory(), get_kamino_assets_directory(), get_kamino_basics_asset(), get_kamino_testing_asset(), get_source_directory(), Test importing the basic boxes_fourbar model from a USD file (+57 more)
+Nodes (40): get_asset(), get_asset_directory(), get_kamino_assets_directory(), get_kamino_testing_asset(), get_source_directory(), Test importing a passive prismatic joint with limits from a USD file, Test importing a passive prismatic joint with limits from a USD file, Test importing a actuated prismatic joint with limits from a USD file (+32 more)
 
 ### Community 151 - "Community 151"
 Cohesion: 0.09
@@ -1324,44 +1325,44 @@ Cohesion: 0.11
 Nodes (39): DiscreteField, build_rigidity_operator(), Collider, collider_gradient_field(), collider_is_dynamic(), collider_volumes_kernel(), collision_sdf(), fill_collider_rigidity_matrices() (+31 more)
 
 ### Community 153 - "Community 153"
-Cohesion: 0.06
-Nodes (48): make_homogeneous_builder(), Utility factory function to create a multi-world builder with identical worlds r, print_progress_bar(), Display a progress bar with ETA and estimated FPS.      Args:         iterati, array, Config, ContactsKamino, ControlKamino (+40 more)
+Cohesion: 0.05
+Nodes (73): BlockSparseLinearOperators, print_progress_bar(), Display a progress bar with ETA and estimated FPS.      Args:         iterati, ColMajorSparseConstraintJacobians, DenseSystemJacobians, DenseSystemJacobiansData, Container to hold time-varying Jacobians of the system., Container to hold time-varying Jacobians of the system. (+65 more)
 
 ### Community 154 - "Community 154"
-Cohesion: 0.09
-Nodes (20): ndarray, classify_points_by_face(), compute_distance_to_cube(), create_unit_cube_mesh(), Classify points by which cube face they are closest to.      Args:         po, Test remesh_mesh() with method='poisson' using Mesh-based API., Test the PointCloudExtractor class., Test that extracting a point cloud from a cube produces many points. (+12 more)
+Cohesion: 0.08
+Nodes (28): PointCloudExtractor, Extract dense point clouds with normals from triangle meshes.      Uses multi-, ndarray, classify_points_by_face(), compute_distance_to_cube(), create_unit_cube_mesh(), Classify points by which cube face they are closest to.      Args:         po, Test the unified remeshing API in utils.py with method='poisson'. (+20 more)
 
 ### Community 155 - "Community 155"
-Cohesion: 0.09
-Nodes (18): Box with an offset larger than its smallest half-extent., Box with an offset much larger than the shape itself., Sphere with a large offset — surface should be roughly spherical., Capsule with offset exceeding its radius., Cylinder with offset exceeding its radius., Plane should return None (not supported)., Heightfield should return None (not supported)., Zero offset should produce a mesh approximating the original surface. (+10 more)
+Cohesion: 0.06
+Nodes (24): flag_to_int(), Converts a flag (Warp constant) to an integer., array, Devicelike, Finalize the builder and create a concrete :class:`~newton.Model` for simulation, Test if two collision groups should interact.          This matches the exact, Test if two entities should collide based on world indices and collision groups., Identifies and stores all potential shape contact pairs for collision detection. (+16 more)
 
 ### Community 156 - "Community 156"
 Cohesion: 0.09
 Nodes (17): Compute and return the convex hull of this mesh.          Args:             r, Compute the convex hull of a set of 3D points and return the vertices and faces, remesh_convex_hull(), ndarray, TestCase, _assert_mesh_shape(), _has_outward_winding(), Degeneracy handling added by the diff. (+9 more)
 
 ### Community 157 - "Community 157"
-Cohesion: 0.13
-Nodes (49): vec2f, array, float32, int32, vec3f, _compute_complementarity_residuals(), make_collect_solver_info_kernel(), make_collect_solver_info_kernel_sparse() (+41 more)
+Cohesion: 0.08
+Nodes (75): build_pair_key2(), Build a 63-bit key from two indices with the following layout:     - The highes, uint32, array, float32, int32, int64, mat33f (+67 more)
 
 ### Community 158 - "Community 158"
 Cohesion: 0.05
 Nodes (41): Path, Multiple threads downloading the same asset do not corrupt the cache., Within TTL, return cached path without calling git ls-remote., When git ls-remote fails and cache exists, return cached version., When git ls-remote fails and no cache exists, raise RuntimeError., Downloading by tag name resolves correctly., Rename succeeds when destination does not exist., Rename is a no-op when destination already exists. (+33 more)
 
 ### Community 159 - "Community 159"
-Cohesion: 0.17
-Nodes (11): compute_ee_delta(), Example, Compute the Jacobian of the end effector's velocity related to joint_q, scale_body_transforms(), scale_positions(), array, Model, spatial_vector (+3 more)
+Cohesion: 0.09
+Nodes (19): compute_ee_delta(), Example, Compute the Jacobian of the end effector's velocity related to joint_q, scale_body_transforms(), scale_positions(), apply_rotation(), Example, initialize_rotation() (+11 more)
 
 ### Community 160 - "Community 160"
 Cohesion: 0.05
-Nodes (39): cache_dir, fit, displacement_shape_bins, displacement_shape_weight, initial_damping_pa_s, initial_damping_power, initial_lock_strain, initial_ogden_alpha (+31 more)
+Nodes (41): cache_dir, fit, displacement_shape_bins, displacement_shape_weight, initial_damping_pa_s, initial_damping_power, initial_lock_strain, initial_ogden2_alpha (+33 more)
 
 ### Community 161 - "Community 161"
 Cohesion: 0.05
 Nodes (41): Verify and correct inertia values similar to MuJoCo's balanceinertia compiler se, verify_and_correct_inertia(), Test that triangle inequality violation is reported but not corrected when balan, Test that valid inertia is not corrected., Test that fast inertia validation works in ModelBuilder.finalize()., Test cases for inertia verification and correction., Test that detailed inertia validation works in ModelBuilder.finalize()., Test that negative mass is corrected to zero. (+33 more)
 
 ### Community 162 - "Community 162"
-Cohesion: 0.05
-Nodes (67): Extract triangle shape data from a mesh.      This function retrieves a specif, Create a mesh-plane collision kernel.      Args:         writer_func: Contact, closest_pt_point_bary_triangle(), compute_block_counts_from_weights(), compute_mesh_mesh_block_offsets_scan(), compute_mesh_mesh_edge_counts(), create_narrow_phase_process_mesh_mesh_contacts_kernel(), _create_sdf_contact_funcs() (+59 more)
+Cohesion: 0.15
+Nodes (25): Create a mesh-plane collision kernel.      Args:         writer_func: Contact, create_narrow_phase_process_mesh_mesh_contacts_kernel(), _create_sdf_contact_funcs(), Generate SDF contact functions with heightfield branches eliminated at compile t, array, float32, GenericShapeData, transform (+17 more)
 
 ### Community 163 - "Community 163"
 Cohesion: 0.06
@@ -1376,20 +1377,20 @@ Cohesion: 0.07
 Nodes (34): array, uint32, Example, Resolve the joint-position-target array across pre/post #2556 layouts.      On, _target_q(), apply_random_control(), FastAllegro, _FastBenchmark (+26 more)
 
 ### Community 166 - "Community 166"
-Cohesion: 0.17
-Nodes (16): BvhEdge, Queries the BVH for overlapping AABBs.          For each query AABB defined by, Queries the BVH for intersections between line segments and AABBs.          Th, BVH structure specialized for edge primitives (line segments).      This class, Computes AABBs for all edges based on current vertex positions and edge indices., Builds the edge BVH from scratch using the given vertex positions and edge indic, Rebuilds the edge BVH using the current vertex positions and edge indices., Queries the BVH to find edges that are within a maximum distance from a set of p (+8 more)
+Cohesion: 0.11
+Nodes (26): BvhAabb, BvhEdge, BvhTri, Refits the existing BVH to updated leaf bounds.          This is the most effi, Queries the BVH for overlapping AABBs.          For each query AABB defined by, Queries the BVH for intersections between line segments and AABBs.          Th, A wrapper class for Warp's BVH (Bounding Volume Hierarchy) structure.      Thi, BVH structure specialized for edge primitives (line segments).      This class (+18 more)
 
 ### Community 167 - "Community 167"
 Cohesion: 0.07
 Nodes (24): _generate_random_control_inputs(), RandomJointController, RandomJointControllerData, Provides a simple interface for generating random     control inputs for testin, Instantiates a new `RandomJointController` and allocates         on-device data, The device used for allocations and execution., The seed used for random number generation., Sets the seed used for random number generation. (+16 more)
 
 ### Community 168 - "Community 168"
-Cohesion: 0.21
-Nodes (33): fill_line_vertex_data(), fill_vertex_data(), LineVertex, MeshGL, Encapsulates mesh data and OpenGL buffers for a shape., Update VBO with simple instance transformation matrices., Update VBO with simple instance transformation matrices., RenderVertex (+25 more)
+Cohesion: 0.22
+Nodes (31): fill_line_vertex_data(), fill_vertex_data(), LineVertex, Update VBO with simple instance transformation matrices., Update VBO with simple instance transformation matrices., RenderVertex, update_vbo_transforms(), update_vbo_transforms_from_points() (+23 more)
 
 ### Community 169 - "Community 169"
-Cohesion: 0.11
-Nodes (27): get_max_constraints_per_world(), make_unilateral_constraints_info(), Returns the maximum number of constraints for each world in the model.      Ar, Updates the active constraints info for the given model and current data., Unpacks the constraint reactions and velocities into respective data containers., Constructs constraints entries in the ModelKaminoInfo member of a model., unpack_constraint_solutions(), _unpack_contact_constraint_solutions() (+19 more)
+Cohesion: 0.30
+Nodes (8): DataKamino, Tests the population of model info with constraint sizes and offsets for a homog, Tests the population of model info with constraint sizes and offsets for a heter, Tests the population of model info with constraint sizes and offsets for a singl, TestKinematicsConstraints, print_data(), print_data_info(), print_model_constraint_info()
 
 ### Community 170 - "Community 170"
 Cohesion: 0.09
@@ -1405,27 +1406,27 @@ Nodes (21): advance_task_kernel(), _build_mesh_with_sdf(), _combine_meshes(), _c
 
 ### Community 173 - "Community 173"
 Cohesion: 0.08
-Nodes (26): add_broad_phase_arg(), add_kamino_contacts_arg(), add_max_worlds_arg(), add_mujoco_contacts_arg(), add_world_count_arg(), compute_world_offsets(), create_collision_pipeline(), _enable_example_deprecation_warnings() (+18 more)
+Nodes (28): add_broad_phase_arg(), add_kamino_contacts_arg(), add_max_worlds_arg(), add_mujoco_contacts_arg(), add_world_count_arg(), compute_world_offsets(), create_collision_pipeline(), _enable_example_deprecation_warnings() (+20 more)
 
 ### Community 174 - "Community 174"
-Cohesion: 0.05
-Nodes (48): GraphColoringAlgorithm, array, array2d, ndarray, CustomAttribute, Define a custom per-entity attribute to be added to the Model.         See :ref, Get custom attributes by frequency.         This is useful for processing custo, Represents a custom attribute definition for the ModelBuilder.         This is (+40 more)
+Cohesion: 0.09
+Nodes (35): GraphColoringAlgorithm, array, array2d, ndarray, Runs coloring algorithm to generate coloring information.          This popula, _canonicalize_edges_np(), color_graph(), color_rigid_bodies() (+27 more)
 
 ### Community 175 - "Community 175"
-Cohesion: 0.08
-Nodes (26): array, int32, mat33f, ModelBuilder, ndarray, vec3f, build_test_system(), _compute_contact_frame_xnorm() (+18 more)
+Cohesion: 0.17
+Nodes (9): array, mat33f, vec3f, _compute_contact_frame_xnorm(), _compute_contact_frame_znorm(), _compute_contact_mode(), TestGeometryContactFrames, TestGeometryContactMode (+1 more)
 
 ### Community 176 - "Community 176"
-Cohesion: 0.06
-Nodes (46): mat44d, Axis, float32, int32, State, uint32, vec2, vec4 (+38 more)
+Cohesion: 0.04
+Nodes (65): mat44d, Any, array, Axis, float32, int32, Model, ndarray (+57 more)
 
 ### Community 177 - "Community 177"
-Cohesion: 0.11
-Nodes (36): Any, array, array2d, float32, int32, mat33, spatial_vector, transform (+28 more)
+Cohesion: 0.08
+Nodes (42): Any, array, array2d, float32, int32, mat33, spatial_vector, transform (+34 more)
 
 ### Community 178 - "Community 178"
-Cohesion: 0.03
-Nodes (42): compute_joints_data(), Computes the states of the joints based on the current body states.      The c, DataKamino, DeviceLike, array, ModelKamino, ndarray, setup_tests() (+34 more)
+Cohesion: 0.02
+Nodes (51): DeviceLike, ModelKamino, ndarray, setup_tests(), TestContext, TestCoreJoints, TestMaterials, tril_index() (+43 more)
 
 ### Community 179 - "Community 179"
 Cohesion: 0.09
@@ -1441,23 +1442,23 @@ Nodes (13): Example, _spawn_particles(), ModelBuilder, array, array2d, vec3, _bu
 
 ### Community 182 - "Community 182"
 Cohesion: 0.06
-Nodes (67): array, array2d, array3d, array, array2d, int32, mat22, mat33 (+59 more)
+Nodes (68): array, array2d, array3d, array, array2d, int32, mat22, mat33 (+60 more)
 
 ### Community 183 - "Community 183"
 Cohesion: 0.06
 Nodes (18): Test the conversion operations between newton.State and kamino.StateKamino., Test the conversions between newton.Control and kamino.ControlKamino., Test the conversion operations between newton.Model and kamino.ModelKamino, Test the conversion operations between newton.Model and kamino.ModelKamino, Test the conversion operations between newton.Model and kamino.ModelKamino, Test the conversion operations between newton.Model and kamino.ModelKamino, Test the conversion operations between newton.Model and kamino.ModelKamino, Test that Newton→Kamino conversion succeeds for a revolute joint         with a (+10 more)
 
 ### Community 184 - "Community 184"
-Cohesion: 0.05
-Nodes (37): ContactAggregation, High-level interface for aggregating Kamino contact data for RL.      This cla, Net force per body [num_worlds, max_bodies, 3], Contact flags per body [num_worlds, max_bodies], Static contact flag per body [num_worlds, max_bodies], Net force per geom [num_worlds, max_geoms, 3], Contact flags per geom [num_worlds, max_geoms], Per-world body-pair contact flag [num_worlds]. (+29 more)
+Cohesion: 0.10
+Nodes (28): _build_cube_cube_scene(), _build_cube_sphere_scene(), _compute_force_weighted_anchor(), _compute_net_force(), _compute_net_moment(), _compute_total_friction_capacity(), _extract_contact_forces(), _make_pipelines() (+20 more)
 
 ### Community 185 - "Community 185"
-Cohesion: 0.04
-Nodes (38): _normalize_texture_input(), Per-vertex canonical IDs that fold geometrically coincident vertices         to, Unique edge vertex pairs, shape (N, 2), with geometric deduplication., Return shared per-slot edge topology and per-triangle face normals.          B, Compute per-pair dihedral diagnostics for two adjacent triangles.          Inp, Return unique edge vertex pairs, dropping near-coplanar internal edges., Per-edge dihedral angle, averaged adjacent-face normal, and area sum., ``True`` if every geometric edge is shared by exactly two triangles. (+30 more)
+Cohesion: 0.02
+Nodes (80): Warp kernel for parallel inertia validation and correction.      This kernel p, validate_and_correct_inertia_kernel(), Data, Gaussian, Heightfield, _normalize_texture_input(), Per-vertex canonical IDs that fold geometrically coincident vertices         to, Unique edge vertex pairs, shape (N, 2), with geometric deduplication. (+72 more)
 
 ### Community 186 - "Community 186"
-Cohesion: 0.14
-Nodes (7): Example, Create native viser GUI controls when running with ViewerViser., Pull current values from viser controls into example state., Build a hydroelastic scene and fetch immutable pressure/contact data., Render slice as an in-place updated point cloud on ViewerViser., Mesh, ndarray
+Cohesion: 0.11
+Nodes (10): Example, Create native viser GUI controls when running with ViewerViser., Pull current values from viser controls into example state., Build a hydroelastic scene and fetch immutable pressure/contact data., Render slice as an in-place updated point cloud on ViewerViser., Returns the number of elements contained in each sparse block., Mesh, ndarray (+2 more)
 
 ### Community 187 - "Community 187"
 Cohesion: 0.09
@@ -1472,56 +1473,56 @@ Cohesion: 0.15
 Nodes (18): ClothSim, compute_current_angles(), Test cloth collision using collision pipeline., Test cloth-body collision using collision pipeline., Compute current angles consistent with both add_edges() in model.py and bending, test_cloth_bending(), test_cloth_bending_consistent_angle_computation(), test_cloth_bending_non_zero_rest_angle_bending() (+10 more)
 
 ### Community 190 - "Community 190"
-Cohesion: 0.08
-Nodes (24): get_basics_usd_assets_path(), Returns the path to the USD assets for basic models., array, DeviceLike, float32, Simulator, CartpoleActions, CartpoleStates (+16 more)
+Cohesion: 0.09
+Nodes (21): get_basics_usd_assets_path(), Returns the path to the USD assets for basic models., array, DeviceLike, float32, Simulator, CartpoleActions, CartpoleStates (+13 more)
 
 ### Community 191 - "Community 191"
-Cohesion: 0.06
-Nodes (63): make_contact_sort_key(), Build a 64-bit sort key for deterministic contact ordering.      Layout (bit 6, export_and_reduce_contact(), Export contact to buffer and register in hashtable for reduction., GlobalContactReducer, int64, array, uint32 (+55 more)
+Cohesion: 0.05
+Nodes (81): export_and_reduce_contact(), GlobalContactReducer, Export contact to buffer and register in hashtable for reduction., Global contact reduction using hashtable-based tracking.      This class manag, Clear all contacts and reset the reducer (full clear)., Clear only the active entries (efficient for sparse usage).          Uses two, Get a GlobalContactReducerData struct for passing to kernels.          Returns, ContactWriterData (+73 more)
 
 ### Community 192 - "Community 192"
 Cohesion: 0.11
 Nodes (22): _apply_warp_config(), create_parser(), init(), Create a base argument parser with common parameters for Newton examples., Apply ``--warp-config`` overrides to :obj:`warp.config`.      Each entry in ``, Initialize Newton example components from parsed arguments.      Args:, A missing '=' should produce a clear error showing the bad entry., The base parser should include --warp-config. (+14 more)
 
 ### Community 193 - "Bipedal RL Environment"
-Cohesion: 0.09
-Nodes (18): DeviceLike, _build_normalization(), Example, _make_balls_fn(), _make_terrain_fn(), Return a callback that adds a smooth heightfield terrain to a builder.      Th, Return a callback that adds *num_balls* pushable spheres., Reset the simulation and internal state. (+10 more)
+Cohesion: 0.17
+Nodes (7): Example, Reset the simulation and internal state., Single physics step (used by run_headless warm-up)., Transfer joystick commands to the observation command tensor., Observations -> policy inference -> actions -> physics step., One RL step: commands -> observe -> infer -> apply -> simulate., Render the current frame.
 
 ### Community 194 - "MJCF Model Conversion"
-Cohesion: 0.11
-Nodes (16): Model, Path, State, apply_randomization(), create_newton_model_from_mjcf(), download_menagerie_asset(), Create a Newton model from an MJCF file.      Args:         mjcf_path: Path t, Apply randomized properties to both Newton model and MuJoCo solver.      Uses (+8 more)
+Cohesion: 0.07
+Nodes (24): Model, Path, SolverMuJoCo, State, apply_randomization(), create_newton_model_from_mjcf(), download_menagerie_asset(), Create a Newton model from an MJCF file.      Args:         mjcf_path: Path t (+16 more)
 
 ### Community 195 - "Community 195"
 Cohesion: 0.06
 Nodes (15): Test that add_particles correctly assigns world groups., Test world grouping functionality for Model entities., Test that world_count is properly tracked when using add_world., Test that world validation catches non-contiguous and non-monotonic world indice, Test error handling for begin_world() and end_world()., Test that _validate_structure catches invalid equality constraint body reference, Test that _validate_structure catches invalid equality constraint joint referenc, Test that _validate_structure catches array length mismatches. (+7 more)
 
 ### Community 196 - "Community 196"
-Cohesion: 0.07
-Nodes (32): State, vec3f, Model, _make_kinematic_front_dynamic_back_model(), _make_model_no_shapes(), _make_single_sphere_model(), pick() with a ray that hits the sphere activates picking and sets pick_body., pick() ignores kinematic bodies so no body is selected. (+24 more)
+Cohesion: 0.09
+Nodes (21): _make_kinematic_front_dynamic_back_model(), _make_model_no_shapes(), _make_single_sphere_model(), pick() with a ray that hits the sphere activates picking and sets pick_body., pick() ignores kinematic bodies so no body is selected., pick() does not pick dynamic bodies occluded by kinematic bodies., pick() with a model that has no shapes returns without error., Model with one body and one sphere at origin (radius 0.5). (+13 more)
 
 ### Community 197 - "Community 197"
-Cohesion: 0.09
-Nodes (26): CodeInfo, PhysicsMetrics, Returns a human-readable string representation of the CodeInfo (same as __repr__, Returns a dictionary representation of the CodeInfo., A utility class to compute statistics for floating-point data arrays, such as st, Initialize a StatsFloat object.          Args:             data (np.ndarray):, Returns a human-readable string representation of the StatsFloat., A utility class to compute statistics for integer data arrays, such as counts an (+18 more)
+Cohesion: 0.08
+Nodes (22): CodeInfo, PhysicsMetrics, Returns a human-readable string representation of the CodeInfo (same as __repr__, Returns a dictionary representation of the CodeInfo., A utility class to compute statistics for floating-point data arrays, such as st, Initialize a StatsFloat object.          Args:             data (np.ndarray):, Returns a human-readable string representation of the StatsFloat., A utility class to compute statistics for integer data arrays, such as counts an (+14 more)
 
 ### Community 198 - "Community 198"
-Cohesion: 0.12
-Nodes (33): build_raycast_spring_grid(), compute_grid_neighbors(), condition_midsole_mesh(), CylinderGrid, detect_mesh_frame(), _load_obj_mesh(), make_cylinder_grid(), make_footprint_grid() (+25 more)
+Cohesion: 0.09
+Nodes (38): build_raycast_spring_grid(), compute_grid_neighbors(), condition_midsole_mesh(), CylinderGrid, detect_mesh_frame(), _load_obj_mesh(), make_cylinder_grid(), make_footprint_grid() (+30 more)
 
 ### Community 199 - "Example Browser UI"
-Cohesion: 0.18
-Nodes (12): default_args(), _ExampleBrowser, _format_fps(), Manages the example browser UI and switching/reset logic for the run loop., Re-register the example's GUI callback (panel callbacks survive clear_model)., Switch to the selected example. Returns (new_example, new_class) or (None, examp, Reset the current example by re-creating it. Returns the new example or None., Format an FPS value with sufficient significant digits. (+4 more)
+Cohesion: 0.19
+Nodes (17): _gather_best_seed(), _pull_seed(), Solve all base problems and write the best result for each one.          Args:, Reset optimizer state, selected seeds, and the sampler RNG., Expanded joint-coordinate buffer that stores all sampled seeds., Expanded per-seed objective costs from the most recent solve., _sample_gauss_kernel(), _sample_none_kernel() (+9 more)
 
 ### Community 200 - "Particle Collision Testing"
-Cohesion: 0.21
-Nodes (14): ParticleFlags, Flags for particle properties., Test that deterministic=True yields bit-identical contacts across collide calls., Test mesh-vs-convex triangle candidate generation., Test heightfield-vs-convex triangle candidate generation., TestCollisionPipeline, TestCollisionPipelineFilterPairs, TestDeterministicPipeline (+6 more)
+Cohesion: 0.11
+Nodes (39): ParticleFlags, Flags for particle properties., IntFlag, GeoType, uint64, vec3, _query_brute_force_winding_signs(), _query_mesh_sdf() (+31 more)
 
 ### Community 201 - "Voxel and Morton Encoding"
-Cohesion: 0.13
+Cohesion: 0.15
 Nodes (28): _accumulate_point_kernel(), compute_voxel_key(), _finalize_voxels_kernel(), morton_encode_3d(), rand_float(), rand_init(), rand_next(), rand_next_float() (+20 more)
 
 ### Community 202 - "Community 202"
-Cohesion: 0.10
-Nodes (28): array, callable, float32, Tensor, Integrate path heading and position from velocity commands.         Uses mid-po, Observations -> policy inference -> actions -> physics step.          Builds 9, _build_mlp_from_state_dict(), _load_policy_checkpoint() (+20 more)
+Cohesion: 0.17
+Nodes (15): Tensor, Observations -> policy inference -> actions -> physics step.          Builds 9, quat_inv_mul(), quat_rotate_inv(), quat_to_projected_yaw(), quat_to_rotation9d(), Rotate 3-D vector by the inverse of quaternion ``q`` (xyzw).      Returns shap, Convert quaternion (xyzw) to a flattened 3x3 rotation matrix (9D).      Return (+7 more)
 
 ### Community 203 - "Actuator DOF Mapping"
 Cohesion: 0.08
@@ -1536,8 +1537,8 @@ Cohesion: 0.10
 Nodes (17): Model, ndarray, _create_actuator_test_stage(), USD-authored ``mjc:solreflimit = [0, 0]`` must set raw mode just like MJCF impor, Verify that contact friction respects geom priority.      When two geoms have, Contact friction should come from the higher-priority geom, regardless of operan, When priorities are equal, contact friction should be the element-wise max, rega, Verify inheritrange on position actuators copies joint range to ctrlrange. (+9 more)
 
 ### Community 206 - "Benchmark Simulation Runner"
-Cohesion: 0.11
-Nodes (30): BenchmarkMetrics, Generates time-series plots of the PADMM solver metrics         (convergence, i, Generates time-series plots of the physics metrics (e.g.,         constraint vi, CameraConfig, ControlConfig, make_benchmark_problem_dr_legs(), make_benchmark_problem_fourbar(), make_benchmark_problems() (+22 more)
+Cohesion: 0.17
+Nodes (25): CameraConfig, ControlConfig, make_benchmark_problem_dr_legs(), make_benchmark_problem_fourbar(), make_benchmark_problems(), ProblemDimensions, # NOTE: The USD model is centered at the origin, # TODO: Use set_camera_lookat params instead (+17 more)
 
 ### Community 207 - "Git Asset Downloader"
 Cohesion: 0.40
@@ -1548,12 +1549,12 @@ Cohesion: 0.09
 Nodes (27): _convert_to_packed_rgba_numpy(), _dtype_ok(), ImageLogger, LoggedImage, _pack_rgba_warp(), Reshape a validated Warp image into canonical ``(N, H, W, C)``., Dispatch to the correct pack kernel for *src*'s dtype.      *src* must be ``wp, Convert any validated image to a packed atlas of ``(rows*H, cols*W, 4) uint8``. (+19 more)
 
 ### Community 209 - "Softbody Mesh Adjacency"
-Cohesion: 0.17
-Nodes (28): array, array2d, int32, mat33, ndarray, vec3, assemble_tet_vertex_force(), _assert_adjacency_matches_tets() (+20 more)
+Cohesion: 0.03
+Nodes (51): ModelBuilderKamino, Maximum contacts per geometry pair override. When set, caps the per-pair contact, Returns the number of worlds represented in the model., Returns the number of bodies contained in the model., Returns the number of joints contained in the model., Returns the number of geometries contained in the model., Returns the number of materials contained in the model., Returns the number of body degrees of freedom contained in the model. (+43 more)
 
 ### Community 210 - "VBD Solver Kernels"
-Cohesion: 0.10
-Nodes (33): array, vec3, _capsule_axial_spin_dissipates_via_friction(), _collect_rigid_contact_forces_reports_surface_points(), _d6_fully_free_structural_slots_are_inactive(), _eval_directional_joint_projection_kernel(), _eval_self_contact_norm_kernel(), _joint_angular_dual_projects_free_axis_lambda() (+25 more)
+Cohesion: 0.09
+Nodes (32): array, vec3, _capsule_axial_spin_dissipates_via_friction(), _collect_rigid_contact_forces_reports_surface_points(), _d6_fully_free_structural_slots_are_inactive(), _eval_directional_joint_projection_kernel(), _eval_self_contact_norm_kernel(), _joint_angular_dual_projects_free_axis_lambda() (+24 more)
 
 ### Community 211 - "Shoe Performance Metrics"
 Cohesion: 0.06
@@ -1568,48 +1569,48 @@ Cohesion: 0.07
 Nodes (17): Test cases for SolverMuJoCo._validate_model_for_separate_worlds()., Create a valid homogeneous multi-world model for validation tests., Test that a valid homogeneous model passes validation., Test that a model with global static shapes (ground plane) passes validation., Test that different body counts per world raises ValueError., Test that different shape counts per world raises ValueError., Test that different joint types at same position across worlds raises ValueError, Test that different shape types at same position across worlds raises ValueError (+9 more)
 
 ### Community 214 - "Runtime Gravity Control"
-Cohesion: 0.06
-Nodes (31): Test that solvers fall back to model gravity when state gravity is not set, Test that runtime gravity changes work with CUDA graph capture, Test that particles respond correctly to runtime gravity changes, Test that different worlds can have different gravity values, Test per-world gravity with MuJoCo Warp solver (CUDA only), Test setting gravity for individual worlds, Test setting per-world gravity using an array, Test that set_gravity raises IndexError for invalid world index (+23 more)
+Cohesion: 0.05
+Nodes (52): Model, Device, array, Contacts, Control, Model, State, A semi-implicit integrator using symplectic Euler.      After constructing `Mo (+44 more)
 
 ### Community 215 - "IK Solver Benchmarking"
-Cohesion: 0.08
-Nodes (31): Model, ndarray, build_ik_solver(), create_franka_model(), eval_success(), fk_targets(), random_solutions(), quat (+23 more)
+Cohesion: 0.11
+Nodes (26): Model, ndarray, build_ik_solver(), create_franka_model(), eval_success(), fk_targets(), random_solutions(), quat (+18 more)
 
 ### Community 216 - "Contact Array Sorting"
-Cohesion: 0.10
-Nodes (24): _backup_full_kernel(), _backup_simple_kernel(), _FullContactArrays, _gather_full_kernel(), _gather_simple_kernel(), _prepare_sort(), Live + scratch arrays for the full CollisionPipeline contact layout., Copy active contacts into scratch buffers. (+16 more)
+Cohesion: 0.13
+Nodes (31): _apply_dual_preconditioner_to_matrix(), _apply_dual_preconditioner_to_vector(), _build_dual_preconditioner_all_constraints(), _build_dual_preconditioner_all_constraints_sparse(), _build_free_velocity_bias_contacts(), _build_free_velocity_bias_joint_dynamics(), _build_free_velocity_bias_joint_kinematics(), _build_free_velocity_bias_limits() (+23 more)
 
 ### Community 217 - "Franka Cube Stacking"
 Cohesion: 0.14
 Nodes (13): advance_task_kernel(), Example, # NOTE: These tolerances can be achieved thanks to the gravity compensation enab, set_target_pose_kernel(), TaskType, array, array2d, float32 (+5 more)
 
 ### Community 218 - "Collision Mesh Generation"
-Cohesion: 0.08
-Nodes (48): Geometry, GeometryDomain, _apply_shape_transforms(), _compute_particle_volume_density(), _create_body_collider_mesh(), _get_body_collision_shapes(), _get_shape_collision_materials(), _get_shape_mesh() (+40 more)
+Cohesion: 0.16
+Nodes (20): get_max_constraints_per_world(), make_unilateral_constraints_info(), Returns the maximum number of constraints for each world in the model.      Ar, Updates the active constraints info for the given model and current data., Unpacks the constraint reactions and velocities into respective data containers., Constructs constraints entries in the ModelKaminoInfo member of a model., unpack_constraint_solutions(), _unpack_contact_constraint_solutions() (+12 more)
 
 ### Community 219 - "Random Matrix Utilities"
-Cohesion: 0.25
-Nodes (8): FloatArrayLike, TestLinAlgUtilsRandomMatrixSPD, TestLinAlgUtilsRandomMatrixSymmetric, is_square_matrix(), is_symmetric_matrix(), SquareSymmetricMatrixProperties, random_symmetric_matrix(), Generate a random symmetric matrix of size (dim, dim).      Args:     - dim (
+Cohesion: 0.14
+Nodes (17): dtype, FloatArrayLike, ndarray, TestLinAlgUtilsRandomMatrixSPD, TestLinAlgUtilsRandomMatrixSymmetric, TestLinAlgUtilsRandomRhsVectors, is_square_matrix(), is_symmetric_matrix() (+9 more)
 
 ### Community 220 - "Block Sparse Linear Algebra"
-Cohesion: 0.09
-Nodes (11): ndarray, BlockSparseLinearOperators, Tests building two fully-filled block-sparse matrices with vector-shaped blocks, Tests the regular matrix-vector product and the generalized matrix-vector produc, Tests multiplication of a random dense block matrix with a random vector., Tests multiplication of a random block sparse matrix with a random vector., Tests multiplication of a block sparse matrix with a random vector, where the sp, TestBlockDType (+3 more)
+Cohesion: 0.08
+Nodes (12): ndarray, BlockSparseLinearOperators, Tests building two fully-filled block-sparse matrices with vector-shaped blocks, Tests the regular matrix-vector product and the generalized matrix-vector produc, Tests multiplication of a random dense block matrix with a random vector., Tests multiplication of a random block sparse matrix with a random vector., Tests multiplication of a block sparse matrix with a random vector, where the sp, TestBlockDType (+4 more)
 
 ### Community 221 - "Differentiable Contact Gradients"
-Cohesion: 0.12
-Nodes (30): array, transform, vec3, _body_position_loss_kernel(), Moving the sphere upward should increase (make less negative) the contact distan, Differentiable arrays are None when requires_grad=False., collide() works correctly outside a tape (no gradients, no crash)., Two dynamic bodies in contact both receive non-zero gradients. (+22 more)
+Cohesion: 0.13
+Nodes (29): array, transform, vec3, _body_position_loss_kernel(), Moving the sphere upward should increase (make less negative) the contact distan, Differentiable arrays are None when requires_grad=False., collide() works correctly outside a tape (no gradients, no crash)., Two dynamic bodies in contact both receive non-zero gradients. (+21 more)
 
 ### Community 222 - "Force-Space Material Overrides"
 Cohesion: 0.11
 Nodes (14): Force-space ``shape_material_ke``/``shape_material_kd`` for the MuJoCo solver., Step until at least one contact is generated, then return its index., Per-contact ``solref`` must equal ``(-ke·factor, -kd·factor)`` with         ``f, Dynamic-vs-dynamic contact: factor uses the sum of both bodies' invweight0., ``BODY_INERTIAL_PROPERTIES`` notify must refresh the per-contact factor., Mixed-mode (FORCE_SPACE + non-FORCE_SPACE) must bypass the override., Guard boundary: ``dmax >= 1`` must skip the override (factor would be zero)., Opting into FORCE_SPACE while running ``use_mujoco_contacts=True`` must warn at (+6 more)
 
 ### Community 223 - "MuJoCo State Synchronization"
-Cohesion: 0.06
-Nodes (35): DeviceLike, ModelBuilderKamino, TestCase, PrimitiveBroadPhaseType, # NOTE: The test_group_pair and test_world_and_group_pair functions below are co, check_broadphase_allocations(), # NOTE: To asses "nominal" contacts for box-box,, Tests a primitive broad-phase backend on a system specified via a ModelBuilderKa (+27 more)
+Cohesion: 0.04
+Nodes (64): ContactsKamino, DataKamino, DeviceLike, ModelKamino, ndarray, StateKamino, ContactsKamino, DataKamino (+56 more)
 
 ### Community 224 - "Model Builder Testing"
-Cohesion: 0.05
-Nodes (16): Returns a human-readable string representation of the RigidBodyDescriptor., Returns a human-readable string representation of the GeometryDescriptor., Returns a human-readable string representation of the GravityDescriptor., Returns a human-readable string representation of the MaterialDescriptor., Enum for representing the three axes in 3D space., Convert an axis representation to a 3D vector., Convert an axis representation to a 3x3 matrix., Returns a hash of the Descriptor based on its UID. (+8 more)
+Cohesion: 0.12
+Nodes (4): ModelBuilderKamino, assert_model_matches_builder(), Assert that a constructed model matches the specifications of the given builder., TestModelBuilder
 
 ### Community 225 - "Cloth Model Construction"
 Cohesion: 0.12
@@ -1620,36 +1621,36 @@ Cohesion: 0.10
 Nodes (15): Verify that contacts between two immovable bodies are filtered out.      The M, Build a model with a kinematic free-joint body resting on a ground plane., Build a model with two kinematic free-joint bodies overlapping., Build a model with a dynamic body on a ground plane (should keep contacts)., Run collision + one solver step and return the MuJoCo contact count., Contacts between a kinematic body and the static ground plane must be filtered., Contacts between two kinematic bodies must be filtered., Contacts between a dynamic body and the ground plane must be preserved. (+7 more)
 
 ### Community 227 - "Community 227"
-Cohesion: 0.11
-Nodes (10): _build_mesh_pair(), Mesh-mesh narrow phase produces the expected contact count under mirroring., A single ``Mesh`` instance can be shared across shapes with different     signe, Build a two-body model with axis-aligned cube meshes at the given scales., Run a single collide() pass and return the contact arrays., Symmetric primitives absorb negative scale components via abs() in the builder., _run_pipeline(), TestBuilderNormalization (+2 more)
+Cohesion: 0.06
+Nodes (22): compute_shape_radius(), Calculates the radius of a sphere that encloses the shape, used for broadphase c, Verify heightfield bounding sphere handles asymmetric Z ranges correctly., Asymmetric Z range [0, 10]: radius must use max(|min_z|, |max_z|), not half-rang, Every heightfield corner vertex must lie within the bounding sphere., Verify plane bounding-sphere radius uses half-diagonal for finite planes., Finite plane radius should be half the diagonal of the full extents., Infinite plane (zero extents) should return large sentinel radius. (+14 more)
 
 ### Community 228 - "Articulation View Selection"
-Cohesion: 0.10
+Cohesion: 0.11
 Nodes (11): origin_velocity_from_body_qd(), BODY-frequency link axis uses unique physical bodies, not joint slots., Test that get_attribute works for extended state attributes., ArticulationView excludes loop-closing joints unless requested., Recover body-origin velocity from COM-referenced `body_qd`., Test that shape attribute values are correct when shape selection is non-contigu, Test an ArticulationView that includes a subset of joints and that we         c, Regression test for issue #920: ArticulationView with only fixed joints. (+3 more)
 
 ### Community 229 - "Viewer Color Synchronization"
-Cohesion: 0.12
-Nodes (14): Verify the viewer reflects runtime updates written to ``model.shape_color``., Captures per-batch colors passed through ``log_instances``., Initialize the probe with storage for the latest colors., Verify deprecated viewer color updates warn and write through to the model., Capture the most recent instance colors sent to the viewer., Regression tests for shape color storage and viewer synchronization., Cache the active Warp device for model finalization., Create a small tetrahedral mesh with an optional display color. (+6 more)
+Cohesion: 0.11
+Nodes (16): Verify the viewer reflects runtime updates written to ``model.shape_color``., Verify packed color slots can be mapped back to model shape indices., Captures per-batch colors passed through ``log_instances``., Verify runtime color sync repacks model colors into packed viewer order., Initialize the probe with storage for the latest colors., Verify deprecated viewer color updates warn and write through to the model., Capture the most recent instance colors sent to the viewer., Regression tests for shape color storage and viewer synchronization. (+8 more)
 
 ### Community 230 - "Block Cholesky Solver"
 Cohesion: 0.12
 Nodes (22): compute_inverse_ordering(), create_blocked_cholesky_kernel(), create_blocked_cholesky_solve_kernel(), cuthill_mckee_ordering(), Given a 2D 0/1 sparsity matrix and a tile size,     returns a 2D 0/1 matrix ind, Given a symmetric 0/1 matrix M, returns the block sparsity pattern (lower-triang, Given a symmetric binary matrix M (0/1, shape n x n), returns a permutation arra, Batched solver for linear systems using block Cholesky factorization.     "Semi (+14 more)
 
 ### Community 231 - "Block Sparse Metadata"
-Cohesion: 0.07
-Nodes (22): allocate_block_sparse_from_dense(), BlockSparseMatrices, dense_to_block_sparse_copy_values(), _make_dense_to_bsm_copy_kernel(), _make_dense_to_bsm_detect_kernel(), A container to represent multiple block-sparse matrices of fixed non-zero block, Finalizes the block-sparse matrix container by allocating on-device data arrays., Clears all variable non-zero blocks. (+14 more)
+Cohesion: 0.08
+Nodes (19): BlockSparseMatrices, dense_to_block_sparse_copy_values(), _make_dense_to_bsm_copy_kernel(), _make_dense_to_bsm_detect_kernel(), _make_masked_zero_kernel(), A container to represent multiple block-sparse matrices of fixed non-zero block, Clears all variable non-zero blocks., Sets non-zero block data to zero, for all or a subset of the matrices. (+11 more)
 
 ### Community 232 - "Shape Transform Computation"
 Cohesion: 0.25
 Nodes (6): Unit tests for match_labels., int indices are passed through without bounds checking., Overlapping glob patterns should not produce duplicate indices., TestMatchLabels, match_labels(), Find indices of elements in ``labels`` that match ``pattern``.      See :ref:`
 
 ### Community 233 - "Cloth Constraint Assembly"
-Cohesion: 0.06
-Nodes (43): Any, ModelBuilder, Prim, ModelBuilder, Prim, _collect_attrs_by_name(), _collect_attrs_by_namespace(), PrimType (+35 more)
+Cohesion: 0.07
+Nodes (39): Any, ModelBuilder, Prim, ModelBuilder, Prim, _collect_attrs_by_name(), _collect_attrs_by_namespace(), PrimType (+31 more)
 
 ### Community 234 - "Actuator Configuration Validation"
-Cohesion: 0.09
-Nodes (6): Constructors and ``step()`` should reject malformed configurations., ``resolve_arguments`` rejects a negative gain/limit for ``key``., ``ControllerPD.__init__`` rejects array shape mismatches., ``Actuator.__init__`` rejects index arrays whose shapes don't match ``indices``., Build a delayed PD actuator (stateful) without any state arrays., TestActuatorErrorPaths
+Cohesion: 0.06
+Nodes (27): Actuator, ControllerPD, Stateless PD (Proportional-Derivative) controller.      Effort law::, Any, ndarray, _build_mlp_onnx(), _onnx_modules(), Write scalar values into specific DOF positions of a Warp array. (+19 more)
 
 ### Community 235 - "Joint Animation Simulator"
 Cohesion: 0.10
@@ -1664,12 +1665,12 @@ Cohesion: 0.11
 Nodes (13): _override_noop(), Convert a value of various types to an Axis enum member.          Args:, Return the axis as a 3D unit vector.          Returns:             The unit v, Return the axis as a warp.vec3 unit vector.          Returns:             The, Return the quaternion between two axes., Convert an axis representation to a 3D vector., Fallback no-op decorator when override is unavailable., Enumeration of axes in 3D space. (+5 more)
 
 ### Community 238 - "Robot Control Simulator"
-Cohesion: 0.10
-Nodes (17): array, DeviceLike, float32, int32, Simulator, vec6f, _control_callback(), Example (+9 more)
+Cohesion: 0.16
+Nodes (9): DeviceLike, Example, Capture CUDA graph if requested and available., Run simulation substeps., Reset the simulation., Run the simulation for a single time-step., Render the current frame., Test function for compatibility. (+1 more)
 
 ### Community 239 - "PADMM Solver State"
 Cohesion: 0.10
-Nodes (27): DeviceLike, SizeKamino, PADMMData, PADMMInfo, PADMMResiduals, PADMMSolution, PADMMState, Allocates the PADMM solver info arrays based on the model size and maximum numbe (+19 more)
+Nodes (25): DeviceLike, SizeKamino, PADMMInfo, PADMMResiduals, PADMMSolution, PADMMState, Allocates the PADMM solver info arrays based on the model size and maximum numbe, Resets all PADMM solver info arrays to zeros. (+17 more)
 
 ### Community 240 - "URDF Parser Testing"
 Cohesion: 0.14
@@ -1688,16 +1689,16 @@ Cohesion: 0.13
 Nodes (16): Collision, Evaluates contact forces and the diagonal of the Hessian for implicit time integ, Collision handler for cloth simulation., Return diagonal of contact Hessian for preconditioning.         Note:, Computes the Hessian-vector product for implicit integration., Initialize the collision handler, including BVHs and buffers.          Args:, Displacement constraints, Apply post-processing (+8 more)
 
 ### Community 244 - "Joint-Space PID Control"
-Cohesion: 0.08
-Nodes (29): _compute_jointspace_pid_control(), JointSpacePIDController, PIDControllerData, A kernel to compute joint-space PID control outputs for force-actuated joints., A kernel launcher to reset joint-space PID controller motion references., A kernel launcher to compute joint-space PID control outputs for force-actuated, A simple PID controller in joint space.      This controller currently only su, A simple PID controller in joint space.          Args:             model (Mod (+21 more)
+Cohesion: 0.12
+Nodes (20): _compute_jointspace_pid_control(), A kernel to compute joint-space PID control outputs for force-actuated joints., A kernel launcher to reset joint-space PID controller motion references., A kernel launcher to compute joint-space PID control outputs for force-actuated, A simple PID controller in joint space.          Args:             model (Mod, Allocates all internal data arrays of the controller.          Args:, Reset the internal state of the controller.          The motion references are, Set the controller reference trajectories.          Args:             q_j_ref (+12 more)
 
 ### Community 245 - "Mesh Reconstruction Utilities"
-Cohesion: 0.10
-Nodes (24): compute_bounding_sphere(), compute_camera_basis(), compute_hemisphere_edge_segments(), create_hemisphere_directions(), create_icosahedron_directions(), extract_largest_island(), PointCloudExtractor, Reconstruct a triangle mesh from a point cloud.          Args:             po (+16 more)
+Cohesion: 0.11
+Nodes (18): compute_hemisphere_edge_segments(), create_hemisphere_directions(), create_icosahedron_directions(), extract_largest_island(), Reconstruct a triangle mesh from a point cloud.          Args:             po, Simplify mesh using pyfqmr (fast)., Simplify mesh using Open3D (higher quality, slower)., Extract the largest connected component (island) from a mesh.      Uses edge-b (+10 more)
 
 ### Community 246 - "GL Wireframe Rendering"
-Cohesion: 0.22
-Nodes (6): check_gl_error(), Render all line objects using the geometry-shader wide-line pipeline., Render arrow batches (wide line + arrowhead triangle per segment)., Render wireframe shapes using the geometry-shader line expansion., Update vertex positions in the VBO.          Args:             points: New po, _upload_texture_from_file()
+Cohesion: 0.20
+Nodes (8): check_gl_error(), MeshGL, Encapsulates mesh data and OpenGL buffers for a shape., Render all line objects using the geometry-shader wide-line pipeline., Render arrow batches (wide line + arrowhead triangle per segment)., Render wireframe shapes using the geometry-shader line expansion., Update vertex positions in the VBO.          Args:             points: New po, _upload_texture_from_file()
 
 ### Community 247 - "IK Obstacle Avoidance"
 Cohesion: 0.13
@@ -1712,15 +1713,15 @@ Cohesion: 0.14
 Nodes (25): ndarray, _add_free_distance_joint(), _build_rotated_anchor_descendant_model(), compute_com_world_position(), _joint_type_name(), Compute the center of mass position in world frame., Test that angular velocity causes rotation about CoM, not body origin.      Wh, Test that linear velocity causes CoM to move as expected.      When a body has (+17 more)
 
 ### Community 250 - "Rigid Body Benchmarks"
-Cohesion: 0.08
-Nodes (41): ModelBuilder, ShapeConfig, # TODO: re-enable the check below once the free-joint handling is fixed in Newto, # NOTE: Check ptr due to conversion from wp.spatial_vectorf, # NOTE: Check that the same arrays because these should be pure references, # TODO: re-enable the check below once the free-joint handling is fixed in Newto, # NOTE: Check ptr due to conversion from vec6f, # NOTE: Check that the same arrays because these should be pure references (+33 more)
+Cohesion: 0.16
+Nodes (27): ModelBuilder, ShapeConfig, _add_ground_box(), build_box_on_plane(), build_box_pendulum(), build_box_pendulum_vertical(), build_boxes_fourbar(), build_boxes_hinged() (+19 more)
 
 ### Community 251 - "USD Physics Parsing"
 Cohesion: 0.06
-Nodes (19): Verify model based on the UsdPhysics Parsing Utils, # TODO: exclude or handle bodies that have child shapes, # TODO: check bodies with CollisionAPI children that have MassAPI specified, Test the granular control over sites and visual shapes loading., Test loading control specifically for files with sites., Verify that prims with NewtonSiteAPI are recognized as sites, in parity with Mjc, Exhaustive test of NewtonMassAPI mass/inertia combinations.          Axes test, Malformed newton:inertia tensors emit warnings and fall back to shape-derived va (+11 more)
+Nodes (18): Verify model based on the UsdPhysics Parsing Utils, # TODO: exclude or handle bodies that have child shapes, # TODO: check bodies with CollisionAPI children that have MassAPI specified, Test the granular control over sites and visual shapes loading., Test loading control specifically for files with sites., Verify that prims with NewtonSiteAPI are recognized as sites, in parity with Mjc, Exhaustive test of NewtonMassAPI mass/inertia combinations.          Axes test, Malformed newton:inertia tensors emit warnings and fall back to shape-derived va (+10 more)
 
 ### Community 252 - "MJCF Site Parsing"
-Cohesion: 0.08
+Cohesion: 0.09
 Nodes (17): Test site without explicit type (should default to sphere)., Test site without name (should get auto-generated name)., Test parsing sites from MJCF XML., Test parsing sites in worldbody (not in bodies)., Test parsing a simple site from MJCF., Test parsing sites with different orientation specifications., Test parsing multiple sites from MJCF., Test parsing sites with different types. (+9 more)
 
 ### Community 253 - "Cable Plug Simulation"
@@ -1744,8 +1745,8 @@ Cohesion: 0.11
 Nodes (15): array, DeviceLike, float32, Simulator, _control_callback(), Example, Capture CUDA graph if requested and available., Run simulation substeps. (+7 more)
 
 ### Community 258 - "GL Viewer Rendering"
-Cohesion: 0.04
-Nodes (53): array, array3d, uint8, array, Axis, float32, int32, State (+45 more)
+Cohesion: 0.06
+Nodes (33): array, Axis, float32, Gaussian, State, transform, transformf, vec3 (+25 more)
 
 ### Community 259 - "Hysteresis Loss Metrics"
 Cohesion: 0.08
@@ -1761,11 +1762,11 @@ Nodes (25): force_r2, metrics, force_r2, hysteresis_error_j, loading_rmse_n, mea
 
 ### Community 262 - "URDF Composition Testing"
 Cohesion: 0.11
-Nodes (14): parse_urdf(), Test that parent_body with base_joint creates a D6 joint to parent., Test that parent_body creates a joint connecting to the parent body., Test that attaching to a non-sequential articulation raises an error., Test that floating=False with parent_body is explicitly allowed., Test repeated URDF imports with fixed-joint collapse preserve articulation order, Test that floating=True with parent_body raises an error., Test that attaching to a body not in any articulation raises an error. (+6 more)
+Nodes (15): parse_urdf(), Test that parent_body attaches the URDF root to an existing body., Test that parent_body with base_joint creates a D6 joint to parent., Test that parent_body creates a joint connecting to the parent body., Test that attaching to a non-sequential articulation raises an error., Test that floating=False with parent_body is explicitly allowed., Test repeated URDF imports with fixed-joint collapse preserve articulation order, Test that floating=True with parent_body raises an error. (+7 more)
 
 ### Community 263 - "Iterative Sparse Solvers"
-Cohesion: 0.08
-Nodes (17): BatchedLinearOperator, CGSolver, Create operator from block-sparse operator.          Args:             A: Blo, Linear operator for batched matrix-vector products.      Supports dense, diago, Conjugate Gradient solver for symmetric positive definite systems.      The so, Create operator from dense matrix data., Create operator from diagonal matrix (flat 1D storage)., BlockSparseLinearOperators (+9 more)
+Cohesion: 0.11
+Nodes (7): Test CG/CR with sparse matrices built from random SPD matrices.          Args:, Helper to build a sparse operator from a dense matrix., Test CG solve with sparse operator on a 16x16 system with 4x4 blocks., Test iterative solver wrapper with heterogeneous dims., Test ConjugateGradientSolver with discover_sparse=True and heterogeneous dims., Test ConjugateResidualSolver with heterogeneous dims., TestLinalgConjugate
 
 ### Community 264 - "Large Mesh Collisions"
 Cohesion: 0.14
@@ -1793,15 +1794,15 @@ Nodes (11): compute_body_forces(), Example, Compute forces applied by sand to ri
 
 ### Community 270 - "Bipedal Observation Builder"
 Cohesion: 0.10
-Nodes (17): Tensor, BipedalObservation, DrlegsBaseObservation, ObservationBuilder, Base class for building observation tensors from a Kamino Simulator.      Subc, Total observation dimensionality (per environment)., Dimensionality of the external command vector., Current command tensor, shape ``(num_worlds, command_dim)``.          External (+9 more)
+Nodes (18): ABC, Tensor, BipedalObservation, DrlegsBaseObservation, ObservationBuilder, Base class for building observation tensors from a Kamino Simulator.      Subc, Total observation dimensionality (per environment)., Dimensionality of the external command vector. (+10 more)
 
 ### Community 271 - "Contact Residual Metrics"
-Cohesion: 0.21
-Nodes (22): build_pair_key2(), Build a 63-bit key from two indices with the following layout:     - The highes, uint32, array, float32, int32, int64, mat33f (+14 more)
+Cohesion: 0.11
+Nodes (10): DeviceLike, Example, Color robot shapes by body group for visual distinction., Convert policy actions to implicit PD joint position references., Integrate path heading and position from velocity commands.         Uses mid-po, Reset the simulation and internal state., Single physics step (used by run_headless warm-up)., Transfer joystick velocity commands and height command to buffers. (+2 more)
 
 ### Community 272 - "Cloth Force Kernels"
-Cohesion: 0.05
-Nodes (21): Regression test: bodies with PhysicsMassAPI but no authored mass properties, USD bodies with physics:kinematicEnabled=true get BodyFlags.KINEMATIC., Kinematic flag is parsed for articulation root bodies from USD., Test importing USD with inertia specified in principal axes that don't align wit, Test importing USD with force limits specified., Joint mjc:solreflimit on MjcJointAPI must populate joint_limit_ke / joint_limit_, Joint mjc:solreflimit on a revolute joint must produce per-radian limit_ke/_kd., Test importing limit_margin from USD with mjc:margin on joint. (+13 more)
+Cohesion: 0.06
+Nodes (18): Regression test: bodies with PhysicsMassAPI but no authored mass properties, USD bodies with physics:kinematicEnabled=true get BodyFlags.KINEMATIC., Kinematic flag is parsed for articulation root bodies from USD., Test importing USD with inertia specified in principal axes that don't align wit, Test importing USD with force limits specified., Test importing limit_margin from USD with mjc:margin on joint., Test _add_base_joints_to_floating_bodies with default parameters creates free jo, Test _add_base_joints_to_floating_bodies with floating=False creates fixed joint (+10 more)
 
 ### Community 273 - "Simulation Displacement Metrics"
 Cohesion: 0.15
@@ -1824,16 +1825,16 @@ Cohesion: 0.16
 Nodes (11): add_mesh_object(), Example, load_mesh_with_sdf(), Initialize tracking data for test validation., Track transforms for test validation (called each step in test mode)., Verify simulation state after example completes.          - Bolts should stay, Mesh, ModelBuilder (+3 more)
 
 ### Community 278 - "Differentiable Cloth Simulation"
-Cohesion: 0.09
-Nodes (20): com_kernel(), Example, loss_kernel(), step_kernel(), assign_param(), com_kernel(), enforce_constraint_kernel(), Example (+12 more)
+Cohesion: 0.12
+Nodes (16): assign_param(), com_kernel(), enforce_constraint_kernel(), Example, loss_kernel(), array, array2d, float32 (+8 more)
 
 ### Community 279 - "Differentiable Softbody Simulation"
 Cohesion: 0.07
-Nodes (30): TestUtilsLinAlgMatrix, Test use of the custom logger., Test use of the custom logger., TestUtilsLogger, critical(), debug(), error(), get_default_logger() (+22 more)
+Nodes (21): DelassusOperator, Adds diagonal regularization to each matrix block of the Delassus operator., Returns the maximum dimension of any Delassus matrix across all worlds., A container to represent the Delassus matrix operator., Returns the number of worlds represented by the Delassus operator.         This, Returns the maximum dimension of the Delassus matrix across all worlds., Returns the maximum size of the Delassus matrix across all worlds.         This, Returns a reference to the flat Delassus matrix array. (+13 more)
 
 ### Community 280 - "Inertia Tensor Computation"
-Cohesion: 0.12
-Nodes (36): compute_hollow_mesh_inertia(), compute_inertia_box(), compute_inertia_box_from_mass(), compute_inertia_capsule(), compute_inertia_cone(), compute_inertia_cylinder(), compute_inertia_ellipsoid(), compute_inertia_mesh() (+28 more)
+Cohesion: 0.05
+Nodes (74): Element, compute_hollow_mesh_inertia(), compute_inertia_box(), compute_inertia_box_from_mass(), compute_inertia_capsule(), compute_inertia_cone(), compute_inertia_cylinder(), compute_inertia_ellipsoid() (+66 more)
 
 ### Community 281 - "Kamino Model Components"
 Cohesion: 0.18
@@ -1844,16 +1845,16 @@ Cohesion: 0.22
 Nodes (21): array, Config, Data, float32, Function, int32, State, transformf (+13 more)
 
 ### Community 283 - "USD Mesh Utilities"
-Cohesion: 0.10
-Nodes (29): _extract_metadata(), _LegacyLstmTorchAdapter, load_checkpoint(), _load_legacy_lstm_torch_checkpoint(), load_metadata(), _load_torch_checkpoint(), _load_torch_metadata(), _load_torch_raw() (+21 more)
+Cohesion: 0.15
+Nodes (25): _add_armature_regularization_preconditioned_sparse(), _add_armature_regularization_sparse(), _add_joint_armature_diagonal_regularization_dense(), _add_matrix_diag_product(), _build_delassus_elementwise_dense(), _build_delassus_elementwise_sparse(), _compute_block_sparse_delassus_diagonal(), _merge_inv_mass_matrix_kernel() (+17 more)
 
 ### Community 284 - "Midsole Simulation Config"
 Cohesion: 0.09
 Nodes (22): midsole_stats, bounds_m, extents_m, fixture_gravity_preload_enabled, fixture_gravity_preload_error_n, fixture_gravity_preload_force_n, fixture_gravity_preload_iterations, fixture_gravity_preload_target_n (+14 more)
 
 ### Community 285 - "Binary Search Operations"
-Cohesion: 0.05
-Nodes (39): binary_search_find_pair(), KeySorter, make_bitmask(), make_build_pair_key3_func(), _prepare_key_sort(), Performs binary-search over a sorted array of pairs to find the index of a targe, Prepares keys and sorting-maps for radix sort.      Args:         num_active_, # NOTE: This ensures that these entries sort to the end when treated as signed i (+31 more)
+Cohesion: 0.04
+Nodes (49): binary_search_find_pair(), KeySorter, make_bitmask(), make_build_pair_key3_func(), _prepare_key_sort(), Performs binary-search over a sorted array of pairs to find the index of a targe, Prepares keys and sorting-maps for radix sort.      Args:         num_active_, # NOTE: This ensures that these entries sort to the end when treated as signed i (+41 more)
 
 ### Community 286 - "Mesh Backface Collisions"
 Cohesion: 0.12
@@ -1868,48 +1869,48 @@ Cohesion: 0.13
 Nodes (13): Example, Capture simulation loop into a CUDA graph for optimal GPU performance., Execute all simulation substeps for one frame., Advance simulation by one frame., Render the current simulation state to the viewer., Test cable twist simulation for stability and correctness (called after simulati, Apply continuous twist to the first segment of each cable., Create a zigzag cable route with parallel-transported quaternions.          Ge (+5 more)
 
 ### Community 289 - "Robot IK Example"
-Cohesion: 0.18
-Nodes (6): Convert a quaternion type to a vec4f., quat, vec4, Example, quat_to_vec4(), Convert a quaternion to a vec4.
+Cohesion: 0.13
+Nodes (10): Convert a quaternion type to a vec4f., array2d, float32, quat, vec4, broadcast_ik_solution_kernel(), Example, quat_to_vec4() (+2 more)
 
 ### Community 290 - "Bounding Sphere Calculation"
-Cohesion: 0.10
-Nodes (16): compute_shape_radius(), Calculates the radius of a sphere that encloses the shape, used for broadphase c, Verify heightfield bounding sphere handles asymmetric Z ranges correctly., Asymmetric Z range [0, 10]: radius must use max(|min_z|, |max_z|), not half-rang, Every heightfield corner vertex must lie within the bounding sphere., Verify shape_collision_aabb_lower/upper are correct for heightfields., Heightfield local AABB should reflect hx, hy, min_z, max_z., Heightfield local AABB should incorporate scale. (+8 more)
+Cohesion: 0.14
+Nodes (15): Any, array, float32, int32, ndarray, transform, uint32, vec2 (+7 more)
 
 ### Community 291 - "Robot Viewer Interface"
-Cohesion: 0.13
-Nodes (9): DeviceLike, Example, Color robot shapes by body group for visual distinction., Convert policy actions to implicit PD joint position references., Reset the simulation and internal state., Single physics step (used by run_headless warm-up)., Transfer joystick velocity commands and height command to buffers., One RL step: check reset -> joystick -> observe -> infer -> apply -> simulate. (+1 more)
+Cohesion: 0.08
+Nodes (19): DeviceLike, Tensor, _build_normalization(), _make_balls_fn(), _make_terrain_fn(), Return a callback that adds a smooth heightfield terrain to a builder.      Th, Return a callback that adds *num_balls* pushable spheres., Build ordered (offset, scale) lists from simulator joint names. (+11 more)
 
 ### Community 292 - "Kamino Asset Loading"
 Cohesion: 0.13
 Nodes (35): eval_fk_batched(), Compute batched forward kinematics for a set of articulations., array, IKJacobianType, Model, ndarray, vec3, _add_free_distance_joint() (+27 more)
 
 ### Community 293 - "Example Test Suite"
-Cohesion: 0.14
-Nodes (19): array, ndarray, Path, TextureSDFData, vec3, _common_hash_kwargs(), _make_box_mesh(), _make_cache_dir() (+11 more)
+Cohesion: 0.09
+Nodes (34): cache_path(), _digest_array(), hash_inputs(), SHA-256 over ``arr`` after a deterministic dtype/contiguity cast., Compute the cache key for a texture-SDF cook.      Args:         vertices: Me, Return the ``.npz`` path for a given cache key., Persist a cooked SDF dict to the cache.      Args:         cache_dir: Destina, Load a cooked SDF dict from the cache, or ``None`` on miss.      Verifies the (+26 more)
 
 ### Community 294 - "Platen Compression Config"
-Cohesion: 0.07
-Nodes (29): enabled, initial_force_max_n, max_m, pre_embedding, steps, tolerance, mode, substeps_per_sample (+21 more)
+Cohesion: 0.10
+Nodes (22): mode, substeps_per_sample, fixture, bottom_platen, bottom_platen_overlap_m, compression_replay, displacement_zero, gravity (+14 more)
 
 ### Community 295 - "Legacy Actuator Compatibility"
 Cohesion: 0.14
 Nodes (11): Deprecated ``newton_actuators`` calling conventions must still work., add_actuator(ActuatorPD, [dof], kp=...) — old positional style., add_actuator(ActuatorPD, input_indices=[dof], kp=...)., add_actuator(actuator_class=ActuatorPD, input_indices=[dof], kp=...)., ActuatorDelayedPD maps to ControllerPD + delay., ActuatorPID maps to ControllerPID., max_force kwarg creates a ClampingMaxEffort on the new actuator., output_indices != input_indices emits extra deprecation warning. (+3 more)
 
 ### Community 296 - "USD Articulation Import"
-Cohesion: 0.09
-Nodes (7): Joints outside any articulation must not be silently dropped.         This test, A body connected to the world via a PhysicsFixedJoint must be imported, Orphan body-to-world fixed joints must FK to env-origin + spawn xform., collapse_fixed_joints must not drop orphan joints or their bodies., Test importing USD with a joint that has missing body1.          This tests th, TestImportUsdArticulation, Test that collapse_fixed_joints retains loop-closing joints.          Covers t
+Cohesion: 0.10
+Nodes (6): Joints outside any articulation must not be silently dropped.         This test, A body connected to the world via a PhysicsFixedJoint must be imported, collapse_fixed_joints must not drop orphan joints or their bodies., Test importing USD with a joint that has missing body1.          This tests th, TestImportUsdArticulation, Test that collapse_fixed_joints retains loop-closing joints.          Covers t
 
 ### Community 297 - "Community 297"
-Cohesion: 0.14
-Nodes (15): _compute_kim_pressures(), _kim_layered_pressure_pa(), _kim_pressure_pa(), KimHyperfoamMaterial, load_calibrated_foundation_material(), preferred_calibrated_hydro_shoe_stroke_m(), Load a Digital Instron v2 material artifact for the calibrated contact law., Return the one-body shoe stroke suggested by a two-sided calibration artifact. (+7 more)
+Cohesion: 0.12
+Nodes (16): ModelBuilder, ndarray, build_test_system(), _quat_rotate(), Constructs a nunchaku model: two boxes connected by a sphere via ball joints., Tests for Newton <-> Kamino contact conversion functions., Finalize the nunchaku model and return (newton_model, newton_state, newton_conta, Newton contacts converted to Kamino must preserve count, A/B convention, and pro (+8 more)
 
 ### Community 298 - "Spatial Tendon Validation"
 Cohesion: 0.10
 Nodes (11): Verify that an actuator can target a spatial tendon., Verify that fixed and spatial tendons coexist correctly., Verify that MJCF default class inheritance works for spatial tendons., Verify that spatial tendons with pulley elements parse correctly., Verify that sites and geoms sharing the same name are correctly disambiguated., Verify that wrap address and shape references are offset correctly across worlds, Verify that spatial tendon attributes are parsed correctly from MJCF., Verify warning when a spatial tendon references a non-existent site. (+3 more)
 
 ### Community 299 - "Delayed Target Buffering"
-Cohesion: 0.06
-Nodes (40): Actuator, Return True if delay or controller maintains internal state., Return True if all components can be captured in a CUDA graph., Return a new composed state, or None if fully stateless., Execute one control step.          1. **Delay read** — read per-DOF delayed ta, Scatter-add effort into output; optionally scatter computed effort too., Composed actuator: delay → controller → clamping.      An actuator reads from, Composed state for an :class:`Actuator`.          Holds the delay state (if a (+32 more)
+Cohesion: 0.11
+Nodes (18): Actuator, Return True if delay or controller maintains internal state., Return True if all components can be captured in a CUDA graph., Return a new composed state, or None if fully stateless., Execute one control step.          1. **Delay read** — read per-DOF delayed ta, Scatter-add effort into output; optionally scatter computed effort too., Composed actuator: delay → controller → clamping.      An actuator reads from, Composed state for an :class:`Actuator`.          Holds the delay state (if a (+10 more)
 
 ### Community 300 - "Community 300"
 Cohesion: 0.14
@@ -1931,10 +1932,6 @@ Nodes (22): compute_prop_wrenches(), define_propeller(), Drone, drone_cost(), en
 Cohesion: 0.17
 Nodes (15): compute_fk_equivalence_classes(), Groups world that are equivalent for FK discrete information, array, int32, uint64, TestEquivalenceClasses, comparison_value(), compute_equivalence_classes() (+7 more)
 
-### Community 305 - "Community 305"
-Cohesion: 0.36
-Nodes (10): _assert_finite_state(), _build_soft_grid(), _make_solver(), Check that an anchored tet grid deforms while keeping fixed vertices pinned., Check that an unconstrained tet grid falls as a coherent soft body., _step(), test_soft_grid_anchored_deforms(), test_soft_grid_free_fall() (+2 more)
-
 ### Community 306 - "Community 306"
 Cohesion: 0.15
 Nodes (7): ndarray, _nullcontext, PerformanceProfile, Compute solver rankings at tau=1.0 and at rho=1.0.          Returns:, Generates a 2D plot to visualize the performance profile using Matplotlib., Simple nullcontext for optional style management (avoid importing contextlib at, Compute performance profiles for a set of num_solvers solvers across a set of np
@@ -1948,40 +1945,44 @@ Cohesion: 0.15
 Nodes (25): metrics, force_r2, hysteresis_error_j, loading_rmse_n, measured_dissipated_work_j, measured_hysteresis_j, measured_loading_work_j, measured_loop_signed_j (+17 more)
 
 ### Community 309 - "Community 309"
-Cohesion: 0.09
-Nodes (22): array, float32, int32, Example, # NOTE: The USD model is centered at the origin, # NOTE: These are used for most efficient GPU runtime, # NOTE: This compiles and loads the warp kernels prior to execution, Capture CUDA graph if requested and available. (+14 more)
+Cohesion: 0.13
+Nodes (17): _delay_buffer_state_kernel(), _delay_masked_reset_kernel(), _delay_read_kernel(), Zero all buffer columns and push count where mask is True., Circular buffer state for delayed targets., Reset delay buffer state.              Args:                 mask: Boolean ma, Initialize delay.          Args:             delay_steps: Per-DOF delay value, Create a new delay state with zeroed circular buffers.          Args: (+9 more)
 
 ### Community 310 - "Community 310"
 Cohesion: 0.08
 Nodes (11): _FakeGL, _ImageLoggerFixture, _install_fake_pyglet(), Make ``from pyglet import gl`` resolve to *fake_gl* for this test., Sets up a fake GL context and builds an ImageLogger on the CPU device., If wp.RegisteredGLBuffer construction raises, _ensure_pbo must roll     back th, Minimal fake of ``pyglet.gl`` sufficient for ImageLogger upload paths.      Re, TestImageLoggerCleanup (+3 more)
 
 ### Community 311 - "Delassus Operator Construction"
-Cohesion: 0.11
-Nodes (22): DenseSquareMultiLinearInfo, Creates a Delassus operator for the given model.          This class also supp, Allocates the Delassus operator with the specified dimensions and device., Flags the operator as needing to update its data structure., Returns the info object for the Delassus problem dimensions and sizes., Creates a Delassus operator for the given model, limits and contacts containers., Returns a reference to the flat Delassus matrix array., The linear solver object for the Delassus operator.         This is used to per (+14 more)
+Cohesion: 0.16
+Nodes (18): DenseSquareMultiLinearInfo, Creates a Delassus operator for the given model.          This class also supp, Allocates the Delassus operator with the specified dimensions and device., Flags the operator as needing to update its data structure., Returns the info object for the Delassus problem dimensions and sizes., Creates a Delassus operator for the given model, limits and contacts containers., The linear solver object for the Delassus operator.         This is used to per, Returns a reference to the flat Delassus matrix array. (+10 more)
 
 ### Community 312 - "Community 312"
-Cohesion: 0.18
-Nodes (18): cache_path(), _digest_array(), hash_inputs(), SHA-256 over ``arr`` after a deterministic dtype/contiguity cast., Compute the cache key for a texture-SDF cook.      Args:         vertices: Me, Return the ``.npz`` path for a given cache key., Persist a cooked SDF dict to the cache.      Args:         cache_dir: Destina, Load a cooked SDF dict from the cache, or ``None`` on miss.      Verifies the (+10 more)
+Cohesion: 0.17
+Nodes (9): com_kernel(), Example, loss_kernel(), step_kernel(), array, vec3, ndarray, most() (+1 more)
 
 ### Community 313 - "Community 313"
 Cohesion: 0.21
 Nodes (3): Validate a ``log_image`` call and return a canonical ``(N, H, W, C)``.      Ra, _validate(), TestValidate
+
+### Community 314 - "Community 314"
+Cohesion: 0.12
+Nodes (11): ContactsKaminoData, An SoA-based container to hold time-varying contact data of a set of contact ele, Clears the count of active contacts., Clears the count of active contacts and resets contact data         to sentinel, Returns the device on which the contacts data is allocated., Returns the managed contacts data container., Finalizes the contacts data allocations based on the specified capacity., Clears the count of active contacts. (+3 more)
 
 ### Community 315 - "Community 315"
 Cohesion: 0.20
 Nodes (19): apply_nodal_impulse_warmstart(), apply_subgrid_impulse(), apply_subgrid_impulse_warmstart(), compute_collider_delassus_diagonal(), compute_collider_inv_mass(), filter_collider_impulse_warmstart(), project_on_friction_cone(), Applies pre-computed impulses to particles and colliders. (+11 more)
 
 ### Community 316 - "Community 316"
-Cohesion: 0.08
-Nodes (16): Tensor, JoystickConfig, Read controller input as semantic axes.          Returns:             ``(forw, Return 1.0 if turbo is engaged, 0.0 otherwise., Read input, compute commands, and optionally advance the path.          Args:, Reset path state and filters.          Args:             root_pos_2d: Current, Change the timestep used for path integration and filtering., Velocity limits and turbo parameters for :class:`JoystickController`.      Eac (+8 more)
+Cohesion: 0.10
+Nodes (20): array, callable, float32, _build_mlp_from_state_dict(), _deadband(), _load_policy_checkpoint(), _LowPassFilter, _quat_to_projected_yaw_kernel() (+12 more)
 
 ### Community 317 - "Community 317"
-Cohesion: 0.29
-Nodes (10): array, float32, int32, quat, vec3, _compute_bipedal_obs_core(), _projected_yaw(), Extract the yaw angle from a quaternion (no warp builtin equivalent). (+2 more)
+Cohesion: 0.14
+Nodes (13): array, float32, int32, transform, uint32, vec2, vec3, vec4 (+5 more)
 
 ### Community 318 - "Community 318"
-Cohesion: 0.28
-Nodes (6): _estimate_rigid_contact_max(), Estimate the maximum number of rigid contacts for the collision pipeline., When pair count is huge, the heuristic provides a tighter bound., Per-world plane computation avoids quadratic cross-world overcount., When precomputed pair count is tighter than the heuristic, it is used., TestContactEstimator
+Cohesion: 0.20
+Nodes (21): _convert_contacts_kamino_to_newton(), _convert_contacts_newton_to_kamino(), make_contact_frame_xnorm(), make_contact_frame_znorm(), Converts Kamino :class:`ContactsKamino` to Newton's :class:`Contacts` format., Convert Newton Contacts to Kamino's ContactsKamino format.      Reads body-loc, Converts Kamino's internal contact representation to Newton's Contacts format., Converts Newton's :class:`Contacts` to Kamino's :class:`ContactsKamino` format. (+13 more)
 
 ### Community 319 - "Community 319"
 Cohesion: 0.16
@@ -2000,8 +2001,8 @@ Cohesion: 0.08
 Nodes (18): Tests for MuJoCo solver options (impratio, etc.) with WORLD frequency., Helper to create a multi-world model with MuJoCo custom attributes registered., Verify that impratio custom attribute with WORLD frequency:         1. Is prope, Verify that zero or negative impratio values are guarded against         to pre, Verify that passing scalar options (impratio, tolerance, ls_tolerance, ccd_toler, Verify that vector options (wind, magnetic) with WORLD frequency:         1. Ar, Verify that ONCE frequency numeric options (ccd_iterations, sdf_iterations, sdf_, Verify that constructor parameters override custom attribute values         for (+10 more)
 
 ### Community 323 - "Community 323"
-Cohesion: 0.14
-Nodes (8): Example, Capture simulation loop into a CUDA graph for optimal GPU performance., Execute all simulation substeps for one frame., Advance simulation by one frame., Render the current simulation state to the viewer., Test cable pile simulation for stability and correctness (called after simulatio, FastExampleCablePile, _supports_cable_pile_size_args()
+Cohesion: 0.19
+Nodes (6): Example, Capture simulation loop into a CUDA graph for optimal GPU performance., Execute all simulation substeps for one frame., Advance simulation by one frame., Render the current simulation state to the viewer., Test cable pile simulation for stability and correctness (called after simulatio
 
 ### Community 324 - "Community 324"
 Cohesion: 0.06
@@ -2013,15 +2014,15 @@ Nodes (32): mode, objective_components, combined_objective, mode, selected_compo
 
 ### Community 326 - "Community 326"
 Cohesion: 0.14
-Nodes (8): Test camera basis for multiple different directions., Test helper functions in the remesh module., Test that empty vertices raise ValueError., Test bounding sphere for single vertex., Test bounding sphere for cube vertices., Test that zero direction raises ValueError., Test that camera basis produces orthonormal vectors., TestRemeshHelperFunctions
+Nodes (12): compute_bounding_sphere(), compute_camera_basis(), Compute a bounding sphere for a set of vertices.      Uses Ritter's algorithm, Compute orthonormal camera basis vectors from a view direction.      Args:, Test camera basis for multiple different directions., Test helper functions in the remesh module., Test that empty vertices raise ValueError., Test bounding sphere for single vertex. (+4 more)
 
 ### Community 327 - "Community 327"
 Cohesion: 0.22
 Nodes (17): advect_grains(), advect_grains_from_particles(), project_grains(), Generate per-particle point samples used for high-resolution rendering.      F, Advect grain samples with the grid velocity and keep them inside the deformed pa, sample_grains(), sample_render_grains(), transform_grains() (+9 more)
 
 ### Community 328 - "Community 328"
-Cohesion: 0.06
-Nodes (52): binary_search_find_range_start(), Performs binary-search over a sorted array of integer keys     to find the star, KeySorter, LimitsKaminoData, array, ContactsKamino, ContactsKaminoData, DataKamino (+44 more)
+Cohesion: 0.04
+Nodes (75): contact_wrench_matrix_from_points(), Generates a 6x3 screw transformation matrix given the contact (`r_k`)     and b, binary_search_find_range_start(), Performs binary-search over a sorted array of integer keys     to find the star, KeySorter, LimitsKaminoData, array, ContactsKamino (+67 more)
 
 ### Community 329 - "Community 329"
 Cohesion: 0.18
@@ -2040,8 +2041,8 @@ Cohesion: 0.16
 Nodes (9): array, array2d, array3d, spatial_vector, compute_middle_kernel(), Example, init_masks(), random_forces_kernel() (+1 more)
 
 ### Community 333 - "Community 333"
-Cohesion: 0.16
-Nodes (9): DeviceLike, Example, Capture CUDA graph if requested and available., Run simulation substeps., Reset the simulation., Run the simulation for a single time-step., Render the current frame., Test function for compatibility. (+1 more)
+Cohesion: 0.17
+Nodes (8): Example, Capture CUDA graph if requested and available., Run simulation substeps., Reset the simulation., Run the simulation for a single time-step., Render the current frame., Test function for compatibility., Plot logged data and generate video from recorded frames.          Args:
 
 ### Community 334 - "Community 334"
 Cohesion: 0.16
@@ -2056,8 +2057,8 @@ Cohesion: 0.16
 Nodes (9): DeviceLike, Example, Capture CUDA graph if requested and available., Run simulation substeps., Reset the simulation., Run the simulation for a single time-step., Render the current frame., Test function for compatibility. (+1 more)
 
 ### Community 337 - "Community 337"
-Cohesion: 0.14
-Nodes (15): Any, array, float32, int32, ndarray, transform, uint32, vec2 (+7 more)
+Cohesion: 0.11
+Nodes (12): quat_between_axes(), Parses an OpenUSD file., Queries the custom data to detect if the prim should override the default materi, Returns a quaternion that represents the rotations between the given sequence of, Axis, AxisType, JointDescriptor, MaterialDescriptor (+4 more)
 
 ### Community 338 - "Community 338"
 Cohesion: 0.07
@@ -2088,16 +2089,16 @@ Cohesion: 0.10
 Nodes (11): Test sites with different geometry types., Test site attached to world (body=-1)., Test site with custom transform., Test site creation via ModelBuilder.add_site()., Test adding sites to different bodies., Test adding a site via ModelBuilder., Test site with default parameters., Test adding multiple sites to same body. (+3 more)
 
 ### Community 345 - "Community 345"
-Cohesion: 0.07
-Nodes (15): Test that sites don't participate in collision detection., Test that sites are created without collision flags., Test that sites don't collide with shapes., Tests for site invariant enforcement mechanisms., Test that mark_as_site() method enforces all invariants., Test that setting flags with SITE enforces invariants., Test that SITE flag overrides collision flags., Test that add_shape rejects sites with collision enabled. (+7 more)
+Cohesion: 0.10
+Nodes (11): Tests for site invariant enforcement mechanisms., Test that mark_as_site() method enforces all invariants., Test that setting flags with SITE enforces invariants., Test that SITE flag overrides collision flags., Test that add_shape rejects sites with collision enabled., Test that add_shape rejects sites with non-zero density., Test that add_shape rejects sites with non-zero collision group., Test that add_site() properly enforces invariants via mark_as_site(). (+3 more)
 
 ### Community 346 - "Community 346"
 Cohesion: 0.12
 Nodes (16): benchmark_dir, branches, build_cache_size, build_command, default_benchmark_timeout, dvcs, env_dir, environment_type (+8 more)
 
 ### Community 347 - "Community 347"
-Cohesion: 0.36
-Nodes (7): DeviceLike, _fmt_bytes(), get_device_malloc_info(), get_device_spec_info(), Helper function to format a byte value into a human-readable string with appropr, Retrieves detailed specifications of a given Warp device as a formatted string., Retrieves memory allocation information for the specified device as a formatted
+Cohesion: 0.16
+Nodes (14): benchmark_output(), benchmark_run(), load_metrics(), Executes the benchmark data generation with the provided arguments.      This, # TODO: Make optional, BenchmarkMetrics, Namespace, DeviceLike (+6 more)
 
 ### Community 348 - "Community 348"
 Cohesion: 0.24
@@ -2132,8 +2133,8 @@ Cohesion: 0.19
 Nodes (7): array, array2d, compute_joint_qd(), Example, Set up GPU IK solver for end-effector pose tracking., Interpolate keyframes and update IK target arrays (CPU, called before graph laun, set_gripper_q()
 
 ### Community 356 - "Community 356"
-Cohesion: 0.25
-Nodes (13): ndarray, in_range_via_gaussian_elimination(), in_range_via_left_nullspace(), in_range_via_projection(), in_range_via_rank(), in_range_via_residual(), Check if b is in the range (column space) of A by forming the augmented     mat, Determine numerical rank from singular values using a pinv-like threshold. (+5 more)
+Cohesion: 0.21
+Nodes (15): ndarray, ndarray, print_dual_problem_summary(), in_range_via_gaussian_elimination(), in_range_via_left_nullspace(), in_range_via_projection(), in_range_via_rank(), in_range_via_residual() (+7 more)
 
 ### Community 357 - "Community 357"
 Cohesion: 0.18
@@ -2180,24 +2181,24 @@ Cohesion: 0.22
 Nodes (10): Any, # NOTE: We do **not** import warp at module import time. Doing so would require, Autodoc documenter that unwraps :pyclass:`warp.types.Function`., Return *True* if *obj* appears to be a `warp.types.Function`., Return *True* when *member* is a Warp function we can handle., Return the original Python function or *self.object* as fallback., Register the :class:`WarpFunctionDocumenter` with *app*., setup() (+2 more)
 
 ### Community 368 - "Community 368"
-Cohesion: 0.06
-Nodes (63): Warp kernel for parallel inertia validation and correction.      This kernel p, validate_and_correct_inertia_kernel(), Heightfield, Optional display RGB color with values in [0, 1]., Represents a heightfield (2D elevation grid) for terrain and large static surfac, Compute a hash of the heightfield data for use in caching.          Returns:, compute_aabb(), compute_inertia_box_mesh() (+55 more)
+Cohesion: 0.07
+Nodes (49): compute_aabb(), compute_inertia_box_mesh(), compute_inertia_obb(), compute_obb_candidates(), compute_pca_obb(), _convex_hull_2d_indices(), _degenerate_hull_line(), _degenerate_hull_point() (+41 more)
 
 ### Community 369 - "Community 369"
-Cohesion: 0.09
-Nodes (24): array, array2d, int32, Model, ndarray, spatial_vector, transform, vec3 (+16 more)
+Cohesion: 0.15
+Nodes (8): Regression tests for the deprecated ``.pt`` MLP checkpoint path.      ``Contro, Regression tests for the deprecated ``.pt`` LSTM checkpoint path.      ``Contr, Save a TorchScript LSTM module matching the pre-ONNX controller contract., Legacy ``.pt`` LSTM checkpoints emit a ``DeprecationWarning`` on load., ``num_layers`` / ``hidden_size`` are read from ``network.lstm`` when missing., Legacy ``.pt`` LSTM runs end-to-end through ``compute()`` / ``update_state()``., TestControllerNeuralLSTMLegacyTorchScript, TestControllerNeuralMLPLegacyTorchScript
 
 ### Community 370 - "Community 370"
 Cohesion: 0.25
 Nodes (3): compute_grid_layout(), Lay out *n* tiles of a given aspect ratio in a window.      Picks the column c, TestComputeGridLayout
 
 ### Community 371 - "Community 371"
-Cohesion: 0.19
-Nodes (8): DeviceLike, JointSpacePIDController, ModelBuilderKamino, Simulator, Capture CUDA graph if requested and available., # NOTE: These are used for most efficient GPU runtime, # NOTE: This compiles and loads the warp kernels prior to execution, SimulationRunner
+Cohesion: 0.24
+Nodes (6): DeviceLike, JointSpacePIDController, ModelBuilderKamino, Simulator, Capture CUDA graph if requested and available., SimulationRunner
 
 ### Community 372 - "Community 372"
 Cohesion: 0.15
-Nodes (14): _build_multi_world_model(), max_worlds param in set_model still works with deprecation warning., Internal mask array is correctly built., set_visible_worlds raises without a model., Geometry cache is not cleared when switching visible worlds., User-provided spacing is reapplied when visible worlds change., Create a simple multi-world model for testing., Verify shape transforms are correct for visible world subset. (+6 more)
+Nodes (9): Constructs a Kamino solver for the given model and optional configurations., Resets the simulation state given a combination of desired base body         an, A physics solver for simulating constrained multi-body systems containing kinema, Propagate Newton model property changes to Kamino's internal ModelKamino., Import the Kamino dependencies and cache them as class variables., Validates that the model does not contain components unsupported by SolverKamino, Updates Kamino's :class:`GravityModel` from Newton's model.gravity.          C, Re-derive Kamino joint anchors and axes from Newton's joint_X_p / joint_X_c. (+1 more)
 
 ### Community 373 - "Community 373"
 Cohesion: 0.16
@@ -2232,8 +2233,8 @@ Cohesion: 0.20
 Nodes (3): Example, Save diagnostics plots to a PNG file., Print a text summary of diagnostics data.
 
 ### Community 381 - "Community 381"
-Cohesion: 0.10
-Nodes (25): benchmark_output(), benchmark_run(), load_metrics(), Executes the benchmark data generation with the provided arguments.      This, # TODO: Make optional, Outputs a formatted table summarizing the total metrics         (memory used, t, Outputs a formatted table for each problem summarizing the per-step time, Outputs a formatted table for each problem summarizing the PADMM         solver (+17 more)
+Cohesion: 0.17
+Nodes (18): Outputs a formatted table for each problem summarizing the per-step time, Outputs a formatted table for each problem summarizing the PADMM         solver, Outputs a formatted table for each problem summarizing the physics         metr, _add_table_column_group(), ColumnGroup, _format_cell(), Renders a rich table summarizing the solver configurations.      Args:, Renders a rich table summarizing the problem dimensions.      Args:         c (+10 more)
 
 ### Community 382 - "Community 382"
 Cohesion: 0.10
@@ -2252,8 +2253,8 @@ Cohesion: 0.13
 Nodes (8): ndarray, CameraFollowRobot, Smoothly follow the robot root body with the viewer camera.      The camera ma, Update camera to follow the given root position.          Args:             r, Change the camera offset from the robot., Change the camera pitch angle in degrees., Change the camera yaw angle in degrees., Reset smoothing state (e.g. after a simulation reset).
 
 ### Community 386 - "Community 386"
-Cohesion: 0.14
-Nodes (13): array, float32, int32, transform, uint32, vec2, vec3, vec4 (+5 more)
+Cohesion: 0.16
+Nodes (14): array, array2d, float32, int32, quat, transform, vec3, _copy_body_q_to_mjwarp_kernel() (+6 more)
 
 ### Community 387 - "Community 387"
 Cohesion: 0.25
@@ -2276,15 +2277,15 @@ Cohesion: 0.47
 Nodes (12): aabb_vs_aabb_kernel(), aabb_vs_line_kernel(), compute_edge_aabbs_kernel(), compute_tri_aabbs_kernel(), edge_vs_edge_kernel(), line_intersects_aabb(), triangle_vs_point_kernel(), array (+4 more)
 
 ### Community 393 - "Community 393"
-Cohesion: 0.13
-Nodes (12): Regression tests for triangle-mesh-vs-convex collisions with non-uniform mesh sc, 1x1 quad in the XY plane centered at the origin, normal +Z, two triangles., Drop a sphere onto a unit quad with the given mesh_scale and return contact coun, A sphere placed just above the (scaled) quad should overlap and produce contacts, Sanity: uniform mesh scale (1, 1, 1) must produce contacts (regression baseline), Uniform scale (10, 10, 10) - sphere over the (now 10x10) quad., Non-uniform scale (10, 10, 1): the user's reported pancake case.          With, Non-uniform scale (10, 10, 1), sphere near a corner of the scaled quad. (+4 more)
+Cohesion: 0.21
+Nodes (13): _hashtable_clear_keys_kernel(), hashtable_find(), _hashtable_hash(), _next_power_of_two(), Kernel to clear only the active keys in the hash table.      Uses grid-stride, Zero the count element after clearing., Round up to the next power of two., Compute hash index using a simplified mixer. (+5 more)
 
 ### Community 394 - "Community 394"
-Cohesion: 0.10
-Nodes (13): Verify that the anti-flicker enlarge in MPR does not bias returned distances or, Two boxes with a small known overlap must report the correct penetration depth., Two boxes whose faces are exactly coincident must report penetration ~0., Contact points reconstructed from center + distance must lie on the true box sur, Two boxes with small thickness (0 < margin_sum < 1e-4) must report correct penet, Two boxes with large thickness (margin_sum >= 1e-4) must report correct penetrat, Contact points with small thickness must lie on the true box surfaces., Contact points with large thickness must lie on the true box surfaces. (+5 more)
+Cohesion: 0.25
+Nodes (8): Creates a :class:`CollisionDetectorConfig` by attempting to         parse custo, Creates a :class:`ConstraintStabilizationConfig` by attempting         to parse, Creates a :class:`ConstrainedDynamicsConfig` by attempting to         parse cus, Creates a :class:`ConfigBase` by attempting to parse custom attributes from a :c, Creates a :class:`PADMMSolverConfig` by attempting to         parse custom attr, Creates a :class:`ForwardKinematicsSolverConfig` by attempting         to parse, Any, Model
 
 ### Community 395 - "Community 395"
-Cohesion: 0.16
+Cohesion: 0.17
 Nodes (17): ndarray, PathLike, compute_texture_hash(), _download_texture_from_file_bytes(), _is_http_url(), linear_texture_to_srgb(), load_texture(), load_texture_from_file() (+9 more)
 
 ### Community 396 - "Community 396"
@@ -2300,8 +2301,8 @@ Cohesion: 0.15
 Nodes (20): compute_num_reduction_slots(), Total reduction slots per shape pair.      Returns:         ``NUM_NORMAL_BINS, array, vec3, _get_slot_kernel(), Test that get_slot returns the face with highest dot product., Kernel to test get_slot function., Tests for contact reduction functionality. (+12 more)
 
 ### Community 399 - "Community 399"
-Cohesion: 0.16
-Nodes (22): IntFlag, GeoType, CollisionSetup, Test that particle-shape contacts are correctly generated.      Creates a clot, Test mesh-mesh collision with specific SDF configurations., Test mesh-mesh collision where both meshes have SDFs., Test mesh-mesh collision where first mesh has SDF, second uses BVH., Test mesh-mesh collision where first mesh uses BVH, second has SDF. (+14 more)
+Cohesion: 0.18
+Nodes (11): CollisionSetup, Test mesh-mesh collision with specific SDF configurations., Test mesh-mesh collision where both meshes have SDFs., Test mesh-mesh collision where first mesh has SDF, second uses BVH., Test mesh-mesh collision where first mesh uses BVH, second has SDF., Test mesh-mesh collision where both meshes use BVH (no SDF)., test_mesh_mesh_bvh_vs_bvh(), test_mesh_mesh_bvh_vs_sdf() (+3 more)
 
 ### Community 400 - "Community 400"
 Cohesion: 0.20
@@ -2331,10 +2332,6 @@ Nodes (8): Verify that contact forces from Newton's MuJoCo solver are physically
 Cohesion: 0.28
 Nodes (8): log_instances(hidden=True) should clear a previously visible entity., log_instances(hidden=True) for a never-visible entity should not crash or log., Regression tests for the hidden parameter in ViewerRerun log_mesh/log_instances., Create a ViewerRerun with mocked rerun backend., Create a mock warp array that behaves enough for ViewerRerun., log_mesh(hidden=True) should store the mesh in _meshes but not render them., Hidden mesh templates should retain shading data for later instancing., TestViewerRerunHidden
 
-### Community 407 - "Community 407"
-Cohesion: 0.24
-Nodes (3): MatrixComparison, Save error visualizations to the specified path., Clip small errors to zero for visualization.
-
 ### Community 408 - "Community 408"
 Cohesion: 0.23
 Nodes (8): ModelBuilder, _setup_allegro(), _setup_ant(), _setup_cartpole(), _setup_g1(), _setup_h1(), _setup_humanoid(), _setup_quadruped()
@@ -2344,16 +2341,16 @@ Cohesion: 0.23
 Nodes (5): _ball_body_stays_on_joint_sphere(), Example, _slider_constrained_motion_has_stopped(), spatial_vector, transform
 
 ### Community 410 - "Community 410"
-Cohesion: 0.13
-Nodes (6): Example, Read gizmo-updated transforms and push into IK objectives., Example, Read gizmo-updated transforms and push into IK objectives., array, transform
+Cohesion: 0.09
+Nodes (8): Example, Read gizmo-updated transforms and push into IK objectives., Example, Read gizmo-updated transform and push into IK objectives., Example, Read gizmo-updated transforms and push into IK objectives., array, transform
 
 ### Community 411 - "Community 411"
-Cohesion: 0.17
-Nodes (8): apply_rotation(), Example, initialize_rotation(), array, int32, vec3, FastExampleClothManipulation, FastExampleClothTwist
+Cohesion: 0.15
+Nodes (13): Test that objects on a ramp with end wall remain stable (don't move or rotate si, Test that a mesh box (created with create_box_mesh) rests stably on a ground pla, Test that MuJoCo Warp solver correctly handles contact transfer from Newton's co, Test that MuJoCo can handle CONVEX_MESH geometry type by simulating a simple dro, Test that dropping boxes are properly constrained by contacts.     Verifies vel, simulate(), test_box_drop(), test_mesh_box_on_ground() (+5 more)
 
 ### Community 412 - "Community 412"
-Cohesion: 0.26
-Nodes (11): active_force_mask(), positive_hysteresis_work(), Compute official held-out trace metrics., Pass/fail metrics for one measured-vs-simulated trace., Mean of the top ``top_count`` active force samples., Return the official active frame mask from measured corrected force., Compute positive dissipated work from loading and unloading branches., robust_peak() (+3 more)
+Cohesion: 0.04
+Nodes (50): Copies the ControlKamino data from another ControlKamino object.          Args, Copies the ControlKamino data to another ControlKamino object.          Args:, Returns the numerical bound imposed by the correction mode., Converts a string to a JointCorrectionMode enum value., Returns the joint's generalized coordinates in its neutral position., Copy the current data to another :class:`StateKamino` object.          Args:, Copy the data from another :class:`StateKamino` object into the current., Sets a uniform discrete time-step for all worlds.          Args: (+42 more)
 
 ### Community 413 - "Community 413"
 Cohesion: 0.21
@@ -2372,16 +2369,16 @@ Cohesion: 0.24
 Nodes (14): dtype, ndarray, build_edge_n_ring_edge_collision_filter(), build_vertex_n_ring_tris_collision_filter(), _csr_row(), leq_n_ring_vertices(), one_ring_vertices(), Extract CSR row `i` from the flattened adjacency arrays. (+6 more)
 
 ### Community 417 - "Community 417"
-Cohesion: 0.14
-Nodes (24): array, Mesh, ndarray, uint64, vec3, _make_mixed_winding_convex_pile_proxy(), _make_thin_gap_box_pair(), _make_warp_mesh() (+16 more)
+Cohesion: 0.10
+Nodes (25): create_mesh_terrain(), Generate a grid of procedural terrain blocks.      This is the main public API, Any, array, Mesh, ndarray, _estimate_rigid_contact_max(), Estimate the maximum number of rigid contacts for the collision pipeline. (+17 more)
 
 ### Community 418 - "Community 418"
 Cohesion: 0.24
 Nodes (14): ndarray, _build_rotated_parent_descendant_free_model(), Regression test for issue #1261: apply_joint_forces must include child joint tra, A descendant FREE world force should move in world coordinates while returned jo, A descendant FREE world torque should rotate in world coordinates while returned, The descendant FREE world-wrench path should not require a caller-side pre-step, _rotate_into_parent_frame(), test_3d_articulation() (+6 more)
 
 ### Community 419 - "Community 419"
-Cohesion: 0.12
-Nodes (12): Verify MJCF position actuator dampratio encoding in biasprm[2]., dampratio should be stored as unresolved biasprm[2] > 0., kv should override dampratio and set biasprm[2] negative., Verify fromto capsules/cylinders get the correct position and orientation., Assert the shape's Z axis (long axis) aligns with expected direction., Diagonal fromto: pos = midpoint, Z aligned with start - end., Downward fromto: start - end = +Z, identity rotation., Upward fromto: start - end = -Z, 180 deg rotation (anti-parallel case). (+4 more)
+Cohesion: 0.06
+Nodes (23): Verify actuator shortcut types set implicit biastype/gaintype correctly., Verify position actuator gets biastype=affine (1)., Verify velocity actuator gets biastype=affine (1)., Verify motor actuator keeps biastype=none (0)., Verify general actuator reads biastype from XML., Verify position actuator gets gaintype=fixed (0)., Verify compiled MuJoCo model has correct biastype after spec creation., Verify MJCF position actuator dampratio encoding in biasprm[2]. (+15 more)
 
 ### Community 420 - "Community 420"
 Cohesion: 0.22
@@ -2396,12 +2393,12 @@ Cohesion: 0.21
 Nodes (11): allocate_rcm_batch_scratch(), create_cuda_graph_callback(), create_rcm_batch_launch(), _default_bfs_iters(), _make_rcm_batch_kernels(), Kernels are parameterized by `dtype` only. `max_dim` / `num_blocks`     are pas, Upper bound on BFS depth we actually execute.      We use ``max_dim`` (the lar, Create a single zero-arg callback that runs RCM on all blocks in parallel. (+3 more)
 
 ### Community 423 - "Community 423"
-Cohesion: 0.14
-Nodes (15): create_1d_tile_based_kernels(), create_eval_joint_constraints_jacobian_kernel(), create_eval_joint_constraints_kernel(), create_eval_joint_constraints_sparse_jacobian_kernel(), Returns the joint constraints sparse Jacobian evaluation kernel,     statically, Generates and returns all kernels based on 2d tiles in this module, given the ti, Generates and returns all kernels based on 1d tiles in this module, given the ti, Returns the joint constraints evaluation kernel, statically baking in whether th (+7 more)
+Cohesion: 0.19
+Nodes (10): create_eval_joint_constraints_kernel(), Returns the joint constraints evaluation kernel, statically baking in whether th, Initializes the solver to solve forward kinematics for a given model., Finishes the solver initialization, performing necessary allocations and precomp, Config, ModelKamino, get_num_tiles(), get_tile_size() (+2 more)
 
 ### Community 424 - "Community 424"
-Cohesion: 0.17
-Nodes (9): Reconstruct triangle meshes from point clouds using Poisson reconstruction., SurfaceReconstructor, Test the SurfaceReconstructor class., Set up test fixtures once for all tests., Test full remeshing pipeline: extract point cloud and reconstruct mesh., Test that reconstruction produces a reasonable number of triangles., Test that invalid parameters raise ValueError., Test that reconstructing from empty point cloud raises ValueError. (+1 more)
+Cohesion: 0.19
+Nodes (8): Reconstruct triangle meshes from point clouds using Poisson reconstruction., SurfaceReconstructor, Test the SurfaceReconstructor class., Set up test fixtures once for all tests., Test that reconstruction produces a reasonable number of triangles., Test that invalid parameters raise ValueError., Test that reconstructing from empty point cloud raises ValueError., TestSurfaceReconstructor
 
 ### Community 425 - "Community 425"
 Cohesion: 0.20
@@ -2412,8 +2409,8 @@ Cohesion: 0.16
 Nodes (11): arr_pointer(), Convert numpy array to C-style float pointer for OpenGL., Update all shader uniforms., Update all shader uniforms., Update light space matrix for shadow rendering., Update texture uniform., Set per-frame uniforms (call once before rendering all wireframe shapes)., Set the per-shape world matrix uniform. (+3 more)
 
 ### Community 427 - "Community 427"
-Cohesion: 0.13
-Nodes (20): Enum, compute_costs(), _eval_fk_articulation_batched(), fk_accum(), IKOptimizer, IKSampler, Optimizer backends supported by :class:`~newton.ik.IKSolver`., Sampling strategies used by :class:`~newton.ik.IKSolver` before optimization. (+12 more)
+Cohesion: 0.31
+Nodes (10): compute_costs(), _eval_fk_articulation_batched(), fk_accum(), array, array2d, float32, int32, spatial_vector (+2 more)
 
 ### Community 428 - "Community 428"
 Cohesion: 0.23
@@ -2424,8 +2421,8 @@ Cohesion: 0.14
 Nodes (12): Tests for recursive USD reference resolution in :func:`resolve_usd_from_url`., Run resolve_usd_from_url with mocked network and USD stage I/O.          Args:, References in the root stage are downloaded., References in child stages are resolved recursively., Three levels of nesting are resolved., The same reference appearing in multiple stages is downloaded only once., Cyclic references (including back to root) do not cause infinite recursion., References in subdirectories preserve correct local paths. (+4 more)
 
 ### Community 431 - "Community 431"
-Cohesion: 0.21
-Nodes (6): Path, _load_drlegs_config(), Load walk config YAML from assets, falling back to built-in defaults., Run an RL example in sync or async mode.      Args:         example: An ``Exa, Run the loop until the viewer is closed or KeyboardInterrupt., SimulationRunner
+Cohesion: 0.15
+Nodes (5): BenchmarkMetrics, Generates time-series plots of the PADMM solver metrics         (convergence, i, Generates time-series plots of the physics metrics (e.g.,         constraint vi, Outputs a formatted table summarizing the total metrics         (memory used, t, SolverKaminoImpl
 
 ### Community 432 - "Community 432"
 Cohesion: 0.20
@@ -2444,8 +2441,8 @@ Cohesion: 0.11
 Nodes (18): Behavioral & Support Changes, ⚠️ Breaking Changes, Changes to Existing API, Contents, Fixed, `Model.geo_meshes`: removed, `ModelBuilder.add_shape_ellipsoid`: parameter rename, `ModelBuilder.add_shape_*`: per-shape color (+10 more)
 
 ### Community 436 - "Community 436"
-Cohesion: 0.15
-Nodes (7): Directories that don't match the prefix are untouched., TestCleanupOldVersions, TestFindCachedVersion, _cleanup_old_versions(), _find_cached_version(), Find an existing content-hash cache directory for the given prefix.      Scans, Best-effort removal of old content-hash directories after a new download.
+Cohesion: 0.20
+Nodes (7): Orphaned temp dirs older than max_age are removed., Recent temp dirs (within max_age) are not removed., Content-hash version dirs are NOT cleaned by temp cleanup., Directories that don't match the prefix are untouched., TestCleanupStaleTempDirs, _cleanup_stale_temp_dirs(), Remove orphaned temp directories left by crashed processes.      Scans *cache_
 
 ### Community 437 - "Community 437"
 Cohesion: 0.12
@@ -2480,8 +2477,8 @@ Cohesion: 0.19
 Nodes (10): Tests for MJCF mesh scale resolution from default classes., Return the vertex extent (max - min) of a mesh shape., Mesh with no class and no explicit scale uses default (1,1,1)., Explicit scale on <asset><mesh> is applied to vertices., Mesh with class="X" inherits scale from <default class="X"><mesh scale="..."/>., Explicit scale on <mesh> overrides the class default., Mesh with no class inherits from the root <default><mesh scale="..."/>., Geom's default class mesh scale must NOT override the asset mesh's scale. (+2 more)
 
 ### Community 447 - "Community 447"
-Cohesion: 0.16
-Nodes (10): BvhAabb, BvhTri, Refits the existing BVH to updated leaf bounds.          This is the most effi, A wrapper class for Warp's BVH (Bounding Volume Hierarchy) structure.      Thi, Refits the edge BVH after vertex positions have changed, without rebuilding the, BVH structure specialized for triangular face primitives.      This class exte, Refits the triangle BVH after vertex positions have changed, without rebuilding, Returns True if the BVH has been built, otherwise False. (+2 more)
+Cohesion: 0.14
+Nodes (13): Model, ndarray, _assign_counterpart_columns(), _check_index_bounds(), _ensure_sorted_unique(), _normalize_world_start(), Raise IndexError if any index is out of range [0, count)., Partition sorted shape/body indices into (globals, locals) based on world bounda (+5 more)
 
 ### Community 448 - "Community 448"
 Cohesion: 0.25
@@ -2519,6 +2516,10 @@ Nodes (10): cycle_end, cycle_start, cycles, displacement_peak_mm, force_min_n, f
 Cohesion: 0.18
 Nodes (10): cycle_end, cycle_start, cycles, displacement_peak_mm, force_min_n, force_peak_n, measured_loop_area_j, output_path (+2 more)
 
+### Community 457 - "Community 457"
+Cohesion: 0.17
+Nodes (3): print_fps(), print_fps_results(), SensorTiledCameraBenchmark
+
 ### Community 458 - "Community 458"
 Cohesion: 0.18
 Nodes (6): Tests that override_root_xform parameter is accepted by the URDF importer., override_root_xform=True with fixed base places root at xform., override_root_xform=True with floating base places root at xform., override_root_xform=True without providing xform should raise a ValueError., override_root_xform=True with a custom base_joint applies xform directly, TestOverrideRootXformURDF
@@ -2536,16 +2537,16 @@ Cohesion: 0.31
 Nodes (3): Example, _y_dirs_xy(), vec3
 
 ### Community 463 - "Community 463"
-Cohesion: 0.16
-Nodes (17): get_mc_tables(), get_triangle_fraction(), int_to_vec3f(), mc_calc_face(), Convert integer voxel coordinates to float vector., Compute the fraction of a triangle's area that lies inside the object.      Us, Extract a triangle face from a marching cubes voxel.      Interpolates vertex, Create marching cubes lookup tables on the specified device.      Returns: (+9 more)
+Cohesion: 0.18
+Nodes (15): get_triangle_fraction(), int_to_vec3f(), mc_calc_face(), Convert integer voxel coordinates to float vector., Compute the fraction of a triangle's area that lies inside the object.      Us, Extract a triangle face from a marching cubes voxel.      Interpolates vertex, array, float32 (+7 more)
 
 ### Community 464 - "Community 464"
 Cohesion: 0.22
 Nodes (5): CORSHTTPRequestHandler, HTTP handler with proper MIME type support and CORS headers., Guess the MIME type of a file with proper WASM/JS support., Add CORS headers for local development., Handle CORS preflight requests.
 
 ### Community 465 - "Community 465"
-Cohesion: 0.20
-Nodes (7): _OtherStubExample, Minimal viewer stub for exercising _ExampleBrowser without a UI., Captures the args namespace passed by the example browser., Second stub example with a different parser default to exercise switch()., _StubExample, _StubViewer, TestExampleBrowserReset
+Cohesion: 0.11
+Nodes (17): default_args(), _ExampleBrowser, Manages the example browser UI and switching/reset logic for the run loop., Re-register the example's GUI callback (panel callbacks survive clear_model)., Switch to the selected example. Returns (new_example, new_class) or (None, examp, Reset the current example by re-creating it. Returns the new example or None., Return an args namespace populated with defaults from the given parser.      U, run() (+9 more)
 
 ### Community 466 - "Community 466"
 Cohesion: 0.20
@@ -2568,24 +2569,24 @@ Cohesion: 0.23
 Nodes (11): Contacts, Model, ndarray, State, _build_isolated_pair_model(), _collect_pair_signed_gaps(), Build a two-shape model with a single triangle vs a convex hull., Return (signed_gaps, normals) for contacts between the two given shapes. (+3 more)
 
 ### Community 471 - "Community 471"
-Cohesion: 0.31
-Nodes (10): transform, vec3, Test that body_f correctly propagates to body_parent_f on a 2-link chain., Test that parent force equals weight for a static pendulum with various transfor, Test centrifugal force contribution when pendulum is spinning about Z axis., _setup_pendulum(), test_apply_body_f(), test_parent_force_centrifugal() (+2 more)
+Cohesion: 0.24
+Nodes (12): ndarray, vec3f, color_linear_to_srgb(), color_srgb_to_linear(), linear_channel_to_srgb_wp(), linear_to_srgb_wp(), Convert an sRGB/display RGB triple to linear Rec.709.      Args:         colo, Convert a linear RGB triple to sRGB/display encoding.      Args:         colo (+4 more)
 
 ### Community 473 - "Community 473"
-Cohesion: 0.30
-Nodes (11): load_solver_configs_to_hdf5(), make_benchmark_configs(), make_solver_config_default(), make_solver_config_dense_jacobian_llt_accurate(), make_solver_config_dense_jacobian_llt_fast(), make_solver_config_sparse_delassus_cr_accurate(), make_solver_config_sparse_delassus_cr_fast(), make_solver_config_sparse_jacobian_llt_accurate() (+3 more)
+Cohesion: 0.19
+Nodes (15): load_solver_configs_to_hdf5(), make_benchmark_configs(), make_solver_config_default(), make_solver_config_dense_jacobian_llt_accurate(), make_solver_config_dense_jacobian_llt_fast(), make_solver_config_sparse_delassus_cr_accurate(), make_solver_config_sparse_delassus_cr_fast(), make_solver_config_sparse_jacobian_llt_accurate() (+7 more)
 
 ### Community 474 - "Community 474"
-Cohesion: 0.15
-Nodes (11): Initialize the CollisionDetector.          Args:             model (`ModelKam, Returns the model associated with the CollisionDetector., Returns the config used to configure the CollisionDetector., Returns the ContactsKamino container managed by the CollisionDetector., Allocates CollisionDetector data on the target device.          Args:, Executes collision detection given a model and its associated data.          T, Config, ContactsKamino (+3 more)
+Cohesion: 0.26
+Nodes (11): active_force_mask(), positive_hysteresis_work(), Compute official held-out trace metrics., Pass/fail metrics for one measured-vs-simulated trace., Mean of the top ``top_count`` active force samples., Return the official active frame mask from measured corrected force., Compute positive dissipated work from loading and unloading branches., robust_peak() (+3 more)
 
 ### Community 476 - "Community 476"
 Cohesion: 0.14
 Nodes (10): Time the amount of time it takes to load and run one frame of the example., Time the amount of time it takes to load and run one frame of the example., Time the amount of time it takes to load and run one frame of the example., Time the amount of time it takes to load and run one frame of the example., Time the amount of time it takes to load and run one frame of the example., SlowExampleBasicUrdf, SlowExampleClothFranka, SlowExampleClothTwist (+2 more)
 
 ### Community 477 - "Community 477"
-Cohesion: 0.31
-Nodes (7): compute_baked_compression(), Soften a binary mask by averaging over a 3x3 neighborhood, returning 0 where inv, Evaluate compression at xy_m using the continuous baked maps., _soften_binary_coverage(), BakedMidsoleGeometry, _test_baked_geometry(), TestDigitalInstronV2
+Cohesion: 0.27
+Nodes (4): _colors_from_compression(), Example, _line_segments_from_neighbors(), ndarray
 
 ### Community 478 - "Community 478"
 Cohesion: 0.22
@@ -2604,32 +2605,32 @@ Cohesion: 0.19
 Nodes (4): MeshInstancerGL, Handles instanced rendering for a mesh.     Note the vertices must be in the 8-, Upload pre-computed mat44 transforms from pinned host memory to GL.          A, Return a 1x1 white RGBA texture, creating it on first use.
 
 ### Community 482 - "Community 482"
-Cohesion: 0.19
-Nodes (9): dtype, ndarray, TestLinAlgUtilsRandomRhsVectors, eigenvalues_from_distribution(), random_rhs_for_matrix(), random_spd_matrix(), Generate a symmetric positive definite (SPD) matrix of shape (n, n).      Args, Generate a random RHS vector b that is in the range space of A.      Args: (+1 more)
+Cohesion: 0.24
+Nodes (11): dispatch(), gh(), main(), Poll a workflow run until it reaches ``completed`` status.      Polls every :d, Entry point: parse arguments, dispatch, poll, and write outputs., Run a ``gh`` CLI command and return the completed process.      If the command, Write a key-value pair to the GitHub Actions step-output file.      Args:, Dispatch a workflow via the GitHub REST API.      Args:         repo: Reposit (+3 more)
 
 ### Community 483 - "Community 483"
-Cohesion: 0.15
-Nodes (8): Test the collision detector with the unified pipeline         on multiple world, Test making default collision detector config., Test making collision detector config with string arguments., Test the collision detector with the primitive pipeline         on multiple wor, TestCollisionDetectorConfig, TestGeometryCollisionDetector, check_contacts(), Checks the contents of a ContactsKamino container against expected values.
+Cohesion: 0.18
+Nodes (7): ForwardKinematicsSolverConfig, Post-initialization to validate configurations., Post-initialization to validate configurations., Post-initialization to validate configurations., A container to hold configurations for the Gauss-Newton forward kinematics solve, Validates the current values held by the :class:`ForwardKinematicsSolverConfig`, Post-initialization to validate configurations.
+
+### Community 484 - "Community 484"
+Cohesion: 0.21
+Nodes (9): array, int32, vec3, apply_wind_force_kernel(), Set wind direction (will be normalized)., Wind parameters struct, stored in GPU memory for graph capture., Apply sinusoidal wind impulses to particles using struct parameters., Initialize wind system.          Args:             model: Newton model object (+1 more)
 
 ### Community 485 - "Community 485"
 Cohesion: 0.12
 Nodes (15): Best Practices Summary, Caching & Optimization, Clarifying Questions Checklist, Concurrency Control, GitHub Actions Expert, Important Reminders, OIDC Authentication, Performance (+7 more)
 
-### Community 486 - "Community 486"
-Cohesion: 0.14
-Nodes (11): array, Control, Model, spatial_vector, State, transform, vec3, Example (+3 more)
-
 ### Community 490 - "Community 490"
-Cohesion: 0.23
-Nodes (8): array, Contacts, Control, Model, State, An implicit integrator using eXtended Position-Based Dynamics (XPBD) for rigid a, Populate ``contacts.force`` from XPBD contact impulses accumulated during the la, SolverXPBD
+Cohesion: 0.24
+Nodes (7): Signature, _check_builder_method_matches_importer_function_signature(), _get_type_hints(), _param_list(), Return evaluated type hints, including extras if available., Return list of parameters excluding the first one., TestApi
 
 ### Community 491 - "Community 491"
-Cohesion: 0.13
+Cohesion: 0.15
 Nodes (9): download_external_git_folder(), FastExampleContactHydroWorkingDefaults, FastExampleContactPyramidDefaults, FastExampleContactSdfDefaults, _import_example_class(), Benchmark the box pyramid example with default configuration., Import and return the ``Example`` class from candidate modules.      Args:, Benchmark the SDF nut-bolt example default configuration. (+1 more)
 
 ### Community 493 - "Community 493"
-Cohesion: 0.19
-Nodes (12): quat, vec3, _geom_dist(), _gjk_kernel(), Tests for GJK distance computation using the new simplex solver., Test distance between two separated spheres., Test two touching spheres have zero distance., Test overlapping spheres return collision=True and distance=0. (+4 more)
+Cohesion: 0.18
+Nodes (6): Registers custom attributes for the CollisionDetector solver config with the giv, Registers custom attributes for this config with the given builder.          N, Registers custom attributes for the constrained dynamics problem configurations, Registers custom attributes for the PADMM solver configurations with the given b, Registers custom attributes for the FK solver configurations with the given buil, ModelBuilder
 
 ### Community 495 - "Community 495"
 Cohesion: 0.22
@@ -2668,12 +2669,12 @@ Cohesion: 0.29
 Nodes (3): TestGetLatestCommitViaGit, _get_latest_commit_via_git(), Resolve latest commit SHA for a branch or tag via 'git ls-remote'.      If *re
 
 ### Community 508 - "Collision Pipeline Tests"
-Cohesion: 0.05
-Nodes (33): ModelBuilderKamino, Runs the unified collision detection pipeline using all broad-phase backends, # NOTE: This is required by the unified pipeline when using SAP and NXN broad-ph, Tests the unified collision detection pipeline on a single shape pair.      No, Tests the unified collision pipeline on a specific primitive shape pair., Tests the unified collision pipeline on each supported primitive         shape, # NOTE: To asses "nominal" contacts for box-box,, Tests the unified collision pipeline on each         supported primitive shape (+25 more)
+Cohesion: 0.01
+Nodes (237): AnimationJointReferenceData, # TODO: Make the 2D arrays as flattened 1D arrays to handle arbitrary layouts, # TODO: Try this instead (it might be more robust):, Container of animation references for actuated joints.      By default, the an, # NOTE: This will block execution until the plot window is closed, # NOTE: We also clamp the final control forces to avoid exceeding actuator limit, # TODO: Add support for other control types, # TODO: Add support for other control types (+229 more)
 
 ### Community 509 - "Unitree Robot Models"
-Cohesion: 0.15
-Nodes (13): Unitree A1 quadruped., Unitree Go1 quadruped., TestMenagerie_UnitreeG1, Unitree G1 humanoid. (USD)., Unitree H1 humanoid. (USD)., Unitree A1 quadruped. (USD)., Unitree Go1 quadruped. (USD)., Unitree Z1 arm. (USD). (+5 more)
+Cohesion: 0.21
+Nodes (6): Path, _load_drlegs_config(), Load walk config YAML from assets, falling back to built-in defaults., Run an RL example in sync or async mode.      Args:         example: An ``Exa, Run the loop until the viewer is closed or KeyboardInterrupt., SimulationRunner
 
 ### Community 510 - "MuJoCo Solver Properties"
 Cohesion: 0.25
@@ -2688,12 +2689,12 @@ Cohesion: 0.42
 Nodes (8): _make_single_tet_model(), _step_activated_tet(), _step_compressed_tet(), test_xpbd_tetrahedra_resist_compression(), test_xpbd_tetrahedra_use_control_activation(), test_xpbd_tetrahedra_use_material_stiffness(), TestSolverXPBDTetrahedra, _tet_volume()
 
 ### Community 515 - "Viewer Step Logic"
-Cohesion: 0.36
-Nodes (3): _make_gl_state(), ViewerGL.should_step() state machine: running, paused, and single-step., TestViewerGLShouldStep
+Cohesion: 0.25
+Nodes (3): Example, # NOTE: This only has an effect on GPU devices, ViewerBase
 
 ### Community 516 - "Output Stream Capture"
-Cohesion: 0.06
-Nodes (25): NarrowPhase, Test that buffer overflow produces warnings and does not crash., Create n overlapping ellipsoids along the X axis (routes to GJK)., Create n overlapping unit spheres along the X axis., Create geometry arrays from geometry descriptions., Test that GJK buffer overflow produces a warning and no crash., Test that broad phase buffer overflow produces a warning and no crash., Create geometry arrays from a list of geometry descriptions.          Each geo (+17 more)
+Cohesion: 0.14
+Nodes (4): CheckOutput, ParallelJunitTestResult, StdErrCapture, StreamCapture
 
 ### Community 519 - "Actuator Force Application"
 Cohesion: 0.29
@@ -2720,8 +2721,8 @@ Cohesion: 0.29
 Nodes (7): crop_input_triangles, crop_input_vertices, crop_output_triangles, crop_output_vertices, crop_removed_triangles, crop_z_max_m, fixture_crop
 
 ### Community 525 - "Contact Search Parameters"
-Cohesion: 0.19
-Nodes (14): add_ground_box(), build_usd(), Offsets the initial poses of all rigid bodies existing in the builder uniformly, Offsets the initial twists of all rigid bodies existing in the builder uniformly, Imports a USD model and optionally adds a ground plane.      Each call creates, Adds a static box geometry to a given builder to represent a flat ground with fi, set_uniform_body_pose_offset(), set_uniform_body_twist_offset() (+6 more)
+Cohesion: 0.27
+Nodes (4): LimitBreachType, Test that tendons limits are respected, Test that tendon length works as expected, TestMujocoFixedTendon
 
 ### Community 526 - "Warp Array Syntax"
 Cohesion: 0.43
@@ -2748,16 +2749,16 @@ Cohesion: 0.13
 Nodes (14): APT (Only Required for Linux), Development, Further Reading, Getting Started, Installing, Introduction, Kamino, MuJoCo (+6 more)
 
 ### Community 532 - "Material Property Averaging"
-Cohesion: 0.05
-Nodes (40): convert_model_gravity(), # TODO: Re-implement using kernels, Converts the gravity representation from the Newton model to the Kamino format., material_average(), material_max(), material_min(), MaterialMuxMode, # TODO: Switch to vec3f for anisotropic+torsional friction? (+32 more)
+Cohesion: 0.22
+Nodes (11): array, array2d, int32, spatial_vector, transform, vec3, accumulate_contact_forces_kernel(), compute_sensing_obj_transforms_kernel() (+3 more)
 
 ### Community 533 - "RGBA Packing Kernels"
 Cohesion: 0.47
 Nodes (6): _pack_rgba_f32_kernel(), _pack_rgba_u8_kernel(), array3d, array4d, float32, uint8
 
 ### Community 534 - "Raycast Hit Functions"
-Cohesion: 0.13
-Nodes (8): Verify actuator shortcut types set implicit biastype/gaintype correctly., Verify position actuator gets biastype=affine (1)., Verify velocity actuator gets biastype=affine (1)., Verify motor actuator keeps biastype=none (0)., Verify general actuator reads biastype from XML., Verify position actuator gets gaintype=fixed (0)., Verify compiled MuJoCo model has correct biastype after spec creation., TestActuatorShortcutTypeDefaults
+Cohesion: 0.20
+Nodes (5): Returns a human-readable string representation of the RigidBodyDescriptor., Returns a human-readable string representation of the GeometryDescriptor., Returns a human-readable string representation of the GravityDescriptor., Returns a human-readable string representation of the MaterialDescriptor., Returns a human-readable string representation of the Descriptor.
 
 ### Community 535 - "Style3D Attribute Registration"
 Cohesion: 0.20
@@ -2768,8 +2769,8 @@ Cohesion: 0.14
 Nodes (8): Tests for custom path_resolver callback., Test custom callback that returns XML content directly for includes., Test that custom callback receives correct base_dir., Test that XML string input works with custom resolver (base_dir is None)., Test DOF attributes pass through unchanged when compiler.angle='radian'., Test DOF attributes for slide joints are not converted regardless of angle setti, Test DOF attributes are converted from degrees when compiler.angle='degree' (def, TestMjcfIncludeCallback
 
 ### Community 537 - "Solver Config Conversion"
-Cohesion: 0.07
-Nodes (25): Config, DeviceLike, PADMMData, SizeKamino, Any, Initializes a PADMM solver.          If a model is provided, it will perform a, Returns the host-side cache of the solver config.\n         They are used to co, Returns the host-side cache of the solver allocation sizes. (+17 more)
+Cohesion: 0.29
+Nodes (4): Returns a string representation of the PADMMPenaltyUpdate., Returns a string representation of the PADMMPenaltyUpdate., Returns a string representation of the PADMMWarmStartMode., Returns a string representation of the PADMMWarmStartMode.
 
 ### Community 538 - "Rearfoot Punch Geometry"
 Cohesion: 0.33
@@ -2792,8 +2793,8 @@ Cohesion: 0.33
 Nodes (4): ModelBuilder actuator construction — grouping, params, state, and index layouts., Mixed controller types, clamping, and delays via add_actuator.          3-join, Free-joint base + 2 revolute children x 3 envs.          Verifies:         -, TestActuatorBuilder
 
 ### Community 544 - "Deterministic Pipeline Tests"
-Cohesion: 0.22
-Nodes (9): create_mesh_terrain(), Generate a grid of procedural terrain blocks.      This is the main public API, Any, _build_deterministic_scene(), Build the mixed-shape scene from example_basic_shapes6_determinism., Run 500 frames of the mixed-shape scene and assert bit-identical contacts on eve, Same scene as ``test_deterministic_pipeline_500_steps`` but with sticky     con, test_deterministic_pipeline_500_steps() (+1 more)
+Cohesion: 0.31
+Nodes (10): transform, vec3, Test that body_f correctly propagates to body_parent_f on a 2-link chain., Test that parent force equals weight for a static pendulum with various transfor, Test centrifugal force contribution when pendulum is spinning about Z axis., _setup_pendulum(), test_apply_body_f(), test_parent_force_centrifugal() (+2 more)
 
 ### Community 545 - "HDR Camera Sensor"
 Cohesion: 0.71
@@ -2829,7 +2830,7 @@ Nodes (5): pressure_layer_params, cubic, densification_power, eta_lock, quintic
 
 ### Community 556 - "Trossen ViperX Models"
 Cohesion: 0.33
-Nodes (6): Trossen Robotics ViperX 300 S arm., Trossen Robotics WidowX 250 S arm., Trossen Robotics WidowX AI arm., TestMenagerie_TrossenWxai, Trossen Robotics WidowX 250 S arm. (USD)., TestMenagerie_TrossenWx250s_USD
+Nodes (9): _llt_sequential_factorize(), _llt_sequential_solve(), _llt_sequential_solve_inplace(), Launches the sequential Cholesky factorization kernel for a block partitioned ma, Launches the sequential solve kernel using the Cholesky factorization of a block, Launches the sequential in-place solve kernel using the Cholesky factorization o, array, float32 (+1 more)
 
 ### Community 557 - "Scalar Plot Logging"
 Cohesion: 0.17
@@ -2844,8 +2845,8 @@ Cohesion: 0.18
 Nodes (10): Code of Conduct, Contributing and Development, Example Options, Example Usage, Examples, Newton, Project Governance, Legal, and Members, Quickstart (+2 more)
 
 ### Community 561 - "OpenGL Uniform Utilities"
-Cohesion: 0.35
-Nodes (4): Convert string to C-style char pointer for OpenGL., Get uniform location for given name., str_buffer(), Shader
+Cohesion: 0.29
+Nodes (3): Convert string to C-style char pointer for OpenGL., Get uniform location for given name., str_buffer()
 
 ### Community 563 - "State Cache Updates"
 Cohesion: 0.18
@@ -2856,8 +2857,12 @@ Cohesion: 0.67
 Nodes (3): Development Guide, Installation Guide, Newton Physics Overview
 
 ### Community 570 - "USD Attribute Parsing"
-Cohesion: 0.31
-Nodes (8): NodeT, check_conditional_graph_support(), Check if conditional graph support is available in the current world.      Ret, _joint_key(), Topological sort of a list of joints treating the graph as undirected.      Th, Topological sort of a list of joints connecting rigid bodies.      Args:, topological_sort(), topological_sort_undirected()
+Cohesion: 0.09
+Nodes (26): Any, ModelBuilder, SchemaResolver, Transform, UsdStage, Any, NodeT, download_asset_tmpfile() (+18 more)
+
+### Community 572 - "Array Repeat Kernel"
+Cohesion: 0.39
+Nodes (3): _make_gl_state(), ViewerGL.should_step() state machine: running, paused, and single-step., TestViewerGLShouldStep
 
 ### Community 573 - "Community 573"
 Cohesion: 0.29
@@ -2884,20 +2889,24 @@ Cohesion: 0.31
 Nodes (8): _build_model_with_per_world_com(), Verify that multi-world simulations with per-world body mass/CoM     produce ph, Build a multi-world model where each world has a free-floating     body with it, Step simulation and return final joint_q as numpy array., Multi-world with different per-world base CoM should match     independent sing, _run_sim(), test_perworld_com_produces_consistent_physics(), TestMultiworldBodyProperties
 
 ### Community 588 - "Particle Friction Velocity"
-Cohesion: 0.22
-Nodes (5): Test the unified remeshing API in utils.py with method='poisson'., Test remesh() with method='poisson' using array-based API., Set up test fixtures once for all tests., Set up test fixtures once for all tests., TestRemeshUnifiedAPI
+Cohesion: 0.40
+Nodes (3): Returns whether the joint has assigned the specified body as Base.          Th, Returns whether the joint has assigned the specified body as Follower., Returns whether the joint is connected to the specified body.          The bod
+
+### Community 590 - "Free-Fall Contact Test"
+Cohesion: 0.25
+Nodes (4): Initialize default values and validate dtype compatibility., Get default value for dtype when not specified., Create appropriate empty container based on frequency type., Validate frequency naming and callback relationships.
 
 ### Community 606 - "Community 606"
 Cohesion: 0.25
 Nodes (7): API And Style Rules, Changes, PRs, And Releases, Commands, graphify, Newton Agent Notes, Project Shape, Tests And Examples
 
 ### Community 607 - "Community 607"
-Cohesion: 0.25
-Nodes (5): ContactMatcher, Frame-to-frame contact matching using binary search on sorted keys.      Inter, Whether the contact report buffers are allocated., Whether sticky-mode full-record buffers are allocated., Clear cross-frame state so the next frame starts fresh.          Use this afte
+Cohesion: 0.40
+Nodes (4): Contacts, State, Update the contact sensor readings based on the provided state and contacts., Zero and recompute force and friction arrays from the given contacts.
 
 ### Community 608 - "Community 608"
-Cohesion: 0.32
-Nodes (5): Data, Construct a simulation-ready Warp Mesh object from the mesh data and return its, Get the normalized [0, 1] elevation data as a 2D numpy array., Set the elevation data from a 2D array. Data is normalized to [0, 1]., Upload Gaussian data to the GPU as Warp arrays.          Args:             de
+Cohesion: 0.29
+Nodes (4): Register custom attributes for the :class:`SolverKamino.Config` configurations., Register custom attributes for SolverKamino.          Args:             build, ModelBuilder, Register custom attributes for the solver.          Args:             builder
 
 ### Community 609 - "Community 609"
 Cohesion: 0.32
@@ -2908,8 +2917,8 @@ Cohesion: 0.25
 Nodes (7): Classification Helpers, Deprecation policy (Phase 4d), Heuristic paths commonly relevant (reference only), Newton has no kernel-scope builtin registry, Newton-specific rename and parameter-reorder recognition (Phase 4d, 5a), Paths that trigger Phase 4f semantic-change review, Public API surface (Phase 4a, 4e)
 
 ### Community 611 - "Community 611"
-Cohesion: 0.25
-Nodes (4): Test that geom_solimp attribute is parsed correctly from MJCF., Test that geom_solmix attribute is parsed correctly from MJCF., Test that geom_solimp attribute is parsed correctly from USD., Test that geom_solmix attribute is parsed correctly from USD.
+Cohesion: 0.29
+Nodes (7): enabled, initial_force_max_n, max_m, pre_embedding, steps, tolerance, auto_contact_search
 
 ### Community 612 - "Community 612"
 Cohesion: 0.25
@@ -2927,10 +2936,6 @@ Nodes (4): SolverMuJoCo warns when a FREE joint has a non-world parent., SolverM
 Cohesion: 0.29
 Nodes (7): array, int32, spatial_vector, transform, vec3, compute_sensor_imu_kernel(), Compute accelerations and angular velocities at sensor sites.
 
-### Community 617 - "Community 617"
-Cohesion: 0.29
-Nodes (6): Robotiq 2F-85 gripper v4., TestMenagerie_Robotiq2f85V4, Robotiq 2F-85 v4 gripper: USD vs native MuJoCo simulation equivalence., Robotiq 2F-85 gripper v4. (USD)., TestMenagerie_Robotiq2f85V4_USD, TestMenagerieUSD_Robotiq2f85V4
-
 ### Community 618 - "Community 618"
 Cohesion: 0.29
 Nodes (7): ANYbotics ANYmal B quadruped., ANYbotics ANYmal C quadruped., TestMenagerie_AnyboticsAnymalB, ANYbotics ANYmal B quadruped. (USD)., ANYbotics ANYmal C quadruped. (USD)., TestMenagerie_AnyboticsAnymalB_USD, TestMenagerie_AnyboticsAnymalC_USD
@@ -2944,12 +2949,12 @@ Cohesion: 0.33
 Nodes (5): Array Documentation Format, Builder Method Signature Template, Nested Classes, Newton API Design Conventions, Quick Checklist
 
 ### Community 621 - "Community 621"
-Cohesion: 0.40
-Nodes (4): Contacts, State, Update the contact sensor readings based on the provided state and contacts., Zero and recompute force and friction arrays from the given contacts.
+Cohesion: 0.33
+Nodes (3): Validates the current values held by the :class:`PADMMSolverConfig` instance., Validates the current values held by the :class:`SolverKamino.Config` instance., Post-initialization to default-initialize empty configurations and validate thos
 
 ### Community 622 - "Community 622"
-Cohesion: 0.40
-Nodes (6): array, transform, compute_relative_transforms_kernel(), compute_shape_transforms_kernel(), Compute world transforms for a list of shape indices.      Args:         shap, Compute relative transforms expressing object poses in reference frame coordinat
+Cohesion: 0.25
+Nodes (8): array, Model, transform, compute_relative_transforms_kernel(), compute_shape_transforms_kernel(), Initialize the SensorFrameTransform.          Args:             model: The mo, Compute world transforms for a list of shape indices.      Args:         shap, Compute relative transforms expressing object poses in reference frame coordinat
 
 ### Community 623 - "Community 623"
 Cohesion: 0.33
@@ -2960,8 +2965,8 @@ Cohesion: 0.33
 Nodes (5): # NOTE: In actual uses-cases this will be called on every sim step, # NOTE: In actual uses-cases this will be called on every sim step, # NOTE: In actual uses-cases this will be called on every sim step, # NOTE: In actual uses-cases this will be called on every sim step, # NOTE: In actual uses-cases this will be called on every sim step
 
 ### Community 625 - "Community 625"
-Cohesion: 0.50
-Nodes (5): array, int32, _clear_counters_and_bump_generation(), _increment_contact_generation(), Zero counter array and optionally increment generation in one kernel launch.
+Cohesion: 0.40
+Nodes (4): Verify shape_collision_aabb_lower/upper are correct for heightfields., Heightfield local AABB should reflect hx, hy, min_z, max_z., Heightfield local AABB should incorporate scale., TestHeightfieldLocalAABB
 
 ### Community 626 - "Community 626"
 Cohesion: 0.40
@@ -2971,9 +2976,21 @@ Nodes (5): pressure_layer_params, cubic, densification_power, eta_lock, quintic
 Cohesion: 0.50
 Nodes (4): Verify that zero-mass bodies are preserved as-is during import.      Models ma, TestZeroMassBodies, SolverMuJoCo accepts models with zero-mass bodies (e.g. sensor frames)., TestMuJoCoSolverZeroMassBody
 
+### Community 628 - "Community 628"
+Cohesion: 0.33
+Nodes (4): Test that sites don't participate in collision detection., Test that sites are created without collision flags., Test that sites don't collide with shapes., TestSiteNonCollision
+
+### Community 629 - "Community 629"
+Cohesion: 0.47
+Nodes (3): Test that tolerance is clamped to 1e-6 to match mujoco_warp behavior., Test that tolerance values above 1e-6 are not modified., TestToleranceClamping
+
 ### Community 630 - "Community 630"
 Cohesion: 0.50
 Nodes (3): Current v2 Choices, Digital Instron v2, v2 Boundary
+
+### Community 631 - "Community 631"
+Cohesion: 0.33
+Nodes (6): _build_two_box_hydro_pipeline(), _contact_surface_aggregates(), Build a deeply-overlapping two-box hydroelastic scene and return the live pipeli, Return order-invariant scalar aggregates summarizing a contact surface.      R, Verify ``mc_edge_clamp_min`` actually flows through to vertex placement., test_mc_edge_clamp_min_changes_contact_surface()
 
 ### Community 632 - "Community 632"
 Cohesion: 0.67
@@ -2986,10 +3003,6 @@ Nodes (3): Key rendering rules, Output style — hard constraints on the generat
 ### Community 635 - "Community 635"
 Cohesion: 0.50
 Nodes (3): CLI, Running Unit Tests, VS Code (& Cursor)
-
-### Community 636 - "Community 636"
-Cohesion: 0.50
-Nodes (3): Verify MJCF plane geoms are imported as infinite planes., MuJoCo plane size is visual-only; imported plane should have zero extents (infin, TestMjcfPlaneInfinite
 
 ### Community 639 - "Community 639"
 Cohesion: 0.50
@@ -3007,26 +3020,22 @@ Nodes (3): Test that update_contacts populates rigid_contact_point0/point1., Dro
 Cohesion: 0.50
 Nodes (4): Regression test for the bug where apply_particle_shape_restitution wrote     re, Regression test for the bug where apply_particle_shape_restitution     did not, test_particle_shape_restitution_accounts_for_body_velocity(), test_particle_shape_restitution_correct_particle()
 
-### Community 645 - "Community 645"
-Cohesion: 0.67
-Nodes (3): Any, Parse a Warp value from a string. This is useful for parsing values from XML fil, string_to_warp()
-
 ## Knowledge Gaps
-- **1252 isolated node(s):** `midsole_mesh`, `cache_dir`, `mesh_source_units`, `min_midsole_thickness_m`, `max_midsole_thickness_m` (+1247 more)
+- **1254 isolated node(s):** `midsole_mesh`, `cache_dir`, `mesh_source_units`, `min_midsole_thickness_m`, `max_midsole_thickness_m` (+1249 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **75 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **74 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `GeoType` connect `Community 6` to `Community 0`, `Community 384`, `Community 2`, `Community 4`, `Community 7`, `Large Mesh Collisions`, `Community 9`, `Community 10`, `Community 12`, `Community 14`, `Community 399`, `Community 143`, `Community 20`, `Inertia Tensor Computation`, `Community 27`, `Community 162`, `Bounding Sphere Calculation`, `Community 37`, `Community 46`, `Community 50`, `Community 185`, `Community 60`, `Community 63`, `Community 458`, `Community 80`, `Community 81`, `Community 82`, `Community 84`, `Community 345`, `Community 93`, `Community 97`, `Community 227`, `Community 101`, `Cloth Constraint Assembly`, `Community 363`, `Community 368`, `MJCF Site Parsing`?**
-  _High betweenness centrality (0.062) - this node is a cross-community bridge._
+- **Why does `GeoType` connect `Community 6` to `Community 0`, `Community 384`, `Community 2`, `Community 5`, `Community 7`, `Large Mesh Collisions`, `Community 10`, `Community 12`, `Community 143`, `Community 18`, `Community 20`, `Community 21`, `Inertia Tensor Computation`, `Community 27`, `Community 419`, `Community 46`, `Community 50`, `Community 185`, `USD Attribute Parsing`, `Community 60`, `Community 63`, `Community 191`, `Particle Collision Testing`, `Community 458`, `Community 81`, `Community 82`, `Community 93`, `Community 97`, `Community 227`, `Community 100`, `Community 363`, `Community 111`, `Community 368`, `Community 121`, `Collision Pipeline Tests`?**
+  _High betweenness centrality (0.051) - this node is a cross-community bridge._
 - **Why does `midsole_stats` connect `Community 104` to `Community 325`, `Community 358`, `Community 359`, `Community 626`, `Community 118`, `Rearfoot Punch Geometry`?**
   _High betweenness centrality (0.048) - this node is a cross-community bridge._
-- **Why does `ModelBuilder` connect `Community 3` to `Community 0`, `Community 10`, `Community 11`, `Community 13`, `Community 144`, `Community 159`, `Community 161`, `Community 35`, `Community 164`, `Community 37`, `Community 42`, `Community 174`, `Community 175`, `Community 182`, `Community 55`, `Community 54`, `Community 62`, `Community 320`, `Community 195`, `Community 80`, `Community 81`, `Softbody Mesh Adjacency`, `Cloth Model Construction`, `Community 355`, `Community 103`, `Cloth Constraint Assembly`, `Rigid Body Benchmarks`?**
-  _High betweenness centrality (0.048) - this node is a cross-community bridge._
-- **Are the 564 inferred relationships involving `ValueError` (e.g. with `.__init__()` and `.step()`) actually correct?**
-  _`ValueError` has 564 INFERRED edges - model-reasoned connections that need verification._
+- **Why does `ModelBuilder` connect `Community 3` to `Community 0`, `Community 10`, `Community 13`, `Community 144`, `Community 21`, `Inertia Tensor Computation`, `Community 155`, `Community 159`, `Community 161`, `Community 35`, `Community 164`, `Community 297`, `Community 174`, `Community 175`, `Community 178`, `Community 182`, `Community 55`, `Community 54`, `USD Attribute Parsing`, `Community 62`, `Community 320`, `Community 195`, `Community 81`, `Cloth Model Construction`, `Community 355`, `Community 103`, `Cloth Constraint Assembly`, `Community 490`, `Community 111`, `Rigid Body Benchmarks`, `Collision Pipeline Tests`?**
+  _High betweenness centrality (0.045) - this node is a cross-community bridge._
+- **Are the 563 inferred relationships involving `ValueError` (e.g. with `.__init__()` and `.step()`) actually correct?**
+  _`ValueError` has 563 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 187 inferred relationships involving `vec6f` (e.g. with `RigidBodiesData` and `RigidBodiesModel`) actually correct?**
   _`vec6f` has 187 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 159 inferred relationships involving `transformf` (e.g. with `RigidBodiesData` and `RigidBodiesModel`) actually correct?**

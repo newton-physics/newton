@@ -20,23 +20,25 @@
   },
   "fit": {
     "model": "locked_ogden_vertical_foundation_v2",
-    "initial_stiffness_pa": 150000.0,
+    "initial_stiffness_pa": 1500.0,
     "initial_ogden_alpha": 0.1,
-    "initial_lock_strain": 0.8,
+    "initial_lock_strain": 0.5,
     "initial_damping_pa_s": 10000.0,
     "initial_damping_power": 1.0,
-    "initial_prony_stiffness_pa": 18000.0,
+    "initial_prony_stiffness_pa": 1800.0,
     "initial_prony_damping_pa_s": 720.0,
     "initial_pasternak_stiffness_n_per_m": 500.0,
+    "initial_ogden2_stiffness_pa": 20000.0,
+    "initial_ogden2_alpha": 1.5,
     "state_warmup_cycles": 5,
     "nominal_midsole_thickness_m": 0.069,
     "low_force_limit_n": 20.0,
     "phase_weights": {
-      "baseline_pre": 1.0,
-      "loading": 1.0,
-      "peak": 1.0,
-      "unloading": 1.0,
-      "baseline_post": 1.0
+      "baseline_pre": 0.25,
+      "loading": 2.0,
+      "peak": 10.0,
+      "unloading": 2.0,
+      "baseline_post": 0.25
     },
     "displacement_shape_weight": 0.0,
     "displacement_shape_bins": 14

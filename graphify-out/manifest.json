@@ -5,9 +5,9 @@
     "semantic_hash": "b27ce4e257143212e048224b94f35f2f"
   },
   "DigitalInstron/manifest_v2.json": {
-    "mtime": 1780597059.6947658,
-    "ast_hash": "1ac1bcafb2cf2c9e5dcca8cec6d51d75",
-    "semantic_hash": "1ac1bcafb2cf2c9e5dcca8cec6d51d75"
+    "mtime": 1782156494.2071652,
+    "ast_hash": "255d27a67b8d36c1fba9c23f7c94cbf4",
+    "semantic_hash": ""
   },
   "DigitalInstron/processed/digital_instron_calibration.summary.json": {
     "mtime": 1779372111.711287,
@@ -2195,9 +2195,9 @@
     "semantic_hash": "79671f973553056e8bcd96089443cfe4"
   },
   "newton/examples/contacts/example_foot_shoe_contact.py": {
-    "mtime": 1779374689.0833397,
-    "ast_hash": "3ea5a93e2ad6a64da2423d3781423009",
-    "semantic_hash": "3ea5a93e2ad6a64da2423d3781423009"
+    "mtime": 1782154133.514259,
+    "ast_hash": "63b3cf25922861c7f4d88577eb146418",
+    "semantic_hash": ""
   },
   "newton/examples/contacts/example_hydro_pressure_slice.py": {
     "mtime": 1779373239.615274,
@@ -2205,9 +2205,9 @@
     "semantic_hash": "643d40c3a82cb176136632df5059f6de"
   },
   "newton/examples/contacts/example_hydro_shoe.py": {
-    "mtime": 1780597059.6973362,
-    "ast_hash": "00176b9a1e178e60f2d2f82e0c2b65cf",
-    "semantic_hash": "00176b9a1e178e60f2d2f82e0c2b65cf"
+    "mtime": 1782154126.9537053,
+    "ast_hash": "a1039e03ae9ea03a199c589667b819a5",
+    "semantic_hash": ""
   },
   "newton/examples/contacts/example_nut_bolt_hydro.py": {
     "mtime": 1779217877.6751351,
@@ -2650,9 +2650,9 @@
     "semantic_hash": "5567347d6a3cbecaef6bdfa59f05e7b7"
   },
   "newton/tests/test_hydro_shoe_material.py": {
-    "mtime": 1780379884.3167748,
-    "ast_hash": "209ad430c964b772855e7b86d3ad4905",
-    "semantic_hash": "209ad430c964b772855e7b86d3ad4905"
+    "mtime": 1782154205.0942626,
+    "ast_hash": "1427d866d286440ebc16105e1551950d",
+    "semantic_hash": ""
   },
   "newton/tests/test_hydroelastic.py": {
     "mtime": 1780517396.951363,
@@ -3190,9 +3190,9 @@
     "semantic_hash": "a35dcfdc414abdea2692af3e0e332b5f"
   },
   "projects/digital_instron_v2/foundation.py": {
-    "mtime": 1780597059.6999297,
-    "ast_hash": "3ebf56d6ff867d68691c61a4697c84a3",
-    "semantic_hash": "3ebf56d6ff867d68691c61a4697c84a3"
+    "mtime": 1782156024.7891343,
+    "ast_hash": "7199a0c43b8e4f9a5462e8eefb4a405b",
+    "semantic_hash": ""
   },
   "projects/digital_instron_v2/frame_qc.py": {
     "mtime": 1780517397.04385,
@@ -3220,14 +3220,14 @@
     "semantic_hash": "e49fa96dd3e42d406c869192f1486862"
   },
   "projects/digital_instron_v2/visualization.py": {
-    "mtime": 1780597059.7044654,
-    "ast_hash": "8ea922fa828ffb822dbdd6352e234c6c",
-    "semantic_hash": "8ea922fa828ffb822dbdd6352e234c6c"
+    "mtime": 1782155871.8449886,
+    "ast_hash": "15348f49a689317943ae1b8b46319293",
+    "semantic_hash": ""
   },
   "projects/digital_instron_v2/workflow.py": {
-    "mtime": 1780597059.7074623,
-    "ast_hash": "cd72a0ee42dde184402ccec7a756c8fe",
-    "semantic_hash": "cd72a0ee42dde184402ccec7a756c8fe"
+    "mtime": 1782157423.0764027,
+    "ast_hash": "9f547b0843ad9d92412ae5dec39ccec2",
+    "semantic_hash": ""
   },
   "scratch/capture_shoe_frame.py": {
     "mtime": 1779934638.2736008,

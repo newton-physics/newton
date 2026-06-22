@@ -153,6 +153,8 @@ def write_visualization_report(manifest: TrialManifest, output_dir: str | Path) 
         damping_pa_s=float(manifest.fit.get("initial_damping_pa_s", 1.0e4)),
         prony_stiffness_pa=prony_stiffness,
         prony_damping_pa_s=prony_damping,
+        ogden2_stiffness_pa=float(manifest.fit.get("initial_ogden2_stiffness_pa", 0.0)),
+        ogden2_alpha=float(manifest.fit.get("initial_ogden2_alpha", 3.0)),
     )
 
     plane = vertices[:, frame.plane_axes]
