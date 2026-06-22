@@ -3793,21 +3793,17 @@ def parse_usd(
             if not mesh_points or not face_counts or not face_indices:
                 warnings.warn(f"{path}: cloth mesh missing points / topology; skipping.", stacklevel=2)
                 continue
-            face_counts = [int(c) for c in face_counts]
-            face_indices = [int(i) for i in face_indices]
-            if any(c < 3 for c in face_counts):
+            if any(int(c) < 3 for c in face_counts):
                 warnings.warn(f"{path}: cloth mesh has a face with fewer than 3 vertices; skipping.", stacklevel=2)
                 continue
-            # Fan-triangulate faces so n-gons (commonly quads) import as triangles. Exact
-            # for convex faces; a concave or strongly non-planar n-gon may triangulate
-            # imperfectly. Vertex indices are preserved so each mesh point stays one particle.
-            tri_vertex_indices: list[int] = []
-            face_offset = 0
-            for count in face_counts:
-                face = face_indices[face_offset : face_offset + count]
-                face_offset += count
-                for k in range(1, count - 1):
-                    tri_vertex_indices += [face[0], face[k], face[k + 1]]
+            # Reuse the shared mesh handling from the rigid path: fan-triangulate faces
+            # (n-gons such as quads; exact for convex faces, preserving vertex indices so
+            # each mesh point stays one particle) and flip winding for left-handed
+            # orientation. Subdivision scheme is not consulted -- the polygon cage is simulated.
+            tri_faces = usd.fan_triangulate_faces(np.asarray(face_counts), np.asarray(face_indices))
+            if mesh.GetOrientationAttr().Get() == UsdGeom.Tokens.leftHanded:
+                tri_faces = tri_faces[:, ::-1]
+            tri_vertex_indices = tri_faces.reshape(-1).tolist()
             _warn_unsupported_rest_fields(
                 prim, path, ("restShapePoints", "restBendAngles", "restAdjTriPairs", "restBendAnglesDefault")
             )

@@ -818,6 +818,27 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertEqual(ranges["tri"], (0, 2))  # quad fan-triangulates to 2 triangles
             self.assertEqual(builder.particle_count, 4)
 
+    def test_cloth_left_handed_orientation_flips_winding(self):
+        """A left-handed cloth mesh flips triangle winding, matching the rigid mesh path."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cloth_lh.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            mesh = UsdGeom.Mesh.Define(stage, "/World/Cloth")
+            mesh.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 1.0, 1.0)])
+            mesh.CreateFaceVertexCountsAttr([4])
+            mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+            mesh.CreateOrientationAttr(UsdGeom.Tokens.leftHanded)
+            mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            builder.add_usd(str(usd_path))
+            # The right-handed fan would give the first triangle (0, 1, 2); left-handed reverses it.
+            self.assertEqual(list(builder.tri_indices[0]), [2, 1, 0])
+
     def test_plain_mesh_without_surface_api_is_not_cloth(self):
         """A triangle Mesh without the surface-deformable API must not produce cloth."""
         from pxr import Usd, UsdGeom, UsdPhysics
