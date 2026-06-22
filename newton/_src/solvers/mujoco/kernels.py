@@ -2645,10 +2645,7 @@ def update_jnt_solref_from_invweight0_kernel(
 
     direct_stiffness = wp.max(ke * factor, MJ_MINVAL)
     direct_damping = wp.max(kd * factor, MJ_MINVAL)
-    timeconst = 2.0 / direct_damping
-    dampratio = direct_damping / (2.0 * wp.sqrt(direct_stiffness))
-
-    jnt_solref[world, mjc_jnt] = wp.vec2(timeconst, dampratio)
+    jnt_solref[world, mjc_jnt] = convert_solref(direct_stiffness, direct_damping, 1.0, 1.0)
 
 
 @wp.kernel(enable_backward=False)
