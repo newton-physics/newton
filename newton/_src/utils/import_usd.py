@@ -3641,8 +3641,12 @@ def parse_usd(
                 )
                 normals = None
 
-            # Curve material moduli (force/area) -> per-joint stiffness via the circular
-            # cross-section (A = pi r^2, I = pi r^4 / 4) and segment length.
+            # The proposal names these curve material values "stretchStiffness" /
+            # "bendStiffness" but authors them in force/area, i.e. modulus units. We read
+            # them as elastic moduli E and convert to Newton's per-joint stiffness through
+            # the circular cross-section and the segment rest length L: stretch = E*A/L
+            # (axial, A = pi r^2) and bend = E*I/L (bending, I = pi r^4 / 4). If the schema
+            # authors instead intend a direct per-length stiffness, this is the place to revisit.
             cable_mat = usd._get_curve_deformable_material(prim, deformable_read) or {}
             radius = 0.5 * cable_mat["thickness"] if "thickness" in cable_mat else 0.05
             area = math.pi * radius * radius
