@@ -850,9 +850,197 @@ def _triangulate_face_varying_indices(counts: Sequence[int], flip_winding: bool)
     return corner_faces.reshape(-1)
 
 
+def _is_usd_url(source: str) -> bool:
+    """Return True when ``source`` is an HTTPS USD asset URL."""
+    return source.startswith("https://")
+
+
+def _open_usd_stage(source: str | os.PathLike[str]):
+    """Open a USD stage from a local path or resolved URL."""
+    if Usd is None:
+        raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).")
+
+    source_path = os.fspath(source)
+    if source_path.startswith("http://"):
+        raise ValueError("HTTP USD URLs are not supported; use HTTPS or download the asset explicitly.")
+    if _is_usd_url(source_path):
+        from ..utils.import_usd import resolve_usd_from_url  # noqa: PLC0415
+
+        source_path = resolve_usd_from_url(source_path)
+
+    stage = Usd.Stage.Open(source_path, Usd.Stage.LoadAll)
+    if stage is None:
+        raise FileNotFoundError(f"Unable to open USD stage: {source_path}")
+    return stage
+
+
+def _get_root_prim(stage, root_path: str | None):
+    """Return the merge root prim for a stage-backed mesh load."""
+    if root_path is None or root_path == "/":
+        return stage.GetPseudoRoot()
+
+    root = stage.GetPrimAtPath(root_path)
+    if not root or not root.IsValid():
+        raise ValueError(f"USD root path '{root_path}' does not exist.")
+    return root
+
+
+def _iter_mesh_prims(root) -> list[Any]:
+    """Return all mesh prims under ``root`` in traversal order."""
+    return [prim for prim in Usd.PrimRange(root) if prim.IsA(UsdGeom.Mesh)]
+
+
+def _matrix_to_numpy(matrix) -> np.ndarray:
+    """Convert a USD matrix value into a NumPy row-vector matrix."""
+    return np.array(matrix, dtype=np.float64)
+
+
+def _relative_transform_matrix(prim, root, xform_cache) -> np.ndarray:
+    """Return ``prim`` transform relative to the selected merge ``root``."""
+    prim_world = _matrix_to_numpy(xform_cache.GetLocalToWorldTransform(prim))
+    if root.IsPseudoRoot():
+        return prim_world
+
+    root_world = _matrix_to_numpy(xform_cache.GetLocalToWorldTransform(root))
+    return prim_world @ np.linalg.inv(root_world)
+
+
+def _transform_mesh_data(mesh: Mesh, matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Apply a row-vector USD transform to mesh vertices, winding, and normals."""
+    vertices = np.asarray(mesh.vertices, dtype=np.float64)
+    vertices_h = np.concatenate((vertices, np.ones((len(vertices), 1), dtype=np.float64)), axis=1)
+    transformed_vertices = (vertices_h @ matrix)[:, :3].astype(np.float32)
+
+    indices = np.asarray(mesh.indices, dtype=np.int32).copy()
+    linear = matrix[:3, :3]
+    if np.linalg.det(linear) < 0.0:
+        indices = indices.reshape(-1, 3)
+        indices[:, [1, 2]] = indices[:, [2, 1]]
+        indices = indices.reshape(-1)
+
+    normals = None
+    if mesh.normals is not None:
+        try:
+            normal_matrix = np.linalg.inv(linear).T
+        except np.linalg.LinAlgError:
+            normal_matrix = None
+        if normal_matrix is not None:
+            normals = np.asarray(mesh.normals, dtype=np.float64) @ normal_matrix
+            lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+            lengths[lengths < 1e-20] = 1.0
+            normals = (normals / lengths).astype(np.float32)
+
+    return transformed_vertices, indices, normals
+
+
+def _get_mesh_from_source(
+    source,
+    *,
+    root_path: str | None,
+    load_normals: bool,
+    load_uvs: bool,
+    maxhullvert: int | None,
+    face_varying_normal_conversion: Literal["vertex_averaging", "angle_weighted", "vertex_splitting"],
+    vertex_splitting_angle_threshold_deg: float,
+    preserve_facevarying_uvs: bool,
+    compute_inertia: bool,
+    apply_stage_units: bool,
+) -> Mesh:
+    """Load and merge mesh prims from a USD stage, path, URL, or prim subtree."""
+    if Usd is None or UsdGeom is None:
+        raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).")
+    if preserve_facevarying_uvs:
+        raise ValueError(
+            "preserve_facevarying_uvs is not supported for merged USD sources; "
+            "load a single mesh prim with return_uv_indices=True or use preserve_facevarying_uvs=False."
+        )
+
+    if isinstance(source, str | os.PathLike):
+        stage = _open_usd_stage(source)
+        root = _get_root_prim(stage, root_path)
+    elif isinstance(source, Usd.Stage):
+        stage = source
+        root = _get_root_prim(stage, root_path)
+    elif isinstance(source, Usd.Prim):
+        stage = source.GetStage()
+        root = source if root_path is None else _get_root_prim(stage, root_path)
+    else:
+        raise TypeError(
+            f"get_mesh() expected a USD prim, USD stage, filesystem path, or URL; received {type(source).__name__}."
+        )
+
+    mesh_prims = _iter_mesh_prims(root)
+    if not mesh_prims:
+        raise ValueError(f"No UsdGeom.Mesh prims found under '{root.GetPath()}'.")
+
+    linear_unit = 1.0
+    if apply_stage_units and UsdGeom.StageHasAuthoredMetersPerUnit(stage):
+        linear_unit = float(UsdGeom.GetStageMetersPerUnit(stage))
+
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    vertices_parts = []
+    indices_parts = []
+    normals_parts = []
+    uvs_parts = []
+    vertex_offset = 0
+    all_have_normals = True
+    all_have_uvs = True
+    source_meshes = []
+
+    for prim in mesh_prims:
+        source_mesh = get_mesh(
+            prim,
+            load_normals=load_normals,
+            load_uvs=load_uvs,
+            maxhullvert=maxhullvert,
+            face_varying_normal_conversion=face_varying_normal_conversion,
+            vertex_splitting_angle_threshold_deg=vertex_splitting_angle_threshold_deg,
+            preserve_facevarying_uvs=preserve_facevarying_uvs,
+            compute_inertia=False,
+        )
+        source_meshes.append(source_mesh)
+        matrix = _relative_transform_matrix(prim, root, xform_cache)
+        vertices, indices, normals = _transform_mesh_data(source_mesh, matrix)
+
+        vertices_parts.append(vertices)
+        indices_parts.append(indices + vertex_offset)
+        vertex_offset += len(vertices)
+
+        if normals is None:
+            all_have_normals = False
+        else:
+            normals_parts.append(normals)
+
+        if source_mesh.uvs is None:
+            all_have_uvs = False
+        else:
+            uvs_parts.append(np.asarray(source_mesh.uvs, dtype=np.float32))
+
+    vertices = np.concatenate(vertices_parts, axis=0)
+    if linear_unit != 1.0:
+        vertices *= linear_unit
+    indices = np.concatenate(indices_parts, axis=0)
+    normals = np.concatenate(normals_parts, axis=0) if all_have_normals else None
+    uvs = np.concatenate(uvs_parts, axis=0) if all_have_uvs else None
+
+    material_source = source_meshes[0] if len(source_meshes) == 1 else None
+    return Mesh(
+        vertices,
+        indices,
+        normals=normals,
+        uvs=uvs,
+        maxhullvert=maxhullvert,
+        compute_inertia=compute_inertia,
+        color=material_source.color if material_source is not None else None,
+        texture=material_source.texture if material_source is not None else None,
+        metallic=material_source.metallic if material_source is not None else None,
+        roughness=material_source.roughness if material_source is not None else None,
+    )
+
+
 @overload
 def get_mesh(
-    prim: Usd.Prim,
+    source: Usd.Prim | Usd.Stage | str | os.PathLike[str],
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -862,12 +1050,15 @@ def get_mesh(
     vertex_splitting_angle_threshold_deg: float = 25.0,
     preserve_facevarying_uvs: bool = False,
     return_uv_indices: Literal[False] = False,
+    root_path: str | None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
 ) -> Mesh: ...
 
 
 @overload
 def get_mesh(
-    prim: Usd.Prim,
+    source: Usd.Prim | Usd.Stage | str | os.PathLike[str],
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -877,11 +1068,14 @@ def get_mesh(
     vertex_splitting_angle_threshold_deg: float = 25.0,
     preserve_facevarying_uvs: bool = False,
     return_uv_indices: Literal[True] = True,
+    root_path: str | None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
 ) -> tuple[Mesh, np.ndarray | None]: ...
 
 
 def get_mesh(
-    prim: Usd.Prim,
+    source: Usd.Prim | Usd.Stage | str | os.PathLike[str],
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -891,9 +1085,17 @@ def get_mesh(
     vertex_splitting_angle_threshold_deg: float = 25.0,
     preserve_facevarying_uvs: bool = False,
     return_uv_indices: bool = False,
+    root_path: str | None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
 ) -> Mesh | tuple[Mesh, np.ndarray | None]:
     """
-    Load a triangle mesh from a USD prim that has the ``UsdGeom.Mesh`` schema.
+    Load a triangle mesh from a USD mesh prim, stage, file path, or URL.
+
+    When ``source`` is a mesh prim, the mesh is loaded in the prim's local
+    coordinates. When ``source`` is a stage, path, URL, or non-mesh prim, all
+    ``UsdGeom.Mesh`` prims under ``root_path`` are merged into one
+    :class:`newton.Mesh` with authored transforms applied relative to that root.
 
     Example:
 
@@ -915,7 +1117,7 @@ def get_mesh(
             assert len(demo_mesh.normals) == 6102
 
     Args:
-        prim: The USD prim to load the mesh from.
+        source: USD mesh prim, stage, file path, or URL to load the mesh from.
         load_normals: Whether to load the normals.
         load_uvs: Whether to load the UVs.
         maxhullvert: The maximum number of vertices for the convex hull approximation.
@@ -949,6 +1151,15 @@ def get_mesh(
             UVs when available. For faceVarying UVs and
             ``preserve_facevarying_uvs=True``, these indices reference the
             face-varying UV array.
+        root_path: USD prim path to use as the merge root for stage, file path,
+            URL, or non-mesh prim sources. Defaults to the stage pseudo-root for
+            stages and paths, or the provided prim for non-mesh prim sources.
+        compute_inertia: If True, compute mass properties for the returned
+            :class:`newton.Mesh`.
+        apply_stage_units: If True, convert merged stage, file path, URL, or
+            non-mesh prim sources from authored USD distance units to meters.
+            Single mesh prim sources keep their authored coordinates for
+            backward compatibility unless ``root_path`` is provided.
 
     Returns:
         newton.Mesh: The loaded mesh, or ``(mesh, uv_indices)`` if
@@ -956,6 +1167,36 @@ def get_mesh(
     """
     if maxhullvert is None:
         maxhullvert = Mesh.MAX_HULL_VERTICES
+
+    should_load_source = isinstance(source, str | os.PathLike) or (
+        Usd is not None
+        and (
+            isinstance(source, Usd.Stage)
+            or (isinstance(source, Usd.Prim) and (root_path is not None or not source.IsA(UsdGeom.Mesh)))
+        )
+    )
+    if should_load_source:
+        if return_uv_indices:
+            raise ValueError("return_uv_indices is only supported when loading a single UsdGeom.Mesh prim.")
+        return _get_mesh_from_source(
+            source,
+            root_path=root_path,
+            load_normals=load_normals,
+            load_uvs=load_uvs,
+            maxhullvert=maxhullvert,
+            face_varying_normal_conversion=face_varying_normal_conversion,
+            vertex_splitting_angle_threshold_deg=vertex_splitting_angle_threshold_deg,
+            preserve_facevarying_uvs=preserve_facevarying_uvs,
+            compute_inertia=compute_inertia,
+            apply_stage_units=apply_stage_units,
+        )
+
+    if Usd is not None and isinstance(source, Usd.Prim):
+        prim = source
+    else:
+        raise TypeError(
+            f"get_mesh() expected a USD prim, USD stage, filesystem path, or URL; received {type(source).__name__}."
+        )
 
     mesh = UsdGeom.Mesh(prim)
 
@@ -1190,6 +1431,7 @@ def get_mesh(
         normals=normals,
         uvs=uvs,
         maxhullvert=maxhullvert,
+        compute_inertia=compute_inertia,
         color=material_props.get("color"),
         texture=material_props.get("texture"),
         metallic=material_props.get("metallic"),
