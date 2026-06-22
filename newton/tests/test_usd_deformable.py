@@ -872,6 +872,22 @@ class TestUSDDeformableCloth(unittest.TestCase):
             # Volumetric density (1000), not the areal 1000 * 0.01 passed to add_cloth_mesh.
             self.assertEqual(result["path_cloth_attrs"]["/World/Cloth"]["resolved_density"], 1000.0)
 
+    def test_cloth_rest_bend_angles_warn(self):
+        """Authored surface rest dihedral angles warn (import not yet supported), like rest shape."""
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cloth_rest.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            mesh.GetPrim().CreateAttribute("physics:restBendAngles", Sdf.ValueTypeNames.FloatArray).Set([0.1, 0.2])
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "restBendAngles.*not yet supported"):
+                builder.add_usd(str(usd_path))
+
     def test_cloth_non_uniform_scale_bakes_into_vertices(self):
         """A non-uniform xformOp:scale on a cloth mesh is baked into the particle positions."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -974,7 +990,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with self.assertWarnsRegex(UserWarning, "rest shape"):
+            with self.assertWarnsRegex(UserWarning, "restShapePoints.*not yet supported"):
                 builder.add_usd(str(usd_path))
 
     def test_two_tetmeshes_have_disjoint_soft_ranges(self):

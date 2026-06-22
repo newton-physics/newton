@@ -3397,14 +3397,14 @@ def parse_usd(
         _, body_density = usd._get_deformable_body_overrides(prim, deformable_read)
         return body_density if body_density is not None else material_density
 
-    def _warn_unsupported_rest_shape(prim, path, names):
-        # Rest-shape import is not implemented yet; warn rather than silently drop an
-        # authored rest configuration (see issue #3178's "unsupported fields" criterion).
+    def _warn_unsupported_rest_fields(prim, path, names):
+        # Rest-state import (rest shape, rest dihedral angles) is not implemented yet;
+        # warn rather than silently drop an authored rest configuration (see issue
+        # #3178's "unsupported fields" criterion).
         for name in names:
             if deformable_read(prim, name) is not None:
                 warnings.warn(
-                    f"{path}: 'physics:{name}' (deformable rest shape) is authored but not "
-                    f"yet imported; it is ignored.",
+                    f"{path}: 'physics:{name}' is authored but its import is not yet supported; it is ignored.",
                     stacklevel=2,
                 )
                 return
@@ -3506,7 +3506,7 @@ def parse_usd(
                 or usd._find_deformable_body_prim(prim) is not None
             )
             if is_volume_deformable:
-                _warn_unsupported_rest_shape(prim, path, ("restShapePoints",))
+                _warn_unsupported_rest_fields(prim, path, ("restShapePoints",))
                 _warn_geometry_authored_material_attrs(prim, path, "PhysicsVolumeDeformableMaterialAPI")
 
             if collect_schema_attrs:
@@ -3623,7 +3623,7 @@ def parse_usd(
                 warnings.warn(f"{path}: cable curve has no points / curveVertexCounts; skipping.", stacklevel=2)
                 continue
             closed = curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic
-            _warn_unsupported_rest_shape(prim, path, ("restWrapPoints",))
+            _warn_unsupported_rest_fields(prim, path, ("restWrapPoints",))
             _warn_geometry_authored_material_attrs(prim, path, "PhysicsCurvesDeformableMaterialAPI")
 
             world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
@@ -3774,7 +3774,9 @@ def parse_usd(
             if any(int(c) != 3 for c in face_counts):
                 warnings.warn(f"{path}: cloth mesh must be triangulated (all faces size 3); skipping.", stacklevel=2)
                 continue
-            _warn_unsupported_rest_shape(prim, path, ("restShapePoints",))
+            _warn_unsupported_rest_fields(
+                prim, path, ("restShapePoints", "restBendAngles", "restAdjTriPairs", "restBendAnglesDefault")
+            )
             _warn_geometry_authored_material_attrs(prim, path, "PhysicsSurfaceDeformableMaterialAPI")
 
             world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
