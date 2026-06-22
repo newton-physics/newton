@@ -3811,15 +3811,12 @@ def parse_usd(
 
             world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
             cloth_pos, cloth_rot, cloth_scale = wp.transform_decompose(world_mat)
-            # add_cloth_mesh takes a single uniform scale; bake a non-uniform scale
-            # into the vertices so it is not silently dropped.
-            if _is_uniform_scale(cloth_scale):
-                scale = float(cloth_scale[0])
-                cloth_vertices = [wp.vec3(float(p[0]), float(p[1]), float(p[2])) for p in mesh_points]
-            else:
-                scale = 1.0
-                sx, sy, sz = float(cloth_scale[0]), float(cloth_scale[1]), float(cloth_scale[2])
-                cloth_vertices = [wp.vec3(float(p[0]) * sx, float(p[1]) * sy, float(p[2]) * sz) for p in mesh_points]
+            # add_cloth_mesh creates one particle per mesh vertex and takes only a uniform
+            # scale, unlike add_shape_mesh's per-axis Vec3 shape scale. So bake the full world
+            # scale (including non-uniform) into the vertices here and pass scale=1.
+            sx, sy, sz = float(cloth_scale[0]), float(cloth_scale[1]), float(cloth_scale[2])
+            cloth_vertices = [wp.vec3(float(p[0]) * sx, float(p[1]) * sy, float(p[2]) * sz) for p in mesh_points]
+            scale = 1.0
 
             # Surface moduli -> tri_ke (stretch) / tri_ka (shear) / bending-edge ke (bend).
             cloth_mat = usd._get_surface_deformable_material(prim, deformable_read) or {}
