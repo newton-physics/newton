@@ -104,8 +104,8 @@ class Contacts:
 
     EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(
         (
-            "rigid_force",
-            "soft_force",
+            "rigid_contact_wrench",
+            "soft_contact_force",
         )
     )
     """
@@ -161,7 +161,7 @@ class Contacts:
                 simulation.  When ``True``, soft contact arrays (body_pos, body_vel, normal)
                 are allocated with gradients so that gradient-based optimization can flow
                 through particle-shape contacts, **and** additional differentiable rigid
-                contact arrays are allocated (``rigid_diff_*``) that provide
+                contact arrays are allocated (``rigid_contact_diff_*``) that provide
                 first-order gradients of contact distance and world-space points with
                 respect to body poses.
             device: Device to allocate buffers on
@@ -173,36 +173,33 @@ class Contacts:
             requested_attributes: Set of extended contact attribute names to allocate.
                 See :attr:`EXTENDED_ATTRIBUTES` for available options.
             contact_matching: Allocate a per-contact match index array
-                (:attr:`rigid_match_index`) that stores frame-to-frame
+                (:attr:`rigid_contact_match_index`) that stores frame-to-frame
                 contact correspondences filled by the collision pipeline.
             contact_report: Allocate compact index lists of new and broken
-                contacts (:attr:`rigid_new_indices`,
-                :attr:`rigid_new_count`,
-                :attr:`rigid_broken_indices`,
-                :attr:`rigid_broken_count`) populated each frame by
+                contacts (:attr:`rigid_contact_new_indices`,
+                :attr:`rigid_contact_new_count`,
+                :attr:`rigid_contact_broken_indices`,
+                :attr:`rigid_contact_broken_count`) populated each frame by
                 the collision pipeline.  Requires ``contact_matching=True``.
 
         .. experimental::
 
-            The ``rigid_diff_*`` arrays allocated when
+            The ``rigid_contact_diff_*`` arrays allocated when
             ``requires_grad=True`` may change without prior notice; see
             :meth:`newton.CollisionPipeline.collide`.
         """
         if contact_report and not contact_matching:
             raise ValueError("contact_report=True requires contact_matching=True")
-        # Validate direct-construction callers; misspelled names would otherwise
-        # silently allocate nothing and surface as ``None`` reads downstream.
-        self.validate_extended_attributes(tuple(requested_attributes or ()))
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
         with wp.ScopedDevice(device):
-            # Packed counter array [rigid_count, soft_count] so
+            # Packed counter array [rigid_contact_count, soft_contact_count] so
             # all counts can be zeroed together in one fused kernel launch.
             # Every entry must be safe to reset to zero at the start of a
             # collision pass.
             self.contact_counters = wp.zeros(2, dtype=wp.int32)
             # Create sliced views for individual counters (no additional allocation)
-            self.rigid_count = self.contact_counters[0:1]
+            self.rigid_contact_count = self.contact_counters[0:1]
 
             self.contact_generation = wp.zeros(1, dtype=wp.int32)
             """Device-side generation counter, incremented each time :meth:`clear` is called.
@@ -210,157 +207,150 @@ class Contacts:
             Solvers can compare this against a cached value to detect whether the
             contact set changed since the last conversion pass."""
 
-            # Rigid narrow-phase outputs are never differentiable (kernels run with
-            # enable_backward=False). The solver-written :attr:`rigid_force` storage
-            # below is the exception — it tracks ``requires_grad`` because solvers
-            # may produce gradient-bearing contact wrenches.
-            self.rigid_point_id = wp.zeros(rigid_contact_max, dtype=wp.int32)
-            """Per-contact pair index used by the narrow phase, shape (rigid_max,), dtype int32."""
+            # rigid contacts — never requires_grad (narrow phase has enable_backward=False)
+            self.rigid_contact_shape0 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
+            """Shape index for shape 0, shape (rigid_contact_max,), dtype int32."""
+            self.rigid_contact_shape1 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
+            """Shape index for shape 1, shape (rigid_contact_max,), dtype int32."""
 
-            self.rigid_shapes = wp.full(rigid_contact_max, -1, dtype=wp.vec2i)
-            """Shape index pair ``[shape_0, shape_1]`` per contact, shape (rigid_max,), dtype :class:`vec2i`."""
-
-            self.rigid_point0 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
-            """Body-frame contact point on shape 0 [m], shape (rigid_max,), dtype :class:`vec3`."""
-            self.rigid_point1 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
-            """Body-frame contact point on shape 1 [m], shape (rigid_max,), dtype :class:`vec3`."""
-            self.rigid_offset0 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
-            """Body-frame friction anchor offset for shape 0 [m], shape (rigid_max,), dtype :class:`vec3`.
+            self.rigid_contact_point0 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
+            """Body-frame contact point on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
+            self.rigid_contact_point1 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
+            """Body-frame contact point on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
+            self.rigid_contact_offset0 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
+            """Body-frame friction anchor offset for shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`.
 
             Equal to the contact normal scaled by ``effective_radius + margin`` and
             expressed in shape 0's body frame. Combined with
-            ``rigid_point0`` to form a shifted friction anchor that accounts
+            ``rigid_contact_point0`` to form a shifted friction anchor that accounts
             for rotational effects of finite contact thickness in tangential friction
             calculations."""
-            self.rigid_offset1 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
-            """Body-frame friction anchor offset for shape 1 [m], shape (rigid_max,), dtype :class:`vec3`.
+            self.rigid_contact_offset1 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
+            """Body-frame friction anchor offset for shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`.
 
             Equal to the contact normal scaled by ``effective_radius + margin`` and
             expressed in shape 1's body frame. Combined with
-            ``rigid_point1`` to form a shifted friction anchor that accounts
+            ``rigid_contact_point1`` to form a shifted friction anchor that accounts
             for rotational effects of finite contact thickness in tangential friction
             calculations."""
-            self.rigid_normal = wp.zeros(rigid_contact_max, dtype=wp.vec3)
-            """Contact normal pointing from shape 0 toward shape 1 (A-to-B) [unitless], shape (rigid_max,), dtype :class:`vec3`."""
-
-            self.rigid_margins = wp.zeros(rigid_contact_max, dtype=wp.vec2)
-            """Surface thickness pair ``[margin_0, margin_1]`` per contact [m], shape (rigid_max,), dtype :class:`vec2`.
-
-            Each component is the shape's effective radius plus its collision margin."""
-
-            self.rigid_tids = wp.full(rigid_contact_max, -1, dtype=wp.int32)
-            """Source thread-id of the narrow-phase test that produced each contact, shape (rigid_max,), dtype int32.
-
-            Filled by the collision pipeline; ``-1`` for unused slots."""
+            self.rigid_contact_normal = wp.zeros(rigid_contact_max, dtype=wp.vec3)
+            """Contact normal pointing from shape 0 toward shape 1 (A-to-B) [unitless], shape (rigid_contact_max,), dtype :class:`vec3`."""
+            self.rigid_contact_margin0 = wp.zeros(rigid_contact_max, dtype=wp.float32)
+            """Surface thickness for shape 0: effective radius + margin [m], shape (rigid_contact_max,), dtype float."""
+            self.rigid_contact_margin1 = wp.zeros(rigid_contact_max, dtype=wp.float32)
+            """Surface thickness for shape 1: effective radius + margin [m], shape (rigid_contact_max,), dtype float."""
+            self.rigid_contact_tids = wp.full(rigid_contact_max, -1, dtype=wp.int32)
 
             # Differentiable rigid contact arrays -- only allocated when requires_grad
             # is True.  Populated by the post-processing kernel in
             # :mod:`newton._src.geometry.differentiable_contacts`.
             if requires_grad:
-                self.rigid_diff_distance = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=True)
-                """Differentiable signed distance [m], shape (rigid_max,), dtype float."""
-                self.rigid_diff_normal = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=False)
-                """Contact normal (A-to-B, world frame) [unitless], shape (rigid_max,), dtype :class:`vec3`."""
-                self.rigid_diff_point0_world = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=True)
-                """World-space contact point on shape 0 [m], shape (rigid_max,), dtype :class:`vec3`."""
-                self.rigid_diff_point1_world = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=True)
-                """World-space contact point on shape 1 [m], shape (rigid_max,), dtype :class:`vec3`."""
+                self.rigid_contact_diff_distance = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=True)
+                """Differentiable signed distance [m], shape (rigid_contact_max,), dtype float."""
+                self.rigid_contact_diff_normal = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=False)
+                """Contact normal (A-to-B, world frame) [unitless], shape (rigid_contact_max,), dtype :class:`vec3`."""
+                self.rigid_contact_diff_point0_world = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=True)
+                """World-space contact point on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
+                self.rigid_contact_diff_point1_world = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=True)
+                """World-space contact point on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
             else:
-                self.rigid_diff_distance = None
-                """Differentiable signed distance [m], shape (rigid_max,), dtype float."""
-                self.rigid_diff_normal = None
-                """Contact normal (A-to-B, world frame) [unitless], shape (rigid_max,), dtype :class:`vec3`."""
-                self.rigid_diff_point0_world = None
-                """World-space contact point on shape 0 [m], shape (rigid_max,), dtype :class:`vec3`."""
-                self.rigid_diff_point1_world = None
-                """World-space contact point on shape 1 [m], shape (rigid_max,), dtype :class:`vec3`."""
+                self.rigid_contact_diff_distance = None
+                """Differentiable signed distance [m], shape (rigid_contact_max,), dtype float."""
+                self.rigid_contact_diff_normal = None
+                """Contact normal (A-to-B, world frame) [unitless], shape (rigid_contact_max,), dtype :class:`vec3`."""
+                self.rigid_contact_diff_point0_world = None
+                """World-space contact point on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
+                self.rigid_contact_diff_point1_world = None
+                """World-space contact point on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
 
             # contact stiffness/damping/friction (only allocated if per_contact_shape_properties is enabled)
             if self.per_contact_shape_properties:
-                self.rigid_stiffness = wp.zeros(rigid_contact_max, dtype=wp.float32)
-                """Per-contact stiffness [N/m], shape (rigid_max,), dtype float."""
-                self.rigid_damping = wp.zeros(rigid_contact_max, dtype=wp.float32)
-                """Per-contact damping [N·s/m], shape (rigid_max,), dtype float."""
-                self.rigid_friction = wp.zeros(rigid_contact_max, dtype=wp.float32)
-                """Per-contact friction coefficient [dimensionless], shape (rigid_max,), dtype float."""
+                self.rigid_contact_stiffness = wp.zeros(rigid_contact_max, dtype=wp.float32)
+                """Per-contact stiffness [N/m], shape (rigid_contact_max,), dtype float."""
+                self.rigid_contact_damping = wp.zeros(rigid_contact_max, dtype=wp.float32)
+                """Per-contact damping [N·s/m], shape (rigid_contact_max,), dtype float."""
+                self.rigid_contact_friction = wp.zeros(rigid_contact_max, dtype=wp.float32)
+                """Per-contact friction coefficient [dimensionless], shape (rigid_contact_max,), dtype float."""
             else:
-                self.rigid_stiffness = None
-                """Per-contact stiffness [N/m], shape (rigid_max,), dtype float."""
-                self.rigid_damping = None
-                """Per-contact damping [N·s/m], shape (rigid_max,), dtype float."""
-                self.rigid_friction = None
-                """Per-contact friction coefficient [dimensionless], shape (rigid_max,), dtype float."""
+                self.rigid_contact_stiffness = None
+                """Per-contact stiffness [N/m], shape (rigid_contact_max,), dtype float."""
+                self.rigid_contact_damping = None
+                """Per-contact damping [N·s/m], shape (rigid_contact_max,), dtype float."""
+                self.rigid_contact_friction = None
+                """Per-contact friction coefficient [dimensionless], shape (rigid_contact_max,), dtype float."""
 
             # Contact matching index — filled by the collision pipeline when
             # contact_matching is enabled.
             self.contact_matching = contact_matching
             self.contact_report = contact_report
             if contact_matching:
-                self.rigid_match_index = wp.full(rigid_contact_max, -1, dtype=wp.int32)
+                self.rigid_contact_match_index = wp.full(rigid_contact_max, -1, dtype=wp.int32)
                 """Per-contact match index from frame-to-frame matching.
 
                 Values: ``>= 0`` matched old contact index;
                 :data:`newton.geometry.MATCH_NOT_FOUND` (``-1``) new contact;
                 :data:`newton.geometry.MATCH_BROKEN` (``-2``) key matched but
                 position/normal thresholds exceeded.
-                Shape (rigid_max,), dtype int32."""
+                Shape (rigid_contact_max,), dtype int32."""
             else:
-                self.rigid_match_index = None
+                self.rigid_contact_match_index = None
 
             if contact_report:
-                self.rigid_new_indices = wp.zeros(rigid_contact_max, dtype=wp.int32)
+                self.rigid_contact_new_indices = wp.zeros(rigid_contact_max, dtype=wp.int32)
                 """Indices of new contacts in the current sorted buffer (where ``match_index < 0``).
 
                 Valid after the collision pipeline runs.
-                Shape (rigid_max,), dtype int32."""
-                self.rigid_new_count = wp.zeros(1, dtype=wp.int32)
+                Shape (rigid_contact_max,), dtype int32."""
+                self.rigid_contact_new_count = wp.zeros(1, dtype=wp.int32)
                 """Device-side count of new contacts (single-element int32)."""
-                self.rigid_broken_indices = wp.zeros(rigid_contact_max, dtype=wp.int32)
+                self.rigid_contact_broken_indices = wp.zeros(rigid_contact_max, dtype=wp.int32)
                 """Indices of broken contacts in the previous frame's sorted buffer.
 
                 Valid after the collision pipeline runs.
-                Shape (rigid_max,), dtype int32."""
-                self.rigid_broken_count = wp.zeros(1, dtype=wp.int32)
+                Shape (rigid_contact_max,), dtype int32."""
+                self.rigid_contact_broken_count = wp.zeros(1, dtype=wp.int32)
                 """Device-side count of broken contacts (single-element int32)."""
             else:
-                self.rigid_new_indices = None
-                self.rigid_new_count = None
-                self.rigid_broken_indices = None
-                self.rigid_broken_count = None
+                self.rigid_contact_new_indices = None
+                self.rigid_contact_new_count = None
+                self.rigid_contact_broken_indices = None
+                self.rigid_contact_broken_count = None
 
             # soft contacts — requires_grad flows through here for differentiable simulation
-            self.soft_count = self.contact_counters[1:2]
-            self.soft_particle = wp.full(soft_contact_max, -1, dtype=int)
-            self.soft_shape = wp.full(soft_contact_max, -1, dtype=int)
-            self.soft_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-            """Contact position on body [m], shape (soft_max,), dtype :class:`vec3`."""
-            self.soft_body_vel = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-            """Contact velocity on body [m/s], shape (soft_max,), dtype :class:`vec3`."""
-            self.soft_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-            """Contact normal direction [unitless], shape (soft_max,), dtype :class:`vec3`."""
-            self.soft_tids = wp.full(soft_contact_max, -1, dtype=int)
+            self.soft_contact_count = self.contact_counters[1:2]
+            self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)
+            self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)
+            self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            """Contact position on body [m], shape (soft_contact_max,), dtype :class:`vec3`."""
+            self.soft_contact_body_vel = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            """Contact velocity on body [m/s], shape (soft_contact_max,), dtype :class:`vec3`."""
+            self.soft_contact_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            """Contact normal direction [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
+            self.soft_contact_tids = wp.full(soft_contact_max, -1, dtype=int)
 
             # Extended contact attributes (optional, allocated on demand).
-            self.rigid_force: wp.array[wp.spatial_vector] | None = None
-            """Contact wrench at the contact midpoint [N, N·m], shape (rigid_max,), dtype :class:`spatial_vector`.
+            self.rigid_contact_wrench: wp.array[wp.spatial_vector] | None = None
+            """Contact wrench at the contact midpoint [N, N·m], shape (rigid_contact_max,), dtype :class:`spatial_vector`.
 
             Sign convention: exerted by body 0 on body 1. ``None`` unless requested;
             see :ref:`extended_contact_attributes`."""
-            self.soft_force: wp.array[wp.vec3] | None = None
-            """Particle contact force [N], shape (soft_max,), dtype :class:`vec3`.
+            self.soft_contact_force: wp.array[wp.vec3] | None = None
+            """Particle contact force [N], shape (soft_contact_max,), dtype :class:`vec3`.
 
             Sign convention: exerted by the shape on the particle. ``None`` unless requested;
             see :ref:`extended_contact_attributes`."""
             if requested_attributes:
-                if "rigid_force" in requested_attributes:
-                    self.rigid_force = wp.zeros(rigid_contact_max, dtype=wp.spatial_vector, requires_grad=requires_grad)
-                if "soft_force" in requested_attributes:
-                    self.soft_force = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+                if "rigid_contact_wrench" in requested_attributes:
+                    self.rigid_contact_wrench = wp.zeros(
+                        rigid_contact_max, dtype=wp.spatial_vector, requires_grad=requires_grad
+                    )
+                if "soft_contact_force" in requested_attributes:
+                    self.soft_contact_force = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
 
         self.requires_grad = requires_grad
 
-        self.rigid_max = rigid_contact_max
-        self.soft_max = soft_contact_max
+        self.rigid_contact_max = rigid_contact_max
+        self.soft_contact_max = soft_contact_max
 
     def clear(self, bump_generation: bool = True):
         """
@@ -393,31 +383,32 @@ class Contacts:
         if self.clear_buffers:
             # Conservative path: clear all buffers with sentinel values and zeros.
             # Slower than the fast path but may be useful for debugging or special cases.
-            self.rigid_shapes.fill_(-1)
-            self.rigid_tids.fill_(-1)
+            self.rigid_contact_shape0.fill_(-1)
+            self.rigid_contact_shape1.fill_(-1)
+            self.rigid_contact_tids.fill_(-1)
 
-            if self.rigid_force is not None:
-                self.rigid_force.zero_()
-            if self.soft_force is not None:
-                self.soft_force.zero_()
+            if self.rigid_contact_wrench is not None:
+                self.rigid_contact_wrench.zero_()
+            if self.soft_contact_force is not None:
+                self.soft_contact_force.zero_()
 
-            if self.rigid_diff_distance is not None:
-                self.rigid_diff_distance.zero_()
-                self.rigid_diff_normal.zero_()
-                self.rigid_diff_point0_world.zero_()
-                self.rigid_diff_point1_world.zero_()
+            if self.rigid_contact_diff_distance is not None:
+                self.rigid_contact_diff_distance.zero_()
+                self.rigid_contact_diff_normal.zero_()
+                self.rigid_contact_diff_point0_world.zero_()
+                self.rigid_contact_diff_point1_world.zero_()
 
             if self.per_contact_shape_properties:
-                self.rigid_stiffness.zero_()
-                self.rigid_damping.zero_()
-                self.rigid_friction.zero_()
+                self.rigid_contact_stiffness.zero_()
+                self.rigid_contact_damping.zero_()
+                self.rigid_contact_friction.zero_()
 
-            if self.rigid_match_index is not None:
-                self.rigid_match_index.fill_(-1)
+            if self.rigid_contact_match_index is not None:
+                self.rigid_contact_match_index.fill_(-1)
 
-            self.soft_particle.fill_(-1)
-            self.soft_shape.fill_(-1)
-            self.soft_tids.fill_(-1)
+            self.soft_contact_particle.fill_(-1)
+            self.soft_contact_shape.fill_(-1)
+            self.soft_contact_tids.fill_(-1)
         # else: Optimized path (default) - only counter clear needed
         #   Collision detection overwrites all active contacts [0, contact_count)
         #   Solvers only read [0, contact_count), so stale data is never accessed
@@ -427,4 +418,4 @@ class Contacts:
         """
         Returns the device on which the contact buffers are allocated.
         """
-        return self.rigid_count.device
+        return self.rigid_contact_count.device
