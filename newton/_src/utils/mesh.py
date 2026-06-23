@@ -5,6 +5,7 @@ import os
 import warnings
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import cast, overload
 from urllib.parse import urlparse
 
@@ -180,12 +181,13 @@ default_num_segments = 32
 
 
 @wp.struct
-class MeshAdjacency:
-    """Warp-ready soft-mesh topology for collision and solver data."""
+class MeshAdjacencyDeviceData:
+    """Compact, kernel-facing soft-mesh adjacency.
 
-    edge_indices: wp.array2d[wp.int32]
-    edge_tri_indices: wp.array2d[wp.int32]
-    tri_edge_indices: wp.array2d[wp.int32]
+    Pure data: only the device-resident vertex-adjacency CSR arrays read inside
+    VBD/collision kernels. Built on demand from :class:`MeshAdjacency` via
+    :meth:`MeshAdjacency.to`; it holds no Python state and no methods.
+    """
 
     v_adj_tris: wp.array[wp.int32]
     v_adj_tris_offsets: wp.array[wp.int32]
@@ -196,24 +198,98 @@ class MeshAdjacency:
     v_adj_tets: wp.array[wp.int32]
     v_adj_tets_offsets: wp.array[wp.int32]
 
-    def to(self, device):
-        if wp.get_device(device) == self.edge_indices.device:
-            return self
 
-        adjacency = MeshAdjacency()
-        adjacency.edge_indices = self.edge_indices.to(device)
-        adjacency.edge_tri_indices = self.edge_tri_indices.to(device)
-        adjacency.tri_edge_indices = self.tri_edge_indices.to(device)
+class MeshAdjacency:
+    """Soft-mesh topology for collision and solver data.
 
-        adjacency.v_adj_tris = self.v_adj_tris.to(device)
-        adjacency.v_adj_tris_offsets = self.v_adj_tris_offsets.to(device)
-        adjacency.v_adj_hinges = self.v_adj_hinges.to(device)
-        adjacency.v_adj_hinges_offsets = self.v_adj_hinges_offsets.to(device)
-        adjacency.v_adj_springs = self.v_adj_springs.to(device)
-        adjacency.v_adj_springs_offsets = self.v_adj_springs_offsets.to(device)
-        adjacency.v_adj_tets = self.v_adj_tets.to(device)
-        adjacency.v_adj_tets_offsets = self.v_adj_tets_offsets.to(device)
-        return adjacency
+    Normally obtained from :attr:`newton.Model.soft_mesh_adjacency` (built by
+    :meth:`~newton.ModelBuilder.finalize`). Holds the host-side adjacency arrays
+    (edges, triangle/edge maps, and the derived vertex-adjacency CSR tables) and
+    owns the bulk of the adjacency computation and lazy initialization. Call
+    :meth:`to` to deploy the kernel-facing subset into a
+    :class:`MeshAdjacencyDeviceData` struct for use inside Warp kernels.
+
+    .. note::
+        Constructing ``MeshAdjacency`` directly from triangle indices and the
+        :attr:`edges` dict are deprecated legacy compatibility shims (both emit a
+        ``DeprecationWarning``); use :attr:`newton.Model.soft_mesh_adjacency` and
+        the ``edge_indices`` / ``edge_tri_indices`` arrays instead.
+    """
+
+    @dataclass(slots=True)
+    class Edge:
+        """Legacy per-edge record: edge ``(v0, v1)`` with opposite vertices
+        ``o0``/``o1`` and adjacent triangles ``f0``/``f1`` (``-1`` if boundary)."""
+
+        v0: int
+        v1: int
+        o0: int
+        o1: int
+        f0: int
+        f1: int
+
+    def __init__(self, indices: Sequence[Sequence[int]] | np.ndarray | None = None):
+        # Edge topology and triangle/edge maps. Populated by the builder, or
+        # eagerly here on the deprecated triangle-indices construction path.
+        self.edge_indices = None
+        self.edge_tri_indices = None
+        self.tri_edge_indices = None
+
+        # Derived vertex-adjacency CSR tables (filled by populate_vertex_adjacency).
+        self.v_adj_tris = None
+        self.v_adj_tris_offsets = None
+        self.v_adj_hinges = None
+        self.v_adj_hinges_offsets = None
+        self.v_adj_springs = None
+        self.v_adj_springs_offsets = None
+        self.v_adj_tets = None
+        self.v_adj_tets_offsets = None
+
+        self.indices = indices
+        if indices is not None:
+            warnings.warn(
+                "Constructing MeshAdjacency from triangle indices is deprecated; "
+                "use Model.soft_mesh_adjacency for simulation adjacency data.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.edge_indices, self.edge_tri_indices, self.tri_edge_indices = _compute_soft_mesh_edge_adjacency(indices)
+
+    @property
+    def edges(self) -> dict[tuple[int, int], "MeshAdjacency.Edge"]:
+        """Deprecated legacy edge dict, rebuilt on access from ``edge_indices``.
+
+        Maps ``(min(v0, v1), max(v0, v1))`` to an :class:`Edge`. Recomputed on
+        every access and never cached; prefer the ``edge_indices`` /
+        ``edge_tri_indices`` arrays directly.
+        """
+        warnings.warn(
+            "MeshAdjacency.edges is deprecated; use the edge_indices/edge_tri_indices arrays.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        edge_indices = _numpy_int_rows(self.edge_indices, 4)
+        edge_tri_indices = _numpy_int_rows(self.edge_tri_indices, 2)
+        return {
+            (min(int(v0), int(v1)), max(int(v0), int(v1))): MeshAdjacency.Edge(
+                int(v0), int(v1), int(o0), int(o1), int(f0), int(f1)
+            )
+            for (o0, o1, v0, v1), (f0, f1) in zip(edge_indices, edge_tri_indices, strict=True)
+        }
+
+    def to(self, device) -> MeshAdjacencyDeviceData:
+        """Deploy the kernel-facing arrays onto ``device`` as a pure data struct."""
+        dev = wp.get_device(device)
+        data = MeshAdjacencyDeviceData()
+        data.v_adj_tris = self.v_adj_tris.to(dev)
+        data.v_adj_tris_offsets = self.v_adj_tris_offsets.to(dev)
+        data.v_adj_hinges = self.v_adj_hinges.to(dev)
+        data.v_adj_hinges_offsets = self.v_adj_hinges_offsets.to(dev)
+        data.v_adj_springs = self.v_adj_springs.to(dev)
+        data.v_adj_springs_offsets = self.v_adj_springs_offsets.to(dev)
+        data.v_adj_tets = self.v_adj_tets.to(dev)
+        data.v_adj_tets_offsets = self.v_adj_tets_offsets.to(dev)
+        return data
 
     @staticmethod
     def compute_edge_adjacency(

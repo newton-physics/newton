@@ -15,7 +15,7 @@ from ...geometry.kernels import (
     vertex_triangle_collision_detection_kernel,
 )
 from ...sim import Model
-from ...utils.mesh import MeshAdjacency
+from ...utils.mesh import MeshAdjacency, MeshAdjacencyDeviceData
 
 
 @wp.struct
@@ -240,7 +240,7 @@ class TriMeshCollisionDetector:
         edge_collision_buffer_max_alloc=256,
         edge_filtering_list=None,
         edge_filtering_list_offsets=None,
-        mesh_adjacency: MeshAdjacency | None = None,
+        mesh_adjacency: MeshAdjacency | MeshAdjacencyDeviceData | None = None,
         topological_contact_filter_threshold: int = 0,
         external_vertex_triangle_filtering_map: dict | None = None,
         external_edge_edge_filtering_map: dict | None = None,

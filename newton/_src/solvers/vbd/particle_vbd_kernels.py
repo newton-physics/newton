@@ -19,7 +19,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import _eval_body_particle_contac
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point
-from ...utils.mesh import MeshAdjacency
+from ...utils.mesh import MeshAdjacencyDeviceData
 from .tri_mesh_collision import TriMeshCollisionInfo
 
 # TODO: Grab changes from Warp that has fixed the backward pass
@@ -62,45 +62,45 @@ class vec9(wp.types.vector(length=9, dtype=wp.float32)):
 
 
 @wp.func
-def get_vertex_num_adjacent_edges(adjacency: MeshAdjacency, vertex: wp.int32):
+def get_vertex_num_adjacent_edges(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32):
     return (adjacency.v_adj_hinges_offsets[vertex + 1] - adjacency.v_adj_hinges_offsets[vertex]) >> 1
 
 
 @wp.func
-def get_vertex_adjacent_edge_id_order(adjacency: MeshAdjacency, vertex: wp.int32, edge: wp.int32):
+def get_vertex_adjacent_edge_id_order(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32, edge: wp.int32):
     offset = adjacency.v_adj_hinges_offsets[vertex]
     return adjacency.v_adj_hinges[offset + edge * 2], adjacency.v_adj_hinges[offset + edge * 2 + 1]
 
 
 @wp.func
-def get_vertex_num_adjacent_faces(adjacency: MeshAdjacency, vertex: wp.int32):
+def get_vertex_num_adjacent_faces(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32):
     return (adjacency.v_adj_tris_offsets[vertex + 1] - adjacency.v_adj_tris_offsets[vertex]) >> 1
 
 
 @wp.func
-def get_vertex_adjacent_face_id_order(adjacency: MeshAdjacency, vertex: wp.int32, face: wp.int32):
+def get_vertex_adjacent_face_id_order(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32, face: wp.int32):
     offset = adjacency.v_adj_tris_offsets[vertex]
     return adjacency.v_adj_tris[offset + face * 2], adjacency.v_adj_tris[offset + face * 2 + 1]
 
 
 @wp.func
-def get_vertex_num_adjacent_springs(adjacency: MeshAdjacency, vertex: wp.int32):
+def get_vertex_num_adjacent_springs(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32):
     return adjacency.v_adj_springs_offsets[vertex + 1] - adjacency.v_adj_springs_offsets[vertex]
 
 
 @wp.func
-def get_vertex_adjacent_spring_id(adjacency: MeshAdjacency, vertex: wp.int32, spring: wp.int32):
+def get_vertex_adjacent_spring_id(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32, spring: wp.int32):
     offset = adjacency.v_adj_springs_offsets[vertex]
     return adjacency.v_adj_springs[offset + spring]
 
 
 @wp.func
-def get_vertex_num_adjacent_tets(adjacency: MeshAdjacency, vertex: wp.int32):
+def get_vertex_num_adjacent_tets(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32):
     return (adjacency.v_adj_tets_offsets[vertex + 1] - adjacency.v_adj_tets_offsets[vertex]) >> 1
 
 
 @wp.func
-def get_vertex_adjacent_tet_id_order(adjacency: MeshAdjacency, vertex: wp.int32, tet: wp.int32):
+def get_vertex_adjacent_tet_id_order(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32, tet: wp.int32):
     offset = adjacency.v_adj_tets_offsets[vertex]
     return adjacency.v_adj_tets[offset + tet * 2], adjacency.v_adj_tets[offset + tet * 2 + 1]
 
@@ -494,7 +494,7 @@ def compute_cofactor_derivative(F: wp.mat33, scale: float) -> mat99:
 
 @wp.kernel
 def _test_compute_force_element_adjacency(
-    adjacency: MeshAdjacency,
+    adjacency: MeshAdjacencyDeviceData,
     edge_indices: wp.array2d[wp.int32],
     face_indices: wp.array2d[wp.int32],
 ):
@@ -1412,7 +1412,7 @@ def compute_particle_conservative_bound(
     # inputs
     conservative_bound_relaxation: float,
     collision_query_radius: float,
-    adjacency: MeshAdjacency,
+    adjacency: MeshAdjacencyDeviceData,
     collision_info: TriMeshCollisionInfo,
     # outputs
     particle_conservative_bounds: wp.array[float],
@@ -2407,7 +2407,7 @@ def solve_elasticity_tile(
     tet_indices: wp.array2d[wp.int32],
     tet_poses: wp.array[wp.mat33],
     tet_materials: wp.array2d[float],
-    particle_adjacency: MeshAdjacency,
+    particle_adjacency: MeshAdjacencyDeviceData,
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
     # output
@@ -2572,7 +2572,7 @@ def solve_elasticity(
     tet_indices: wp.array2d[wp.int32],
     tet_poses: wp.array[wp.mat33],
     tet_materials: wp.array2d[float],
-    particle_adjacency: MeshAdjacency,
+    particle_adjacency: MeshAdjacencyDeviceData,
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
     # output
