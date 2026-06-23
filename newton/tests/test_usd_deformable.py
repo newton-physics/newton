@@ -1241,6 +1241,22 @@ def _author_unit_tet(stage, path):
     return tet
 
 
+def _author_two_tet_wedge(stage, path):
+    """Author a TetMesh of two tets that share a base triangle but have very different
+    volumes, so density-based per-point masses must be non-uniform. Both tets are wound
+    for positive signed volume.
+
+    Vertices 0,1,2 form the shared base; vertex 3 is the apex of the large tet (V = 4/6)
+    and vertex 4 the apex of the small tet (V = 1/6)."""
+    from pxr import UsdGeom
+
+    tet = UsdGeom.TetMesh.Define(stage, path)
+    tet.CreatePointsAttr([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 4.0), (0.0, 0.0, -1.0)])
+    tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3), (0, 2, 1, 4)])
+    tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+    return tet
+
+
 def _apply_deformable_body_api(prim, *, mass=None, density=None):
     """Apply PhysicsDeformableBodyAPI with optional mass / density overrides."""
     from pxr import Sdf
@@ -1281,6 +1297,32 @@ class TestUSDDeformableMass(unittest.TestCase):
 
         builder, _ = self._build_soft(author)
         self.assertEqual([builder.particle_mass[i] for i in range(4)], [1.0, 2.0, 3.0, 4.0])
+
+    def test_body_mass_override_preserves_volume_weighting(self):
+        """A body-mass override must rescale the per-point masses *proportionally*, preserving the
+        volume weighting (proposal: m_p = sum_{e in tau(p)} V_e / T). The importer's rescale is
+        ``particle_mass[i] *= body_mass / current``; a uniform ``body_mass / n`` would also hit the
+        total but flatten the distribution, so assert the per-point ratios, not just the sum."""
+        body_mass = 10.0
+        v_large, v_small = 4.0 / 6.0, 1.0 / 6.0  # the two authored tet volumes
+        total_vol = v_large + v_small
+
+        def author(stage):
+            tet = _author_two_tet_wedge(stage, "/World/Soft")
+            _apply_deformable_body_api(tet.GetPrim(), mass=body_mass)
+
+        builder, _ = self._build_soft(author)
+        m = [builder.particle_mass[i] for i in range(5)]
+        # The override sets the total ...
+        self.assertAlmostEqual(sum(m), body_mass, places=4)
+        # ... but the distribution still follows adjacent-element volume. Apexes sit on one tet
+        # each (V_e / 4); shared base vertices sum both tets ((V_large + V_small) / 4).
+        self.assertAlmostEqual(m[3], body_mass * (v_large / 4.0) / total_vol, places=4)  # large apex
+        self.assertAlmostEqual(m[4], body_mass * (v_small / 4.0) / total_vol, places=4)  # small apex
+        self.assertAlmostEqual(m[3] / m[4], v_large / v_small, places=4)  # = 4, weighting preserved
+        for i in range(3):
+            self.assertAlmostEqual(m[i], body_mass / 4.0, places=4)  # shared = (V_large+V_small)/4 scaled
+        self.assertGreater(max(m) - min(m), 1.0e-6)  # genuinely non-uniform, not flattened
 
     def test_body_mass_sets_total(self):
         """PhysicsDeformableBodyAPI.mass rescales the distribution to that total."""
