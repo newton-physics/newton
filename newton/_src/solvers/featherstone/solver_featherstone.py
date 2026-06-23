@@ -187,12 +187,21 @@ class SolverFeatherstone(SolverBase):
         self.descendant_free_distance_refresh_joint_starts = None
         self.joint_armature_effective = model.joint_armature
 
+        body_flags = None
+        kinematic_mask = None
+        if model.body_count:
+            body_flags = model.body_flags.numpy()
+            kinematic_mask = (body_flags & int(BodyFlags.KINEMATIC)) != 0
+
         if model.joint_count:
             joint_type = model.joint_type.numpy()
             joint_parent = model.joint_parent.numpy()
+            joint_child = model.joint_child.numpy()
             descendant_free_distance_mask = (
                 (joint_type == int(JointType.FREE)) | (joint_type == int(JointType.DISTANCE))
             ) & (joint_parent >= 0)
+            if kinematic_mask is not None:
+                descendant_free_distance_mask &= ~kinematic_mask[joint_child]
             if np.any(descendant_free_distance_mask):
                 joint_indices = np.flatnonzero(descendant_free_distance_mask)
                 self.descendant_free_distance_joint_indices = wp.array(
@@ -225,11 +234,8 @@ class SolverFeatherstone(SolverBase):
                     )
 
         if model.body_count:
-            body_flags = model.body_flags.numpy()
-            kinematic_mask = (body_flags & int(BodyFlags.KINEMATIC)) != 0
             self.has_kinematic_bodies = bool(np.any(kinematic_mask))
             if model.joint_count and self.has_kinematic_bodies:
-                joint_child = model.joint_child.numpy()
                 joint_qd_start = model.joint_qd_start.numpy()
                 joint_armature = model.joint_armature.numpy().copy()
                 for joint_idx in range(model.joint_count):
@@ -518,8 +524,7 @@ class SolverFeatherstone(SolverBase):
                 eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f)
 
             # muscles
-            if False:
-                eval_muscle_forces(model, state_in, control, body_f)
+            eval_muscle_forces(model, state_in, control, body_f)
 
             # ----------------------------
             # articulations
@@ -570,7 +575,9 @@ class SolverFeatherstone(SolverBase):
                         model.joint_type,
                         model.joint_parent,
                         model.joint_child,
+                        model.joint_q_start,
                         model.joint_qd_start,
+                        state_in.joint_q,
                         state_aug.joint_qd_internal_in,
                         model.joint_axis,
                         model.joint_dof_dim,

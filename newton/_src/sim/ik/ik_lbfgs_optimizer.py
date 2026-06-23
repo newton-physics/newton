@@ -631,6 +631,7 @@ class IKOptimizerLBFGS:
         ctx.jacobian_out.zero_()
 
         self._compute_motion_subspace(
+            joint_q_in=ctx.joint_q,
             body_q=ctx.fk_body_q,
             joint_S_s_out=ctx.motion_subspace,
         )
@@ -841,6 +842,7 @@ class IKOptimizerLBFGS:
     def _compute_motion_subspace(
         self,
         *,
+        joint_q_in: wp.array2d[wp.float32],
         body_q: wp.array2d[wp.transform],
         joint_S_s_out: wp.array2d[wp.spatial_vector],
     ) -> None:
@@ -853,7 +855,9 @@ class IKOptimizerLBFGS:
                 self.model.joint_type,
                 self.model.joint_parent,
                 self.model.joint_child,
+                self.model.joint_q_start,
                 self.model.joint_qd_start,
+                joint_q_in,
                 self.model.joint_axis,
                 self.model.joint_dof_dim,
                 body_q,
@@ -1424,7 +1428,9 @@ class IKOptimizerLBFGS:
             joint_type: wp.array[wp.int32],  # (n_joints)
             joint_parent: wp.array[wp.int32],  # (n_joints)
             joint_child: wp.array[wp.int32],  # (n_joints)
+            joint_q_start: wp.array[wp.int32],  # (n_joints + 1)
             joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
             joint_axis: wp.array[wp.vec3],  # (n_joint_dof_count)
             joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)
             body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
@@ -1438,6 +1444,7 @@ class IKOptimizerLBFGS:
             type = joint_type[joint_idx]
             parent = joint_parent[joint_idx]
             child = joint_child[joint_idx]
+            q_start = joint_q_start[joint_idx]
             qd_start = joint_qd_start[joint_idx]
 
             X_pj = joint_X_p[joint_idx]
@@ -1448,17 +1455,20 @@ class IKOptimizerLBFGS:
             lin_axis_count = joint_dof_dim[joint_idx, 0]
             ang_axis_count = joint_dof_dim[joint_idx, 1]
 
+            joint_q_1d = joint_q[row]
             S_s_out = joint_S_s[row]
 
             if type == JointType.FREE or type == JointType.DISTANCE:
                 jcalc_motion_subspace(
                     type,
                     joint_axis,
+                    joint_q_1d,
                     lin_axis_count,
                     ang_axis_count,
                     X_wpj,
                     body_q[row, child],
                     body_com[child],
+                    q_start,
                     qd_start,
                     S_s_out,
                 )
@@ -1466,11 +1476,13 @@ class IKOptimizerLBFGS:
                 jcalc_motion_subspace(
                     type,
                     joint_axis,
+                    joint_q_1d,
                     lin_axis_count,
                     ang_axis_count,
                     X_wpj,
                     wp.transform_identity(),
                     wp.vec3(),
+                    q_start,
                     qd_start,
                     S_s_out,
                 )

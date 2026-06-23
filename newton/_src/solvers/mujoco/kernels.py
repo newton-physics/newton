@@ -11,7 +11,6 @@ import warp as wp
 
 from ...core.types import vec5
 from ...sim import BodyFlags, EqType, JointTargetMode, JointType
-from ...sim.articulation import com_twist_to_point_velocity, origin_twist_to_com_twist
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
     DEFAULT_LIMIT_GAIN_RTOL,
@@ -405,9 +404,9 @@ def convert_newton_contacts_to_mjwarp_kernel(
         )
 
         # FORCE_SPACE per-contact override: bypass contact_params' per-geom
-        # solref averaging and write the two-body factor directly. See
-        # docs/integrations/mujoco.rst > "Shape-material contact stiffness
-        # and damping" for the mechanism.
+        # solref averaging and recompute the solref from the combined
+        # two-body factor. See docs/integrations/mujoco.rst > "Shape-material
+        # contact stiffness and damping" for the mechanism.
         if shape_mjc_solref_mode:
             mode_a = shape_mjc_solref_mode[shape_a]
             mode_b = shape_mjc_solref_mode[shape_b]
@@ -430,7 +429,12 @@ def convert_newton_contacts_to_mjwarp_kernel(
                 dmax = solimp[1]
                 if m_inv > 0.0 and dmax < 1.0:
                     factor = m_inv * (1.0 - dmax)
-                    solref = wp.vec2(-ke * factor, -kd * factor)
+                    solref = convert_solref(
+                        wp.max(ke * factor, MJ_MINVAL),
+                        wp.max(kd * factor, MJ_MINVAL),
+                        1.0,
+                        1.0,
+                    )
 
         # Convert Newton per-contact stiffness/damping to MuJoCo solref
         # (timeconst, dampratio). Per-contact overrides take precedence over
@@ -1615,196 +1619,6 @@ def apply_mjc_free_joint_f_to_body_f_kernel(
     )
 
 
-@wp.func
-def eval_single_articulation_fk(
-    joint_start: int,
-    joint_end: int,
-    joint_articulation: wp.array[int],
-    joint_q: wp.array[float],
-    joint_qd: wp.array[float],
-    joint_q_start: wp.array[int],
-    joint_qd_start: wp.array[int],
-    joint_type: wp.array[int],
-    joint_parent: wp.array[int],
-    joint_child: wp.array[int],
-    joint_X_p: wp.array[wp.transform],
-    joint_X_c: wp.array[wp.transform],
-    joint_axis: wp.array[wp.vec3],
-    joint_dof_dim: wp.array2d[int],
-    body_com: wp.array[wp.vec3],
-    # outputs
-    body_q: wp.array[wp.transform],
-    body_qd: wp.array[wp.spatial_vector],
-):
-    for i in range(joint_start, joint_end):
-        articulation = joint_articulation[i]
-        if articulation == -1:
-            continue
-
-        parent = joint_parent[i]
-        child = joint_child[i]
-
-        # compute transform across the joint
-        type = joint_type[i]
-
-        X_pj = joint_X_p[i]
-        X_cj = joint_X_c[i]
-
-        q_start = joint_q_start[i]
-        qd_start = joint_qd_start[i]
-        lin_axis_count = joint_dof_dim[i, 0]
-        ang_axis_count = joint_dof_dim[i, 1]
-
-        X_j = wp.transform_identity()
-        v_j = wp.spatial_vector(wp.vec3(), wp.vec3())
-
-        if type == JointType.PRISMATIC:
-            axis = joint_axis[qd_start]
-
-            q = joint_q[q_start]
-            qd = joint_qd[qd_start]
-
-            X_j = wp.transform(axis * q, wp.quat_identity())
-            v_j = wp.spatial_vector(axis * qd, wp.vec3())
-
-        if type == JointType.REVOLUTE:
-            axis = joint_axis[qd_start]
-
-            q = joint_q[q_start]
-            qd = joint_qd[qd_start]
-
-            X_j = wp.transform(wp.vec3(), wp.quat_from_axis_angle(axis, q))
-            v_j = wp.spatial_vector(wp.vec3(), axis * qd)
-
-        if type == JointType.BALL:
-            r = wp.quat(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2], joint_q[q_start + 3])
-
-            w = wp.vec3(joint_qd[qd_start + 0], joint_qd[qd_start + 1], joint_qd[qd_start + 2])
-
-            X_j = wp.transform(wp.vec3(), r)
-            v_j = wp.spatial_vector(wp.vec3(), w)
-
-        if type == JointType.FREE or type == JointType.DISTANCE:
-            t = wp.transform(
-                wp.vec3(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2]),
-                wp.quat(joint_q[q_start + 3], joint_q[q_start + 4], joint_q[q_start + 5], joint_q[q_start + 6]),
-            )
-
-            v = wp.spatial_vector(
-                wp.vec3(joint_qd[qd_start + 0], joint_qd[qd_start + 1], joint_qd[qd_start + 2]),
-                wp.vec3(joint_qd[qd_start + 3], joint_qd[qd_start + 4], joint_qd[qd_start + 5]),
-            )
-
-            X_j = t
-            v_j = v
-
-        if type == JointType.D6:
-            pos = wp.vec3(0.0)
-            rot = wp.quat_identity()
-            vel_v = wp.vec3(0.0)
-            vel_w = wp.vec3(0.0)
-
-            for j in range(lin_axis_count):
-                axis = joint_axis[qd_start + j]
-                pos += axis * joint_q[q_start + j]
-                vel_v += axis * joint_qd[qd_start + j]
-
-            iq = q_start + lin_axis_count
-            iqd = qd_start + lin_axis_count
-            for j in range(ang_axis_count):
-                axis = joint_axis[iqd + j]
-                rot = rot * wp.quat_from_axis_angle(axis, joint_q[iq + j])
-                vel_w += joint_qd[iqd + j] * axis
-
-            X_j = wp.transform(pos, rot)
-            v_j = wp.spatial_vector(vel_v, vel_w)  # vel_v=linear, vel_w=angular
-
-        # transform from world to parent joint anchor frame
-        X_wpj = X_pj
-        if parent >= 0:
-            X_wp = body_q[parent]
-            X_wpj = X_wp * X_wpj
-
-        # transform from world to joint anchor frame at child body
-        X_wcj = X_wpj * X_j
-        # transform from world to child body frame
-        X_wc = X_wcj * wp.transform_inverse(X_cj)
-
-        x_child_origin = wp.transform_get_translation(X_wc)
-        v_parent_origin = wp.vec3()
-        w_parent = wp.vec3()
-        if parent >= 0:
-            v_wp = body_qd[parent]
-            w_parent = wp.spatial_bottom(v_wp)
-            v_parent_origin = com_twist_to_point_velocity(v_wp, X_wp, body_com[parent], x_child_origin)
-
-        linear_joint_world = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
-        angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
-        if type == JointType.FREE or type == JointType.DISTANCE:
-            linear_joint_origin = linear_joint_world - wp.cross(
-                angular_joint_world, wp.transform_vector(X_wc, body_com[child])
-            )
-        else:
-            child_origin_offset_world = x_child_origin - wp.transform_get_translation(X_wcj)
-            linear_joint_origin = linear_joint_world + wp.cross(angular_joint_world, child_origin_offset_world)
-
-        v_wc_origin = wp.spatial_vector(
-            v_parent_origin + linear_joint_origin,
-            w_parent + angular_joint_world,
-        )  # spatial vector with (linear, angular) ordering
-
-        body_q[child] = X_wc
-        body_qd[child] = origin_twist_to_com_twist(v_wc_origin, X_wc, body_com[child])
-
-
-@wp.kernel
-def eval_articulation_fk(
-    articulation_start: wp.array[int],
-    articulation_end: wp.array[int],
-    joint_articulation: wp.array[int],
-    joint_q: wp.array[float],
-    joint_qd: wp.array[float],
-    joint_q_start: wp.array[int],
-    joint_qd_start: wp.array[int],
-    joint_type: wp.array[int],
-    joint_parent: wp.array[int],
-    joint_child: wp.array[int],
-    joint_X_p: wp.array[wp.transform],
-    joint_X_c: wp.array[wp.transform],
-    joint_axis: wp.array[wp.vec3],
-    joint_dof_dim: wp.array2d[int],
-    body_com: wp.array[wp.vec3],
-    # outputs
-    body_q: wp.array[wp.transform],
-    body_qd: wp.array[wp.spatial_vector],
-):
-    tid = wp.tid()
-
-    joint_start = articulation_start[tid]
-    joint_end = articulation_end[tid]
-
-    eval_single_articulation_fk(
-        joint_start,
-        joint_end,
-        joint_articulation,
-        joint_q,
-        joint_qd,
-        joint_q_start,
-        joint_qd_start,
-        joint_type,
-        joint_parent,
-        joint_child,
-        joint_X_p,
-        joint_X_c,
-        joint_axis,
-        joint_dof_dim,
-        body_com,
-        # outputs
-        body_q,
-        body_qd,
-    )
-
-
 @wp.kernel
 def convert_body_xforms_to_warp_kernel(
     mjc_body_to_newton: wp.array2d[wp.int32],
@@ -2544,13 +2358,15 @@ def update_jnt_solref_from_invweight0_kernel(
     simulated restoring torque matches the user-specified ``limit_ke`` /
     ``limit_kd``.
 
-    The limit uses the negative (stiffness, damping) convention so the result is
-    ``solref = (-ke * factor, -kd * factor)``. When ``ke <= 0`` or ``kd <= 0``,
-    Newton restores MuJoCo's default ``(0.02, 1.0)`` pair so runtime disablement
-    matches a fresh model compiled without ``solreflimit``. MJCF-imported raw
-    ``solreflimit`` values are forwarded unchanged when present; MJCF joints
-    that rely on the implicit default keep MuJoCo's native ``(0.02, 1.0)`` until
-    ``joint_limit_ke``/``joint_limit_kd`` are changed by the user.
+    The force-space path converts the scaled direct stiffness/damping pair to
+    MuJoCo's positive ``(timeconst, dampratio)`` convention. This lets MuJoCo's
+    ``refsafe`` clamp soften constraints that are too stiff for the timestep.
+    When ``ke <= 0`` or ``kd <= 0``, Newton restores MuJoCo's default
+    ``(0.02, 1.0)`` pair so runtime disablement matches a fresh model compiled
+    without ``solreflimit``. MJCF-imported raw ``solreflimit`` values are
+    forwarded unchanged when present; MJCF joints that rely on the implicit
+    default keep MuJoCo's native ``(0.02, 1.0)`` until ``joint_limit_ke`` /
+    ``joint_limit_kd`` are changed by the user.
     ``dof_invweight0`` is only valid after MuJoCo's ``set_const_0`` /
     ``mj_setConst`` has run, so this kernel must be launched from
     :meth:`SolverMuJoCo.notify_model_changed` after those calls (and once at
@@ -2577,8 +2393,7 @@ def update_jnt_solref_from_invweight0_kernel(
         jnt_solimp: MuJoCo limit ``solimp`` per joint, shape ``[world, mjc_jnt]``
             with component ``[..., 1]`` carrying ``dmax``.
         jnt_solref: Output ``solref`` per joint, shape ``[world, mjc_jnt]``,
-            written in MuJoCo's negative-direct-mode convention
-            ``(-ke·factor, -kd·factor)``.
+            written in MuJoCo's positive ``(timeconst, dampratio)`` convention.
     """
     world, mjc_jnt = wp.tid()
     newton_dof = mjc_jnt_to_newton_dof[world, mjc_jnt]
@@ -2625,9 +2440,7 @@ def update_jnt_solref_from_invweight0_kernel(
         # Restore MuJoCo's compiled default so runtime ``ke -> 0`` or ``kd -> 0``
         # updates behave the same as a fresh model built without a custom limit
         # solref. Without the ``kd <= 0`` guard, a ``(ke>0, kd=0)`` pair would
-        # write ``solref = (-ke·factor, 0)``, which MuJoCo's negative-direct-mode
-        # convention treats as ``dampratio = 0`` and triggers a divide-by-zero
-        # in ``k_eff = 1/(τ²·ζ²)``.
+        # produce an infinite time constant in the positive solref conversion.
         jnt_solref[world, mjc_jnt] = wp.vec2(DEFAULT_LIMIT_SOLREF_TIMECONST, DEFAULT_LIMIT_SOLREF_DAMPRATIO)
         return
 
@@ -2639,7 +2452,9 @@ def update_jnt_solref_from_invweight0_kernel(
     if invw > 0.0 and dmax < 1.0:
         factor = invw * (1.0 - dmax)
 
-    jnt_solref[world, mjc_jnt] = wp.vec2(-ke * factor, -kd * factor)
+    direct_stiffness = wp.max(ke * factor, MJ_MINVAL)
+    direct_damping = wp.max(kd * factor, MJ_MINVAL)
+    jnt_solref[world, mjc_jnt] = convert_solref(direct_stiffness, direct_damping, 1.0, 1.0)
 
 
 @wp.kernel(enable_backward=False)

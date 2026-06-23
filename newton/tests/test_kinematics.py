@@ -9,7 +9,6 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.solvers.mujoco import kernels as mujoco_kernels
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 
@@ -27,33 +26,6 @@ def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
         dtype=np.float32,
     )
     return body_qd[body_idx, :3] - np.cross(body_qd[body_idx, 3:6], com_world)
-
-
-def eval_fk_mujoco_kernel(model, joint_q, joint_qd, state):
-    """Evaluate the duplicated MuJoCo FK kernel directly."""
-    wp.launch(
-        kernel=mujoco_kernels.eval_articulation_fk,
-        dim=model.articulation_count,
-        inputs=[
-            model.articulation_start,
-            model.articulation_end,
-            model.joint_articulation,
-            joint_q,
-            joint_qd,
-            model.joint_q_start,
-            model.joint_qd_start,
-            model.joint_type,
-            model.joint_parent,
-            model.joint_child,
-            model.joint_X_p,
-            model.joint_X_c,
-            model.joint_axis,
-            model.joint_dof_dim,
-            model.body_com,
-        ],
-        outputs=[state.body_q, state.body_qd],
-        device=model.device,
-    )
 
 
 def _add_free_distance_joint(builder, joint_type, parent, child, parent_xform, child_xform):
@@ -499,7 +471,7 @@ def test_fk_free_distance_root_descendant_linear_velocity_matches_finite_differe
     )
     q_next[q_start[1]] = q[q_start[1]] + qd[qd_start[1]] * dt
 
-    for eval_fk_fn in (newton.eval_fk, eval_fk_mujoco_kernel):
+    for eval_fk_fn in (newton.eval_fk,):
         state = model.state()
         state.joint_q.assign(q)
         state.joint_qd.assign(qd)
@@ -625,7 +597,7 @@ def test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_differenc
     q_next[q_start[0]] += qd[qd_start[0]] * dt
     q_next[q_start[1]] += qd[qd_start[1]] * dt
 
-    for eval_fk_fn in (newton.eval_fk, eval_fk_mujoco_kernel):
+    for eval_fk_fn in (newton.eval_fk,):
         state = model.state()
         state.joint_q.assign(q)
         state.joint_qd.assign(qd)
@@ -1063,6 +1035,58 @@ def test_ik_body_flag_filter_dynamic_only(test, device):
     test.assertAlmostEqual(float(recovered_qd_np[1]), 3.0, places=6)
 
 
+def test_fk_ik_d6_left_handed_angular_axes(test, device):
+    """Regression for FK/IK on a D6 joint whose three angular axes form a left-handed orthonormal triple
+    (e.g. X, Z, Y as used by the nv_humanoid hip). The intrinsic-Euler product
+    ``qfa(axis_0, q0) * qfa(axis_1, q1) * qfa(axis_2, q2)`` must hold for the resulting body rotation,
+    and ``eval_ik`` must recover the original joint coordinates."""
+    cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
+    builder = newton.ModelBuilder(gravity=0.0)
+    child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
+    j = builder.add_joint_d6(
+        parent=-1,
+        child=child,
+        angular_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Z), cfg(axis=newton.Axis.Y)],
+    )
+    builder.add_articulation([j])
+    model = builder.finalize(device=device)
+
+    q_vals = np.array([0.5, -0.4, 0.7], dtype=np.float32)
+    qd_vals = np.array([0.9, -0.6, 0.3], dtype=np.float32)
+    state = model.state()
+    state.joint_q.assign(q_vals)
+    state.joint_qd.assign(qd_vals)
+
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    body_q = state.body_q.numpy()[child]
+    rot = wp.quat(float(body_q[3]), float(body_q[4]), float(body_q[5]), float(body_q[6]))
+    expected = (
+        wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(q_vals[0]))
+        * wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(q_vals[1]))
+        * wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), float(q_vals[2]))
+    )
+    assert_np_equal(np.array(rot), np.array(expected), tol=1e-6)
+
+    # Independent FK angular-velocity check so a matching regression in compute_3d_rotational_dofs
+    # and invert_3d_rotational_dofs cannot mask itself via the FK->IK round-trip below.
+    q_0 = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(q_vals[0]))
+    axis_1_w = wp.quat_rotate(q_0, wp.vec3(0.0, 0.0, 1.0))
+    q_1 = wp.quat_from_axis_angle(axis_1_w, float(q_vals[1]))
+    axis_2_w = wp.quat_rotate(q_1 * q_0, wp.vec3(0.0, 1.0, 0.0))
+    expected_w = np.array(
+        wp.vec3(1.0, 0.0, 0.0) * float(qd_vals[0]) + axis_1_w * float(qd_vals[1]) + axis_2_w * float(qd_vals[2]),
+        dtype=np.float32,
+    )
+    assert_np_equal(state.body_qd.numpy()[child][3:6], expected_w, tol=1e-6)
+
+    q_ik = wp.zeros_like(model.joint_q, device=device)
+    qd_ik = wp.zeros_like(model.joint_qd, device=device)
+    newton.eval_ik(model, state, q_ik, qd_ik)
+    assert_np_equal(q_ik.numpy(), q_vals, tol=1e-6)
+    assert_np_equal(qd_ik.numpy(), qd_vals, tol=1e-6)
+
+
 devices = get_test_devices()
 
 
@@ -1143,6 +1167,12 @@ add_function_test(
     TestSimKinematics,
     "test_ik_body_flag_filter_dynamic_only",
     test_ik_body_flag_filter_dynamic_only,
+    devices=devices,
+)
+add_function_test(
+    TestSimKinematics,
+    "test_fk_ik_d6_left_handed_angular_axes",
+    test_fk_ik_d6_left_handed_angular_axes,
     devices=devices,
 )
 
