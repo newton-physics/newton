@@ -3999,8 +3999,13 @@ class ModelBuilder:
 
         frame = frame.f_back
         stacklevel = 1
+        internal_root = __file__.replace("\\", "/").rsplit("/sim/builder.py", maxsplit=1)[0] + "/"
+        internal_root = internal_root.casefold()
         try:
-            while frame is not None and frame.f_code.co_filename == __file__:
+            while frame is not None:
+                filename = frame.f_code.co_filename.replace("\\", "/").casefold()
+                if not filename.startswith(internal_root):
+                    break
                 frame = frame.f_back
                 stacklevel += 1
             return stacklevel
