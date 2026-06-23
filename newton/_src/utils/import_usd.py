@@ -3757,12 +3757,21 @@ def parse_usd(
                     )
                     continue
                 imported_point_count += n
-                # Authored normals -> per-segment orientation (rotated to world). The
-                # normal at vertex i orients its outgoing segment, including the wrap.
+                # Authored normals set each segment's cross-section twist. Transform them by the
+                # inverse-transpose of the world map (correct under non-uniform scale): for
+                # rotation R and per-axis scale S that is R*S^-1 -- divide by the scale, then rotate.
                 quaternions = None
                 if normals is not None:
+                    inv_scale = wp.vec3(
+                        *(1.0 / s if abs(s) > 1.0e-8 else 1.0 for s in (w_scale[0], w_scale[1], w_scale[2]))
+                    )
                     seg_normals = [
-                        wp.quat_rotate(w_rot, wp.vec3(float(nv[0]), float(nv[1]), float(nv[2])))
+                        wp.quat_rotate(
+                            w_rot,
+                            wp.vec3(
+                                float(nv[0]) * inv_scale[0], float(nv[1]) * inv_scale[1], float(nv[2]) * inv_scale[2]
+                            ),
+                        )
                         for nv in normals[start : start + n]
                     ]
                     quaternions = _cable_segment_quaternions(positions, seg_normals)
