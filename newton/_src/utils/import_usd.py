@@ -3657,7 +3657,17 @@ def parse_usd(
                 warnings.warn(f"{path}: cable curve has no points / curveVertexCounts; skipping.", stacklevel=2)
                 continue
             closed = curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic
-            _warn_unsupported_rest_fields(prim, path, ("restWrapPoints",))
+            # Rest centerline used for the rest length below (one point per vertex); restNormals
+            # and rest bend angles are not imported yet.
+            rest_shape_points = deformable_read(prim, "restShapePoints")
+            if rest_shape_points is not None and len(rest_shape_points) != len(points):
+                warnings.warn(
+                    f"{path}: restShapePoints length {len(rest_shape_points)} != points {len(points)}; "
+                    f"ignoring rest shape (rest length taken from the imported points).",
+                    stacklevel=2,
+                )
+                rest_shape_points = None
+            _warn_unsupported_rest_fields(prim, path, ("restNormals",))
             _warn_geometry_authored_material_attrs(prim, path, "PhysicsCurvesDeformableMaterialAPI")
 
             world_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
@@ -3779,6 +3789,18 @@ def parse_usd(
                 # actual segment lengths (the straight-line endpoint distance would
                 # underestimate it for curved cables and inflate the stiffness).
                 seg_len = sum(seg_lengths) / max(1, num_seg)
+                # Use the rest centerline for the rest length when authored (else the imported
+                # points), so the cable is not pre-stressed. Only lengths matter -> apply w_scale.
+                if rest_shape_points is not None:
+                    rest_pts = [
+                        wp.vec3(float(rp[0]) * w_scale[0], float(rp[1]) * w_scale[1], float(rp[2]) * w_scale[2])
+                        for rp in rest_shape_points[start : start + n]
+                    ]
+                    if closed:
+                        rest_pts = [*rest_pts, rest_pts[0]]
+                    rest_seg_lengths = [float(wp.length(rest_pts[i + 1] - rest_pts[i])) for i in range(num_seg)]
+                    if min(rest_seg_lengths, default=0.0) > 1.0e-8:
+                        seg_len = sum(rest_seg_lengths) / max(1, num_seg)
                 # Convert each authored modulus through the shared cable utility (stretch = E*A/L,
                 # bend = E*I/L); the moduli are independent and either may be absent -> None ->
                 # builder default. The util returns both from one modulus, so take the matching one.

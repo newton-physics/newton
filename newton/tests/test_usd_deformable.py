@@ -153,6 +153,36 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertAlmostEqual(ke[dof0], expected_stretch, delta=expected_stretch * 1e-3)
             self.assertAlmostEqual(ke[dof0 + 1], expected_bend, delta=expected_bend * 1e-3)
 
+    def test_cable_rest_length_from_rest_shape_points(self):
+        """Per-joint stiffness uses the rest centerline (restShapePoints), not the possibly-deformed
+        points, so an authored rest shape sets the rest length L in E*A/L (proposal: rest segment
+        lengths derive from restShapePoints)."""
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_rest.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            # Current points: 0.2-long segments (a stretched state).
+            pts = [(0.0, 0.0, 1.0), (0.2, 0.0, 1.0), (0.4, 0.0, 1.0), (0.6, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            # Rest centerline: 0.1-long segments (half the deformed length).
+            rest = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(rest)
+            thickness, stretch_mod = 0.02, 2.0e6
+            _bind_cable_material(
+                stage, curves.GetPrim(), "/World/CableMat", thickness=thickness, stretchStiffness=stretch_mod
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            _, joints = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
+            r = 0.5 * thickness
+            area = math.pi * r * r
+            expected = stretch_mod * area / 0.1  # rest length 0.1, not the 0.2 deformed segments
+            dof0 = builder.joint_qd_start[joints[0]]
+            self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1e-3)
+
     def test_cable_zero_stiffness_is_preserved(self):
         """Authored zero stiffness (range [0, inf)) is kept, not replaced by add_rod's default."""
         from pxr import Usd, UsdPhysics
