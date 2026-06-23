@@ -411,6 +411,8 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         parser.add_argument("--seed", type=int, default=42)
+        # Default to the full settle + lift sequence so --test exercises the lift.
+        parser.set_defaults(num_frames=PARAMS["settle_frames"] + PARAMS["lift_frames"])
         return parser
 
 
