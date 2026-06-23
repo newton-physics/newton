@@ -197,7 +197,7 @@ class MeshAdjacency:
     v_adj_tets_offsets: wp.array[wp.int32]
 
     def to(self, device):
-        if device == self.edge_indices.device:
+        if wp.get_device(device) == self.edge_indices.device:
             return self
 
         adjacency = MeshAdjacency()
