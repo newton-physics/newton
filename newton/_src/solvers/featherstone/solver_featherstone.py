@@ -524,7 +524,8 @@ class SolverFeatherstone(SolverBase):
                 eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f)
 
             # muscles
-            eval_muscle_forces(model, state_in, control, body_f)
+            if False:
+                eval_muscle_forces(model, state_in, control, body_f)
 
             # ----------------------------
             # articulations
