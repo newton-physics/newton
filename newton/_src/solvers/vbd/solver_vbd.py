@@ -85,9 +85,6 @@ from .tri_mesh_collision import (
 __all__ = ["SolverVBD"]
 
 
-_vbd_damping_migration_warned = {"value": False}
-
-
 class SolverVBD(SolverBase):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
@@ -377,22 +374,6 @@ class SolverVBD(SolverBase):
                 DeprecationWarning,
                 stacklevel=2,
             )
-
-        # TODO: Remove this temporary warning after the Newton 1.4 migration window.
-        if (
-            model.particle_count > 0 or (model.body_count > 0 and not integrate_with_external_rigid_solver)
-        ) and not _vbd_damping_migration_warned["value"]:
-            warnings.warn(
-                "SolverVBD damping behavior changed in Newton 1.4.0:\n"
-                "  - Damping coefficients are interpreted as absolute physical coefficients, "
-                "not stiffness-relative multipliers.\n"
-                "To preserve previous behavior, compute the new damping coefficient as "
-                "kd_new = kd_old * k, where kd_old is the old relative damping value and k is "
-                "the stiffness or penalty coefficient for the same constraint, contact, or material.",
-                UserWarning,
-                stacklevel=2,
-            )
-            _vbd_damping_migration_warned["value"] = True
 
         if rigid_avbd_beta < 0:
             raise ValueError(f"rigid_avbd_beta must be >= 0, got {rigid_avbd_beta}")

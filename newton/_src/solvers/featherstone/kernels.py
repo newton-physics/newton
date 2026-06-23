@@ -12,6 +12,8 @@ from ...sim.articulation import (
     compute_2d_rotational_dofs,
     compute_3d_rotational_dofs,
     origin_twist_to_com_twist,
+    transform_2d_rotational_axes,
+    transform_3d_rotational_axes,
 )
 from ..semi_implicit.kernels_body import joint_force
 
@@ -241,10 +243,12 @@ def jcalc_transform(
 def jcalc_motion(
     type: int,
     joint_axis: wp.array[wp.vec3],
+    joint_q: wp.array[float],
     lin_axis_count: int,
     ang_axis_count: int,
     X_sc: wp.transform,
     joint_qd: wp.array[float],
+    q_start: int,
     qd_start: int,
     # outputs
     joint_S_s: wp.array[wp.spatial_vector],
@@ -280,21 +284,37 @@ def jcalc_motion(
             S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             v_j_s += S_s * joint_qd[qd_start + 2]
             joint_S_s[qd_start + 2] = S_s
-        if ang_axis_count > 0:
-            axis = joint_axis[qd_start + lin_axis_count + 0]
+        # Use the FK-transported axes (transform_*_rotational_axes), not the raw joint
+        # axes, so velocity and motion subspace stay consistent with FK for multi-angular D6 joints.
+        iqd = qd_start + lin_axis_count
+        iq = q_start + lin_axis_count
+        if ang_axis_count == 1:
+            axis = joint_axis[iqd]
             S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
-            v_j_s += S_s * joint_qd[qd_start + lin_axis_count + 0]
-            joint_S_s[qd_start + lin_axis_count + 0] = S_s
-        if ang_axis_count > 1:
-            axis = joint_axis[qd_start + lin_axis_count + 1]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
-            v_j_s += S_s * joint_qd[qd_start + lin_axis_count + 1]
-            joint_S_s[qd_start + lin_axis_count + 1] = S_s
-        if ang_axis_count > 2:
-            axis = joint_axis[qd_start + lin_axis_count + 2]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
-            v_j_s += S_s * joint_qd[qd_start + lin_axis_count + 2]
-            joint_S_s[qd_start + lin_axis_count + 2] = S_s
+            v_j_s += S_s * joint_qd[iqd]
+            joint_S_s[iqd] = S_s
+        if ang_axis_count == 2:
+            a0, a1 = transform_2d_rotational_axes(joint_axis[iqd + 0], joint_axis[iqd + 1], joint_q[iq + 0])
+            S_0 = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a0))
+            S_1 = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a1))
+            v_j_s += S_0 * joint_qd[iqd + 0] + S_1 * joint_qd[iqd + 1]
+            joint_S_s[iqd + 0] = S_0
+            joint_S_s[iqd + 1] = S_1
+        if ang_axis_count == 3:
+            a0, a1, a2 = transform_3d_rotational_axes(
+                joint_axis[iqd + 0],
+                joint_axis[iqd + 1],
+                joint_axis[iqd + 2],
+                joint_q[iq + 0],
+                joint_q[iq + 1],
+            )
+            S_0 = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a0))
+            S_1 = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a1))
+            S_2 = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a2))
+            v_j_s += S_0 * joint_qd[iqd + 0] + S_1 * joint_qd[iqd + 1] + S_2 * joint_qd[iqd + 2]
+            joint_S_s[iqd + 0] = S_0
+            joint_S_s[iqd + 1] = S_1
+            joint_S_s[iqd + 2] = S_2
 
         return v_j_s
 
@@ -726,7 +746,9 @@ def compute_link_velocity(
     joint_type: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
     joint_qd_start: wp.array[int],
+    joint_q: wp.array[float],
     joint_qd: wp.array[float],
     joint_axis: wp.array[wp.vec3],
     joint_dof_dim: wp.array2d[int],
@@ -746,6 +768,7 @@ def compute_link_velocity(
     type = joint_type[i]
     child = joint_child[i]
     parent = joint_parent[i]
+    q_start = joint_q_start[i]
     qd_start = joint_qd_start[i]
 
     X_pj = joint_X_p[i]
@@ -763,10 +786,12 @@ def compute_link_velocity(
     v_j_s = jcalc_motion(
         type,
         joint_axis,
+        joint_q,
         lin_axis_count,
         ang_axis_count,
         X_wpj,
         joint_qd,
+        q_start,
         qd_start,
         joint_S_s,
     )
@@ -1042,7 +1067,9 @@ def eval_rigid_id(
     joint_type: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
     joint_qd_start: wp.array[int],
+    joint_q: wp.array[float],
     joint_qd: wp.array[float],
     joint_axis: wp.array[wp.vec3],
     joint_dof_dim: wp.array2d[int],
@@ -1072,7 +1099,9 @@ def eval_rigid_id(
             joint_type,
             joint_parent,
             joint_child,
+            joint_q_start,
             joint_qd_start,
+            joint_q,
             joint_qd,
             joint_axis,
             joint_dof_dim,
