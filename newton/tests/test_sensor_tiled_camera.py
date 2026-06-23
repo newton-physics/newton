@@ -152,6 +152,58 @@ class TestSensorTiledCamera(unittest.TestCase):
             np.testing.assert_array_equal(packed[:3], expected_rgb)
             self.assertEqual(packed[3], 255)
 
+    def test_cloth_renders_via_triangle_mesh_construction(self) -> None:
+        """wp.Mesh must be lazily constructed on the first render call for cloth models.
+
+        Cloth models have both ``particle_q`` and ``tri_indices``, which routes rendering
+        through RenderContext's triangle-mesh path. The first ``update`` then constructs
+        a :class:`wp.Mesh` from those geometry arrays.
+        """
+        # Cloth is the minimal model with both particle_q and tri_indices. During
+        # init_from_model, RenderContext maps those to triangle_points and
+        # triangle_indices (cloth vertices live in particle_q; tri_indices are the
+        # faces). That pairing is what enables the triangle-mesh construction.
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.1,
+            fix_top=True,
+        )
+        model = builder.finalize(device="cpu")
+
+        sensor = SensorTiledCamera(model=model)
+        # The public render_context alias was removed; this regression test needs
+        # the internal mesh state that drives first-render construction.
+        render_context = sensor._SensorTiledCamera__render_context
+
+        # init_from_model copies model.particle_q/tri_indices into triangle_points/
+        # triangle_indices but does not build wp.Mesh until the first render call.
+        self.assertTrue(render_context.has_triangle_mesh)
+        self.assertIsNone(render_context.triangle_mesh)
+
+        width, height = 8, 8
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0, 0.0, 0.5), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        camera_rays = sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(60.0))
+        depth_image = sensor.utils.create_depth_image_output(width, height)
+
+        sensor.update(model.state(), camera_transforms, camera_rays, depth_image=depth_image)
+
+        # update() must construct the cloth triangle mesh on this first render call.
+        self.assertIsNotNone(render_context.triangle_mesh)
+
+        # Depth hits prove the mesh was passed into the render kernel, not just created.
+        self.assertGreater(int(np.sum(depth_image.numpy() > 0.0)), 0)
+
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_golden_image(self):
         model = self._shared_model

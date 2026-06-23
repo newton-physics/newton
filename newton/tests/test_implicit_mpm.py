@@ -179,8 +179,8 @@ def test_finite_difference_collider_velocity(test, device):
         end_mean_x = np.mean(state_0.particle_q.numpy()[:, 0])
         return end_mean_x - init_mean_x
 
-    # Run with both modes ('instantaneous'/'finite_difference' are deprecated
-    # aliases for 'forward'/'backward').
+    # 'forward' sees the current collider velocity; 'backward' derives it from
+    # the previous-step collider position.
     displacement_instantaneous = run_simulation("forward")
     displacement_finite_diff = run_simulation("backward")
 

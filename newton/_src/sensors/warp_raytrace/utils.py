@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import math
-import warnings
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -792,48 +791,6 @@ class Utils:
         )
         return out_buffer
 
-    def assign_random_colors_per_world(self, seed: int = 100):
-        """Assign each world a random color, applied to all its shapes.
-
-        .. deprecated:: 1.1
-            Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).
-
-        Args:
-            seed: Random seed.
-        """
-        warnings.warn(
-            "``SensorTiledCamera.utils.assign_random_colors_per_world`` is deprecated. Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).",
-            category=DeprecationWarning,
-            stacklevel=2,
-        )
-
-        if not self.__render_context.shape_count_total:
-            return
-        colors = np.random.default_rng(seed).random((self.__render_context.shape_count_total, 3)) * 0.5 + 0.5
-        self.__render_context.shape_colors = wp.array(
-            colors[self.__render_context.shape_world_index.numpy() % len(colors)],
-            dtype=wp.vec3f,
-            device=self.__render_context.device,
-        )
-
-    def assign_random_colors_per_shape(self, seed: int = 100):
-        """Assign a random color to each shape.
-
-        .. deprecated:: 1.1
-            Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).
-
-        Args:
-            seed: Random seed.
-        """
-        warnings.warn(
-            "``SensorTiledCamera.utils.assign_random_colors_per_shape`` is deprecated. Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).",
-            category=DeprecationWarning,
-            stacklevel=2,
-        )
-
-        colors = np.random.default_rng(seed).random((self.__render_context.shape_count_total, 3)) * 0.5 + 0.5
-        self.__render_context.shape_colors = wp.array(colors, dtype=wp.vec3f, device=self.__render_context.device)
-
     def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None):
         """Create a default directional light oriented at ``(-1, 1, -1)``.
 
@@ -905,16 +862,6 @@ class Utils:
     ) -> wp.array():
         world_and_camera_count = self.__render_context.world_count * camera_count
         if worlds_per_row is None:
-            worlds_per_row = math.ceil(math.sqrt(world_and_camera_count))
-        elif worlds_per_row == 0:
-            # Older callers passed 0 to mean "auto layout" because the original
-            # check was a falsy test. Preserve that behavior with a deprecation
-            # warning so we can require >=1 in a future release.
-            warnings.warn(
-                "worlds_per_row=0 is deprecated; pass None for auto layout.",
-                category=DeprecationWarning,
-                stacklevel=3,
-            )
             worlds_per_row = math.ceil(math.sqrt(world_and_camera_count))
         elif worlds_per_row < 1:
             raise ValueError(f"worlds_per_row must be >= 1, got {worlds_per_row}")

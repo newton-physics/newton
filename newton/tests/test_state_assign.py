@@ -12,7 +12,7 @@ import newton
 def _build_model(*, custom_attrs: tuple[str, ...] = ()):
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
     inertia = wp.mat33((0.1, 0.0, 0.0), (0.0, 0.1, 0.0), (0.0, 0.0, 0.1))
-    body = builder.add_link(armature=0.0, inertia=inertia, mass=1.0)
+    body = builder.add_link(inertia=inertia, mass=1.0)
     joint = builder.add_joint_revolute(
         parent=-1,
         child=body,

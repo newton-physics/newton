@@ -425,6 +425,7 @@ class IKOptimizerLM:
 
         ctx.fk_qd_zero.zero_()
         self._compute_motion_subspace(
+            joint_q_in=ctx.joint_q,
             body_q=ctx.fk_body_q,
             joint_S_s_out=ctx.motion_subspace,
             joint_qd_in=ctx.fk_qd_zero,
@@ -495,6 +496,7 @@ class IKOptimizerLM:
     def _compute_motion_subspace(
         self,
         *,
+        joint_q_in: wp.array2d[wp.float32],
         body_q: wp.array2d[wp.transform],
         joint_S_s_out: wp.array2d[wp.spatial_vector],
         joint_qd_in: wp.array2d[wp.float32],
@@ -507,7 +509,9 @@ class IKOptimizerLM:
             inputs=[
                 self.model.joint_type,
                 self.model.joint_parent,
+                self.model.joint_q_start,
                 self.model.joint_qd_start,
+                joint_q_in,
                 joint_qd_in,
                 self.model.joint_axis,
                 self.model.joint_dof_dim,
@@ -805,7 +809,9 @@ class IKOptimizerLM:
         def _compute_motion_subspace_2d(
             joint_type: wp.array[wp.int32],  # (n_joints)
             joint_parent: wp.array[wp.int32],  # (n_joints)
+            joint_q_start: wp.array[wp.int32],  # (n_joints + 1)
             joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
+            joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
             joint_qd: wp.array2d[wp.float32],  # (n_batch, n_joint_dof_count)
             joint_axis: wp.array[wp.vec3],  # (n_joint_dof_count)
             joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)
@@ -818,6 +824,7 @@ class IKOptimizerLM:
 
             type = joint_type[joint_idx]
             parent = joint_parent[joint_idx]
+            q_start = joint_q_start[joint_idx]
             qd_start = joint_qd_start[joint_idx]
 
             X_pj = joint_X_p[joint_idx]
@@ -828,16 +835,19 @@ class IKOptimizerLM:
             lin_axis_count = joint_dof_dim[joint_idx, 0]
             ang_axis_count = joint_dof_dim[joint_idx, 1]
 
+            joint_q_1d = joint_q[row]
             joint_qd_1d = joint_qd[row]
             S_s_out = joint_S_s[row]
 
             jcalc_motion(
                 type,
                 joint_axis,
+                joint_q_1d,
                 lin_axis_count,
                 ang_axis_count,
                 X_wpj,
                 joint_qd_1d,
+                q_start,
                 qd_start,
                 S_s_out,
             )
