@@ -1407,32 +1407,35 @@ class TestUSDDeformableMass(unittest.TestCase):
             bodies, _ = result["path_cable_map"]["/World/Cable"]
             self.assertAlmostEqual(sum(builder.body_mass[b] for b in bodies), 2.5, places=4)
 
-    def test_cable_asymmetric_masses_warn_and_collapse_to_uniform(self):
-        """The rigid cable can't carry per-point masses, so an asymmetric physics:masses array is
-        collapsed to its sum and spread uniformly. Assert this is not silent (it warns that the
-        distribution is dropped) and that a front-heavy array does not produce a front-heavy cable."""
+    def test_cable_per_point_masses_lump_onto_segments(self):
+        """Per-point physics:masses are lumped onto the segments they border, so a front-heavy mass
+        array yields a front-heavy cable (not a uniform one) while preserving the total. Each point's
+        mass splits between its adjacent segments; the two endpoints border a single segment each."""
         from pxr import Sdf, Usd, UsdPhysics
 
         with tempfile.TemporaryDirectory() as tmpdir:
             usd_path = Path(tmpdir) / "cable_asym.usda"
             stage = Usd.Stage.CreateNew(str(usd_path))
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]  # 4 points
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]  # 4 points -> 3 segments
             curves = _add_cable_curve(stage, "/World/Cable", pts)
-            asymmetric = [10.0, 1.0, 1.0, 1.0]  # front-heavy, length == points
-            curves.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(asymmetric)
+            masses = [10.0, 1.0, 1.0, 1.0]  # front-heavy, length == points
+            curves.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(masses)
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with self.assertWarnsRegex(UserWarning, "distribution is dropped"):
-                result = builder.add_usd(str(usd_path))
+            result = builder.add_usd(str(usd_path))
             bodies, _ = result["path_cable_map"]["/World/Cable"]
             seg_masses = [builder.body_mass[b] for b in bodies]
-            # Total is preserved (the sum is applied) ...
-            self.assertAlmostEqual(sum(seg_masses), sum(asymmetric), places=4)
-            # ... but the front-heavy distribution is gone: every segment carries the same mass.
-            self.assertGreater(len(seg_masses), 1)
-            self.assertAlmostEqual(max(seg_masses) - min(seg_masses), 0.0, places=4)
+            # Lumping (endpoints contribute their full mass to their one segment, interior points
+            # split): seg0 = m0 + m1/2, seg1 = m1/2 + m2/2, seg2 = m2/2 + m3.
+            self.assertEqual(len(seg_masses), 3)
+            self.assertAlmostEqual(seg_masses[0], 10.0 + 0.5, places=4)
+            self.assertAlmostEqual(seg_masses[1], 0.5 + 0.5, places=4)
+            self.assertAlmostEqual(seg_masses[2], 0.5 + 1.0, places=4)
+            # Total is preserved and the front-heavy profile survives (not flattened).
+            self.assertAlmostEqual(sum(seg_masses), sum(masses), places=4)
+            self.assertGreater(seg_masses[0], seg_masses[2])
 
     def test_cable_masses_length_mismatch_is_ignored(self):
         """A physics:masses array whose length != curve points warns and is ignored."""

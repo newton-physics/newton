@@ -3453,9 +3453,37 @@ def parse_usd(
                 for i in range(p0, p1):
                     builder.particle_mass[i] *= scale
 
-    def _apply_cable_masses(prim, body_ids, num_points):
-        # The rigid capsule chain can't carry per-point masses; collapse them (or take
-        # the body mass) to a total and rescale segment mass + inertia.
+    def _set_body_mass(b, m):
+        # Set body b's mass and scale its inertia tensor to match (keeps the segment's shape).
+        orig = builder.body_mass[b]
+        s = (m / orig) if orig > 0.0 else 0.0
+        builder.body_mass[b] = m
+        builder.body_inertia[b] = builder.body_inertia[b] * s
+        builder.body_inv_mass[b] = (1.0 / m) if m > 0.0 else 0.0
+        builder.body_inv_inertia[b] = wp.inverse(builder.body_inertia[b]) if m > 0.0 else wp.mat33(0.0)
+
+    def _apply_cable_masses(prim, body_ids, point_runs, closed):
+        # Mass precedence for the rigid cable: per-point physics:masses (highest), else a
+        # PhysicsDeformableBodyAPI body-mass total.
+        #
+        # physics:masses is a per-POINT (vertex) quantity, but add_rod builds one capsule body
+        # per SEGMENT between consecutive points -- a point is the junction of its neighboring
+        # segments, not a body. So N points map to N-1 segments (open) or N (closed):
+        #
+        #     points     P0------P1------P2------P3      mass m0 m1 m2 m3
+        #     segments       C0      C1      C2          (open: 3 capsule bodies)
+        #
+        # There is no body at a vertex, so each point's mass is lumped onto the segment(s) it
+        # borders: an interior point splits its mass between its two segments, an endpoint gives
+        # its full mass to its single segment (so the total is conserved):
+        #
+        #     C0 = m0 + m1/2,   C1 = m1/2 + m2/2,   C2 = m2/2 + m3
+        #
+        # This preserves the authored distribution (a front-heavy cable stays front-heavy) and its
+        # total. The mass lands at the segment midpoints rather than the vertices -- the inherent
+        # approximation of a rigid chain that has no per-vertex DOF. A body-mass total has no
+        # per-point profile, so it just rescales the (density-derived) segment masses to that total.
+        num_points = sum(n for _, n, _ in point_runs)
         point_masses = usd._get_deformable_point_masses(prim, deformable_read)
         body_mass, _ = usd._get_deformable_body_overrides(prim, deformable_read)
         if point_masses is not None and len(point_masses) != num_points:
@@ -3466,28 +3494,29 @@ def parse_usd(
             )
             point_masses = None
         if point_masses is not None:
-            target = float(sum(point_masses))
-            warnings.warn(
-                f"{prim.GetPath()}: the rigid cable model cannot carry per-point physics:masses, so the "
-                f"authored distribution is dropped (not merely re-represented): only its sum is applied as "
-                f"the total cable mass and spread proportionally across the (uniform) segments, so a "
-                f"non-uniform mass profile comes back uniform.",
-                stacklevel=2,
-            )
-        elif body_mass is not None:
-            target = body_mass
-        else:
+            for start, n, bodies in point_runs:
+                pm = [float(point_masses[start + i]) for i in range(n)]
+                if closed:
+                    # Loop: N points -> N segments, every point borders two, so split each in half.
+                    seg_masses = [0.5 * pm[s] + 0.5 * pm[(s + 1) % n] for s in range(n)]
+                else:
+                    # Open: N points -> N-1 segments. Interior points (the +0.5 terms) split between
+                    # two segments; the first/last points are endpoints and give their full mass.
+                    seg_masses = [
+                        (pm[s] if s == 0 else 0.5 * pm[s]) + (pm[s + 1] if s + 1 == n - 1 else 0.5 * pm[s + 1])
+                        for s in range(n - 1)
+                    ]
+                for b, m in zip(bodies, seg_masses, strict=True):
+                    _set_body_mass(b, m)
+            return
+        if body_mass is None:
             return
         current = float(sum(builder.body_mass[b] for b in body_ids))
         if current <= 0.0:
             return
-        scale = target / current
+        scale = body_mass / current
         for b in body_ids:
-            m = builder.body_mass[b] * scale
-            builder.body_mass[b] = m
-            builder.body_inertia[b] = builder.body_inertia[b] * scale
-            builder.body_inv_mass[b] = (1.0 / m) if m > 0.0 else 0.0
-            builder.body_inv_inertia[b] = wp.inverse(builder.body_inertia[b]) if m > 0.0 else wp.mat33(0.0)
+            _set_body_mass(b, builder.body_mass[b] * scale)
 
     # Volume deformables (TetMesh -> soft body). PhysicsVolumeDeformableSimAPI (or a
     # PhysicsDeformableBodyAPI) opts into the mass precedence; a bare TetMesh stays legacy.
@@ -3683,6 +3712,9 @@ def parse_usd(
 
             cable_bodies: list[int] = []
             cable_joints: list[int] = []
+            # Per built curve: (point offset in the prim's masses array, point count, segment bodies),
+            # so per-point masses can be lumped onto each curve's segments.
+            cable_point_runs: list[tuple[int, int, list[int]]] = []
             imported_point_count = 0
             offset = 0
             for ci, n in enumerate(vertex_counts):
@@ -3758,9 +3790,10 @@ def parse_usd(
                 )
                 cable_bodies.extend(bodies)
                 cable_joints.extend(joints)
+                cable_point_runs.append((start, n, bodies))
 
             if cable_bodies:
-                _apply_cable_masses(prim, cable_bodies, imported_point_count)
+                _apply_cable_masses(prim, cable_bodies, cable_point_runs, closed)
                 path_cable_map[path] = (cable_bodies, cable_joints)
                 path_cable_attrs[path] = {
                     "material": dict(cable_mat),
