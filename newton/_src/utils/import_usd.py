@@ -3468,8 +3468,10 @@ def parse_usd(
         if point_masses is not None:
             target = float(sum(point_masses))
             warnings.warn(
-                f"{prim.GetPath()}: per-point physics:masses are not representable on the rigid cable "
-                f"model; applying their sum as the total cable mass.",
+                f"{prim.GetPath()}: the rigid cable model cannot carry per-point physics:masses, so the "
+                f"authored distribution is dropped (not merely re-represented): only its sum is applied as "
+                f"the total cable mass and spread proportionally across the (uniform) segments, so a "
+                f"non-uniform mass profile comes back uniform.",
                 stacklevel=2,
             )
         elif body_mass is not None:
