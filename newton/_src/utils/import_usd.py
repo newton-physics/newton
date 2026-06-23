@@ -347,6 +347,12 @@ def parse_usd(
     except Exception as e:
         if verbose:
             print(f"Failed to get mass unit: {e}")
+    if not math.isclose(mass_unit, 1.0):
+        warnings.warn(
+            "USD stages with non-unit mass units are not supported. "
+            f"Set kilogramsPerUnit to 1.0 before import. Found kilogramsPerUnit={mass_unit}.",
+            stacklevel=_external_stacklevel(),
+        )
     linear_unit = 1.0
     try:
         if UsdGeom.StageHasAuthoredMetersPerUnit(stage):
