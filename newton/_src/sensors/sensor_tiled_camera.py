@@ -193,7 +193,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
     def update(
         self,
-        state: State | None = None,
+        state: State,
         camera_transforms: wp.array2d[wp.transformf] | None = None,
         camera_rays: wp.array4d[wp.vec3f] | None = None,
         *,
@@ -203,7 +203,6 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         normal_image: wp.array4d[wp.vec3f] | None = None,
         albedo_image: wp.array4d[wp.uint32] | None = None,
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
-        refit_bvh: bool | None = None,
         hdr_color_image: wp.array4d[wp.vec3f] | None = None,
         kernel_block_dim: int = 64,
     ):
@@ -221,7 +220,6 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
         Args:
             state: Simulation state with body and particle transforms.
-                Passing ``None`` is deprecated and will be removed in a future release.
             camera_transforms: Camera-to-world transforms, shape ``(camera_count, world_count)``.
             camera_rays: Camera-space rays from :meth:`compute_pinhole_camera_rays`, shape
                 ``(camera_count, height, width, 2)``.
@@ -238,46 +236,16 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
                 albedo clear values are specified as display/sRGB RGBA and
                 converted to linear when linear output is requested. See
                 :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
-            refit_bvh: Refit the BVH before rendering. This is deprecated;
-                call :meth:`~newton.Model.bvh_refit_shapes` and
-                :meth:`~newton.Model.bvh_refit_particles` explicitly after
-                state changes instead.
             hdr_color_image: Output for linear HDR color. None to skip.
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
                 for the render megakernel.
         """
 
-        # TODO: Remove this deprecation behaviour in the next release.
-        # state will be required and refit_bvh will be removed.
-        render_state = state if state is not None else self.model.state()
-
-        if state is None or refit_bvh is not None:
-            warnings.warn(
-                "Passing state=None or refit_bvh to SensorTiledCamera.update() is deprecated. "
-                "Call SensorTiledCamera.sync_transforms(state) and refit model BVHs explicitly with "
-                "model.bvh_refit_*() after state changes.",
-                category=DeprecationWarning,
-                stacklevel=2,
-            )
-            should_refit = True if refit_bvh is None else refit_bvh
-
-            if self.model.shape_count:
-                if self.model.bvh_shapes is None:
-                    self.model.bvh_build_shapes(render_state)
-                elif should_refit:
-                    self.model.bvh_refit_shapes(render_state)
-
-            if render_state.particle_q is not None and render_state.particle_count:
-                if self.model.bvh_particles is None:
-                    self.model.bvh_build_particles(render_state)
-                elif should_refit:
-                    self.model.bvh_refit_particles(render_state)
-
-        self.sync_transforms(render_state)
+        self.sync_transforms(state)
 
         self.__render_context.render(
             self.model,
-            render_state,
+            state,
             camera_transforms,
             camera_rays,
             color_image,
