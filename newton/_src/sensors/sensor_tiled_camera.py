@@ -91,7 +91,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         """
 
         checkerboard_texture: bool = False
-        """.. deprecated:: 1.1 Use ``SensorTiledCamera.utils.assign_checkerboard_material_to_all_shapes()`` instead."""
+        """.. deprecated:: 1.1 Use ``SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)`` instead."""
 
         default_light: bool = False
         """.. deprecated:: 1.1 Use ``SensorTiledCamera.utils.create_default_light()`` instead."""
@@ -166,7 +166,7 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
 
         if isinstance(config, SensorTiledCamera.Config):
             if config.checkerboard_texture:
-                self.utils.assign_checkerboard_material_to_all_shapes()
+                self.utils.assign_checkerboard_material(shape_indices=np.arange(self.model.shape_count, dtype=np.int32))
             if config.default_light:
                 self.utils.create_default_light(config.default_light_shadows)
             if config.colors_per_world:
@@ -449,19 +449,25 @@ class SensorTiledCamera(metaclass=_SensorTiledCameraMeta):
         Creates a gray checkerboard pattern texture and applies it to all shapes
         in the scene.
 
-        .. deprecated:: 1.1
-            Use ``SensorTiledCamera.utils.assign_checkerboard_material_to_all_shapes`` instead.
+        .. deprecated:: 1.4
+            Use ``SensorTiledCamera.utils.assign_checkerboard_material`` with
+            explicit shape indices instead.
 
         Args:
             resolution: Texture resolution in pixels (square texture).
             checker_size: Size of each checkerboard square in pixels.
         """
         warnings.warn(
-            "Deprecated: SensorTiledCamera.assign_checkerboard_material_to_all_shapes is deprecated, use SensorTiledCamera.utils.assign_checkerboard_material_to_all_shapes instead.",
+            "``SensorTiledCamera.assign_checkerboard_material_to_all_shapes`` is deprecated as of Newton 1.4. "
+            "Use ``SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)`` instead.",
             category=DeprecationWarning,
             stacklevel=2,
         )
-        self.utils.assign_checkerboard_material_to_all_shapes(resolution, checker_size)
+        self.utils.assign_checkerboard_material(
+            shape_indices=np.arange(self.model.shape_count, dtype=np.int32),
+            resolution=resolution,
+            checker_size=checker_size,
+        )
 
     def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create a color output array for :meth:`update`.
