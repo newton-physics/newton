@@ -41,12 +41,164 @@ if TYPE_CHECKING:
 # Module interface
 ###
 
-__all__ = ["SolverKamino"]
+__all__ = ["ResetConfigKamino", "SolverKamino"]
 
 
 ###
 # Interfaces
 ###
+
+
+@dataclass
+class ResetConfigKamino:
+    """
+    Configuration for a call to the reset() operation, specifying the behaviour (common or separate)
+    for body poses, body velocities as well as floating base pose and velocity.
+    """
+
+    @dataclass(frozen=True)
+    class ToDefault:
+        """Reset option, to reset to default values (e.g., initial pose and zero velocity)."""
+
+    @dataclass(frozen=True)
+    class Preserve:
+        """Reset option, to preserve current values, assuming without check that they are consistent."""
+
+    @dataclass(frozen=True)
+    class FromJointQ:
+        """
+        Reset option, to set body poses from actuator coordinates and/or base joint coordinates.
+        Extracts relevant data from joint coordinates, and applies position-level Forward Kinematics
+        and/or a global transformation at the base.
+        """
+
+        joint_q: wp.array[wp.float32] | None = None
+        """Optional joint coordinates array. If not provided, coordinates in the state container are used."""
+
+    @dataclass(frozen=True)
+    class FromJointU:
+        """
+        Reset option, to set body velocities from actuator velocities and/or base joint velocity.
+        Extracts relevant data from joint velocities, and applies velocity-level Forward Kinematics
+        and/or a global composition with the base velocity.
+        """
+
+        joint_u: wp.array[wp.float32] | None = None
+        """Optional joint velocities array. If not provided, velocities in the state container are used."""
+
+    @dataclass(frozen=True)
+    class FromActuatorQ:
+        """
+        Reset option, to set body poses from actuator coordinates, using position-level Forward Kinematics.
+        """
+
+        actuator_q: wp.array[wp.float32]
+        """Actuator coordinates array."""
+
+    @dataclass(frozen=True)
+    class FromActuatorU:
+        """
+        Reset option, to set body velocities from actuator velocities, using velocity-level Forward Kinematics.
+        """
+
+        actuator_u: wp.array[wp.float32]
+        """Actuator velocities array."""
+
+    @dataclass(frozen=True)
+    class FromBaseQ:
+        """Reset option, to set a new pose for the base body, and transform all bodies accordingly."""
+
+        base_q: wp.array[wp.transformf]
+        """Per-world base body pose array."""
+
+    @dataclass(frozen=True)
+    class FromBaseU:
+        """Reset option, to set a new velocity for the base body, and compose with body velocities accordingly."""
+
+        base_u: wp.array[wp.spatial_vectorf]
+        """Per-world base body velocity array."""
+
+    body_poses: ToDefault | Preserve | FromJointQ | FromActuatorQ = ToDefault()
+    """
+    Reset option for body poses:
+    - ToDefault: reset poses to their initial values.
+    - Preserve: preserve poses in the state container, assuming they are consistent.
+    - FromJointQ: extract actuator coordinates from joint coordinates, and compute consistent
+      body poses with a position-level forward kinematics solve.
+    - FromActuatorQ: compute consistent body poses for the prescribed actuator coordinates with
+      a position-level forward kinematics solve.
+    """
+
+    body_velocities: ToDefault | Preserve | FromJointU | FromActuatorU = ToDefault()
+    """
+    Reset option for body velocities:
+    - ToDefault: reset velocities to zero.
+    - Preserve: if body poses are preserved, preserve velocities in the state container, assuming
+      they are consistent. Otherwise, behaves like FromJointU, transferring current joint velocities
+      in the state container, to the extent possible, to the new body poses.
+    - FromJointU: extract actuator velocities from joint velocities, and compute consistent body
+      velocities with a velocity-level forward kinematics solve.
+    - FromActuatorU: compute consistent body velocities for the prescribed actuator velocities with
+      a velocity-level forward kinematics solve.
+    """
+
+    base_pose: ToDefault | Preserve | FromJointQ | FromBaseQ = ToDefault()
+    """
+    Reset option for the floating base pose:
+    - ToDefault: reset the base pose to its initial value.
+    - Preserve: preserve the current base pose, as read from current joint coordinates (if a base joint
+      was set) or body poses (otherwise).
+    - FromJointQ: read the base pose from joint coordinates, assuming a base joint was set. Behaves
+      like ToDefault otherwise (as a fallback).
+    - FromBaseQ: use the provided base pose.
+    Body poses and velocities are transformed (if needed) to match the prescribed base pose, while
+    preserving relative poses and velocities.
+    """
+
+    base_velocity: ToDefault | Preserve | FromJointU | FromBaseU = ToDefault()
+    """
+    Reset option for the floating base velocity:
+    - ToDefault: reset the base velocity to zero.
+    - Preserve: preserve the current base velocity, as read from current joint velocities (if a base joint
+      was set) or body velocities (otherwise), up to transformation due to the new base pose if applicable.
+    - FromJointU: read the base velocity from joint velocities, assuming a base joint was set. Behaves
+      like ToDefault otherwise (as a fallback).
+    - FromBaseU: use the provided base velocity.
+    Body velocities are updated to match the prescribed base velocity, while preserving relative velocities.
+    """
+
+    @classmethod
+    def to_default(cls) -> ResetConfigKamino:
+        """Instantiates a reset config for resetting all state components to default values."""
+        return cls(
+            body_poses=ResetConfigKamino.ToDefault(),
+            body_velocities=ResetConfigKamino.ToDefault(),
+            base_pose=ResetConfigKamino.ToDefault(),
+            base_velocity=ResetConfigKamino.ToDefault(),
+        )
+
+    @classmethod
+    def preserve(cls) -> ResetConfigKamino:
+        """Instantiates a reset config for preserving all state components."""
+        return cls(
+            body_poses=ResetConfigKamino.Preserve(),
+            body_velocities=ResetConfigKamino.Preserve(),
+            base_pose=ResetConfigKamino.Preserve(),
+            base_velocity=ResetConfigKamino.Preserve(),
+        )
+
+    @classmethod
+    def from_joints(cls) -> ResetConfigKamino:
+        """
+        Instantiates a reset config for running FK at the position and velocity level,
+        to set new poses and velocities from current per-joint values in the state container.
+        """
+        return cls(
+            body_poses=ResetConfigKamino.FromJointQ(),
+            body_velocities=ResetConfigKamino.FromJointU(),
+            base_pose=ResetConfigKamino.FromJointQ(),
+            base_velocity=ResetConfigKamino.FromJointU(),
+        )
 
 
 class SolverKamino(SolverBase):
@@ -365,6 +517,9 @@ class SolverKamino(SolverBase):
     the solver to avoid import overhead if the solver is not used.
     """
 
+    ResetConfig = ResetConfigKamino
+    """ Defines a type alias of the reset configuration container. """
+
     def __init__(
         self,
         model: Model,
@@ -457,21 +612,18 @@ class SolverKamino(SolverBase):
         world_mask: wp.array | None = None,
         flags: StateFlags | int | None = None,
         *,
-        actuator_q: wp.array | None = None,
-        actuator_u: wp.array | None = None,
-        joint_q: wp.array | None = None,
-        joint_u: wp.array | None = None,
-        base_q: wp.array | None = None,
-        base_u: wp.array | None = None,
+        reset_config: ResetConfigKamino | None = None,
     ):
-        """Reset the Kamino solver state.
+        """
+        Reset the Kamino solver state.
 
-        Resets the simulation state given a combination of desired base body
-        and joint states, as well as an optional per-world mask array indicating
-        which worlds should be reset. The state is modified in place.
+        Performs a configurable in-place reset of the simulation state, in all or a subset
+        of worlds, setting body poses and velocities selectively to default or current values,
+        or as per joint coordinates/velocities, using a forward kinematics solve.
+        This is optionally combined with a reset of the pose and velocity of the floating base.
 
-        For resets given absolute quantities like base body poses, *state*
-        must initially contain the current state of the simulation.
+        All state components are reset consistently with the new body poses and velocities
+        (unless prescribed otherwise by state flags), and solver-internal buffers are cleared.
 
         Args:
             state: The simulation state to reset (modified in place).
@@ -481,78 +633,67 @@ class SolverKamino(SolverBase):
             flags: Optional :class:`~newton.StateFlags` or ``int`` bitmask controlling
                 which state attributes need to be reset.  If ``None``, all
                 state attributes are reset.
-            actuator_q: Optional array of target actuated joint coordinates.
-                Shape of ``(num_actuated_joint_coords,)`` and type :class:`wp.float32`.
-            actuator_u: Optional array of target actuated joint DoF velocities.
-                Shape of ``(num_actuated_joint_dofs,)`` and type :class:`wp.float32`.
-            joint_q: Optional array of target joint coordinates.
-                Shape of ``(num_joint_coords,)`` and type :class:`wp.float32`.
-            joint_u: Optional array of target joint DoF velocities.
-                Shape of ``(num_joint_dofs,)`` and type :class:`wp.float32`.
-            base_q: Optional array of target base body poses.
-                Shape of ``(num_worlds,)`` and type :class:`wp.transformf`.
-            base_u: Optional array of target base body twists.
-                Shape of ``(num_worlds,)`` and type :class:`wp.spatial_vectorf`.
+                Note: currently, this is implementing simply by caching attributes that
+                should not be reset, and restoring them after the Kamino-internal reset.
+                For complex/partial resets, it is recommended to use reset_config instead.
+            reset_config: Optional reset configuration, controlling the reset behavior
+                for body poses/velocities as well as floating base pose/velocity.
+                If not provided, all components are reset to default (initial) values.
         """
         if state is None:
             raise ValueError("'state' argument is required.")
 
+        # Process None arguments
         state_flags = int(StateFlags.ALL if flags is None else flags)
+        reset_config = ResetConfigKamino.to_default() if reset_config is None else reset_config
 
-        # Convert base pose from body-origin to COM frame
-        if base_q is not None:
-            base_q_com = wp.zeros_like(base_q)
-            self._kamino.convert_base_origin_to_com(
-                base_body_index=self._model_kamino.info.base_body_index,
-                body_com=self._model_kamino.bodies.i_r_com_i,
-                base_q=base_q,
-                base_q_com=base_q_com,
-            )
-            base_q = base_q_com
+        # Determine if a body CoM <-> origin conversion is needed
+        need_CoM_conversion = (
+            not isinstance(reset_config.body_poses, ResetConfigKamino.Preserve)
+            or not isinstance(reset_config.base_pose, ResetConfigKamino.Preserve)
+            or self._solver_kamino._pre_reset_cb is not None
+            or self._solver_kamino._post_reset_cb is not None
+        )
 
-        # TODO: fix brittle in-place update of arrays after conversion
-        # Create a zero-copy view of the input state as a StateKamino
-        # to interface with the Kamino solver's reset operation.
-        state_out_kamino = self._kamino.StateKamino.from_newton(self._model_kamino.size, self.model, state)
+        # Convert/alias the input state as a StateKamino object
+        state_kamino = self._kamino.StateKamino.from_newton(
+            self._model_kamino.size, self.model, state, convert_to_com_frame=need_CoM_conversion
+        )
 
-        # Partial resets preserve excluded fields by snapshotting and restoring
-        # them around the Kamino reset. Replace this with preallocated scratch if
-        # partial resets become part of a captured reset graph.
+        # Cache fields excluded from the reset op, to restore them afterwards
         restore_after_reset: list[tuple[wp.array, wp.array]] = []
 
         def _preserve_if_unset(array: wp.array | None, flag: int) -> None:
             if array is not None and not (state_flags & flag):
                 restore_after_reset.append((array, wp.clone(array, device=array.device)))
 
-        _preserve_if_unset(state_out_kamino.q_j, StateFlags.JOINT_Q)
-        _preserve_if_unset(state_out_kamino.q_j_p, StateFlags.JOINT_Q)
-        _preserve_if_unset(state_out_kamino.dq_j, StateFlags.JOINT_QD)
-        _preserve_if_unset(state_out_kamino.q_i, StateFlags.BODY_Q)
-        _preserve_if_unset(state_out_kamino.u_i, StateFlags.BODY_QD)
+        _preserve_if_unset(state_kamino.q_j, StateFlags.JOINT_Q)
+        _preserve_if_unset(state_kamino.q_j_p, StateFlags.JOINT_Q)
+        _preserve_if_unset(state_kamino.dq_j, StateFlags.JOINT_QD)
+        _preserve_if_unset(state_kamino.q_i, StateFlags.BODY_Q)
+        _preserve_if_unset(state_kamino.u_i, StateFlags.BODY_QD)
 
         # Execute the reset operation of the Kamino solver,
-        # to write the reset state to `state_out_kamino`.
+        # to write the reset state to `state_kamino`.
         self._solver_kamino.reset(
-            state_out=state_out_kamino,
+            state=state_kamino,
             world_mask=world_mask,
-            actuator_q=actuator_q,
-            actuator_u=actuator_u,
-            joint_q=joint_q,
-            joint_u=joint_u,
-            base_q=base_q,
-            base_u=base_u,
+            reset_config=reset_config,
         )
 
-        # Convert COM-frame poses from Kamino reset to body-origin frame
-        self._kamino.convert_body_com_to_origin(
-            body_com=self._model_kamino.bodies.i_r_com_i,
-            body_q_com=state_out_kamino.q_i,
-            body_q=state_out_kamino.q_i,
-            world_mask=world_mask,
-            body_wid=self._model_kamino.bodies.wid,
-        )
+        # Restore fields excluded from the reset op
         for array, snapshot in restore_after_reset:
             wp.copy(array, snapshot)
+
+        # Convert back body poses from COM-frame (Kamino) to body-origin frame (Newton)
+        if need_CoM_conversion:
+            self._kamino.convert_body_com_to_origin(
+                body_com=self._model_kamino.bodies.i_r_com_i,
+                body_q_com=state_kamino.q_i,
+                body_q=state_kamino.q_i,
+                world_mask=world_mask,
+                body_wid=self._model_kamino.bodies.wid,
+            )
 
     @override
     def step(self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float):

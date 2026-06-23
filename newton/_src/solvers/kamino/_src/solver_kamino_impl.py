@@ -18,7 +18,7 @@ from ....sim import Contacts, ModelFlags, State
 from ...solver import SolverBase
 
 # Kamino imports
-from ..solver_kamino import SolverKamino
+from ..solver_kamino import ResetConfigKamino, SolverKamino
 from .core.bodies import update_body_inertias, update_body_wrenches
 from .core.control import ControlKamino
 from .core.data import DataKamino
@@ -48,12 +48,19 @@ from .kinematics.joints import (
 )
 from .kinematics.limits import LimitsKamino
 from .kinematics.resets import (
+    get_base_q_from_joint_q_and_body_q,
+    get_base_u_from_joint_u_and_body_u,
     reset_body_net_wrenches,
+    reset_body_velocities,
+    reset_body_wrenches,
     reset_joint_constraint_reactions,
+    reset_joints_state_from_bodies_state,
     reset_state_from_base_state,
     reset_state_from_bodies_state,
     reset_state_to_model_default,
     reset_time,
+    set_body_q,
+    set_floating_base,
     set_joint_state_masked,
 )
 from .linalg import ConjugateResidualSolver, IterativeSolver, LinearSolverNameToType
@@ -381,144 +388,249 @@ class SolverKaminoImpl(SolverBase):
 
     def reset(
         self,
-        state_out: StateKamino,
+        state: StateKamino,
         world_mask: wp.array | None = None,
-        actuator_q: wp.array | None = None,
-        actuator_u: wp.array | None = None,
-        joint_q: wp.array | None = None,
-        joint_u: wp.array | None = None,
-        base_q: wp.array | None = None,
-        base_u: wp.array | None = None,
-        bodies_q: wp.array | None = None,
-        bodies_u: wp.array | None = None,
+        reset_config: ResetConfigKamino | None = None,
     ):
         """
-        Resets the simulation state given a combination of desired base body
-        and joint states, as well as an optional per-world mask array indicating
-        which worlds should be reset. The reset state is written to `state_out`.
+        Reset the Kamino solver state.
 
-        For resets given absolute quantities like base body poses, the
-        `state_out` must initially contain the current state of the simulation.
+        Performs a configurable in-place reset of the simulation state, in all or a subset
+        of worlds, setting body poses and velocities selectively to default or current values,
+        or as per joint coordinates/velocities, using a forward kinematics solve.
+        This is optionally combined with a reset of the pose and velocity of the floating base.
+
+        All state components are reset consistently with the new body poses and velocities
+        (unless prescribed otherwise by state flags), and solver-internal buffers are cleared.
 
         Args:
-            state_out (StateKamino):
-                The output state container to which the reset state data is written.
-            world_mask (wp.array, optional):
-                Optional array of per-world masks indicating which worlds should be reset.\n
-                Shape of `(num_worlds,)` and type :class:`wp.bool`
-            actuator_q (wp.array, optional):
-                Optional array of target actuated joint coordinates.\n
-                Shape of `(num_actuated_joint_coords,)` and type :class:`wp.float32`
-            actuator_u (wp.array, optional):
-                Optional array of target actuated joint DoF velocities.\n
-                Shape of `(num_actuated_joint_dofs,)` and type :class:`wp.float32`
-            joint_q (wp.array, optional):
-                Optional array of target joint coordinates.\n
-                Shape of `(num_joint_coords,)` and type :class:`wp.float32`
-            joint_u (wp.array, optional):
-                Optional array of target joint DoF velocities.\n
-                Shape of `(num_joint_dofs,)` and type :class:`wp.float32`
-            base_q (wp.array, optional):
-                Optional array of target base body poses.\n
-                Shape of `(num_worlds,)` and type :class:`wp.transformf`
-            base_u (wp.array, optional):
-                Optional array of target base body twists.\n
-                Shape of `(num_worlds,)` and type :class:`wp.spatial_vectorf`
-            bodies_q (wp.array, optional):
-                Optional array of target body poses.\n
-                Shape of `(num_bodies,)` and type :class:`wp.transformf`
-            bodies_u (wp.array, optional):
-                Optional array of target body twists.\n
-                Shape of `(num_bodies,)` and type :class:`wp.spatial_vectorf`
+            state: The simulation state to reset (modified in place).
+            world_mask: Optional array of per-world masks indicating which
+                worlds should be reset.
+                Shape of ``(num_worlds,)`` and type :class:`wp.int8` | :class:`wp.bool`.
+            reset_config: Optional reset configuration, controlling the reset behavior
+                for body poses/velocities as well as floating base pose/velocity.
+                If not provided, all components are reset to default (initial) values.
         """
 
-        # Ensure the input reset targets are valid
         def _check_length(data: wp.array, name: str, expected: int):
             if data is not None and data.shape[0] != expected:
-                raise ValueError(f"Invalid {name} shape: Expected ({expected},), but got {data.shape}.")
+                raise ValueError(f"Invalid shape for {name}: Expected ({expected},), but got {data.shape}.")
 
-        _check_length(joint_q, "joint_q", self._model.size.sum_of_num_joint_coords)
-        _check_length(joint_u, "joint_u", self._model.size.sum_of_num_joint_dofs)
-        _check_length(actuator_q, "actuator_q", self._model.size.sum_of_num_actuated_joint_coords)
-        _check_length(actuator_u, "actuator_u", self._model.size.sum_of_num_actuated_joint_dofs)
-        _check_length(base_q, "base_q", self._model.size.num_worlds)
-        _check_length(base_u, "base_u", self._model.size.num_worlds)
-        _check_length(bodies_q, "bodies_q", self._model.size.sum_of_num_bodies)
-        _check_length(bodies_u, "bodies_u", self._model.size.sum_of_num_bodies)
+        # Resolve and validate world mask
+        world_mask = self._all_worlds_mask if world_mask is None else world_mask
         _check_length(world_mask, "world_mask", self._model.size.num_worlds)
 
-        # Ensure that only joint or actuator targets are provided
-        if (joint_q is not None or joint_u is not None) and (actuator_q is not None or actuator_u is not None):
-            raise ValueError("Combined joint and actuator targets are not supported. Only one type may be provided.")
-
-        # Ensure that joint/actuator velocity-only resets are prevented
-        if (joint_q is None and joint_u is not None) or (actuator_q is None and actuator_u is not None):
-            raise ValueError("Velocity-only joint or actuator resets are not supported.")
+        # Resolve and validate reset config
+        reset_config = ResetConfigKamino.to_default() if reset_config is None else reset_config
+        if isinstance(reset_config.body_poses, ResetConfigKamino.FromJointQ):
+            _check_length(
+                reset_config.body_poses.joint_q,
+                "reset_config.body_poses.joint_q",
+                self._model.size.sum_of_num_joint_coords,
+            )
+        if isinstance(reset_config.body_poses, ResetConfigKamino.FromActuatorQ):
+            _check_length(
+                reset_config.body_poses.actuator_q,
+                "reset_config.body_poses.actuator_q",
+                self._model.size.sum_of_num_actuated_joint_coords,
+            )
+        if isinstance(reset_config.body_velocities, ResetConfigKamino.FromJointU):
+            _check_length(
+                reset_config.body_velocities.joint_u,
+                "reset_config.body_velocities.joint_u",
+                self._model.size.sum_of_num_joint_dofs,
+            )
+        if isinstance(reset_config.body_velocities, ResetConfigKamino.FromActuatorU):
+            _check_length(
+                reset_config.body_velocities.actuator_u,
+                "reset_config.body_velocities.actuator_u",
+                self._model.size.sum_of_num_actuated_joint_dofs,
+            )
+        if isinstance(reset_config.base_pose, ResetConfigKamino.FromJointQ):
+            _check_length(
+                reset_config.base_pose.joint_q,
+                "reset_config.base_pose.joint_q",
+                self._model.size.sum_of_num_joint_coords,
+            )
+        if isinstance(reset_config.base_pose, ResetConfigKamino.FromBaseQ):
+            _check_length(reset_config.base_pose.base_q, "reset_config.base_pose.base_q", self._model.size.num_worlds)
+        if isinstance(reset_config.base_velocity, ResetConfigKamino.FromJointU):
+            _check_length(
+                reset_config.base_velocity.joint_u,
+                "reset_config.base_velocity.joint_u",
+                self._model.size.sum_of_num_joint_dofs,
+            )
+        if isinstance(reset_config.base_velocity, ResetConfigKamino.FromBaseU):
+            _check_length(
+                reset_config.base_velocity.base_u, "reset_config.base_velocity.base_u", self._model.size.num_worlds
+            )
 
         # Run the pre-reset callback if it has been set
-        self._run_pre_reset_callback(state_out=state_out)
+        self._run_pre_reset_callback(state_out=state)
 
-        # Determine the effective world mask to use for the reset operation
-        _world_mask = world_mask if world_mask is not None else self._all_worlds_mask
+        # Resolve target joint_q
+        joint_q = None
+        if isinstance(reset_config.body_poses, ResetConfigKamino.FromJointQ):
+            joint_q = reset_config.body_poses.joint_q
+            joint_q = state.q_j if joint_q is None else joint_q
 
-        # Detect mode
-        base_reset = base_q is not None or base_u is not None
-        joint_reset = joint_q is not None or actuator_q is not None
-        bodies_reset = bodies_q is not None or bodies_u is not None
+        # Resolve target joint_u
+        joint_u = None
+        if isinstance(reset_config.body_velocities, ResetConfigKamino.FromJointU):
+            # Reset config explicitly provides joint_u
+            joint_u = reset_config.body_velocities.joint_u
+            joint_u = state.dq_j if joint_u is None else joint_u
+        elif not isinstance(reset_config.body_poses, ResetConfigKamino.Preserve) and isinstance(
+            reset_config.body_velocities, ResetConfigKamino.Preserve
+        ):
+            # Preserve velocities but not poses: transfer current joint_u to new poses
+            joint_u = state.dq_j
 
-        # If no reset targets are provided, reset all bodies to the model default state
-        if not base_reset and not joint_reset and not bodies_reset:
-            self._reset_to_default_state(
-                state_out=state_out,
-                world_mask=_world_mask,
+        # Resolve target actuator_q and actuator_u
+        actuator_q = None
+        actuator_u = None
+        if isinstance(reset_config.body_poses, ResetConfigKamino.FromActuatorQ):
+            actuator_q = reset_config.body_poses.actuator_q
+        if isinstance(reset_config.body_velocities, ResetConfigKamino.FromActuatorU):
+            actuator_u = reset_config.body_velocities.actuator_u
+        if joint_q is not None or joint_u is not None:
+            # Extract joint state into pre-allocated actuator state buffers
+            extract_actuators_state_from_joints(
+                model=self._model,
+                world_mask=world_mask,
+                joint_q=joint_q if joint_q is not None else state.q_j,
+                joint_u=joint_u if joint_u is not None else state.dq_j,
+                actuator_q=self._actuators_q,
+                actuator_u=self._actuators_u,
             )
+            actuator_q = self._actuators_q if joint_q is not None else actuator_q
+            actuator_u = self._actuators_u if joint_u is not None else actuator_u
 
-        # If only base targets are provided, uniformly reset all bodies to the given base states
-        elif base_reset and not joint_reset and not bodies_reset:
-            self._reset_to_base_state(
-                state_out=state_out,
-                world_mask=_world_mask,
-                base_q=base_q,
-                base_u=base_u,
-            )
-
-        # If a joint target is provided, use the FK solver to reset the bodies accordingly
-        elif joint_reset and not bodies_reset:
-            self._reset_with_fk_solve(
-                state_out=state_out,
-                world_mask=_world_mask,
-                actuator_q=actuator_q,
-                actuator_u=actuator_u,
+        # Resolve target base_q
+        base_q = None
+        if isinstance(reset_config.base_pose, ResetConfigKamino.ToDefault):
+            # Set base pose to default if body poses are not already reset to default
+            if not isinstance(reset_config.body_poses, ResetConfigKamino.ToDefault):
+                get_base_q_from_joint_q_and_body_q(
+                    model=self._model,
+                    joint_q=self._model.joints.q_j_0,
+                    body_q=self._model.bodies.q_i_0,
+                    base_q=self._base_q,
+                    world_mask=world_mask,
+                )
+                base_q = self._base_q
+        elif isinstance(reset_config.base_pose, ResetConfigKamino.Preserve):
+            # Extract current base pose if body poses are modified but base should be preserved
+            if not isinstance(reset_config.body_poses, ResetConfigKamino.Preserve):
+                get_base_q_from_joint_q_and_body_q(
+                    model=self._model, joint_q=state.q_j, body_q=state.q_i, base_q=self._base_q, world_mask=world_mask
+                )
+                base_q = self._base_q
+        elif isinstance(reset_config.base_pose, ResetConfigKamino.FromJointQ):
+            # Extract base pose from provided joint_q (defaulting to extraction from body_q_0 if no base joint)
+            joint_q = reset_config.base_pose.joint_q
+            joint_q = state.q_j if joint_q is None else joint_q
+            get_base_q_from_joint_q_and_body_q(
+                model=self._model,
                 joint_q=joint_q,
+                body_q=self._model.bodies.q_i_0,
+                base_q=self._base_q,
+                world_mask=world_mask,
+            )
+            base_q = self._base_q
+        elif isinstance(reset_config.base_pose, ResetConfigKamino.FromBaseQ):
+            # Set base_q to provided value
+            base_q = reset_config.base_pose.base_q
+
+        # Resolve target base_u
+        base_u = None
+        relative_base_u = False
+        if isinstance(reset_config.base_velocity, ResetConfigKamino.ToDefault):
+            # Set base velocity to zero if body velocities are not already reset to zero
+            if not isinstance(reset_config.body_velocities, ResetConfigKamino.ToDefault):
+                self._base_u.zero_()
+                base_u = self._base_u
+        elif isinstance(reset_config.base_velocity, ResetConfigKamino.Preserve):
+            # Extract current base velocity if body poses/velocities are modified but base velocity should be preserved
+            if not isinstance(reset_config.body_poses, ResetConfigKamino.Preserve) or not isinstance(
+                reset_config.body_velocities, ResetConfigKamino.Preserve
+            ):
+                get_base_u_from_joint_u_and_body_u(
+                    model=self._model, joint_u=state.dq_j, body_u=state.u_i, base_u=self._base_u, world_mask=world_mask
+                )
+                base_u = self._base_u
+                relative_base_u = True  # We preserve base_u relative to the transform applied due to base_q
+        elif isinstance(reset_config.base_velocity, ResetConfigKamino.FromJointU):
+            # Extract base velocity from provided joint_u (defaulting to extraction from body_u_0 if no base joint)
+            joint_u = reset_config.base_velocity.joint_u
+            joint_u = state.dq_j if joint_u is None else joint_u
+            get_base_u_from_joint_u_and_body_u(
+                model=self._model,
                 joint_u=joint_u,
+                body_u=self._model.bodies.u_i_0,
+                base_u=self._base_u,
+                world_mask=world_mask,
+            )
+            base_u = self._base_u
+        elif isinstance(reset_config.base_velocity, ResetConfigKamino.FromBaseU):
+            # Set base_u to provided value
+            base_u = reset_config.base_velocity.base_u
+
+        # Body poses: run FK or reset to default if applicable
+        if actuator_q is not None:
+            if self._solver_fk is None:
+                raise RuntimeError("The FK solver must be enabled to use resets from joint coordinates.")
+            self._solver_fk.run_fk_solve(
+                actuators_q=actuator_q,
+                bodies_q=state.q_i,
+                base_q=base_q,
+                actuators_u=actuator_u,
+                base_u=base_u if actuator_u is not None else None,
+                bodies_u=state.u_i if actuator_u is not None else None,
+                world_mask=world_mask,
+            )
+        elif isinstance(reset_config.body_poses, ResetConfigKamino.ToDefault):
+            set_body_q(
+                model=self._model, body_q_in=self._model.bodies.q_i_0, body_q_out=state.q_i, world_mask=world_mask
+            )
+
+        # Body velocities: run FK (if not already done) or reset to default if needed
+        if actuator_u is not None and actuator_q is None:  # Velocity-level only FK
+            if self._solver_fk is None:
+                raise RuntimeError("The FK solver must be enabled to use resets from joint velocities.")
+            self._solver_fk.solve_for_body_velocities(
+                actuators_u=actuator_u,
+                bodies_q=state.q_i,
+                bodies_u=state.u_i,
+                base_u=base_u,
+                target_rel_transforms=None,
+                world_mask=world_mask,
+            )
+        elif isinstance(reset_config.body_velocities, ResetConfigKamino.ToDefault):
+            reset_body_velocities(self._model, state, world_mask)
+
+        # Base pose and velocity: transform body poses and velocities if not already passed to FK
+        if (base_q is not None and actuator_q is None) or (base_u is not None and actuator_u is None):
+            set_floating_base(
+                model=self._model,
                 base_q=base_q,
                 base_u=base_u,
+                body_q=state.q_i,
+                body_u=state.u_i,
+                world_mask=world_mask,
+                relative_base_u=relative_base_u,
             )
 
-        # If body targets are provided, reset bodies directly
-        elif not base_reset and not joint_reset and bodies_reset:
-            self._reset_to_bodies_state(
-                state_out=state_out,
-                world_mask=_world_mask,
-                bodies_q=bodies_q,
-                bodies_u=bodies_u,
-            )
+        # Fill/reset remaining state components based on body poses and velocities
+        reset_joints_state_from_bodies_state(self._model, state, world_mask)
+        reset_body_wrenches(self._model, state, world_mask)
 
-        # If no valid combination of reset targets is provided, raise an error
-        else:
-            raise ValueError(
-                "Unsupported reset combination with: "
-                f" actuator_q: {actuator_q is not None}, actuator_u: {actuator_u is not None},"
-                f" joint_q: {joint_q is not None}, joint_u: {joint_u is not None},"
-                f" base_q: {base_q is not None}, base_u: {base_u is not None}."
-                f" bodies_q: {bodies_q is not None}, bodies_u: {bodies_u is not None}."
-            )
-
-        # Post-process the reset operation
-        self._reset_post_process(world_mask=_world_mask)
+        # Reset solver internals
+        self._reset_solver_data(world_mask=world_mask)
 
         # Run the post-reset callback if it has been set
-        self._run_post_reset_callback(state_out=state_out)
+        self._run_post_reset_callback(state_out=state)
 
     @override
     def step(
@@ -888,7 +1000,7 @@ class SolverKaminoImpl(SolverBase):
                 dst_dq=None,
             )
 
-    def _reset_post_process(self, world_mask: wp.array | None = None):
+    def _reset_solver_data(self, world_mask: wp.array | None = None):
         """
         Resets solver internal data and calls reset callbacks.
 
