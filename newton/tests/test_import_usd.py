@@ -9812,8 +9812,10 @@ def Mesh "JustAMesh" ()
         world = UsdGeom.Xform.Define(stage, "/World")
         stage.SetDefaultPrim(world.GetPrim())
 
-        UsdGeom.Xform.Define(stage, "/Prototypes/TetProto")
-        tetmesh = stage.DefinePrim("/Prototypes/TetProto/SoftBody", "TetMesh")
+        # Author the template as a class prim (abstract, excluded by the default
+        # traversal predicate) so only the per-instance proxies are imported.
+        stage.CreateClassPrim("/TetProto")
+        tetmesh = stage.DefinePrim("/TetProto/SoftBody", "TetMesh")
         tetmesh.CreateAttribute("points", Sdf.ValueTypeNames.Point3fArray).Set(
             [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
         )
@@ -9822,7 +9824,7 @@ def Mesh "JustAMesh" ()
         for i in range(2):
             instance = UsdGeom.Xform.Define(stage, f"/World/Instance{i}")
             instance_prim = instance.GetPrim()
-            instance_prim.GetReferences().AddInternalReference("/Prototypes/TetProto")
+            instance_prim.GetReferences().AddInternalReference("/TetProto")
             instance_prim.SetInstanceable(True)
 
         builder = newton.ModelBuilder()

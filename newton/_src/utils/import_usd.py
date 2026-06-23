@@ -3496,10 +3496,9 @@ def parse_usd(
                 continue
 
             path = str(prim.GetPath())
-            # Skip prims inside an instancing prototype; the per-instance proxies are
-            # imported instead (via TraverseInstanceProxies above).
-            if prim.IsInPrototype():
-                continue
+            # Per-instance proxies are imported via TraverseInstanceProxies above; USD does
+            # not surface prototype masters under a scene-root traversal, so no prototype
+            # filter is needed (a non-rendered template is authored as a class/inactive prim).
             if any(re.match(pattern, path) for pattern in ignore_paths):
                 continue
 
@@ -3604,10 +3603,9 @@ def parse_usd(
                 continue
 
             path = str(prim.GetPath())
-            # Skip prims inside an instancing prototype; the per-instance proxies are
-            # imported instead (via TraverseInstanceProxies above).
-            if prim.IsInPrototype():
-                continue
+            # Per-instance proxies are imported via TraverseInstanceProxies above; USD does
+            # not surface prototype masters under a scene-root traversal, so no prototype
+            # filter is needed (a non-rendered template is authored as a class/inactive prim).
             if any(re.match(pattern, path) for pattern in ignore_paths):
                 continue
 
@@ -3780,10 +3778,9 @@ def parse_usd(
                 continue
 
             path = str(prim.GetPath())
-            # Skip prims inside an instancing prototype; the per-instance proxies are
-            # imported instead (via TraverseInstanceProxies above).
-            if prim.IsInPrototype():
-                continue
+            # Per-instance proxies are imported via TraverseInstanceProxies above; USD does
+            # not surface prototype masters under a scene-root traversal, so no prototype
+            # filter is needed (a non-rendered template is authored as a class/inactive prim).
             if any(re.match(pattern, path) for pattern in ignore_paths):
                 continue
 
