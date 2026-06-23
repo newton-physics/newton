@@ -49,7 +49,7 @@ Deformable Bodies
 
 :meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the `AOUSD UsdPhysics
 Deformables proposal
-<https://github.com/andrewkaufman/OpenUSD-proposals/blob/50a48457043e46af1bf2f9a685f67aed759150f1/proposals/physics_deformables/wp_deformable_physics_temp_2026_06_12.md>`_,
+<https://github.com/aousd/OpenUSD-proposals/blob/5d89c0ed46a26de92f4d3fefef3bfad6500c07ce/proposals/physics_deformables/wp_deformable_physics.md>`_,
 across three families:
 
 * **Curve / cable** -- a linear ``UsdGeom.BasisCurves`` with ``PhysicsCurvesDeformableSimAPI`` is
@@ -61,7 +61,7 @@ across three families:
   ``PhysicsDeformableBodyAPI``) is built as a soft body. A bare ``UsdGeom.TetMesh`` keeps the legacy
   material-density import.
 
-Material attributes are read from the canonical ``physics:`` namespace (the proposal as written).
+Material attributes are read from the canonical ``physics:`` namespace (per the proposed schema).
 Vendor namespaces (``omniphysics:``, ``physxDeformableBody:``) are an opt-in fallback, declared by
 a schema resolver (e.g. ``SchemaResolverPhysx``) and consulted only for deformable attributes.
 
