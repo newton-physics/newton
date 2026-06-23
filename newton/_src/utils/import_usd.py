@@ -3696,7 +3696,19 @@ def parse_usd(
             # (axial, A = pi r^2) and bend = E*I/L (bending, I = pi r^4 / 4). If the schema
             # authors instead intend a direct per-length stiffness, this is the place to revisit.
             cable_mat = usd._get_curve_deformable_material(prim, deformable_read) or {}
-            radius = 0.5 * cable_mat["thickness"] if "thickness" in cable_mat else 0.05
+            if "thickness" in cable_mat:
+                radius = 0.5 * cable_mat["thickness"]
+            else:
+                # No authored thickness: assume a default radius. Express it via the stage's linear
+                # unit (meters per unit) so the assumed size is a fixed physical ~0.05 m regardless
+                # of cm / mm / m authoring, rather than a meters-flavored literal in stage units.
+                radius = 0.05 / linear_unit
+                warnings.warn(
+                    f"{path}: no cable thickness authored (physics:thickness); assuming a default "
+                    f"radius of {radius:g} stage units (~0.05 m). Author physics:thickness on the "
+                    f"bound material to set it.",
+                    stacklevel=2,
+                )
             area = math.pi * radius * radius
             inertia = 0.25 * math.pi * radius**4
             # Density precedence resolved here; total-mass/per-point overrides applied after add_rod.

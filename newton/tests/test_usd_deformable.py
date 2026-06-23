@@ -1407,6 +1407,40 @@ class TestUSDDeformableMass(unittest.TestCase):
             bodies, _ = result["path_cable_map"]["/World/Cable"]
             self.assertAlmostEqual(sum(builder.body_mass[b] for b in bodies), 2.5, places=4)
 
+    def test_cable_default_radius_scales_with_stage_units(self):
+        """With no authored thickness the importer assumes a default radius derived from the stage's
+        linear unit, so it is the same physical size (~0.05 m) on a centimeter stage as on a meter
+        stage, and it warns that a default was assumed (rather than a meters-flavored literal)."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        def capsule_radius(meters_per_unit):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                usd_path = Path(tmpdir) / "cable.usda"
+                stage = Usd.Stage.CreateNew(str(usd_path))
+                UsdGeom.SetStageMetersPerUnit(stage, meters_per_unit)
+                UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+                pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+                _add_cable_curve(stage, "/World/Cable", pts)  # no bound material -> no thickness
+                stage.Save()
+                builder = newton.ModelBuilder()
+                builder.add_usd(str(usd_path))
+                return float(builder.shape_scale[0][0])  # capsule radius is stored as scale.x
+
+        # ~0.05 m on a meter stage; 0.05 / 0.01 = 5 stage units on a cm stage (still ~0.05 m physical).
+        self.assertAlmostEqual(capsule_radius(1.0), 0.05, places=4)
+        self.assertAlmostEqual(capsule_radius(0.01), 5.0, places=3)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            _add_cable_curve(stage, "/World/Cable", pts)
+            stage.Save()
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "no cable thickness"):
+                builder.add_usd(str(usd_path))
+
     def test_cable_per_point_masses_lump_onto_segments(self):
         """Per-point physics:masses are lumped onto the segments they border, so a front-heavy mass
         array yields a front-heavy cable (not a uniform one) while preserving the total. Each point's
