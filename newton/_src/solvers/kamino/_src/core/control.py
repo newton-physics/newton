@@ -95,21 +95,6 @@ class ControlKamino:
     # Operations
     ###
 
-    @classmethod
-    def create_newton_wrapper(cls, model: ModelKamino, device: wp.DeviceLike = None) -> ControlKamino:
-        """Create a :class:`ControlKamino` wrapper for the Newton solver bridge."""
-        if device is None:
-            device = model.device
-
-        # Kamino to Newton conversion does not set `tau_j_ref`, so it needs to
-        # be created here
-        ndofs = model.size.sum_of_num_joint_dofs
-        control = cls(
-            tau_j_ref=wp.zeros(shape=ndofs, dtype=float32, device=device),
-        )
-        control.finalize(model, device=device)
-        return control
-
     def copy_to(self, other: ControlKamino) -> None:
         """
         Copies the ControlKamino data to another ControlKamino object.

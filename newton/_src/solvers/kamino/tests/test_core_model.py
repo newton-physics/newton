@@ -1170,12 +1170,13 @@ class TestModelConversions(unittest.TestCase):
         self.assertIsInstance(control_1.tau_j, wp.array)
         self.assertEqual(control_1.tau_j.size, model_1.size.sum_of_num_joint_dofs)
 
-        control_2 = ControlKamino.create_newton_wrapper(model_1)
+        control_2 = ControlKamino()
+        control_2.finalize(model_1)
         control_2.from_newton(control_0, model_1)
         self.assertIsInstance(control_2.tau_j, wp.array)
         self.assertIs(control_2.tau_j, control_0.joint_f)
         self.assertEqual(control_2.tau_j.size, model_0.joint_dof_count)
-        test_util_checks.assert_control_equal(self, control_2, control_1)
+        test_util_checks.assert_control_equal(self, control_2, control_1, ["tau_j_ref"])
 
         # Convert back to a Newton control container.
         control_3: Control = model_0.control()
