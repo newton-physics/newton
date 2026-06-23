@@ -86,6 +86,7 @@ class Example:
         )
 
         builder.body_qd[self.body] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 20.0, 0.0)
+        builder.joint_qd = np.array(builder.body_qd).flatten().tolist()
 
         if self.solver_type == "vbd":
             builder.color()
@@ -116,7 +117,6 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self._set_initial_velocity(self.state_0)
 
         self.initial_body_q = self.state_0.body_q.numpy().copy()
         self.body_com = self.model.body_com.numpy()[self.body].copy()
@@ -129,17 +129,6 @@ class Example:
         self.viewer.set_model(self.model)
 
         self.capture()
-
-    def _set_initial_velocity(self, state):
-        velocity = np.array([[0.0, 0.0, 0.0, 0.0, 20.0, 0.0]], dtype=np.float32)
-        if self.solver_type == "mujoco":
-            joint_qd = state.joint_qd.numpy()
-            qd_start = int(self.model.joint_qd_start.numpy()[self.free_joint])
-            joint_qd[qd_start : qd_start + 6] = velocity[0]
-            state.joint_qd.assign(joint_qd)
-            newton.eval_fk(self.model, state.joint_q, state.joint_qd, state)
-        else:
-            state.body_qd.assign(velocity)
 
     def capture(self):
         if wp.get_device().is_cuda:
