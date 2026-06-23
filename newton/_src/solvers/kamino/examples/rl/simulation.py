@@ -35,6 +35,7 @@ from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.sim import Simulator
 from newton._src.solvers.kamino._src.utils.viewer import Color3, ViewerConfig
+from newton._src.solvers.kamino.solver_kamino import ResetConfigKamino
 from newton._src.viewer import ViewerGL
 
 
@@ -105,7 +106,7 @@ class SimulatorFromNewton:
         )
 
         # Initialize state
-        self._solver.reset(state_out=self._state_n)
+        self._solver.reset(state=self._state_n)
         self._state_p.copy_from(self._state_n)
 
     @property
@@ -184,9 +185,9 @@ class SimulatorFromNewton:
         """Reset the simulation state.
 
         Keyword arguments are forwarded to :meth:`SolverKaminoImpl.reset`
-        (e.g. ``world_mask``, ``joint_q``, ``joint_u``, ``base_q``, ``base_u``).
+        (e.g. ``world_mask``, ``reset_config``).
         """
-        self._solver.reset(state_out=self._state_n, **kwargs)
+        self._solver.reset(state=self._state_n, **kwargs)
         self._state_p.copy_from(self._state_n)
 
 
@@ -596,12 +597,18 @@ class RigidBodySim:
 
     def _reset_worlds(self):
         """Reset selected worlds based on world_mask."""
+        reset_config = ResetConfigKamino.to_default()
+        if self._update_q_j:
+            reset_config.body_poses = ResetConfigKamino.FromJointQ(self._reset_q_j.view(-1))
+        if self._update_dq_j:
+            reset_config.body_velocities = ResetConfigKamino.FromJointU(self._reset_dq_j.view(-1))
+        if self._update_base_q:
+            reset_config.base_pose = ResetConfigKamino.FromBaseQ(self._reset_base_q.view(-1, 7))
+        if self._update_base_u:
+            reset_config.base_velocity = ResetConfigKamino.FromBaseU(self._reset_base_u.view(-1, 6))
         self.sim.reset(
             world_mask=self._world_mask_wp,
-            joint_q=wp.from_torch(self._reset_q_j.view(-1)) if self._update_q_j else None,
-            joint_u=wp.from_torch(self._reset_dq_j.view(-1)) if self._update_dq_j else None,
-            base_q=wp.from_torch(self._reset_base_q.view(-1, 7)) if self._update_base_q else None,
-            base_u=wp.from_torch(self._reset_base_u.view(-1, 6)) if self._update_base_u else None,
+            reset_config=reset_config,
         )
 
     def render(self):
