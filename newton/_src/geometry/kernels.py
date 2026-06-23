@@ -1129,7 +1129,9 @@ def create_soft_contacts(
         index = counter_increment(soft_contact_count, 0, soft_contact_tids, tid)
 
         if index < soft_contact_max:
-            # compute contact point in body local space
+            # body_pos is the raw closest-surface point; per-shape margin is applied
+            # analytically at force eval. Inflation is just (SDF - margin), so n is
+            # unchanged and the closest point only slides out by margin along n
             body_pos = wp.transform_point(X_bs, x_local - n * d)
             body_vel = wp.transform_vector(X_bs, v)
 
