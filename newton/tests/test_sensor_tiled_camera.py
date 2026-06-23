@@ -178,7 +178,9 @@ class TestSensorTiledCamera(unittest.TestCase):
         model = builder.finalize(device="cpu")
 
         sensor = SensorTiledCamera(model=model)
-        render_context = sensor.render_context
+        # The public render_context alias was removed; this regression test needs
+        # the internal mesh state that drives first-render construction.
+        render_context = sensor._SensorTiledCamera__render_context
 
         # init_from_model copies model.particle_q/tri_indices into triangle_points/
         # triangle_indices but does not build wp.Mesh until the first render call.
