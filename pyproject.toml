@@ -129,6 +129,7 @@ docs = [
 notebook = [
     "newton[examples]",
     "rerun-sdk[notebook]>=0.27.1; python_version < '3.14'",
+    "jupyter-server>=2.20.0",  # >=2.20.0 for GHSA-fcw5-x6j4-ccmp / CVE-2026-44727
     "jupyterlab>=4.5.7",
     "jupyter-server-proxy>=4.5.0",
     # Pin the backend and web client to one Viser build; 1.0.24-1.0.26 changed playback-sensitive paths.
