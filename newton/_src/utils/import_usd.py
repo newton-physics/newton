@@ -45,6 +45,7 @@ from ..solvers.mujoco.utils import (
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
+from .cable import create_cable_stiffness_from_elastic_moduli
 from .import_utils import should_show_collider
 
 logger = logging.getLogger("newton")
@@ -3689,12 +3690,10 @@ def parse_usd(
                 )
                 normals = None
 
-            # The proposal names these curve material values "stretchStiffness" /
-            # "bendStiffness" but authors them in force/area, i.e. modulus units. We read
-            # them as elastic moduli E and convert to Newton's per-joint stiffness through
-            # the circular cross-section and the segment rest length L: stretch = E*A/L
-            # (axial, A = pi r^2) and bend = E*I/L (bending, I = pi r^4 / 4). If the schema
-            # authors instead intend a direct per-length stiffness, this is the place to revisit.
+            # The proposal authors curve "stretchStiffness" / "bendStiffness" in force/area, i.e.
+            # elastic moduli E. create_cable_stiffness_from_elastic_moduli() converts each to the
+            # per-joint stiffness add_rod expects via the circular cross-section and segment rest
+            # length L (stretch = E*A/L, bend = E*I/L); applied per curve below.
             cable_mat = usd._get_curve_deformable_material(prim, deformable_read) or {}
             if "thickness" in cable_mat:
                 radius = 0.5 * cable_mat["thickness"]
@@ -3709,8 +3708,6 @@ def parse_usd(
                     f"bound material to set it.",
                     stacklevel=2,
                 )
-            area = math.pi * radius * radius
-            inertia = 0.25 * math.pi * radius**4
             # Density precedence resolved here; total-mass/per-point overrides applied after add_rod.
             cable_density = _resolve_deformable_density(prim, cable_mat.get("density"))
             resolved_cable_density = cable_density if cable_density is not None else builder.default_shape_cfg.density
@@ -3773,16 +3770,19 @@ def parse_usd(
                 # actual segment lengths (the straight-line endpoint distance would
                 # underestimate it for curved cables and inflate the stiffness).
                 seg_len = sum(seg_lengths) / max(1, num_seg)
-                stretch_stiffness = (
-                    cable_mat["stretchStiffness"] * area / seg_len
-                    if "stretchStiffness" in cable_mat and seg_len > 0.0
-                    else None
-                )
-                bend_stiffness = (
-                    cable_mat["bendStiffness"] * inertia / seg_len
-                    if "bendStiffness" in cable_mat and seg_len > 0.0
-                    else None
-                )
+                # Convert each authored modulus through the shared cable utility (stretch = E*A/L,
+                # bend = E*I/L); the moduli are independent and either may be absent -> None ->
+                # builder default. The util returns both from one modulus, so take the matching one.
+                stretch_stiffness = bend_stiffness = None
+                if seg_len > 0.0:
+                    if "stretchStiffness" in cable_mat:
+                        stretch_stiffness = create_cable_stiffness_from_elastic_moduli(
+                            cable_mat["stretchStiffness"], radius, seg_len
+                        )[0]
+                    if "bendStiffness" in cable_mat:
+                        bend_stiffness = create_cable_stiffness_from_elastic_moduli(
+                            cable_mat["bendStiffness"], radius, seg_len
+                        )[1]
                 label = path if len(vertex_counts) == 1 else f"{path}_curve{ci}"
                 # Imported cables are left unwrapped (wrap_in_articulation=False): the
                 # caller wraps the returned joints via add_articulation() before
