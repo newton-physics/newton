@@ -55,6 +55,7 @@
 - Remove the deprecated `SensorRaycast`; use `SensorTiledCamera` (`SensorTiledCamera.utils.compute_pinhole_camera_rays()` and `create_depth_image_output()` for single-camera depth) instead
 - Remove the deprecated `max_worlds` parameter of `ViewerBase.set_model()`; call `ViewerBase.set_visible_worlds()` after `set_model()` instead
 - Remove the deprecated `a`, `b`, `c` parameters of `ModelBuilder.add_shape_ellipsoid()` (deprecated in 1.1.0); use `rx`, `ry`, `rz` instead
+- Remove the deprecated and ignored `rigid_enable_dahl_friction` argument of `SolverVBD`; Dahl friction is auto-detected from `model.vbd.dahl_eps_max` / `model.vbd.dahl_tau`
 
 ## [1.3.0] - 2026-06-11
 
