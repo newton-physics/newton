@@ -89,7 +89,7 @@ def make_correct_joint_coords(dof_type: JointDoFType):
             coords[0] = _correct_joint_angle(coords[0], coords_ref[0])
 
         elif wp.static(dof_type == JointDoFType.SPHERICAL):  # Correct quaternion up to sign
-            quat_ref = wp.vec4f(coords_ref[3], coords_ref[4], coords_ref[5], coords_ref[6])
+            quat_ref = wp.vec4f(coords_ref[0], coords_ref[1], coords_ref[2], coords_ref[3])
             coords = _correct_joint_quaternion(coords, quat_ref)
 
         elif wp.static(dof_type == JointDoFType.UNIVERSAL):  # Correct angles up to +/- 2 pi
@@ -1571,7 +1571,7 @@ def get_base_u_from_joint_u_and_body_u(
         inputs=[
             model.info.base_joint_index,
             model.info.base_body_index,
-            model.joints.coords_offset,
+            model.joints.dofs_offset,
             joint_u,
             body_u,
             world_mask,

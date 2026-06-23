@@ -943,6 +943,8 @@ class ModelBuilderKamino:
                         break
                 # As a last fallback, set body 0 in that world as base body (no base joint)
                 if not world.has_base_body:
+                    if world.num_bodies == 0:
+                        raise RuntimeError(f"Zero bodies in world {w}, cannot set base body.")
                     world.set_base_body(0)
 
         ###

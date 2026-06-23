@@ -27,7 +27,7 @@ from newton._src.solvers.kamino._src.core.bodies import convert_body_com_to_orig
 from newton._src.solvers.kamino._src.core.control import ControlKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.state import StateKamino
-from newton._src.solvers.kamino._src.core.types import transformf, vec6f
+from newton._src.solvers.kamino._src.core.types import float32, transformf, vec6f
 from newton._src.solvers.kamino._src.geometry import CollisionDetector
 from newton._src.solvers.kamino._src.geometry.aggregation import ContactAggregation
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino, convert_contacts_newton_to_kamino
@@ -456,10 +456,12 @@ class RigidBodySim:
         # Reset buffers
         self._reset_base_q_wp = wp.zeros(nw, dtype=transformf, device=self._device)
         self._reset_base_u_wp = wp.zeros(nw, dtype=vec6f, device=self._device)
-        self._reset_q_j = torch.zeros((nw, njd), device=self._torch_device)
-        self._reset_dq_j = torch.zeros((nw, njd), device=self._torch_device)
+        self._reset_q_j_wp = wp.zeros((nw, njc), dtype=float32, device=self._device)
+        self._reset_dq_j_wp = wp.zeros((nw, njd), dtype=float32, device=self._device)
         self._reset_base_q = wp.to_torch(self._reset_base_q_wp).reshape(nw, 7)
         self._reset_base_u = wp.to_torch(self._reset_base_u_wp).reshape(nw, 6)
+        self._reset_q_j = wp.to_torch(self._reset_q_j_wp)
+        self._reset_dq_j = wp.to_torch(self._reset_dq_j_wp)
 
         # Reset flags
         self._update_q_j = False
@@ -599,13 +601,13 @@ class RigidBodySim:
         """Reset selected worlds based on world_mask."""
         reset_config = ResetConfigKamino.to_default()
         if self._update_q_j:
-            reset_config.body_poses = ResetConfigKamino.FromJointQ(self._reset_q_j.view(-1))
+            reset_config.body_poses = ResetConfigKamino.FromJointQ(self._reset_q_j_wp)
         if self._update_dq_j:
-            reset_config.body_velocities = ResetConfigKamino.FromJointU(self._reset_dq_j.view(-1))
+            reset_config.body_velocities = ResetConfigKamino.FromJointU(self._reset_dq_j_wp)
         if self._update_base_q:
-            reset_config.base_pose = ResetConfigKamino.FromBaseQ(self._reset_base_q.view(-1, 7))
+            reset_config.base_pose = ResetConfigKamino.FromBaseQ(self._reset_base_q_wp)
         if self._update_base_u:
-            reset_config.base_velocity = ResetConfigKamino.FromBaseU(self._reset_base_u.view(-1, 6))
+            reset_config.base_velocity = ResetConfigKamino.FromBaseU(self._reset_base_u_wp)
         self.sim.reset(
             world_mask=self._world_mask_wp,
             reset_config=reset_config,

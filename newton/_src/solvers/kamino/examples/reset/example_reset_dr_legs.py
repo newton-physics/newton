@@ -364,7 +364,7 @@ class Example:
             )
             self.sim.reset(reset_config=reset_config)
 
-        # Demo of resetting the base state and joint configurations to specific poses
+        # Demo of resetting the base state and actuator configurations to specific poses
         # NOTE: This will invoke the FK solver to update body poses
         if self.sim_steps >= self.max_steps and self.sim_reset_mode == 4:
             msg.notif("Resetting with base pose and specific actuator configurations...")

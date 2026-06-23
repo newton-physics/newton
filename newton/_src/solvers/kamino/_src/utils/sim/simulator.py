@@ -367,7 +367,7 @@ class Simulator:
         if self._pre_reset_cb is not None:
             self._pre_reset_cb(self)
 
-        # Step the physics solver
+        # Reset the physics solver
         self._solver.reset(
             state=self._data.state_n,
             world_mask=world_mask,

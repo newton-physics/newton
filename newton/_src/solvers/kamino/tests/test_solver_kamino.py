@@ -147,7 +147,6 @@ def assert_states_close(testcase: unittest.TestCase, state_0: StateKamino, state
 
 
 def assert_states_close_masked(
-    testcase: unittest.TestCase,
     model: ModelKamino,
     state: StateKamino,
     state_true: StateKamino | None,
@@ -155,10 +154,6 @@ def assert_states_close_masked(
     world_mask: wp.array[wp.bool],
 ):
     """Check that state attributes match one of two reference states, based on the world mask."""
-    testcase.assertIsInstance(model, ModelKamino)
-    testcase.assertIsInstance(state_true, StateKamino)
-    testcase.assertIsInstance(state_false, StateKamino)
-
     bodies_offset = model.info.bodies_offset.numpy()
     coords_offset = np.array([*model.info.joint_coords_offset.numpy(), model.size.sum_of_num_joint_coords])
     dofs_offset = np.array([*model.info.joint_dofs_offset.numpy(), model.size.sum_of_num_joint_dofs])
@@ -218,7 +213,7 @@ def check_body_and_joint_state_consistency(
     np.testing.assert_equal(body_q.shape[0], model.size.sum_of_num_bodies)
     np.testing.assert_equal(body_u.shape[0], model.size.sum_of_num_bodies)
     np.testing.assert_equal(joint_q.shape[0], model.size.sum_of_num_joint_coords)
-    np.testing.assert_equal(joint_u.shape[0], model.size.sum_of_num_joint_coords)
+    np.testing.assert_equal(joint_u.shape[0], model.size.sum_of_num_joint_dofs)
 
     # Create a model data, and evaluate joint data given provided body states
     data = model.data(unilateral_cts=False, device=model.device)
@@ -467,7 +462,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         solver.reset(state=state_n, world_mask=world_mask)
 
         # Check that only the specified worlds were reset
-        assert_states_close_masked(self, model, state_n, state_0, state_n_ref, world_mask)
+        assert_states_close_masked(model, state_n, state_0, state_n_ref, world_mask)
 
     def test_06_reset_to_base_state(self):
         """
@@ -592,7 +587,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         solver.reset(state=state_n, world_mask=world_mask, reset_config=reset_config)
 
         # Check that state was correctly preserved or reset based on mask
-        assert_states_close_masked(self, model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)
+        assert_states_close_masked(model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)
 
     def test_07_reset_to_joint_state(self):
         """
@@ -726,7 +721,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         solver.reset(state=state_n, world_mask=world_mask, reset_config=reset_config)
 
         # Check that state was correctly preserved or reset based on mask
-        assert_states_close_masked(self, model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)
+        assert_states_close_masked(model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)
 
     def test_08_reset_to_actuator_state(self):
         """
@@ -862,7 +857,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         solver.reset(state=state_n, world_mask=world_mask, reset_config=reset_config)
 
         # Check that state was correctly preserved or reset based on mask
-        assert_states_close_masked(self, model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)
+        assert_states_close_masked(model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)
 
     ###
     # Test Step Operations

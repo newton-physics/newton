@@ -611,11 +611,13 @@ class SolverKaminoImpl(SolverBase):
             reset_body_velocities(self._model, state, world_mask)
 
         # Base pose and velocity: transform body poses and velocities if not already passed to FK
-        if (base_q is not None and actuator_q is None) or (base_u is not None and actuator_u is None):
+        apply_base_q_needed = base_q is not None and actuator_q is None
+        apply_base_u_needed = base_u is not None and actuator_u is None
+        if apply_base_q_needed or apply_base_u_needed:
             set_floating_base(
                 model=self._model,
-                base_q=base_q,
-                base_u=base_u,
+                base_q=base_q if apply_base_q_needed else None,
+                base_u=base_u if apply_base_u_needed else None,
                 body_q=state.q_i,
                 body_u=state.u_i,
                 world_mask=world_mask,

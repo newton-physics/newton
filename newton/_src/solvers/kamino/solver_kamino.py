@@ -106,14 +106,22 @@ class ResetConfigKamino:
 
     @dataclass(frozen=True)
     class FromBaseQ:
-        """Reset option, to set a new pose for the base body, and transform all bodies accordingly."""
+        """
+        Reset option, to set a new pose for the base body, and transform all bodies accordingly.
+        If a base joint is set, the prescribed pose is interpreted in the frame of the base joint;
+        else it is directly interpreted as the new pose of the base body.
+        """
 
         base_q: wp.array[wp.transformf]
         """Per-world base body pose array."""
 
     @dataclass(frozen=True)
     class FromBaseU:
-        """Reset option, to set a new velocity for the base body, and compose with body velocities accordingly."""
+        """
+        Reset option, to set a new velocity for the base body, and compose with body velocities accordingly.
+        If a base joint is set, the prescribed velocity is interpreted in the frame of the base joint;
+        else it is directly interpreted as the new velocity of the base body.
+        """
 
         base_u: wp.array[wp.spatial_vectorf]
         """Per-world base body velocity array."""
@@ -612,7 +620,7 @@ class SolverKamino(SolverBase):
         world_mask: wp.array | None = None,
         flags: StateFlags | int | None = None,
         *,
-        reset_config: ResetConfigKamino | None = None,
+        reset_config: SolverKamino.ResetConfig | None = None,
     ):
         """
         Reset the Kamino solver state.
@@ -647,18 +655,27 @@ class SolverKamino(SolverBase):
         state_flags = int(StateFlags.ALL if flags is None else flags)
         reset_config = ResetConfigKamino.to_default() if reset_config is None else reset_config
 
-        # Determine if a body CoM <-> origin conversion is needed
+        # Convert/alias the input state as a StateKamino object
+        state_kamino = self._kamino.StateKamino.from_newton(
+            self._model_kamino.size, self.model, state, convert_to_com_frame=False
+        )
+
+        # Convert body poses from origin to CoM if needed
+        has_callbacks = self._solver_kamino._pre_reset_cb is not None or self._solver_kamino._post_reset_cb is not None
         need_CoM_conversion = (
             not isinstance(reset_config.body_poses, ResetConfigKamino.Preserve)
             or not isinstance(reset_config.base_pose, ResetConfigKamino.Preserve)
-            or self._solver_kamino._pre_reset_cb is not None
-            or self._solver_kamino._post_reset_cb is not None
+            or has_callbacks
         )
-
-        # Convert/alias the input state as a StateKamino object
-        state_kamino = self._kamino.StateKamino.from_newton(
-            self._model_kamino.size, self.model, state, convert_to_com_frame=need_CoM_conversion
-        )
+        if need_CoM_conversion:
+            self._kamino.convert_body_origin_to_com(
+                body_com=self._model_kamino.bodies.i_r_com_i,
+                body_q_com=state_kamino.q_i,
+                body_q=state_kamino.q_i,
+                world_mask=world_mask if not has_callbacks else None,
+                body_wid=self._model_kamino.bodies.wid,
+            )
+            # Note: we convert all worlds if callbacks are set, so they see the full state correctly
 
         # Cache fields excluded from the reset op, to restore them afterwards
         restore_after_reset: list[tuple[wp.array, wp.array]] = []
@@ -691,7 +708,7 @@ class SolverKamino(SolverBase):
                 body_com=self._model_kamino.bodies.i_r_com_i,
                 body_q_com=state_kamino.q_i,
                 body_q=state_kamino.q_i,
-                world_mask=world_mask,
+                world_mask=world_mask if not has_callbacks else None,
                 body_wid=self._model_kamino.bodies.wid,
             )
 
