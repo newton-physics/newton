@@ -169,7 +169,7 @@ def mass_prop_accumulation_kernel(
 @wp.kernel
 def joint_conversion_kernel(
     # Inputs:
-    force_dynamic: bool,
+    force_implicit_actuator_dynamics: bool,
     model_joint_world: wp.array[int32],
     model_joint_world_start: wp.array[int32],
     model_joint_type: wp.array[int32],
@@ -235,7 +235,11 @@ def joint_conversion_kernel(
     joint_act_type[joint_id] = act_type_j
 
     is_dynamic_j = bool(False)
-    if force_dynamic and (dof_type_j == JointDoFType.REVOLUTE or dof_type_j == JointDoFType.PRISMATIC):
+    if (
+        force_implicit_actuator_dynamics
+        and act_type_j != JointActuationType.PASSIVE
+        and (dof_type_j == JointDoFType.REVOLUTE or dof_type_j == JointDoFType.PRISMATIC)
+    ):
         is_dynamic_j = True
     else:
         # Infer if the joint requires dynamic constraints
@@ -826,7 +830,7 @@ def convert_joints(
     model: Model,
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
-    force_joint_dynamics: bool = False,
+    force_implicit_actuator_dynamics: bool = False,
 ) -> JointsModel:
     """
     Converts the joints from a Newton model into Kamino's format. The function will
@@ -838,8 +842,8 @@ def convert_joints(
         model: Newton model.
         model_size: Model size object, to be filled in by the function.
         model_info: Model info object, to be filled in by the function.
-        force_joint_dynamics: Flag to indicate whether joint dynamics should
-                be forced for supported types.
+        force_implicit_actuator_dynamics: Flag to indicate whether implicit
+            actuator dynamics should be forced for supported joint types.
 
     Returns:
         Fully converted joints model in Kamino's format.
@@ -874,7 +878,7 @@ def convert_joints(
         dim=model.joint_count,
         inputs=[
             # Inputs:
-            force_joint_dynamics,
+            force_implicit_actuator_dynamics,
             model.joint_world,
             model.joint_world_start,
             model.joint_type,

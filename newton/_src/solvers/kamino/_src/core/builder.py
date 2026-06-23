@@ -400,7 +400,7 @@ class ModelBuilderKamino:
         name: str | None = None,
         uid: str | None = None,
         world_index: int = 0,
-        force_dynamic: bool = False,
+        force_implicit_actuator_dynamics: bool = False,
     ) -> int:
         """
         Add a joint entity to the model using explicit specifications.
@@ -426,8 +426,8 @@ class ModelBuilderKamino:
             uid (str | None): The unique identifier of the joint.
             world_index (int): The index of the world to which the joint will be added.
                 Defaults to the first world with index `0`.
-            force_dynamic (bool): Flag to indicate whether joint dynamics should be
-                forced for supported actuated joints.
+            force_implicit_actuator_dynamics (bool): Flag to indicate whether
+                implicit actuator dynamics should be forced for supported joints.
 
         Returns:
             int: The index of the newly added joint.
@@ -463,8 +463,8 @@ class ModelBuilderKamino:
             b_j=b_j,
             k_p_j=k_p_j,
             k_d_j=k_d_j,
-            force_dynamic=(
-                force_dynamic
+            force_implicit_joint_dynamics=(
+                force_implicit_actuator_dynamics
                 and act_type != JointActuationType.PASSIVE
                 and (dof_type in (JointDoFType.REVOLUTE, JointDoFType.PRISMATIC))
             ),

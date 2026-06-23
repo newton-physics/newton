@@ -686,15 +686,15 @@ class ModelKamino:
     @staticmethod
     def from_newton(
         model: Model,
-        force_joint_dynamics: bool = False,
+        force_implicit_actuator_dynamics: bool = False,
     ) -> ModelKamino:
         """
         Finalizes the :class:`ModelKamino` from an existing instance of :class:`newton.Model`.
 
         Args:
             model: The source :class:`newton.Model` instance to be converted.
-            force_joint_dynamics: Flag to indicate whether joint dynamics should
-                be forced for supported types.
+            force_implicit_actuator_dynamics: Flag to indicate whether implicit
+                actuator dynamics should be forced for supported joint types.
 
         Returns:
             Kamino model converted from the input Newton model.
@@ -754,7 +754,12 @@ class ModelKamino:
             model_bodies = convert_rigid_bodies(model, model_size, model_info)
 
             # Joints
-            model_joints = convert_joints(model, model_size, model_info)
+            model_joints = convert_joints(
+                model,
+                model_size,
+                model_info,
+                force_implicit_actuator_dynamics=force_implicit_actuator_dynamics,
+            )
 
             # Geometries
             model_geoms = convert_geometries(

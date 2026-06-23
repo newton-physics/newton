@@ -132,7 +132,7 @@ class ControlKamino:
             raise ValueError("Error copying from/to uninitialized ControlKamino")
         wp.copy(self.tau_j, other.tau_j)
 
-    def finalize(self, model: ModelKamino, device: wp.DeviceLike = None) -> None:
+    def finalize(self, model: ModelKamino, device: wp.DeviceLike | None = None) -> None:
         """Allocate the coord-space side buffer used to interface with a
         :class:`newton.Control`.
 
