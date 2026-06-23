@@ -354,6 +354,12 @@ def parse_usd(
     except Exception as e:
         if verbose:
             print(f"Failed to get linear unit: {e}")
+    if not math.isclose(linear_unit, 1.0):
+        warnings.warn(
+            "USD stages with non-unit linear units are not supported. "
+            f"Set metersPerUnit to 1.0 before import. Found metersPerUnit={linear_unit}.",
+            stacklevel=_external_stacklevel(),
+        )
 
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=non_regex_ignore_paths)
@@ -1852,7 +1858,7 @@ def parse_usd(
             print("Found PhysicsScene:", path)
             print("Gravity direction:", scene_desc.gravityDirection)
             print("Gravity magnitude:", scene_desc.gravityMagnitude)
-        builder.gravity = -scene_desc.gravityMagnitude * linear_unit
+        builder.gravity = -scene_desc.gravityMagnitude
 
         # Storing Physics Scene attributes
         physics_scene_prim = stage.GetPrimAtPath(path)

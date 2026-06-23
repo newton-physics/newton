@@ -5414,7 +5414,8 @@ def Xform "Articulation" (
         UsdShade.MaterialBindingAPI.Apply(collider_prim).Bind(material, "physics")
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        with self.assertWarnsRegex(UserWarning, "non-unit linear units are not supported"):
+            result = builder.add_usd(stage)
 
         self.assertAlmostEqual(result["linear_unit"], 0.01, places=7)
 
@@ -6769,6 +6770,28 @@ def Xform "Articulation" (
 
         # Gravity should be disabled (zero)
         self.assertEqual(builder2.gravity, 0.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_scene_gravity_non_unit_linear_unit(self):
+        """Test non-unit linear unit warning and unscaled PhysicsScene gravity."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+        scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+        scene.CreateGravityMagnitudeAttr().Set(12.34)
+
+        body = UsdGeom.Cube.Define(stage, "/Body")
+        body_prim = body.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body_prim)
+        UsdPhysics.CollisionAPI.Apply(body_prim)
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "non-unit linear units are not supported"):
+            builder.add_usd(stage)
+
+        self.assertAlmostEqual(builder.gravity, -12.34, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_time_steps_per_second_parsing(self):
