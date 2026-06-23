@@ -858,8 +858,11 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertEqual(result["path_cloth_map"], {})
             self.assertEqual(builder.particle_count, 0)
 
-    def test_cloth_material_maps_to_triangle_and_edge_stiffness(self):
-        """Bound surface material -> tri_ke (stretch), tri_ka (shear), edge bending (bend)."""
+    def test_cloth_material_maps_to_isotropic_membrane(self):
+        """Surface material -> isotropic membrane: stretchStiffness -> tri_ke, bendStiffness -> edge
+        bending. tri_ka (area-preservation/Poisson) is left at the solver default since the proposal
+        has no such attribute. shearStiffness can't be represented independently: it warns but is
+        preserved in path_cloth_attrs."""
         from pxr import Usd, UsdPhysics
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -867,7 +870,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
             stage = Usd.Stage.CreateNew(str(usd_path))
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             mesh = _add_cloth_mesh(stage, "/World/Cloth")
-            stretch, shear, bend = 1.0e3, 5.0e2, 2.0e1
+            stretch, shear, bend = 1.0e3, 5.0e2, 2.0e1  # distinct stretch != shear
             _bind_cable_material(
                 stage,
                 mesh.GetPrim(),
@@ -879,12 +882,16 @@ class TestUSDDeformableCloth(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
+            with self.assertWarnsRegex(UserWarning, "shearStiffness is not applied"):
+                result = builder.add_usd(str(usd_path))
             t0 = result["path_cloth_map"]["/World/Cloth"]["tri"][0]
             e0 = result["path_cloth_map"]["/World/Cloth"]["edge"][0]
-            self.assertAlmostEqual(builder.tri_materials[t0][0], stretch, delta=stretch * 1e-3)  # tri_ke
-            self.assertAlmostEqual(builder.tri_materials[t0][1], shear, delta=shear * 1e-3)  # tri_ka
+            # stretchStiffness -> tri_ke (mu); tri_ka left at the solver default (not fabricated).
+            self.assertAlmostEqual(builder.tri_materials[t0][0], stretch, delta=stretch * 1e-3)  # tri_ke (mu)
+            self.assertEqual(builder.tri_materials[t0][1], builder.default_tri_ka)  # tri_ka (lambda) = default
             self.assertAlmostEqual(builder.edge_bending_properties[e0][0], bend, delta=bend * 1e-3)
+            # The unmapped shearStiffness survives for anisotropic solvers.
+            self.assertAlmostEqual(result["path_cloth_attrs"]["/World/Cloth"]["material"]["shearStiffness"], shear)
 
     def test_cloth_zero_stiffness_is_preserved(self):
         """Authored zero stretch stiffness (range [0, inf)) maps to tri_ke = 0, not a default."""

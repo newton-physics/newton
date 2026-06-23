@@ -3816,11 +3816,7 @@ def parse_usd(
             cloth_vertices = [wp.vec3(float(p[0]) * sx, float(p[1]) * sy, float(p[2]) * sz) for p in mesh_points]
             scale = 1.0
 
-            # Surface moduli -> tri_ke (stretch) / tri_ka (shear) / bending-edge ke (bend).
             cloth_mat = usd._get_surface_deformable_material(prim, deformable_read) or {}
-            tri_ke = cloth_mat.get("stretchStiffness")
-            tri_ka = cloth_mat.get("shearStiffness")
-            edge_ke = cloth_mat.get("bendStiffness")
             # Surface thickness: prefer the material's authored value; otherwise fall back to a
             # shell mass model's thickness (NewtonMassAPI massModel="shell" / shellThickness,
             # resolved across Newton / MuJoCo like the rigid shape path above).
@@ -3830,6 +3826,38 @@ def parse_usd(
                 if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)):
                     if float(shell_thickness_val) > 0.0:
                         thickness = float(shell_thickness_val)
+
+            # Map the surface material onto the SolverVBD / SolverSemiImplicit membrane, whose
+            # triangle has three parameters:
+            #   tri_ke  = mu     -> in-plane elastic stiffness  <- stretchStiffness
+            #   edge_ke          -> dihedral bending stiffness  <- bendStiffness
+            #   tri_ka  = lambda -> area preservation (Poisson) <- (no proposal attribute)
+            # This membrane is isotropic, so stretch and shear are not separable: both live in mu.
+            # We therefore drive mu from stretchStiffness and drop shearStiffness (an anisotropic
+            # membrane such as SolverStyle3D's tri_aniso_ke is needed to honor it). tri_ka encodes
+            # the Poisson ratio nu = tri_ka / (tri_ka + 2*tri_ke); given a target nu it would be
+            # tri_ka = 2*tri_ke*nu / (1 - nu), but the surface material authors no Poisson, so we
+            # leave tri_ka at the solver default rather than fabricate one.
+            #
+            # The proposal authors moduli in force/area; Newton integrates the triangle energy over
+            # area, so a modulus is scaled by the shell thickness when one is authored (membrane
+            # stiffness ~ E*h, bending ~ E*h^3) -- the surface analog of the cable path's E*A/L.
+            #
+            # Either way the raw, as-authored moduli (including the dropped shearStiffness) survive
+            # in path_cloth_attrs, so another solver can rebuild from them.
+            tri_ke = cloth_mat.get("stretchStiffness")
+            edge_ke = cloth_mat.get("bendStiffness")
+            if thickness is not None:
+                tri_ke = tri_ke * thickness if tri_ke is not None else None
+                edge_ke = edge_ke * thickness**3 if edge_ke is not None else None
+            tri_ka = None  # see above: no proposal attribute -> solver default
+            if "shearStiffness" in cloth_mat:
+                warnings.warn(
+                    f"{path}: shearStiffness is not applied -- SolverVBD / SolverSemiImplicit use an "
+                    f"isotropic membrane where stretch and shear share one modulus. Use SolverStyle3D "
+                    f"(tri_aniso_ke) for independent shear; the value is preserved in path_cloth_attrs.",
+                    stacklevel=2,
+                )
             # Newton cloth density is areal; convert the volumetric material density with the
             # surface thickness (required for surface mass per the proposal). Body density overrides.
             vol_density = _resolve_deformable_density(prim, cloth_mat.get("density"))
