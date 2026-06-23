@@ -6,6 +6,7 @@ from __future__ import annotations
 import collections
 import copy
 import datetime
+import inspect
 import itertools
 import logging
 import math
@@ -49,6 +50,24 @@ from .import_utils import should_show_collider
 logger = logging.getLogger("newton")
 
 AttributeFrequency = Model.AttributeFrequency
+
+_NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
+
+
+def _external_stacklevel() -> int:
+    """Return a ``stacklevel`` that points past all ``newton._src`` frames."""
+    frame = inspect.currentframe()
+    if frame is None:
+        return 2
+    frame = frame.f_back
+    stacklevel = 1
+    try:
+        while frame is not None and os.path.normpath(frame.f_code.co_filename).startswith(_NEWTON_SRC_DIR):
+            frame = frame.f_back
+            stacklevel += 1
+        return stacklevel
+    finally:
+        del frame
 
 
 def parse_usd(
