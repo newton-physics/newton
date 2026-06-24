@@ -24,7 +24,7 @@ from newton._src.solvers.kamino._src.models import basics as basics_kamino
 from newton._src.solvers.kamino._src.models.builders import utils as model_utils
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
-from newton._src.solvers.kamino.solver_kamino import ResetConfigKamino, SolverKamino
+from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 from newton._src.solvers.kamino.tests.utils import print as print_utils
 from newton.tests import get_kamino_basics_asset
@@ -754,9 +754,9 @@ class TestModelConversions(unittest.TestCase):
             dtype=wp.transformf,
         )
         base_u = wp.zeros(1, dtype=wp.spatial_vectorf)
-        reset_config = ResetConfigKamino(
-            base_pose=ResetConfigKamino.FromBaseQ(base_q),
-            base_velocity=ResetConfigKamino.FromBaseU(base_u),
+        reset_config = SolverKamino.ResetConfig(
+            base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q),
+            base_velocity=SolverKamino.ResetConfig.FromBaseU(base_u),
         )
         solver.reset(state=state_out, reset_config=reset_config)
         body_q_after = state_out.body_q.numpy()
@@ -784,9 +784,9 @@ class TestModelConversions(unittest.TestCase):
             [wp.transformf(wp.vec3f(*offset), wp.quat_identity(dtype=wp.float32))],
             dtype=wp.transformf,
         )
-        reset_config = ResetConfigKamino(
-            base_pose=ResetConfigKamino.FromBaseQ(base_q_shifted),
-            base_velocity=ResetConfigKamino.FromBaseU(base_u),
+        reset_config = SolverKamino.ResetConfig(
+            base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q_shifted),
+            base_velocity=SolverKamino.ResetConfig.FromBaseU(base_u),
         )
         solver.reset(state=state_out, reset_config=reset_config)
         body_q_shifted = state_out.body_q.numpy()

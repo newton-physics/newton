@@ -27,7 +27,7 @@ from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino._src.solvers import PADMMSolver
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.examples import print_progress_bar
-from newton._src.solvers.kamino.solver_kamino import ResetConfigKamino
+from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 
 ###
@@ -506,7 +506,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         )
 
         # Reset all worlds to the specified base pose
-        reset_config = ResetConfigKamino(base_pose=ResetConfigKamino.FromBaseQ(base_q_0))
+        reset_config = SolverKamino.ResetConfig(base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q_0))
         solver.reset(state=state_n, reset_config=reset_config)
 
         # Check consistency of state after reset
@@ -535,9 +535,9 @@ class TestSolverKaminoImpl(unittest.TestCase):
         )
 
         # Reset all worlds to the specified base pose + velocity
-        reset_config = ResetConfigKamino(
-            base_pose=ResetConfigKamino.FromBaseQ(base_q_0),
-            base_velocity=ResetConfigKamino.FromBaseU(base_u_0),
+        reset_config = SolverKamino.ResetConfig(
+            base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q_0),
+            base_velocity=SolverKamino.ResetConfig.FromBaseU(base_u_0),
         )
         solver.reset(state=state_n, reset_config=reset_config)
 
@@ -580,9 +580,9 @@ class TestSolverKaminoImpl(unittest.TestCase):
         state_n_stepped_ref.copy_from(state_n)
 
         # Reset selected worlds to the specified base pose + velocity
-        reset_config = ResetConfigKamino(
-            base_pose=ResetConfigKamino.FromBaseQ(base_q_0),
-            base_velocity=ResetConfigKamino.FromBaseU(base_u_0),
+        reset_config = SolverKamino.ResetConfig(
+            base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q_0),
+            base_velocity=SolverKamino.ResetConfig.FromBaseU(base_u_0),
         )
         solver.reset(state=state_n, world_mask=world_mask, reset_config=reset_config)
 
@@ -630,8 +630,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         )
 
         # Reset all worlds to the specified joint coords
-        reset_config = ResetConfigKamino(
-            body_poses=ResetConfigKamino.FromJointQ(joint_q_0),
+        reset_config = SolverKamino.ResetConfig(
+            body_poses=SolverKamino.ResetConfig.FromJointQ(joint_q_0),
         )
         solver.reset(state=state_n, reset_config=reset_config)
 
@@ -664,9 +664,9 @@ class TestSolverKaminoImpl(unittest.TestCase):
         )
 
         # Reset all worlds to the specified joint coords + velocities
-        reset_config = ResetConfigKamino(
-            body_poses=ResetConfigKamino.FromJointQ(joint_q_0),
-            body_velocities=ResetConfigKamino.FromJointU(joint_u_0),
+        reset_config = SolverKamino.ResetConfig(
+            body_poses=SolverKamino.ResetConfig.FromJointQ(joint_q_0),
+            body_velocities=SolverKamino.ResetConfig.FromJointU(joint_u_0),
         )
         solver.reset(state=state_n, reset_config=reset_config)
 
@@ -714,9 +714,9 @@ class TestSolverKaminoImpl(unittest.TestCase):
         state_n_stepped_ref.copy_from(state_n)
 
         # Reset selected worlds to the specified joint coords + velocities
-        reset_config = ResetConfigKamino(
-            body_poses=ResetConfigKamino.FromJointQ(joint_q_0),
-            body_velocities=ResetConfigKamino.FromJointU(joint_u_0),
+        reset_config = SolverKamino.ResetConfig(
+            body_poses=SolverKamino.ResetConfig.FromJointQ(joint_q_0),
+            body_velocities=SolverKamino.ResetConfig.FromJointU(joint_u_0),
         )
         solver.reset(state=state_n, world_mask=world_mask, reset_config=reset_config)
 
@@ -764,8 +764,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         )
 
         # Reset all worlds to the specified actuator coords
-        reset_config = ResetConfigKamino(
-            body_poses=ResetConfigKamino.FromActuatorQ(actuator_q_0),
+        reset_config = SolverKamino.ResetConfig(
+            body_poses=SolverKamino.ResetConfig.FromActuatorQ(actuator_q_0),
         )
         solver.reset(state=state_n, reset_config=reset_config)
 
@@ -798,9 +798,9 @@ class TestSolverKaminoImpl(unittest.TestCase):
         )
 
         # Reset all worlds to the specified actuator coords and velocities
-        reset_config = ResetConfigKamino(
-            body_poses=ResetConfigKamino.FromActuatorQ(actuator_q_0),
-            body_velocities=ResetConfigKamino.FromActuatorU(actuator_u_0),
+        reset_config = SolverKamino.ResetConfig(
+            body_poses=SolverKamino.ResetConfig.FromActuatorQ(actuator_q_0),
+            body_velocities=SolverKamino.ResetConfig.FromActuatorU(actuator_u_0),
         )
         solver.reset(state=state_n, reset_config=reset_config)
 
@@ -850,9 +850,9 @@ class TestSolverKaminoImpl(unittest.TestCase):
         state_n_stepped_ref.copy_from(state_n)
 
         # Reset selected worlds to the specified actuator coords + velocities
-        reset_config = ResetConfigKamino(
-            body_poses=ResetConfigKamino.FromActuatorQ(actuator_q_0),
-            body_velocities=ResetConfigKamino.FromActuatorU(actuator_u_0),
+        reset_config = SolverKamino.ResetConfig(
+            body_poses=SolverKamino.ResetConfig.FromActuatorQ(actuator_q_0),
+            body_velocities=SolverKamino.ResetConfig.FromActuatorU(actuator_u_0),
         )
         solver.reset(state=state_n, world_mask=world_mask, reset_config=reset_config)
 

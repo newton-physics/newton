@@ -35,7 +35,7 @@ from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.sim import Simulator
 from newton._src.solvers.kamino._src.utils.viewer import Color3, ViewerConfig
-from newton._src.solvers.kamino.solver_kamino import ResetConfigKamino
+from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.viewer import ViewerGL
 
 
@@ -604,15 +604,15 @@ class RigidBodySim:
 
     def _reset_worlds(self):
         """Reset selected worlds based on world_mask."""
-        reset_config = ResetConfigKamino.to_default()
+        reset_config = SolverKamino.ResetConfig.to_default()
         if self._update_q_j:
-            reset_config.body_poses = ResetConfigKamino.FromJointQ(self._reset_q_j_wp)
+            reset_config.body_poses = SolverKamino.ResetConfig.FromJointQ(self._reset_q_j_wp)
         if self._update_dq_j:
-            reset_config.body_velocities = ResetConfigKamino.FromJointU(self._reset_dq_j_wp)
+            reset_config.body_velocities = SolverKamino.ResetConfig.FromJointU(self._reset_dq_j_wp)
         if self._update_base_q:
-            reset_config.base_pose = ResetConfigKamino.FromBaseQ(self._reset_base_q_wp)
+            reset_config.base_pose = SolverKamino.ResetConfig.FromBaseQ(self._reset_base_q_wp)
         if self._update_base_u:
-            reset_config.base_velocity = ResetConfigKamino.FromBaseU(self._reset_base_u_wp)
+            reset_config.base_velocity = SolverKamino.ResetConfig.FromBaseU(self._reset_base_u_wp)
         self.sim.reset(
             world_mask=self._world_mask_wp,
             reset_config=reset_config,

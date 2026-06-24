@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 import warp as wp
 
-from ....solver_kamino import ResetConfigKamino
+from ....solver_kamino import SolverKamino
 from ...core.builder import ModelBuilderKamino
 from ...core.control import ControlKamino
 from ...core.model import ModelKamino
@@ -344,7 +344,7 @@ class Simulator:
     def reset(
         self,
         world_mask: wp.array | None = None,
-        reset_config: ResetConfigKamino | None = None,
+        reset_config: SolverKamino.ResetConfig | None = None,
     ):
         """
         Performs a configurable in-place reset of the simulation state, in all or a subset

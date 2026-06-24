@@ -21,7 +21,7 @@ from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
 from newton._src.solvers.kamino._src.utils.sim import ViewerKamino
 from newton._src.solvers.kamino._src.utils.sim.simulator import Simulator
 from newton._src.solvers.kamino.examples import get_examples_output_path, run_headless
-from newton._src.solvers.kamino.solver_kamino import ResetConfigKamino
+from newton._src.solvers.kamino.solver_kamino import SolverKamino
 
 ###
 # Kernels
@@ -304,7 +304,7 @@ class Example:
             q_b = R_b.as_quat()  # x, y, z, w
             q_base = wp.transformf((0.1, 0.1, 0.3), q_b)
             self.base_q.assign([q_base] * self.sim.model.size.num_worlds)
-            reset_config = ResetConfigKamino(base_pose=ResetConfigKamino.FromBaseQ(self.base_q))
+            reset_config = SolverKamino.ResetConfig(base_pose=SolverKamino.ResetConfig.FromBaseQ(self.base_q))
             self.sim.reset(reset_config=reset_config)
 
         # Demo of resetting the base pose and twist
@@ -317,9 +317,9 @@ class Example:
             u_base = vec6f(0.0, 0.0, 0.05, 0.0, 0.0, 0.3)
             self.base_q.assign([q_base] * self.sim.model.size.num_worlds)
             self.base_u.assign([u_base] * self.sim.model.size.num_worlds)
-            reset_config = ResetConfigKamino(
-                base_pose=ResetConfigKamino.FromBaseQ(self.base_q),
-                base_velocity=ResetConfigKamino.FromBaseU(self.base_u),
+            reset_config = SolverKamino.ResetConfig(
+                base_pose=SolverKamino.ResetConfig.FromBaseQ(self.base_q),
+                base_velocity=SolverKamino.ResetConfig.FromBaseU(self.base_u),
             )
             self.sim.reset(reset_config=reset_config)
 
@@ -356,11 +356,11 @@ class Example:
             joint_q_np = np.zeros(self.sim.model.size.sum_of_num_joint_coords, dtype=np.float32)
             joint_q_np[self.actuated_joint_idx_np[joint_reset_index]] = actuated_joint_config[joint_reset_index]
             self.joint_q.assign(joint_q_np)
-            reset_config = ResetConfigKamino(
-                body_poses=ResetConfigKamino.FromJointQ(self.joint_q),
-                body_velocities=ResetConfigKamino.FromJointU(self.joint_u),
-                base_pose=ResetConfigKamino.FromBaseQ(self.base_q),
-                base_velocity=ResetConfigKamino.FromBaseU(self.base_u),
+            reset_config = SolverKamino.ResetConfig(
+                body_poses=SolverKamino.ResetConfig.FromJointQ(self.joint_q),
+                body_velocities=SolverKamino.ResetConfig.FromJointU(self.joint_u),
+                base_pose=SolverKamino.ResetConfig.FromBaseQ(self.base_q),
+                base_velocity=SolverKamino.ResetConfig.FromBaseU(self.base_u),
             )
             self.sim.reset(reset_config=reset_config)
 
@@ -397,11 +397,11 @@ class Example:
             actuator_q_np = np.zeros(self.sim.model.size.sum_of_num_actuated_joint_coords, dtype=np.float32)
             actuator_q_np[joint_reset_index] = actuated_joint_config[joint_reset_index]
             self.actuator_q.assign(actuator_q_np)
-            reset_config = ResetConfigKamino(
-                body_poses=ResetConfigKamino.FromActuatorQ(self.actuator_q),
-                body_velocities=ResetConfigKamino.FromActuatorU(self.actuator_u),
-                base_pose=ResetConfigKamino.FromBaseQ(self.base_q),
-                base_velocity=ResetConfigKamino.FromBaseU(self.base_u),
+            reset_config = SolverKamino.ResetConfig(
+                body_poses=SolverKamino.ResetConfig.FromActuatorQ(self.actuator_q),
+                body_velocities=SolverKamino.ResetConfig.FromActuatorU(self.actuator_u),
+                base_pose=SolverKamino.ResetConfig.FromBaseQ(self.base_q),
+                base_velocity=SolverKamino.ResetConfig.FromBaseU(self.base_u),
             )
             self.sim.reset(reset_config=reset_config)
 

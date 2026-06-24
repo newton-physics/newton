@@ -41,172 +41,12 @@ if TYPE_CHECKING:
 # Module interface
 ###
 
-__all__ = ["ResetConfigKamino", "SolverKamino"]
+__all__ = ["SolverKamino"]
 
 
 ###
 # Interfaces
 ###
-
-
-@dataclass
-class ResetConfigKamino:
-    """
-    Configuration for a call to the reset() operation, specifying the behaviour (common or separate)
-    for body poses, body velocities as well as floating base pose and velocity.
-    """
-
-    @dataclass(frozen=True)
-    class ToDefault:
-        """Reset option, to reset to default values (e.g., initial pose and zero velocity)."""
-
-    @dataclass(frozen=True)
-    class Preserve:
-        """Reset option, to preserve current values, assuming without check that they are consistent."""
-
-    @dataclass(frozen=True)
-    class FromJointQ:
-        """
-        Reset option, to set body poses from actuator coordinates and/or base joint coordinates.
-        Extracts relevant data from joint coordinates, and applies position-level Forward Kinematics
-        and/or a global transformation at the base.
-        """
-
-        joint_q: wp.array[wp.float32] | None = None
-        """Optional joint coordinates array. If not provided, coordinates in the state container are used."""
-
-    @dataclass(frozen=True)
-    class FromJointU:
-        """
-        Reset option, to set body velocities from actuator velocities and/or base joint velocity.
-        Extracts relevant data from joint velocities, and applies velocity-level Forward Kinematics
-        and/or a global composition with the base velocity.
-        """
-
-        joint_u: wp.array[wp.float32] | None = None
-        """Optional joint velocities array. If not provided, velocities in the state container are used."""
-
-    @dataclass(frozen=True)
-    class FromActuatorQ:
-        """
-        Reset option, to set body poses from actuator coordinates, using position-level Forward Kinematics.
-        """
-
-        actuator_q: wp.array[wp.float32]
-        """Actuator coordinates array."""
-
-    @dataclass(frozen=True)
-    class FromActuatorU:
-        """
-        Reset option, to set body velocities from actuator velocities, using velocity-level Forward Kinematics.
-        """
-
-        actuator_u: wp.array[wp.float32]
-        """Actuator velocities array."""
-
-    @dataclass(frozen=True)
-    class FromBaseQ:
-        """
-        Reset option, to set a new pose for the base body, and transform all bodies accordingly.
-        If a base joint is set, the prescribed pose is interpreted in the frame of the base joint;
-        else it is directly interpreted as the new pose of the base body.
-        """
-
-        base_q: wp.array[wp.transformf]
-        """Per-world base body pose array."""
-
-    @dataclass(frozen=True)
-    class FromBaseU:
-        """
-        Reset option, to set a new velocity for the base body, and compose with body velocities accordingly.
-        If a base joint is set, the prescribed velocity is interpreted in the frame of the base joint;
-        else it is directly interpreted as the new velocity of the base body.
-        """
-
-        base_u: wp.array[wp.spatial_vectorf]
-        """Per-world base body velocity array."""
-
-    body_poses: ToDefault | Preserve | FromJointQ | FromActuatorQ = ToDefault()
-    """
-    Reset option for body poses:
-    - ToDefault: reset poses to their initial values.
-    - Preserve: preserve poses in the state container, assuming they are consistent.
-    - FromJointQ: extract actuator coordinates from joint coordinates, and compute consistent
-      body poses with a position-level forward kinematics solve.
-    - FromActuatorQ: compute consistent body poses for the prescribed actuator coordinates with
-      a position-level forward kinematics solve.
-    """
-
-    body_velocities: ToDefault | Preserve | FromJointU | FromActuatorU = ToDefault()
-    """
-    Reset option for body velocities:
-    - ToDefault: reset velocities to zero.
-    - Preserve: if body poses are preserved, preserve velocities in the state container, assuming
-      they are consistent. Otherwise, behaves like FromJointU, transferring current joint velocities
-      in the state container, to the extent possible, to the new body poses.
-    - FromJointU: extract actuator velocities from joint velocities, and compute consistent body
-      velocities with a velocity-level forward kinematics solve.
-    - FromActuatorU: compute consistent body velocities for the prescribed actuator velocities with
-      a velocity-level forward kinematics solve.
-    """
-
-    base_pose: ToDefault | Preserve | FromJointQ | FromBaseQ = ToDefault()
-    """
-    Reset option for the floating base pose:
-    - ToDefault: reset the base pose to its initial value.
-    - Preserve: preserve the current base pose, as read from current joint coordinates (if a base joint
-      was set) or body poses (otherwise).
-    - FromJointQ: read the base pose from joint coordinates, assuming a base joint was set. Behaves
-      like ToDefault otherwise (as a fallback).
-    - FromBaseQ: use the provided base pose.
-    Body poses and velocities are transformed (if needed) to match the prescribed base pose, while
-    preserving relative poses and velocities.
-    """
-
-    base_velocity: ToDefault | Preserve | FromJointU | FromBaseU = ToDefault()
-    """
-    Reset option for the floating base velocity:
-    - ToDefault: reset the base velocity to zero.
-    - Preserve: preserve the current base velocity, as read from current joint velocities (if a base joint
-      was set) or body velocities (otherwise), up to transformation due to the new base pose if applicable.
-    - FromJointU: read the base velocity from joint velocities, assuming a base joint was set. Behaves
-      like ToDefault otherwise (as a fallback).
-    - FromBaseU: use the provided base velocity.
-    Body velocities are updated to match the prescribed base velocity, while preserving relative velocities.
-    """
-
-    @classmethod
-    def to_default(cls) -> ResetConfigKamino:
-        """Instantiates a reset config for resetting all state components to default values."""
-        return cls(
-            body_poses=ResetConfigKamino.ToDefault(),
-            body_velocities=ResetConfigKamino.ToDefault(),
-            base_pose=ResetConfigKamino.ToDefault(),
-            base_velocity=ResetConfigKamino.ToDefault(),
-        )
-
-    @classmethod
-    def preserve(cls) -> ResetConfigKamino:
-        """Instantiates a reset config for preserving all state components."""
-        return cls(
-            body_poses=ResetConfigKamino.Preserve(),
-            body_velocities=ResetConfigKamino.Preserve(),
-            base_pose=ResetConfigKamino.Preserve(),
-            base_velocity=ResetConfigKamino.Preserve(),
-        )
-
-    @classmethod
-    def from_joints(cls) -> ResetConfigKamino:
-        """
-        Instantiates a reset config for running FK at the position and velocity level,
-        to set new poses and velocities from current per-joint values in the state container.
-        """
-        return cls(
-            body_poses=ResetConfigKamino.FromJointQ(),
-            body_velocities=ResetConfigKamino.FromJointU(),
-            base_pose=ResetConfigKamino.FromJointQ(),
-            base_velocity=ResetConfigKamino.FromJointU(),
-        )
 
 
 class SolverKamino(SolverBase):
@@ -525,8 +365,164 @@ class SolverKamino(SolverBase):
     the solver to avoid import overhead if the solver is not used.
     """
 
-    ResetConfig = ResetConfigKamino
-    """ Defines a type alias of the reset configuration container. """
+    @dataclass
+    class ResetConfig:
+        """
+        Configuration for a call to the reset() operation, specifying the behaviour (common or separate)
+        for body poses, body velocities as well as floating base pose and velocity.
+        """
+
+        @dataclass(frozen=True)
+        class ToDefault:
+            """Reset option, to reset to default values (e.g., initial pose and zero velocity)."""
+
+        @dataclass(frozen=True)
+        class Preserve:
+            """Reset option, to preserve current values, assuming without check that they are consistent."""
+
+        @dataclass(frozen=True)
+        class FromJointQ:
+            """
+            Reset option, to set body poses from actuator coordinates and/or base joint coordinates.
+            Extracts relevant data from joint coordinates, and applies position-level Forward Kinematics
+            and/or a global transformation at the base.
+            """
+
+            joint_q: wp.array[wp.float32] | None = None
+            """Optional joint coordinates array. If not provided, coordinates in the state container are used."""
+
+        @dataclass(frozen=True)
+        class FromJointU:
+            """
+            Reset option, to set body velocities from actuator velocities and/or base joint velocity.
+            Extracts relevant data from joint velocities, and applies velocity-level Forward Kinematics
+            and/or a global composition with the base velocity.
+            """
+
+            joint_u: wp.array[wp.float32] | None = None
+            """Optional joint velocities array. If not provided, velocities in the state container are used."""
+
+        @dataclass(frozen=True)
+        class FromActuatorQ:
+            """
+            Reset option, to set body poses from actuator coordinates, using position-level Forward Kinematics.
+            """
+
+            actuator_q: wp.array[wp.float32]
+            """Actuator coordinates array."""
+
+        @dataclass(frozen=True)
+        class FromActuatorU:
+            """
+            Reset option, to set body velocities from actuator velocities, using velocity-level Forward Kinematics.
+            """
+
+            actuator_u: wp.array[wp.float32]
+            """Actuator velocities array."""
+
+        @dataclass(frozen=True)
+        class FromBaseQ:
+            """
+            Reset option, to set a new pose for the base body, and transform all bodies accordingly.
+            If a base joint is set, the prescribed pose is interpreted in the frame of the base joint;
+            else it is directly interpreted as the new pose of the base body.
+            """
+
+            base_q: wp.array[wp.transformf]
+            """Per-world base body pose array."""
+
+        @dataclass(frozen=True)
+        class FromBaseU:
+            """
+            Reset option, to set a new velocity for the base body, and compose with body velocities accordingly.
+            If a base joint is set, the prescribed velocity is interpreted in the frame of the base joint;
+            else it is directly interpreted as the new velocity of the base body.
+            """
+
+            base_u: wp.array[wp.spatial_vectorf]
+            """Per-world base body velocity array."""
+
+        body_poses: ToDefault | Preserve | FromJointQ | FromActuatorQ = ToDefault()
+        """
+        Reset option for body poses:
+        - ToDefault: reset poses to their initial values.
+        - Preserve: preserve poses in the state container, assuming they are consistent.
+        - FromJointQ: extract actuator coordinates from joint coordinates, and compute consistent
+          body poses with a position-level forward kinematics solve.
+        - FromActuatorQ: compute consistent body poses for the prescribed actuator coordinates with
+          a position-level forward kinematics solve.
+        """
+
+        body_velocities: ToDefault | Preserve | FromJointU | FromActuatorU = ToDefault()
+        """
+        Reset option for body velocities:
+        - ToDefault: reset velocities to zero.
+        - Preserve: if body poses are preserved, preserve velocities in the state container, assuming
+          they are consistent. Otherwise, behaves like FromJointU, transferring current joint velocities
+          in the state container, to the extent possible, to the new body poses.
+        - FromJointU: extract actuator velocities from joint velocities, and compute consistent body
+          velocities with a velocity-level forward kinematics solve.
+        - FromActuatorU: compute consistent body velocities for the prescribed actuator velocities with
+          a velocity-level forward kinematics solve.
+        """
+
+        base_pose: ToDefault | Preserve | FromJointQ | FromBaseQ = ToDefault()
+        """
+        Reset option for the floating base pose:
+        - ToDefault: reset the base pose to its initial value.
+        - Preserve: preserve the current base pose, as read from current joint coordinates (if a base joint
+          was set) or body poses (otherwise).
+        - FromJointQ: read the base pose from joint coordinates, assuming a base joint was set. Behaves
+          like ToDefault otherwise (as a fallback).
+        - FromBaseQ: use the provided base pose.
+        Body poses and velocities are transformed (if needed) to match the prescribed base pose, while
+        preserving relative poses and velocities.
+        """
+
+        base_velocity: ToDefault | Preserve | FromJointU | FromBaseU = ToDefault()
+        """
+        Reset option for the floating base velocity:
+        - ToDefault: reset the base velocity to zero.
+        - Preserve: preserve the current base velocity, as read from current joint velocities (if a base joint
+          was set) or body velocities (otherwise), up to transformation due to the new base pose if applicable.
+        - FromJointU: read the base velocity from joint velocities, assuming a base joint was set. Behaves
+          like ToDefault otherwise (as a fallback).
+        - FromBaseU: use the provided base velocity.
+        Body velocities are updated to match the prescribed base velocity, while preserving relative velocities.
+        """
+
+        @classmethod
+        def to_default(cls) -> SolverKamino.ResetConfig:
+            """Instantiates a reset config for resetting all state components to default values."""
+            return cls(
+                body_poses=SolverKamino.ResetConfig.ToDefault(),
+                body_velocities=SolverKamino.ResetConfig.ToDefault(),
+                base_pose=SolverKamino.ResetConfig.ToDefault(),
+                base_velocity=SolverKamino.ResetConfig.ToDefault(),
+            )
+
+        @classmethod
+        def preserve(cls) -> SolverKamino.ResetConfig:
+            """Instantiates a reset config for preserving all state components."""
+            return cls(
+                body_poses=SolverKamino.ResetConfig.Preserve(),
+                body_velocities=SolverKamino.ResetConfig.Preserve(),
+                base_pose=SolverKamino.ResetConfig.Preserve(),
+                base_velocity=SolverKamino.ResetConfig.Preserve(),
+            )
+
+        @classmethod
+        def from_joints(cls) -> SolverKamino.ResetConfig:
+            """
+            Instantiates a reset config for running FK at the position and velocity level,
+            to set new poses and velocities from current per-joint values in the state container.
+            """
+            return cls(
+                body_poses=SolverKamino.ResetConfig.FromJointQ(),
+                body_velocities=SolverKamino.ResetConfig.FromJointU(),
+                base_pose=SolverKamino.ResetConfig.FromJointQ(),
+                base_velocity=SolverKamino.ResetConfig.FromJointU(),
+            )
 
     def __init__(
         self,
@@ -653,7 +649,7 @@ class SolverKamino(SolverBase):
 
         # Process None arguments
         state_flags = int(StateFlags.ALL if flags is None else flags)
-        reset_config = ResetConfigKamino.to_default() if reset_config is None else reset_config
+        reset_config = SolverKamino.ResetConfig.to_default() if reset_config is None else reset_config
 
         # Convert/alias the input state as a StateKamino object
         state_kamino = self._kamino.StateKamino.from_newton(
@@ -663,8 +659,8 @@ class SolverKamino(SolverBase):
         # Convert body poses from origin to CoM if needed
         has_callbacks = self._solver_kamino._pre_reset_cb is not None or self._solver_kamino._post_reset_cb is not None
         need_CoM_conversion = (
-            not isinstance(reset_config.body_poses, ResetConfigKamino.Preserve)
-            or not isinstance(reset_config.base_pose, ResetConfigKamino.Preserve)
+            not isinstance(reset_config.body_poses, SolverKamino.ResetConfig.Preserve)
+            or not isinstance(reset_config.base_pose, SolverKamino.ResetConfig.Preserve)
             or has_callbacks
         )
         if need_CoM_conversion:
