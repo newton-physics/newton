@@ -374,7 +374,7 @@ class PADMMSolver:
             inner.atol = self._data.linear_solver_atol
         elif problem.sparse:
             # The fused single-kernel CR has no wrapped ``solver``; it reads its own ``.atol`` array
-            # live each solve (see FusedConjugateResidualSolver._solve_impl).
+            # live each solve (see ConjugateResidualSolverFused._solve_impl).
             problem._delassus._solver.atol = self._data.linear_solver_atol
 
         # Initialize the solver status, ALM penalty, and iterative solver tolerance
