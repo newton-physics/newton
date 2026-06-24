@@ -545,7 +545,7 @@ def _eval_floating_base_relative_transform(
     body_q: wp.array[transformf],
     body_u: wp.array[vec6f],
     world_mask: wp.array[bool],
-    relative_base_u: wp.bool,
+    relative_base_u: bool,
     # Outputs:
     rel_transform: wp.array[transformf],
     rel_velocity: wp.array[vec6f],
@@ -570,8 +570,8 @@ def _eval_floating_base_relative_transform(
         r_F = joint_F_r_Fj[base_joint_id]
         X_B = joint_X_Bj[base_joint_id]
         X_F = joint_X_Fj[base_joint_id]
-        T_B = wp.transformf(r_B, wp.quat_from_matrix(X_B))
-        T_F = wp.transformf(r_F, wp.quat_from_matrix(X_F))
+        T_B = transformf(r_B, wp.quat_from_matrix(X_B))
+        T_F = transformf(r_F, wp.quat_from_matrix(X_F))
         T_F_inv = wp.transform_inverse(T_F)
         base_body_pose = wp.transform_multiply(wp.transform_multiply(T_B, base_q[wid]), T_F_inv)
     else:  # Directly interpret base_q as the new base body pose if no base joint
@@ -594,6 +594,9 @@ def _eval_floating_base_relative_transform(
     if base_joint_id >= 0:  # If there is a base joint, base_u is the velocity in joint frame
         # For a unary joint, the joint velocity is simply the follower velocity in base joint frame
         # i.e. base_u = (base_v, base_omega) = X_B^T * (v_F + omega_F x R_F r_F), X_B^T * omega_F
+        if not base_q:  # Read joint data that was not read above in the base_q = None path
+            r_F = joint_F_r_Fj[base_joint_id]
+            X_B = joint_X_Bj[base_joint_id]
         base_v = base_u_[:3]
         base_omega = base_u_[3:]
         omega_F = X_B * base_omega
@@ -1607,9 +1610,9 @@ def set_body_q(
 def set_floating_base(
     model: ModelKamino,
     base_q: wp.array[transformf] | None,
-    base_u: wp.array[transformf] | None,
+    base_u: wp.array[vec6f] | None,
     body_q: wp.array[transformf],
-    body_u: wp.array[transformf],
+    body_u: wp.array[vec6f],
     world_mask: wp.array[bool],
     relative_base_u: bool = False,
 ):
@@ -1629,6 +1632,10 @@ def set_floating_base(
         relative_base_u: Boolean indicating whether base_u should be interpreted as expressed relative
                          to the new pose (after transforming so as to match base_q).
     """
+    # Early return if nothing to do
+    if base_q is None and base_u is None:
+        return
+
     # Compute relative transformation and velocity change applied to base body
     # Note: we also cache the new base body position to avoid a race condition as the base body is updated
     rel_transform = wp.empty(shape=model.size.num_worlds, dtype=transformf, device=model.device)

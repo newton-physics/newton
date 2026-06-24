@@ -437,6 +437,11 @@ class RigidBodySim:
         njd = self.sim.model.size.max_of_num_joint_dofs
         nb = self.sim.model.size.max_of_num_bodies
 
+        # Current code below assumes homogenous worlds and coords = dofs
+        # To adapt if these assertions trigger
+        assert self.sim.model.size.sum_of_num_joint_coords == nw * njc
+        assert njc == njd
+
         # State tensors (read-only views into simulator)
         # q_j uses generalized coordinates (njc), dq_j uses DOFs (njd)
         self._q_j = wp.to_torch(self.sim.state.q_j).reshape(nw, njc)
@@ -456,12 +461,12 @@ class RigidBodySim:
         # Reset buffers
         self._reset_base_q_wp = wp.zeros(nw, dtype=transformf, device=self._device)
         self._reset_base_u_wp = wp.zeros(nw, dtype=vec6f, device=self._device)
-        self._reset_q_j_wp = wp.zeros((nw, njc), dtype=float32, device=self._device)
-        self._reset_dq_j_wp = wp.zeros((nw, njd), dtype=float32, device=self._device)
+        self._reset_q_j_wp = wp.zeros(nw * njc, dtype=float32, device=self._device)
+        self._reset_dq_j_wp = wp.zeros(nw * njd, dtype=float32, device=self._device)
         self._reset_base_q = wp.to_torch(self._reset_base_q_wp).reshape(nw, 7)
         self._reset_base_u = wp.to_torch(self._reset_base_u_wp).reshape(nw, 6)
-        self._reset_q_j = wp.to_torch(self._reset_q_j_wp)
-        self._reset_dq_j = wp.to_torch(self._reset_dq_j_wp)
+        self._reset_q_j = wp.to_torch(self._reset_q_j_wp).reshape(nw, njc)
+        self._reset_dq_j = wp.to_torch(self._reset_dq_j_wp).reshape(nw, njd)
 
         # Reset flags
         self._update_q_j = False
