@@ -238,7 +238,6 @@ class SolverVBD(SolverBase):
         rigid_joint_angular_k_start: float = 1.0e1,  # Angular penalty seed (used when angular beta > 0)
         rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-cable angular joint constraints
-        rigid_enable_dahl_friction: bool | None = None,  # Deprecated: controlled by model attributes
     ):
         """
         Args:
@@ -346,8 +345,6 @@ class SolverVBD(SolverBase):
                 Negative values are clamped to 0.
             rigid_joint_angular_kd: Damping coefficient for non-cable angular joint constraints [N·m·s/rad].
                 Negative values are clamped to 0.
-            rigid_enable_dahl_friction: Deprecated and ignored. Dahl friction is controlled
-                by ``model.vbd.dahl_eps_max`` / ``model.vbd.dahl_tau``.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
@@ -365,16 +362,6 @@ class SolverVBD(SolverBase):
               enabled only when positive Dahl parameters are authored.
 
         """
-        if rigid_enable_dahl_friction is not None:
-            warnings.warn(
-                "rigid_enable_dahl_friction is deprecated and ignored. "
-                "Dahl friction is now controlled by model attributes "
-                "(model.vbd.dahl_eps_max / model.vbd.dahl_tau). "
-                "It is enabled only where both values are positive.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
         if rigid_avbd_beta < 0:
             raise ValueError(f"rigid_avbd_beta must be >= 0, got {rigid_avbd_beta}")
         rigid_avbd_linear_beta = rigid_avbd_linear_beta if rigid_avbd_linear_beta is not None else rigid_avbd_beta
