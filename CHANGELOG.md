@@ -11,6 +11,7 @@
 - Add user-defined pressure laws to hydroelastic SDF contact via `HydroelasticSDF.Config.pressure_func` (a `@wp.func` mapping `(signed_depth, shape_idx, data) -> pressure`) and `pressure_data` (a `@wp.struct` carrying per-shape state). The contact patch is the iso-pressure surface `p_a == p_b`; the default linear law `pressure = -kh * signed_depth` is preserved when no callback is supplied.
 - Add `SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)` for applying the checkerboard texture to selected shapes.
 - Add `--render-fps` to cap example rendering rate without changing simulation frame timing
+- Add inverse-dynamics evaluation for articulated systems: `Model.inverse_dynamics()` returns an `InverseDynamics` + `InverseDynamicsScratchBuffer` pair that `eval_inverse_dynamics` populates with the joint-space mass matrix `M(q)`, gravity bias `g(q)`, and Coriolis bias `C(q, q_dot)*q_dot` (selected via `InverseDynamics.EvalType` flags); `eval_inverse_dynamics_force` combines them with a user-supplied `qddot` into the manipulator-equation joint force `tau = M*qddot + C*q_dot + g`; `ArticulationView.eval_inverse_dynamics` masks the computation to a selected subset of articulations via the selection API
 
 ### Changed
 
@@ -220,7 +221,6 @@
 - Import per-shape authored color from USD stages into `ModelBuilder.shape_color`
 - Add `TRIANGLE_PRISM` support-function type for heightfield triangles, extruding 1 m along the heightfield's local -Z so GJK/MPR naturally resolves shapes on the back side
 - Add `ViewerGL.log_scalar()` for live scalar time-series plots in the viewer
-- Add inverse-dynamics evaluation for articulated systems: `Model.inverse_dynamics()` returns an `InverseDynamics` + `InverseDynamicsScratchBuffer` pair that `eval_inverse_dynamics` populates with the joint-space mass matrix `M(q)`, gravity bias `g(q)`, and Coriolis bias `C(q, q_dot)*q_dot` (selected via `InverseDynamics.EvalType` flags); `eval_inverse_dynamics_force` combines them with a user-supplied `qddot` into the manipulator-equation joint force `tau = M*qddot + C*q_dot + g`; `ArticulationView.eval_inverse_dynamics` masks the computation to a selected subset of articulations via the selection API
 - Add `newton.utils.OnnxRuntime`, a graph-capturable ONNX inference engine backed solely by Warp kernels (no `onnxruntime` or `torch` runtime dependency); used by `ControllerNeuralMLP` and `ControllerNeuralLSTM` to load `.onnx` policies. To migrate a TorchScript policy, run `torch.onnx.export(model, dummy_input, "policy.onnx", opset_version=17)` once and point the controllers at the resulting `.onnx` file. The `onnx` package is now an optional extra (`pip install newton[onnx]`); install it explicitly to use the ONNX runtime.
 - Add `Mesh.is_watertight` property (cached) that reports whether every geometric edge is shared by exactly two triangles
 - Add `HydroelasticSDF.Config.mc_edge_clamp_min` to expose the marching-cubes edge-interpolation clamp; default `0.02` matches the previous hard-coded value. Set to `0.0` to disable the clamp and recover faithful contact-surface dynamics for threading-style scenarios (#2702)
