@@ -34,6 +34,31 @@ def com_twist_to_origin_twist(qd: wp.spatial_vector, X_wb: wp.transform, body_co
 
 
 @wp.func
+def transform_2d_rotational_axes(
+    axis_0: wp.vec3,
+    axis_1: wp.vec3,
+    q0: float,
+):
+    """Returns the two world-space angular axes of a 2D rotational joint at coordinate ``q0``.
+
+    These are the per-DOF angular Jacobian columns: ``axis_0`` and ``axis_1`` transported through the
+    rotation about ``axis_0``. The basis is first orthonormalized via ``q_off`` so the result matches
+    :func:`compute_2d_rotational_dofs` exactly.
+    """
+    q_off = wp.quat_from_matrix(wp.matrix_from_cols(axis_0, axis_1, wp.cross(axis_0, axis_1)))
+
+    # body local axes
+    local_0 = wp.quat_rotate(q_off, wp.vec3(1.0, 0.0, 0.0))
+    local_1 = wp.quat_rotate(q_off, wp.vec3(0.0, 1.0, 0.0))
+
+    a0 = local_0
+    q_0 = wp.quat_from_axis_angle(a0, q0)
+    a1 = wp.quat_rotate(q_0, local_1)
+
+    return a0, a1
+
+
+@wp.func
 def compute_2d_rotational_dofs(
     axis_0: wp.vec3,
     axis_1: wp.vec3,
@@ -45,21 +70,14 @@ def compute_2d_rotational_dofs(
     """
     Computes the rotation quaternion and 3D angular velocity given the joint axes, coordinates and velocities.
     """
-    q_off = wp.quat_from_matrix(wp.matrix_from_cols(axis_0, axis_1, wp.cross(axis_0, axis_1)))
+    a0, a1 = transform_2d_rotational_axes(axis_0, axis_1, q0)
 
-    # body local axes
-    local_0 = wp.quat_rotate(q_off, wp.vec3(1.0, 0.0, 0.0))
-    local_1 = wp.quat_rotate(q_off, wp.vec3(0.0, 1.0, 0.0))
-
-    axis_0 = local_0
-    q_0 = wp.quat_from_axis_angle(axis_0, q0)
-
-    axis_1 = wp.quat_rotate(q_0, local_1)
-    q_1 = wp.quat_from_axis_angle(axis_1, q1)
+    q_0 = wp.quat_from_axis_angle(a0, q0)
+    q_1 = wp.quat_from_axis_angle(a1, q1)
 
     rot = q_1 * q_0
 
-    vel = axis_0 * qd0 + axis_1 * qd1
+    vel = a0 * qd0 + a1 * qd1
 
     return rot, vel
 
@@ -107,6 +125,30 @@ def invert_2d_rotational_dofs(
 
 
 @wp.func
+def transform_3d_rotational_axes(
+    axis_0: wp.vec3,
+    axis_1: wp.vec3,
+    axis_2: wp.vec3,
+    q0: float,
+    q1: float,
+):
+    """Returns the three world-space angular axes of a 3D rotational joint at coordinates ``(q0, q1)``.
+
+    These are the per-DOF angular Jacobian columns of the intrinsic-Euler chain: ``axis_0`` and each
+    later axis transported through the rotations applied before it. Matches the axis transport in
+    :func:`compute_3d_rotational_dofs` exactly.
+    """
+    q_0 = wp.quat_from_axis_angle(axis_0, q0)
+
+    axis_1_w = wp.quat_rotate(q_0, axis_1)
+    q_1 = wp.quat_from_axis_angle(axis_1_w, q1)
+
+    axis_2_w = wp.quat_rotate(q_1 * q_0, axis_2)
+
+    return axis_0, axis_1_w, axis_2_w
+
+
+@wp.func
 def compute_3d_rotational_dofs(
     axis_0: wp.vec3,
     axis_1: wp.vec3,
@@ -120,26 +162,18 @@ def compute_3d_rotational_dofs(
 ):
     """
     Computes the rotation quaternion and 3D angular velocity given the joint axes, coordinates and velocities.
+
+    Correct for any orthogonal axis triple, including left-handed bases such as the (X, Z, Y) hip
+    convention in ``nv_humanoid.xml``.
     """
-    q_off = wp.quat_from_matrix(wp.matrix_from_cols(axis_0, axis_1, axis_2))
+    axis_0_w, axis_1_w, axis_2_w = transform_3d_rotational_axes(axis_0, axis_1, axis_2, q0, q1)
 
-    # body local axes
-    local_0 = wp.quat_rotate(q_off, wp.vec3(1.0, 0.0, 0.0))
-    local_1 = wp.quat_rotate(q_off, wp.vec3(0.0, 1.0, 0.0))
-    local_2 = wp.quat_rotate(q_off, wp.vec3(0.0, 0.0, 1.0))
-
-    # reconstruct rotation axes
-    axis_0 = local_0
-    q_0 = wp.quat_from_axis_angle(axis_0, q0)
-
-    axis_1 = wp.quat_rotate(q_0, local_1)
-    q_1 = wp.quat_from_axis_angle(axis_1, q1)
-
-    axis_2 = wp.quat_rotate(q_1 * q_0, local_2)
-    q_2 = wp.quat_from_axis_angle(axis_2, q2)
+    q_0 = wp.quat_from_axis_angle(axis_0_w, q0)
+    q_1 = wp.quat_from_axis_angle(axis_1_w, q1)
+    q_2 = wp.quat_from_axis_angle(axis_2_w, q2)
 
     rot = q_2 * q_1 * q_0
-    vel = axis_0 * qd0 + axis_1 * qd1 + axis_2 * qd2
+    vel = axis_0_w * qd0 + axis_1_w * qd1 + axis_2_w * qd2
 
     return rot, vel
 
@@ -150,41 +184,53 @@ def invert_3d_rotational_dofs(
 ):
     """
     Computes generalized joint position and velocity coordinates for a 3D rotational joint given the joint axes, relative orientations and angular velocity differences between the two bodies the joint connects.
+
+    Builds ``q_off`` from a canonical right-handed basis ``(axis_0, axis_1, cross(axis_0, axis_1))``
+    so that the XYZ Euler decomposition is always well-defined. If the user's ``axis_2`` points opposite
+    that canonical third column (left-handed triple), the third angle and velocity component are
+    negated to express the result in the user's axes — the inverse of :func:`compute_3d_rotational_dofs`.
     """
-    q_off = wp.quat_from_matrix(wp.matrix_from_cols(axis_0, axis_1, axis_2))
+    axis_2_rh = wp.cross(axis_0, axis_1)
+    s = float(1.0)
+    if wp.dot(axis_2_rh, axis_2) < 0.0:
+        s = float(-1.0)
+
+    q_off = wp.quat_from_matrix(wp.matrix_from_cols(axis_0, axis_1, axis_2_rh))
     q_pc = wp.quat_inverse(q_off) * wp.quat_inverse(q_p) * q_c * q_off
 
-    # decompose to a compound rotation each axis
+    # decompose to a compound rotation each axis in the canonical right-handed basis
     angles = quat_decompose(q_pc)
 
-    # find rotation axes
+    # find rotation axes (canonical right-handed basis)
     local_0 = wp.quat_rotate(q_off, wp.vec3(1.0, 0.0, 0.0))
     local_1 = wp.quat_rotate(q_off, wp.vec3(0.0, 1.0, 0.0))
     local_2 = wp.quat_rotate(q_off, wp.vec3(0.0, 0.0, 1.0))
 
-    axis_0 = local_0
-    q_0 = wp.quat_from_axis_angle(axis_0, angles[0])
+    a0 = local_0
+    q_0 = wp.quat_from_axis_angle(a0, angles[0])
 
-    axis_1 = wp.quat_rotate(q_0, local_1)
-    q_1 = wp.quat_from_axis_angle(axis_1, angles[1])
+    a1 = wp.quat_rotate(q_0, local_1)
+    q_1 = wp.quat_from_axis_angle(a1, angles[1])
 
-    axis_2 = wp.quat_rotate(q_1 * q_0, local_2)
+    a2 = wp.quat_rotate(q_1 * q_0, local_2)
 
     # convert angular velocity to local space
     w_err_p = wp.quat_rotate_inv(q_p, w_err)
 
-    # given joint axes and angular velocity error, solve for joint velocities
-    c12 = wp.cross(axis_1, axis_2)
-    c02 = wp.cross(axis_0, axis_2)
-    c01 = wp.cross(axis_0, axis_1)
+    # given joint axes and angular velocity error, solve for joint velocities in the canonical basis
+    c12 = wp.cross(a1, a2)
+    c02 = wp.cross(a0, a2)
+    c01 = wp.cross(a0, a1)
 
     velocities = wp.vec3(
-        wp.dot(w_err_p, c12) / wp.dot(axis_0, c12),
-        wp.dot(w_err_p, c02) / wp.dot(axis_1, c02),
-        wp.dot(w_err_p, c01) / wp.dot(axis_2, c01),
+        wp.dot(w_err_p, c12) / wp.dot(a0, c12),
+        wp.dot(w_err_p, c02) / wp.dot(a1, c02),
+        wp.dot(w_err_p, c01) / wp.dot(a2, c01),
     )
 
-    return angles, velocities
+    # Map canonical-basis result back to the user's axes: rotation/velocity around axis_2 equals
+    # ``s`` times the same quantity around axis_2_rh (s = -1 iff the user's triple is left-handed).
+    return wp.vec3(angles[0], angles[1], s * angles[2]), wp.vec3(velocities[0], velocities[1], s * velocities[2])
 
 
 @wp.func
@@ -220,6 +266,9 @@ def eval_single_articulation_fk(
 
         # compute transform across the joint
         type = joint_type[i]
+        if type == JointType.CABLE:
+            # CABLE joints are skipped by generic forward kinematics.
+            continue
 
         X_pj = joint_X_p[i]
         X_cj = joint_X_c[i]
@@ -377,6 +426,7 @@ def eval_single_articulation_fk(
 @wp.kernel
 def eval_articulation_fk(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     articulation_count: int,  # total number of articulations
     articulation_mask: wp.array[
         bool
@@ -421,7 +471,7 @@ def eval_articulation_fk(
             return
 
     joint_start = articulation_start[articulation_id]
-    joint_end = articulation_start[articulation_id + 1]
+    joint_end = articulation_end[articulation_id]
 
     eval_single_articulation_fk(
         joint_start,
@@ -462,6 +512,12 @@ def eval_fk(
     The written :attr:`State.body_qd` values use Newton's public body-twist
     convention ``(v_com_world, omega_world)``.
 
+    .. note::
+
+        :attr:`~newton.JointType.CABLE` body transforms are not changed by
+        :func:`newton.eval_fk`; they are advanced directly by
+        :class:`newton.solvers.SolverVBD`.
+
     Args:
         model: The model to evaluate.
         joint_q: Generalized joint position coordinates, shape [joint_coord_count], float
@@ -489,6 +545,7 @@ def eval_fk(
         dim=num_articulations,
         inputs=[
             model.articulation_start,
+            model.articulation_end,
             model.articulation_count,
             mask,
             indices,
@@ -583,6 +640,7 @@ def reconstruct_angular_q_qd(q_pc: wp.quat, w_err: wp.vec3, X_wp: wp.transform, 
 @wp.kernel
 def eval_articulation_ik(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     articulation_count: int,  # total number of articulations
     articulation_mask: wp.array[bool],  # can be None, mask to filter articulations
     articulation_indices: wp.array[int],  # can be None, articulation indices to process
@@ -622,7 +680,7 @@ def eval_articulation_ik(
 
     # Get joint range for this articulation
     joint_start = articulation_start[articulation_id]
-    joint_end = articulation_start[articulation_id + 1]
+    joint_end = articulation_end[articulation_id]
 
     # Check if this thread has a valid joint to process
     joint_idx = joint_start + joint_offset
@@ -850,6 +908,7 @@ def eval_ik(
         dim=(num_articulations, model.max_joints_per_articulation),
         inputs=[
             model.articulation_start,
+            model.articulation_end,
             model.articulation_count,
             mask,
             indices,
@@ -877,11 +936,13 @@ def eval_ik(
 def jcalc_motion_subspace(
     type: int,
     joint_axis: wp.array[wp.vec3],
+    joint_q: wp.array[float],
     lin_axis_count: int,
     ang_axis_count: int,
     X_sc: wp.transform,
     X_wc: wp.transform,
     body_com_child: wp.vec3,
+    q_start: int,
     qd_start: int,
     # outputs
     joint_S_s: wp.array[wp.spatial_vector],
@@ -892,6 +953,12 @@ def jcalc_motion_subspace(
     which represent how each joint coordinate affects the spatial velocity.
 
     Note:
+        For D6 joints with two or three angular DOFs the angular axes are
+        transported through the rotations of the preceding angular DOFs, matching
+        :func:`compute_2d_rotational_dofs` / :func:`compute_3d_rotational_dofs` in
+        FK so that ``J @ joint_qd`` agrees with ``state.body_qd`` at non-identity
+        configurations.
+
         CABLE joints are not currently supported. CABLE joints have complex,
         configuration-dependent motion subspaces (dynamic stretch direction and
         isotropic angular DOF) and are primarily designed for VBD solver.
@@ -920,18 +987,26 @@ def jcalc_motion_subspace(
             axis = joint_axis[qd_start + 2]
             S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 2] = S_s
-        if ang_axis_count > 0:
-            axis = joint_axis[qd_start + lin_axis_count + 0]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
-            joint_S_s[qd_start + lin_axis_count + 0] = S_s
-        if ang_axis_count > 1:
-            axis = joint_axis[qd_start + lin_axis_count + 1]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
-            joint_S_s[qd_start + lin_axis_count + 1] = S_s
-        if ang_axis_count > 2:
-            axis = joint_axis[qd_start + lin_axis_count + 2]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
-            joint_S_s[qd_start + lin_axis_count + 2] = S_s
+        iqd = qd_start + lin_axis_count
+        iq = q_start + lin_axis_count
+        if ang_axis_count == 1:
+            axis = joint_axis[iqd]
+            joint_S_s[iqd] = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+        if ang_axis_count == 2:
+            a0, a1 = transform_2d_rotational_axes(joint_axis[iqd + 0], joint_axis[iqd + 1], joint_q[iq + 0])
+            joint_S_s[iqd + 0] = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a0))
+            joint_S_s[iqd + 1] = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a1))
+        if ang_axis_count == 3:
+            a0, a1, a2 = transform_3d_rotational_axes(
+                joint_axis[iqd + 0],
+                joint_axis[iqd + 1],
+                joint_axis[iqd + 2],
+                joint_q[iq + 0],
+                joint_q[iq + 1],
+            )
+            joint_S_s[iqd + 0] = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a0))
+            joint_S_s[iqd + 1] = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a1))
+            joint_S_s[iqd + 2] = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a2))
 
     elif type == JointType.BALL:
         S_0 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
@@ -958,15 +1033,18 @@ def jcalc_motion_subspace(
 @wp.kernel
 def eval_articulation_jacobian(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     articulation_count: int,
     articulation_mask: wp.array[bool],
     joint_type: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
     joint_ancestor: wp.array[int],
+    joint_q_start: wp.array[int],
     joint_qd_start: wp.array[int],
     joint_X_p: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
+    joint_q: wp.array[float],
     joint_dof_dim: wp.array2d[int],
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
@@ -989,7 +1067,7 @@ def eval_articulation_jacobian(
             return
 
     joint_start = articulation_start[art_idx]
-    joint_end = articulation_start[art_idx + 1]
+    joint_end = articulation_end[art_idx]
     joint_count = joint_end - joint_start
 
     articulation_dof_start = joint_qd_start[joint_start]
@@ -1008,6 +1086,7 @@ def eval_articulation_jacobian(
             X_wp = body_q[parent]
             X_wpj = X_wp * X_pj
 
+        q_start = joint_q_start[j]
         qd_start = joint_qd_start[j]
         lin_axis_count = joint_dof_dim[j, 0]
         ang_axis_count = joint_dof_dim[j, 1]
@@ -1015,11 +1094,13 @@ def eval_articulation_jacobian(
         jcalc_motion_subspace(
             type,
             joint_axis,
+            joint_q,
             lin_axis_count,
             ang_axis_count,
             X_wpj,
             body_q[joint_child[j]],
             body_com[joint_child[j]],
+            q_start,
             qd_start,
             joint_S_s,
         )
@@ -1105,15 +1186,18 @@ def eval_jacobian(
         dim=model.articulation_count,
         inputs=[
             model.articulation_start,
+            model.articulation_end,
             model.articulation_count,
             mask,
             model.joint_type,
             model.joint_parent,
             model.joint_child,
             model.joint_ancestor,
+            model.joint_q_start,
             model.joint_qd_start,
             model.joint_X_p,
             model.joint_axis,
+            state.joint_q,
             model.joint_dof_dim,
             state.body_q,
             model.body_com,
@@ -1195,6 +1279,7 @@ def compute_body_spatial_inertia(
 @wp.kernel
 def eval_articulation_mass_matrix(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     articulation_count: int,
     articulation_mask: wp.array[bool],
     joint_child: wp.array[int],
@@ -1219,7 +1304,7 @@ def eval_articulation_mass_matrix(
             return
 
     joint_start = articulation_start[art_idx]
-    joint_end = articulation_start[art_idx + 1]
+    joint_end = articulation_end[art_idx]
     joint_count = joint_end - joint_start
 
     articulation_dof_start = joint_qd_start[joint_start]
@@ -1441,6 +1526,7 @@ def eval_mass_matrix(
         dim=model.articulation_count,
         inputs=[
             model.articulation_start,
+            model.articulation_end,
             model.articulation_count,
             mask,
             model.joint_child,

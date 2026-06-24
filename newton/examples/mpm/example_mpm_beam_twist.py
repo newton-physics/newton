@@ -117,7 +117,7 @@ class Example:
         if hasattr(self.viewer, "set_camera"):
             self.viewer.set_camera(pos=wp.vec3(2.5, -5.0, 2.5), pitch=-15.0, yaw=90.0)
 
-        if isinstance(self.viewer, newton.viewer.ViewerGL):
+        if hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(self.render_ui, position="side")
 
         self.show_stress = True

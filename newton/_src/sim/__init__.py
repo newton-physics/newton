@@ -11,6 +11,8 @@ from .enums import (
     EqType,
     JointTargetMode,
     JointType,
+    ModelFlags,
+    StateFlags,
 )
 from .inverse_dynamics import InverseDynamics, InverseDynamicsScratchBuffer, eval_inverse_dynamics
 from .model import Model
@@ -28,7 +30,9 @@ __all__ = [
     "JointType",
     "Model",
     "ModelBuilder",
+    "ModelFlags",
     "State",
+    "StateFlags",
     "eval_fk",
     "eval_ik",
     "eval_inverse_dynamics",

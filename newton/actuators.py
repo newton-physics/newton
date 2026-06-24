@@ -8,6 +8,11 @@ clamping, and delay — that compute joint effort from simulation state and
 control targets. Components are composed into an :class:`Actuator` instance
 and registered with :meth:`~newton.ModelBuilder.add_actuator` during model
 construction.
+
+.. experimental::
+
+    The actuator API may change without prior notice. Feedback is welcome —
+    please file issues or discussion threads.
 """
 
 from ._src.actuators import (
@@ -24,6 +29,7 @@ from ._src.actuators import (
     ControllerPD,
     ControllerPID,
     Delay,
+    SchemaNames,
     parse_actuator_prim,
     register_actuator_component,
 )
@@ -42,6 +48,7 @@ __all__ = [
     "ControllerPD",
     "ControllerPID",
     "Delay",
+    "SchemaNames",
     "parse_actuator_prim",
     "register_actuator_component",
 ]

@@ -368,7 +368,7 @@ class IterativeSolver(LinearSolver):
 
         with wp.ScopedDevice(self._device):
             if self._world_active is None:
-                self._world_active = wp.full(self._num_worlds, 1, dtype=wp.int32)
+                self._world_active = wp.full(self._num_worlds, True, dtype=wp.bool)
             elif not isinstance(self._world_active, wp.array):
                 raise ValueError("The provided world_active is not a valid wp.array!")
             if self._maxiter is None:
