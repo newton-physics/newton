@@ -140,7 +140,10 @@ By default, sites are loaded along with collision and visual shapes. You can con
 USD Import
 ~~~~~~~~~~
 
-Sites in USD are identified by the ``MjcSiteAPI`` schema applied to geometric primitives:
+Sites in USD are identified by either the ``NewtonSiteAPI`` or the ``MjcSiteAPI``
+schema applied to geometric primitives. Both schemas are recognized equivalently
+by the importer; ``NewtonSiteAPI`` is preferred for new content,
+while ``MjcSiteAPI`` continues to be supported for MuJoCo-derived assets.
 
 .. code-block:: usda
 
@@ -148,7 +151,7 @@ Sites in USD are identified by the ``MjcSiteAPI`` schema applied to geometric pr
        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
    ) {
        def Sphere "imu_site" (
-           prepend apiSchemas = ["MjcSiteAPI"]
+           prepend apiSchemas = ["NewtonSiteAPI"]
        ) {
            double radius = 0.02
            double3 xformOp:translate = (0.1, 0, 0)

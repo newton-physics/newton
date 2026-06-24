@@ -19,8 +19,10 @@ Moreover, world-based grouping can also facilitate partitioning of thread grids 
 Such operations facilitate support for simulating multiple, and potentially heterogeneous, worlds defined within a :class:`~newton.Model` instance.
 Lastly, world-based grouping also enables selectively operating on only the entities that belong to a specific world, i.e. masking, as well as partitioning of the :class:`~newton.Model` and :class:`~newton.State` data.
 
-.. note::
-   Support for fully heterogeneous simulations is still under active development and quite experimental.
+.. experimental::
+
+   Support for fully heterogeneous simulations is still under active development
+   and may change without prior notice.
    At present time, although the :class:`~newton.ModelBuilder` and :class:`~newton.Model` objects support instantiating worlds with different disparate entities, not all solvers are able to simulate them.
    Moreover, the selection API still operates under the assumption of model homogeneity, but this is expected to also support heterogeneous simulations in the near future.
 
@@ -94,7 +96,6 @@ Specifically, the entity types that currently support world grouping include:
 - Shapes: :attr:`~newton.Model.shape_world`
 - Joints: :attr:`~newton.Model.joint_world`
 - Articulations: :attr:`~newton.Model.articulation_world`
-- Equality Constraints: :attr:`~newton.Model.equality_constraint_world`
 
 The corresponding world grouping arrays for the example above are:
 
@@ -125,7 +126,6 @@ These arrays include:
 - Shapes: :attr:`~newton.Model.shape_world_start`
 - Joints: :attr:`~newton.Model.joint_world_start`
 - Articulations: :attr:`~newton.Model.articulation_world_start`
-- Equality Constraints: :attr:`~newton.Model.equality_constraint_world_start`
 
 To handle the special case of joint entities, that vary in the number of DOFs, coordinates and constraints, the model also provides arrays that store the per-world starting indices in these specific dimensions:
 

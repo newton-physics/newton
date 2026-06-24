@@ -76,6 +76,9 @@ Pre-release planning
          maintainer approval.
        - Verify deprecated symbols carry proper deprecation warnings and
          migration guidance (see :ref:`deprecation-policy`).
+       - Verify experimental public API is explicitly marked with
+         ``.. experimental::`` in API or concept documentation, following the
+         :ref:`developer guidance <experimental-features>`.
        - Confirm new public API has complete docstrings and is included in
          Sphinx docs (run ``uv run docs/generate_api.py``).
 
@@ -150,7 +153,7 @@ Testing criteria
 
 The release engineer and maintainers decide which issues must be fixed
 before GA and which can ship as known issues documented in the release
-materials.  Features explicitly marked **experimental** have a lower bar —
+materials.  Features marked experimental have a lower bar —
 regressions in experimental APIs do not necessarily block a release.
 
 As a guideline, an RC is typically ready for GA when:

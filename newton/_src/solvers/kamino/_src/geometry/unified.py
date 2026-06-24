@@ -30,7 +30,19 @@ from ..core.data import DataKamino
 from ..core.materials import DEFAULT_FRICTION, DEFAULT_RESTITUTION, make_get_material_pair_properties
 from ..core.model import ModelKamino
 from ..core.state import StateKamino
-from ..core.types import float32, int32, quatf, transformf, uint32, uint64, vec2f, vec2i, vec3f, vec4f
+from ..core.types import (
+    float32,
+    int32,
+    quatf,
+    to_warp_int32_array,
+    transformf,
+    uint32,
+    uint64,
+    vec2f,
+    vec2i,
+    vec3f,
+    vec4f,
+)
 from ..geometry.contacts import (
     DEFAULT_GEOM_PAIR_CONTACT_GAP,
     DEFAULT_GEOM_PAIR_MAX_CONTACTS,
@@ -66,6 +78,7 @@ class ContactWriterDataKamino:
     geom_bid: wp.array[int32]  # Body ID for each geometry
     geom_mid: wp.array[int32]  # Material ID for each geometry
     geom_gap: wp.array[float32]  # Detection gap for each geometry [m]
+    geom_margin: wp.array[float32]  # Shape margin for each geometry [m]
 
     # Material properties (indexed by material pair)
     material_restitution: wp.array[float32]
@@ -91,6 +104,7 @@ class ContactWriterDataKamino:
     contact_gapfunc: wp.array[vec4f]
     contact_frame: wp.array[quatf]
     contact_material: wp.array[vec2f]
+    contact_margins: wp.array[vec2f]
     contact_key: wp.array[uint64]
 
 
@@ -100,7 +114,7 @@ class ContactWriterDataKamino:
 
 
 @wp.func
-def write_contact_unified_kamino(
+def _write_contact_unified_kamino(
     contact_data: ContactData,
     writer_data: ContactWriterDataKamino,
     output_index: int,
@@ -131,7 +145,12 @@ def write_contact_unified_kamino(
     b_contact_world = contact_data.contact_point_center + contact_normal_a_to_b * half_d
 
     # Margin-shifted signed distance (negative = penetrating beyond margin)
-    d = contact_data.contact_distance - (contact_data.margin_a + contact_data.margin_b)
+    distance = contact_data.contact_distance - (contact_data.margin_a + contact_data.margin_b)
+
+    # Ensure unassigned/unchecked contacts are filtered out by the gap check
+    if output_index < 0:
+        if distance > contact_data.gap_sum:
+            return
 
     # Determine world ID — global shapes (wid=-1) can collide with any world,
     # so fall back to the other shape's world when one is global.
@@ -142,32 +161,30 @@ def write_contact_unified_kamino(
         wid = wid_b
     world_max_contacts = writer_data.world_max_contacts[wid]
 
-    if output_index < 0:
-        # Use per-shape detection gap (additive, matching Newton core)
-        gap_a = writer_data.geom_gap[contact_data.shape_a]
-        gap_b = writer_data.geom_gap[contact_data.shape_b]
-        contact_gap = gap_a + gap_b
-        if d > contact_gap:
-            return
-
     # Always allocate from the model-level counter so the active count
     # stays accurate regardless of whether the narrowphase pre-allocated
     # an output_index (primitive kernel) or left it to the writer (-1).
-    mcid = wp.atomic_add(writer_data.contacts_model_num_active, 0, 1)
-    if mcid >= writer_data.model_max_contacts:
-        wp.atomic_sub(writer_data.contacts_model_num_active, 0, 1)
-        return
-
-    # Atomically increment the world-specific contact counter and
-    # roll-back the atomic add if the respective limit is exceeded
     wcid = wp.atomic_add(writer_data.contacts_world_num_active, wid, 1)
-    if wcid >= world_max_contacts:
+    if wcid >= world_max_contacts:  # Roll back and exit if world counter exceeds max
         wp.atomic_sub(writer_data.contacts_world_num_active, wid, 1)
         return
+    mcid = wp.atomic_add(writer_data.contacts_model_num_active, 0, 1)
+    if mcid >= writer_data.model_max_contacts:  # Roll back and exit if model counter exceeds max
+        wp.atomic_sub(writer_data.contacts_model_num_active, 0, 1)
+        wp.atomic_sub(writer_data.contacts_world_num_active, wid, 1)
+        return
+    # Note: the world counter must be incremented first to ensure that once
+    # a thread increments the global counter, it won't decrease it again after
+    # because its world is saturated (leading to potential non-unique
+    # mcid in other threads working on other worlds)
+    # The decrease to the world counter if the model is saturated is not
+    # problematic because the model is saturated for all threads in all worlds anyway.
 
     # Retrieve the geom/body/material indices
     gid_a = contact_data.shape_a
     gid_b = contact_data.shape_b
+    margin_a = contact_data.margin_a
+    margin_b = contact_data.margin_b
     bid_a = writer_data.geom_bid[contact_data.shape_a]
     bid_b = writer_data.geom_bid[contact_data.shape_b]
     mid_a = writer_data.geom_mid[contact_data.shape_a]
@@ -181,12 +198,14 @@ def write_contact_unified_kamino(
         normal = -contact_normal_a_to_b
         pos_A = b_contact_world
         pos_B = a_contact_world
+        margins = vec2f(margin_b, margin_a)
     else:
         gid_AB = vec2i(gid_a, gid_b)
         bid_AB = vec2i(bid_a, bid_b)
         normal = contact_normal_a_to_b
         pos_A = a_contact_world
         pos_B = b_contact_world
+        margins = vec2f(margin_a, margin_b)
 
     # Retrieve the material properties for the geom pair
     restitution_ab, _, mu_ab = wp.static(make_get_material_pair_properties())(
@@ -203,7 +222,7 @@ def write_contact_unified_kamino(
 
     # Generate the gap-function (normal.x, normal.y, normal.z, distance),
     # contact frame (z-norm aligned with contact normal)
-    gapfunc = vec4f(normal[0], normal[1], normal[2], d)
+    gapfunc = vec4f(normal[0], normal[1], normal[2], distance)
     q_frame = wp.quat_from_matrix(make_contact_frame_znorm(normal))
     key = build_pair_key2(uint32(gid_AB[0]), uint32(gid_AB[1]))
 
@@ -217,6 +236,7 @@ def write_contact_unified_kamino(
     writer_data.contact_gapfunc[mcid] = gapfunc
     writer_data.contact_frame[mcid] = q_frame
     writer_data.contact_material[mcid] = material
+    writer_data.contact_margins[mcid] = margins
     writer_data.contact_key[mcid] = key
 
 
@@ -496,7 +516,7 @@ class CollisionPipelineUnifiedKamino:
         # the Kamino model and data do not yet provide
         with wp.ScopedDevice(self._device):
             self.geom_data = wp.zeros(self._num_geoms, dtype=vec4f)
-            self.geom_collision_group = wp.array(geom_collision_group_list, dtype=int32)
+            self.geom_collision_group = to_warp_int32_array(geom_collision_group_list)
             self.collision_radius = wp.zeros(self._num_geoms, dtype=float32)
             self.shape_flags = wp.full(self._num_geoms, default_shape_flag, dtype=int32)
             self.shape_aabb_lower = wp.zeros(self._num_geoms, dtype=wp.vec3)
@@ -543,7 +563,7 @@ class CollisionPipelineUnifiedKamino:
             device=self._device,
             shape_aabb_lower=self.shape_aabb_lower,
             shape_aabb_upper=self.shape_aabb_upper,
-            contact_writer_warp_func=write_contact_unified_kamino,
+            contact_writer_warp_func=_write_contact_unified_kamino,
             has_meshes=_has_meshes,
             has_heightfields=_has_heightfields,
         )
@@ -752,6 +772,7 @@ class CollisionPipelineUnifiedKamino:
         writer_data.geom_wid = self._model.geoms.wid
         writer_data.geom_mid = self._model.geoms.material
         writer_data.geom_gap = self._model.geoms.gap
+        writer_data.geom_margin = self._model.geoms.margin
         writer_data.material_restitution = self._model.materials.restitution
         writer_data.material_static_friction = self._model.materials.static_friction
         writer_data.material_dynamic_friction = self._model.materials.dynamic_friction
@@ -771,6 +792,7 @@ class CollisionPipelineUnifiedKamino:
         writer_data.contact_gapfunc = contacts.gapfunc
         writer_data.contact_frame = contacts.frame
         writer_data.contact_material = contacts.material
+        writer_data.contact_margins = contacts.margins
         writer_data.contact_key = contacts.key
 
         # Run narrow phase with the custom Kamino contact writer

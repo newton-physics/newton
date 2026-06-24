@@ -5,8 +5,7 @@ from __future__ import annotations
 
 import logging
 import warnings
-from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import warp as wp
@@ -18,16 +17,37 @@ from ..utils.selection import match_labels
 
 _logger = logging.getLogger(__name__)
 
-# Object type constants used in the sensing-object transform kernel.
-_OBJ_TYPE_TOTAL = 0
-_OBJ_TYPE_SHAPE = 1
-_OBJ_TYPE_BODY = 2
+_UNSET = object()
+
+_SENSING_KIND_SHAPE = 1
+_SENSING_KIND_BODY = 2
+
+_SENSING_OBJ_IDX_DEPRECATION_MSG = (
+    "SensorContact.sensing_obj_idx is deprecated; use SensorContact.sensing_indices. "
+    "The alias will be removed in a future release."
+)
+_SENSING_OBJ_TYPE_DEPRECATION_MSG = (
+    "SensorContact.sensing_obj_type is deprecated; use SensorContact.sensing_type. "
+    "The alias will be removed in a future release."
+)
+_SENSING_OBJ_TRANSFORMS_DEPRECATION_MSG = (
+    "SensorContact.sensing_obj_transforms is deprecated; use SensorContact.sensing_transforms. "
+    "The alias will be removed in a future release."
+)
+_SENSING_OBJ_BODIES_DEPRECATION_MSG = (
+    "SensorContact(..., sensing_obj_bodies=...) is deprecated; use sensing_bodies=... instead. "
+    "The alias will be removed in a future release."
+)
+_SENSING_OBJ_SHAPES_DEPRECATION_MSG = (
+    "SensorContact(..., sensing_obj_shapes=...) is deprecated; use sensing_shapes=... instead. "
+    "The alias will be removed in a future release."
+)
 
 
 @wp.kernel(enable_backward=False)
-def compute_sensing_obj_transforms_kernel(
+def compute_sensing_transforms_kernel(
     indices: wp.array[wp.int32],
-    obj_types: wp.array[wp.int32],
+    sensing_kinds: wp.array[wp.int32],
     shape_body: wp.array[wp.int32],
     shape_transform: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
@@ -35,16 +55,16 @@ def compute_sensing_obj_transforms_kernel(
     transforms: wp.array[wp.transform],
 ):
     tid = wp.tid()
-    idx = indices[tid]
-    obj_type = obj_types[tid]
-    if obj_type == wp.static(_OBJ_TYPE_BODY):
-        transforms[tid] = body_q[idx]
-    elif obj_type == wp.static(_OBJ_TYPE_SHAPE):
-        body_idx = shape_body[idx]
-        if body_idx >= 0:
-            transforms[tid] = wp.transform_multiply(body_q[body_idx], shape_transform[idx])
+    index = indices[tid]
+    sensing_kind = sensing_kinds[tid]
+    if sensing_kind == wp.static(_SENSING_KIND_BODY):
+        transforms[tid] = body_q[index]
+    elif sensing_kind == wp.static(_SENSING_KIND_SHAPE):
+        body_index = shape_body[index]
+        if body_index >= 0:
+            transforms[tid] = wp.transform_multiply(body_q[body_index], shape_transform[index])
         else:
-            transforms[tid] = shape_transform[idx]
+            transforms[tid] = shape_transform[index]
 
 
 @wp.kernel(enable_backward=False)
@@ -63,17 +83,17 @@ def accumulate_contact_forces_kernel(
     total_force_friction: wp.array[wp.vec3],
 ):
     """Accumulate per-contact forces and friction into total and/or per-counterpart arrays. Parallelizes over contacts."""
-    con_idx = wp.tid()
-    if con_idx >= num_contacts[0]:
+    contact_index = wp.tid()
+    if contact_index >= num_contacts[0]:
         return
 
-    shape0 = contact_shape0[con_idx]
-    shape1 = contact_shape1[con_idx]
+    shape0 = contact_shape0[contact_index]
+    shape1 = contact_shape1[contact_index]
     assert shape0 >= 0 and shape1 >= 0
-    force = wp.spatial_top(contact_force[con_idx])
+    force = wp.spatial_top(contact_force[contact_index])
 
     # Decompose into normal and friction (tangential) components
-    n = contact_normal[con_idx]
+    n = contact_normal[contact_index]
     len_sq = wp.dot(n, n)
     if wp.abs(len_sq - 1.0) > 1.0e-4:
         n = wp.normalize(n)
@@ -133,9 +153,9 @@ def expand_body_to_shape_kernel(
 
 def _check_index_bounds(indices: list[int], count: int, param_name: str, entity_name: str) -> None:
     """Raise IndexError if any index is out of range [0, count)."""
-    for idx in indices:
-        if idx < 0 or idx >= count:
-            raise IndexError(f"{param_name} contains index {idx}, but model only has {count} {entity_name}")
+    for index in indices:
+        if index < 0 or index >= count:
+            raise IndexError(f"{param_name} contains index {index}, but model only has {count} {entity_name}")
 
 
 def _split_globals(indices: list[int], local_start: int, tail_global_start: int):
@@ -191,8 +211,8 @@ def _assign_counterpart_columns(
     """
     col_map = np.full(n_entities, -1, dtype=np.int32)
 
-    for col, idx in enumerate(c_globals):
-        col_map[idx] = col
+    for col, index in enumerate(c_globals):
+        col_map[index] = col
     n_global_cols = len(c_globals)
 
     counterparts_by_world: list[list[int]] = []
@@ -234,9 +254,9 @@ class SensorContact:
 
     When counterparts are specified, the force matrix has shape ``(sum_of_sensors_across_worlds, max_counterparts)``
     where ``max_counterparts`` is the maximum counterpart count of any single world. Row order matches
-    :attr:`sensing_obj_idx`. Columns beyond a world's own counterpart count are zero-padded.
+    :attr:`sensing_indices`. Columns beyond a world's own counterpart count are zero-padded.
 
-    :attr:`sensing_obj_idx` and :attr:`counterpart_indices` are flat lists that describe the structure of the output
+    :attr:`sensing_indices` and :attr:`counterpart_indices` are flat lists that describe the structure of the output
     arrays.
 
     .. rubric:: Terms
@@ -270,7 +290,7 @@ class SensorContact:
             builder.add_shape_sphere(body, radius=0.1, label="ball")
             model = builder.finalize()
 
-            sensor = SensorContact(model, sensing_obj_shapes="ball")
+            sensor = SensorContact(model, sensing_shapes="ball")
             solver = newton.solvers.SolverMuJoCo(model)
             state = model.state()
             contacts = model.contacts()
@@ -278,86 +298,119 @@ class SensorContact:
             solver.step(state, state, None, None, dt=1.0 / 60.0)
             solver.update_contacts(contacts)
             sensor.update(state, contacts)
-            force = sensor.total_force.numpy()  # (n_sensing_objs, 3)
+            force = sensor.total_force.numpy()  # (n_sensing, 3)
 
     Raises:
         ValueError: If the configuration of sensing/counterpart objects is invalid.
     """
 
-    class ObjectType(Enum):
-        """Deprecated. Type tag for entries in legacy :attr:`~newton.sensors.SensorContact.sensing_objs` and :attr:`~newton.sensors.SensorContact.counterparts` properties."""
-
-        TOTAL = _OBJ_TYPE_TOTAL
-        """Total force entry."""
-
-        SHAPE = _OBJ_TYPE_SHAPE
-        """Individual shape."""
-
-        BODY = _OBJ_TYPE_BODY
-        """Individual body."""
-
-    sensing_obj_type: Literal["body", "shape"]
-    """Whether :attr:`sensing_obj_idx` contains body indices (``"body"``) or shape indices (``"shape"``)."""
-
-    sensing_obj_idx: list[int]
+    sensing_indices: list[int]
     """Body or shape index per sensing object, matching the row of output arrays. For ``list[int]`` inputs the caller's
     order is preserved; for string patterns the order follows ascending body/shape index."""
+
+    sensing_type: Literal["body", "shape"]
+    """Whether :attr:`sensing_indices` contains body indices (``"body"``) or shape indices (``"shape"``)."""
+
+    counterpart_indices: list[list[int]]
+    """Counterpart body or shape indices per sensing object. ``counterpart_indices[i]`` lists the counterparts for row
+    ``i``. Global counterparts appear first, followed by per-world locals in ascending index order."""
 
     counterpart_type: Literal["body", "shape"] | None
     """Whether :attr:`counterpart_indices` contains body indices (``"body"``) or shape indices (``"shape"``).
     ``None`` when no counterparts are specified."""
 
-    counterpart_indices: list[list[int]]
-    """Counterpart body or shape indices per sensing object. ``counterpart_indices[i]`` lists the counterparts for row ``i``. Global counterparts appear first, followed by per-world locals in ascending index order."""
-
     total_force: wp.array[wp.vec3] | None
-    """Total contact force [N] per sensing object, shape ``(n_sensing_objs,)``, dtype :class:`vec3`.
+    """Total contact force [N] per sensing object, shape ``(n_sensing,)``, dtype :class:`vec3`.
     ``None`` when ``measure_total=False``."""
 
     force_matrix: wp.array2d[wp.vec3] | None
-    """Per-counterpart contact forces [N], shape ``(n_sensing_objs, max_counterparts)``, dtype :class:`vec3`.
+    """Per-counterpart contact forces [N], shape ``(n_sensing, max_counterparts)``, dtype :class:`vec3`.
     Entry ``[i, j]`` is the force on sensing object ``i`` from counterpart ``counterpart_indices[i][j]``, in world
     frame. ``None`` when no counterparts are specified."""
 
     total_force_friction: wp.array[wp.vec3] | None
-    """Total friction (tangential) contact force [N] per sensing object, shape ``(n_sensing_objs,)``,
+    """Total friction (tangential) contact force [N] per sensing object, shape ``(n_sensing,)``,
     dtype :class:`vec3`. ``None`` when ``measure_total=False``."""
 
     force_matrix_friction: wp.array2d[wp.vec3] | None
-    """Per-counterpart friction (tangential) contact forces [N], shape ``(n_sensing_objs, max_counterparts)``,
+    """Per-counterpart friction (tangential) contact forces [N], shape ``(n_sensing, max_counterparts)``,
     dtype :class:`vec3`. Entry ``[i, j]`` is the friction force on sensing object ``i`` from counterpart
     ``counterpart_indices[i][j]``, in world frame. ``None`` when no counterparts are specified."""
 
-    sensing_obj_transforms: wp.array[wp.transform]
+    sensing_transforms: wp.array[wp.transform]
     """World-frame transforms of sensing objects [m, unitless quaternion],
-    shape ``(n_sensing_objs,)``, dtype :class:`transform`."""
+    shape ``(n_sensing,)``, dtype :class:`transform`."""
+
+    @property
+    def sensing_obj_idx(self) -> list[int]:
+        """Deprecated alias for :attr:`sensing_indices`.
+
+        .. deprecated:: 1.4
+            Use :attr:`sensing_indices` instead.
+        """
+        warnings.warn(_SENSING_OBJ_IDX_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self.sensing_indices
+
+    @sensing_obj_idx.setter
+    def sensing_obj_idx(self, value: list[int]) -> None:
+        warnings.warn(_SENSING_OBJ_IDX_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        self.sensing_indices = value
+
+    @property
+    def sensing_obj_type(self) -> Literal["body", "shape"]:
+        """Deprecated alias for :attr:`sensing_type`.
+
+        .. deprecated:: 1.4
+            Use :attr:`sensing_type` instead.
+        """
+        warnings.warn(_SENSING_OBJ_TYPE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self.sensing_type
+
+    @sensing_obj_type.setter
+    def sensing_obj_type(self, value: Literal["body", "shape"]) -> None:
+        warnings.warn(_SENSING_OBJ_TYPE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        self.sensing_type = value
+
+    @property
+    def sensing_obj_transforms(self) -> wp.array[wp.transform]:
+        """Deprecated alias for :attr:`sensing_transforms`.
+
+        .. deprecated:: 1.4
+            Use :attr:`sensing_transforms` instead.
+        """
+        warnings.warn(_SENSING_OBJ_TRANSFORMS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self.sensing_transforms
+
+    @sensing_obj_transforms.setter
+    def sensing_obj_transforms(self, value: wp.array[wp.transform]) -> None:
+        warnings.warn(_SENSING_OBJ_TRANSFORMS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        self.sensing_transforms = value
 
     def __init__(
         self,
         model: Model,
         *,
-        sensing_obj_bodies: str | list[str] | list[int] | None = None,
-        sensing_obj_shapes: str | list[str] | list[int] | None = None,
+        sensing_bodies: str | list[str] | list[int] | None = None,
+        sensing_shapes: str | list[str] | list[int] | None = None,
         counterpart_bodies: str | list[str] | list[int] | None = None,
         counterpart_shapes: str | list[str] | list[int] | None = None,
         measure_total: bool = True,
         verbose: bool | None = None,
         request_contact_attributes: bool = True,
-        # deprecated
-        include_total: bool | None = None,
+        **kwargs: Any,
     ):
         """Initialize the SensorContact.
 
-        Exactly one of ``sensing_obj_bodies`` or ``sensing_obj_shapes`` must be specified to define the sensing
-        objects. At most one of ``counterpart_bodies`` or ``counterpart_shapes`` may be specified. If neither is
-        specified, only :attr:`total_force` and :attr:`total_force_friction` are available (no per-counterpart breakdown).
+        Exactly one of ``sensing_bodies`` or ``sensing_shapes`` must be specified to define the sensing objects. At most
+        one of ``counterpart_bodies`` or ``counterpart_shapes`` may be specified. If neither is specified, only
+        :attr:`total_force` and :attr:`total_force_friction` are available (no per-counterpart breakdown).
 
         Args:
             model: The simulation model providing shape/body definitions and world layout.
-            sensing_obj_bodies: List of body indices, single pattern to match
-                against body labels, or list of patterns where any one matches.
-            sensing_obj_shapes: List of shape indices, single pattern to match
-                against shape labels, or list of patterns where any one matches.
+            sensing_bodies: List of body indices, single pattern to match against body labels, or list of patterns where
+                any one matches.
+            sensing_shapes: List of shape indices, single pattern to match against shape labels, or list of patterns
+                where any one matches.
             counterpart_bodies: List of body indices, single pattern to match
                 against body labels, or list of patterns where any one matches.
             counterpart_shapes: List of shape indices, single pattern to match
@@ -368,18 +421,29 @@ class SensorContact:
                 ``wp.config.log_level`` is configured for debug logging.
             request_contact_attributes: If True (default), transparently request the extended contact attribute
                 ``force`` from the model.
-            include_total: Deprecated. Use ``measure_total`` instead.
         """
-        if include_total is not None:
-            warnings.warn(
-                "SensorContact: 'include_total' is deprecated, use 'measure_total' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            measure_total = include_total
+        deprecated_sensing_bodies = kwargs.pop("sensing_obj_bodies", _UNSET)
+        if deprecated_sensing_bodies is not _UNSET:
+            warnings.warn(_SENSING_OBJ_BODIES_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            if sensing_bodies is not None and deprecated_sensing_bodies is not None:
+                raise TypeError("Specify only one of `sensing_bodies` and deprecated `sensing_obj_bodies`.")
+            if deprecated_sensing_bodies is not None:
+                sensing_bodies = deprecated_sensing_bodies
 
-        if (sensing_obj_bodies is None) == (sensing_obj_shapes is None):
-            raise ValueError("Exactly one of `sensing_obj_bodies` and `sensing_obj_shapes` must be specified")
+        deprecated_sensing_shapes = kwargs.pop("sensing_obj_shapes", _UNSET)
+        if deprecated_sensing_shapes is not _UNSET:
+            warnings.warn(_SENSING_OBJ_SHAPES_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            if sensing_shapes is not None and deprecated_sensing_shapes is not None:
+                raise TypeError("Specify only one of `sensing_shapes` and deprecated `sensing_obj_shapes`.")
+            if deprecated_sensing_shapes is not None:
+                sensing_shapes = deprecated_sensing_shapes
+
+        if kwargs:
+            unexpected = next(iter(kwargs))
+            raise TypeError(f"SensorContact.__init__() got an unexpected keyword argument '{unexpected}'")
+
+        if (sensing_bodies is None) == (sensing_shapes is None):
+            raise ValueError("Exactly one of `sensing_bodies` and `sensing_shapes` must be specified")
 
         if (counterpart_bodies is not None) and (counterpart_shapes is not None):
             raise ValueError("At most one of `counterpart_bodies` and `counterpart_shapes` may be specified.")
@@ -391,14 +455,14 @@ class SensorContact:
         if request_contact_attributes:
             model.request_contact_attributes("force")
 
-        if sensing_obj_bodies is not None:
-            s_bodies = match_labels(model.body_label, sensing_obj_bodies)
-            _check_index_bounds(s_bodies, len(model.body_label), "sensing_obj_bodies", "bodies")
+        if sensing_bodies is not None:
+            s_bodies = match_labels(model.body_label, sensing_bodies)
+            _check_index_bounds(s_bodies, len(model.body_label), "sensing_bodies", "bodies")
             s_shapes = []
         else:
             s_bodies = []
-            s_shapes = match_labels(model.shape_label, sensing_obj_shapes)
-            _check_index_bounds(s_shapes, len(model.shape_label), "sensing_obj_shapes", "shapes")
+            s_shapes = match_labels(model.shape_label, sensing_shapes)
+            _check_index_bounds(s_shapes, len(model.shape_label), "sensing_shapes", "shapes")
 
         using_counterparts = True
         if counterpart_bodies is not None:
@@ -416,8 +480,8 @@ class SensorContact:
 
         world_count = model.world_count
 
-        # Determine whether sensing objects and counterparts are body-level or shape-level.
-        sensing_is_body = sensing_obj_bodies is not None
+        # Determine whether sensing and counterparts are body-level or shape-level.
+        sensing_is_body = sensing_bodies is not None
         counterpart_is_body = counterpart_bodies is not None
         sensing_indices = s_bodies if sensing_is_body else s_shapes
         counterpart_indices = c_bodies if counterpart_is_body else c_shapes
@@ -431,7 +495,7 @@ class SensorContact:
 
         sensing_indices_ordered = list(sensing_indices)  # preserve user's original order
         sensing_indices = _ensure_sorted_unique(
-            sensing_indices, "sensing_obj_bodies" if sensing_is_body else "sensing_obj_shapes"
+            sensing_indices, "sensing_bodies" if sensing_is_body else "sensing_shapes"
         )
         counterpart_indices = _ensure_sorted_unique(
             counterpart_indices, "counterpart_bodies" if counterpart_is_body else "counterpart_shapes"
@@ -508,27 +572,23 @@ class SensorContact:
                 device=self.device,
             )
 
-        total_cols = int(measure_total) + max_readings
-        self._net_force = wp.zeros((n_rows, total_cols), dtype=wp.vec3, device=self.device)
-        self._net_friction_force = wp.zeros((n_rows, total_cols), dtype=wp.vec3, device=self.device)
-
         if measure_total:
-            self.total_force = self._net_force[:, 0]
-            self.total_force_friction = self._net_friction_force[:, 0]
+            self.total_force = wp.zeros(n_rows, dtype=wp.vec3, device=self.device)
+            self.total_force_friction = wp.zeros(n_rows, dtype=wp.vec3, device=self.device)
         else:
             self.total_force = None
             self.total_force_friction = None
 
         if max_readings > 0:
-            self.force_matrix = self._net_force[:, int(measure_total) :]
-            self.force_matrix_friction = self._net_friction_force[:, int(measure_total) :]
+            self.force_matrix = wp.zeros((n_rows, max_readings), dtype=wp.vec3, device=self.device)
+            self.force_matrix_friction = wp.zeros((n_rows, max_readings), dtype=wp.vec3, device=self.device)
         else:
             self.force_matrix = None
             self.force_matrix_friction = None
 
-        self.sensing_obj_type = "body" if sensing_is_body else "shape"
+        self.sensing_type = "body" if sensing_is_body else "shape"
         self.counterpart_type = "body" if counterpart_is_body else ("shape" if counterpart_indices else None)
-        self.sensing_obj_idx = sensing_indices_ordered
+        self.sensing_indices = sensing_indices_ordered
 
         # Map each sensing object to its world's counterpart list.
         world_starts = np.array(sensing_world_start[:world_count])
@@ -537,7 +597,7 @@ class SensorContact:
 
         if self.verbose:
             log_verbose(_logger, "SensorContact initialized:")
-            log_verbose(_logger, f"  Sensing objects: {n_rows} ({self.sensing_obj_type}s)")
+            log_verbose(_logger, f"  Sensing objects: {n_rows} ({self.sensing_type}s)")
             log_verbose(
                 _logger,
                 f"  Counterpart columns: {max_readings}"
@@ -550,100 +610,10 @@ class SensorContact:
             )
 
         self._model = model
-        self._sensing_obj_indices = wp.array(sensing_indices_ordered, dtype=wp.int32, device=self.device)
-        obj_type = _OBJ_TYPE_BODY if sensing_is_body else _OBJ_TYPE_SHAPE
-        self._sensing_obj_types = wp.full(n_rows, obj_type, dtype=wp.int32, device=self.device)
-        self.sensing_obj_transforms = wp.zeros(n_rows, dtype=wp.transform, device=self.device)
-
-        self._init_deprecated_shims(measure_total, world_count, worlds)
-
-    def _init_deprecated_shims(self, measure_total: bool, world_count: int, sensing_obj_worlds: np.ndarray):
-        """Store data needed by deprecated backward-compatible properties.
-
-        The properties themselves are computed lazily on first access and cached.
-        """
-        self._measure_total = measure_total
-        self._world_count = world_count
-        self._sensing_obj_worlds = sensing_obj_worlds
-
-    @property
-    def shape(self) -> tuple[int, int]:
-        """Deprecated. Dimensions of :attr:`net_force`."""
-        warnings.warn(
-            "SensorContact.shape is deprecated. Use total_force.shape / force_matrix.shape instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return tuple(self._net_force.shape)
-
-    @property
-    def sensing_objs(self) -> list[list[tuple[int, ObjectType]]]:
-        """Deprecated. Use :attr:`sensing_obj_idx` and :attr:`sensing_obj_type` instead."""
-        warnings.warn(
-            "SensorContact.sensing_objs is deprecated. Use 'sensing_obj_idx' and 'sensing_obj_type' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if hasattr(self, "_deprecated_sensing_objs"):
-            return self._deprecated_sensing_objs
-        obj_type = self.ObjectType.BODY if self.sensing_obj_type == "body" else self.ObjectType.SHAPE
-        result: list[list[tuple[int, SensorContact.ObjectType]]] = [[] for _ in range(self._world_count)]
-        for i, idx in enumerate(self.sensing_obj_idx):
-            result[int(self._sensing_obj_worlds[i])].append((idx, obj_type))
-        self._deprecated_sensing_objs = result
-        return result
-
-    @property
-    def counterparts(self) -> list[list[tuple[int, ObjectType]]]:
-        """Deprecated. Use :attr:`counterpart_indices` and :attr:`counterpart_type` instead."""
-        warnings.warn(
-            "SensorContact.counterparts is deprecated. Use 'counterpart_indices' and 'counterpart_type' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if hasattr(self, "_deprecated_counterparts"):
-            return self._deprecated_counterparts
-        cp_type = (
-            self.ObjectType.BODY
-            if self.counterpart_type == "body"
-            else self.ObjectType.SHAPE
-            if self.counterpart_type == "shape"
-            else None
-        )
-        result: list[list[tuple[int, SensorContact.ObjectType]]] = [[] for _ in range(self._world_count)]
-        seen_worlds: set[int] = set()
-        for i in range(len(self.sensing_obj_idx)):
-            w = int(self._sensing_obj_worlds[i])
-            if w in seen_worlds:
-                continue
-            seen_worlds.add(w)
-            entries: list[tuple[int, SensorContact.ObjectType]] = []
-            if self._measure_total:
-                entries.append((-1, self.ObjectType.TOTAL))
-            if cp_type is not None:
-                for idx in self.counterpart_indices[i]:
-                    entries.append((idx, cp_type))
-            result[w] = entries
-        self._deprecated_counterparts = result
-        return result
-
-    @property
-    def reading_indices(self) -> list[list[list[int]]]:
-        """Deprecated. Active counterpart indices per sensing object, per world."""
-        warnings.warn(
-            "SensorContact.reading_indices is deprecated. Use 'counterpart_indices' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if hasattr(self, "_deprecated_reading_indices"):
-            return self._deprecated_reading_indices
-        result: list[list[list[int]]] = [[] for _ in range(self._world_count)]
-        for i in range(len(self.sensing_obj_idx)):
-            w = int(self._sensing_obj_worlds[i])
-            n_active = int(self._measure_total) + len(self.counterpart_indices[i])
-            result[w].append(list(range(n_active)))
-        self._deprecated_reading_indices = result
-        return result
+        self._sensing_indices = wp.array(sensing_indices_ordered, dtype=wp.int32, device=self.device)
+        sensing_kind = _SENSING_KIND_BODY if sensing_is_body else _SENSING_KIND_SHAPE
+        self._sensing_kinds = wp.full(n_rows, sensing_kind, dtype=wp.int32, device=self.device)
+        self.sensing_transforms = wp.zeros(n_rows, dtype=wp.transform, device=self.device)
 
     def update(self, state: State | None, contacts: Contacts):
         """Update the contact sensor readings based on the provided state and contacts.
@@ -660,20 +630,20 @@ class SensorContact:
             ValueError: If ``contacts.force`` is None.
             ValueError: If ``contacts.device`` does not match the sensor's device.
         """
-        # update sensing object transforms
-        n = len(self._sensing_obj_indices)
+        # update sensing transforms
+        n = len(self._sensing_indices)
         if n > 0 and state is not None and state.body_q is not None:
             wp.launch(
-                compute_sensing_obj_transforms_kernel,
+                compute_sensing_transforms_kernel,
                 dim=n,
                 inputs=[
-                    self._sensing_obj_indices,
-                    self._sensing_obj_types,
+                    self._sensing_indices,
+                    self._sensing_kinds,
                     self._model.shape_body,
                     self._model.shape_transform,
                     state.body_q,
                 ],
-                outputs=[self.sensing_obj_transforms],
+                outputs=[self.sensing_transforms],
                 device=self.device,
             )
 
@@ -686,21 +656,14 @@ class SensorContact:
             raise ValueError(f"Contacts device ({contacts.device}) does not match sensor device ({self.device}).")
         self._eval_forces(contacts)
 
-    @property
-    def net_force(self) -> wp.array2d:
-        """Deprecated. Use :attr:`total_force` and :attr:`force_matrix` instead."""
-        warnings.warn(
-            "SensorContact.net_force is deprecated. Use 'total_force' for total forces "
-            "and 'force_matrix' for per-counterpart forces.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._net_force
-
     def _eval_forces(self, contacts: Contacts):
         """Zero and recompute force and friction arrays from the given contacts."""
-        self._net_force.zero_()
-        self._net_friction_force.zero_()
+        if self.total_force is not None:
+            self.total_force.zero_()
+            self.total_force_friction.zero_()
+        if self.force_matrix is not None:
+            self.force_matrix.zero_()
+            self.force_matrix_friction.zero_()
         wp.launch(
             accumulate_contact_forces_kernel,
             dim=contacts.rigid_contact_max,

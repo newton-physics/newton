@@ -7,21 +7,6 @@ newton
 .. py:module:: newton
 .. currentmodule:: newton
 
-.. toctree::
-   :hidden:
-
-   newton_actuators
-   newton_exceptions
-   newton_geometry
-   newton_ik
-   newton_math
-   newton_selection
-   newton_sensors
-   newton_solvers
-   newton_usd
-   newton_utils
-   newton_viewer
-
 .. rubric:: Submodules
 
 - :doc:`newton.actuators <newton_actuators>`
@@ -56,6 +41,7 @@ newton
    Mesh
    Model
    ModelBuilder
+   ModelFlags
    NewtonDeprecationWarning
    NewtonGeometryWarning
    NewtonWarning
@@ -63,6 +49,7 @@ newton
    SDF
    ShapeFlags
    State
+   StateFlags
    TetMesh
 
 .. rubric:: Functions
@@ -76,6 +63,7 @@ newton
    eval_ik
    eval_jacobian
    eval_mass_matrix
+   intersect_ray
 
 .. rubric:: Constants
 
@@ -87,4 +75,6 @@ newton
    * - ``MAXVAL``
      - ``10000000000.0``
    * - ``__version__``
-     - ``1.3.0.dev0``
+     - ``1.4.0.dev0``
+   * - ``use_coord_layout_targets``
+     - ``False``

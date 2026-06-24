@@ -642,34 +642,48 @@ def _compute_total_friction_capacity(contacts, model, state, shape_pair=None):
     return float((friction * force_mag).sum())
 
 
-def _build_cube_cube_scene(device, cube_half_lower=0.2, cube_half_upper=0.1):
+def _build_cube_cube_scene(device, cube_half_lower=0.2, cube_half_upper=0.1, kh_lower=1e9, kh_upper=1e9):
     """Build a big-cube-on-ground + small-cube-on-top scene for contact comparison tests.
 
     Returns (model, state, upper_body, rest_z).
     """
-    shape_cfg = newton.ModelBuilder.ShapeConfig(
-        sdf_max_resolution=128,
-        is_hydroelastic=True,
-        sdf_narrow_band_range=(-0.01, 0.01),
-        gap=0.01,
-        kh=1e9,
-    )
+
+    def shape_cfg(kh):
+        return newton.ModelBuilder.ShapeConfig(
+            sdf_max_resolution=128,
+            is_hydroelastic=True,
+            sdf_narrow_band_range=(-0.01, 0.01),
+            gap=0.01,
+            kh=kh,
+        )
+
     builder = newton.ModelBuilder()
-    builder.default_shape_cfg = shape_cfg
     builder.add_ground_plane()
 
     lower_body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, cube_half_lower), wp.quat_identity()),
         label="lower_cube",
     )
-    builder.add_shape_box(body=lower_body, hx=cube_half_lower, hy=cube_half_lower, hz=cube_half_lower)
+    builder.add_shape_box(
+        body=lower_body,
+        hx=cube_half_lower,
+        hy=cube_half_lower,
+        hz=cube_half_lower,
+        cfg=shape_cfg(kh_lower),
+    )
 
     rest_z = 2 * cube_half_lower + cube_half_upper
     upper_body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, rest_z), wp.quat_identity()),
         label="upper_cube",
     )
-    builder.add_shape_box(body=upper_body, hx=cube_half_upper, hy=cube_half_upper, hz=cube_half_upper)
+    builder.add_shape_box(
+        body=upper_body,
+        hx=cube_half_upper,
+        hy=cube_half_upper,
+        hz=cube_half_upper,
+        cfg=shape_cfg(kh_upper),
+    )
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -719,6 +733,277 @@ def test_reduced_vs_unreduced_contact_forces_cube_on_cube(test, device):
                 0.01,
                 f"pen={pen}: {label} diff {abs_diff:.4f} > 1% of |Fz| {abs(f_unr[2]):.4f}",
             )
+
+
+# User-defined pressure-callback equivalent to the built-in linear law
+# ``pressure = -kh * signed_depth``. Defined here (not imported from
+# ``newton._src``) to exercise the public callback API the same way user code
+# would, mirroring ``newton/examples/contacts/example_nut_bolt_hydro.py``.
+@wp.struct
+class _LinearPressureData:
+    shape_kh: wp.array[wp.float32]
+
+
+@wp.func
+def _linear_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: _LinearPressureData) -> wp.float32:
+    return -data.shape_kh[shape_idx] * signed_depth
+
+
+@wp.struct
+class _PowerPressureData:
+    shape_kh: wp.array[wp.float32]
+    depth_ref_m: wp.float32
+    exponent: wp.float32
+
+
+@wp.func
+def _power_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: _PowerPressureData) -> wp.float32:
+    kh = data.shape_kh[shape_idx]
+    if signed_depth >= 0.0:
+        return -kh * signed_depth
+    depth = -signed_depth
+    return kh * data.depth_ref_m * wp.pow(depth / data.depth_ref_m, data.exponent)
+
+
+def test_custom_pressure_func_matches_default_linear(test, device):
+    """User-supplied linear ``pressure_func`` must match the built-in default within 1%."""
+    model, state, upper_body, rest_z = _build_cube_cube_scene(device)
+
+    pressure_data = _LinearPressureData()
+    pressure_data.shape_kh = model.shape_material_kh
+
+    cfg_default = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+    )
+    cfg_callback = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+        pressure_func=_linear_pressure,
+        pressure_data=pressure_data,
+    )
+    (pipe_default, contacts_default), (pipe_callback, contacts_callback) = _make_pipelines(
+        model, [cfg_default, cfg_callback], [50000, 50000]
+    )
+
+    for pen in [1e-4, 1e-3, 1e-2]:
+        upper_z = rest_z - pen
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, upper_body, upper_z], device=device)
+
+        pipe_default.collide(state, contacts_default)
+        pipe_callback.collide(state, contacts_callback)
+
+        f_default = _compute_net_force(contacts_default, model, state)
+        f_callback = _compute_net_force(contacts_callback, model, state)
+
+        test.assertGreater(abs(f_default[2]), 0.0, f"pen={pen}: default Fz should be nonzero")
+        rel_z = abs(f_callback[2] - f_default[2]) / abs(f_default[2])
+        test.assertLess(
+            rel_z,
+            0.01,
+            f"pen={pen}: Fz mismatch {rel_z * 100:.2f}% (callback={f_callback[2]:.4f}, default={f_default[2]:.4f})",
+        )
+
+        for axis, label in [(0, "Fx"), (1, "Fy")]:
+            abs_diff = abs(f_callback[axis] - f_default[axis])
+            test.assertLess(
+                abs_diff / abs(f_default[2]),
+                0.01,
+                f"pen={pen}: {label} diff {abs_diff:.4f} > 1% of |Fz| {abs(f_default[2]):.4f}",
+            )
+
+
+def test_custom_pressure_func_matches_default_linear_with_stiffness_ratio(test, device):
+    """Exponent-1 power pressure must match the default for unequal stiffnesses."""
+    model, state, upper_body, rest_z = _build_cube_cube_scene(device, kh_lower=1e9, kh_upper=1e10)
+
+    pressure_data = _PowerPressureData()
+    pressure_data.shape_kh = model.shape_material_kh
+    pressure_data.depth_ref_m = 1.0e-3
+    pressure_data.exponent = 1.0
+
+    cfg_default = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+    )
+    cfg_callback = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+        pressure_func=_power_pressure,
+        pressure_data=pressure_data,
+    )
+    (pipe_default, contacts_default), (pipe_callback, contacts_callback) = _make_pipelines(
+        model, [cfg_default, cfg_callback], [50000, 50000]
+    )
+
+    for pen in [1e-4, 5e-4, 1e-3]:
+        upper_z = rest_z - pen
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, upper_body, upper_z], device=device)
+
+        pipe_default.collide(state, contacts_default)
+        pipe_callback.collide(state, contacts_callback)
+
+        f_default = _compute_net_force(contacts_default, model, state)
+        f_callback = _compute_net_force(contacts_callback, model, state)
+
+        test.assertGreater(abs(f_default[2]), 0.0, f"pen={pen}: default Fz should be nonzero")
+        rel_z = abs(f_callback[2] - f_default[2]) / abs(f_default[2])
+        test.assertLess(
+            rel_z,
+            0.01,
+            f"pen={pen}: unequal-kh Fz mismatch {rel_z * 100:.2f}% "
+            f"(callback={f_callback[2]:.4f}, default={f_default[2]:.4f})",
+        )
+
+        for axis, label in [(0, "Fx"), (1, "Fy")]:
+            abs_diff = abs(f_callback[axis] - f_default[axis])
+            test.assertLess(
+                abs_diff / abs(f_default[2]),
+                0.01,
+                f"pen={pen}: unequal-kh {label} diff {abs_diff:.4f} > 1% of |Fz| {abs(f_default[2]):.4f}",
+            )
+
+
+# Cubic pressure law for non-linear regression tests:
+# ``p = kh * (-d)^3``. Sign-preserving (cube of pen has same sign as pen) and
+# monotone non-increasing in signed_depth, satisfying the iso-surface
+# precondition. Per-face force becomes ``area * kh * (-d)^3``; for the cube-
+# cube scene where contact area is approximately constant in depth, total Fz
+# scales as ``|d|^3``.
+@wp.struct
+class _CubicPressureData:
+    shape_kh: wp.array[wp.float32]
+
+
+@wp.func
+def _cubic_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: _CubicPressureData) -> wp.float32:
+    pen = -signed_depth  # positive when penetrating
+    return data.shape_kh[shape_idx] * pen * pen * pen
+
+
+def test_custom_pressure_func_force_scales_with_pressure_law(test, device):
+    """Cubic pressure law must produce a steeper Fz(depth) curve than linear.
+
+    The contact area in a cube-on-cube scene is itself depth-dependent, so the
+    absolute force-vs-depth exponent is geometry-coupled. To isolate the
+    *pressure-law* contribution, this test compares the ratio ``F(2d)/F(d)``
+    under linear and cubic laws on the same geometry: the area scaling cancels,
+    leaving only the pressure-law factor (2x for linear, 8x for cubic). The
+    ratio-of-ratios should equal 4 regardless of how area scales with depth.
+    """
+    model, state, upper_body, rest_z = _build_cube_cube_scene(device)
+
+    cubic_data = _CubicPressureData()
+    cubic_data.shape_kh = model.shape_material_kh
+    linear_data = _LinearPressureData()
+    linear_data.shape_kh = model.shape_material_kh
+
+    cfg_cubic = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+        pressure_func=_cubic_pressure,
+        pressure_data=cubic_data,
+    )
+    cfg_linear = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+        pressure_func=_linear_pressure,
+        pressure_data=linear_data,
+    )
+    (pipe_c, contacts_c), (pipe_l, contacts_l) = _make_pipelines(model, [cfg_cubic, cfg_linear], [50000, 50000])
+
+    def fz_at(pipe, contacts, pen):
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, upper_body, rest_z - pen], device=device)
+        pipe.collide(state, contacts)
+        return abs(_compute_net_force(contacts, model, state)[2])
+
+    pen_d, pen_2d = 1e-3, 2e-3
+    f_l_d = fz_at(pipe_l, contacts_l, pen_d)
+    f_l_2d = fz_at(pipe_l, contacts_l, pen_2d)
+    f_c_d = fz_at(pipe_c, contacts_c, pen_d)
+    f_c_2d = fz_at(pipe_c, contacts_c, pen_2d)
+
+    test.assertGreater(f_l_d, 0.0)
+    test.assertGreater(f_c_d, 0.0)
+
+    linear_ratio = f_l_2d / f_l_d
+    cubic_ratio = f_c_2d / f_c_d
+
+    # Linear law's F-doubling ratio should be near 2 (force grows roughly with
+    # depth at constant patch area). Cubic pressure must produce a substantially
+    # steeper curve — if pressure_func were ignored downstream we'd see the
+    # same ratio as linear. Bounds are intentionally wide because MC vertex
+    # interpolation under a non-linear law shifts vertex positions along
+    # voxel edges, perturbing patch area in a depth-dependent way.
+    test.assertGreater(linear_ratio, 1.5, f"linear F(2d)/F(d) = {linear_ratio:.2f}")
+    test.assertLess(linear_ratio, 3.0, f"linear F(2d)/F(d) = {linear_ratio:.2f}")
+    test.assertGreater(
+        cubic_ratio,
+        4.0 * linear_ratio,
+        f"cubic ratio {cubic_ratio:.2f} vs linear {linear_ratio:.2f}: "
+        f"pressure_func may not be applied to per-contact force",
+    )
+
+
+def test_custom_pressure_func_reduced_matches_unreduced_cubic(test, device):
+    """Under a cubic pressure law, reduced and unreduced net force must still agree."""
+    model, state, upper_body, rest_z = _build_cube_cube_scene(device)
+
+    pressure_data = _CubicPressureData()
+    pressure_data.shape_kh = model.shape_material_kh
+
+    cfg_red = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=True,
+        anchor_contact=False,
+        pressure_func=_cubic_pressure,
+        pressure_data=pressure_data,
+    )
+    cfg_unr = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        anchor_contact=False,
+        pressure_func=_cubic_pressure,
+        pressure_data=pressure_data,
+    )
+    (pipe_red, contacts_red), (pipe_unr, contacts_unr) = _make_pipelines(model, [cfg_red, cfg_unr], [500, 50000])
+
+    for pen in [1e-3, 4e-3]:
+        upper_z = rest_z - pen
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, upper_body, upper_z], device=device)
+        pipe_red.collide(state, contacts_red)
+        pipe_unr.collide(state, contacts_unr)
+
+        f_red = _compute_net_force(contacts_red, model, state)
+        f_unr = _compute_net_force(contacts_unr, model, state)
+        test.assertGreater(abs(f_unr[2]), 0.0, f"pen={pen}: unreduced cubic Fz should be nonzero")
+        rel_z = abs(f_red[2] - f_unr[2]) / abs(f_unr[2])
+        test.assertLess(
+            rel_z,
+            0.02,
+            f"pen={pen}: cubic reduced/unreduced Fz mismatch {rel_z * 100:.2f}% "
+            f"(red={f_red[2]:.4f}, unr={f_unr[2]:.4f})",
+        )
+
+
+def test_custom_pressure_func_requires_pressure_data(test, device):
+    """Setting ``pressure_func`` without ``pressure_data`` must raise."""
+    model, state, _, _ = _build_cube_cube_scene(device)
+    del state
+
+    cfg = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        pressure_func=_linear_pressure,
+        pressure_data=None,
+    )
+    with test.assertRaises(ValueError):
+        newton.CollisionPipeline(model, sdf_hydroelastic_config=cfg)
 
 
 def test_reduced_vs_unreduced_contact_moments_cube_on_cube(test, device):
@@ -1251,6 +1536,45 @@ add_function_test(
     check_output=False,
 )
 
+add_function_test(
+    TestHydroelastic,
+    "test_custom_pressure_func_matches_default_linear",
+    test_custom_pressure_func_matches_default_linear,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_custom_pressure_func_matches_default_linear_with_stiffness_ratio",
+    test_custom_pressure_func_matches_default_linear_with_stiffness_ratio,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_custom_pressure_func_force_scales_with_pressure_law",
+    test_custom_pressure_func_force_scales_with_pressure_law,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_custom_pressure_func_reduced_matches_unreduced_cubic",
+    test_custom_pressure_func_reduced_matches_unreduced_cubic,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_custom_pressure_func_requires_pressure_data",
+    test_custom_pressure_func_requires_pressure_data,
+    devices=cuda_devices,
+)
+
 
 def test_no_degenerate_triangles_deep_penetration(test, device):
     """Verify marching cubes produces no zero-area triangles and fewer than 2% near-degenerate triangles under deep interpenetration.
@@ -1468,6 +1792,152 @@ add_function_test(
     TestHydroelastic,
     "test_mc_edge_clamp_min_changes_contact_surface",
     test_mc_edge_clamp_min_changes_contact_surface,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+
+def test_hydroelastic_mesh_empty_sdf_raises_value_error(test, device):
+    mesh = newton.Mesh.create_box(
+        0.1,
+        0.1,
+        0.1,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
+    mesh.sdf = newton.SDF.create_from_data()
+
+    cfg = newton.ModelBuilder.ShapeConfig(is_hydroelastic=True)
+    builder = newton.ModelBuilder()
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
+    builder.add_shape_mesh(body=body_a, mesh=mesh, cfg=cfg)
+    builder.add_shape_mesh(body=body_b, mesh=mesh, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    with test.assertRaisesRegex(ValueError, "requires texture SDF data"):
+        newton.CollisionPipeline(model, broad_phase="explicit")
+
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_mesh_empty_sdf_raises_value_error",
+    test_hydroelastic_mesh_empty_sdf_raises_value_error,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+
+def test_deep_penetration_contact_surface_has_no_central_hole(test, device):
+    """Regression test for newton-physics/newton#2611.
+
+    Two hydroelastic boxes are overlapped by an amount that is much larger
+    than the SDF narrow band.  Before the fix, the broadphase skipped any
+    subgrid whose center fell deeper than the narrow band, so the
+    contact surface formed a thin annulus around the box perimeter with
+    no triangles in the central region (visible in the issue images as a
+    "center hole" in the contact patch).  The fix visits every subgrid
+    arithmetically; the central region of the patch must now be
+    populated.
+
+    The scene mirrors the minimal repro from the issue: two 20 cm boxes,
+    10 cm overlap (5x the 20 mm narrow band), ``kh=1e10``,
+    ``sdf_max_resolution=64``, ``reduce_contacts=False``.
+
+    The assertion is targeted at the *symptom* described in the issue —
+    the contact patch is annular, with no centroids near the center of
+    the overlap region.  A simple total-area check is not enough: a
+    thick perimeter ring could still pass an area threshold without
+    filling the middle, which is exactly what the bug looked like.
+    """
+    box_half = 0.10  # 20 cm box -> 10 cm half-extent (issue #2611)
+    narrow_band = 0.02  # 20 mm narrow band
+    overlap = 0.10  # 10 cm overlap == 5x narrow band
+    contact_gap = 0.02
+
+    cfg = newton.ModelBuilder.ShapeConfig(
+        mu=0.5,
+        kh=1e10,
+        sdf_max_resolution=64,
+        is_hydroelastic=True,
+        sdf_narrow_band_range=(-narrow_band, narrow_band),
+        gap=contact_gap,
+    )
+    builder = newton.ModelBuilder()
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, box_half), wp.quat_identity()))
+    builder.add_shape_box(body=body_a, hx=box_half, hy=box_half, hz=box_half, cfg=cfg)
+    z_b = box_half + 2.0 * box_half - overlap
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, z_b), wp.quat_identity()))
+    builder.add_shape_box(body=body_b, hx=box_half, hy=box_half, hz=box_half, cfg=cfg)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    hydro_config = HydroelasticSDF.Config(
+        output_contact_surface=True,
+        reduce_contacts=False,
+        buffer_mult_iso=4,
+        buffer_mult_contact=4,
+    )
+    pipeline = newton.CollisionPipeline(
+        model,
+        rigid_contact_max=200000,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=hydro_config,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+
+    cs = pipeline.hydroelastic_sdf.get_contact_surface()
+    test.assertIsNotNone(cs, "Expected a contact surface for deeply overlapping hydroelastic boxes")
+
+    num_faces = int(cs.face_contact_count.numpy()[0])
+    test.assertGreater(num_faces, 0, "Expected a non-empty contact surface")
+
+    verts = cs.contact_surface_point.numpy()[: num_faces * 3].astype(np.float64).reshape(num_faces, 3, 3)
+    centroids = verts.mean(axis=1)  # (num_faces, 3) world-space face centroids
+
+    # The boxes are stacked on Z, so the *pressure-equilibrium* plane
+    # (where the hydroelastic iso-surface should pass through the
+    # center of the overlap volume) sits at z = mid-overlap.  Look for
+    # face centroids in a thin slab around that mid plane, then require
+    # that some of them fall in the *central XY quarter* of the face
+    # (|x|,|y| <= box_half / 2).  The issue's debug sweep used exactly
+    # this "centroid-in-central-region" coverage metric and reported it
+    # as ``0.00`` for this config under the bug; with the fix the
+    # central XY region of the mid-z slab must be populated.
+    mid_z = 2.0 * box_half - 0.5 * overlap  # midpoint between the two box centers along Z
+    mid_slab_half = 0.5 * narrow_band  # ~5 mm slab around the mid plane
+    in_mid_slab = np.abs(centroids[:, 2] - mid_z) <= mid_slab_half
+    in_central_xy = np.maximum(np.abs(centroids[:, 0]), np.abs(centroids[:, 1])) <= 0.5 * box_half
+    central_count = int((in_mid_slab & in_central_xy).sum())
+    slab_count = int(in_mid_slab.sum())
+
+    test.assertGreater(
+        slab_count,
+        0,
+        f"No contact-surface centroids in the mid-z slab around z={mid_z:.4f} "
+        f"(num_faces={num_faces}); contact surface is not reaching the "
+        f"pressure-equilibrium plane.",
+    )
+    central_frac_of_slab = central_count / slab_count
+    test.assertGreater(
+        central_frac_of_slab,
+        0.05,
+        f"Only {central_count}/{slab_count} = {100.0 * central_frac_of_slab:.2f}% "
+        f"of contact-surface centroids in the mid-z slab fall inside the "
+        f"central XY quarter; the contact patch is annular with a center "
+        f"hole — see newton-physics/newton#2611.",
+    )
+
+
+add_function_test(
+    TestHydroelastic,
+    "test_deep_penetration_contact_surface_has_no_central_hole",
+    test_deep_penetration_contact_surface_has_no_central_hole,
     devices=cuda_devices,
     check_output=False,
 )
