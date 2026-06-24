@@ -152,6 +152,10 @@ class Example:
         linear_solver: str = "LLTB",
         linear_solver_maxiter: int = 0,
         use_graph_conditionals: bool = False,
+        sparse: bool = False,
+        asset: str = "dr_legs_with_meshes_and_boxes.usda",
+        lin_tol_ratio: float = 0.0,
+        penalty_update_method: str = "fixed",
         headless: bool = False,
         record_video: bool = False,
         async_save: bool = False,
@@ -173,7 +177,7 @@ class Example:
 
         # Load the DR Legs USD and add it to the builder
         asset_path = newton.utils.download_asset("disneyresearch")
-        asset_file = str(asset_path / "dr_legs/usd" / "dr_legs_with_meshes_and_boxes.usda")
+        asset_file = str(asset_path / "dr_legs/usd" / asset)
 
         # Create a model builder from the imported USD
         msg.notif("Constructing builder from imported USD ...")
@@ -218,8 +222,8 @@ class Example:
         config = Simulator.Config()
         config.dt = self.sim_dt
         config.collision_detector.pipeline = "unified"  # Select from {"primitive", "unified"}
-        config.solver.sparse_jacobian = False
-        config.solver.sparse_dynamics = False
+        config.solver.sparse_jacobian = sparse
+        config.solver.sparse_dynamics = sparse
         config.solver.integrator = "moreau"  # Select from {"euler", "moreau"}
         config.solver.constraints.alpha = 0.1
         config.solver.constraints.beta = 0.011
@@ -231,7 +235,8 @@ class Example:
         config.solver.padmm.eta = 1e-5
         config.solver.padmm.rho_0 = 0.02  # try 0.02 for Balanced update
         config.solver.padmm.rho_min = 0.05
-        config.solver.padmm.penalty_update_method = "fixed"  # try "balanced"
+        config.solver.padmm.linear_solver_tolerance_ratio = lin_tol_ratio  # 0 = fixed inner tol
+        config.solver.padmm.penalty_update_method = penalty_update_method  # "fixed" or "balanced"
         config.solver.padmm.use_acceleration = True
         config.solver.padmm.warmstart_mode = "containers"
         config.solver.padmm.contact_warmstart_method = "geom_pair_net_force"
@@ -486,6 +491,31 @@ if __name__ == "__main__":
         default=True,
         help="Use CUDA graph conditional nodes in iterative solvers",
     )
+    parser.add_argument(
+        "--sparse",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use the sparse Jacobian and sparse dynamics solver path",
+    )
+    parser.add_argument(
+        "--asset",
+        type=str,
+        default="dr_legs_with_meshes_and_boxes.usda",
+        help="dr_legs USD asset filename under dr_legs/usd/",
+    )
+    parser.add_argument(
+        "--lin-tol-ratio",
+        type=float,
+        default=0.0,
+        help="Inexact-ADMM inner linear-solver tolerance ratio (0 = fixed inner tolerance)",
+    )
+    parser.add_argument(
+        "--penalty-update-method",
+        type=str,
+        default="fixed",
+        choices=["fixed", "balanced"],
+        help="PADMM penalty update method",
+    )
     args = parser.parse_args()
 
     # Set global numpy configurations
@@ -522,6 +552,10 @@ if __name__ == "__main__":
         linear_solver=args.linear_solver,
         linear_solver_maxiter=args.linear_solver_maxiter,
         use_graph_conditionals=args.use_graph_conditionals,
+        sparse=args.sparse,
+        asset=args.asset,
+        lin_tol_ratio=args.lin_tol_ratio,
+        penalty_update_method=args.penalty_update_method,
         max_steps=args.num_steps,
         implicit_pd=args.implicit_pd,
         gravity=args.gravity,
