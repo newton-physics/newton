@@ -74,11 +74,38 @@ Each imported deformable is addressable through the :meth:`~newton.ModelBuilder.
 ``path_soft_map`` (prim path -> ``particle`` / element ``(start, end)`` index ranges). The cable map
 is remapped if ``collapse_fixed_joints`` reindexes bodies.
 
-Imported cables are **unwrapped**: the cable joints are not placed in an articulation, so the caller
-wraps the returned ``joint_indices`` with :meth:`~newton.ModelBuilder.add_articulation` before
+A ``PhysicsAttachment`` prim ties two sites together. Each side has a target relationship
+(``src0``, ``src1``) pointing at the prim it attaches to, a site ``type`` (``type0``, ``type1``)
+naming what on that prim is attached -- ``point``, ``segment``, ``face``, ``tetrahedron``, or
+``xform`` -- and ``indices``/``coords`` locating the site on the target (for example, which cable
+segment and the ``(u, s, t)`` position along it).
+
+``PhysicsAttachment`` prims are parsed for the supported cable subset. When ``src0`` is an imported
+curve deformable, ``type0`` is ``point`` or ``segment``, and ``type1`` is ``xform``, the importer
+creates point-point ball joints from the cable segment body (or bodies incident to a cable point) to
+the target xform, rigid body (including a kinematic body), or world frame. Created attachment joints are returned through
+``path_attachment_map``; parsed attributes, including unsupported cases, are returned through
+``path_attachment_attrs``. Finite attachment stiffness / damping are currently not represented by
+this lowering; supported attachments are imported as hard point constraints. Attachments involving
+surface or volume deformable sites are warned and preserved in ``path_attachment_attrs`` until Newton
+has a general deformable-site attachment constraint.
+
+A ``point``->``point`` ``PhysicsAttachment`` whose ``src0`` and ``src1`` are **both** imported curve
+deformables is treated as graph topology rather than a runtime constraint: the two referenced control
+points are the same junction node. Curves transitively joined this way form one component, built with
+a single :meth:`~newton.ModelBuilder.add_rod_graph` call (one capsule body per segment, junction
+nodes shared). These junction attachments are consumed by the graph build, so they do not appear in
+``path_attachment_map`` / ``path_attachment_attrs``; curve-to-xform attachments on the same curves are
+still lowered as above.
+
+Imported single cables are **unwrapped**: their cable joints are not placed in an articulation, so the
+caller wraps the returned ``joint_indices`` with :meth:`~newton.ModelBuilder.add_articulation` before
 :meth:`~newton.ModelBuilder.finalize` (which otherwise reports the joints as orphaned). This keeps
 articulation topology -- closing a loop with extra joints, attaching the cable to other bodies -- a
-caller decision rather than something the importer imposes.
+caller decision rather than something the importer imposes. Welded **rod graphs** are the exception:
+their junction spanning tree is intrinsic topology, so the importer wraps each component in its own
+articulation and exposes empty ``joint_indices`` for those curves (callers using the
+``if joints: add_articulation(joints)`` pattern skip them).
 
 The same return dict also carries ``path_cable_attrs``, ``path_cloth_attrs`` and ``path_soft_attrs``,
 mapping each prim path to its as-authored, solver-neutral attributes. The cable and cloth maps expose the

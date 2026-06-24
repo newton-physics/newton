@@ -2900,7 +2900,7 @@ class ModelBuilder:
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
                 * - ``"path_cable_map"``
-                  - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` in :class:`~newton.ModelBuilder`
+                  - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` in :class:`~newton.ModelBuilder`. A single cable is imported unwrapped, so the caller wraps ``joint_indices`` with :meth:`~newton.ModelBuilder.add_articulation`. Curves welded into a rod graph by curve-to-curve attachments are instead returned pre-wrapped, so ``joint_indices`` is empty for those curves.
                 * - ``"path_cloth_map"``
                   - Mapping from prim path (str) of a surface deformable (cloth) to a dict of its ``particle`` / ``tri`` / ``edge`` ``(start, end)`` index ranges
                 * - ``"path_soft_map"``
@@ -2911,6 +2911,10 @@ class ModelBuilder:
                   - Mapping from prim path (str) of a surface deformable (cloth) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``)
                 * - ``"path_soft_attrs"``
                   - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to its as-authored, solver-neutral attributes (``resolved_density``)
+                * - ``"path_attachment_map"``
+                  - Mapping from prim path (str) of a supported ``PhysicsAttachment`` prim to the created joint indices. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology (see ``path_cable_map``) and are absent from this mapping.
+                * - ``"path_attachment_attrs"``
+                  - Mapping from prim path (str) of a ``PhysicsAttachment`` prim to its parsed, solver-neutral attributes and any unsupported reason. Junctions consumed as rod-graph topology are absent here as well.
                 * - ``"mass_unit"``
                   - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
                 * - ``"linear_unit"``

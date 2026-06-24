@@ -67,6 +67,46 @@ def _bind_cable_material(stage, prim, mat_path, *, namespace="physics", **attrs)
     return mat
 
 
+def _add_physics_attachment(
+    stage,
+    path,
+    *,
+    src0,
+    type0,
+    indices0,
+    src1="",
+    type1="xform",
+    indices1=None,
+    coords0=None,
+    coords1=None,
+    enabled=True,
+    stiffness=None,
+    damping=None,
+):
+    """Author a proposal PhysicsAttachment prim by token, before the schema is registered."""
+    from pxr import Sdf
+
+    prim = stage.DefinePrim(path, "PhysicsAttachment")
+    prim.CreateRelationship("physics:src0").SetTargets([src0])
+    if src1:
+        prim.CreateRelationship("physics:src1").SetTargets([src1])
+    prim.CreateAttribute("physics:type0", Sdf.ValueTypeNames.Token).Set(type0)
+    prim.CreateAttribute("physics:type1", Sdf.ValueTypeNames.Token).Set(type1)
+    prim.CreateAttribute("physics:indices0", Sdf.ValueTypeNames.IntArray).Set(list(indices0))
+    if indices1 is not None:
+        prim.CreateAttribute("physics:indices1", Sdf.ValueTypeNames.IntArray).Set(list(indices1))
+    if coords0 is not None:
+        prim.CreateAttribute("physics:coords0", Sdf.ValueTypeNames.Vector3fArray).Set([tuple(c) for c in coords0])
+    if coords1 is not None:
+        prim.CreateAttribute("physics:coords1", Sdf.ValueTypeNames.Vector3fArray).Set([tuple(c) for c in coords1])
+    prim.CreateAttribute("physics:attachmentEnabled", Sdf.ValueTypeNames.Bool).Set(enabled)
+    if stiffness is not None:
+        prim.CreateAttribute("physics:stiffness", Sdf.ValueTypeNames.Float).Set(stiffness)
+    if damping is not None:
+        prim.CreateAttribute("physics:damping", Sdf.ValueTypeNames.Float).Set(damping)
+    return prim
+
+
 class TestUSDDeformableCable(unittest.TestCase):
     """Curve-deformable (cable) parsing into VBD rod bodies + cable joints."""
 
@@ -736,6 +776,240 @@ class TestUSDDeformableCable(unittest.TestCase):
                 all("/World/Cable" in builder.body_label[b] for b in bodies),
                 "remapped cable indices point at non-cable bodies",
             )
+
+    def test_physics_attachment_segment_to_world_imports_ball_joint(self):
+        """A proposal PhysicsAttachment from a cable segment to world imports as a point joint."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_attachment_world.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
+            _add_physics_attachment(
+                stage,
+                "/World/AttachMid",
+                src0="/World/Cable",
+                type0="segment",
+                indices0=[1],
+                coords0=[(0.5, 0.0, 0.0)],
+                coords1=[(0.15, 0.0, 1.0)],
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+
+            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            joints = result["path_attachment_map"]["/World/AttachMid"]
+            self.assertEqual(len(joints), 1)
+            j = joints[0]
+            self.assertEqual(builder.joint_type[j], newton.JointType.BALL)
+            self.assertEqual(builder.joint_parent[j], -1)
+            self.assertEqual(builder.joint_child[j], bodies[1])
+            np.testing.assert_allclose(np.array(builder.joint_X_p[j].p), [0.15, 0.0, 1.0], atol=1e-6)
+            np.testing.assert_allclose(np.array(builder.joint_X_c[j].p), [0.0, 0.0, 0.0], atol=1e-6)
+
+    def test_physics_attachment_interior_point_to_rigid_imports_incident_segment_joints(self):
+        """A cable point attachment maps an interior point to both incident segment bodies."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_attachment_rigid.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            rigid = UsdGeom.Xform.Define(stage, "/World/Rigid")
+            UsdPhysics.RigidBodyAPI.Apply(rigid.GetPrim())
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
+            _add_physics_attachment(
+                stage,
+                "/World/AttachPoint",
+                src0="/World/Cable",
+                src1="/World/Rigid",
+                type0="point",
+                indices0=[1],
+                coords1=[(0.1, 0.0, 1.0)],
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+
+            rigid_body = result["path_body_map"]["/World/Rigid"]
+            cable_bodies, _ = result["path_cable_map"]["/World/Cable"]
+            joints = result["path_attachment_map"]["/World/AttachPoint"]
+            self.assertEqual(len(joints), 2)
+            self.assertEqual({builder.joint_child[j] for j in joints}, {cable_bodies[0], cable_bodies[1]})
+            self.assertTrue(all(builder.joint_parent[j] == rigid_body for j in joints))
+            for j in joints:
+                self.assertEqual(builder.joint_type[j], newton.JointType.BALL)
+                np.testing.assert_allclose(np.array(builder.joint_X_p[j].p), [0.1, 0.0, 1.0], atol=1e-6)
+
+    def test_physics_attachment_to_kinematic_body_finalizes(self):
+        """A cable attached to a jointless kinematic body must finalize().
+
+        The importer gives a jointless kinematic/floating rigid body its own base-joint
+        articulation. That pass must run before the (caller-wrapped) cable so the cable's
+        articulation stays last in both id and joint index; otherwise finalize() rejects a
+        non-monotonic articulation_start. Regression for the StaticMeshAttach case where the
+        attachment targets a kinematic anchor that carries no USD joint.
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_attachment_kinematic.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            # Kinematic anchor with a collider (so it gets a computed mass > 0) but no USD joint:
+            # the importer gives it a base-joint articulation, which must be created before the
+            # cable so the caller's cable articulation stays monotonic. A massless anchor would be
+            # skipped by the floating-body pass and would not reproduce the ordering conflict.
+            anchor = UsdGeom.Cube.Define(stage, "/World/Anchor")
+            anchor.CreateSizeAttr(0.1)
+            rigid_api = UsdPhysics.RigidBodyAPI.Apply(anchor.GetPrim())
+            rigid_api.CreateKinematicEnabledAttr(True)
+            UsdPhysics.CollisionAPI.Apply(anchor.GetPrim())
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
+            _add_physics_attachment(
+                stage,
+                "/World/AttachKinematic",
+                src0="/World/Cable",
+                src1="/World/Anchor",
+                type0="point",
+                indices0=[0],
+                coords1=[(0.0, 0.0, 1.0)],
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            _bodies, joints = result["path_cable_map"]["/World/Cable"]
+            builder.add_articulation(joints, label="/World/Cable_articulation")
+            self.assertIn("/World/AttachKinematic", result["path_attachment_map"])
+
+            # The regression: a non-monotonic articulation_start raised here before the fix.
+            model = builder.finalize()
+            self.assertGreater(model.body_count, 0)
+
+    def test_curve_to_curve_attachment_builds_rod_graph(self):
+        """A curve->curve point attachment welds two curve deformables into one rod graph.
+
+        The junction is topology, not a runtime constraint: it is consumed by the graph build
+        (not surfaced as an attachment joint), the two curves share the welded node, and the whole
+        component comes back pre-wrapped in a single articulation that finalizes.
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "rod_graph.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            # Trunk along x (3 segments); branch goes +y from the trunk's interior point 1.
+            trunk_pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            branch_pts = [(0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.1, 0.2, 1.0)]
+            _add_cable_curve(stage, "/World/Trunk", trunk_pts)
+            _add_cable_curve(stage, "/World/Branch", branch_pts)
+            # Weld branch point 0 to trunk point 1 (curve-to-curve junction).
+            _add_physics_attachment(
+                stage,
+                "/World/Junction",
+                src0="/World/Branch",
+                src1="/World/Trunk",
+                type0="point",
+                type1="point",
+                indices0=[0],
+                indices1=[1],
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+
+            # Both curves import as one welded component; the junction is consumed as topology.
+            self.assertIn("/World/Trunk", result["path_cable_map"])
+            self.assertIn("/World/Branch", result["path_cable_map"])
+            self.assertNotIn("/World/Junction", result["path_attachment_map"])
+            self.assertNotIn("/World/Junction", result["path_attachment_attrs"])
+
+            trunk_bodies, trunk_joints = result["path_cable_map"]["/World/Trunk"]
+            branch_bodies, _ = result["path_cable_map"]["/World/Branch"]
+            self.assertEqual(len(trunk_bodies), 3, "trunk has 3 segments")
+            self.assertEqual(len(branch_bodies), 2, "branch has 2 segments")
+            # Graph cables are returned pre-wrapped, so the caller does no articulation work.
+            self.assertEqual(trunk_joints, [], "graph cable joints are pre-wrapped (empty)")
+            self.assertEqual(builder.articulation_count, 1, "the welded component is one articulation")
+
+            model = builder.finalize()
+            self.assertEqual(model.body_count, 5)
+
+    def test_disabled_physics_attachment_is_recorded_but_not_imported(self):
+        """attachmentEnabled=false preserves attrs but creates no joint."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "disabled_attachment.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
+            _add_physics_attachment(
+                stage,
+                "/World/AttachDisabled",
+                src0="/World/Cable",
+                type0="segment",
+                indices0=[0],
+                coords0=[(0.5, 0.0, 0.0)],
+                coords1=[(0.05, 0.0, 1.0)],
+                enabled=False,
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+
+            self.assertNotIn("/World/AttachDisabled", result["path_attachment_map"])
+            self.assertFalse(result["path_attachment_attrs"]["/World/AttachDisabled"]["enabled"])
+
+    def test_physics_attachment_cloth_source_warns_and_preserves_attrs(self):
+        """Cloth/volume attachments are surfaced but not lowered to fake constraints."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cloth_attachment.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            _add_cloth_mesh(stage, "/World/Cloth")
+            _add_physics_attachment(
+                stage,
+                "/World/AttachCloth",
+                src0="/World/Cloth",
+                type0="point",
+                indices0=[0],
+                coords1=[(0.0, 0.0, 1.0)],
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "cloth/volume"):
+                result = builder.add_usd(str(usd_path))
+
+            self.assertNotIn("/World/AttachCloth", result["path_attachment_map"])
+            attrs = result["path_attachment_attrs"]["/World/AttachCloth"]
+            self.assertEqual(attrs["src0"], "/World/Cloth")
+            self.assertIn("unsupported_reason", attrs)
 
 
 # Authored .usda cable asset (T7): loading it should replace the programmatic
