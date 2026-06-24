@@ -38,6 +38,7 @@ except ImportError:
 
 from .camera import Camera
 from .picking import Picking
+from .viewer import _DEFAULT_LAYER_ID
 from .viewer_gui import ViewerGui
 from .viewer_usd import ViewerUSD, _compute_segment_xform
 from .wind import Wind
@@ -65,6 +66,7 @@ def update_and_write_shape_transforms(
     body_q: wp.array[wp.transform],
     shape_worlds: wp.array[int],
     world_offsets: wp.array[wp.vec3],
+    layer_xform: wp.transform,
     scales: wp.array[wp.vec3],
     mat44_offset: int,
     m_out: wp.array[wp.mat44d],
@@ -85,6 +87,7 @@ def update_and_write_shape_transforms(
         w = shape_worlds[tid]
         if w >= 0 and w < world_offsets.shape[0]:
             world_xf = wp.transform(world_xf.p + world_offsets[w], world_xf.q)
+    world_xf = wp.transform_multiply(layer_xform, world_xf)
     # promote to f64
     p = world_xf.p
     q = world_xf.q
@@ -114,6 +117,16 @@ class ViewerRTX(ViewerUSD):
 
     # Available lighting environment presets.
     ENVIRONMENTS = ("default", "studio", "none")
+
+    @override
+    def activate(self, layer_id: str):
+        if (
+            getattr(self, "_phase", self._PHASE_BUILD) == self._PHASE_RENDER
+            and layer_id != _DEFAULT_LAYER_ID
+            and layer_id not in self._layers
+        ):
+            raise RuntimeError("ViewerRTX layers must be activated before the first rendered frame")
+        return super().activate(layer_id)
 
     def __init__(
         self,
@@ -724,7 +737,11 @@ void main() {
             except Exception as e:
                 raise RuntimeError(f"Failed to create window: {e}") from e
 
-        self._build_flat_shape_arrays()
+        self._use_layered_transform_updates = any(layer_id != _DEFAULT_LAYER_ID for layer_id in self._layers)
+        if self._use_layered_transform_updates:
+            self._flat_total_shapes = 0
+        else:
+            self._build_flat_shape_arrays()
 
         self._phase = self._PHASE_RENDER
 
@@ -1266,6 +1283,11 @@ void main() {
         if self._phase == self._PHASE_BUILD:
             # Build phase: delegate fully to base so USD prims are set up normally.
             super().log_state(state)
+        elif self._use_layered_transform_updates:
+            # Multiple layers carry different models and layer transforms.
+            # Queue this active layer's transforms; end_frame() flushes all
+            # queued layer updates through the shared OVRTX binding.
+            super().log_state(state)
         else:
             # Render phase: flat arrays (built at end of build phase) handle all shape
             # transform updates in a single kernel launch — no per-batch work needed here.
@@ -1332,6 +1354,7 @@ void main() {
         with wp.ScopedTimer("ViewerRTX::begin_frame", active=PROFILE_ENABLED, use_nvtx=True):
             super().begin_frame(time)
             self._pending_xforms.clear()
+            self._pending_instance_visibility.clear()
             self._pending_mesh_points.clear()
             self._pending_mesh_normals.clear()
             self._pending_line_batches.clear()
@@ -1373,6 +1396,7 @@ void main() {
         with wp.ScopedTimer("ViewerRTX::end_frame", active=PROFILE_ENABLED, use_nvtx=True):
             self._update_ovrtx_camera()
             self._update_ovrtx_transforms()
+            self._update_ovrtx_instance_visibility()
             self._update_ovrtx_line_batches()
             self._update_ovrtx_point_batches()
             self._update_ovrtx_mesh_points()
@@ -1411,6 +1435,8 @@ void main() {
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
         """
+        name = self._qualify(name)
+
         if self._phase == self._PHASE_BUILD:
             super().log_mesh(
                 name,
@@ -1462,6 +1488,9 @@ void main() {
             materials: Array of materials.
             hidden: Whether the instances are hidden.
         """
+        name = self._qualify(name)
+        mesh = self._qualify(mesh)
+
         if self._phase == self._PHASE_BUILD:
             super().log_instances(name, mesh, xforms, scales, colors, materials, hidden)
             if xforms is not None:
@@ -1469,6 +1498,7 @@ void main() {
                 paths = [self._get_path(name) + f"/instance_{i}" for i in range(count)]
                 self._instance_prim_paths[name] = paths
         else:
+            self._pending_instance_visibility[name] = not hidden
             if xforms is not None:
                 if scales is None:
                     scales = wp.ones(len(xforms), dtype=wp.vec3, device=xforms.device)
@@ -1494,6 +1524,8 @@ void main() {
             width: Line width [m].
             hidden: Whether the lines are initially hidden.
         """
+        name = self._qualify(name)
+
         if self._phase == self._PHASE_BUILD:
             super().log_lines(name, starts, ends, colors, width, hidden)
             self._line_batch_paths[name] = self._get_path(name)
@@ -1524,6 +1556,8 @@ void main() {
             colors: Array of point colors, a single RGB triplet, or ``None``.
             hidden: Whether the points are hidden.
         """
+        name = self._qualify(name)
+
         if self._phase == self._PHASE_BUILD:
             if points is None:
                 return None
@@ -1603,6 +1637,7 @@ void main() {
                             body_q,
                             self._flat_shape_worlds,
                             world_offsets,
+                            self.layer.xform,
                             self._flat_shape_scales,
                             self._flat_mat44_offset,
                             matrices,
@@ -1628,6 +1663,20 @@ void main() {
 
                 if matrices.device.is_cuda:
                     mapping.unmap(stream=matrices.device.stream.cuda_stream)
+
+    def _update_ovrtx_instance_visibility(self):
+        if self._rtx is None or not self._pending_instance_visibility:
+            return
+
+        for name, visible in self._pending_instance_visibility.items():
+            paths = self._instance_prim_paths.get(name)
+            if not paths:
+                continue
+            self._rtx.write_attribute(
+                prim_paths=paths,
+                attribute_name="visibility",
+                tensor=["inherited" if visible else "invisible"] * len(paths),
+            )
 
     @staticmethod
     def _make_laned_array_dltensor(values_np: np.ndarray, lanes: int):
@@ -1945,6 +1994,12 @@ void main() {
         UI callbacks, releases the picking and wind helpers, and drains the
         async rendering pipeline before releasing the renderer.
         """
+        if self._has_other_user_layers():
+            raise RuntimeError(
+                "ViewerRTX cannot clear one layer while other user layers are still live; "
+                "create a new ViewerRTX for a different layered scene."
+            )
+
         # Drop example-registered side/free UI callbacks (panel/stats/rendering persist).
         if getattr(self, "gui", None) is not None:
             self.gui.clear_example_callbacks()
@@ -1983,6 +2038,7 @@ void main() {
         self._point_batch_synced_counts = {}
 
         self._pending_xforms = {}
+        self._pending_instance_visibility = {}
         self._pending_mesh_points = {}
         self._pending_mesh_normals = {}
         self._pending_line_batches = {}
@@ -1994,6 +2050,7 @@ void main() {
         self._flat_shape_scales = None
         self._flat_total_shapes = 0
         self._flat_mat44_offset = 0
+        self._use_layered_transform_updates = False
 
         self._last_state = None
         self._last_control = None
@@ -2005,6 +2062,11 @@ void main() {
         self._camera_dirty = True
 
         super().clear_model()
+
+    def _has_other_user_layers(self) -> bool:
+        active_layer_id = getattr(self, "_active_layer_id", _DEFAULT_LAYER_ID)
+        layers = getattr(self, "_layers", {})
+        return any(layer_id != _DEFAULT_LAYER_ID and layer_id != active_layer_id for layer_id in layers)
 
     def _ui_populate_rendering_panel(self, imgui):
         """Render RTX-specific items inside the Rendering Options panel section."""

@@ -112,7 +112,7 @@ def compute_com_world_position(body_q, body_com, body_world, world_offsets=None,
     wp.launch(
         kernel=compute_com_positions,
         dim=body_q.shape[0],
-        inputs=[body_q, body_com, body_world, world_offsets, None],
+        inputs=[body_q, body_com, body_world, world_offsets, wp.transform_identity(), None],
         outputs=[com_world],
         device=body_q.device,
     )
@@ -400,6 +400,57 @@ def test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd(
     # body_qd stays world-frame at the COM regardless of joint anchor rotations.
     np.testing.assert_allclose(state_1.body_qd.numpy()[body, 0:3], (0.0, 0.0, -10.0 * dt), atol=1e-5)
     np.testing.assert_allclose(state_1.body_qd.numpy()[body, 3:6], (0.0, 0.0, 0.0), atol=1e-5)
+
+
+def test_featherstone_d6_three_angular_body_qd_matches_fk(
+    test: TestBodyVelocity,
+    device,
+):
+    """SolverFeatherstone's reported body_qd should match eval_fk for a D6 joint
+    with three angular DOFs at a non-identity configuration.
+
+    The Featherstone state update and the public eval_fk must agree on the
+    world-frame angular velocity, which is the transported-axis sum rather than
+    the raw joint_qd.
+    """
+    cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
+    builder = newton.ModelBuilder(gravity=0.0)
+    child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
+    builder.add_shape_sphere(child, radius=0.1)
+    j = builder.add_joint_d6(
+        parent=-1,
+        child=child,
+        angular_axes=[
+            cfg(axis=newton.Axis.X),
+            cfg(axis=newton.Axis.Y),
+            cfg(axis=newton.Axis.Z),
+        ],
+    )
+    builder.add_articulation([j])
+
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
+    state_0 = model.state()
+    state_1 = model.state()
+
+    q = state_0.joint_q.numpy()
+    qd = state_0.joint_qd.numpy()
+    q[:3] = [0.5, -0.4, 0.7]
+    qd[:3] = [0.9, -0.6, 0.3]
+    state_0.joint_q.assign(q)
+    state_0.joint_qd.assign(qd)
+
+    # Reference angular velocity from the (corrected) public FK.
+    reference = model.state()
+    reference.joint_q.assign(q)
+    reference.joint_qd.assign(qd)
+    newton.eval_fk(model, reference.joint_q, reference.joint_qd, reference)
+    expected = reference.body_qd.numpy()[child]
+
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    solver.step(state_0, state_1, model.control(), None, 1.0e-7)
+
+    np.testing.assert_allclose(state_1.body_qd.numpy()[child], expected, atol=1.0e-5, rtol=1.0e-6)
 
 
 def test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent(
@@ -818,6 +869,12 @@ for device in devices:
                 tolerance=tolerance,
             )
 
+    add_function_test(
+        TestBodyVelocity,
+        "test_featherstone_d6_three_angular_body_qd_matches_fk",
+        test_featherstone_d6_three_angular_body_qd_matches_fk,
+        devices=[device],
+    )
     add_function_test(
         TestBodyVelocity,
         "test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent",

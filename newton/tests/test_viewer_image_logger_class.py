@@ -368,5 +368,80 @@ class TestViewerGLClearModelClearsImageLogger(unittest.TestCase):
             viewer.close()
 
 
+class TestViewerGLInitialization(unittest.TestCase):
+    def test_headless_init_handles_initial_clear_model(self):
+        """ViewerBase.__init__ calls ViewerGL.clear_model before GL setup."""
+
+        class _FakeWindow:
+            scale = 1.0
+
+            def get_framebuffer_size(self):
+                return (640, 480)
+
+            def get_size(self):
+                return (640, 480)
+
+        class _FakeRenderer:
+            def __init__(self, *args, **kwargs):
+                self.window = _FakeWindow()
+                self.closed = False
+
+            def set_title(self, title):
+                self.title = title
+
+            def register_key_press(self, callback):
+                pass
+
+            def register_key_release(self, callback):
+                pass
+
+            def register_mouse_press(self, callback):
+                pass
+
+            def register_mouse_release(self, callback):
+                pass
+
+            def register_mouse_drag(self, callback):
+                pass
+
+            def register_mouse_scroll(self, callback):
+                pass
+
+            def register_resize(self, callback):
+                pass
+
+            def close(self):
+                self.closed = True
+
+        class _FakeImageLogger:
+            def __init__(self, device, sidebar_width_px=0.0, dpi_scale=1.0):
+                self.device = device
+
+            def clear_matching(self, owns):
+                pass
+
+            def clear(self):
+                pass
+
+        from newton._src.viewer import viewer_gl  # noqa: PLC0415
+
+        with (
+            mock.patch.object(viewer_gl, "RendererGL", _FakeRenderer),
+            mock.patch.object(viewer_gl, "ImageLogger", _FakeImageLogger),
+            mock.patch.object(viewer_gl, "Camera"),
+        ):
+            viewer = viewer_gl.ViewerGL(headless=True)
+
+        try:
+            viewer.log_scalar("metric", 1.0)
+            self.assertIn("metric", viewer._scalar_buffers)
+
+            viewer.clear_model()
+
+            self.assertNotIn("metric", viewer._scalar_buffers)
+        finally:
+            viewer.close()
+
+
 if __name__ == "__main__":
     unittest.main()
