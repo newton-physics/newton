@@ -323,24 +323,21 @@ add_basic_example_test(
     test_options={"num-frames": 100},
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_dzhanibekov",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 230, "solver": "vbd"},
     test_suffix="vbd",
 )
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_dzhanibekov",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 230, "solver": "xpbd"},
     test_suffix="xpbd",
 )
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_dzhanibekov",
     devices=test_devices,
     use_viewer=True,
@@ -348,8 +345,7 @@ add_example_test(
     test_suffix="mujoco",
 )
 
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_multi_solver_overlay",
     devices=test_devices,
     use_viewer=True,
