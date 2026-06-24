@@ -269,12 +269,15 @@ def _rnea_compensation_pass(
         eval_rigid_id,
         dim=model.articulation_count,
         inputs=[
-            model.articulation_start,
             mask,
+            model.articulation_start,
+            model.articulation_end,
             model.joint_type,
             model.joint_parent,
             model.joint_child,
+            model.joint_q_start,
             model.joint_qd_start,
+            state.joint_q,
             scratch.joint_qd_internal,
             model.joint_axis,
             model.joint_dof_dim,
@@ -302,16 +305,18 @@ def _rnea_compensation_pass(
         eval_rigid_tau,
         dim=model.articulation_count,
         inputs=[
-            model.articulation_start,
             mask,
+            model.articulation_start,
+            model.articulation_end,
             model.joint_type,
             model.joint_parent,
             model.joint_child,
             model.joint_q_start,
             model.joint_qd_start,
+            model.joint_target_q_start,
             model.joint_dof_dim,
-            scratch.zeros_dof,  # joint_target_pos
-            scratch.zeros_dof,  # joint_target_vel
+            scratch.zeros_dof,  # joint_target_q
+            scratch.zeros_dof,  # joint_target_qd
             state.joint_q,
             scratch.joint_qd_internal,
             scratch.zeros_dof,  # joint_f
@@ -321,6 +326,7 @@ def _rnea_compensation_pass(
             model.joint_limit_upper,
             scratch.zeros_dof,  # joint_limit_ke
             scratch.zeros_dof,  # joint_limit_kd
+            scratch.zeros_dof,  # joint_damping
             scratch.joint_S_s,
             scratch.body_f_s,
             scratch.zeros_body,  # body_f_ext
