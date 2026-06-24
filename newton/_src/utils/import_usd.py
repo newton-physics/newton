@@ -50,7 +50,6 @@ from ..usd.schemas import SchemaResolverNewton
 from .import_utils import should_show_collider
 
 _logger = logging.getLogger(__name__)
-logger = logging.getLogger("newton")
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -555,7 +554,7 @@ def parse_usd(
         if texture is not None:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
-            logger.info("Mesh %s: dropping texture because UVs could not be recovered.", path_name)
+            _logger.info("Mesh %s: dropping texture because UVs could not be recovered.", path_name)
             mesh.texture = None
         if material_props.get("color") is not None and mesh.texture is None:
             mesh.color = material_props["color"]
@@ -662,7 +661,7 @@ def parse_usd(
         if texture:
             submesh.texture = texture
         if submesh.texture is not None and submesh.uvs is None:
-            logger.info("Mesh material subset %s: dropping texture because UVs could not be recovered.", path_name)
+            _logger.info("Mesh material subset %s: dropping texture because UVs could not be recovered.", path_name)
             submesh.texture = None
 
         color = material_props.get("color")
@@ -707,7 +706,7 @@ def parse_usd(
             subset_indices = np.asarray(subset.GetIndicesAttr().Get(), dtype=np.int32)
             valid = (subset_indices >= 0) & (subset_indices < len(face_counts))
             if not np.all(valid):
-                logger.info(
+                _logger.info(
                     "Mesh material subset %s: face indices outside the mesh face range; "
                     "out-of-range indices will be ignored.",
                     subset_path,

@@ -18,7 +18,7 @@ from ..sim.model import Model
 from ..utils.color import color_linear_to_srgb
 from ..utils.texture import linear_texture_to_srgb, load_texture
 
-logger = logging.getLogger("newton")
+_logger = logging.getLogger(__name__)
 
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
@@ -1150,7 +1150,7 @@ def get_mesh(
         # were converted to per-vertex. Avoid a second split here.
         if uvs_interpolation == UsdGeom.Tokens.faceVarying and not did_split_vertices:
             if len(uvs) != len(indices):
-                logger.info(
+                _logger.info(
                     "Mesh %s: UV primvar length (%d) does not match indices length (%d); dropping UVs.",
                     prim.GetPath(),
                     len(uvs),
