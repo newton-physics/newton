@@ -1905,30 +1905,18 @@ class USDImporter:
         # Articulations
         ###
 
-        # Construct a list of articulation root bodies to create FREE
-        # joints if not already defined explicitly in the USD file
+        # Articulation roots are intentionally not parsed. Kamino is a maximal-coordinate,
+        # constraint-based solver: it represents every joint (including kinematic loop closures)
+        # as a constraint and needs no spanning-tree articulation. Honoring USD
+        # ``PhysicsArticulationRootAPI`` here would route the model through the DFS tree ordering
+        # in ``topological_sort_undirected`` below, which rejects loop closures with a
+        # "Joint graph contains a cycle" error (it does not honor ``excludeFromArticulation``).
+        # Leaving this empty restores the pre-articulation-metadata behavior: all joints are added
+        # directly, in document order, and loops are handled natively by the solver. The FREE
+        # root-to-world joint auto-insertion is likewise skipped; assets that need a free base
+        # author an explicit world joint (and an unjointed body is already free in maximal
+        # coordinates).
         articulation_root_body_paths = []
-        if self.UsdPhysics.ObjectType.Articulation in ret_dict:
-            paths, articulation_descs = ret_dict[self.UsdPhysics.ObjectType.Articulation]
-            for path, _desc in zip(paths, articulation_descs, strict=False):
-                articulation_prim = stage.GetPrimAtPath(path)
-                try:
-                    parent_prim = articulation_prim.GetParent()
-                except Exception:
-                    parent_prim = None
-                if articulation_prim.HasAPI(self.UsdPhysics.ArticulationRootAPI):
-                    if self._prim_is_rigid_body(articulation_prim):
-                        msg.debug(f"Adding articulation_prim at '{path}' as articulation root body")
-                        articulation_root_body_paths.append(articulation_prim.GetPath())
-                elif (
-                    parent_prim is not None
-                    and parent_prim.IsValid()
-                    and parent_prim.HasAPI(self.UsdPhysics.ArticulationRootAPI)
-                ):
-                    if self._prim_is_rigid_body(parent_prim):
-                        msg.debug(f"Adding parent_prim at '{parent_prim.GetPath()}' as articulation root body")
-                        articulation_root_body_paths.append(parent_prim.GetPath())
-        msg.debug(f"articulation_root_body_paths: {articulation_root_body_paths}")
 
         ###
         # Bodies
