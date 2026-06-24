@@ -4,48 +4,66 @@
 
 ### Added
 
-- Add opt-in `validate_mesh` parameter to `ModelBuilder.add_cloth_mesh()`, `ModelBuilder.add_soft_mesh()`, and `style3d.add_cloth_mesh()` that warns on degenerate geometry; add public `newton.utils.validate_triangle_mesh()` and `newton.utils.validate_tet_mesh()` utilities
-- Add `ViewerGL.show_loading_splash()` / `ViewerGL.hide_loading_splash()` displaying a stylized Newton's-cradle overlay while the GL viewer waits on Warp kernel compilation; raised automatically by `newton.examples.init()` for visible GL viewers
-- Add edge-simplification options to `Mesh.build_sdf()` that drop near-coplanar internal edges from the mesh-edge set used by SDF-mesh contact generation: `edge_lower_angle_threshold_rad` (default 0.1°; pass a negative value to opt out and keep the full edge set), `edge_upper_angle_threshold_rad`, opt-in `edge_box_absorption`, and box half-extent controls `edge_box_half_{normal,lateral}` / `edge_box_half_{normal,lateral}_rel`
-- Add `cable_cross_slide_table` example demonstrating a cable-driven XY table
-- Add an optional `kernel_block_dim` argument to `SensorTiledCamera.update()` for tuning the Warp ray-tracer's `render_megakernel` launch shape.
-- Add `rec_id` parameter to `ViewerRerun` for specifying the recording ID, enabling multiple processes to share a single Rerun recording
-- Add `ArticulationView.joint_template_labels`, `link_template_labels` (aliased as `body_template_labels`), and `shape_template_labels` exposing the raw template-articulation labels alongside the existing leaf-only `*_names`, so callers can disambiguate selected entries whose leaf names collide.
-- Add three VBD contact examples — `vbd_rigid_rigid_contact`, `vbd_soft_rigid_contact`, and `vbd_soft_rigid_mix_contact` — demonstrating rigid-rigid, soft (particle-rigid), and mixed cloth-bag contacts
-- Parse URDF `<material>` colors (inline `<color rgba>` and named material references) during import and apply them to `ModelBuilder.shape_color` for all shape types
-- Add robotics tutorial notebook covering ModelBuilder, solvers, CUDA graphs, IK, and pick-and-place
-- Add `newton.utils.OnnxRuntime`, a graph-capturable ONNX inference engine backed solely by Warp kernels (no `onnxruntime` or `torch` runtime dependency); used by `ControllerNeuralMLP` and `ControllerNeuralLSTM` to load `.onnx` policies. To migrate a TorchScript policy, run `torch.onnx.export(model, dummy_input, "policy.onnx", opset_version=17)` once and point the controllers at the resulting `.onnx` file. The `onnx` package is now an optional extra (`pip install newton[onnx]`); install it explicitly to use the ONNX runtime.
-- Add USD parsing for `NewtonSiteAPI` to mark shapes as sites.
-- Add `ViewerRTX`, a real-time ray-traced viewer powered by NVIDIA OVRTX.
-- Support negative (mirrored) scale on mesh, convex hull, and SDF shapes, so a single `Mesh` instance can be shared across shapes with different signed scales without re-baking
-- Add `newton.utils.ColorSpace`, `color_srgb_to_linear()`, `color_linear_to_srgb()`, and `SensorTiledCamera.RenderConfig.output_color_space` for color-space boundaries
 - Add `cloth_stiff_material_hanging` and `cloth_stiff_material_stretch` examples regression-guarding the new Neo-Hookean triangle material (stability under gravity at extreme stiffness, and bulk area-preservation across a Poisson-ratio sweep)
+- Add three VBD contact examples — `vbd_rigid_rigid_contact`, `vbd_soft_rigid_contact`, and `vbd_soft_rigid_mix_contact` — demonstrating rigid-rigid, soft (particle-rigid), and mixed cloth-bag contacts
+- Add viewer layer system to overlay multiple solvers/models in supported rendering viewers; call `ViewerBase.activate(layer_id)` to route subsequent `set_model` / `log_state` / `log_*` calls into a named layer, `ViewerBase.set_layer_visible()` to toggle layers independently, and `ViewerBase.set_layer_transform()` to position layers side-by-side. See `example_basic_multi_solver_overlay.py`
+- Add `viewer.set_picking_linear_only_bodies()` and `viewer.clear_picking_linear_only_bodies()` to mark bodies that should receive only the linear component of mouse-picking force, suppressing offset-induced torque.
+- Add opt-in `body_frame_origin="com"` to `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()` for COM-centered cable capsule body frames.
+- Add user-defined pressure laws to hydroelastic SDF contact via `HydroelasticSDF.Config.pressure_func` (a `@wp.func` mapping `(signed_depth, shape_idx, data) -> pressure`) and `pressure_data` (a `@wp.struct` carrying per-shape state). The contact patch is the iso-pressure surface `p_a == p_b`; the default linear law `pressure = -kh * signed_depth` is preserved when no callback is supplied.
+- Add `SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)` for applying the checkerboard texture to selected shapes.
 - Add `--render-fps` to cap example rendering rate without changing simulation frame timing
 
 ### Changed
 
+- Change the default CoACD convex decomposition threshold from `0.5` to `0.05` to match CoACD's default; pass `remeshing_kwargs={"threshold": 0.5}` to preserve the previous coarse decomposition.
 - **Breaking change (experimental `SolverVBD`):** VBD now interprets all damping coefficients as absolute physical units instead of dimensionless stiffness-relative (Rayleigh) multipliers (`D = kd · ke`). Existing `kd`-family values will produce different damping. Affected parameters: tetrahedral `k_damp` [Pa·s], `tri_kd`, spring `kd` [N·s/m], cable `stretch_damping` [N·s/m] and `bend_damping` [N·m·s/rad] in `add_joint_cable()`/`add_rod()`/`add_rod_graph()`, `joint_target_kd` and `joint_limit_kd` (including `JointDofConfig.limit_kd`), shape contact `kd`/`shape_material_kd` and `soft_contact_kd` [N·s/m], and `SolverVBD(rigid_joint_linear_kd=…, rigid_joint_angular_kd=…)`. To preserve previous behavior, set `kd_new = kd_old · k`, where `k` is the stiffness or penalty coefficient the value was previously paired with, and pass the product to the same field.
 - Change `SolverKamino.reset(world_mask=...)` to accept `wp.bool` arrays instead of `wp.int32`; callers passing `wp.int32` masks must switch to `wp.bool` (e.g. `wp.array([False, True, False], dtype=wp.bool)` or `wp.ones((num_worlds,), dtype=wp.bool)`). (#2934)
+- Change `SolverFeatherstone` FREE/DISTANCE `joint_qd` to use the public Newton convention: callers must pass six values per joint as child-COM linear velocity followed by angular velocity, both expressed in the joint parent frame; floating-root FREE/DISTANCE articulations now use a root-COM-centered internal solve frame for improved stability far from the world origin.
+- Assign one default visual color to capsule segments generated by `ModelBuilder.add_rod()` or `add_rod_graph()`; pass `color=` to choose an explicit cable color.
+- `SolverVBD` now applies each shape's `ShapeConfig.margin` (`model.shape_margin`) to particle-rigid (soft) contacts, widening the soft-contact detection shell and reducing penetration depth per shape; previously only the global `soft_contact_margin` and particle radius were used. Re-check VBD scenes that set per-shape margins. (#2994)
+
+### Deprecated
+
+- Deprecate omitting `body_frame_origin` in `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()`; the implicit behavior still uses the existing start-node body-frame convention during the deprecation window, but the implicit default will change to `body_frame_origin="com"` in a future release. Pass `body_frame_origin="start"` to preserve the legacy frame or `body_frame_origin="com"` to opt into the future COM-centered frame.
 - Change VBD Neo-Hookean membrane/tet damping to an objective metric based on the rate of `C = FᵀF`, so rigid-body rotations no longer generate damping force.
 - Change VBD spring damping to act only along the spring axis (damping edge-length rate), so transverse and rigid-rotational motion is no longer damped by springs.
-- `SolverVBD` now applies each shape's `ShapeConfig.margin` (`model.shape_margin`) to particle-rigid (soft) contacts, widening the soft-contact detection shell and reducing penetration depth per shape; previously only the global `soft_contact_margin` and particle radius were used. Re-check VBD scenes that set per-shape margins. (#2994)
 
 ### Fixed
 
+- Fix `ViewerFile.is_running()` to return `False` after `ViewerFile.close()` so headless recording loops can terminate like interactive viewers. (#3094)
+- Fix `SolverVBD` rigid contact injecting kinetic energy for yawed finite-radius contacts (e.g. small-radius cables blowing up). The normal response now acts at the geometric skeleton point rather than the rotating surface anchor, which was non-conservative under reorientation; friction still uses the surface anchor to preserve finite-radius slip. (#3125)
 - Fix `SolverKamino` contact filtering and constraint stabilization so gap/margin contacts are handled consistently, positive-distance contacts can be filtered as configured, and converted contact forces/wrenches populate matching Newton contact slots for `SensorContact`. (#2908)
+- Fix `newton.eval_jacobian`, `SolverFeatherstone`, and the IK analytic Jacobian building `JointType.D6` angular motion-subspace columns from raw axes, so `J @ joint_qd` now matches `State.body_qd` for two- or three-angular-DOF joints at non-identity configurations.
 - Fix mesh inertia computation to produce deterministic results across repeated CUDA runs. (#3136)
+- Fix USD import so non-unit `metersPerUnit` and `kilogramsPerUnit` warn as unsupported, and stop scaling `PhysicsScene` gravity magnitude by `metersPerUnit`.
+- Fix `SolverMuJoCo` reporting incorrect `State.body_qd` angular velocity for `JointType.D6` joints with two or three angular DOFs at non-identity configurations.
 - Fix VBD collision damping to use relative normal gap rate so uniform contact-stencil motion and tangential sliding do not create artificial normal damping.
+- Fix `RenderContext` triangle mesh construction by removing the unsupported `device=` keyword from `wp.Mesh(...)`.
 - Fix MJCF `euler` producing wrong orientations for multi-component angles by treating angles as intrinsic rotations. (#3030)
+- Fix `newton.eval_fk` / `newton.eval_ik` producing wrong rotations and joint velocities for `JointType.D6` with three angular DOFs whose axes form a left-handed orthonormal basis.
 - Fix MJCF parsing so attributes from multiple `<compiler>` elements, including `<include>`-expanded children, are merged in document order. (#3030)
 - Fix MJCF worldbody static geoms bypassing the visual/collider class filter, so `parse_visuals=False` drops visual-class geoms attached directly to `<worldbody>` too. (#3030)
 - Fix `cable_cross_slide_table` example stability so the cable-driven table reliably tracks its rectangular path and catches drift during regression runs.
 - Fix URDF `package://` mesh fallback resolution without `resolve-robotics-uri-py` so package names only match full path components instead of unrelated directory-name substrings
+- Fix `ModelBuilder.collapse_fixed_joints()` crashing with `IndexError` when a `mujoco:equality_constraint` row omits optional fields (`anchor`, `relpose`) that carry defaults. (#3054)
+- Fix `ViewerGL.set_model()` resetting headless/interactive camera and wind state when switching between models that use the same up-axis. (#2658)
 
 ### Removed
 
 - Remove the deprecated Style3D `CollisionHandler`; use `Collision` instead
+- Remove the deprecated `state=None` and `refit_bvh` arguments of `SensorTiledCamera.update()`; pass a `State` and refit BVHs explicitly via `Model.bvh_refit_shapes()` / `Model.bvh_refit_particles()` before rendering frames that change geometry
+- Remove support for the legacy `newton_actuators`-style `ModelBuilder.add_actuator(actuator_class, input_indices=...)` signature; use `add_actuator(controller_class, index=..., ...)` with `newton.actuators` controllers (e.g. `ControllerPD`, `ControllerPID`) instead
+- Remove the deprecated `newton-actuators` package dependency; all actuator functionality is built into `newton.actuators`
+- Remove the deprecated implicit MPM `collider_velocity_mode` aliases `'finite_difference'` and `'instantaneous'` (deprecated in 1.1.0); use `'backward'` and `'forward'` instead
+- Remove the deprecated `Viewer.update_shape_colors()`; write to `Model.shape_color` directly instead
+- Remove body armature: drop `ModelBuilder.default_body_armature`, the `armature` parameter of `ModelBuilder.add_link()` and `add_body()`, and USD-authored body `newton:armature` (deprecated in 1.1.0); add any isotropic artificial inertia directly to `inertia` instead. All `add_link()` and `add_body()` parameters are now keyword-only
+- Remove support for passing a `Gaussian` as the second positional argument to `ModelBuilder.add_shape_gaussian()` (deprecated in 1.1.0); pass it via the `gaussian=` keyword instead
+- Remove support for `worlds_per_row=0` in `SensorTiledCamera.flatten_*_to_rgba()` (deprecated in 1.2.0); pass `worlds_per_row=None` for automatic layout (values below 1 now raise `ValueError`) (#3149)
+- Remove the deprecated SensorTiledCamera 1.1 API surface: `Config`, `RenderContext`, `render_context`, image helper methods, and random color helpers; use `RenderConfig`, `render_config`, `SensorTiledCamera.utils.*`, and per-shape colors instead
+- Remove the deprecated `SensorRaycast`; use `SensorTiledCamera` (`SensorTiledCamera.utils.compute_pinhole_camera_rays()` and `create_depth_image_output()` for single-camera depth) instead
 - Remove the deprecated `max_worlds` parameter of `ViewerBase.set_model()`; call `ViewerBase.set_visible_worlds()` after `set_model()` instead
 - Remove the deprecated `a`, `b`, `c` parameters of `ModelBuilder.add_shape_ellipsoid()` (deprecated in 1.1.0); use `rx`, `ry`, `rz` instead
+- Remove the deprecated and ignored `rigid_enable_dahl_friction` argument of `SolverVBD`; Dahl friction is auto-detected from `model.vbd.dahl_eps_max` / `model.vbd.dahl_tau`
 
 ## [1.3.0] - 2026-06-11
 
@@ -67,6 +85,7 @@
 - Document loop closure in the articulations concept page, covering the omit-from-`add_articulation` pattern and USD `excludeFromArticulation` with per-solver caveats
 - Add `model.mujoco.equality_constraint_objtype`, `_target_kind`, and `_target` fields, recording the object kind a MuJoCo equality references and whether it was projected onto a native loop joint or mimic constraint for solver portability. (#2959)
 - Add `newton.actuators.SchemaNames` exposing the canonical USD schema token constants used by `parse_actuator_prim` for actuator USD parsing
+- Add `basic_dzhanibekov` example demonstrating free rigid-body intermediate-axis instability across VBD, XPBD, and MuJoCo solvers
 - Parse URDF `<material>` colors (inline `<color rgba>` and named material references) during import and apply them to `ModelBuilder.shape_color` for all shape types
 - Add opt-in `collapse_massless_fixed_root` to URDF and MJCF importers to collapse massless fixed-root chains for maximal-coordinate solvers while preserving topology by default
 - Parse `NewtonSDFCollisionAPI` attributes from USD in `ModelBuilder.add_usd()`, including the `newton:hydroelasticEnabled` toggle, absolute narrow band / margin, texture format, hydroelastic stiffness (`newton:hydroelasticStiffness`), and applied-API schema defaults. Hydroelastic configuration is folded into `NewtonSDFCollisionAPI` and opted into via `newton:hydroelasticEnabled` (default `false`). SDF generation is opt-in by applying the API; for primitive shapes the SDF is only built when hydroelastic is also enabled. (#2533)
@@ -117,6 +136,7 @@
 
 - Users of joint target aliases should migrate `Model.joint_target_pos` / `Control.joint_target_pos` and `Model.joint_target_vel` / `Control.joint_target_vel` to `joint_target_q` / `joint_target_qd`. The legacy names emit a `DeprecationWarning` and raise `AttributeError` when `newton.use_coord_layout_targets = True`. Set that flag before building a model to switch `joint_target_q` to `joint_coord_count` shape (matching `joint_q`); the default `False` keeps the legacy `joint_dof_count` layout. `ModelBuilder.joint_target_pos` / `ModelBuilder.joint_target_vel` are now read-only deprecated aliases (the writable attributes are removed) — set per-axis targets via `JointDofConfig.target_pos` / `target_vel` or write directly to `ModelBuilder.joint_target_q` / `joint_target_qd`. (#2965)
 - Actuator users should pass `control_target_pos_attr="joint_target_q"` (and the velocity counterpart) explicitly to adopt the future default now. The implicit `Actuator` default that resolves `control_target_pos_attr` / `control_target_vel_attr` to legacy `joint_target_pos` / `joint_target_vel` when `newton.use_coord_layout_targets` is `False` is deprecated and will switch to `joint_target_q` / `joint_target_qd` in a future release. (#2965)
+- Deprecate `SensorTiledCamera.utils.assign_checkerboard_material_to_all_shapes()` in favor of `SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)`.
 - Deprecate `SolverNotifyFlags` in favor of `ModelFlags`; migrate calls such as `SolverNotifyFlags.MODEL_PROPERTIES` to `ModelFlags.MODEL_PROPERTIES`. (#2657)
 - `SolverVBD.register_custom_attributes()` users who want Dahl cable friction should pass `dahl_defaults_enabled=False` and explicitly author positive `model.vbd.dahl_eps_max` and `model.vbd.dahl_tau` values instead of relying on registered default values. Implicit positive Dahl defaults are deprecated. (#2921)
 - Deprecate `Model.mujoco.dof_passive_damping` in favor of `Model.joint_damping`; MuJoCo `damping` import now populates `Model.joint_damping` and the old namespaced attribute remains a warning alias. (#2304)
@@ -290,7 +310,7 @@
 - Fix `SolverMuJoCo` passing non-zero geom/pair margins to `mujoco_warp.put_model()`, which fails when NATIVECCD is enabled. Margins are forced to zero when MuJoCo handles collisions (`use_mujoco_contacts=True`); the Newton collision pipeline (`use_mujoco_contacts=False`) is unchanged
 - Fix `SolverMuJoCo` failing to compile planar mesh colliders with MuJoCo's convex-hull path when `use_mujoco_contacts=False`; use MuJoCo contacts only with non-planar mesh colliders, primitive planes, or thick proxy geometry
 - Fix GPU illegal-memory-access in `SolverMuJoCo` Newton-contacts fast path when `notify_model_changed(BODY_INERTIAL_PROPERTIES | JOINT_DOF_PROPERTIES | MODEL_PROPERTIES)` was called between substeps (e.g. mass randomization in IsaacLab), or when the bound `Contacts` instance / MJWarp `naconmax` changed without invalidating the cached `tid_to_cid` mapping. The fast path is now invalidated on any property notify that affects cached MJWarp contact fields, and bounds-checks `cid` against `naconmax` defensively
-- Fix `State.assign` not copying namespaced extended and custom state attributes 
+- Fix `State.assign` not copying namespaced extended and custom state attributes
 - Fix mesh-convex back-face contacts generating inverted normals that trap shapes inside meshes and cause solver divergence (NaN)
 - Fix triangle-mesh-vs-convex collisions silently dropping all contacts under non-uniform (and even large uniform) mesh scale: the BVH AABB query in `mesh_vs_convex_midphase` is now performed in unscaled mesh-local space (matching the BVH built over `mesh.points`), with the per-axis contact gap converted accordingly. Previously the query was performed in scaled mesh-local space, so any convex shape whose unscaled-space AABB lay outside the BVH bounds would receive 0 triangles and 0 contacts.
 - Fix finite plane geometry 2x too large in collision, bounding sphere, and raytrace sensor
@@ -413,7 +433,7 @@
 - Deprecate `SensorContact(include_total=...)` in favor of `SensorContact(measure_total=...)`
 - Deprecate `SensorContact.sensing_objs` in favor of `SensorContact.sensing_obj_idx`
 - Deprecate `SensorContact.counterparts` and `SensorContact.reading_indices` in favor of `SensorContact.counterpart_indices`
-- Deprecate `SensorContact.shape` (use `total_force.shape` and `force_matrix.shape` instead) 
+- Deprecate `SensorContact.shape` (use `total_force.shape` and `force_matrix.shape` instead)
 - Deprecate `SensorTiledCamera.render_context`; prefer `SensorTiledCamera.utils` and `SensorTiledCamera.render_config`.
 - Deprecate `SensorTiledCamera.RenderContext`; use `SensorTiledCamera.RenderConfig` for config types and `SensorTiledCamera.render_config` / `SensorTiledCamera.utils` for runtime access.
 - Deprecate `SensorTiledCamera.Config`; prefer `SensorTiledCamera.RenderConfig` and `SensorTiledCamera.utils`.
