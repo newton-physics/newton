@@ -687,7 +687,19 @@ def load_meshes_from_file(
     if filename.lower().endswith(".dae"):
         dae_face_materials, dae_material_colors = _parse_dae_material_colors(filename)
 
-    tri = trimesh.load(filename, force="mesh")
+    if filename.lower().endswith(".dae"):
+        with warnings.catch_warnings():
+            # Remove when the pycollada floor includes a release that replaces
+            # load-time NumPy array shape assignment with reshape.
+            warnings.filterwarnings(
+                "ignore",
+                message=r"Setting the shape on a NumPy array has been deprecated.*",
+                category=DeprecationWarning,
+                module=r"^collada\.",
+            )
+            tri = trimesh.load(filename, force="mesh")
+    else:
+        tri = trimesh.load(filename, force="mesh")
     tri_meshes = tri.geometry.values() if hasattr(tri, "geometry") else [tri]
 
     meshes = []

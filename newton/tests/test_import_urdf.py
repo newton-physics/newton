@@ -5,7 +5,9 @@ import base64
 import os
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -14,6 +16,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
+from newton._src.utils.mesh import load_meshes_from_file
 from newton.tests.unittest_utils import assert_np_equal
 
 try:
@@ -457,6 +460,52 @@ class TestImportUrdfBasic(unittest.TestCase):
             mesh = builder.shape_source[0]
             self.assertIsNotNone(mesh.texture)
             self.assertEqual(mesh.texture, texture_uri)
+
+    def test_dae_pycollada_shape_deprecation_filtered(self):
+        """Verify known pycollada NumPy deprecations do not fail strict warning runs."""
+
+        def make_loader(message: str, module_name: str):
+            def fake_load(filename, force=None):
+                warnings.warn_explicit(
+                    message=message,
+                    category=DeprecationWarning,
+                    filename=str(filename),
+                    lineno=1,
+                    module=module_name,
+                )
+                return SimpleNamespace(
+                    vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+                    faces=np.array([[0, 1, 2]], dtype=np.int32),
+                    vertex_normals=np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=np.float32),
+                )
+
+            return fake_load
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dae_path = Path(temp_dir) / "triangle.dae"
+            dae_path.write_text("<COLLADA/>")
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                with patch(
+                    "trimesh.load",
+                    side_effect=make_loader(
+                        "Setting the shape on a NumPy array has been deprecated in NumPy 2.5.",
+                        "collada.polylist",
+                    ),
+                ):
+                    meshes = load_meshes_from_file(str(dae_path), maxhullvert=0)
+
+            self.assertEqual(len(meshes), 1)
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                with patch(
+                    "trimesh.load",
+                    side_effect=make_loader("Different Collada deprecation", "collada.polylist"),
+                ):
+                    with self.assertRaises(DeprecationWarning):
+                        load_meshes_from_file(str(dae_path), maxhullvert=0)
 
     def test_inertial_params_urdf(self):
         builder = newton.ModelBuilder()
