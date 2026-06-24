@@ -43,6 +43,16 @@ except ImportError:
 START_DIRECTORY = os.path.dirname(__file__)  # The directory to start test discovery
 
 
+def _enable_strict_warnings():
+    """Escalate DeprecationWarnings and any newton.* warning to errors.
+
+    Installed before discovery and in each worker initializer so import-time
+    warnings from test modules are escalated too, not just runtime ones.
+    """
+    warnings.filterwarnings("error", category=DeprecationWarning)
+    warnings.filterwarnings("error", module=r"newton(\.|$)")
+
+
 def main(argv=None):
     """
     unittest-parallel command-line script main entry point
@@ -206,6 +216,11 @@ def main(argv=None):
 
     # Create the temporary directory (for coverage files)
     with tempfile.TemporaryDirectory() as temp_dir:
+        # Apply before discovery so import-time warnings are caught; also covers
+        # the serial-fallback path, which runs here.
+        if args.strict_warnings:
+            _enable_strict_warnings()
+
         # Discover tests
         with _coverage(args, temp_dir):
             test_loader = unittest.TestLoader()
@@ -516,15 +531,12 @@ class ParallelTestManager:
         newton.tests.unittest_utils.coverage_temp_dir = self.temp_dir
         newton.tests.unittest_utils.coverage_branch = self.args.coverage_branch
 
-        # Expose the warning policy to test modules (e.g. test_examples.py) and
-        # escalate the warnings we can act on to errors in this worker process when
-        # requested: all DeprecationWarnings (any source) plus any warning attributed
-        # to a newton.* module. Dependency-owned non-deprecation warnings stay
-        # warnings, since we cannot act on those.
+        # Publish the flag for subprocess-based tests (e.g. test_examples.py).
+        # Filters are applied earlier (pre-discovery and in the worker
+        # initializer); re-applying here is idempotent.
         newton.tests.unittest_utils.strict_warnings = self.args.strict_warnings
         if self.args.strict_warnings:
-            warnings.filterwarnings("error", category=DeprecationWarning)
-            warnings.filterwarnings("error", module=r"newton(\.|$)")
+            _enable_strict_warnings()
 
         if self.args.junit_report_xml:
             resultclass = ParallelJunitTestResult
@@ -648,6 +660,11 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
 
     It also ensures that Warp is initialized prior to running any tests.
     """
+
+    # Apply before the worker imports any test module (suites are imported on
+    # unpickle, before run_tests).
+    if args.strict_warnings:
+        _enable_strict_warnings()
 
     with lock:
         shared_index.value += 1
