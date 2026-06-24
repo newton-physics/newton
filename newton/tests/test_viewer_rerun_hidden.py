@@ -68,6 +68,20 @@ class TestViewerRerunHidden(unittest.TestCase):
         self.assertIn("hidden_mesh", viewer._meshes)
         self.mock_rr.log.assert_not_called()
 
+    def test_log_mesh_hidden_uses_layer_namespace(self):
+        """Layer-qualified hidden mesh templates should not collide across layers."""
+        viewer = self._create_viewer()
+        viewer.activate("solverA")
+
+        points = self._make_mock_wp_array([[0, 0, 0], [1, 0, 0], [0, 1, 0]])
+        indices = self._make_mock_wp_array([0, 1, 2])
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_mesh("hidden_mesh", points, indices, hidden=True)
+
+        self.assertIn("/layers/solverA/hidden_mesh", viewer._meshes)
+        self.mock_rr.log.assert_not_called()
+
     def test_log_mesh_hidden_preserves_uvs_and_texture(self):
         """Hidden mesh templates should retain shading data for later instancing."""
         viewer = self._create_viewer()
@@ -121,6 +135,53 @@ class TestViewerRerunHidden(unittest.TestCase):
         # Verify rr.Clear was constructed and logged
         self.mock_rr.Clear.assert_called_once_with(recursive=False)
         self.mock_rr.log.assert_called_once_with("my_instance", self.mock_rr.Clear.return_value)
+
+    def test_log_instances_hidden_clears_layer_entity(self):
+        """Hidden instance updates should clear the active layer's entity path."""
+        viewer = self._create_viewer()
+        viewer.activate("solverA")
+
+        viewer._meshes["/layers/solverA/my_mesh"] = {
+            "points": np.array([[0, 0, 0]], dtype=np.float32),
+            "indices": np.array([[0, 0, 0]], dtype=np.uint32),
+            "normals": np.array([[0, 0, 1]], dtype=np.float32),
+            "uvs": None,
+            "texture_image": None,
+            "texture_buffer": None,
+            "texture_format": None,
+        }
+        viewer._instances["/layers/solverA/my_instance"] = Mock()
+
+        xforms = self._make_mock_wp_array([[0, 0, 0, 0, 0, 0, 1]])
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_instances(
+                "my_instance", "my_mesh", xforms, scales=None, colors=None, materials=None, hidden=True
+            )
+
+        self.mock_rr.Clear.assert_called_once_with(recursive=False)
+        self.mock_rr.log.assert_called_once_with("/layers/solverA/my_instance", self.mock_rr.Clear.return_value)
+
+    def test_remove_layer_clears_rerun_layer_subtree(self):
+        """Removing a layer should clear its entity subtree from the Rerun stream."""
+        viewer = self._create_viewer()
+        viewer.activate("solverA")
+        viewer._meshes["/layers/solverA/my_mesh"] = Mock()
+        viewer._instances["/layers/solverA/my_instance"] = Mock()
+        viewer.activate("solverB")
+        viewer._meshes["/layers/solverB/my_mesh"] = Mock()
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            self.mock_rr.log.reset_mock()
+            self.mock_rr.Clear.reset_mock()
+
+            viewer.remove_layer("solverA")
+
+        self.mock_rr.Clear.assert_called_once_with(recursive=True)
+        self.mock_rr.log.assert_called_once_with("/layers/solverA", self.mock_rr.Clear.return_value)
+        self.assertNotIn("/layers/solverA/my_mesh", viewer._meshes)
+        self.assertNotIn("/layers/solverA/my_instance", viewer._instances)
+        self.assertIn("/layers/solverB/my_mesh", viewer._meshes)
 
     def test_log_instances_hidden_noop_when_not_created(self):
         """log_instances(hidden=True) for a never-visible entity should not crash or log."""

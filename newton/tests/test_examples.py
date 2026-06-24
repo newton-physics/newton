@@ -270,6 +270,38 @@ add_example_test(
     use_viewer=True,
     test_options={"num-frames": 100},
 )
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_dzhanibekov",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 230, "solver": "vbd"},
+    test_suffix="vbd",
+)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_dzhanibekov",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 230, "solver": "xpbd"},
+    test_suffix="xpbd",
+)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_dzhanibekov",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 230, "solver": "mujoco"},
+    test_suffix="mujoco",
+)
+
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_multi_solver_overlay",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 50},
+)
 
 
 class TestCableExamples(unittest.TestCase):

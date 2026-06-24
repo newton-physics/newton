@@ -95,7 +95,7 @@ class TestJointDrive(unittest.TestCase):
             # Create a single body jointed to the world with a prismatic joint
             # Make sure that we use the mass properties specified here by setting shape density to 0.0
             world_builder = newton.ModelBuilder(gravity=g, up_axis=world_up_axis)
-            bodyIndex = world_builder.add_link(mass=body_mass, inertia=body_inertia, armature=0.0, com=body_com)
+            bodyIndex = world_builder.add_link(mass=body_mass, inertia=body_inertia, com=body_com)
             world_builder.add_shape_sphere(
                 radius=1.0, body=bodyIndex, cfg=newton.ModelBuilder.ShapeConfig(density=0.0, has_shape_collision=False)
             )

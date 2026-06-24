@@ -3,7 +3,6 @@
 
 import types
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
@@ -336,31 +335,16 @@ class TestUtilsPublicAdapterAPI(unittest.TestCase):
             utils.to_rgba_from_depth(inp, depth_range=(5.0, 3.0))
         self.assertIn("near < far", str(cm.exception))
 
-    def test_worlds_per_row_zero_warns_and_auto_layouts(self):
-        # Legacy callers passed worlds_per_row=0 to mean "auto layout"
-        # because the original gate was a falsy check. Behavior preserved
-        # behind a DeprecationWarning; outcome must match worlds_per_row=None.
+    def test_worlds_per_row_below_one_raises(self):
+        # 0 is the historically-mishandled value: the original gate was a falsy
+        # check that treated it as auto layout. It must be rejected like any
+        # other value below 1; pass None for auto layout.
         utils = _make_utils(world_count=4)
         device = utils._Utils__render_context.device
         inp = wp.zeros((4, 1, 3, 5), dtype=wp.uint32, device=device)
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", DeprecationWarning)
-            out_zero = utils.flatten_color_image_to_rgba(inp, worlds_per_row=0)
-        self.assertTrue(
-            any(issubclass(w.category, DeprecationWarning) for w in caught),
-            "expected DeprecationWarning for worlds_per_row=0",
-        )
-
-        out_auto = utils.flatten_color_image_to_rgba(inp, worlds_per_row=None)
-        self.assertEqual(tuple(out_zero.shape), tuple(out_auto.shape))
-
-    def test_worlds_per_row_negative_raises(self):
-        utils = _make_utils(world_count=1)
-        device = utils._Utils__render_context.device
-        inp = wp.zeros((1, 1, 2, 2), dtype=wp.uint32, device=device)
-        with self.assertRaises(ValueError):
-            utils.flatten_color_image_to_rgba(inp, worlds_per_row=-1)
+        for invalid in (0, -1):
+            with self.assertRaises(ValueError):
+                utils.flatten_color_image_to_rgba(inp, worlds_per_row=invalid)
 
 
 if __name__ == "__main__":

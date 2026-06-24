@@ -558,6 +558,44 @@ class TestEqualityConstraints(unittest.TestCase):
         self.assertEqual(model.joint_count, 3)
         self.assertEqual(model.mujoco.equality_constraint_count, 3)
 
+    def test_collapse_fixed_joints_sparse_optional_fields(self):
+        """collapse_fixed_joints must not crash when anchor/relpose are omitted (issue #3054)."""
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=1.0)
+
+        root = builder.add_link()
+        builder.add_shape_box(body=root, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
+        root_joint = builder.add_joint_revolute(parent=-1, child=root, axis=wp.vec3(0.0, 1.0, 0.0))
+
+        merged = builder.add_link()
+        builder.add_shape_box(body=merged, hx=0.2, hy=0.2, hz=0.2, cfg=shape_cfg)
+        fixed_joint = builder.add_joint_fixed(parent=root, child=merged)
+
+        target = builder.add_link()
+        builder.add_shape_box(body=target, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
+        target_joint = builder.add_joint_revolute(parent=root, child=target, axis=wp.vec3(0.0, 0.0, 1.0))
+
+        builder.add_articulation([root_joint, fixed_joint, target_joint])
+
+        builder.add_custom_values(
+            **{
+                "mujoco:equality_constraint_type": int(newton.EqType.WELD),
+                "mujoco:equality_constraint_body1": merged,
+                "mujoco:equality_constraint_body2": target,
+                "mujoco:equality_constraint_enabled": True,
+                "mujoco:equality_constraint_world": 0,
+                # anchor and relpose intentionally omitted -- they have defaults
+            }
+        )
+
+        # Must not raise IndexError
+        builder.collapse_fixed_joints(verbose=False)
+
+        # After collapse the constraint should still be present and finalizable
+        model = builder.finalize()
+        self.assertEqual(model.mujoco.equality_constraint_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
