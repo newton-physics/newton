@@ -185,7 +185,7 @@ class SimulatorFromNewton:
         """Reset the simulation state.
 
         Keyword arguments are forwarded to :meth:`SolverKaminoImpl.reset`
-        (e.g. ``world_mask``, ``reset_config``).
+        (e.g. ``world_mask``, ``config``).
         """
         self._solver.reset(state=self._state_n, **kwargs)
         self._state_p.copy_from(self._state_n)
@@ -615,7 +615,7 @@ class RigidBodySim:
             reset_config.base_velocity = SolverKamino.ResetConfig.FromBaseU(self._reset_base_u_wp)
         self.sim.reset(
             world_mask=self._world_mask_wp,
-            reset_config=reset_config,
+            config=reset_config,
         )
 
     def render(self):

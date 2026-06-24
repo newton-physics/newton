@@ -305,7 +305,7 @@ class Example:
             q_base = wp.transformf((0.1, 0.1, 0.3), q_b)
             self.base_q.assign([q_base] * self.sim.model.size.num_worlds)
             reset_config = SolverKamino.ResetConfig(base_pose=SolverKamino.ResetConfig.FromBaseQ(self.base_q))
-            self.sim.reset(reset_config=reset_config)
+            self.sim.reset(config=reset_config)
 
         # Demo of resetting the base pose and twist
         if self.sim_steps >= self.max_steps and self.sim_reset_mode == 2:
@@ -321,7 +321,7 @@ class Example:
                 base_pose=SolverKamino.ResetConfig.FromBaseQ(self.base_q),
                 base_velocity=SolverKamino.ResetConfig.FromBaseU(self.base_u),
             )
-            self.sim.reset(reset_config=reset_config)
+            self.sim.reset(config=reset_config)
 
         # Demo of resetting the base state and joint configurations to specific poses
         # NOTE: This will invoke the FK solver to update body poses
@@ -362,7 +362,7 @@ class Example:
                 base_pose=SolverKamino.ResetConfig.FromBaseQ(self.base_q),
                 base_velocity=SolverKamino.ResetConfig.FromBaseU(self.base_u),
             )
-            self.sim.reset(reset_config=reset_config)
+            self.sim.reset(config=reset_config)
 
         # Demo of resetting the base state and actuator configurations to specific poses
         # NOTE: This will invoke the FK solver to update body poses
@@ -403,7 +403,7 @@ class Example:
                 base_pose=SolverKamino.ResetConfig.FromBaseQ(self.base_q),
                 base_velocity=SolverKamino.ResetConfig.FromBaseU(self.base_u),
             )
-            self.sim.reset(reset_config=reset_config)
+            self.sim.reset(config=reset_config)
 
     def render(self):
         """Render the current frame."""

@@ -344,7 +344,7 @@ class Simulator:
     def reset(
         self,
         world_mask: wp.array | None = None,
-        reset_config: SolverKamino.ResetConfig | None = None,
+        config: SolverKamino.ResetConfig | None = None,
     ):
         """
         Performs a configurable in-place reset of the simulation state, in all or a subset
@@ -359,7 +359,7 @@ class Simulator:
             world_mask: Optional array of per-world masks indicating which
                 worlds should be reset.
                 Shape of ``(num_worlds,)`` and type :class:`wp.int8` | :class:`wp.bool`.
-            reset_config: Optional reset configuration, controlling the reset behavior
+            config: Optional reset configuration, controlling the reset behavior
                 for body poses/velocities as well as floating base pose/velocity.
                 If not provided, all components are reset to default (initial) values.
         """
@@ -371,7 +371,7 @@ class Simulator:
         self._solver.reset(
             state=self._data.state_n,
             world_mask=world_mask,
-            reset_config=reset_config,
+            config=config,
         )
 
         # Cache the current state as the previous state for the next step

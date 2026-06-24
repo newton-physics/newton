@@ -616,7 +616,7 @@ class SolverKamino(SolverBase):
         world_mask: wp.array | None = None,
         flags: StateFlags | int | None = None,
         *,
-        reset_config: SolverKamino.ResetConfig | None = None,
+        config: SolverKamino.ResetConfig | None = None,
     ):
         """
         Reset the Kamino solver state.
@@ -639,8 +639,8 @@ class SolverKamino(SolverBase):
                 state attributes are reset.
                 Note: currently, this is implementing simply by caching attributes that
                 should not be reset, and restoring them after the Kamino-internal reset.
-                For complex/partial resets, it is recommended to use reset_config instead.
-            reset_config: Optional reset configuration, controlling the reset behavior
+                For complex/partial resets, it is recommended to use config instead.
+            config: Optional reset configuration, controlling the reset behavior
                 for body poses/velocities as well as floating base pose/velocity.
                 If not provided, all components are reset to default (initial) values.
         """
@@ -649,7 +649,7 @@ class SolverKamino(SolverBase):
 
         # Process None arguments
         state_flags = int(StateFlags.ALL if flags is None else flags)
-        reset_config = SolverKamino.ResetConfig.to_default() if reset_config is None else reset_config
+        config = SolverKamino.ResetConfig.to_default() if config is None else config
 
         # Convert/alias the input state as a StateKamino object
         state_kamino = self._kamino.StateKamino.from_newton(
@@ -659,8 +659,8 @@ class SolverKamino(SolverBase):
         # Convert body poses from origin to CoM if needed
         has_callbacks = self._solver_kamino._pre_reset_cb is not None or self._solver_kamino._post_reset_cb is not None
         need_CoM_conversion = (
-            not isinstance(reset_config.body_poses, SolverKamino.ResetConfig.Preserve)
-            or not isinstance(reset_config.base_pose, SolverKamino.ResetConfig.Preserve)
+            not isinstance(config.body_poses, SolverKamino.ResetConfig.Preserve)
+            or not isinstance(config.base_pose, SolverKamino.ResetConfig.Preserve)
             or has_callbacks
         )
         if need_CoM_conversion:
@@ -691,7 +691,7 @@ class SolverKamino(SolverBase):
         self._solver_kamino.reset(
             state=state_kamino,
             world_mask=world_mask,
-            reset_config=reset_config,
+            config=config,
         )
 
         # Restore fields excluded from the reset op

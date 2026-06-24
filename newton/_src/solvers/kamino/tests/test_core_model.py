@@ -758,7 +758,7 @@ class TestModelConversions(unittest.TestCase):
             base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q),
             base_velocity=SolverKamino.ResetConfig.FromBaseU(base_u),
         )
-        solver.reset(state=state_out, reset_config=reset_config)
+        solver.reset(state=state_out, config=reset_config)
         body_q_after = state_out.body_q.numpy()
 
         for i in range(model.body_count):
@@ -788,7 +788,7 @@ class TestModelConversions(unittest.TestCase):
             base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q_shifted),
             base_velocity=SolverKamino.ResetConfig.FromBaseU(base_u),
         )
-        solver.reset(state=state_out, reset_config=reset_config)
+        solver.reset(state=state_out, config=reset_config)
         body_q_shifted = state_out.body_q.numpy()
 
         for i in range(model.body_count):

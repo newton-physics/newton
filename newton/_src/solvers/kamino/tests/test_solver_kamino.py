@@ -507,7 +507,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
         # Reset all worlds to the specified base pose
         reset_config = SolverKamino.ResetConfig(base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q_0))
-        solver.reset(state=state_n, reset_config=reset_config)
+        solver.reset(state=state_n, config=reset_config)
 
         # Check consistency of state after reset
         check_post_reset_state_consistency(model=model, state=state_n)
@@ -539,7 +539,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
             base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q_0),
             base_velocity=SolverKamino.ResetConfig.FromBaseU(base_u_0),
         )
-        solver.reset(state=state_n, reset_config=reset_config)
+        solver.reset(state=state_n, config=reset_config)
 
         # Check consistency of state after reset
         check_post_reset_state_consistency(model=model, state=state_n)
@@ -584,7 +584,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
             base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q_0),
             base_velocity=SolverKamino.ResetConfig.FromBaseU(base_u_0),
         )
-        solver.reset(state=state_n, world_mask=world_mask, reset_config=reset_config)
+        solver.reset(state=state_n, world_mask=world_mask, config=reset_config)
 
         # Check that state was correctly preserved or reset based on mask
         assert_states_close_masked(model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)
@@ -633,7 +633,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         reset_config = SolverKamino.ResetConfig(
             body_poses=SolverKamino.ResetConfig.FromJointQ(joint_q_0),
         )
-        solver.reset(state=state_n, reset_config=reset_config)
+        solver.reset(state=state_n, config=reset_config)
 
         # Check consistency of state after reset
         check_post_reset_state_consistency(model=model, state=state_n)
@@ -668,7 +668,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
             body_poses=SolverKamino.ResetConfig.FromJointQ(joint_q_0),
             body_velocities=SolverKamino.ResetConfig.FromJointU(joint_u_0),
         )
-        solver.reset(state=state_n, reset_config=reset_config)
+        solver.reset(state=state_n, config=reset_config)
 
         # Check consistency of state after reset
         check_post_reset_state_consistency(model=model, state=state_n)
@@ -718,7 +718,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
             body_poses=SolverKamino.ResetConfig.FromJointQ(joint_q_0),
             body_velocities=SolverKamino.ResetConfig.FromJointU(joint_u_0),
         )
-        solver.reset(state=state_n, world_mask=world_mask, reset_config=reset_config)
+        solver.reset(state=state_n, world_mask=world_mask, config=reset_config)
 
         # Check that state was correctly preserved or reset based on mask
         assert_states_close_masked(model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)
@@ -767,7 +767,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         reset_config = SolverKamino.ResetConfig(
             body_poses=SolverKamino.ResetConfig.FromActuatorQ(actuator_q_0),
         )
-        solver.reset(state=state_n, reset_config=reset_config)
+        solver.reset(state=state_n, config=reset_config)
 
         # Check consistency of state after reset
         check_post_reset_state_consistency(model=model, state=state_n)
@@ -802,7 +802,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
             body_poses=SolverKamino.ResetConfig.FromActuatorQ(actuator_q_0),
             body_velocities=SolverKamino.ResetConfig.FromActuatorU(actuator_u_0),
         )
-        solver.reset(state=state_n, reset_config=reset_config)
+        solver.reset(state=state_n, config=reset_config)
 
         # Check consistency of state after reset
         check_post_reset_state_consistency(model=model, state=state_n)
@@ -854,7 +854,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
             body_poses=SolverKamino.ResetConfig.FromActuatorQ(actuator_q_0),
             body_velocities=SolverKamino.ResetConfig.FromActuatorU(actuator_u_0),
         )
-        solver.reset(state=state_n, world_mask=world_mask, reset_config=reset_config)
+        solver.reset(state=state_n, world_mask=world_mask, config=reset_config)
 
         # Check that state was correctly preserved or reset based on mask
         assert_states_close_masked(model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)

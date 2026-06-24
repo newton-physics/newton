@@ -119,7 +119,7 @@ class Example:
         reset_config = newton.solvers.SolverKamino.ResetConfig(
             base_pose=newton.solvers.SolverKamino.ResetConfig.FromBaseQ(base_q=self.base_q),
         )
-        self.solver.reset(state=self.state_0, reset_config=reset_config)
+        self.solver.reset(state=self.state_0, config=reset_config)
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices

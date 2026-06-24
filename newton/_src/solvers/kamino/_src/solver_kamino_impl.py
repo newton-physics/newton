@@ -390,7 +390,7 @@ class SolverKaminoImpl(SolverBase):
         self,
         state: StateKamino,
         world_mask: wp.array | None = None,
-        reset_config: SolverKamino.ResetConfig | None = None,
+        config: SolverKamino.ResetConfig | None = None,
     ):
         """
         Reset the Kamino solver state.
@@ -408,7 +408,7 @@ class SolverKaminoImpl(SolverBase):
             world_mask: Optional array of per-world masks indicating which
                 worlds should be reset.
                 Shape of ``(num_worlds,)`` and type :class:`wp.int8` | :class:`wp.bool`.
-            reset_config: Optional reset configuration, controlling the reset behavior
+            config: Optional reset configuration, controlling the reset behavior
                 for body poses/velocities as well as floating base pose/velocity.
                 If not provided, all components are reset to default (initial) values.
         """
@@ -422,67 +422,65 @@ class SolverKaminoImpl(SolverBase):
         _check_length(world_mask, "world_mask", self._model.size.num_worlds)
 
         # Resolve and validate reset config
-        reset_config = SolverKamino.ResetConfig.to_default() if reset_config is None else reset_config
-        if isinstance(reset_config.body_poses, SolverKamino.ResetConfig.FromJointQ):
+        config = SolverKamino.ResetConfig.to_default() if config is None else config
+        if isinstance(config.body_poses, SolverKamino.ResetConfig.FromJointQ):
             _check_length(
-                reset_config.body_poses.joint_q,
-                "reset_config.body_poses.joint_q",
+                config.body_poses.joint_q,
+                "config.body_poses.joint_q",
                 self._model.size.sum_of_num_joint_coords,
             )
-        if isinstance(reset_config.body_poses, SolverKamino.ResetConfig.FromActuatorQ):
+        if isinstance(config.body_poses, SolverKamino.ResetConfig.FromActuatorQ):
             _check_length(
-                reset_config.body_poses.actuator_q,
-                "reset_config.body_poses.actuator_q",
+                config.body_poses.actuator_q,
+                "config.body_poses.actuator_q",
                 self._model.size.sum_of_num_actuated_joint_coords,
             )
-        if isinstance(reset_config.body_velocities, SolverKamino.ResetConfig.FromJointU):
+        if isinstance(config.body_velocities, SolverKamino.ResetConfig.FromJointU):
             _check_length(
-                reset_config.body_velocities.joint_u,
-                "reset_config.body_velocities.joint_u",
+                config.body_velocities.joint_u,
+                "config.body_velocities.joint_u",
                 self._model.size.sum_of_num_joint_dofs,
             )
-        if isinstance(reset_config.body_velocities, SolverKamino.ResetConfig.FromActuatorU):
+        if isinstance(config.body_velocities, SolverKamino.ResetConfig.FromActuatorU):
             _check_length(
-                reset_config.body_velocities.actuator_u,
-                "reset_config.body_velocities.actuator_u",
+                config.body_velocities.actuator_u,
+                "config.body_velocities.actuator_u",
                 self._model.size.sum_of_num_actuated_joint_dofs,
             )
-        if isinstance(reset_config.base_pose, SolverKamino.ResetConfig.FromJointQ):
+        if isinstance(config.base_pose, SolverKamino.ResetConfig.FromJointQ):
             _check_length(
-                reset_config.base_pose.joint_q,
-                "reset_config.base_pose.joint_q",
+                config.base_pose.joint_q,
+                "config.base_pose.joint_q",
                 self._model.size.sum_of_num_joint_coords,
             )
-        if isinstance(reset_config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
-            _check_length(reset_config.base_pose.base_q, "reset_config.base_pose.base_q", self._model.size.num_worlds)
-        if isinstance(reset_config.base_velocity, SolverKamino.ResetConfig.FromJointU):
+        if isinstance(config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
+            _check_length(config.base_pose.base_q, "config.base_pose.base_q", self._model.size.num_worlds)
+        if isinstance(config.base_velocity, SolverKamino.ResetConfig.FromJointU):
             _check_length(
-                reset_config.base_velocity.joint_u,
-                "reset_config.base_velocity.joint_u",
+                config.base_velocity.joint_u,
+                "config.base_velocity.joint_u",
                 self._model.size.sum_of_num_joint_dofs,
             )
-        if isinstance(reset_config.base_velocity, SolverKamino.ResetConfig.FromBaseU):
-            _check_length(
-                reset_config.base_velocity.base_u, "reset_config.base_velocity.base_u", self._model.size.num_worlds
-            )
+        if isinstance(config.base_velocity, SolverKamino.ResetConfig.FromBaseU):
+            _check_length(config.base_velocity.base_u, "config.base_velocity.base_u", self._model.size.num_worlds)
 
         # Run the pre-reset callback if it has been set
         self._run_pre_reset_callback(state_out=state)
 
         # Resolve target joint_q
         joint_q = None
-        if isinstance(reset_config.body_poses, SolverKamino.ResetConfig.FromJointQ):
-            joint_q = reset_config.body_poses.joint_q
+        if isinstance(config.body_poses, SolverKamino.ResetConfig.FromJointQ):
+            joint_q = config.body_poses.joint_q
             joint_q = state.q_j if joint_q is None else joint_q
 
         # Resolve target joint_u
         joint_u = None
-        if isinstance(reset_config.body_velocities, SolverKamino.ResetConfig.FromJointU):
+        if isinstance(config.body_velocities, SolverKamino.ResetConfig.FromJointU):
             # Reset config explicitly provides joint_u
-            joint_u = reset_config.body_velocities.joint_u
+            joint_u = config.body_velocities.joint_u
             joint_u = state.dq_j if joint_u is None else joint_u
-        elif not isinstance(reset_config.body_poses, SolverKamino.ResetConfig.Preserve) and isinstance(
-            reset_config.body_velocities, SolverKamino.ResetConfig.Preserve
+        elif not isinstance(config.body_poses, SolverKamino.ResetConfig.Preserve) and isinstance(
+            config.body_velocities, SolverKamino.ResetConfig.Preserve
         ):
             # Preserve velocities but not poses: transfer current joint_u to new poses
             joint_u = state.dq_j
@@ -490,10 +488,10 @@ class SolverKaminoImpl(SolverBase):
         # Resolve target actuator_q and actuator_u
         actuator_q = None
         actuator_u = None
-        if isinstance(reset_config.body_poses, SolverKamino.ResetConfig.FromActuatorQ):
-            actuator_q = reset_config.body_poses.actuator_q
-        if isinstance(reset_config.body_velocities, SolverKamino.ResetConfig.FromActuatorU):
-            actuator_u = reset_config.body_velocities.actuator_u
+        if isinstance(config.body_poses, SolverKamino.ResetConfig.FromActuatorQ):
+            actuator_q = config.body_poses.actuator_q
+        if isinstance(config.body_velocities, SolverKamino.ResetConfig.FromActuatorU):
+            actuator_u = config.body_velocities.actuator_u
         if joint_q is not None or joint_u is not None:
             # Extract joint state into pre-allocated actuator state buffers
             extract_actuators_state_from_joints(
@@ -509,9 +507,9 @@ class SolverKaminoImpl(SolverBase):
 
         # Resolve target base_q
         base_q = None
-        if isinstance(reset_config.base_pose, SolverKamino.ResetConfig.ToDefault):
+        if isinstance(config.base_pose, SolverKamino.ResetConfig.ToDefault):
             # Set base pose to default if body poses are not already reset to default
-            if not isinstance(reset_config.body_poses, SolverKamino.ResetConfig.ToDefault):
+            if not isinstance(config.body_poses, SolverKamino.ResetConfig.ToDefault):
                 get_base_q_from_joint_q_and_body_q(
                     model=self._model,
                     joint_q=self._model.joints.q_j_0,
@@ -520,16 +518,16 @@ class SolverKaminoImpl(SolverBase):
                     world_mask=world_mask,
                 )
                 base_q = self._base_q
-        elif isinstance(reset_config.base_pose, SolverKamino.ResetConfig.Preserve):
+        elif isinstance(config.base_pose, SolverKamino.ResetConfig.Preserve):
             # Extract current base pose if body poses are modified but base should be preserved
-            if not isinstance(reset_config.body_poses, SolverKamino.ResetConfig.Preserve):
+            if not isinstance(config.body_poses, SolverKamino.ResetConfig.Preserve):
                 get_base_q_from_joint_q_and_body_q(
                     model=self._model, joint_q=state.q_j, body_q=state.q_i, base_q=self._base_q, world_mask=world_mask
                 )
                 base_q = self._base_q
-        elif isinstance(reset_config.base_pose, SolverKamino.ResetConfig.FromJointQ):
+        elif isinstance(config.base_pose, SolverKamino.ResetConfig.FromJointQ):
             # Extract base pose from provided joint_q (defaulting to extraction from body_q_0 if no base joint)
-            joint_q = reset_config.base_pose.joint_q
+            joint_q = config.base_pose.joint_q
             joint_q = state.q_j if joint_q is None else joint_q
             get_base_q_from_joint_q_and_body_q(
                 model=self._model,
@@ -539,31 +537,31 @@ class SolverKaminoImpl(SolverBase):
                 world_mask=world_mask,
             )
             base_q = self._base_q
-        elif isinstance(reset_config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
+        elif isinstance(config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
             # Set base_q to provided value
-            base_q = reset_config.base_pose.base_q
+            base_q = config.base_pose.base_q
 
         # Resolve target base_u
         base_u = None
         relative_base_u = False
-        if isinstance(reset_config.base_velocity, SolverKamino.ResetConfig.ToDefault):
+        if isinstance(config.base_velocity, SolverKamino.ResetConfig.ToDefault):
             # Set base velocity to zero if body velocities are not already reset to zero
-            if not isinstance(reset_config.body_velocities, SolverKamino.ResetConfig.ToDefault):
+            if not isinstance(config.body_velocities, SolverKamino.ResetConfig.ToDefault):
                 self._base_u.zero_()
                 base_u = self._base_u
-        elif isinstance(reset_config.base_velocity, SolverKamino.ResetConfig.Preserve):
+        elif isinstance(config.base_velocity, SolverKamino.ResetConfig.Preserve):
             # Extract current base velocity if body poses/velocities are modified but base velocity should be preserved
-            if not isinstance(reset_config.body_poses, SolverKamino.ResetConfig.Preserve) or not isinstance(
-                reset_config.body_velocities, SolverKamino.ResetConfig.Preserve
+            if not isinstance(config.body_poses, SolverKamino.ResetConfig.Preserve) or not isinstance(
+                config.body_velocities, SolverKamino.ResetConfig.Preserve
             ):
                 get_base_u_from_joint_u_and_body_u(
                     model=self._model, joint_u=state.dq_j, body_u=state.u_i, base_u=self._base_u, world_mask=world_mask
                 )
                 base_u = self._base_u
                 relative_base_u = True  # We preserve base_u relative to the transform applied due to base_q
-        elif isinstance(reset_config.base_velocity, SolverKamino.ResetConfig.FromJointU):
+        elif isinstance(config.base_velocity, SolverKamino.ResetConfig.FromJointU):
             # Extract base velocity from provided joint_u (defaulting to extraction from body_u_0 if no base joint)
-            joint_u = reset_config.base_velocity.joint_u
+            joint_u = config.base_velocity.joint_u
             joint_u = state.dq_j if joint_u is None else joint_u
             get_base_u_from_joint_u_and_body_u(
                 model=self._model,
@@ -573,9 +571,9 @@ class SolverKaminoImpl(SolverBase):
                 world_mask=world_mask,
             )
             base_u = self._base_u
-        elif isinstance(reset_config.base_velocity, SolverKamino.ResetConfig.FromBaseU):
+        elif isinstance(config.base_velocity, SolverKamino.ResetConfig.FromBaseU):
             # Set base_u to provided value
-            base_u = reset_config.base_velocity.base_u
+            base_u = config.base_velocity.base_u
 
         # Body poses: run FK or reset to default if applicable
         if actuator_q is not None:
@@ -590,7 +588,7 @@ class SolverKaminoImpl(SolverBase):
                 bodies_u=state.u_i if actuator_u is not None else None,
                 world_mask=world_mask,
             )
-        elif isinstance(reset_config.body_poses, SolverKamino.ResetConfig.ToDefault):
+        elif isinstance(config.body_poses, SolverKamino.ResetConfig.ToDefault):
             set_body_q(
                 model=self._model, body_q_in=self._model.bodies.q_i_0, body_q_out=state.q_i, world_mask=world_mask
             )
@@ -607,7 +605,7 @@ class SolverKaminoImpl(SolverBase):
                 target_rel_transforms=None,
                 world_mask=world_mask,
             )
-        elif isinstance(reset_config.body_velocities, SolverKamino.ResetConfig.ToDefault):
+        elif isinstance(config.body_velocities, SolverKamino.ResetConfig.ToDefault):
             reset_body_velocities(self._model, state, world_mask)
 
         # Base pose and velocity: transform body poses and velocities if not already passed to FK
