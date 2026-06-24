@@ -257,6 +257,19 @@ class ModelBuilder:
         delay_args: list[dict[str, Any]]  # Per-actuator delay params (empty if no delay)
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
 
+    @dataclass
+    class BvhConfig:
+        """Default BVH construction settings used during model finalization."""
+
+        mesh_constructor: str | None = None
+        """Warp mesh BVH constructor backend. If ``None``, Warp's default is used."""
+
+        gaussian_constructor: str | None = None
+        """Warp Gaussian BVH constructor backend. If ``None``, Warp's default is used."""
+
+        shape_constructor: str | None = None
+        """Warp model shape BVH constructor backend. If ``None``, Warp's default is used."""
+
     @dataclass(kw_only=True)
     class ShapeConfig:
         """
@@ -867,6 +880,9 @@ class ModelBuilder:
         """Number of worlds accumulated for :attr:`Model.world_count`."""
 
         # region defaults
+        self.default_bvh_cfg = ModelBuilder.BvhConfig()
+        """Default BVH construction configuration used during model finalization."""
+
         self.default_shape_cfg = ModelBuilder.ShapeConfig()
         """Default shape configuration used when shape-creation methods are called with ``cfg=None``.
         Update this object before adding shapes to set default contact/material properties."""
@@ -10588,17 +10604,25 @@ class ModelBuilder:
                             ground_z=geo.min_z,
                             compute_inertia=False,
                         )
-                        finalized_geos[geo_hash] = hf_geo.finalize(device=device)
+                        finalized_geos[geo_hash] = hf_geo.finalize(
+                            device=device,
+                            bvh_constructor=self.default_bvh_cfg.mesh_constructor,
+                        )
                         # keep mesh alive for the model's lifetime
                         heightfield_meshes.append(hf_geo.mesh)
                     geo_sources.append(finalized_geos[geo_hash])
                 elif geo:
                     if geo_hash not in finalized_geos:
                         if isinstance(geo, Mesh):
-                            finalized_geos[geo_hash] = geo.finalize(device=device)
+                            finalized_geos[geo_hash] = geo.finalize(
+                                device=device,
+                                bvh_constructor=self.default_bvh_cfg.mesh_constructor,
+                            )
                         elif isinstance(geo, Gaussian):
                             finalized_geos[geo_hash] = len(gaussians)
-                            gaussians.append(geo.finalize(device=device))
+                            gaussians.append(
+                                geo.finalize(device=device, bvh_constructor=self.default_bvh_cfg.gaussian_constructor)
+                            )
                         else:
                             finalized_geos[geo_hash] = geo.finalize()
                     geo_sources.append(finalized_geos[geo_hash])
@@ -11492,7 +11516,7 @@ class ModelBuilder:
             # Add custom attributes onto the model (with lazy evaluation)
             # Early return if no custom attributes exist to avoid overhead
             if not self.custom_attributes:
-                m.bvh_build_shapes(m)
+                m.bvh_build_shapes(m, bvh_constructor=self.default_bvh_cfg.shape_constructor)
                 m.bvh_build_particles(m)
                 return m
 
@@ -11599,7 +11623,7 @@ class ModelBuilder:
                 result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
                 m.add_attribute(custom_attr.name, result, freq_key, custom_attr.assignment, custom_attr.namespace)
 
-            m.bvh_build_shapes(m)
+            m.bvh_build_shapes(m, bvh_constructor=self.default_bvh_cfg.shape_constructor)
             m.bvh_build_particles(m)
             return m
 
