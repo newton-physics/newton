@@ -1,0 +1,88 @@
+name: Auto-assign PR creator
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+
+permissions:
+  pull-requests: write
+
+jobs:
+  assign-creator:
+    if: >-
+      github.repository == 'newton-physics/newton' &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Assign PR creator when no assignee
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const author = pr.user.login;
+
+            if (author.endsWith('[bot]')) {
+              core.info(`Skipping bot author: ${author}`);
+              return;
+            }
+
+            const { data: issue } = await github.rest.issues.get({
+              owner,
+              repo,
+              issue_number: pr.number,
+            });
+
+            if (issue.assignees?.length > 0) {
+              core.info(`PR #${pr.number} already has assignee(s).`);
+              return;
+            }
+
+            try {
+              await github.rest.issues.checkUserCanBeAssigned({
+                owner,
+                repo,
+                assignee: author,
+              });
+            } catch (error) {
+              if (error.status === 404) {
+                core.warning(
+                  `Author ${author} is not assignable on PR #${pr.number}; skipping.`
+                );
+                return;
+              }
+              throw error;
+            }
+
+            try {
+              const { data } = await github.rest.issues.addAssignees({
+                owner,
+                repo,
+                issue_number: pr.number,
+                assignees: [author],
+              });
+
+              const assigned = data.assignees?.some((a) => a.login === author);
+              if (!assigned) {
+                core.warning(
+                  `addAssignees did not add ${author} to PR #${pr.number}; author may not be assignable.`
+                );
+                return;
+              }
+
+              core.info(`Assigned PR #${pr.number} to ${author}`);
+            } catch (error) {
+              core.warning(
+                `Could not assign ${author} on PR #${pr.number}: ${error.message}`
+              );
+            }
