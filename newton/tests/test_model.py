@@ -399,6 +399,20 @@ class TestModelMesh(unittest.TestCase):
         shared = adj.edges[(0, 2)]
         self.assertEqual({shared.f0, shared.f1}, {0, 1})
 
+    def test_expand_edge_parameter(self):
+        expand = newton.ModelBuilder._expand_edge_parameter
+        # Scalars broadcast to one value per generated edge.
+        self.assertEqual(expand(2.0, 3), [2.0, 2.0, 2.0])
+        # A 0-D array is treated as a scalar, not iterated.
+        self.assertEqual(expand(np.array(2.0), 3), [2.0, 2.0, 2.0])
+        # A per-edge sequence of matching length passes through.
+        self.assertEqual(expand([1.0, 2.0, 3.0], 3), [1.0, 2.0, 3.0])
+        # None is preserved so add_edges() can substitute its default.
+        self.assertIsNone(expand(None, 3))
+        # A length mismatch is rejected instead of silently desyncing.
+        with self.assertRaises(ValueError):
+            expand([1.0, 2.0], 3)
+
     def test_mesh_approximation(self):
         def box_mesh(scale=(1.0, 1.0, 1.0), transform: wp.transform | None = None):
             mesh = newton.Mesh.create_box(

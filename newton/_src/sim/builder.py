@@ -8363,12 +8363,16 @@ class ModelBuilder:
 
     @staticmethod
     def _expand_edge_parameter(values: float | Sequence[float] | np.ndarray | None, count: int):
-        """Broadcast scalar edge parameters while preserving sequences and None."""
+        """Normalize edge parameters to one value per generated edge."""
         if values is None:
             return None
-        if np.isscalar(values):
-            return [float(values)] * count
-        return values
+        values_array = np.asarray(values, dtype=np.float32)
+        if values_array.ndim == 0:
+            return [float(values_array)] * count
+        values_flat = values_array.reshape(-1)
+        if values_flat.size != count:
+            raise ValueError(f"Expected {count} edge parameter values, got {values_flat.size}")
+        return values_flat.tolist()
 
     def _add_soft_mesh_edges_from_triangles(
         self,
