@@ -1144,7 +1144,7 @@ class SolverVBD(SolverBase):
     def _compute_particle_force_element_adjacency(self):
         if self.model.soft_mesh_adjacency is None:
             raise ValueError("model.soft_mesh_adjacency is missing; finalize the model with ModelBuilder.")
-        return self.model.soft_mesh_adjacency.populate_vertex_adjacency(
+        return self.model.soft_mesh_adjacency.init_vertex_adjacency(
             self.model.particle_count,
             edge_indices=self.model.edge_indices,
             tri_indices=self.model.tri_indices,

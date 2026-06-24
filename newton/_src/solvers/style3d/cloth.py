@@ -101,7 +101,8 @@ def _compute_edge_bending_data(
         edge_bending_cot, edge_aniso_values)`` suitable for Style3D edge
         attributes.
     """
-    edge_indices, edge_tri_indices, _tri_edge_indices = MeshAdjacency.compute_edge_adjacency(tri_indices)
+    _adjacency = MeshAdjacency(tri_indices)
+    edge_indices, edge_tri_indices = _adjacency.edge_indices, _adjacency.edge_tri_indices
     edge_indices = np.concatenate((edge_indices, edge_tri_indices), axis=1)
 
     edge_count = edge_indices.shape[0]

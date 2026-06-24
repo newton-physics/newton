@@ -328,19 +328,19 @@ class TestModelMesh(unittest.TestCase):
         )
 
         np.testing.assert_array_equal(
-            builder.tri_edge_indices,
+            builder.soft_mesh_adjacency.tri_edge_indices,
             np.array([[0, 1, 2], [2, 3, 4]], dtype=np.int32),
         )
         np.testing.assert_array_equal(
-            builder.edge_tri_indices,
+            builder.soft_mesh_adjacency.edge_tri_indices,
             np.array([[0, -1], [0, -1], [0, 1], [1, -1], [1, -1]], dtype=np.int32),
         )
 
         model = builder.finalize(device="cpu")
         adjacency = model.soft_mesh_adjacency
         self.assertIsNotNone(adjacency)
-        np.testing.assert_array_equal(adjacency.tri_edge_indices.numpy(), builder.tri_edge_indices)
-        np.testing.assert_array_equal(adjacency.edge_tri_indices.numpy(), builder.edge_tri_indices)
+        np.testing.assert_array_equal(adjacency.tri_edge_indices.numpy(), builder.soft_mesh_adjacency.tri_edge_indices)
+        np.testing.assert_array_equal(adjacency.edge_tri_indices.numpy(), builder.soft_mesh_adjacency.edge_tri_indices)
         self.assertEqual(len(adjacency.v_adj_tris), 0)
         self.assertEqual(len(adjacency.v_adj_hinges_offsets), 0)
 
@@ -352,8 +352,8 @@ class TestModelMesh(unittest.TestCase):
         builder.add_triangle(0, 1, 2)
         builder.add_edge(-1, -1, 0, 1)
 
-        self.assertEqual(builder.tri_edge_indices.shape, (0, 3))
-        self.assertEqual(builder.edge_tri_indices.shape, (0, 2))
+        self.assertEqual(builder.soft_mesh_adjacency.tri_edge_indices.shape, (0, 3))
+        self.assertEqual(builder.soft_mesh_adjacency.edge_tri_indices.shape, (0, 2))
 
         model = builder.finalize(device="cpu")
         adjacency = model.soft_mesh_adjacency
@@ -382,21 +382,32 @@ class TestModelMesh(unittest.TestCase):
         combined.add_builder(base)
         combined.add_builder(base)
 
-        np.testing.assert_array_equal(combined.tri_edge_indices[:2], base.tri_edge_indices)
-        np.testing.assert_array_equal(combined.edge_tri_indices[:5], base.edge_tri_indices)
-        np.testing.assert_array_equal(combined.tri_edge_indices[2:], base.tri_edge_indices + 5)
         np.testing.assert_array_equal(
-            combined.edge_tri_indices[5:],
+            combined.soft_mesh_adjacency.tri_edge_indices[:2], base.soft_mesh_adjacency.tri_edge_indices
+        )
+        np.testing.assert_array_equal(
+            combined.soft_mesh_adjacency.edge_tri_indices[:5], base.soft_mesh_adjacency.edge_tri_indices
+        )
+        np.testing.assert_array_equal(
+            combined.soft_mesh_adjacency.tri_edge_indices[2:], base.soft_mesh_adjacency.tri_edge_indices + 5
+        )
+        np.testing.assert_array_equal(
+            combined.soft_mesh_adjacency.edge_tri_indices[5:],
             np.array([[2, -1], [2, -1], [2, 3], [3, -1], [3, -1]], dtype=np.int32),
         )
 
     def test_mesh_adjacency_public_deprecated(self):
         tris = [[0, 1, 2], [0, 2, 3]]
+        # Construction from triangle indices is supported (no warning) and eager.
+        adj = newton.utils.MeshAdjacency(tris)
+        self.assertEqual(adj.edge_indices.shape, (5, 4))
+        self.assertEqual(adj.edge_tri_indices.shape, (5, 2))
+        self.assertEqual(adj.tri_edge_indices.shape, (2, 3))
+        # The legacy .edges dict stays available but is deprecated.
         with self.assertWarns(DeprecationWarning):
-            adj = newton.utils.MeshAdjacency(tris)
-        # The legacy dict surface stays available for backward compatibility.
-        self.assertEqual(len(adj.edges), 5)
-        shared = adj.edges[(0, 2)]
+            edges = adj.edges
+        self.assertEqual(len(edges), 5)
+        shared = edges[(0, 2)]
         self.assertEqual({shared.f0, shared.f1}, {0, 1})
 
     def test_expand_edge_parameter(self):

@@ -202,18 +202,19 @@ class MeshAdjacencyDeviceData:
 class MeshAdjacency:
     """Soft-mesh topology for collision and solver data.
 
-    Normally obtained from :attr:`newton.Model.soft_mesh_adjacency` (built by
-    :meth:`~newton.ModelBuilder.finalize`). Holds the host-side adjacency arrays
-    (edges, triangle/edge maps, and the derived vertex-adjacency CSR tables) and
-    owns the bulk of the adjacency computation and lazy initialization. Call
-    :meth:`to` to deploy the kernel-facing subset into a
-    :class:`MeshAdjacencyDeviceData` struct for use inside Warp kernels.
+    Construct directly from triangle indices — ``MeshAdjacency(tri_indices)`` —
+    or obtain the simulation's instance from
+    :attr:`newton.Model.soft_mesh_adjacency` (built by
+    :meth:`~newton.ModelBuilder.finalize`). The constructor computes the edge
+    tables eagerly; the vertex-adjacency CSR tables are built on demand by
+    :meth:`init_vertex_adjacency`. Call :meth:`to` to deploy the kernel-facing
+    subset into a :class:`MeshAdjacencyDeviceData` struct for use inside Warp
+    kernels.
 
     .. note::
-        Constructing ``MeshAdjacency`` directly from triangle indices and the
-        :attr:`edges` dict are deprecated legacy compatibility shims (both emit a
-        ``DeprecationWarning``); use :attr:`newton.Model.soft_mesh_adjacency` and
-        the ``edge_indices`` / ``edge_tri_indices`` arrays instead.
+        The :attr:`edges` dict is a deprecated legacy compatibility shim (it
+        emits a ``DeprecationWarning``); use the ``edge_indices`` /
+        ``edge_tri_indices`` arrays instead.
     """
 
     @dataclass(slots=True)
@@ -228,14 +229,26 @@ class MeshAdjacency:
         f0: int
         f1: int
 
-    def __init__(self, indices: Sequence[Sequence[int]] | np.ndarray | None = None):
-        # Edge topology and triangle/edge maps. Populated by the builder, or
-        # eagerly here on the deprecated triangle-indices construction path.
-        self.edge_indices = None
-        self.edge_tri_indices = None
-        self.tri_edge_indices = None
+    def __init__(self, tri_indices: Sequence[Sequence[int]] | np.ndarray | None = None):
+        """Build edge adjacency from triangle indices.
 
-        # Derived vertex-adjacency CSR tables (filled by populate_vertex_adjacency).
+        Args:
+            tri_indices: Triangle indices, shape ``[tri_count, 3]``. When given,
+                ``edge_indices`` and the edge/triangle maps are computed eagerly.
+                ``None`` leaves the tables empty for incremental builder
+                accumulation via :meth:`ModelBuilder.add_adjacency`.
+        """
+        self.indices = tri_indices
+
+        # Edge topology and triangle/edge maps (eager when tri_indices given).
+        if tri_indices is not None:
+            self.edge_indices, self.edge_tri_indices, self.tri_edge_indices = self._compute_edge_adjacency(tri_indices)
+        else:
+            self.edge_indices = np.empty((0, 4), dtype=np.int32)
+            self.edge_tri_indices = np.empty((0, 2), dtype=np.int32)
+            self.tri_edge_indices = np.empty((0, 3), dtype=np.int32)
+
+        # Vertex-to-element CSR tables; built explicitly by init_vertex_adjacency.
         self.v_adj_tris = None
         self.v_adj_tris_offsets = None
         self.v_adj_hinges = None
@@ -244,16 +257,6 @@ class MeshAdjacency:
         self.v_adj_springs_offsets = None
         self.v_adj_tets = None
         self.v_adj_tets_offsets = None
-
-        self.indices = indices
-        if indices is not None:
-            warnings.warn(
-                "Constructing MeshAdjacency from triangle indices is deprecated; "
-                "use Model.soft_mesh_adjacency for simulation adjacency data.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            self.edge_indices, self.edge_tri_indices, self.tri_edge_indices = _compute_soft_mesh_edge_adjacency(indices)
 
     @property
     def edges(self) -> dict[tuple[int, int], "MeshAdjacency.Edge"]:
@@ -292,23 +295,132 @@ class MeshAdjacency:
         return data
 
     @staticmethod
-    def compute_edge_adjacency(
+    def _compute_edge_adjacency(
         indices: Sequence[Sequence[int]] | np.ndarray,
         *,
         tri_start: int = 0,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Compute edge, edge-triangle, and triangle-edge adjacency."""
-        return _compute_soft_mesh_edge_adjacency(indices, tri_start=tri_start)
+        """Compute the edge / edge-triangle / triangle-edge tables from triangles.
+
+        Returns ``(edge_indices, edge_tri_indices, tri_edge_indices)``.
+        ``edge_indices`` rows are ``[o0, o1, v0, v1]`` (opposite vertices, edge
+        endpoints); ``edge_tri_indices`` rows are ``[tri0, tri1]`` (``-1`` for a
+        boundary side, triangle ids offset by ``tri_start``); ``tri_edge_indices``
+        maps each triangle's three local edge slots to edge rows.
+        """
+        tris = np.asarray(indices, dtype=np.int32).reshape(-1, 3)
+        tri_count = tris.shape[0]
+        if tri_count == 0:
+            return (
+                np.empty((0, 4), dtype=np.int32),
+                np.empty((0, 2), dtype=np.int32),
+                np.empty((0, 3), dtype=np.int32),
+            )
+
+        # Local edge slots are: (v0, v1 | opposite v2), (v1, v2 | opposite v0),
+        # (v2, v0 | opposite v1).
+        entry_v0 = np.stack((tris[:, 0], tris[:, 1], tris[:, 2]), axis=1).reshape(-1)
+        entry_v1 = np.stack((tris[:, 1], tris[:, 2], tris[:, 0]), axis=1).reshape(-1)
+        entry_opposite = np.stack((tris[:, 2], tris[:, 0], tris[:, 1]), axis=1).reshape(-1)
+        entry_tri = np.repeat(np.arange(tri_count, dtype=np.int32), 3)
+        entry_slot = np.tile(np.arange(3, dtype=np.int32), tri_count)
+
+        keys = np.stack((np.minimum(entry_v0, entry_v1), np.maximum(entry_v0, entry_v1)), axis=1)
+        _, first_entries, inverse = np.unique(keys, axis=0, return_index=True, return_inverse=True)
+
+        # np.unique returns keys sorted lexicographically. Remap to first-occurrence
+        # order so edge rows follow triangle traversal order.
+        first_order = np.argsort(first_entries, kind="stable")
+        edge_remap = np.empty(len(first_order), dtype=np.int32)
+        edge_remap[first_order] = np.arange(len(first_order), dtype=np.int32)
+        entry_edge = edge_remap[inverse]
+
+        edge_count = len(first_order)
+        edge_indices = np.full((edge_count, 4), -1, dtype=np.int32)
+        edge_tri_indices = np.full((edge_count, 2), -1, dtype=np.int32)
+        tri_edge_indices = np.full((tri_count, 3), -1, dtype=np.int32)
+
+        fill_counts = np.zeros(edge_count, dtype=np.int32)
+        for entry_id, edge_ref in enumerate(entry_edge):
+            edge_id = int(edge_ref)
+            tri_edge_indices[entry_tri[entry_id], entry_slot[entry_id]] = edge_id
+
+            side = fill_counts[edge_id]
+            if side == 0:
+                edge_indices[edge_id, 0] = entry_opposite[entry_id]
+                edge_indices[edge_id, 2] = entry_v0[entry_id]
+                edge_indices[edge_id, 3] = entry_v1[entry_id]
+                edge_tri_indices[edge_id, 0] = tri_start + entry_tri[entry_id]
+            elif side == 1:
+                edge_indices[edge_id, 1] = entry_opposite[entry_id]
+                edge_tri_indices[edge_id, 1] = tri_start + entry_tri[entry_id]
+            else:
+                warnings.warn("Detected non-manifold edge", stacklevel=2)
+
+            fill_counts[edge_id] += 1
+
+        return edge_indices, edge_tri_indices, tri_edge_indices
 
     @staticmethod
     def complete_tri_edge_indices(tri_edge_indices, tri_count: int) -> np.ndarray:
         """Return a ``(tri_count, 3)`` triangle-edge table, padding missing rows with ``-1``."""
-        return _complete_tri_edge_indices(tri_edge_indices, tri_count)
+        rows = np.full((tri_count, 3), -1, dtype=np.int32)
+        source_rows = _numpy_int_rows(tri_edge_indices, 3)
+        row_count = min(tri_count, source_rows.shape[0])
+        if row_count > 0:
+            rows[:row_count] = source_rows[:row_count]
+        return rows
 
     @staticmethod
     def complete_edge_tri_indices(edge_tri_indices, edge_count: int) -> np.ndarray:
         """Return an ``(edge_count, 2)`` edge-triangle table, padding missing rows with ``-1``."""
-        return _complete_edge_tri_indices(edge_tri_indices, edge_count)
+        rows = np.full((edge_count, 2), -1, dtype=np.int32)
+        source_rows = _numpy_int_rows(edge_tri_indices, 2)
+        row_count = min(edge_count, source_rows.shape[0])
+        if row_count > 0:
+            rows[:row_count] = source_rows[:row_count]
+        return rows
+
+    def _grow_tri_edge_indices(self, tri_count: int) -> None:
+        """Grow :attr:`tri_edge_indices` to ``tri_count`` rows, padding with ``-1``."""
+        current = 0 if self.tri_edge_indices is None else self.tri_edge_indices.shape[0]
+        if tri_count <= current:
+            return
+        pad = np.full((tri_count - current, 3), -1, dtype=np.int32)
+        self.tri_edge_indices = pad if self.tri_edge_indices is None else np.concatenate((self.tri_edge_indices, pad))
+
+    def _grow_edge_tri_indices(self, edge_count: int) -> None:
+        """Grow :attr:`edge_tri_indices` to ``edge_count`` rows, padding with ``-1``."""
+        current = 0 if self.edge_tri_indices is None else self.edge_tri_indices.shape[0]
+        if edge_count <= current:
+            return
+        pad = np.full((edge_count - current, 2), -1, dtype=np.int32)
+        self.edge_tri_indices = pad if self.edge_tri_indices is None else np.concatenate((self.edge_tri_indices, pad))
+
+    def add_adjacency(self, other: "MeshAdjacency", *, tri_offset: int = 0, edge_offset: int = 0) -> None:
+        """Expand this adjacency's triangle/edge maps with ``other``'s.
+
+        Places ``other``'s ``tri_edge_indices``/``edge_tri_indices`` rows into this
+        object's tables at ``tri_offset``/``edge_offset``, shifting referenced edge
+        ids by ``edge_offset`` and triangle ids by ``tri_offset`` into a shared
+        global numbering. Edge connectivity (:attr:`edge_indices`) and bending
+        material are owned by the caller and not merged here.
+        """
+        other_tri_edge = _numpy_int_rows(other.tri_edge_indices, 3)
+        if other_tri_edge.shape[0]:
+            end_tri = tri_offset + other_tri_edge.shape[0]
+            self._grow_tri_edge_indices(end_tri)
+            shifted = other_tri_edge.copy()
+            shifted[shifted != -1] += edge_offset
+            self.tri_edge_indices[tri_offset:end_tri] = shifted
+
+        other_edge_tri = _numpy_int_rows(other.edge_tri_indices, 2)
+        if other_edge_tri.shape[0]:
+            end_edge = edge_offset + other_edge_tri.shape[0]
+            self._grow_edge_tri_indices(end_edge)
+            shifted = other_edge_tri.copy()
+            shifted[shifted != -1] += tri_offset
+            self.edge_tri_indices[edge_offset:end_edge] = shifted
 
     @staticmethod
     def compute_vertex_adjacency(
@@ -320,9 +432,9 @@ class MeshAdjacency:
         tet_indices=None,
         device=None,
     ) -> "MeshAdjacency":
-        """Build vertex-to-element CSR arrays into a temporary adjacency object."""
+        """Build a temporary adjacency holding only the vertex-to-element CSR tables."""
         adjacency = MeshAdjacency()
-        return adjacency.populate_vertex_adjacency(
+        return adjacency.init_vertex_adjacency(
             particle_count,
             edge_indices=edge_indices,
             tri_indices=tri_indices,
@@ -332,10 +444,18 @@ class MeshAdjacency:
         )
 
     def init_empty_vertex_adjacency(self, *, device=None) -> "MeshAdjacency":
-        """Initialize derived vertex adjacency fields as empty arrays."""
-        return _init_empty_soft_mesh_vertex_adjacency(self, device=device)
+        """Set the vertex-adjacency CSR tables to empty arrays."""
+        self.v_adj_tris = wp.empty(0, dtype=wp.int32, device=device)
+        self.v_adj_tris_offsets = wp.empty(0, dtype=wp.int32, device=device)
+        self.v_adj_hinges = wp.empty(0, dtype=wp.int32, device=device)
+        self.v_adj_hinges_offsets = wp.empty(0, dtype=wp.int32, device=device)
+        self.v_adj_springs = wp.empty(0, dtype=wp.int32, device=device)
+        self.v_adj_springs_offsets = wp.empty(0, dtype=wp.int32, device=device)
+        self.v_adj_tets = wp.empty(0, dtype=wp.int32, device=device)
+        self.v_adj_tets_offsets = wp.empty(0, dtype=wp.int32, device=device)
+        return self
 
-    def populate_vertex_adjacency(
+    def init_vertex_adjacency(
         self,
         particle_count: int,
         *,
@@ -345,88 +465,64 @@ class MeshAdjacency:
         tet_indices=None,
         device=None,
     ) -> "MeshAdjacency":
-        """Compute and store derived vertex adjacency CSR fields on demand."""
-        return _populate_soft_mesh_vertex_adjacency(
-            self,
-            particle_count,
-            edge_indices=edge_indices,
-            tri_indices=tri_indices,
-            spring_indices=spring_indices,
-            tet_indices=tet_indices,
-            device=device,
-        )
+        """Compute and store the vertex-to-element CSR tables (hinges/tris/springs/tets).
 
+        Hinge adjacency uses ``edge_indices`` (defaulting to :attr:`edge_indices`);
+        triangle/spring/tet adjacency use the supplied indices. Called explicitly
+        (e.g. by the VBD solver) rather than on first access.
+        """
+        if edge_indices is None:
+            edge_indices = self.edge_indices
 
-def _compute_soft_mesh_edge_adjacency(
-    indices: Sequence[Sequence[int]] | np.ndarray,
-    *,
-    tri_start: int = 0,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute soft-mesh edge adjacency from triangle indices.
-
-    Args:
-        indices: Triangle indices, shape ``[tri_count, 3]``.
-        tri_start: Global triangle index corresponding to ``indices[0]``.
-
-    Returns:
-        Tuple of ``(edge_indices, edge_tri_indices, tri_edge_indices)``.
-        ``edge_indices`` has rows ``[o0, o1, v0, v1]`` compatible with
-        bending edges. ``edge_tri_indices`` has rows ``[tri0, tri1]`` with
-        ``-1`` for boundary sides. ``tri_edge_indices`` maps each triangle's
-        three local edge slots to edge rows.
-    """
-    tris = np.asarray(indices, dtype=np.int32).reshape(-1, 3)
-    tri_count = tris.shape[0]
-    if tri_count == 0:
-        return (
-            np.empty((0, 4), dtype=np.int32),
-            np.empty((0, 2), dtype=np.int32),
-            np.empty((0, 3), dtype=np.int32),
-        )
-
-    # Local edge slots are: (v0, v1 | opposite v2), (v1, v2 | opposite v0),
-    # (v2, v0 | opposite v1).
-    entry_v0 = np.stack((tris[:, 0], tris[:, 1], tris[:, 2]), axis=1).reshape(-1)
-    entry_v1 = np.stack((tris[:, 1], tris[:, 2], tris[:, 0]), axis=1).reshape(-1)
-    entry_opposite = np.stack((tris[:, 2], tris[:, 0], tris[:, 1]), axis=1).reshape(-1)
-    entry_tri = np.repeat(np.arange(tri_count, dtype=np.int32), 3)
-    entry_slot = np.tile(np.arange(3, dtype=np.int32), tri_count)
-
-    keys = np.stack((np.minimum(entry_v0, entry_v1), np.maximum(entry_v0, entry_v1)), axis=1)
-    _, first_entries, inverse = np.unique(keys, axis=0, return_index=True, return_inverse=True)
-
-    # np.unique returns keys sorted lexicographically. Remap to first-occurrence
-    # order so edge rows follow triangle traversal order.
-    first_order = np.argsort(first_entries, kind="stable")
-    edge_remap = np.empty(len(first_order), dtype=np.int32)
-    edge_remap[first_order] = np.arange(len(first_order), dtype=np.int32)
-    entry_edge = edge_remap[inverse]
-
-    edge_count = len(first_order)
-    edge_indices = np.full((edge_count, 4), -1, dtype=np.int32)
-    edge_tri_indices = np.full((edge_count, 2), -1, dtype=np.int32)
-    tri_edge_indices = np.full((tri_count, 3), -1, dtype=np.int32)
-
-    fill_counts = np.zeros(edge_count, dtype=np.int32)
-    for entry_id, edge_ref in enumerate(entry_edge):
-        edge_id = int(edge_ref)
-        tri_edge_indices[entry_tri[entry_id], entry_slot[entry_id]] = edge_id
-
-        side = fill_counts[edge_id]
-        if side == 0:
-            edge_indices[edge_id, 0] = entry_opposite[entry_id]
-            edge_indices[edge_id, 2] = entry_v0[entry_id]
-            edge_indices[edge_id, 3] = entry_v1[entry_id]
-            edge_tri_indices[edge_id, 0] = tri_start + entry_tri[entry_id]
-        elif side == 1:
-            edge_indices[edge_id, 1] = entry_opposite[entry_id]
-            edge_tri_indices[edge_id, 1] = tri_start + entry_tri[entry_id]
+        if _has_entries(edge_indices):
+            self.v_adj_hinges, self.v_adj_hinges_offsets = _build_vertex_adjacency_with_warp(
+                _as_cpu_int_array2d(edge_indices, 4),
+                particle_count,
+                count_kernel=_count_num_adjacent_hinges,
+                fill_kernel=_fill_adjacent_hinges,
+                values_per_entry=2,
+                device=device,
+            )
         else:
-            warnings.warn("Detected non-manifold edge", stacklevel=2)
+            self.v_adj_hinges, self.v_adj_hinges_offsets = _empty_vertex_adjacency(device)
 
-        fill_counts[edge_id] += 1
+        if _has_entries(tri_indices):
+            self.v_adj_tris, self.v_adj_tris_offsets = _build_vertex_adjacency_with_warp(
+                _as_cpu_int_array2d(tri_indices, 3),
+                particle_count,
+                count_kernel=_count_num_adjacent_tris,
+                fill_kernel=_fill_adjacent_tris,
+                values_per_entry=2,
+                device=device,
+            )
+        else:
+            self.v_adj_tris, self.v_adj_tris_offsets = _empty_vertex_adjacency(device)
 
-    return edge_indices, edge_tri_indices, tri_edge_indices
+        if _has_entries(tet_indices):
+            self.v_adj_tets, self.v_adj_tets_offsets = _build_vertex_adjacency_with_warp(
+                _as_cpu_int_array2d(tet_indices, 4),
+                particle_count,
+                count_kernel=_count_num_adjacent_tets,
+                fill_kernel=_fill_adjacent_tets,
+                values_per_entry=2,
+                device=device,
+            )
+        else:
+            self.v_adj_tets, self.v_adj_tets_offsets = _empty_vertex_adjacency(device)
+
+        if _has_entries(spring_indices):
+            self.v_adj_springs, self.v_adj_springs_offsets = _build_vertex_adjacency_with_warp(
+                _as_cpu_int_array1d(spring_indices),
+                particle_count,
+                count_kernel=_count_num_adjacent_springs,
+                fill_kernel=_fill_adjacent_springs,
+                values_per_entry=1,
+                device=device,
+            )
+        else:
+            self.v_adj_springs, self.v_adj_springs_offsets = _empty_vertex_adjacency(device)
+
+        return self
 
 
 def _numpy_int_array(data) -> np.ndarray:
@@ -444,34 +540,6 @@ def _numpy_int_rows(data, width: int) -> np.ndarray:
     if data_np.size == 0:
         return np.empty((0, width), dtype=np.int32)
     return data_np.reshape(-1, width)
-
-
-def _complete_tri_edge_indices(tri_edge_indices, tri_count: int) -> np.ndarray:
-    """Return a ``(tri_count, 3)`` triangle-edge table.
-
-    Existing rows are copied first; missing rows stay ``-1`` so manual
-    triangle builders can finalize without generated edge adjacency.
-    """
-    rows = np.full((tri_count, 3), -1, dtype=np.int32)
-    source_rows = _numpy_int_rows(tri_edge_indices, 3)
-    row_count = min(tri_count, source_rows.shape[0])
-    if row_count > 0:
-        rows[:row_count] = source_rows[:row_count]
-    return rows
-
-
-def _complete_edge_tri_indices(edge_tri_indices, edge_count: int) -> np.ndarray:
-    """Return an ``(edge_count, 2)`` edge-triangle table.
-
-    Existing rows are copied first; missing rows stay ``-1`` so manual edges
-    remain valid when no adjacent triangles are known.
-    """
-    rows = np.full((edge_count, 2), -1, dtype=np.int32)
-    source_rows = _numpy_int_rows(edge_tri_indices, 2)
-    row_count = min(edge_count, source_rows.shape[0])
-    if row_count > 0:
-        rows[:row_count] = source_rows[:row_count]
-    return rows
 
 
 @wp.kernel
@@ -731,89 +799,6 @@ def _build_vertex_adjacency_with_warp(
         wp.launch(fill_kernel, inputs=[topology, offsets, fill_count, values], dim=1, device="cpu")
 
     return _move_vertex_adjacency_to_device(values, offsets, device)
-
-
-def _init_empty_soft_mesh_vertex_adjacency(
-    adjacency: MeshAdjacency,
-    *,
-    device=None,
-) -> MeshAdjacency:
-    """Set derived vertex adjacency fields to empty arrays.
-
-    ``ModelBuilder.finalize()`` uses this to keep ``MeshAdjacency`` valid
-    without computing solver/collision CSR tables eagerly.
-    """
-    adjacency.v_adj_tris = wp.empty(0, dtype=wp.int32, device=device)
-    adjacency.v_adj_tris_offsets = wp.empty(0, dtype=wp.int32, device=device)
-    adjacency.v_adj_hinges = wp.empty(0, dtype=wp.int32, device=device)
-    adjacency.v_adj_hinges_offsets = wp.empty(0, dtype=wp.int32, device=device)
-    adjacency.v_adj_springs = wp.empty(0, dtype=wp.int32, device=device)
-    adjacency.v_adj_springs_offsets = wp.empty(0, dtype=wp.int32, device=device)
-    adjacency.v_adj_tets = wp.empty(0, dtype=wp.int32, device=device)
-    adjacency.v_adj_tets_offsets = wp.empty(0, dtype=wp.int32, device=device)
-    return adjacency
-
-
-def _populate_soft_mesh_vertex_adjacency(
-    adjacency: MeshAdjacency,
-    particle_count: int,
-    *,
-    edge_indices=None,
-    tri_indices=None,
-    spring_indices=None,
-    tet_indices=None,
-    device=None,
-) -> MeshAdjacency:
-    """Compute and store derived vertex adjacency CSR fields on demand."""
-    if _has_entries(edge_indices):
-        adjacency.v_adj_hinges, adjacency.v_adj_hinges_offsets = _build_vertex_adjacency_with_warp(
-            _as_cpu_int_array2d(edge_indices, 4),
-            particle_count,
-            count_kernel=_count_num_adjacent_hinges,
-            fill_kernel=_fill_adjacent_hinges,
-            values_per_entry=2,
-            device=device,
-        )
-    else:
-        adjacency.v_adj_hinges, adjacency.v_adj_hinges_offsets = _empty_vertex_adjacency(device)
-
-    if _has_entries(tri_indices):
-        adjacency.v_adj_tris, adjacency.v_adj_tris_offsets = _build_vertex_adjacency_with_warp(
-            _as_cpu_int_array2d(tri_indices, 3),
-            particle_count,
-            count_kernel=_count_num_adjacent_tris,
-            fill_kernel=_fill_adjacent_tris,
-            values_per_entry=2,
-            device=device,
-        )
-    else:
-        adjacency.v_adj_tris, adjacency.v_adj_tris_offsets = _empty_vertex_adjacency(device)
-
-    if _has_entries(tet_indices):
-        adjacency.v_adj_tets, adjacency.v_adj_tets_offsets = _build_vertex_adjacency_with_warp(
-            _as_cpu_int_array2d(tet_indices, 4),
-            particle_count,
-            count_kernel=_count_num_adjacent_tets,
-            fill_kernel=_fill_adjacent_tets,
-            values_per_entry=2,
-            device=device,
-        )
-    else:
-        adjacency.v_adj_tets, adjacency.v_adj_tets_offsets = _empty_vertex_adjacency(device)
-
-    if _has_entries(spring_indices):
-        adjacency.v_adj_springs, adjacency.v_adj_springs_offsets = _build_vertex_adjacency_with_warp(
-            _as_cpu_int_array1d(spring_indices),
-            particle_count,
-            count_kernel=_count_num_adjacent_springs,
-            fill_kernel=_fill_adjacent_springs,
-            values_per_entry=1,
-            device=device,
-        )
-    else:
-        adjacency.v_adj_springs, adjacency.v_adj_springs_offsets = _empty_vertex_adjacency(device)
-
-    return adjacency
 
 
 def create_mesh_sphere(
