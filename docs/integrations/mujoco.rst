@@ -562,7 +562,7 @@ Caveats
 -------
 
 **Gap is forwarded to MuJoCo.**
-  Under MuJoCo 3.9 semantics, ``gap`` no longer affects force generation:
+  Under MuJoCo 3.9+ semantics, ``gap`` no longer affects force generation:
   contacts in ``[margin, margin + gap)`` are detected and reported (for
   sensing) but produce no constraint force. :class:`~newton.solvers.SolverMuJoCo`
   therefore propagates the Newton model's

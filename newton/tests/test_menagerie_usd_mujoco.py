@@ -1218,9 +1218,16 @@ class TestMenagerieUSD(TestMenagerieBase):
         newton_opt = newton_solver.mjw_model.opt
         native_opt = native_mjw_model.opt
         for attr in dir(native_opt):
-            if attr.startswith("_") or callable(getattr(native_opt, attr)):
+            if attr.startswith("_"):
                 continue
-            native_val = getattr(native_opt, attr)
+            try:
+                native_val = getattr(native_opt, attr)
+            except AttributeError:
+                # Removed options (e.g. ls_parallel, removed in mujoco_warp 3.9.1)
+                # keep their property defined but raise on access.
+                continue
+            if callable(native_val):
+                continue
             if isinstance(native_val, (int, float, bool)):
                 setattr(newton_opt, attr, native_val)
 

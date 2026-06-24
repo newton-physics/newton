@@ -424,6 +424,10 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Derived from inertia by set_const; differs when inertia representation differs. Backfilled.
     # Derived from inertia and dof_armature by set_const_0. Backfilled.
     "dof_invweight0",
+    # Per-DOF characteristic length (mujoco_warp >= 3.10, used to weight velocity norms
+    # for the sleep feature). Derived from subtree extent and COM/inertia frames, so it
+    # differs when Newton re-diagonalizes inertia (e.g. mesh-based visual geoms).
+    "dof_length",
     # Body frame position/orientation: compilation-dependent, derived from joint and inertia
     # frames by mj_setConst. Differs due to inertia re-diagonalization. Backfilled.
     "body_pos",
