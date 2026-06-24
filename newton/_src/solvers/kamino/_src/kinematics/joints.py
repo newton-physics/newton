@@ -102,7 +102,7 @@ def correct_quat_vector_coord(q_j_in: vec4f, q_j_ref: vec4f) -> vec4f:
 @wp.func
 def correct_joint_coord_free(q_j_in: vec7f, q_j_ref: vec7f, q_j_limit: vec7f = DEFAULT_LIMIT_V7F) -> vec7f:
     """Corrects the orientation quaternion coordinate of a free joint."""
-    q_j_in[0:4] = correct_quat_vector_coord(q_j_in[0:4], q_j_ref[0:4])
+    q_j_in[3:] = correct_quat_vector_coord(q_j_in[3:], q_j_ref[3:])
     return q_j_in
 
 
