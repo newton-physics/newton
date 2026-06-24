@@ -6,6 +6,7 @@ from __future__ import annotations
 import collections
 import copy
 import datetime
+import inspect
 import itertools
 import logging
 import math
@@ -50,6 +51,24 @@ from .import_utils import should_show_collider
 logger = logging.getLogger("newton")
 
 AttributeFrequency = Model.AttributeFrequency
+
+_NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
+
+
+def _external_stacklevel() -> int:
+    """Return a ``stacklevel`` that points past all ``newton._src`` frames."""
+    frame = inspect.currentframe()
+    if frame is None:
+        return 2
+    frame = frame.f_back
+    stacklevel = 1
+    try:
+        while frame is not None and os.path.normpath(frame.f_code.co_filename).startswith(_NEWTON_SRC_DIR):
+            frame = frame.f_back
+            stacklevel += 1
+        return stacklevel
+    finally:
+        del frame
 
 
 def parse_usd(
@@ -345,6 +364,12 @@ def parse_usd(
     except Exception as e:
         if verbose:
             print(f"Failed to get mass unit: {e}")
+    if not math.isclose(mass_unit, 1.0):
+        warnings.warn(
+            "USD stages with non-unit mass units are not supported. "
+            f"Set kilogramsPerUnit to 1.0 before import. Found kilogramsPerUnit={mass_unit}.",
+            stacklevel=_external_stacklevel(),
+        )
     linear_unit = 1.0
     try:
         if UsdGeom.StageHasAuthoredMetersPerUnit(stage):
@@ -352,6 +377,12 @@ def parse_usd(
     except Exception as e:
         if verbose:
             print(f"Failed to get linear unit: {e}")
+    if not math.isclose(linear_unit, 1.0):
+        warnings.warn(
+            "USD stages with non-unit linear units are not supported. "
+            f"Set metersPerUnit to 1.0 before import. Found metersPerUnit={linear_unit}.",
+            stacklevel=_external_stacklevel(),
+        )
 
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=non_regex_ignore_paths)
@@ -1852,7 +1883,7 @@ def parse_usd(
             print("Found PhysicsScene:", path)
             print("Gravity direction:", scene_desc.gravityDirection)
             print("Gravity magnitude:", scene_desc.gravityMagnitude)
-        builder.gravity = -scene_desc.gravityMagnitude * linear_unit
+        builder.gravity = -scene_desc.gravityMagnitude
 
         # Storing Physics Scene attributes
         physics_scene_prim = stage.GetPrimAtPath(path)
