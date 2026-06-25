@@ -304,23 +304,28 @@ def eval_single_articulation_fk(
             X_j = wp.transform(wp.vec3(), r)
             v_j = wp.spatial_vector(wp.vec3(), w)
 
-        # FREE, DISTANCE, and CABLE all store a full relative anchor pose
-        # (3 translation + 4 quaternion) in joint_q, so they share the same
-        # position reconstruction. They differ only in velocity: FREE/DISTANCE
-        # carry a 6-DoF twist, while CABLE's two DOFs are VBD stretch/bend slots
-        # (not a twist), so its kinematic velocity contribution is zero.
-        if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.CABLE:
+        if type == JointType.FREE or type == JointType.DISTANCE:
+            t = wp.transform(
+                wp.vec3(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2]),
+                wp.quat(joint_q[q_start + 3], joint_q[q_start + 4], joint_q[q_start + 5], joint_q[q_start + 6]),
+            )
+
+            v = wp.spatial_vector(
+                wp.vec3(joint_qd[qd_start + 0], joint_qd[qd_start + 1], joint_qd[qd_start + 2]),
+                wp.vec3(joint_qd[qd_start + 3], joint_qd[qd_start + 4], joint_qd[qd_start + 5]),
+            )
+
+            X_j = t
+            v_j = v
+
+        if type == JointType.CABLE:
+            # CABLE stores its relative anchor pose (3 translation + 4 quaternion)
+            # in joint_q, so FK reconstructs the rod like a FREE joint. Its two
+            # velocity DOFs (stretch, bend/twist) are not a 6-DoF twist, so v_j stays zero.
             X_j = wp.transform(
                 wp.vec3(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2]),
                 wp.quat(joint_q[q_start + 3], joint_q[q_start + 4], joint_q[q_start + 5], joint_q[q_start + 6]),
             )
-            # FREE/DISTANCE carry a 6-DoF twist in joint_qd; CABLE's two DOFs are
-            # stretch/bend stiffness slots (not a twist), so it has no velocity here.
-            if type == JointType.FREE or type == JointType.DISTANCE:
-                v_j = wp.spatial_vector(
-                    wp.vec3(joint_qd[qd_start + 0], joint_qd[qd_start + 1], joint_qd[qd_start + 2]),
-                    wp.vec3(joint_qd[qd_start + 3], joint_qd[qd_start + 4], joint_qd[qd_start + 5]),
-                )
 
         if type == JointType.D6:
             pos = wp.vec3(0.0)
@@ -785,12 +790,41 @@ def eval_articulation_ik(
     if type == JointType.FIXED:
         return
 
-    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.CABLE:
-        # FREE, DISTANCE, and CABLE share a full relative-pose position
-        # coordinate: translation in the parent anchor frame plus the relative
-        # quaternion, i.e. X_j = inv(X_wpj) * X_wcj. They differ only in
-        # velocity: FREE/DISTANCE recover a 6-DoF twist, while CABLE's two DOFs
-        # are VBD stretch/bend slots (not a twist), so joint_qd is left untouched.
+    if type == JointType.FREE or type == JointType.DISTANCE:
+        q_pc = wp.quat_inverse(q_p) * q_c
+
+        x_err_c = wp.quat_rotate_inv(q_p, x_err)
+        x_child_com_world = wp.transform_point(X_wc, body_com[child])
+        v_com_err = wp.spatial_top(v_wc)
+        if parent >= 0:
+            v_com_err = v_com_err - com_twist_to_point_velocity(v_wp, X_wp, body_com[parent], x_child_com_world)
+        v_err_c = wp.quat_rotate_inv(q_p, v_com_err)
+        w_err_c = wp.quat_rotate_inv(q_p, w_err)
+
+        joint_q[q_start + 0] = x_err_c[0]
+        joint_q[q_start + 1] = x_err_c[1]
+        joint_q[q_start + 2] = x_err_c[2]
+
+        joint_q[q_start + 3] = q_pc[0]
+        joint_q[q_start + 4] = q_pc[1]
+        joint_q[q_start + 5] = q_pc[2]
+        joint_q[q_start + 6] = q_pc[3]
+
+        joint_qd[qd_start + 0] = v_err_c[0]
+        joint_qd[qd_start + 1] = v_err_c[1]
+        joint_qd[qd_start + 2] = v_err_c[2]
+
+        joint_qd[qd_start + 3] = w_err_c[0]
+        joint_qd[qd_start + 4] = w_err_c[1]
+        joint_qd[qd_start + 5] = w_err_c[2]
+
+        return
+
+    if type == JointType.CABLE:
+        # CABLE's joint_q is the relative anchor pose X_j = inv(X_wpj) * X_wcj,
+        # the same quantity FREE stores, so eval_fk can reconstruct the rod. Its
+        # two velocity DOFs (stretch, bend/twist) are not a 6-DoF twist, so
+        # joint_qd is left untouched.
         q_pc = wp.quat_inverse(q_p) * q_c
         x_err_c = wp.quat_rotate_inv(q_p, x_err)
 
@@ -802,24 +836,6 @@ def eval_articulation_ik(
         joint_q[q_start + 4] = q_pc[1]
         joint_q[q_start + 5] = q_pc[2]
         joint_q[q_start + 6] = q_pc[3]
-
-        # FREE/DISTANCE recover a 6-DoF twist into joint_qd; CABLE's two DOFs are
-        # stretch/bend stiffness slots (not a twist), so its joint_qd is left as-is.
-        if type == JointType.FREE or type == JointType.DISTANCE:
-            x_child_com_world = wp.transform_point(X_wc, body_com[child])
-            v_com_err = wp.spatial_top(v_wc)
-            if parent >= 0:
-                v_com_err = v_com_err - com_twist_to_point_velocity(v_wp, X_wp, body_com[parent], x_child_com_world)
-            v_err_c = wp.quat_rotate_inv(q_p, v_com_err)
-            w_err_c = wp.quat_rotate_inv(q_p, w_err)
-
-            joint_qd[qd_start + 0] = v_err_c[0]
-            joint_qd[qd_start + 1] = v_err_c[1]
-            joint_qd[qd_start + 2] = v_err_c[2]
-
-            joint_qd[qd_start + 3] = w_err_c[0]
-            joint_qd[qd_start + 4] = w_err_c[1]
-            joint_qd[qd_start + 5] = w_err_c[2]
 
         return
 
