@@ -140,23 +140,10 @@ Going Deeper
 Agent Checklist
 ---------------
 
-When asked to tune a Newton scene, follow this checklist:
-
-1. Identify the active solver class and read its public constructor or
-   configuration object, plus :ref:`Joint feature support` for public model
-   attributes.
-2. Verify that each proposed option is supported by that solver. Do not copy
-   parameter names from another Newton solver, MuJoCo CPU, MuJoCo Warp, or
-   Omniverse unless Newton exposes the same option on the active solver.
-3. Record ``dt``, substeps, contact refresh cadence, solver parameters, contact
-   material values, and drive gains before changing anything.
-4. Reproduce the symptom in a minimal scene.
-5. Change one category at a time: model, timestep, solver convergence,
-   contacts, drives, then performance.
-6. Prefer physically meaningful changes before solver brute force.
-7. Do not invent cross-solver options. For example, ``noslip_iterations`` is
-   not a Newton :class:`~newton.solvers.SolverMuJoCo` constructor option.
-8. Keep the final recommendation solver-specific.
+Automated agents should follow the diagnostic order and per-solver verification
+checklist in the ``simulation-tuning`` skill
+(``.claude/skills/simulation-tuning/SKILL.md``), which routes to the relevant
+section of this guide for parameter detail.
 
 Further Reading
 ---------------
