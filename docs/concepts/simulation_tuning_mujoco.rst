@@ -34,6 +34,28 @@ unconstrained acceleration ``a0``:
 constraint-space reference dynamics**, not a world-space Young's modulus or an
 N/m material spring.
 
+Reference Dynamics
+------------------
+
+For one constraint row, MuJoCo-Warp computes the reference acceleration as
+
+.. math::
+
+   a_{\mathrm{ref}} = -k_0\,d\,\mathtt{pos} - b_0\,\mathtt{vel}
+
+where ``d`` is the current impedance ``d(r)`` and the gains depend on the active
+``solref`` format:
+
+- **Positive format**
+  :math:`k_0 = \dfrac{1}{d_{\max}^2\,\mathtt{timeconst}^2\,\mathtt{dampratio}^2}`,
+  :math:`b_0 = \dfrac{2}{d_{\max}\,\mathtt{timeconst}}`.
+- **Direct format**
+  :math:`k_0 = \dfrac{\mathtt{stiffness}}{d_{\max}^2}`,
+  :math:`b_0 = \dfrac{\mathtt{damping}}{d_{\max}}`.
+
+The ``solimp`` plateau impedance ``dmax`` therefore normalizes both gains; raising
+``dmax`` hardens the row but couples into ``k_0`` and ``b_0`` together.
+
 Mapping ``ke``/``kd`` to ``solref``
 -----------------------------------
 
