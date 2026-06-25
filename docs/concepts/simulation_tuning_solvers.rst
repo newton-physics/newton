@@ -5,8 +5,8 @@
 
 .. _Tuning Solver Reference:
 
-Solver-Specific Tuning Reference
-================================
+Solver Tuning Reference
+=======================
 
 This page is the solver reference for :ref:`Simulation Tuning`: shared tuning
 concepts followed by the supported knobs per Newton solver, and
