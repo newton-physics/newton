@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 """Unit and integration tests for the single-kernel sparse Conjugate Residual solver.
@@ -250,7 +250,6 @@ def _run_padmm_sparse(solver_cls, device):
     solver.reset()
     solver.coldstart()
     solver.solve(problem=problem)
-    wp.synchronize()
     return {
         "lambdas": solver.data.solution.lambdas.numpy().copy(),
         "v_plus": solver.data.solution.v_plus.numpy().copy(),

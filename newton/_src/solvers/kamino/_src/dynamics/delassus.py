@@ -1813,11 +1813,20 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
     # Operations
     ###
 
+    def _require_assembled(self, op_name: str):
+        # Matrix-free (uses_raw_jacobian) operators skip assembly -> bsm/_transpose_op_matrix are None.
+        if not self._assemble:
+            raise RuntimeError(
+                f"{op_name} is unavailable on a matrix-free Delassus operator (uses_raw_jacobian "
+                "solver such as CRF): no assembled matrices were allocated."
+            )
+
     def matvec(self, x: wp.array, y: wp.array, world_mask: wp.array):
         """
         Performs the sparse matrix-vector product `y = D @ x`, applying regularization and
         preconditioning if configured.
         """
+        self._require_assembled("matvec")
         if self.Ax_op is None:
             raise RuntimeError("No `A@x` operator has been assigned.")
         if self.ATy_op is None:
@@ -1877,6 +1886,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         Performs a BLAS-like generalized sparse matrix-vector product `y = alpha * D @ x + beta * y`,
         applying regularization and preconditioning if configured.
         """
+        self._require_assembled("gemv")
         if self.gemv_op is None:
             raise RuntimeError("No BLAS-like `GEMV` operator has been assigned.")
         if self.ATy_op is None:
