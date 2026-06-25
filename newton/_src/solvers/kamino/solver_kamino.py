@@ -445,6 +445,7 @@ class SolverKamino(SolverBase):
         body_poses: ToDefault | Preserve | FromJointQ | FromActuatorQ = ToDefault()
         """
         Reset option for body poses:
+
         - ToDefault: reset poses to their initial values.
         - Preserve: preserve poses in the state container, assuming they are consistent.
         - FromJointQ: extract actuator coordinates from joint coordinates, and compute consistent
@@ -456,6 +457,7 @@ class SolverKamino(SolverBase):
         body_velocities: ToDefault | Preserve | FromJointU | FromActuatorU = ToDefault()
         """
         Reset option for body velocities:
+
         - ToDefault: reset velocities to zero.
         - Preserve: if body poses are preserved, preserve velocities in the state container, assuming
           they are consistent. Otherwise, behaves like FromJointU, transferring current joint velocities
@@ -469,12 +471,14 @@ class SolverKamino(SolverBase):
         base_pose: ToDefault | Preserve | FromJointQ | FromBaseQ = ToDefault()
         """
         Reset option for the floating base pose:
+
         - ToDefault: reset the base pose to its initial value.
         - Preserve: preserve the current base pose, as read from current joint coordinates (if a base joint
           was set) or body poses (otherwise).
         - FromJointQ: read the base pose from joint coordinates, assuming a base joint was set. Behaves
           like ToDefault otherwise (as a fallback).
         - FromBaseQ: use the provided base pose.
+
         Body poses and velocities are transformed (if needed) to match the prescribed base pose, while
         preserving relative poses and velocities.
         """
@@ -482,12 +486,14 @@ class SolverKamino(SolverBase):
         base_velocity: ToDefault | Preserve | FromJointU | FromBaseU = ToDefault()
         """
         Reset option for the floating base velocity:
+
         - ToDefault: reset the base velocity to zero.
         - Preserve: preserve the current base velocity, as read from current joint velocities (if a base joint
           was set) or body velocities (otherwise), up to transformation due to the new base pose if applicable.
         - FromJointU: read the base velocity from joint velocities, assuming a base joint was set. Behaves
           like ToDefault otherwise (as a fallback).
         - FromBaseU: use the provided base velocity.
+
         Body velocities are updated to match the prescribed base velocity, while preserving relative velocities.
         """
 
