@@ -90,6 +90,11 @@ def get_edge_collision_buffer_edge_index(col_info: TriMeshCollisionInfo, e: int,
     return col_info.edge_colliding_edges[2 * (offset + i_collision)]
 
 
+def _as_numpy(arr) -> np.ndarray:
+    """Return ``arr`` as NumPy, accepting either a NumPy or a Warp int array."""
+    return arr if isinstance(arr, np.ndarray) else arr.numpy()
+
+
 def _csr_row(vals: np.ndarray, offs: np.ndarray, i: int) -> np.ndarray:
     """Extract row ``i`` from flat CSR arrays."""
     return vals[offs[i] : offs[i + 1]]
@@ -422,24 +427,25 @@ class TriMeshCollisionDetector:
             edge_indices = self.model.edge_indices.numpy()
             if (
                 adjacency is not None
+                and adjacency.v_adj_hinges is not None
                 and adjacency.v_adj_hinges.size > 0
                 and adjacency.v_adj_hinges_offsets.size > 0
                 and adjacency.v_adj_tris_offsets.size > 0
             ):
-                v_adj_hinges = adjacency.v_adj_hinges.numpy()
-                v_adj_hinges_offsets = adjacency.v_adj_hinges_offsets.numpy()
-                v_adj_tris = adjacency.v_adj_tris.numpy()
-                v_adj_tris_offsets = adjacency.v_adj_tris_offsets.numpy()
+                v_adj_hinges = _as_numpy(adjacency.v_adj_hinges)
+                v_adj_hinges_offsets = _as_numpy(adjacency.v_adj_hinges_offsets)
+                v_adj_tris = _as_numpy(adjacency.v_adj_tris)
+                v_adj_tris_offsets = _as_numpy(adjacency.v_adj_tris_offsets)
             else:
                 filter_adjacency = MeshAdjacency.compute_vertex_adjacency(
                     self.model.particle_count,
                     edge_indices=self.model.edge_indices,
                     tri_indices=self.model.tri_indices,
                 )
-                v_adj_hinges = filter_adjacency.v_adj_hinges.numpy()
-                v_adj_hinges_offsets = filter_adjacency.v_adj_hinges_offsets.numpy()
-                v_adj_tris = filter_adjacency.v_adj_tris.numpy()
-                v_adj_tris_offsets = filter_adjacency.v_adj_tris_offsets.numpy()
+                v_adj_hinges = _as_numpy(filter_adjacency.v_adj_hinges)
+                v_adj_hinges_offsets = _as_numpy(filter_adjacency.v_adj_hinges_offsets)
+                v_adj_tris = _as_numpy(filter_adjacency.v_adj_tris)
+                v_adj_tris_offsets = _as_numpy(filter_adjacency.v_adj_tris_offsets)
 
             vertex_triangle_filter_sets = build_vertex_n_ring_tris_collision_filter(
                 topological_contact_filter_threshold,

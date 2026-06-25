@@ -1150,7 +1150,6 @@ class SolverVBD(SolverBase):
             tri_indices=self.model.tri_indices,
             spring_indices=self.model.spring_indices,
             tet_indices=self.model.tet_indices,
-            device=self.device,
         )
 
     def _compute_rigid_force_element_adjacency(self, model):

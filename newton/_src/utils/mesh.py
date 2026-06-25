@@ -281,17 +281,21 @@ class MeshAdjacency:
         }
 
     def to(self, device) -> MeshAdjacencyDeviceData:
-        """Deploy the kernel-facing arrays onto ``device`` as a pure data struct."""
+        """Upload the vertex-adjacency CSR onto ``device`` as a pure data struct.
+
+        This is the only place the host NumPy tables become Warp arrays;
+        :meth:`init_vertex_adjacency` must have populated them first.
+        """
         dev = wp.get_device(device)
         data = MeshAdjacencyDeviceData()
-        data.v_adj_tris = self.v_adj_tris.to(dev)
-        data.v_adj_tris_offsets = self.v_adj_tris_offsets.to(dev)
-        data.v_adj_hinges = self.v_adj_hinges.to(dev)
-        data.v_adj_hinges_offsets = self.v_adj_hinges_offsets.to(dev)
-        data.v_adj_springs = self.v_adj_springs.to(dev)
-        data.v_adj_springs_offsets = self.v_adj_springs_offsets.to(dev)
-        data.v_adj_tets = self.v_adj_tets.to(dev)
-        data.v_adj_tets_offsets = self.v_adj_tets_offsets.to(dev)
+        data.v_adj_tris = wp.array(self.v_adj_tris, dtype=wp.int32, device=dev)
+        data.v_adj_tris_offsets = wp.array(self.v_adj_tris_offsets, dtype=wp.int32, device=dev)
+        data.v_adj_hinges = wp.array(self.v_adj_hinges, dtype=wp.int32, device=dev)
+        data.v_adj_hinges_offsets = wp.array(self.v_adj_hinges_offsets, dtype=wp.int32, device=dev)
+        data.v_adj_springs = wp.array(self.v_adj_springs, dtype=wp.int32, device=dev)
+        data.v_adj_springs_offsets = wp.array(self.v_adj_springs_offsets, dtype=wp.int32, device=dev)
+        data.v_adj_tets = wp.array(self.v_adj_tets, dtype=wp.int32, device=dev)
+        data.v_adj_tets_offsets = wp.array(self.v_adj_tets_offsets, dtype=wp.int32, device=dev)
         return data
 
     @staticmethod
@@ -381,6 +385,12 @@ class MeshAdjacency:
             rows[:row_count] = source_rows[:row_count]
         return rows
 
+    def complete(self, *, edge_count: int, tri_count: int) -> "MeshAdjacency":
+        """Pad the edge/triangle maps to the full edge/triangle counts with ``-1`` rows (in place)."""
+        self.edge_tri_indices = self.complete_edge_tri_indices(self.edge_tri_indices, edge_count)
+        self.tri_edge_indices = self.complete_tri_edge_indices(self.tri_edge_indices, tri_count)
+        return self
+
     def _grow_tri_edge_indices(self, tri_count: int) -> None:
         """Grow :attr:`tri_edge_indices` to ``tri_count`` rows, padding with ``-1``."""
         current = 0 if self.tri_edge_indices is None else self.tri_edge_indices.shape[0]
@@ -430,7 +440,6 @@ class MeshAdjacency:
         tri_indices=None,
         spring_indices=None,
         tet_indices=None,
-        device=None,
     ) -> "MeshAdjacency":
         """Build a temporary adjacency holding only the vertex-to-element CSR tables."""
         adjacency = MeshAdjacency()
@@ -440,20 +449,7 @@ class MeshAdjacency:
             tri_indices=tri_indices,
             spring_indices=spring_indices,
             tet_indices=tet_indices,
-            device=device,
         )
-
-    def init_empty_vertex_adjacency(self, *, device=None) -> "MeshAdjacency":
-        """Set the vertex-adjacency CSR tables to empty arrays."""
-        self.v_adj_tris = wp.empty(0, dtype=wp.int32, device=device)
-        self.v_adj_tris_offsets = wp.empty(0, dtype=wp.int32, device=device)
-        self.v_adj_hinges = wp.empty(0, dtype=wp.int32, device=device)
-        self.v_adj_hinges_offsets = wp.empty(0, dtype=wp.int32, device=device)
-        self.v_adj_springs = wp.empty(0, dtype=wp.int32, device=device)
-        self.v_adj_springs_offsets = wp.empty(0, dtype=wp.int32, device=device)
-        self.v_adj_tets = wp.empty(0, dtype=wp.int32, device=device)
-        self.v_adj_tets_offsets = wp.empty(0, dtype=wp.int32, device=device)
-        return self
 
     def init_vertex_adjacency(
         self,
@@ -463,13 +459,12 @@ class MeshAdjacency:
         tri_indices=None,
         spring_indices=None,
         tet_indices=None,
-        device=None,
     ) -> "MeshAdjacency":
-        """Compute and store the vertex-to-element CSR tables (hinges/tris/springs/tets).
+        """Compute and store the vertex-to-element CSR tables (hinges/tris/springs/tets) as NumPy.
 
         Hinge adjacency uses ``edge_indices`` (defaulting to :attr:`edge_indices`);
-        triangle/spring/tet adjacency use the supplied indices. Called explicitly
-        (e.g. by the VBD solver) rather than on first access.
+        triangle/spring/tet adjacency use the supplied indices. Built on the host
+        (the count/fill Warp kernels run on CPU); :meth:`to` uploads to a device.
         """
         if edge_indices is None:
             edge_indices = self.edge_indices
@@ -481,10 +476,9 @@ class MeshAdjacency:
                 count_kernel=_count_num_adjacent_hinges,
                 fill_kernel=_fill_adjacent_hinges,
                 values_per_entry=2,
-                device=device,
             )
         else:
-            self.v_adj_hinges, self.v_adj_hinges_offsets = _empty_vertex_adjacency(device)
+            self.v_adj_hinges, self.v_adj_hinges_offsets = _empty_vertex_adjacency()
 
         if _has_entries(tri_indices):
             self.v_adj_tris, self.v_adj_tris_offsets = _build_vertex_adjacency_with_warp(
@@ -493,10 +487,9 @@ class MeshAdjacency:
                 count_kernel=_count_num_adjacent_tris,
                 fill_kernel=_fill_adjacent_tris,
                 values_per_entry=2,
-                device=device,
             )
         else:
-            self.v_adj_tris, self.v_adj_tris_offsets = _empty_vertex_adjacency(device)
+            self.v_adj_tris, self.v_adj_tris_offsets = _empty_vertex_adjacency()
 
         if _has_entries(tet_indices):
             self.v_adj_tets, self.v_adj_tets_offsets = _build_vertex_adjacency_with_warp(
@@ -505,10 +498,9 @@ class MeshAdjacency:
                 count_kernel=_count_num_adjacent_tets,
                 fill_kernel=_fill_adjacent_tets,
                 values_per_entry=2,
-                device=device,
             )
         else:
-            self.v_adj_tets, self.v_adj_tets_offsets = _empty_vertex_adjacency(device)
+            self.v_adj_tets, self.v_adj_tets_offsets = _empty_vertex_adjacency()
 
         if _has_entries(spring_indices):
             self.v_adj_springs, self.v_adj_springs_offsets = _build_vertex_adjacency_with_warp(
@@ -517,10 +509,9 @@ class MeshAdjacency:
                 count_kernel=_count_num_adjacent_springs,
                 fill_kernel=_fill_adjacent_springs,
                 values_per_entry=1,
-                device=device,
             )
         else:
-            self.v_adj_springs, self.v_adj_springs_offsets = _empty_vertex_adjacency(device)
+            self.v_adj_springs, self.v_adj_springs_offsets = _empty_vertex_adjacency()
 
         return self
 
@@ -757,21 +748,9 @@ def _as_cpu_int_array1d(data) -> wp.array:
     return wp.array(_numpy_int_array(data).reshape(-1), dtype=wp.int32, device="cpu")
 
 
-def _empty_vertex_adjacency(device=None) -> tuple[wp.array, wp.array]:
-    """Return empty adjacency values and offsets arrays."""
-    if device is None:
-        device = "cpu"
-    return wp.empty(0, dtype=wp.int32, device=device), wp.empty(0, dtype=wp.int32, device=device)
-
-
-def _move_vertex_adjacency_to_device(
-    values: wp.array,
-    offsets: wp.array,
-    device=None,
-) -> tuple[wp.array, wp.array]:
-    if device is None:
-        return values, offsets
-    return values.to(device), offsets.to(device)
+def _empty_vertex_adjacency() -> tuple[np.ndarray, np.ndarray]:
+    """Return empty (NumPy) adjacency values and offsets arrays."""
+    return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32)
 
 
 def _build_vertex_adjacency_with_warp(
@@ -781,9 +760,12 @@ def _build_vertex_adjacency_with_warp(
     count_kernel,
     fill_kernel,
     values_per_entry: int,
-    device=None,
-) -> tuple[wp.array, wp.array]:
-    """Build vertex adjacency CSR arrays using the VBD Warp count/fill pattern."""
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build vertex-adjacency CSR arrays (NumPy) using the VBD count/fill Warp kernels on CPU.
+
+    The kernels run on CPU; results are copied out to NumPy so the host
+    ``MeshAdjacency`` stays free of Warp arrays (``to`` re-uploads on demand).
+    """
     with wp.ScopedDevice("cpu"):
         counts = wp.zeros(shape=(particle_count,), dtype=wp.int32, device="cpu")
         wp.launch(count_kernel, inputs=[topology, counts], dim=1, device="cpu")
@@ -798,7 +780,8 @@ def _build_vertex_adjacency_with_warp(
         values = wp.empty(shape=(int(values_per_entry * counts_np.sum()),), dtype=wp.int32, device="cpu")
         wp.launch(fill_kernel, inputs=[topology, offsets, fill_count, values], dim=1, device="cpu")
 
-    return _move_vertex_adjacency_to_device(values, offsets, device)
+    # Copy out of the CPU Warp buffers (which go out of scope here) into owned NumPy arrays.
+    return values.numpy().copy(), offsets_np
 
 
 def create_mesh_sphere(

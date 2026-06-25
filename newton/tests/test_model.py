@@ -339,10 +339,13 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize(device="cpu")
         adjacency = model.soft_mesh_adjacency
         self.assertIsNotNone(adjacency)
-        np.testing.assert_array_equal(adjacency.tri_edge_indices.numpy(), builder.soft_mesh_adjacency.tri_edge_indices)
-        np.testing.assert_array_equal(adjacency.edge_tri_indices.numpy(), builder.soft_mesh_adjacency.edge_tri_indices)
-        self.assertEqual(len(adjacency.v_adj_tris), 0)
-        self.assertEqual(len(adjacency.v_adj_hinges_offsets), 0)
+        # The builder's accumulator is handed to the model as the same NumPy object.
+        self.assertIs(adjacency, builder.soft_mesh_adjacency)
+        np.testing.assert_array_equal(adjacency.tri_edge_indices, builder.soft_mesh_adjacency.tri_edge_indices)
+        np.testing.assert_array_equal(adjacency.edge_tri_indices, builder.soft_mesh_adjacency.edge_tri_indices)
+        # Vertex adjacency stays unset until the solver builds it via init_vertex_adjacency.
+        self.assertIsNone(adjacency.v_adj_tris)
+        self.assertIsNone(adjacency.v_adj_hinges_offsets)
 
     def test_manual_soft_mesh_adjacency_placeholders_finalize(self):
         builder = ModelBuilder()
@@ -358,8 +361,8 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize(device="cpu")
         adjacency = model.soft_mesh_adjacency
         self.assertIsNotNone(adjacency)
-        np.testing.assert_array_equal(adjacency.tri_edge_indices.numpy(), np.array([[-1, -1, -1]], dtype=np.int32))
-        np.testing.assert_array_equal(adjacency.edge_tri_indices.numpy(), np.array([[-1, -1]], dtype=np.int32))
+        np.testing.assert_array_equal(adjacency.tri_edge_indices, np.array([[-1, -1, -1]], dtype=np.int32))
+        np.testing.assert_array_equal(adjacency.edge_tri_indices, np.array([[-1, -1]], dtype=np.int32))
 
     def test_add_builder_offsets_soft_mesh_adjacency(self):
         base = ModelBuilder()

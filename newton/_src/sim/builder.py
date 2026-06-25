@@ -11100,25 +11100,17 @@ class ModelBuilder:
             m.edge_bending_properties = _to_wp_array(
                 self.edge_bending_properties, wp.float32, requires_grad=requires_grad
             )
-            # Finalize the accumulated soft-mesh adjacency into a fresh, device-resident
-            # MeshAdjacency: complete the maps to the full triangle/edge counts and move
-            # them (plus empty vertex adjacency) to device. The host accumulator is left intact.
-            accumulator = self.soft_mesh_adjacency
-            soft_mesh_adjacency = MeshAdjacency()
+            # Finalize the accumulated soft-mesh adjacency: set its edge connectivity from the
+            # builder's bending edges (NumPy), pad the maps to the full edge/triangle counts, and
+            # hand the SAME host object to the model. Vertex adjacency stays unset until the solver
+            # builds it via init_vertex_adjacency; kernels get a device copy from MeshAdjacency.to.
+            soft_mesh_adjacency = self.soft_mesh_adjacency
             soft_mesh_adjacency.edge_indices = (
-                m.edge_indices if m.edge_indices is not None else wp.empty((0, 4), dtype=wp.int32, device=device)
+                np.array(self.edge_indices, dtype=np.int32).reshape(-1, 4)
+                if self.edge_indices
+                else np.empty((0, 4), dtype=np.int32)
             )
-            soft_mesh_adjacency.edge_tri_indices = wp.array(
-                MeshAdjacency.complete_edge_tri_indices(accumulator.edge_tri_indices, self.edge_count),
-                dtype=wp.int32,
-                device=device,
-            )
-            soft_mesh_adjacency.tri_edge_indices = wp.array(
-                MeshAdjacency.complete_tri_edge_indices(accumulator.tri_edge_indices, self.tri_count),
-                dtype=wp.int32,
-                device=device,
-            )
-            soft_mesh_adjacency.init_empty_vertex_adjacency(device=device)
+            soft_mesh_adjacency.complete(edge_count=self.edge_count, tri_count=self.tri_count)
             m.soft_mesh_adjacency = soft_mesh_adjacency
 
             # ---------------------
