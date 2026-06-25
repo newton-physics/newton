@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "newton"
-version = "1.3.0.dev0"
+version = "1.4.0.dev0"
 license = "Apache-2.0"
 license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
 authors = [{ name = "Newton Developers", email = "developers@newton-physics.org" }]
@@ -38,7 +38,6 @@ sim = [
     # MuJoCo simulation
     "mujoco-warp>=3.8.0.3,~=3.8.0",  # MuJoCo, warp-accelerated (3.8.0 was broken)
     "mujoco~=3.8.0",        # MuJoCo physics engine
-    "newton-actuators>=0.1.0,<0.1.1",  # deprecated — kept for backward compat, will be removed; <0.1.1 avoids 0.1.1's import-time DeprecationWarning
 ]
 
 # Asset import and mesh processing dependencies

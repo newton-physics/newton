@@ -36,6 +36,7 @@ from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute
 from ..sim.builder import ModelBuilder
 from ..sim.enums import EqType, JointTargetMode
 from ..sim.model import Model
+from ..solvers.mujoco.equality import _add_equality_constraint
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
     mjc_add_equality_mimic,
@@ -107,7 +108,7 @@ def parse_usd(
     See :ref:`usd_parsing` for more information.
 
     Args:
-        builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
+        builder: The :class:`ModelBuilder` to add the bodies and joints to.
         source: The file path to the USD file, or an existing USD stage instance.
         xform: The transform to apply to the entire scene.
         override_root_xform: If ``True``, the articulation root's world-space
@@ -208,7 +209,8 @@ def parse_usd(
         parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
             joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
-            equality constraints are stored in the legacy equality constraint arrays.
+            equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
+            and finalize under ``model.mujoco.equality_constraint_*``.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
         schema_resolvers: Resolver instances in priority order. Default is to only parse Newton-specific attributes.
             Schema resolvers collect per-prim "solver-specific" attributes, see :ref:`schema_resolvers` for more information.
@@ -345,6 +347,12 @@ def parse_usd(
     except Exception as e:
         if verbose:
             print(f"Failed to get mass unit: {e}")
+    if not math.isclose(mass_unit, 1.0):
+        warnings.warn(
+            "USD stages with non-unit mass units are not supported. "
+            f"Set kilogramsPerUnit to 1.0 before import. Found kilogramsPerUnit={mass_unit}.",
+            stacklevel=_external_stacklevel(),
+        )
     linear_unit = 1.0
     try:
         if UsdGeom.StageHasAuthoredMetersPerUnit(stage):
@@ -352,6 +360,12 @@ def parse_usd(
     except Exception as e:
         if verbose:
             print(f"Failed to get linear unit: {e}")
+    if not math.isclose(linear_unit, 1.0):
+        warnings.warn(
+            "USD stages with non-unit linear units are not supported. "
+            f"Set metersPerUnit to 1.0 before import. Found metersPerUnit={linear_unit}.",
+            stacklevel=_external_stacklevel(),
+        )
 
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=non_regex_ignore_paths)
@@ -757,7 +771,6 @@ def parse_usd(
         return imageable.ComputeVisibility() != UsdGeom.Tokens.invisible
 
     bodies_with_visual_shapes: set[int] = set()
-    warned_deprecated_body_armature_paths: set[str] = set()
 
     def _get_prim_world_mat(prim, articulation_root_xform, incoming_world_xform):
         prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
@@ -995,7 +1008,6 @@ def parse_usd(
         prim: Usd.Prim,
         xform: wp.transform,
         label: str,
-        armature: float | None,
         articulation_root_xform: wp.transform | None = None,
         is_kinematic: bool = False,
     ) -> int:
@@ -1004,13 +1016,10 @@ def parse_usd(
         body_custom_attrs = usd.get_custom_attribute_values(
             prim, builder_custom_attr_body, context={"builder": builder}
         )
-        body_inertia = wp.mat33(np.eye(3, dtype=np.float32)) * armature if armature is not None else None
 
         b = builder.add_link(
             xform=xform,
             label=label,
-            inertia=body_inertia,
-            armature=0.0 if armature is not None else None,
             is_kinematic=is_kinematic,
             custom_attributes=body_custom_attrs,
         )
@@ -1042,28 +1051,6 @@ def parse_usd(
             origin = wp.mul(incoming_xform, origin)
         path = str(prim.GetPath())
 
-        body_armature_source_path: str | None = None
-        body_armature = usd.get_float(prim, "newton:armature", None)
-        if body_armature is not None:
-            body_armature_source_path = path
-        if body_armature is None and physics_scene_prim:
-            body_armature = usd.get_float(physics_scene_prim, "newton:armature", None)
-            if body_armature is not None:
-                body_armature_source_path = str(physics_scene_prim.GetPath())
-
-        if (
-            body_armature_source_path is not None
-            and body_armature_source_path not in warned_deprecated_body_armature_paths
-        ):
-            warnings.warn(
-                f"USD-authored 'newton:armature' on {body_armature_source_path} is deprecated and will be "
-                "removed in a future release. Add any isotropic artificial inertia directly to the body's "
-                "inertia instead.",
-                DeprecationWarning,
-                stacklevel=_external_stacklevel(),
-            )
-            warned_deprecated_body_armature_paths.add(body_armature_source_path)
-
         is_kinematic = rigid_body_desc.kinematicBody
 
         if add_body_to_builder:
@@ -1071,7 +1058,6 @@ def parse_usd(
                 prim,
                 origin,
                 path,
-                body_armature,
                 articulation_root_xform=articulation_root_xform,
                 is_kinematic=is_kinematic,
             )
@@ -1080,7 +1066,6 @@ def parse_usd(
                 "prim": prim,
                 "xform": origin,
                 "label": path,
-                "armature": body_armature,
                 "is_kinematic": is_kinematic,
             }
             if articulation_root_xform is not None:
@@ -1850,7 +1835,7 @@ def parse_usd(
             print("Found PhysicsScene:", path)
             print("Gravity direction:", scene_desc.gravityDirection)
             print("Gravity magnitude:", scene_desc.gravityMagnitude)
-        builder.gravity = -scene_desc.gravityMagnitude * linear_unit
+        builder.gravity = -scene_desc.gravityMagnitude
 
         # Storing Physics Scene attributes
         physics_scene_prim = stage.GetPrimAtPath(path)
@@ -1919,7 +1904,7 @@ def parse_usd(
         [AttributeFrequency.JOINT, AttributeFrequency.JOINT_DOF, AttributeFrequency.JOINT_COORD]
     )
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [AttributeFrequency.EQUALITY_CONSTRAINT]
+        ["mujoco:equality_constraint"]
     )
     builder_custom_attr_articulation: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.ARTICULATION]
@@ -3700,16 +3685,14 @@ def parse_usd(
     # for any bodies that get merged.
     def _parse_mjc_equality_constraints():
         local_builder_custom_attr_eq = builder_custom_attr_eq
-        if (
-            convert_mjc_equality_constraints
-            and "mujoco:equality_constraint_target_kind" not in builder.custom_attributes
-        ):
+        # The equality custom attributes are declared by ModelBuilder.__init__; register the
+        # remaining MuJoCo custom attributes needed to parse and convert the model.
+        # register_custom_attributes is idempotent, so re-registering the equality fields is a no-op.
+        if convert_mjc_equality_constraints:
             from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
             SolverMuJoCo.register_custom_attributes(builder)
-            local_builder_custom_attr_eq = builder.get_custom_attributes_by_frequency(
-                [AttributeFrequency.EQUALITY_CONSTRAINT]
-            )
+            local_builder_custom_attr_eq = builder.get_custom_attributes_by_frequency(["mujoco:equality_constraint"])
 
         def add_converted_loop_joint(
             eq_type: EqType,
@@ -3801,7 +3784,9 @@ def parse_usd(
                             eq_custom_attrs,
                         )
                     else:
-                        builder.add_equality_constraint_connect(
+                        _add_equality_constraint(
+                            builder,
+                            constraint_type=EqType.CONNECT,
                             body1=body0_idx,
                             body2=body1_idx,
                             anchor=anchor,
@@ -3841,7 +3826,9 @@ def parse_usd(
                             eq_custom_attrs,
                         )
                     else:
-                        builder.add_equality_constraint_weld(
+                        _add_equality_constraint(
+                            builder,
+                            constraint_type=EqType.WELD,
                             body1=body0_idx,
                             body2=body1_idx,
                             anchor=anchor,
@@ -3909,7 +3896,9 @@ def parse_usd(
                         eq_custom_attrs,
                     )
                 else:
-                    builder.add_equality_constraint_joint(
+                    _add_equality_constraint(
+                        builder,
+                        constraint_type=EqType.JOINT,
                         joint1=joint1_idx,
                         joint2=joint2_idx,
                         polycoef=polycoef,

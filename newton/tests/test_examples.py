@@ -261,6 +261,38 @@ add_example_test(
     use_viewer=True,
     test_options={"num-frames": 100},
 )
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_dzhanibekov",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 230, "solver": "vbd"},
+    test_suffix="vbd",
+)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_dzhanibekov",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 230, "solver": "xpbd"},
+    test_suffix="xpbd",
+)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_dzhanibekov",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 230, "solver": "mujoco"},
+    test_suffix="mujoco",
+)
+
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_multi_solver_overlay",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 50},
+)
 
 
 class TestCableExamples(unittest.TestCase):
@@ -368,6 +400,20 @@ add_example_test(
     name="cloth.example_cloth_rollers",
     devices=cuda_test_devices,
     test_options={"num-frames": 200},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_cloth_stiff_material_hanging",
+    devices=cuda_test_devices,
+    test_options={"usd_required": True, "num-frames": 360},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_cloth_stiff_material_stretch",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 360},
     use_viewer=True,
 )
 

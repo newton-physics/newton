@@ -170,9 +170,7 @@ class SolverSemiImplicit(SolverBase):
             )
 
             # particle shape contact
-            eval_particle_body_contact_forces(
-                model, state_in, contacts, particle_f, body_f_work, body_f_in_world_frame=False
-            )
+            eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f_work)
 
             self.integrate_particles(model, state_in, state_out, dt)
 

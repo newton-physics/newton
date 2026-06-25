@@ -522,14 +522,18 @@ class TestModelConversions(unittest.TestCase):
         # Conversion must succeed (previously raised ValueError)
         kamino_model: ModelKamino = ModelKamino.from_newton(model)
 
-        # Verify X_j first column is aligned with the expected axis direction
-        X_j = kamino_model.joints.X_j.numpy()
-        # X_j has shape (num_joints, 3, 3); the revolute joint is the second one (index 1)
-        R = X_j[1]  # 3x3 rotation matrix
-        ax_col = R[:, 0]  # first column = joint axis direction
+        # Verify that X_Bj's and X_Fj's first column is aligned with the expected axis direction
+        X_Bj = kamino_model.joints.X_Bj.numpy()
+        X_Fj = kamino_model.joints.X_Fj.numpy()
+        # X_Bj has shape (num_joints, 3, 3); the revolute joint is the second one (index 1)
+        R_B = X_Bj[1]  # 3x3 rotation matrix
+        R_F = X_Fj[1]
+        ax_col_B = R_B[:, 0]  # first column = joint axis direction
+        ax_col_F = R_F[:, 0]  # first column = joint axis direction
         expected_ax = np.array([1.0, 1.0, 0.0])
         expected_ax = expected_ax / np.linalg.norm(expected_ax)
-        np.testing.assert_allclose(ax_col, expected_ax, atol=1e-6)
+        np.testing.assert_allclose(ax_col_B, expected_ax, atol=1e-6)
+        np.testing.assert_allclose(ax_col_F, expected_ax, atol=1e-6)
 
     def test_06_model_conversions_q_i_0_com_frame(self):
         """

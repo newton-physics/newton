@@ -26,7 +26,7 @@ from .core.joints import JointCorrectionMode
 from .core.model import ModelKamino
 from .core.state import StateKamino
 from .core.time import advance_time
-from .core.types import float32, int32, transformf, vec6f
+from .core.types import float32, transformf, vec6f
 from .dynamics.dual import DualProblem
 from .dynamics.wrenches import (
     compute_constraint_body_wrenches,
@@ -255,7 +255,7 @@ class SolverKaminoImpl(SolverBase):
 
         # Allocate additional internal data for reset operations
         with wp.ScopedDevice(self._model.device):
-            self._all_worlds_mask = wp.ones(shape=(self._model.size.num_worlds,), dtype=int32)
+            self._all_worlds_mask = wp.ones(shape=(self._model.size.num_worlds,), dtype=wp.bool)
             self._base_q = wp.zeros(shape=(self._model.size.num_worlds,), dtype=transformf)
             self._base_u = wp.zeros(shape=(self._model.size.num_worlds,), dtype=vec6f)
             self._bodies_u_zeros = wp.zeros(shape=(self._model.size.sum_of_num_bodies,), dtype=vec6f)
@@ -405,7 +405,7 @@ class SolverKaminoImpl(SolverBase):
                 The output state container to which the reset state data is written.
             world_mask (wp.array, optional):
                 Optional array of per-world masks indicating which worlds should be reset.\n
-                Shape of `(num_worlds,)` and type :class:`wp.int8 | wp.bool`
+                Shape of `(num_worlds,)` and type :class:`wp.bool`
             actuator_q (wp.array, optional):
                 Optional array of target actuated joint coordinates.\n
                 Shape of `(num_actuated_joint_coords,)` and type :class:`wp.float32`
@@ -952,7 +952,7 @@ class SolverKaminoImpl(SolverBase):
         """
         Runs limit detection to generate active joint limits.
         """
-        self._limits.detect(self._model, self._data)
+        self._limits.detect(q_j=self._data.joints.q_j)
 
     def _update_constraint_info(self):
         """
@@ -1119,7 +1119,7 @@ class SolverKaminoImpl(SolverBase):
         # If a limits container/detector is provided, run joint-limit
         # detection to generate active joint limits at the current state
         if limits is not None:
-            limits.detect(self._model, self._data)
+            limits.detect(q_j=self._data.joints.q_j)
 
         # Update the constraint state info
         self._update_constraint_info()
