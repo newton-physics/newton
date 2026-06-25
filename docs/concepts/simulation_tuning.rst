@@ -153,10 +153,24 @@ Going Deeper
 Agent Checklist
 ---------------
 
-Automated agents should follow the diagnostic order and per-solver verification
-checklist in the ``simulation-tuning`` skill
-(``.claude/skills/simulation-tuning/SKILL.md``), which routes to the relevant
-section of this guide for parameter detail.
+When tuning a scene, follow this order and verification checklist:
+
+1. Classify the symptom (initialization/geometry, control, model, capacity, or
+   contact/solver — see "Diagnose Before Tuning" above).
+2. Identify the active solver class and confirm each parameter you plan to change
+   is actually supported by it — check the "Joint feature support" table in
+   ``docs/api/newton_solvers.rst``. Do not copy option names across solvers or
+   from external MuJoCo/Omniverse docs.
+3. Record ``dt``, substeps, contact-refresh cadence, solver parameters, contact
+   materials, and drive gains before changing anything.
+4. Reproduce the symptom in a minimal scene.
+5. Change one category at a time, in the tuning order above, applying the
+   acceptance procedure before keeping a change.
+6. Keep the final recommendation solver-specific.
+
+Agents using the Newton skill harness can invoke the ``simulation-tuning`` skill,
+which packages this checklist; it is an optional helper, not the canonical
+source — this guide is.
 
 Further Reading
 ---------------
