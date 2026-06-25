@@ -956,6 +956,8 @@ class ConjugateResidualSolverFused(IterativeSolver):
 
     def __init__(self, block_dim: int = 128, **kwargs: dict[str, Any]):
         self._delassus_op = None
+        if int(block_dim) <= 0:
+            raise ValueError("ConjugateResidualSolverFused requires block_dim > 0.")
         # Threads per block (one block solves one world). 128 (four warps) is the measured sweet
         # spot for the dr_legs workload: faster than 64 (more warps hide matvec memory latency) and
         # than 256 (which over-subscribes and loses occupancy).
@@ -1036,8 +1038,10 @@ class ConjugateResidualSolverFused(IterativeSolver):
             bodies_offset = model.info.bodies_offset.numpy()
             self._nbd = wp.array((np.diff(bodies_offset) * 6).astype(np.int32), dtype=wp.int32)
             self._precond_dummy = wp.zeros((1,), dtype=wp.float32)
+            # Full-length zero eta fallback (the fused kernel reads eta[voff + row] for every active row).
+            self._eta_dummy = wp.zeros((self._total_rows,), dtype=wp.float32)
         # Combined regularization, refreshed together with the index structures (see _solve_impl).
-        self._cached_eta = self._precond_dummy
+        self._cached_eta = self._eta_dummy
 
         # Per-world stopping controls are read in the kernel as device arrays so per-world or
         # PADMM-adaptive (``linear_solver_atol``) tolerances are honored rather than scalarized.
@@ -1128,7 +1132,7 @@ class ConjugateResidualSolverFused(IterativeSolver):
         # Regularization (eta) refresh is needed on either flag; it depends only on eta / armature /
         # preconditioner, not on the Jacobian sparsity, so it never needs the index structures.
         eta = self._refresh_combined_regularization(op)
-        self._cached_eta = eta if eta is not None else self._precond_dummy
+        self._cached_eta = eta if eta is not None else self._eta_dummy
         op._regularization_dirty = False
 
         # The index structures depend only on the Jacobian sparsity, so rebuild them (the segmented
