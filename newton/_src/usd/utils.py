@@ -17,6 +17,7 @@ from ..core.types import Axis, AxisType
 from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
 from ..utils.color import color_linear_to_srgb
+from ..utils.import_usd_deformable import validate_mass_array
 from ..utils.texture import linear_texture_to_srgb, load_texture
 
 logger = logging.getLogger("newton")
@@ -1514,8 +1515,9 @@ def _get_deformable_body_overrides(
         return None, None
     mass = read_attr(body_prim, "mass")
     density = read_attr(body_prim, "density")
-    mass = float(mass) if mass is not None and float(mass) > 0.0 else None
-    density = float(density) if density is not None and float(density) > 0.0 else None
+    # Require a finite positive value; drop unset, non-positive, or inf/nan overrides.
+    mass = float(mass) if mass is not None and math.isfinite(float(mass)) and float(mass) > 0.0 else None
+    density = float(density) if density is not None and math.isfinite(float(density)) and float(density) > 0.0 else None
     return mass, density
 
 
@@ -1528,8 +1530,7 @@ def _get_deformable_point_masses(prim: Usd.Prim, read_attr: Callable[[Usd.Prim, 
     val = read_attr(prim, "masses")
     if val is None:
         return None
-    masses = [float(x) for x in val]
-    return masses or None
+    return validate_mass_array(val, str(prim.GetPath()))
 
 
 def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:

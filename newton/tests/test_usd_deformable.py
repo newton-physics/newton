@@ -1451,6 +1451,38 @@ class TestUSDDeformableCloth(unittest.TestCase):
             builder.add_usd(str(usd_path))
             self.assertEqual([builder.particle_mass[i] for i in range(4)], [1.0, 2.0, 3.0, 4.0])
 
+    def test_invalid_per_point_masses_warn_and_fall_back(self):
+        """Negative / inf / nan physics:masses warn and are ignored in favor of density mass.
+
+        Per-point masses have the highest precedence, so a poisoned array would otherwise be
+        written straight into the particles.
+        """
+        from pxr import Sdf, Usd, UsdPhysics
+
+        for label, bad in (
+            ("negative", [1.0, -2.0, 3.0, 4.0]),
+            ("inf", [1.0, float("inf"), 3.0, 4.0]),
+            ("nan", [1.0, float("nan"), 3.0, 4.0]),
+        ):
+            with self.subTest(kind=label), tempfile.TemporaryDirectory() as tmpdir:
+                usd_path = Path(tmpdir) / f"cloth_bad_masses_{label}.usda"
+                stage = Usd.Stage.CreateNew(str(usd_path))
+                UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+                mesh = _add_cloth_mesh(stage, "/World/Cloth")
+                _bind_cable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0)
+                mesh.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(bad)
+                stage.Save()
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, "non-finite or negative"):
+                    builder.add_usd(str(usd_path))
+
+                masses = [builder.particle_mass[i] for i in range(4)]
+                # Fell back to density-derived masses: all finite and strictly positive.
+                for m in masses:
+                    self.assertTrue(math.isfinite(m) and m > 0.0)
+                self.assertNotEqual(masses, bad)
+
     def test_cloth_thickness_scales_areal_density(self):
         """Surface thickness converts the volumetric material density to an areal density."""
         from pxr import Usd, UsdPhysics

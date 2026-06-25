@@ -10,9 +10,10 @@ mutation and traversal orchestration stay in :mod:`.import_usd`.
 
 from __future__ import annotations
 
+import math
 import re
 import warnings
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,26 @@ import warp as wp
 
 if TYPE_CHECKING:
     from pxr import Usd
+
+
+def validate_mass_array(values: Iterable[float], path: str) -> list[float] | None:
+    """Validate an authored per-point ``physics:masses`` array.
+
+    Per-point masses have the highest precedence in the deformable mass resolution, so a poisoned
+    value would dominate. Returns the masses as floats when all are finite and non-negative; warns
+    and returns ``None`` (so the caller falls back to body / material mass) if any value is
+    non-finite or negative, or the array is empty.
+    """
+    masses = [float(x) for x in values]
+    if not masses:
+        return None
+    if any((not math.isfinite(m)) or m < 0.0 for m in masses):
+        warnings.warn(
+            f"{path}: physics:masses contains non-finite or negative values; ignoring per-point masses.",
+            stacklevel=2,
+        )
+        return None
+    return masses
 
 
 def is_ignored_path(path: str, ignore_paths: Sequence[str]) -> bool:
