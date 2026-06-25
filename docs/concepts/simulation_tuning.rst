@@ -21,6 +21,33 @@ as external references.
 
    simulation_tuning_solvers
 
+Diagnose Before Tuning
+----------------------
+
+Before changing any parameter, classify the problem. Most "soft contact"
+symptoms are not contact problems:
+
+- **Initialization / geometry:** initial penetration, collision-vs-visual mesh
+  mismatch, wrong joint state.
+- **Control:** a bad controller or IK target, step changes in drive targets.
+- **Model:** missing joint friction, armature, or damping; a missing drive
+  import; bad mass or inertia.
+- **Capacity:** too few contact or constraint rows for the scene.
+- **Contact / solver:** only after the above are ruled out.
+
+Three principles guide every change:
+
+1. **Rule out non-contact issues before tuning contact.** Do not hide a model
+   or control problem by raising contact stiffness.
+2. **Tune physical parameters before solver options.** Solver iterations,
+   line-search iterations, and tolerances affect *convergence*; they are not a
+   substitute for correct geometry, mass, drives, and contact parameters.
+3. **Harder is not always more stable.** A harder contact (smaller penetration,
+   closer to a hard constraint) can be *less* stable: excessive stiffness, high
+   plateau impedance, or too large a timestep cause jitter, energy injection, or
+   poor solver conditioning. Tune to task metrics, not to a single penetration
+   number.
+
 Tuning Order
 ------------
 
@@ -100,6 +127,12 @@ Symptom Table
      - Lower iterations if available; simplify collision geometry; reduce
        contact buffers or contact count when safe.
      - Accuracy
+
+Going Deeper
+------------
+
+- :ref:`Tuning Solver Reference` — supported knobs per solver and sanity-check
+  math.
 
 Agent Checklist
 ---------------
