@@ -44,6 +44,7 @@ contact problems):
 | Workflow, principles, symptom table | `docs/concepts/simulation_tuning.rst` |
 | Supported knobs per solver, sanity-check math | `docs/concepts/simulation_tuning_solvers.rst` |
 | MuJoCo-Warp constraint model, ke/kd↔solref/solimp, task templates | `docs/concepts/simulation_tuning_mujoco.rst` |
+| Which joint features each solver supports ("Joint feature support" table) | `docs/api/newton_solvers.rst` |
 
 ## Key facts
 
