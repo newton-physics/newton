@@ -6,8 +6,15 @@ description: Use when tuning a Newton physics scene or diagnosing instability �
 # Newton Simulation Tuning
 
 Route tuning work through the diagnostic order below, then read the matching
-docs page for parameter detail. The docs are the source of truth; this skill is
-triage + discipline.
+docs page for parameter detail. Rely on this guide for the durable reasoning —
+the diagnostic workflow, the tuning order, and the principles. The **code is the
+source of truth for specifics**: default values, parameter formulas, enum/mode
+names, which knobs a solver exposes, and APIs all change as the codebase evolves.
+
+**Before you state or act on any specific — a default value, a parameter formula,
+an enum/mode name, or "solver X supports knob Y" — open the source file that
+defines it and confirm. The guide and your own memory can be stale or wrong; the
+code is not.**
 
 ## Diagnose first — what kind of problem is this?
 
@@ -36,6 +43,10 @@ contact problems):
    contacts → drives → performance.
 6. Prefer physically meaningful changes before solver brute force.
 7. Keep the final recommendation solver-specific.
+
+Red flag — stop and read the source: you are about to state a default value, a
+parameter formula, an enum/mode name, or "solver X supports knob Y" from memory
+or from this guide without having opened the code that defines it.
 
 ## Where to read for depth
 
