@@ -24,7 +24,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices
+from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_selected_cuda_test_devices
 from newton.usd import SchemaResolverPhysx
 
 
@@ -107,6 +107,7 @@ def _add_physics_attachment(
     return prim
 
 
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableCable(unittest.TestCase):
     """Curve-deformable (cable) parsing into VBD rod bodies + cable joints."""
 
@@ -1208,6 +1209,7 @@ class TestUSDDeformableCable(unittest.TestCase):
 _CABLE_ASSET = Path(__file__).parent / "assets" / "cable_curve_deformable.usda"
 
 
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableCableAsset(unittest.TestCase):
     """Round-trip a committed .usda cable asset through the importer and the VBD solver (T7)."""
 
@@ -1265,6 +1267,7 @@ def _add_cloth_mesh(stage, path):
     return mesh
 
 
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableCloth(unittest.TestCase):
     """Surface-deformable (cloth) parsing into particles + FEM triangles + bending edges."""
 
@@ -1630,6 +1633,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertTrue(np.isfinite(pq).all(), "non-finite cloth particle positions after stepping")
 
 
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableVolume(unittest.TestCase):
     """Volume (TetMesh) soft-body addressability (REQ #3038)."""
 
@@ -1795,6 +1799,7 @@ def _apply_deformable_body_api(prim, *, mass=None, density=None):
         prim.CreateAttribute("physics:density", Sdf.ValueTypeNames.Float).Set(density)
 
 
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableMass(unittest.TestCase):
     """Mass-distribution precedence (proposal "Mass Distribution")."""
 
@@ -2009,6 +2014,8 @@ class TestUSDDeformableMass(unittest.TestCase):
                 UsdPhysics.Scene.Define(stage, "/PhysicsScene")
                 pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]  # 4 points
                 curves = _add_cable_curve(stage, "/World/Cable", pts)
+                # Bind a thickness so the only warning under test is the mass-length mismatch.
+                _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
                 if masses is not None:
                     curves.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(masses)
                 stage.Save()
@@ -2017,7 +2024,7 @@ class TestUSDDeformableMass(unittest.TestCase):
                 return sum(builder.body_mass[b] for b in bodies)
 
         baseline = total_cable_mass()
-        with self.assertWarns(UserWarning):
+        with self.assertWarnsRegex(UserWarning, r"!= 4 curve points"):
             mismatched = total_cable_mass(masses=[1.0, 2.0, 3.0])  # length 3 != 4 points
         self.assertAlmostEqual(mismatched, baseline, places=6)
 
