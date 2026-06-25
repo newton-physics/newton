@@ -155,8 +155,6 @@ class Example:
         use_graph_conditionals: bool = False,
         sparse: bool = False,
         asset: str = "dr_legs_with_meshes_and_boxes.usda",
-        lin_tol_ratio: float = 0.0,
-        penalty_update_method: str = "fixed",
         headless: bool = False,
         record_video: bool = False,
         async_save: bool = False,
@@ -234,11 +232,16 @@ class Example:
         config.solver.padmm.compl_tolerance = 1e-4
         config.solver.padmm.max_iterations = 200
         config.solver.padmm.eta = 1e-5
-        config.solver.padmm.rho_0 = 0.02  # try 0.02 for Balanced update
-        config.solver.padmm.rho_min = 0.05
-        config.solver.padmm.linear_solver_tolerance_ratio = lin_tol_ratio  # 0 = fixed inner tol
-        config.solver.padmm.penalty_update_method = penalty_update_method  # "fixed" or "balanced"
         config.solver.padmm.use_acceleration = True
+        # CRF converges only with the adaptive "balanced" penalty; rho_min/alpha/tau are no-ops
+        # under the fixed penalty the direct solvers use.
+        crf = linear_solver == "CRF"
+        config.solver.padmm.penalty_update_method = "balanced" if crf else "fixed"
+        config.solver.padmm.rho_0 = 0.5 if crf else 0.02
+        config.solver.padmm.rho_min = 5e-5
+        config.solver.padmm.alpha = 5.0
+        config.solver.padmm.tau = 1.4
+        config.solver.padmm.linear_solver_tolerance_ratio = 0.2
         config.solver.padmm.warmstart_mode = "containers"
         config.solver.padmm.contact_warmstart_method = "geom_pair_net_force"
         config.solver.collect_solver_info = False
@@ -504,19 +507,6 @@ if __name__ == "__main__":
         default="dr_legs_with_meshes_and_boxes.usda",
         help="dr_legs USD asset filename under dr_legs/usd/",
     )
-    parser.add_argument(
-        "--lin-tol-ratio",
-        type=float,
-        default=0.0,
-        help="Inexact-ADMM inner linear-solver tolerance ratio (0 = fixed inner tolerance)",
-    )
-    parser.add_argument(
-        "--penalty-update-method",
-        type=str,
-        default="fixed",
-        choices=["fixed", "balanced"],
-        help="PADMM penalty update method",
-    )
     args = parser.parse_args()
 
     # Set global numpy configurations
@@ -555,8 +545,6 @@ if __name__ == "__main__":
         use_graph_conditionals=args.use_graph_conditionals,
         sparse=args.sparse,
         asset=args.asset,
-        lin_tol_ratio=args.lin_tol_ratio,
-        penalty_update_method=args.penalty_update_method,
         max_steps=args.num_steps,
         implicit_pd=args.implicit_pd,
         gravity=args.gravity,
