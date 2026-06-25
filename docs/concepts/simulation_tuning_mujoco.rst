@@ -192,3 +192,92 @@ goal that matches the actual failure, not the one that seems most intuitive.
 Hardness is mainly ``timeconst``/``ke`` and ``d(r)``; stability depends on
 ``timeconst``, ``ke``, ``kd``, ``d(r)``, ``dt``, solver, friction, cone,
 geometry, mass/inertia, and controller.
+
+Task Templates
+--------------
+
+Each template below gives a goal and a sequence of parameter-direction steps.
+The workflow logic applies to any solver; ``solimp``/``solref`` advice is
+MuJoCo-specific. For which solvers support armature, effort limits, and joint
+friction, see :ref:`Tuning Solver Reference`.
+
+New Asset Import
+~~~~~~~~~~~~~~~~
+
+*Goal: verify stable simulation before adding performance requirements; catch
+geometry, joint, and controller problems early.*
+
+- Start with conservative contact: low ``ke``, default ``solimp`` (wide
+  ``width``, low ``dmax``).
+- Inspect initial contacts — overlapping geometries at spawn cause immediate
+  instability.
+- Check joint parameters: ranges, armature, and damping; flag joints with zero
+  inertia or zero armature.
+- Check drives: verify gains, effort limits, and target values are physically
+  reasonable.
+- Check capacity: confirm mass, inertia, and friction are plausible.
+- Only harden contact (raise ``ke``/``kd``, tighten ``solimp``) once the asset
+  simulates stably with gravity and light loading.
+
+Tabletop Support / Pressing / Stacking
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+*Goal: reduce penetration, keep support stable, and suppress bounce and chatter.*
+
+- Use medium-to-high ``ke``; use medium-to-high ``kd`` (target ``kd ≈ 2·√ke``
+  for near-critical contact).
+- Raise ``dmax`` in ``solimp`` to cut deep penetration; raise ``d0`` only if
+  shallow contact is also too soft.
+- Increase substeps if the contact must be hard and the timestep cannot shrink.
+- Verify the controller maintains a downward force; loss of support often
+  traces to drive saturation, not contact stiffness.
+
+Impact / Rebound
+~~~~~~~~~~~~~~~~
+
+*Goal: limit penetration on collision, preserve reasonable rebound, and maintain
+energy and velocity transfer.*
+
+- Raise stiffness (higher ``ke``, lower ``timeconst``) to limit penetration
+  depth.
+- Lower damping (``dampratio`` toward 1, or lower ``kd``) to preserve rebound;
+  overdamped contact absorbs energy that should transfer.
+- Reduce ``dt`` or increase substeps — high stiffness is more stable at small
+  timesteps.
+- Judge contact quality by energy retention and rebound height, not penetration
+  alone; excessive dissipation is as wrong as excessive bounce.
+
+Grasping / Holding
+~~~~~~~~~~~~~~~~~~~
+
+*Goal: prevent slipping, reduce stick-slip oscillation, and keep contact forces
+stable across the grasp.*
+
+- Check normal force first: insufficient normal force cannot be fixed by any
+  friction or stiffness setting.
+- Then check friction: raise ``mu`` before touching stiffness.
+- Then check contact stiffness: raise ``ke``/``kd`` to stiffen the contact
+  patch if friction is adequate but the grasp deflects.
+- Tune ``impratio`` and the friction cone shape if stick-slip persists after
+  normal force and friction are correct.
+- Never use higher stiffness as a substitute for insufficient friction capacity;
+  it increases constraint load without fixing the root cause.
+
+Articulated Joints
+~~~~~~~~~~~~~~~~~~
+
+*Goal: doors, drawers, knobs, and switches stop naturally; joint limits do not
+jitter; drives behave as intended.*
+
+- Verify drive import: confirm gains, effort limits, and target mode match the
+  intended behavior.
+- Add joint friction (``jnt_frictionloss`` in MuJoCo; solver-equivalent damping
+  on other solvers) so joints resist motion without a drive.
+- Add armature to low-inertia joints to damp high-frequency oscillation; small
+  values (0.01–0.1 kg·m²) are often sufficient.
+- Add passive damping (``jnt_damping``) to prevent free-spinning at zero
+  velocity.
+- Tune joint limit stiffness and damping separately from contact stiffness;
+  limit jitter usually requires raising ``kd`` on the limit, not on the contact.
+- Clip controller targets to the joint range; drives that demand positions beyond
+  the limits fight the limit constraint and destabilize the joint.
