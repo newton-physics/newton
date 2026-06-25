@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 import re
 import warnings
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -99,3 +99,93 @@ class CurveDeformableRecord:
     radius: float
     density: float
     material: dict[str, float] = field(default_factory=dict)
+
+
+def import_element_collision_filters(
+    builder,
+    root_prim,
+    ignore_paths: Sequence[str],
+    deformable_read: Callable,
+    get_first_target: Callable,
+    verbose: bool,
+    path_cable_segments: dict,
+    path_body_map: dict,
+    path_cloth_map: dict,
+    path_soft_map: dict,
+) -> None:
+    """Lower AOUSD ``PhysicsElementCollisionFilter`` prims to shape collision filter pairs.
+
+    Each prim suppresses collision between selected *elements* of ``src0`` and ``src1``. Supported
+    element sources are imported cables (``groupElemIndices`` index the cable's segments) and rigid
+    colliders (all of the collider's shapes). An empty index array means *all* elements of that
+    source. Cloth/volume (triangle/tet) element sources have no per-element rigid shape in Newton's
+    shape-filter model and are warned and skipped.
+    """
+    from pxr import Usd
+
+    if not (root_prim and root_prim.IsValid()):
+        return
+
+    def _src_shapes(src_path: str, indices: list[int], filter_path: str) -> list[int] | None:
+        # Resolve a source prim + element indices to the builder shape ids to filter.
+        if src_path in path_cable_segments:
+            segs = path_cable_segments[src_path]  # flat segment index -> (body, length)
+            if indices:
+                bodies = []
+                for idx in indices:
+                    if idx not in segs:
+                        warnings.warn(
+                            f"{filter_path}: element index {idx} is not an imported segment of cable "
+                            f"'{src_path}'; skipping that element.",
+                            stacklevel=2,
+                        )
+                        continue
+                    bodies.append(segs[idx][0])
+            else:
+                bodies = [body for body, _length in segs.values()]  # empty indices -> all segments
+            shapes: list[int] = []
+            for b in bodies:
+                shapes.extend(builder.body_shapes.get(b, []))
+            return shapes
+        if src_path in path_body_map:
+            # A rigid collider: filter against all of its shapes (per-element indices not meaningful).
+            return list(builder.body_shapes.get(path_body_map[src_path], []))
+        if src_path in path_cloth_map or src_path in path_soft_map:
+            warnings.warn(
+                f"{filter_path}: PhysicsElementCollisionFilter on cloth/volume source '{src_path}' is not "
+                "supported (no per-element rigid shapes); skipping.",
+                stacklevel=2,
+            )
+            return None
+        warnings.warn(
+            f"{filter_path}: PhysicsElementCollisionFilter source '{src_path}' is not an imported "
+            "deformable or collider; skipping.",
+            stacklevel=2,
+        )
+        return None
+
+    for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
+        if str(prim.GetTypeName()) != "PhysicsElementCollisionFilter":
+            continue
+        path = str(prim.GetPath())
+        if is_ignored_path(path, ignore_paths):
+            continue
+        enabled = deformable_read(prim, "filterEnabled")
+        if enabled is not None and not bool(enabled):
+            continue
+        src0 = get_first_target(prim, "physics:src0")
+        src1 = get_first_target(prim, "physics:src1")
+        idx0 = [int(i) for i in (deformable_read(prim, "groupElemIndices0") or [])]
+        idx1 = [int(i) for i in (deformable_read(prim, "groupElemIndices1") or [])]
+        shapes0 = _src_shapes(src0, idx0, path)
+        shapes1 = _src_shapes(src1, idx1, path)
+        if not shapes0 or not shapes1:
+            continue
+        pair_count = 0
+        for sa in shapes0:
+            for sb in shapes1:
+                if sa != sb:
+                    builder.add_shape_collision_filter_pair(sa, sb)
+                    pair_count += 1
+        if verbose:
+            print(f"Applied PhysicsElementCollisionFilter {path}: {pair_count} shape pair(s).")

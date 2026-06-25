@@ -46,7 +46,12 @@ from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
 from .cable import create_cable_stiffness_from_elastic_moduli
-from .import_usd_deformable import CurveDeformableRecord, is_ignored_path, validate_attachment_index_pairs
+from .import_usd_deformable import (
+    CurveDeformableRecord,
+    import_element_collision_filters,
+    is_ignored_path,
+    validate_attachment_index_pairs,
+)
 from .import_utils import should_show_collider
 
 logger = logging.getLogger("newton")
@@ -4828,6 +4833,21 @@ def parse_usd(
                 attrs["joint_indices"] = list(joints)
                 if verbose:
                     print(f"Added PhysicsAttachment {path} with {len(joints)} joint(s).")
+
+    # AOUSD PhysicsElementCollisionFilter prims: suppress collision between authored element
+    # groups (cable segments / collider shapes); runs after the cables and colliders exist.
+    import_element_collision_filters(
+        builder,
+        root_prim,
+        ignore_paths,
+        deformable_read,
+        _get_first_target,
+        verbose,
+        path_cable_segments,
+        path_body_map,
+        path_cloth_map,
+        path_soft_map,
+    )
 
     # Parse MjcEquality constraints *before* collapsing fixed joints so that the
     # builder's collapse logic can remap body/joint indices and adjust anchors/relposes

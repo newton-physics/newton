@@ -107,6 +107,19 @@ def _add_physics_attachment(
     return prim
 
 
+def _add_element_collision_filter(stage, path, *, src0, src1, indices0=None, indices1=None, enabled=True):
+    """Author an AOUSD ``PhysicsElementCollisionFilter`` prim by token."""
+    from pxr import Sdf
+
+    prim = stage.DefinePrim(path, "PhysicsElementCollisionFilter")
+    prim.CreateRelationship("physics:src0").SetTargets([src0])
+    prim.CreateRelationship("physics:src1").SetTargets([src1])
+    prim.CreateAttribute("physics:filterEnabled", Sdf.ValueTypeNames.Bool).Set(enabled)
+    prim.CreateAttribute("physics:groupElemIndices0", Sdf.ValueTypeNames.IntArray).Set(list(indices0 or []))
+    prim.CreateAttribute("physics:groupElemIndices1", Sdf.ValueTypeNames.IntArray).Set(list(indices1 or []))
+    return prim
+
+
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableCable(unittest.TestCase):
     """Curve-deformable (cable) parsing into VBD rod bodies + cable joints."""
@@ -937,6 +950,39 @@ class TestUSDDeformableCable(unittest.TestCase):
             # The regression: a non-monotonic articulation_start raised here before the fix.
             model = builder.finalize()
             self.assertGreater(model.body_count, 0)
+
+    def test_element_collision_filter_filters_cable_segments_against_collider(self):
+        """A PhysicsElementCollisionFilter suppresses collision between the named cable segments
+        and a collider; unlisted segments stay collidable."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "elem_filter.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            box = UsdGeom.Cube.Define(stage, "/World/Box")
+            box.CreateSizeAttr(0.1)
+            UsdPhysics.RigidBodyAPI.Apply(box.GetPrim()).CreateKinematicEnabledAttr(True)
+            UsdPhysics.CollisionAPI.Apply(box.GetPrim())
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]  # 3 segments
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
+            # Filter the cable's first two segments (0, 1) against all of the box; empty indices1 = all.
+            _add_element_collision_filter(
+                stage, "/World/Filter", src0="/World/Cable", src1="/World/Box", indices0=[0, 1], indices1=[]
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            seg_bodies, _ = result["path_cable_map"]["/World/Cable"]
+            seg_shapes = [builder.body_shapes[b][0] for b in seg_bodies]
+            box_shape = builder.body_shapes[result["path_body_map"]["/World/Box"]][0]
+            pairs = {tuple(sorted(p)) for p in builder.shape_collision_filter_pairs}
+            self.assertIn(tuple(sorted((seg_shapes[0], box_shape))), pairs)
+            self.assertIn(tuple(sorted((seg_shapes[1], box_shape))), pairs)
+            self.assertNotIn(tuple(sorted((seg_shapes[2], box_shape))), pairs, "segment 2 was not listed")
 
     def test_curve_to_curve_attachment_builds_rod_graph(self):
         """A curve->curve point attachment welds two curve deformables into one rod graph.
