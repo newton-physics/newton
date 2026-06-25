@@ -935,9 +935,9 @@ class ModelBuilderKamino:
                 else:  # Set base body to be the follower of the base joint
                     world.set_base_body(follower_idx)
             elif not world.has_base_body and base_auto:
-                # Look for a unary joint connecting the world to a follower body
+                # Look for a non-universal unary joint connecting the world to a follower body
                 for jt_idx, joint in enumerate(self._joints[w]):
-                    if joint.wid == w and joint.bid_B == -1 and joint.bid_F >= 0:
+                    if joint.bid_B == -1 and joint.dof_type != JointDoFType.UNIVERSAL:
                         world.set_base_joint(jt_idx)
                         world.set_base_body(joint.bid_F)
                         break

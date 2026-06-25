@@ -1036,6 +1036,7 @@ def convert_joints(
     joint_world_start_np = model.joint_world_start.numpy()
     joint_child_np = model.joint_child.numpy()
     joint_parent_np = model.joint_parent.numpy()
+    joint_dof_type_np = joint_dof_type.numpy()
 
     # Assign base bodies based on articulation roots (if articulations are present)
     if model.articulation_count > 0:
@@ -1048,6 +1049,10 @@ def convert_joints(
             base_joint = articulation_start_np[aid]
             base_body = joint_child_np[base_joint]
             if base_body_idx_np[wid] == -1 and base_joint_idx_np[wid] == -1:
+                if joint_dof_type_np[base_joint] == JointDoFType.UNIVERSAL:
+                    raise RuntimeError(
+                        "Universal joint as the base joint of an articulation isn't supported in Kamino."
+                    )
                 base_body_idx_np[wid] = base_body
                 base_joint_idx_np[wid] = base_joint
 
@@ -1055,9 +1060,9 @@ def convert_joints(
     for wid in range(model.world_count):
         if base_body_idx_np[wid] != -1:  # World already has a base body
             continue
-        # Look for a unary joint connecting the world to a follower body
+        # Look for a unary non-universal joint connecting the world to a follower body
         for jid in range(joint_world_start_np[wid], joint_world_start_np[wid + 1]):
-            if joint_parent_np[jid] == -1 and joint_child_np[jid] >= 0:
+            if joint_parent_np[jid] == -1 and joint_dof_type_np[jid] != JointDoFType.UNIVERSAL:
                 base_joint_idx_np[wid] = jid
                 base_body_idx_np[wid] = int(joint_child_np[jid])
                 break

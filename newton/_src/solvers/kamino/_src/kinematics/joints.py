@@ -349,8 +349,11 @@ def get_joint_constraint_angular_residual_function(dof_type: JointDoFType):
 
 
 @wp.func
-def joint_constraint_velocity_residual_universal(j_q_j: quatf, j_u_j: vec6f) -> vec6f:
-    """Returns the joint constraint velocity residual for a universal joint."""
+def convert_angular_vel_to_universal_joint_intermediary_frame(j_q_j: quatf, j_u_j: vec6f) -> vec6f:
+    """
+    Converts the angular part of a relative body velocity at a universal joint, from the
+    joint frame on the base body to the intermediary frame.
+    """
     # Compute intermediary body axes, in the joint frame on the base body
     e_x = vec3f(1.0, 0.0, 0.0)
     e_y = vec3f(0.0, 1.0, 0.0)
@@ -410,7 +413,7 @@ def make_typed_write_joint_data(dof_type: JointDoFType, correction: JointCorrect
     ):
         # Convert angular velocity to intermediary body frame for universal joint
         if wp.static(dof_type == JointDoFType.UNIVERSAL):
-            j_u_j = joint_constraint_velocity_residual_universal(j_q_j, j_u_j)
+            j_u_j = convert_angular_vel_to_universal_joint_intermediary_frame(j_q_j, j_u_j)
 
         # Only write the constraint residual and velocity if the joint defines constraints
         # NOTE: This will be disabled for free joints
