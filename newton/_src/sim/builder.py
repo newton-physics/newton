@@ -1028,16 +1028,6 @@ class ModelBuilder:
         # triangles
         self.tri_indices: list[tuple[int, int, int]] = []
         """Triangle connectivity accumulated for :attr:`Model.tri_indices`."""
-        self.soft_mesh_adjacency = MeshAdjacency()
-        """Soft-mesh edge/triangle adjacency accumulated across cloth/soft meshes.
-
-        Expanded per mesh via :meth:`MeshAdjacency.add_adjacency` and finalized into
-        :attr:`Model.soft_mesh_adjacency`. ``tri_edge_indices`` gives each triangle's
-        three edges (column ``k`` = edge between local vertices ``k`` and ``(k+1)%3``);
-        ``edge_tri_indices`` gives each edge's two adjacent triangles (column 1 is
-        ``-1`` on a boundary edge). ``-1`` marks unrecorded slots (e.g. triangles
-        outside the soft-mesh range).
-        """
         self.tri_poses: list[Mat22] = []
         """Triangle rest-pose 2x2 matrices accumulated for :attr:`Model.tri_poses`."""
         self.tri_activations: list[float] = []
@@ -3401,12 +3391,7 @@ class ModelBuilder:
         if builder.tet_count:
             self.tet_indices.extend((np.array(builder.tet_indices, dtype=np.int32) + start_particle_idx).tolist())
 
-        # Expand the accumulated soft-mesh adjacency with the sub-builder's tables.
-        other_adjacency = getattr(builder, "soft_mesh_adjacency", None)
-        if other_adjacency is not None:
-            self.soft_mesh_adjacency.add_adjacency(
-                other_adjacency, tri_offset=start_triangle_idx, edge_offset=start_edge_idx
-            )
+        # The soft-mesh adjacency is rebuilt from the merged edge/triangle tables in finalize().
 
         builder_coloring_translated = [group + start_particle_idx for group in builder.particle_color_groups]
         self.particle_color_groups = combine_independent_particle_coloring(
@@ -8352,11 +8337,11 @@ class ModelBuilder:
         edge_kd: float | Sequence[float] | np.ndarray | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> range:
-        """Register bending edges for a triangle range and expand the accumulated adjacency.
+        """Register bending edges for a triangle range from its derived edge topology.
 
-        Topology merging lives on :meth:`MeshAdjacency.add_adjacency`; this only
-        builds the batch adjacency, registers its bending edges (material), and
-        merges the batch into :attr:`soft_mesh_adjacency`.
+        Computes the unique edges of the triangle range and registers them as
+        bending edges (with material). The edge/triangle adjacency maps are rebuilt
+        from the accumulated tables in :meth:`finalize`.
 
         Returns:
             The range of global edge indices added.
@@ -8375,7 +8360,6 @@ class ModelBuilder:
                     edge_kd=self._expand_edge_parameter(edge_kd, edge_count),
                     custom_attributes=custom_attributes,
                 )
-            self.soft_mesh_adjacency.add_adjacency(local, tri_offset=start_tri, edge_offset=edge_start)
         return range(edge_start, len(self.edge_indices))
 
     def add_cloth_grid(
@@ -11100,18 +11084,17 @@ class ModelBuilder:
             m.edge_bending_properties = _to_wp_array(
                 self.edge_bending_properties, wp.float32, requires_grad=requires_grad
             )
-            # Finalize the accumulated soft-mesh adjacency: set its edge connectivity from the
-            # builder's bending edges (NumPy), pad the maps to the full edge/triangle counts, and
-            # hand the SAME host object to the model. Vertex adjacency stays unset until the solver
-            # builds it via init_vertex_adjacency; kernels get a device copy from MeshAdjacency.to.
-            soft_mesh_adjacency = self.soft_mesh_adjacency
-            soft_mesh_adjacency.edge_indices = (
+            # Build the soft-mesh adjacency from the accumulated bending edges and triangles:
+            # keep the builder's edge numbering (it stays aligned with the bending materials) and
+            # derive the edge/triangle maps against the final triangles. Vertex adjacency stays
+            # unset until the solver builds it via init_vertex_adjacency; kernels get a device copy
+            # from MeshAdjacency.to.
+            edge_indices = (
                 np.array(self.edge_indices, dtype=np.int32).reshape(-1, 4)
                 if self.edge_indices
                 else np.empty((0, 4), dtype=np.int32)
             )
-            soft_mesh_adjacency.complete(edge_count=self.edge_count, tri_count=self.tri_count)
-            m.soft_mesh_adjacency = soft_mesh_adjacency
+            m.soft_mesh_adjacency = MeshAdjacency(tri_indices=self.tri_indices, edge_indices=edge_indices)
 
             # ---------------------
             # tetrahedra

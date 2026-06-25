@@ -229,19 +229,30 @@ class MeshAdjacency:
         f0: int
         f1: int
 
-    def __init__(self, tri_indices: Sequence[Sequence[int]] | np.ndarray | None = None):
-        """Build edge adjacency from triangle indices.
+    def __init__(
+        self,
+        tri_indices: Sequence[Sequence[int]] | np.ndarray | None = None,
+        edge_indices: Sequence[Sequence[int]] | np.ndarray | None = None,
+    ):
+        """Build edge adjacency from triangles, optionally reusing existing edges.
 
         Args:
-            tri_indices: Triangle indices, shape ``[tri_count, 3]``. When given,
-                ``edge_indices`` and the edge/triangle maps are computed eagerly.
-                ``None`` leaves the tables empty for incremental builder
-                accumulation via :meth:`ModelBuilder.add_adjacency`.
+            tri_indices: Triangle indices, shape ``[tri_count, 3]``, used to
+                derive the edge/triangle maps. ``None`` leaves the tables empty.
+            edge_indices: Pre-numbered bending edges, shape ``[edge_count, 4]`` as
+                ``[o0, o1, v0, v1]``. When given, this exact edge numbering is kept
+                (so it stays aligned with externally stored bending materials) and
+                only the edge/triangle maps are derived against ``tri_indices``.
+                When ``None``, ``edge_indices`` is computed from ``tri_indices``.
         """
         self.indices = tri_indices
 
-        # Edge topology and triangle/edge maps (eager when tri_indices given).
-        if tri_indices is not None:
+        if edge_indices is not None:
+            # Keep the caller's edge numbering; derive only the maps from the triangles.
+            self.edge_indices = _numpy_int_rows(edge_indices, 4)
+            tris = _numpy_int_rows(tri_indices, 3) if tri_indices is not None else np.empty((0, 3), dtype=np.int32)
+            self.edge_tri_indices, self.tri_edge_indices = self._build_maps(self.edge_indices, tris)
+        elif tri_indices is not None:
             self.edge_indices, self.edge_tri_indices, self.tri_edge_indices = self._compute_edge_adjacency(tri_indices)
         else:
             self.edge_indices = np.empty((0, 4), dtype=np.int32)
@@ -366,71 +377,44 @@ class MeshAdjacency:
         return edge_indices, edge_tri_indices, tri_edge_indices
 
     @staticmethod
-    def complete_tri_edge_indices(tri_edge_indices, tri_count: int) -> np.ndarray:
-        """Return a ``(tri_count, 3)`` triangle-edge table, padding missing rows with ``-1``."""
-        rows = np.full((tri_count, 3), -1, dtype=np.int32)
-        source_rows = _numpy_int_rows(tri_edge_indices, 3)
-        row_count = min(tri_count, source_rows.shape[0])
-        if row_count > 0:
-            rows[:row_count] = source_rows[:row_count]
-        return rows
+    def _build_maps(edge_indices: np.ndarray, tri_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Derive the edge-triangle and triangle-edge maps from pre-numbered edges.
 
-    @staticmethod
-    def complete_edge_tri_indices(edge_tri_indices, edge_count: int) -> np.ndarray:
-        """Return an ``(edge_count, 2)`` edge-triangle table, padding missing rows with ``-1``."""
-        rows = np.full((edge_count, 2), -1, dtype=np.int32)
-        source_rows = _numpy_int_rows(edge_tri_indices, 2)
-        row_count = min(edge_count, source_rows.shape[0])
-        if row_count > 0:
-            rows[:row_count] = source_rows[:row_count]
-        return rows
-
-    def complete(self, *, edge_count: int, tri_count: int) -> "MeshAdjacency":
-        """Pad the edge/triangle maps to the full edge/triangle counts with ``-1`` rows (in place)."""
-        self.edge_tri_indices = self.complete_edge_tri_indices(self.edge_tri_indices, edge_count)
-        self.tri_edge_indices = self.complete_tri_edge_indices(self.tri_edge_indices, tri_count)
-        return self
-
-    def _grow_tri_edge_indices(self, tri_count: int) -> None:
-        """Grow :attr:`tri_edge_indices` to ``tri_count`` rows, padding with ``-1``."""
-        current = 0 if self.tri_edge_indices is None else self.tri_edge_indices.shape[0]
-        if tri_count <= current:
-            return
-        pad = np.full((tri_count - current, 3), -1, dtype=np.int32)
-        self.tri_edge_indices = pad if self.tri_edge_indices is None else np.concatenate((self.tri_edge_indices, pad))
-
-    def _grow_edge_tri_indices(self, edge_count: int) -> None:
-        """Grow :attr:`edge_tri_indices` to ``edge_count`` rows, padding with ``-1``."""
-        current = 0 if self.edge_tri_indices is None else self.edge_tri_indices.shape[0]
-        if edge_count <= current:
-            return
-        pad = np.full((edge_count - current, 2), -1, dtype=np.int32)
-        self.edge_tri_indices = pad if self.edge_tri_indices is None else np.concatenate((self.edge_tri_indices, pad))
-
-    def add_adjacency(self, other: "MeshAdjacency", *, tri_offset: int = 0, edge_offset: int = 0) -> None:
-        """Expand this adjacency's triangle/edge maps with ``other``'s.
-
-        Places ``other``'s ``tri_edge_indices``/``edge_tri_indices`` rows into this
-        object's tables at ``tri_offset``/``edge_offset``, shifting referenced edge
-        ids by ``edge_offset`` and triangle ids by ``tri_offset`` into a shared
-        global numbering. Edge connectivity (:attr:`edge_indices`) and bending
-        material are owned by the caller and not merged here.
+        Returns ``(edge_tri_indices, tri_edge_indices)`` sized to ``edge_indices`` /
+        ``tri_indices``. A triangle is linked to an edge only when the triangle's
+        vertex opposite that edge equals one of the edge's stored opposite vertices
+        (``o0``/``o1``); placeholder edges (``o0 == o1 == -1``) and bare triangles
+        therefore stay unlinked, as if the edge were never registered for them.
         """
-        other_tri_edge = _numpy_int_rows(other.tri_edge_indices, 3)
-        if other_tri_edge.shape[0]:
-            end_tri = tri_offset + other_tri_edge.shape[0]
-            self._grow_tri_edge_indices(end_tri)
-            shifted = other_tri_edge.copy()
-            shifted[shifted != -1] += edge_offset
-            self.tri_edge_indices[tri_offset:end_tri] = shifted
+        edge_count = edge_indices.shape[0]
+        tri_count = tri_indices.shape[0]
+        edge_tri_indices = np.full((edge_count, 2), -1, dtype=np.int32)
+        tri_edge_indices = np.full((tri_count, 3), -1, dtype=np.int32)
+        if edge_count == 0 or tri_count == 0:
+            return edge_tri_indices, tri_edge_indices
 
-        other_edge_tri = _numpy_int_rows(other.edge_tri_indices, 2)
-        if other_edge_tri.shape[0]:
-            end_edge = edge_offset + other_edge_tri.shape[0]
-            self._grow_edge_tri_indices(end_edge)
-            shifted = other_edge_tri.copy()
-            shifted[shifted != -1] += tri_offset
-            self.edge_tri_indices[edge_offset:end_edge] = shifted
+        # Map each edge's endpoint pair to its row (edges are unique per vertex pair).
+        edge_of: dict[tuple[int, int], int] = {}
+        for e in range(edge_count):
+            v0, v1 = int(edge_indices[e, 2]), int(edge_indices[e, 3])
+            edge_of[(min(v0, v1), max(v0, v1))] = e
+
+        for t in range(tri_count):
+            verts = (int(tri_indices[t, 0]), int(tri_indices[t, 1]), int(tri_indices[t, 2]))
+            for k in range(3):
+                v0, v1 = verts[k], verts[(k + 1) % 3]
+                e = edge_of.get((min(v0, v1), max(v0, v1)))
+                if e is None:
+                    continue
+                # Slot k spans local verts (k, k+1); the opposite vertex picks the side.
+                opposite = verts[(k + 2) % 3]
+                if opposite == edge_indices[e, 0]:
+                    tri_edge_indices[t, k] = e
+                    edge_tri_indices[e, 0] = t
+                elif opposite == edge_indices[e, 1]:
+                    tri_edge_indices[t, k] = e
+                    edge_tri_indices[e, 1] = t
+        return edge_tri_indices, tri_edge_indices
 
     @staticmethod
     def compute_vertex_adjacency(

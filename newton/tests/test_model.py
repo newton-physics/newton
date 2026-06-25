@@ -327,22 +327,18 @@ class TestModelMesh(unittest.TestCase):
             density=1.0,
         )
 
-        np.testing.assert_array_equal(
-            builder.soft_mesh_adjacency.tri_edge_indices,
-            np.array([[0, 1, 2], [2, 3, 4]], dtype=np.int32),
-        )
-        np.testing.assert_array_equal(
-            builder.soft_mesh_adjacency.edge_tri_indices,
-            np.array([[0, -1], [0, -1], [0, 1], [1, -1], [1, -1]], dtype=np.int32),
-        )
-
+        # The adjacency is built in finalize() from the accumulated edges and triangles.
         model = builder.finalize(device="cpu")
         adjacency = model.soft_mesh_adjacency
         self.assertIsNotNone(adjacency)
-        # The builder's accumulator is handed to the model as the same NumPy object.
-        self.assertIs(adjacency, builder.soft_mesh_adjacency)
-        np.testing.assert_array_equal(adjacency.tri_edge_indices, builder.soft_mesh_adjacency.tri_edge_indices)
-        np.testing.assert_array_equal(adjacency.edge_tri_indices, builder.soft_mesh_adjacency.edge_tri_indices)
+        np.testing.assert_array_equal(
+            adjacency.tri_edge_indices,
+            np.array([[0, 1, 2], [2, 3, 4]], dtype=np.int32),
+        )
+        np.testing.assert_array_equal(
+            adjacency.edge_tri_indices,
+            np.array([[0, -1], [0, -1], [0, 1], [1, -1], [1, -1]], dtype=np.int32),
+        )
         # Vertex adjacency stays unset until the solver builds it via init_vertex_adjacency.
         self.assertIsNone(adjacency.v_adj_tris)
         self.assertIsNone(adjacency.v_adj_hinges_offsets)
@@ -355,9 +351,8 @@ class TestModelMesh(unittest.TestCase):
         builder.add_triangle(0, 1, 2)
         builder.add_edge(-1, -1, 0, 1)
 
-        self.assertEqual(builder.soft_mesh_adjacency.tri_edge_indices.shape, (0, 3))
-        self.assertEqual(builder.soft_mesh_adjacency.edge_tri_indices.shape, (0, 2))
-
+        # A bare triangle and a placeholder edge (o0 == o1 == -1) stay unlinked: the triangle's
+        # opposite vertex matches neither stored opposite, so finalize leaves both map rows at -1.
         model = builder.finalize(device="cpu")
         adjacency = model.soft_mesh_adjacency
         self.assertIsNotNone(adjacency)
@@ -385,18 +380,51 @@ class TestModelMesh(unittest.TestCase):
         combined.add_builder(base)
         combined.add_builder(base)
 
+        # add_builder concatenates the edge/triangle tables; finalize() rebuilds the maps, so the
+        # second copy's rows are the first's with triangle ids +2 and edge ids +5.
+        base_adj = base.finalize(device="cpu").soft_mesh_adjacency
+        combined_adj = combined.finalize(device="cpu").soft_mesh_adjacency
+
+        np.testing.assert_array_equal(combined_adj.tri_edge_indices[:2], base_adj.tri_edge_indices)
+        np.testing.assert_array_equal(combined_adj.edge_tri_indices[:5], base_adj.edge_tri_indices)
+        np.testing.assert_array_equal(combined_adj.tri_edge_indices[2:], base_adj.tri_edge_indices + 5)
         np.testing.assert_array_equal(
-            combined.soft_mesh_adjacency.tri_edge_indices[:2], base.soft_mesh_adjacency.tri_edge_indices
-        )
-        np.testing.assert_array_equal(
-            combined.soft_mesh_adjacency.edge_tri_indices[:5], base.soft_mesh_adjacency.edge_tri_indices
-        )
-        np.testing.assert_array_equal(
-            combined.soft_mesh_adjacency.tri_edge_indices[2:], base.soft_mesh_adjacency.tri_edge_indices + 5
-        )
-        np.testing.assert_array_equal(
-            combined.soft_mesh_adjacency.edge_tri_indices[5:],
+            combined_adj.edge_tri_indices[5:],
             np.array([[2, -1], [2, -1], [2, 3], [3, -1], [3, -1]], dtype=np.int32),
+        )
+
+    def test_soft_mesh_adjacency_mixes_cloth_and_bare_triangles(self):
+        # A cloth mesh (with bending edges) plus a bare add_triangle (no edges) in one builder:
+        # finalize() sizes tri_edge_indices to every triangle, leaves the bare triangle's row at -1,
+        # keeps the cloth rows linked, and never synthesizes edges for the bare triangle.
+        builder = ModelBuilder()
+        builder.add_cloth_mesh(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            vertices=[
+                wp.vec3(0.0, 0.0, 0.0),
+                wp.vec3(1.0, 0.0, 0.0),
+                wp.vec3(1.0, 1.0, 0.0),
+                wp.vec3(0.0, 1.0, 0.0),
+            ],
+            indices=[0, 1, 2, 0, 2, 3],
+            density=1.0,
+        )
+        p0 = builder.add_particle(wp.vec3(2.0, 0.0, 0.0), wp.vec3(), 1.0)
+        p1 = builder.add_particle(wp.vec3(3.0, 0.0, 0.0), wp.vec3(), 1.0)
+        p2 = builder.add_particle(wp.vec3(2.0, 1.0, 0.0), wp.vec3(), 1.0)
+        builder.add_triangle(p0, p1, p2)
+
+        adjacency = builder.finalize(device="cpu").soft_mesh_adjacency
+        np.testing.assert_array_equal(
+            adjacency.tri_edge_indices,
+            np.array([[0, 1, 2], [2, 3, 4], [-1, -1, -1]], dtype=np.int32),
+        )
+        np.testing.assert_array_equal(
+            adjacency.edge_tri_indices,
+            np.array([[0, -1], [0, -1], [0, 1], [1, -1], [1, -1]], dtype=np.int32),
         )
 
     def test_mesh_adjacency_public_deprecated(self):
