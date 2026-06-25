@@ -65,8 +65,10 @@ Use this order for most rigid-body and articulation problems:
    before raising stiffness. A smaller ``dt`` is usually the most reliable
    stability improvement, but it is also expensive.
 5. **Tune solver convergence.** If the selected solver exposes iterations or
-   tolerances, increase iterations or tighten tolerances until constraint
-   residuals stop improving enough to justify the cost.
+   tolerances, increase them in a bounded sweep (for example, double the
+   iterations) and stop when an increase reduces the constraint residual by less
+   than a small margin you set in advance (a few percent); further iterations
+   then cost runtime without meaningful accuracy.
 6. **Tune contacts.** Adjust stiffness, damping, friction, contact margins,
    gaps, contact count, and collision refresh cadence.
 7. **Tune joints and drives.** Use realistic drive stiffness and damping. Add target rate limits in
@@ -78,6 +80,17 @@ Use this order for most rigid-body and articulation problems:
 Do not hide model errors with extreme solver settings. Bad mass ratios,
 incorrect inertia tensors, overlapping collision geometry, and over-stiff
 drives usually remain unstable even with more iterations.
+
+For symptoms that classify as **Control** or **Model** under "Diagnose Before
+Tuning" above, resolve that category before contacts: steps 6–7 list contacts
+before joints and drives only because that order suits contact-dominated
+symptoms. For drive- or controller-dominated symptoms (such as poor tracking or
+oscillation), tune joints and drives first and consult the Symptom Table.
+
+Accept a parameter change only when the target task metric improves and no
+guardrail regresses past a bound set in advance — NaN/Inf count, maximum
+penetration or constraint residual, and runtime. Record those baselines before
+the first change and change one knob at a time.
 
 Symptom Table
 -------------

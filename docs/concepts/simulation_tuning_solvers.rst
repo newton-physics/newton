@@ -258,9 +258,12 @@ for a prismatic drive, or:
    \zeta \approx d / (2 \sqrt{k I_{\mathrm{eff}}})
 
 for a revolute drive. Treat these as order-of-magnitude checks, not exact
-system identification. If the dimensionless product :math:`\omega_n \Delta t`
-is large, reduce ``dt``, reduce stiffness, add physically justified armature, or
-switch to a solver/formulation that better matches the problem.
+system identification. There is no universal safe threshold for the
+dimensionless product :math:`\omega_n \Delta t`; rather than tune to a fixed
+number, run a bounded ``dt`` (or stiffness) sweep and watch for instability. If
+:math:`\omega_n \Delta t` grows, reduce ``dt``, reduce stiffness, add physically
+justified armature, or switch to a solver/formulation that better matches the
+problem.
 
 For grippers and manipulation, set actuator limits before increasing gains:
 
@@ -321,9 +324,11 @@ Then estimate:
    \zeta_{\mathrm{n}} \approx d_{\mathrm{n}} / (2 \sqrt{k_{\mathrm{n}} m_{\mathrm{eff}}})
 
 Use this to catch obviously over-stiff contact settings before running large
-scenes. If the dimensionless product :math:`\omega_n \Delta t` is large, lower
-:math:`k_{\mathrm{n}}`, increase damping within reason, reduce ``dt``, or choose
-a solver and contact representation that can handle the desired stiffness. For
+scenes. There is no universal safe threshold for :math:`\omega_n \Delta t`; use
+a bounded sweep rather than a fixed cutoff. If it grows large enough to threaten
+stability, lower :math:`k_{\mathrm{n}}`, increase damping within reason, reduce
+``dt``, or choose a solver and contact representation that can handle the desired
+stiffness. For
 torsional or rolling contact effects, the same idea applies with effective
 inertia instead of effective mass, but the exact parameter mapping is
 solver-dependent.
