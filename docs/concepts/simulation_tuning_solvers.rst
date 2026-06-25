@@ -8,8 +8,8 @@
 Solver-Specific Tuning Reference
 ================================
 
-This page is the solver-agnostic reference for :ref:`Simulation Tuning`. It
-lists shared tuning concepts, the supported knobs per Newton solver, and
+This page is the solver reference for :ref:`Simulation Tuning`: shared tuning
+concepts followed by the supported knobs per Newton solver, and
 order-of-magnitude sanity checks. Start from the :ref:`Simulation Tuning`
 landing page for the diagnostic workflow.
 

@@ -25,7 +25,7 @@ contact problems):
 ## Agent checklist
 
 1. Identify the active solver class; read its public constructor / config object
-   and `Joint feature support` for supported model attributes.
+   and the "Joint feature support" docs table for supported model attributes.
 2. Verify each proposed option is supported by that solver. Do **not** copy
    option names across solvers or from external MuJoCo/Omniverse docs. Example:
    `noslip_iterations` is **not** a `SolverMuJoCo` option.

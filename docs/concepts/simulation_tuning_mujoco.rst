@@ -17,6 +17,15 @@ and constraint parameters, so that :attr:`~Model.shape_material_ke` and
 Constraint Mental Model
 -----------------------
 
+.. note::
+
+   This section condenses MuJoCo's own constraint model into the terms a Newton
+   user tunes; it is not a new formulation. For the authoritative treatment, see
+   the MuJoCo references on `constraint computation
+   <https://mujoco.readthedocs.io/en/stable/computation/index.html#constraint-model>`__
+   and `solver parameters
+   <https://mujoco.readthedocs.io/en/stable/modeling.html#solver-parameters>`__.
+
 MuJoCo-style contact, limit, and equality constraints are not explicit
 spring-damper penalties in world space. A more accurate picture is a *soft servo
 in constraint space*. For one scalar constraint row with residual ``r``,
@@ -61,7 +70,8 @@ Mapping ``ke``/``kd`` to ``solref``
 
 :class:`~newton.solvers.SolverMuJoCo` converts ``ke``/``kd`` to positive-format
 ``solref`` using the current impedance. With ``d_width`` the impedance width
-factor and ``d_r`` the impedance at the current residual:
+factor and ``d_r`` the impedance at the current residual (the same impedance
+``d(r)`` used in the constraint mental model above):
 
 .. math::
 
@@ -131,7 +141,7 @@ constraint row but can condition worse. ``efc_D`` is the inverse regularization,
 not the regularizer itself.
 
 Make Harder vs. Make Stable
-----------------------------
+---------------------------
 
 These two goals require different actions and have different costs. Choose the
 goal that matches the actual failure, not the one that seems most intuitive.
@@ -220,7 +230,7 @@ geometry, joint, and controller problems early.*
   simulates stably with gravity and light loading.
 
 Tabletop Support / Pressing / Stacking
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 *Goal: reduce penetration, keep support stable, and suppress bounce and chatter.*
 
@@ -248,7 +258,7 @@ energy and velocity transfer.*
   alone; excessive dissipation is as wrong as excessive bounce.
 
 Grasping / Holding
-~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~
 
 *Goal: prevent slipping, reduce stick-slip oscillation, and keep contact forces
 stable across the grasp.*
