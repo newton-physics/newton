@@ -314,7 +314,9 @@ def eval_single_articulation_fk(
                 wp.vec3(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2]),
                 wp.quat(joint_q[q_start + 3], joint_q[q_start + 4], joint_q[q_start + 5], joint_q[q_start + 6]),
             )
-            if type != JointType.CABLE:
+            # FREE/DISTANCE carry a 6-DoF twist in joint_qd; CABLE's two DOFs are
+            # stretch/bend stiffness slots (not a twist), so it has no velocity here.
+            if type == JointType.FREE or type == JointType.DISTANCE:
                 v_j = wp.spatial_vector(
                     wp.vec3(joint_qd[qd_start + 0], joint_qd[qd_start + 1], joint_qd[qd_start + 2]),
                     wp.vec3(joint_qd[qd_start + 3], joint_qd[qd_start + 4], joint_qd[qd_start + 5]),
@@ -801,7 +803,9 @@ def eval_articulation_ik(
         joint_q[q_start + 5] = q_pc[2]
         joint_q[q_start + 6] = q_pc[3]
 
-        if type != JointType.CABLE:
+        # FREE/DISTANCE recover a 6-DoF twist into joint_qd; CABLE's two DOFs are
+        # stretch/bend stiffness slots (not a twist), so its joint_qd is left as-is.
+        if type == JointType.FREE or type == JointType.DISTANCE:
             x_child_com_world = wp.transform_point(X_wc, body_com[child])
             v_com_err = wp.spatial_top(v_wc)
             if parent >= 0:
