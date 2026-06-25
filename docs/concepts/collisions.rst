@@ -1648,7 +1648,7 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
      - ShapeConfig
      - Model Array
    * - ``mu``
-     - Dynamic friction coefficient
+     - Coefficient of friction
      - 1.0
      - :attr:`~ModelBuilder.ShapeConfig.mu`
      - :attr:`~Model.shape_material_mu`
