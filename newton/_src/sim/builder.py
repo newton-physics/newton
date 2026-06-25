@@ -12,6 +12,7 @@ import math
 import warnings
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, MutableSequence, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -85,6 +86,82 @@ class _ShapeCollisionFilterBlock:
     local_pairs: tuple[tuple[int, int], ...]
     world: int | None = None
     shape_count: int = 0
+
+
+class _CompactShapeCollisionFilterPairs(AbstractSet[tuple[int, int]]):
+    """Read-only set view over compact replicated collision filters."""
+
+    def __init__(
+        self,
+        explicit_pairs: Iterable[tuple[int, int]],
+        blocks: Iterable[_ShapeCollisionFilterBlock],
+    ):
+        self._explicit_pairs = frozenset(self._canonical_pair(shape_a, shape_b) for shape_a, shape_b in explicit_pairs)
+        block_specs = []
+        local_pair_sets = {}
+        for block in blocks:
+            key = id(block.local_pairs)
+            local_pair_set = local_pair_sets.get(key)
+            if local_pair_set is None:
+                local_pair_set = frozenset(
+                    self._canonical_pair(shape_a, shape_b) for shape_a, shape_b in block.local_pairs
+                )
+                local_pair_sets[key] = local_pair_set
+            block_specs.append((block.shape_start, block.shape_count, block.local_pairs, local_pair_set))
+        self._block_specs = tuple(block_specs)
+        self._materialized: frozenset[tuple[int, int]] | None = None
+
+    @staticmethod
+    def _canonical_pair(shape_a: int, shape_b: int) -> tuple[int, int]:
+        return (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
+
+    def _as_frozenset(self) -> frozenset[tuple[int, int]]:
+        if self._materialized is None:
+            pairs = set(self._explicit_pairs)
+            for shape_start, _shape_count, local_pairs, _local_pair_set in self._block_specs:
+                pairs.update(
+                    self._canonical_pair(shape_start + shape_a, shape_start + shape_b)
+                    for shape_a, shape_b in local_pairs
+                )
+            self._materialized = frozenset(pairs)
+        return self._materialized
+
+    def __bool__(self) -> bool:
+        return bool(self._explicit_pairs) or bool(self._block_specs)
+
+    def __contains__(self, pair: object) -> bool:
+        if not isinstance(pair, tuple) or len(pair) != 2:
+            return False
+
+        try:
+            shape_a, shape_b = pair
+            canonical_pair = self._canonical_pair(shape_a, shape_b)
+
+            if self._materialized is not None:
+                return canonical_pair in self._materialized
+
+            if canonical_pair in self._explicit_pairs:
+                return True
+
+            for shape_start, shape_count, _local_pairs, local_pair_set in self._block_specs:
+                if (
+                    shape_start <= shape_a < shape_start + shape_count
+                    and shape_start <= shape_b < shape_start + shape_count
+                ):
+                    local_shape_a = shape_a - shape_start
+                    local_shape_b = shape_b - shape_start
+                    if self._canonical_pair(local_shape_a, local_shape_b) in local_pair_set:
+                        return True
+        except (TypeError, ValueError):
+            return False
+
+        return False
+
+    def __iter__(self):
+        return iter(self._as_frozenset())
+
+    def __len__(self) -> int:
+        return len(self._as_frozenset())
 
 
 class _BuilderShapeCollisionFilterPairs(MutableSequence):
@@ -10614,14 +10691,13 @@ class ModelBuilder:
         compact_filter_blocks = self.shape_collision_filter_pairs.compact_contact_blocks
         if compact_filter_blocks:
             self._validate_compact_shape_collision_filter_blocks(compact_filter_blocks)
-            explicit_filter_pairs = self.shape_collision_filter_pairs.explicit_pairs
+            explicit_filter_pairs = tuple(
+                self._iter_validated_shape_collision_filter_pairs(self.shape_collision_filter_pairs.explicit_pairs)
+            )
             # Residual filters are arbitrary caller-provided pairs; validate them
-            # before the compact path materializes block-generated pairs cheaply.
-            for _ in self._iter_validated_shape_collision_filter_pairs(explicit_filter_pairs):
-                pass
-            shape_collision_filter_pairs = frozenset(
-                (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
-                for shape_a, shape_b in self.shape_collision_filter_pairs
+            # while leaving replicated block filters compact on the model.
+            shape_collision_filter_pairs = _CompactShapeCollisionFilterPairs(
+                explicit_filter_pairs, compact_filter_blocks
             )
         else:
             shape_collision_filter_pairs = frozenset(

@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import warnings
 from collections.abc import Callable
+from collections.abc import Set as AbstractSet
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
@@ -295,7 +296,7 @@ class Model:
 
         self.shape_collision_group: wp.array[wp.int32] | None = None
         """Collision group of each shape, shape [shape_count], int. Array populated during finalization."""
-        self._shape_collision_filter_pairs: frozenset[tuple[int, int]] = frozenset()
+        self._shape_collision_filter_pairs: AbstractSet[tuple[int, int]] = frozenset()
         self.shape_collision_radius: wp.array[wp.float32] | None = None
         """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
         self.shape_contact_pairs: wp.array[wp.vec2i] | None = None
@@ -881,8 +882,8 @@ class Model:
         """List of actuator instances for this model."""
 
     @property
-    def shape_collision_filter_pairs(self) -> frozenset[tuple[int, int]]:
-        """Read-only pairs of shape indices that should not collide."""
+    def shape_collision_filter_pairs(self) -> AbstractSet[tuple[int, int]]:
+        """Read-only set of shape index pairs that should not collide."""
         return self._shape_collision_filter_pairs
 
     # Deprecated equality-constraint arrays (removal in a future release).

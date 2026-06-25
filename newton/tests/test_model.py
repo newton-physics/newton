@@ -6,6 +6,7 @@ import math
 import sys
 import unittest
 import warnings
+from collections.abc import Set as AbstractSet
 from types import SimpleNamespace
 from unittest import mock
 
@@ -722,7 +723,7 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
 
     def test_large_replicated_collision_filter_pairs_are_read_only_and_preserve_contacts(self):
-        """Large replicated filters should materialize read-only while preserving contacts."""
+        """Large replicated filters should stay compact/read-only while preserving contacts."""
 
         robot = ModelBuilder()
         body0 = robot.add_body()
@@ -744,7 +745,8 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize()
 
         filters = model.shape_collision_filter_pairs
-        self.assertIsInstance(filters, frozenset)
+        self.assertIsInstance(filters, AbstractSet)
+        self.assertNotIsInstance(filters, frozenset)
         self.assertIn((1, 2), filters)
         self.assertIn((3, 4), filters)
         self.assertIn((5, 6), filters)
@@ -801,7 +803,8 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize()
 
         filters = model.shape_collision_filter_pairs
-        self.assertIsInstance(filters, frozenset)
+        self.assertIsInstance(filters, AbstractSet)
+        self.assertNotIsInstance(filters, frozenset)
         self.assertIn((1, 2), filters)
         self.assertIn((ground, 1), filters)
 
