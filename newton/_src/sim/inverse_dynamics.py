@@ -80,6 +80,8 @@ class InverseDynamicsScratchBuffer:
         self.body_I_m = wp.empty(bc, dtype=wp.spatial_matrix, device=device)
         self.body_q_com = wp.empty(bc, dtype=wp.transform, device=device)
         self.joint_qd_internal = wp.empty(jdc, dtype=wp.float32, device=device)
+        self.body_qd_fk = wp.empty(bc, dtype=wp.spatial_vector, device=device)
+        self.body_solve_origin = wp.zeros(bc, dtype=wp.vec3, device=device)
         self.joint_S_s = wp.empty(jdc, dtype=wp.spatial_vector, device=device)
         self.body_I_s = wp.empty(bc, dtype=wp.spatial_matrix, device=device)
         self.body_v_s = wp.empty(bc, dtype=wp.spatial_vector, device=device)
@@ -289,7 +291,9 @@ def _rnea_compensation_pass(
             gravity,
         ],
         outputs=[
+            scratch.body_qd_fk,
             scratch.joint_S_s,
+            scratch.body_solve_origin,
             scratch.body_I_s,
             scratch.body_v_s,
             scratch.body_f_s,
@@ -328,6 +332,8 @@ def _rnea_compensation_pass(
             scratch.zeros_dof,  # joint_limit_kd
             scratch.zeros_dof,  # joint_damping
             scratch.joint_S_s,
+            scratch.body_q_com,
+            scratch.body_solve_origin,
             scratch.body_f_s,
             scratch.zeros_body,  # body_f_ext
         ],
