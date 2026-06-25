@@ -1102,6 +1102,47 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertNotEqual(trunk_joints, [])
             self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])
 
+    def test_heterogeneous_welded_cable_materials_warn(self):
+        """Welding curves with different materials warns that one representative is used.
+
+        add_rod_graph applies one scalar radius/density/stiffness per component, so the graph
+        flattens to the first curve's material; the disagreement must be surfaced, not silent.
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "heterogeneous_weld.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            trunk_pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            branch_pts = [(0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.1, 0.2, 1.0)]
+            trunk = _add_cable_curve(stage, "/World/Trunk", trunk_pts)
+            branch = _add_cable_curve(stage, "/World/Branch", branch_pts)
+            _bind_cable_material(stage, trunk.GetPrim(), "/World/TrunkMat", thickness=0.02)
+            _bind_cable_material(stage, branch.GetPrim(), "/World/BranchMat", thickness=0.06)
+            _add_physics_attachment(
+                stage,
+                "/World/Junction",
+                src0="/World/Branch",
+                src1="/World/Trunk",
+                type0="point",
+                type1="point",
+                indices0=[0],
+                indices1=[1],
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "differing radius/density/stiffness"):
+                result = builder.add_usd(str(usd_path))
+
+            # Still welded into one graph; each curve keeps its own authored material in the attrs.
+            self.assertIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])
+            self.assertIn("graph_component", result["path_cable_attrs"]["/World/Branch"])
+            self.assertAlmostEqual(result["path_cable_attrs"]["/World/Trunk"]["material"]["thickness"], 0.02, places=5)
+            self.assertAlmostEqual(result["path_cable_attrs"]["/World/Branch"]["material"]["thickness"], 0.06, places=5)
+
     def test_disabled_physics_attachment_is_recorded_but_not_imported(self):
         """attachmentEnabled=false preserves attrs but creates no joint."""
         from pxr import Usd, UsdGeom, UsdPhysics

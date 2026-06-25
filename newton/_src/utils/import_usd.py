@@ -3935,6 +3935,11 @@ def parse_usd(
         Returns the curve prim paths and the junction attachment prim paths consumed here so the
         per-curve cable pass and the attachment post-pass skip them. Single curves and
         curve-to-xform attachments are left to those passes.
+
+        :meth:`ModelBuilder.add_rod_graph` applies one scalar radius/density/stiffness to a whole
+        component, so a welded graph uses the first curve's material as the representative for every
+        segment (heterogeneous welds warn). Each curve's own authored material is still reported in
+        ``path_cable_attrs``.
         """
         consumed_curves: set[str] = set()
         consumed_attachments: set[str] = set()
@@ -4090,6 +4095,25 @@ def parse_usd(
                 return
 
             rep = curve_recs[comp_paths[0]]
+            # add_rod_graph applies one scalar radius/density/stiffness to the whole component, so a
+            # welded graph necessarily flattens its curves to a single representative material. Warn
+            # when the welded curves disagree so the flattening is explicit rather than silent.
+            if len(comp_paths) > 1:
+                sigs = {
+                    (
+                        curve_recs[p].radius,
+                        curve_recs[p].density,
+                        curve_recs[p].material.get("stretchStiffness"),
+                        curve_recs[p].material.get("bendStiffness"),
+                    )
+                    for p in comp_paths
+                }
+                if len(sigs) > 1:
+                    warnings.warn(
+                        f"cable graph '{cid}': welded curves have differing radius/density/stiffness; "
+                        f"using '{comp_paths[0]}' as the representative material for the whole component.",
+                        stacklevel=2,
+                    )
             radius = rep.radius
             seg_len = sum(float(wp.length(node_positions[v] - node_positions[u])) for u, v in edges) / len(edges)
             mat = rep.material
