@@ -47,8 +47,10 @@ contact problems):
 
 ## Key facts
 
-- Newton `ke`/`kd` on the `SolverMuJoCo` path are force-space constraint gains,
-  not a world-space N/m spring (see the MuJoCo-Warp page).
+- Newton `ke`/`kd` keep their force-space units but on the `SolverMuJoCo` path are
+  converted into MuJoCo `solref` (exactly how depends on the shape's `solref_mode`);
+  they are not a Young's modulus or a direct world-space penalty spring. See the
+  MuJoCo-Warp page.
 - Harder is not always more stable. Tune to task metrics, not one penetration
   number.
 - Reduce `dt` / add substeps before raising stiffness — usually the most

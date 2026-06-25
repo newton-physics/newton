@@ -38,10 +38,12 @@ unconstrained acceleration ``a0``:
 
 ``solref`` sets *how* the constraint corrects error (``b``/``k``, i.e.
 ``timeconst``/``dampratio``); ``solimp`` sets *how much authority* it has
-(impedance ``d(r)`` and regularization). Therefore Newton ``ke``/``kd`` on the
-:class:`~newton.solvers.SolverMuJoCo` path are **force-space gains feeding
-constraint-space reference dynamics**, not a world-space Young's modulus or an
-N/m material spring.
+(impedance ``d(r)`` and regularization). Newton ``ke``/``kd`` keep their
+force-space units (``N/m`` and ``N·s/m``), but on the
+:class:`~newton.solvers.SolverMuJoCo` path they are converted into MuJoCo
+constraint ``solref`` rather than applied as a world-space penalty spring. Treat
+them as **force-space gains feeding constraint-space reference dynamics**, not as
+a Young's modulus or a direct N/m material spring.
 
 Reference Dynamics
 ------------------
@@ -68,30 +70,38 @@ The ``solimp`` plateau impedance ``dmax`` therefore normalizes both gains; raisi
 Mapping ``ke``/``kd`` to ``solref``
 -----------------------------------
 
-:class:`~newton.solvers.SolverMuJoCo` converts ``ke``/``kd`` to positive-format
-``solref`` using the current impedance. With ``d_width`` the impedance width
-factor and ``d_r`` the impedance at the current residual (the same impedance
-``d(r)`` used in the constraint mental model above):
+How ``ke``/``kd`` reach the solver depends on the shape's ``solref_mode``
+(``model.mujoco.solref_mode``; default ``SOLREF_MODE_MJCF_DEFAULT``) and on
+``use_mujoco_contacts`` (default ``True``).
+
+**Default path (MJCF-default mode).** Each shape's ``ke``/``kd`` are baked into
+its geom ``solref`` at model build, as positive-format ``solref``:
 
 .. math::
 
-   \mathtt{timeconst} = \frac{2}{k_d \cdot d_{\mathrm{width}}}, \qquad
-   \mathtt{dampratio} = \frac{k_d}{2}\sqrt{\frac{d_r}{k_e}}
+   \mathtt{timeconst} = \frac{2}{k_d}, \qquad
+   \mathtt{dampratio} = \frac{k_d}{2\sqrt{k_e}}
 
-with inverse
+So ``√ke`` is the nominal constraint-space natural frequency and ``kd / (2√ke)``
+the damping ratio. To compare damping at fixed stiffness, hold ``ke`` and set
+``kd = 2·ζ·√ke``; do not raise ``ke`` or ``kd`` alone. (Newton's
+``convert_solref`` carries internal ``d_width``/``d_r`` arguments, but they are
+fixed at ``1`` on every current path, so they are not tuning knobs.) The realized
+response still depends on ``solimp``, ``dmax``, the current impedance ``d(r)``,
+constraint inverse inertia, the friction cone, solver convergence, and the
+timestep.
 
-.. math::
+**Force-space mode** (opt in per shape via
+``model.mujoco.solref_mode[shape] = SOLREF_MODE_FORCE_SPACE``). Here ``ke``/``kd``
+are scaled by the contacting bodies' inverse-weight sum times ``(1 - dmax)``
+before the same conversion, so the effective stiffness accounts for the pair's
+effective mass. This per-contact scaling applies **only when**
+``use_mujoco_contacts=False``; with the default ``use_mujoco_contacts=True`` the
+solver falls back to the MJCF-default mapping above.
 
-   k_e = \frac{d_r}{d_{\mathrm{width}}^2\,\mathtt{timeconst}^2\,\mathtt{dampratio}^2},
-   \qquad k_d = \frac{2}{d_{\mathrm{width}} \cdot \mathtt{timeconst}}
-
-In the impedance plateau (``d_width = 1``, ``d_r = 1``) this reduces to the
-intuition ``timeconst ≈ 2 / kd`` and ``dampratio ≈ kd / (2√ke)`` — so ``√ke`` is
-the nominal constraint-space natural frequency and ``kd / (2√ke)`` the damping
-ratio. The real response also depends on ``solimp``, ``dmax``, the current
-``d(r)``, constraint inverse inertia, the friction cone, solver convergence, and
-the timestep. To compare damping at fixed stiffness, hold ``ke`` and set
-``kd = 2·ζ·√ke``; do not raise ``ke`` or ``kd`` alone.
+**Raw mode** (``SOLREF_MODE_RAW``). The authored MuJoCo ``solref`` is used
+unchanged; ``ke``/``kd`` are ignored. Tune it with MuJoCo ``solref`` semantics
+directly (see the MuJoCo reference linked above).
 
 ``solref`` Formats
 ------------------
