@@ -205,8 +205,8 @@ goal that matches the actual failure, not the one that seems most intuitive.
        limits and drive gains
      - Setup effort
    * - Reduce oscillation at impact
-     - Lower ``dampratio`` toward 1; measure energy per step before
-       changing stiffness
+     - Move ``dampratio`` toward 1 (raise it if below 1, lower it only if
+       overdamped); measure energy per step before changing stiffness
      - Fidelity at impact
 
 Hardness is mainly ``timeconst``/``ke`` and ``d(r)``; stability depends on
@@ -227,15 +227,20 @@ New Asset Import
 *Goal: verify stable simulation before adding performance requirements; catch
 geometry, joint, and controller problems early.*
 
-- Start with conservative contact: low ``ke``, default ``solimp`` (wide
-  ``width``, low ``dmax``).
+- Start with conservative contact: low ``ke``. The default ``solimp``
+  ``(0.9, 0.95, 0.001, 0.5, 2.0)`` is already firm — high plateau impedance
+  (``dmax = 0.95``) with a narrow transition (``width = 0.001``) — so soften via
+  ``ke``/``kd`` rather than assuming the default impedance is loose.
 - Inspect initial contacts — overlapping geometries at spawn cause immediate
   instability.
 - Check joint parameters: ranges, armature, and damping; flag joints with zero
   inertia or zero armature.
 - Check drives: verify gains, effort limits, and target values are physically
   reasonable.
-- Check capacity: confirm mass, inertia, and friction are plausible.
+- Check model plausibility: confirm mass, inertia, and friction are physically
+  reasonable.
+- Check capacity: ensure contact/constraint row limits (``nconmax``, ``njmax``)
+  and contact buffers are not overflowing or dropping contacts.
 - Only harden contact (raise ``ke``/``kd``, tighten ``solimp``) once the asset
   simulates stably with gravity and light loading.
 
@@ -278,8 +283,8 @@ stable across the grasp.*
 - Then check friction: raise ``mu`` before touching stiffness.
 - Then check contact stiffness: raise ``ke``/``kd`` to stiffen the contact
   patch if friction is adequate but the grasp deflects.
-- Tune ``impratio`` and the friction cone shape if stick-slip persists after
-  normal force and friction are correct.
+- Tune ``impratio`` and the friction cone shape (both ``SolverMuJoCo``-specific)
+  if stick-slip persists after normal force and friction are correct.
 - Never use higher stiffness as a substitute for insufficient friction capacity;
   it increases constraint load without fixing the root cause.
 
@@ -291,12 +296,13 @@ jitter; drives behave as intended.*
 
 - Verify drive import: confirm gains, effort limits, and target mode match the
   intended behavior.
-- Add joint friction (``jnt_frictionloss`` in MuJoCo; solver-equivalent damping
-  on other solvers) so joints resist motion without a drive.
+- Add joint friction (``Model.joint_friction``; MJCF ``frictionloss``) so joints
+  resist motion without a drive. This is Coulomb friction loss, not viscous
+  damping; on solvers without it, approximate with damping.
 - Add armature to low-inertia joints to damp high-frequency oscillation; small
   values (0.01–0.1 kg·m²) are often sufficient.
-- Add passive damping (``jnt_damping``) to prevent free-spinning at zero
-  velocity.
+- Add passive damping (``Model.joint_damping``; MJCF ``damping``) to prevent
+  free-spinning at zero velocity.
 - Tune joint limit stiffness and damping separately from contact stiffness;
   limit jitter usually requires raising ``kd`` on the limit, not on the contact.
 - Clip controller targets to the joint range; drives that demand positions beyond
