@@ -561,8 +561,9 @@ def _eval_floating_base_relative_transform(
     # Determine new pose of the base body (= follower of the base joint if there is a base joint)
     base_joint_id = model_base_joint_index[wid]
     base_body_id = model_base_body_index[wid]
+    base_body_curr_pose = body_q[base_body_id]
     if not base_q:  # No prescribed base_q: take new base body pose as its current pose
-        base_body_pose = body_q[base_body_id]
+        base_body_pose = base_body_curr_pose
     elif base_joint_id >= 0:  # If there is a base joint, base_q is the transform in joint frame
         # body_q_B * T_B * base_q = body_q_F * T_F, and body_q_B = identity for a unary joint
         # This gives body_q_F = T_B * base_q * T_F ^-1
@@ -583,7 +584,7 @@ def _eval_floating_base_relative_transform(
         T_rel = wp.transform_identity(float32)
         # Ensure we get a bit-accurate identity (although the formula below would yield the identity)
     else:
-        T_rel = wp.transform_multiply(base_body_pose, wp.transform_inverse(body_q[base_body_id]))
+        T_rel = wp.transform_multiply(base_body_pose, wp.transform_inverse(base_body_curr_pose))
     rel_transform[wid] = T_rel
 
     # Determine new velocity of the base body
@@ -600,7 +601,10 @@ def _eval_floating_base_relative_transform(
         base_v = base_u_[:3]
         base_omega = base_u_[3:]
         omega_F = X_B * base_omega
-        q_F = wp.transform_get_rotation(base_body_pose)
+        if relative_base_u:
+            q_F = wp.transform_get_rotation(base_body_curr_pose)
+        else:
+            q_F = wp.transform_get_rotation(base_body_pose)
         v_F = X_B * base_v - wp.cross(omega_F, wp.quat_rotate(q_F, r_F))
     else:  # Directly interpret base_u as the new base body velocity if no base joint
         v_F = base_u_[:3]

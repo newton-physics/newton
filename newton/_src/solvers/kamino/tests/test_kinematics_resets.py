@@ -335,7 +335,7 @@ def set_fourbar_to_random_pose(
     np.testing.assert_allclose(data.joints.r_j.numpy(), 0.0, rtol=0, atol=atol)
     np.testing.assert_allclose(data.joints.dr_j.numpy(), 0.0, rtol=0, atol=atol)
 
-    return base_q, base_u, actuator_q, actuator_u, data
+    return data
 
 
 ###
@@ -375,7 +375,7 @@ class TestSetFloatingBase(unittest.TestCase):
 
         # Set model into non-trivial pose
         rng = np.random.default_rng(self.seed)
-        _, _, _, _, data = set_fourbar_to_random_pose(self, model, rng)
+        data = set_fourbar_to_random_pose(self, model, rng)
 
         # Sample non-trivial world mask and base state
         world_mask = sample_world_mask(num_worlds, rng, self.default_device)
@@ -398,7 +398,7 @@ class TestSetFloatingBase(unittest.TestCase):
 
         # Set model into non-trivial pose
         rng = np.random.default_rng(self.seed)
-        _, _, _, _, data = set_fourbar_to_random_pose(self, model, rng)
+        data = set_fourbar_to_random_pose(self, model, rng)
 
         # Sample non-trivial world mask and base state
         world_mask = sample_world_mask(num_worlds, rng, self.default_device)
@@ -409,6 +409,110 @@ class TestSetFloatingBase(unittest.TestCase):
         run_set_floating_base_check(model, base_q, None, world_mask, data)
         run_set_floating_base_check(model, None, base_u, world_mask, data)
         run_set_floating_base_check(model, None, None, world_mask, data)
+
+    def test_03_relative_base_u_with_base_joint(self):
+        """
+        Validate the relative_base_u flag of set_floating_base(), for a model with a base joint.
+        """
+        # Set up an actuated four-bar model with a floating base, using a base joint
+        num_worlds = 3
+        model = setup_test_fourbar_model(base_joint=True, num_worlds=num_worlds, device=self.default_device)
+
+        # Set model into non-trivial pose
+        rng = np.random.default_rng(self.seed)
+        data = set_fourbar_to_random_pose(self, model, rng)
+
+        # Sample non-trivial world mask and base state
+        world_mask = sample_world_mask(num_worlds, rng, self.default_device)
+        base_q, base_u = sample_base_state(num_worlds, rng, self.default_device)
+
+        # Check that a call to set_floating_base() with relative_base_u enabled is equivalent
+        # to a first call changing only base_u, followed by a second call changing only base_q
+        body_q = wp.clone(data.bodies.q_i, device=self.default_device)
+        body_u = wp.clone(data.bodies.u_i, device=self.default_device)
+        set_floating_base(
+            model=model,
+            base_q=base_q,
+            base_u=base_u,
+            body_q=body_q,
+            body_u=body_u,
+            world_mask=world_mask,
+            relative_base_u=True,
+        )
+        body_q_check = wp.clone(data.bodies.q_i, device=self.default_device)
+        body_u_check = wp.clone(data.bodies.u_i, device=self.default_device)
+        set_floating_base(
+            model=model,
+            base_q=None,
+            base_u=base_u,
+            body_q=body_q_check,
+            body_u=body_u_check,
+            world_mask=world_mask,
+            relative_base_u=False,
+        )
+        set_floating_base(
+            model=model,
+            base_q=base_q,
+            base_u=None,
+            body_q=body_q_check,
+            body_u=body_u_check,
+            world_mask=world_mask,
+            relative_base_u=False,
+        )
+        np.testing.assert_allclose(body_q.numpy(), body_q_check.numpy(), rtol=rtol, atol=atol)
+        np.testing.assert_allclose(body_u.numpy(), body_u_check.numpy(), rtol=rtol, atol=atol)
+
+    def test_04_relative_base_u_with_base_body(self):
+        """
+        Validate the relative_base_u flag of set_floating_base(), for a model with a base body.
+        """
+        # Set up an actuated four-bar model with a floating base, using a base body
+        num_worlds = 3
+        model = setup_test_fourbar_model(base_joint=False, num_worlds=num_worlds, device=self.default_device)
+
+        # Set model into non-trivial pose
+        rng = np.random.default_rng(self.seed)
+        data = set_fourbar_to_random_pose(self, model, rng)
+
+        # Sample non-trivial world mask and base state
+        world_mask = sample_world_mask(num_worlds, rng, self.default_device)
+        base_q, base_u = sample_base_state(num_worlds, rng, self.default_device)
+
+        # Check that a call to set_floating_base() with relative_base_u enabled is equivalent
+        # to a first call changing only base_u, followed by a second call changing only base_q
+        body_q = wp.clone(data.bodies.q_i, device=self.default_device)
+        body_u = wp.clone(data.bodies.u_i, device=self.default_device)
+        set_floating_base(
+            model=model,
+            base_q=base_q,
+            base_u=base_u,
+            body_q=body_q,
+            body_u=body_u,
+            world_mask=world_mask,
+            relative_base_u=True,
+        )
+        body_q_check = wp.clone(data.bodies.q_i, device=self.default_device)
+        body_u_check = wp.clone(data.bodies.u_i, device=self.default_device)
+        set_floating_base(
+            model=model,
+            base_q=None,
+            base_u=base_u,
+            body_q=body_q_check,
+            body_u=body_u_check,
+            world_mask=world_mask,
+            relative_base_u=False,
+        )
+        set_floating_base(
+            model=model,
+            base_q=base_q,
+            base_u=None,
+            body_q=body_q_check,
+            body_u=body_u_check,
+            world_mask=world_mask,
+            relative_base_u=False,
+        )
+        np.testing.assert_allclose(body_q.numpy(), body_q_check.numpy(), rtol=rtol, atol=atol)
+        np.testing.assert_allclose(body_u.numpy(), body_u_check.numpy(), rtol=rtol, atol=atol)
 
 
 ###
