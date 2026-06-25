@@ -509,8 +509,8 @@ Filter pairs are automatically populated in several cases:
 - **USD filtered pairs**: Pairs defined by ``physics:filteredPairs`` relationships in USD files
 - **USD collision disabled**: Shapes with ``physics:collisionEnabled=false`` (filtered against all other shapes)
 
-The resulting filter pairs are stored in :attr:`~Model.shape_collision_filter_pairs` as a set of
-``(shape_index_a, shape_index_b)`` tuples (canonical order: ``a < b``).
+The resulting filter pairs are stored in :attr:`~Model.shape_collision_filter_pairs` as a read-only
+``frozenset`` of ``(shape_index_a, shape_index_b)`` tuples (canonical order: ``a < b``).
 
 **USD Import Example**
 

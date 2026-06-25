@@ -721,8 +721,8 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
         self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
 
-    def test_large_replicated_collision_filter_pairs_are_compact_and_preserve_contacts(self):
-        """Large replicated filters should stay compact while preserving contact pairs."""
+    def test_large_replicated_collision_filter_pairs_are_read_only_and_preserve_contacts(self):
+        """Large replicated filters should materialize read-only while preserving contacts."""
 
         robot = ModelBuilder()
         body0 = robot.add_body()
@@ -741,15 +741,17 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn((3, 4), builder.shape_collision_filter_pairs)
         self.assertIn((5, 6), builder.shape_collision_filter_pairs)
 
-        with mock.patch.object(ModelBuilder, "_SHAPE_COLLISION_FILTER_PAIR_SET_LIMIT", 1, create=True):
-            model = builder.finalize()
-
-        self.assertNotIsInstance(model.shape_collision_filter_pairs, set)
+        model = builder.finalize()
 
         filters = model.shape_collision_filter_pairs
+        self.assertIsInstance(filters, frozenset)
         self.assertIn((1, 2), filters)
         self.assertIn((3, 4), filters)
         self.assertIn((5, 6), filters)
+        with self.assertRaises(AttributeError):
+            filters.add((ground, 1))
+        with self.assertRaises(AttributeError):
+            object.__setattr__(model, "shape_collision_filter_pairs", frozenset())
 
         contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
         self.assertEqual(contact_pairs, {(ground, 1), (ground, 2), (ground, 3), (ground, 4), (ground, 5), (ground, 6)})
@@ -776,7 +778,7 @@ class TestModelMesh(unittest.TestCase):
         self.assertNotIn((3, 4), builder.shape_collision_filter_pairs)
 
     def test_compact_replicated_collision_filters_allow_residual_filters(self):
-        """Residual global filters should not force large replicated filters to materialize."""
+        """Residual global filters should work with compact contact-pair generation."""
 
         robot = ModelBuilder()
         body0 = robot.add_body()
@@ -791,17 +793,15 @@ class TestModelMesh(unittest.TestCase):
 
         # Match robot examples that add one non-block global/local filter per
         # replicated world. The compact block path should handle these residual
-        # filters without expanding all replicated pairs.
+        # filters while generating contact pairs.
         builder.shape_collision_filter_pairs.append((ground, 1))
         builder.shape_collision_filter_pairs.append((ground, 3))
         builder.shape_collision_filter_pairs.append((ground, 5))
 
-        with mock.patch.object(ModelBuilder, "_SHAPE_COLLISION_FILTER_PAIR_SET_LIMIT", 1, create=True):
-            model = builder.finalize()
-
-        self.assertNotIsInstance(model.shape_collision_filter_pairs, set)
+        model = builder.finalize()
 
         filters = model.shape_collision_filter_pairs
+        self.assertIsInstance(filters, frozenset)
         self.assertIn((1, 2), filters)
         self.assertIn((ground, 1), filters)
 
@@ -810,6 +810,35 @@ class TestModelMesh(unittest.TestCase):
 
         builder.shape_collision_filter_pairs.append((ground, 2))
         self.assertNotIn((ground, 2), filters)
+
+    def test_collision_filter_pairs_reject_invalid_shape_indices(self):
+        """Invalid filters should fail consistently before contact generation."""
+
+        builder = ModelBuilder()
+        body = builder.add_body()
+        shape = builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.5)
+        builder.shape_collision_filter_pairs.append((shape, builder.shape_count))
+
+        with self.assertRaisesRegex(ValueError, "shape_collision_filter_pairs contains invalid pair"):
+            builder.finalize()
+
+    def test_compact_collision_filter_residuals_reject_invalid_shape_indices(self):
+        """Compact residual filters should raise ValueError instead of raw IndexError."""
+
+        robot = ModelBuilder()
+        body0 = robot.add_body()
+        shape0 = robot.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = robot.add_body()
+        shape1 = robot.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        robot.shape_collision_filter_pairs.append((shape0, shape1))
+
+        builder = ModelBuilder()
+        ground = builder.add_ground_plane()
+        builder.replicate(robot, 3)
+        builder.shape_collision_filter_pairs.append((ground, builder.shape_count))
+
+        with self.assertRaisesRegex(ValueError, "shape_collision_filter_pairs contains invalid pair"):
+            builder.finalize()
 
     def test_compact_collision_filter_blocks_invalidate_after_mutation(self):
         """Mutating compact filters should avoid stale block metadata."""
@@ -826,10 +855,9 @@ class TestModelMesh(unittest.TestCase):
         builder.replicate(robot, 3)
         builder.shape_collision_filter_pairs[0] = (1, 3)
 
-        with mock.patch.object(ModelBuilder, "_SHAPE_COLLISION_FILTER_PAIR_SET_LIMIT", 1, create=True):
-            model = builder.finalize()
+        model = builder.finalize()
 
-        self.assertIsInstance(model.shape_collision_filter_pairs, set)
+        self.assertIsInstance(model.shape_collision_filter_pairs, frozenset)
 
         contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
         self.assertIn((1, 2), contact_pairs)

@@ -295,8 +295,7 @@ class Model:
 
         self.shape_collision_group: wp.array[wp.int32] | None = None
         """Collision group of each shape, shape [shape_count], int. Array populated during finalization."""
-        self.shape_collision_filter_pairs: set[tuple[int, int]] = set()
-        """Pairs of shape indices (s1, s2) that should not collide. Pairs are in canonical order: s1 < s2."""
+        self._shape_collision_filter_pairs: frozenset[tuple[int, int]] = frozenset()
         self.shape_collision_radius: wp.array[wp.float32] | None = None
         """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
         self.shape_contact_pairs: wp.array[wp.vec2i] | None = None
@@ -880,6 +879,11 @@ class Model:
 
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
+
+    @property
+    def shape_collision_filter_pairs(self) -> frozenset[tuple[int, int]]:
+        """Read-only pairs of shape indices that should not collide."""
+        return self._shape_collision_filter_pairs
 
     # Deprecated equality-constraint arrays (removal in a future release).
     # The legacy top-level ``Model.equality_constraint_*`` arrays are now read-only forwards to
