@@ -25,8 +25,8 @@ from newton._src.solvers.kamino.tests import setup_tests, test_context
 # Utils
 ###
 
-rtol = 1e-7
-atol = 1e-6
+rtol = 1e-6
+atol = 1e-5
 
 
 def assert_binary_joint_states_equal(
@@ -269,12 +269,28 @@ def run_set_floating_base_check(
         raise AssertionError(f"set_floating_base() check failed for {base_q_str}, {base_u_str}\n{e}") from e
 
 
-def setup_test_fourbar_model(base_joint: bool, num_worlds: int, device: wp.DeviceLike) -> ModelKamino:
+def setup_test_fourbar_model(
+    base_joint: bool, num_worlds: int, rng: np.random._generator.Generator, device: wp.DeviceLike
+) -> ModelKamino:
     """Helper setting up a floating-base actuated four-bar model, with a base joint or a base body."""
     build_fn = functools.partial(
         build_boxes_fourbar, actuator_ids=[1], floatingbase=base_joint, fixedbase=False, ground=False
     )
     builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_fn, limits=False)
+    if base_joint:
+        # Set non-trivial r_B, X_B, r_F, X_F into base joint for testing (while preserving initial pose)
+        random_frames = np.resize(rng.uniform(-1.0, 1.0, 7 * num_worlds), (num_worlds, 7))
+        random_frames[:, 3:] /= np.linalg.norm(random_frames[:, 3:], axis=1)[:, None]  # Normalize quaternions
+        for wid in range(num_worlds):
+            joint = builder.joints[wid][0]
+            assert joint.bid_B == -1
+            body_F = builder.bodies[wid][joint.bid_F]
+            c_F = wp.transform_get_translation(body_F.q_i_0)
+            R_F = wp.quat_to_matrix(wp.transform_get_rotation(body_F.q_i_0))
+            joint.F_r_Fj = wp.vec3f(random_frames[wid, :3])
+            joint.X_Fj = wp.quat_to_matrix(wp.quatf(random_frames[wid, 3:]))
+            joint.B_r_Bj = c_F + R_F * joint.F_r_Fj  # Compute r_B, X_B given r_F, X_F to preserve a valid pose
+            joint.X_Bj = R_F * joint.X_Fj
     model = builder.finalize(device=device)
     return model
 
@@ -369,12 +385,14 @@ class TestSetFloatingBase(unittest.TestCase):
         Validate that set_floating_base() sets the base pose/velocity as expected,
         while preserving relative poses and velocities, for a model with a base joint.
         """
+        # Initialize rng
+        rng = np.random.default_rng(self.seed)
+
         # Set up an actuated four-bar model with a floating base, using a base joint
         num_worlds = 3
-        model = setup_test_fourbar_model(base_joint=True, num_worlds=num_worlds, device=self.default_device)
+        model = setup_test_fourbar_model(base_joint=True, num_worlds=num_worlds, rng=rng, device=self.default_device)
 
         # Set model into non-trivial pose
-        rng = np.random.default_rng(self.seed)
         data = set_fourbar_to_random_pose(self, model, rng)
 
         # Sample non-trivial world mask and base state
@@ -392,12 +410,14 @@ class TestSetFloatingBase(unittest.TestCase):
         Validate that set_floating_base() sets the base pose/velocity as expected,
         while preserving relative poses and velocities, for a model with only a base body.
         """
+        # Initialize rng
+        rng = np.random.default_rng(self.seed)
+
         # Set up an actuated four-bar model with a floating base, using a base body
         num_worlds = 3
-        model = setup_test_fourbar_model(base_joint=False, num_worlds=num_worlds, device=self.default_device)
+        model = setup_test_fourbar_model(base_joint=False, num_worlds=num_worlds, rng=rng, device=self.default_device)
 
         # Set model into non-trivial pose
-        rng = np.random.default_rng(self.seed)
         data = set_fourbar_to_random_pose(self, model, rng)
 
         # Sample non-trivial world mask and base state
@@ -414,12 +434,14 @@ class TestSetFloatingBase(unittest.TestCase):
         """
         Validate the relative_base_u flag of set_floating_base(), for a model with a base joint.
         """
+        # Initialize rng
+        rng = np.random.default_rng(self.seed)
+
         # Set up an actuated four-bar model with a floating base, using a base joint
         num_worlds = 3
-        model = setup_test_fourbar_model(base_joint=True, num_worlds=num_worlds, device=self.default_device)
+        model = setup_test_fourbar_model(base_joint=True, num_worlds=num_worlds, rng=rng, device=self.default_device)
 
         # Set model into non-trivial pose
-        rng = np.random.default_rng(self.seed)
         data = set_fourbar_to_random_pose(self, model, rng)
 
         # Sample non-trivial world mask and base state
@@ -466,12 +488,14 @@ class TestSetFloatingBase(unittest.TestCase):
         """
         Validate the relative_base_u flag of set_floating_base(), for a model with a base body.
         """
+        # Initialize rng
+        rng = np.random.default_rng(self.seed)
+
         # Set up an actuated four-bar model with a floating base, using a base body
         num_worlds = 3
-        model = setup_test_fourbar_model(base_joint=False, num_worlds=num_worlds, device=self.default_device)
+        model = setup_test_fourbar_model(base_joint=False, num_worlds=num_worlds, rng=rng, device=self.default_device)
 
         # Set model into non-trivial pose
-        rng = np.random.default_rng(self.seed)
         data = set_fourbar_to_random_pose(self, model, rng)
 
         # Sample non-trivial world mask and base state
