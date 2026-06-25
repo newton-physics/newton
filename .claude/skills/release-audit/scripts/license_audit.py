@@ -201,16 +201,22 @@ def _fetch_pypi_license(package: str, version: str | None, timeout: float) -> di
         return {"license": f"not checked ({type(exc).__name__})", "url": url}
 
     info = payload.get("info", {})
+    license_expression = (info.get("license_expression") or "").strip()
     license_text = (info.get("license") or "").strip()
+    license_files = [str(path) for path in info.get("license_files") or []]
     classifiers = [
         classifier.removeprefix("License :: ").strip()
         for classifier in info.get("classifiers", [])
         if classifier.startswith("License :: ")
     ]
-    if license_text:
+    if license_expression:
+        license_value = license_expression
+    elif license_text:
         license_value = license_text
     elif classifiers:
         license_value = "; ".join(classifiers)
+    elif license_files:
+        license_value = f"not declared (license files: {', '.join(license_files)})"
     else:
         license_value = "not declared"
     return {"license": license_value, "url": evidence_url}
@@ -337,12 +343,10 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
 
     base_external_names = {req.normalized_name for req in base_project.requirements if _is_external(req)}
     added_external_reqs = [head_req_by_key[key] for key in added_req_keys if _is_external(head_req_by_key[key])]
-    new_direct_external = [
-        req for req in added_external_reqs if req.normalized_name not in base_external_names
-    ]
+    new_direct_external = [req for req in added_external_reqs if req.normalized_name not in base_external_names]
 
-    base_lock = [pkg for pkg in _parse_lock(_git(repo, "show", f"{base}:uv.lock", required=False))]
-    head_lock = [pkg for pkg in _parse_lock(_git(repo, "show", f"{head}:uv.lock", required=False))]
+    base_lock = _parse_lock(_git(repo, "show", f"{base}:uv.lock", required=False))
+    head_lock = _parse_lock(_git(repo, "show", f"{head}:uv.lock", required=False))
     base_lock_by_name = _lock_by_name(base_lock)
     head_lock_by_name = _lock_by_name(head_lock)
 
@@ -411,7 +415,7 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
             review_packages.add(name)
 
     lines = [
-        f"Compared `pyproject.toml`, `uv.lock`, `LICENSE.md`, and `newton/licenses/**` between `{base}` and `{head}`.",
+        f"Compared `pyproject.toml`, `uv.lock`, `LICENSE`, `LICENSE.md`, and `newton/licenses/**` between `{base}` and `{head}`.",
         "",
         "### Summary",
         "",
@@ -440,9 +444,7 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
         rows = []
         for req in added_external_reqs:
             status = (
-                "new package name"
-                if req.normalized_name not in base_external_names
-                else "existing package, new scope"
+                "new package name" if req.normalized_name not in base_external_names else "existing package, new scope"
             )
             if req.normalized_name in head_lock_by_name:
                 license_value, evidence = _license_summary(
