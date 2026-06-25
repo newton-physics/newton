@@ -1897,6 +1897,7 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True):
         bend_stiffness=1.0e-4,
         bend_damping=1.0e-4,
         label="cable",
+        body_frame_origin="com",
     )
     builder.color(balance_colors=False)
 

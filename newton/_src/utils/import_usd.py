@@ -115,7 +115,7 @@ def parse_usd(
     See :ref:`usd_parsing` for more information.
 
     Args:
-        builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
+        builder: The :class:`ModelBuilder` to add the bodies and joints to.
         source: The file path to the USD file, or an existing USD stage instance.
         xform: The transform to apply to the entire scene.
         override_root_xform: If ``True``, the articulation root's world-space
