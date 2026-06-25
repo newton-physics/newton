@@ -44,24 +44,17 @@ from .kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from .kinematics.joints import (
     compute_joints_data,
     extract_actuators_state_from_joints,
-    extract_joints_state_from_actuators,
 )
 from .kinematics.limits import LimitsKamino
 from .kinematics.resets import (
     get_base_q_from_joint_q_and_body_q,
     get_base_u_from_joint_u_and_body_u,
-    reset_body_net_wrenches,
     reset_body_velocities,
     reset_body_wrenches,
-    reset_joint_constraint_reactions,
     reset_joints_state_from_bodies_state,
-    reset_state_from_base_state,
-    reset_state_from_bodies_state,
-    reset_state_to_model_default,
     reset_time,
     set_body_q,
     set_floating_base,
-    set_joint_state_masked,
 )
 from .linalg import ConjugateResidualSolver, IterativeSolver, LinearSolverNameToType
 from .solvers.fk import ForwardKinematicsSolver
@@ -845,160 +838,6 @@ class SolverKaminoImpl(SolverBase):
 
         # Reset the forward dynamics solver
         self._solver_fd.reset()
-
-    def _reset_to_default_state(self, state_out: StateKamino, world_mask: wp.array):
-        """
-        Resets the simulation to the default state defined in the model.
-        """
-        reset_state_to_model_default(
-            model=self._model,
-            state_out=state_out,
-            world_mask=world_mask,
-        )
-
-    def _reset_to_base_state(
-        self,
-        state_out: StateKamino,
-        world_mask: wp.array,
-        base_q: wp.array,
-        base_u: wp.array | None = None,
-    ):
-        """
-        Resets the simulation to the given base body states by
-        uniformly applying the necessary transform across all bodies.
-        """
-        # Ensure that the base pose reset targets are valid
-        if base_q is None:
-            raise ValueError("Base pose targets must be provided for base state resets.")
-        if base_q.shape[0] != self._model.size.num_worlds:
-            raise ValueError(
-                f"Invalid base_q shape: Expected ({self._model.size.num_worlds},), but got {base_q.shape}."
-            )
-
-        # Determine the effective base twists to use
-        _base_u = base_u if base_u is not None else self._base_u
-
-        # Uniformly reset all bodies according to the transform between the given
-        # base state and the existing body states contained in `state_out`
-        reset_state_from_base_state(
-            model=self._model,
-            state_out=state_out,
-            world_mask=world_mask,
-            base_q=base_q,
-            base_u=_base_u,
-        )
-
-    def _reset_to_bodies_state(
-        self,
-        state_out: StateKamino,
-        world_mask: wp.array,
-        bodies_q: wp.array | None = None,
-        bodies_u: wp.array | None = None,
-    ):
-        """
-        Resets the simulation to the given rigid body states.
-        There is no check that the provided states satisfy any kinematic constraints.
-        """
-
-        # use initial model poses if not provided
-        _bodies_q = bodies_q if bodies_q is not None else self._model.bodies.q_i_0
-        # use zero body velocities if not provided
-        _bodies_u = bodies_u if bodies_u is not None else self._bodies_u_zeros
-
-        reset_state_from_bodies_state(
-            model=self._model,
-            state_out=state_out,
-            world_mask=world_mask,
-            bodies_q=_bodies_q,
-            bodies_u=_bodies_u,
-        )
-
-    def _reset_with_fk_solve(
-        self,
-        state_out: StateKamino,
-        world_mask: wp.array,
-        joint_q: wp.array | None = None,
-        joint_u: wp.array | None = None,
-        actuator_q: wp.array | None = None,
-        actuator_u: wp.array | None = None,
-        base_q: wp.array | None = None,
-        base_u: wp.array | None = None,
-    ):
-        """
-        Resets the simulation to the given joint states by solving
-        the forward kinematics to compute the corresponding body states.
-        """
-        # Check that the FK solver was initialized
-        if self._solver_fk is None:
-            raise RuntimeError("The FK solver must be enabled to use resets from joint angles.")
-
-        # Detect if joint or actuator targets are provided
-        with_joint_targets = joint_q is not None and (actuator_q is None and actuator_u is None)
-
-        # Unpack the actuated joint states from the input joint states
-        if with_joint_targets:
-            extract_actuators_state_from_joints(
-                model=self._model,
-                world_mask=world_mask,
-                joint_q=joint_q,
-                joint_u=joint_u if joint_u is not None else state_out.dq_j,
-                actuator_q=self._actuators_q,
-                actuator_u=self._actuators_u,
-            )
-
-        # Determine the actuator state arrays to use for the FK solve
-        _actuator_q = actuator_q if actuator_q is not None else self._actuators_q
-        _actuator_u = actuator_u if actuator_u is not None else self._actuators_u
-
-        # TODO: We need a graph-capturable mechanism to detect solver errors
-        # Solve the forward kinematics to compute the body states
-        self._solver_fk.run_fk_solve(
-            world_mask=world_mask,
-            bodies_q=state_out.q_i,
-            bodies_u=state_out.u_i if joint_u is not None or actuator_u is not None else None,
-            actuators_q=_actuator_q,
-            actuators_u=_actuator_u,
-            base_q=base_q,
-            base_u=base_u,
-        )
-
-        # Reset net body wrenches and joint constraint reactions to zero
-        # NOTE: This is necessary to ensure proper solver behavior after resets
-        reset_body_net_wrenches(model=self._model, body_w=state_out.w_i, world_mask=world_mask)
-        reset_joint_constraint_reactions(model=self._model, lambda_j=state_out.lambda_j, world_mask=world_mask)
-
-        # If joint targets were provided, write them to the output state. The mask-aware
-        # write ensures worlds outside `world_mask` keep their previous values (notably
-        # `q_j_p`, the TWOPI angle-correction reference).
-        if with_joint_targets:
-            set_joint_state_masked(
-                model=self._model,
-                world_mask=world_mask,
-                src_q=joint_q,
-                src_u=joint_u,
-                dst_q=state_out.q_j,
-                dst_q_p=state_out.q_j_p,
-                dst_dq=state_out.dq_j,
-            )
-        # Otherwise, extract the joint states from the actuators and synchronize `q_j_p`
-        else:
-            extract_joints_state_from_actuators(
-                model=self._model,
-                world_mask=world_mask,
-                actuator_q=_actuator_q,
-                actuator_u=_actuator_u,
-                joint_q=state_out.q_j,
-                joint_u=state_out.dq_j,
-            )
-            set_joint_state_masked(
-                model=self._model,
-                world_mask=world_mask,
-                src_q=state_out.q_j,
-                src_u=None,
-                dst_q=state_out.q_j,
-                dst_q_p=state_out.q_j_p,
-                dst_dq=None,
-            )
 
     def _reset_solver_data(self, world_mask: wp.array | None = None):
         """
