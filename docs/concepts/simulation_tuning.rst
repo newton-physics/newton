@@ -20,6 +20,7 @@ as external references.
    :maxdepth: 1
 
    simulation_tuning_solvers
+   simulation_tuning_mujoco
 
 Diagnose Before Tuning
 ----------------------
@@ -133,6 +134,8 @@ Going Deeper
 
 - :ref:`Tuning Solver Reference` — supported knobs per solver and sanity-check
   math.
+- :ref:`Tuning MuJoCo` — the MuJoCo-Warp constraint model, ``ke``/``kd`` to
+  ``solref``/``solimp`` mapping, and task templates.
 
 Agent Checklist
 ---------------
