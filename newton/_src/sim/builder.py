@@ -13,14 +13,11 @@ import warnings
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import warp as wp
 
-from ..actuators.clamping.clamping_max_effort import ClampingMaxEffort
-from ..actuators.controllers.controller_pd import ControllerPD
-from ..actuators.controllers.controller_pid import ControllerPID
 from ..core.types import (
     MAXVAL,
     Axis,
@@ -67,11 +64,6 @@ from .graph_coloring import (
     construct_particle_graph,
 )
 from .model import Model
-
-try:
-    from newton_actuators import Actuator as _LegacyActuator
-except ImportError:
-    _LegacyActuator = None
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -185,14 +177,18 @@ class ModelBuilder:
         (238, 153, 51),  # orange
         (0, 153, 136),  # teal
     )
-    _BODY_ARMATURE_ARG_DEPRECATION_MESSAGE = (
-        "ModelBuilder.add_link(..., armature=...) and ModelBuilder.add_body(..., armature=...) "
-        "are deprecated and will be removed in a future release. "
-        "Add any isotropic artificial inertia directly to 'inertia' instead."
+    # Use one quiet default for dense cable/rod examples; callers can pass color=
+    # when per-rod or per-scene coloring matters.
+    _DEFAULT_ROD_COLOR = (
+        _SHAPE_COLOR_PALETTE[0][0] / 255.0,
+        _SHAPE_COLOR_PALETTE[0][1] / 255.0,
+        _SHAPE_COLOR_PALETTE[0][2] / 255.0,
     )
-    _DEFAULT_BODY_ARMATURE_DEPRECATION_MESSAGE = (
-        "ModelBuilder.default_body_armature is deprecated and will be removed in a future release. "
-        "Add any isotropic artificial inertia directly to 'inertia' instead."
+    _ROD_BODY_FRAME_ORIGIN_DEPRECATION_MESSAGE = (
+        "Omitting body_frame_origin when creating cable rods is deprecated because the implicit default "
+        "will change from 'start' to 'com' in a future release. Pass body_frame_origin='start' to "
+        "preserve the existing start-node body frame, or body_frame_origin='com' to opt into "
+        "COM-centered capsule body frames."
     )
 
     @staticmethod
@@ -205,6 +201,39 @@ class ModelBuilder:
         if color is None:
             return None
         return (float(color[0]), float(color[1]), float(color[2]))
+
+    @staticmethod
+    def _external_warning_stacklevel() -> int:
+        frame = inspect.currentframe()
+        if frame is None:
+            return 2
+
+        frame = frame.f_back
+        stacklevel = 1
+        try:
+            while frame is not None and frame.f_code.co_filename == __file__:
+                frame = frame.f_back
+                stacklevel += 1
+            return stacklevel
+        finally:
+            del frame
+
+    @classmethod
+    def _resolve_rod_body_frame_origin(
+        cls,
+        method_name: str,
+        body_frame_origin: Literal["start", "com"] | None,
+    ) -> Literal["start", "com"]:
+        if body_frame_origin is None:
+            warnings.warn(
+                cls._ROD_BODY_FRAME_ORIGIN_DEPRECATION_MESSAGE,
+                DeprecationWarning,
+                stacklevel=cls._external_warning_stacklevel(),
+            )
+            return "start"
+        if body_frame_origin not in ("start", "com"):
+            raise ValueError(f"{method_name}: body_frame_origin must be 'start' or 'com', got {body_frame_origin!r}")
+        return body_frame_origin
 
     @dataclass
     class ActuatorEntry:
@@ -681,7 +710,7 @@ class ModelBuilder:
 
         def build_array(
             self, count: int, device: Devicelike | None = None, requires_grad: bool = False
-        ) -> wp.array | list:
+        ) -> wp.array[Any] | list:
             """Build wp.array (or list for string dtype) from count, dtype, default and overrides.
 
             For string dtype, returns a Python list[str] instead of a Warp array.
@@ -866,7 +895,6 @@ class ModelBuilder:
         self.default_tet_density = 1.0
         """Default density [kg/m^3] for tetrahedral soft bodies."""
 
-        self._default_body_armature = 0.0
         # endregion
 
         # region compiler settings (similar to MuJoCo)
@@ -1929,82 +1957,6 @@ class ModelBuilder:
                     f"Custom attribute '{attr_key}' has unsupported frequency {custom_attr.frequency} for joints"
                 )
 
-    # Maps legacy newton_actuators class names to (newton.actuators controller class name, has_delay).
-    _LEGACY_ACTUATOR_CLASS_MAP: ClassVar[dict[str, tuple[str, bool]]] = {
-        "ActuatorPD": ("ControllerPD", False),
-        "ActuatorPID": ("ControllerPID", False),
-        "ActuatorDelayedPD": ("ControllerPD", True),
-    }
-
-    def _add_actuator_legacy(
-        self,
-        actuator_class: type,
-        input_indices: list[int] | None,
-        output_indices: list[int] | None,
-        **kwargs: Any,
-    ) -> None:
-        """Translate a legacy ``newton_actuators``-style call to the new API.
-
-        Mirrors the old ``main``-branch signature::
-
-            add_actuator(actuator_class, input_indices, output_indices=None, **kwargs)
-
-        *input_indices* / *output_indices* may arrive either as explicit
-        arguments or inside *kwargs* (keyword style).  All old per-DOF
-        params (``kp``, ``kd``, ``delay``, ``max_effort``, ``gear``, …)
-        are expected in *kwargs*.
-        """
-        if input_indices is None:
-            raise TypeError("Legacy add_actuator() requires 'input_indices'")
-
-        # --- Map old class name → new controller class ---
-        class_name = actuator_class.__name__
-        mapping = self._LEGACY_ACTUATOR_CLASS_MAP.get(class_name)
-        if mapping is None:
-            raise TypeError(
-                f"Unknown legacy actuator class '{class_name}'. "
-                f"Supported: {', '.join(self._LEGACY_ACTUATOR_CLASS_MAP)}."
-            )
-
-        ctrl_name, class_has_delay = mapping
-        controller_class: type = {"ControllerPD": ControllerPD, "ControllerPID": ControllerPID}[ctrl_name]
-
-        delay_val: int | None = kwargs.pop("delay_steps", kwargs.pop("delay", None))
-        if class_has_delay and delay_val is None:
-            raise ValueError(f"{class_name} requires a 'delay_steps' argument")
-
-        max_effort_val = kwargs.pop("max_force", None)
-        gear_val = kwargs.pop("gear", None)
-
-        if gear_val is not None and gear_val != 1.0:
-            warnings.warn(
-                f"'gear={gear_val}' is not supported in the new actuator API and will be "
-                f"ignored. Fold the gear ratio into kp/kd/const_effort manually.",
-                DeprecationWarning,
-                stacklevel=3,
-            )
-
-        clamping: list[tuple[type, dict[str, Any]]] | None = None
-        if max_effort_val is not None and max_effort_val != math.inf:
-            clamping = [(ClampingMaxEffort, {"max_effort": max_effort_val})]
-
-        if output_indices is not None and output_indices != input_indices:
-            warnings.warn(
-                "'output_indices' is not supported in the new actuator API and will be "
-                "ignored. Forces are written to the same DOF index by default.",
-                DeprecationWarning,
-                stacklevel=3,
-            )
-
-        for dof_idx in input_indices:
-            self.add_actuator(
-                controller_class,
-                index=dof_idx,
-                clamping=clamping,
-                delay_steps=delay_val,
-                **kwargs,
-            )
-
     def add_actuator(
         self,
         controller_class: type[Controller] | None = None,
@@ -2024,19 +1976,8 @@ class ModelBuilder:
         values are supported within the same group; the buffer is
         sized to ``max(delay_step_values)``.
 
-        .. deprecated:: 1.2
-            The legacy ``newton_actuators`` signature is still accepted::
-
-                add_actuator(ActuatorPD, input_indices=[dof], kp=50.0)
-                add_actuator(ActuatorPD, [dof], kp=50.0)
-                add_actuator(actuator_class=ActuatorPD, input_indices=[dof], kp=50.0)
-
-            It will be removed in a future release.  Use the new per-DOF
-            signature instead.
-
         Args:
             controller_class: Controller class (e.g. :class:`~newton.actuators.ControllerPD`).
-                The deprecated keyword ``actuator_class`` is also accepted.
             index: DOF index into ``joint_qd``-shaped arrays (velocities,
                 velocity targets, feedforward, forces).
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
@@ -2048,30 +1989,6 @@ class ModelBuilder:
                 where ``joint_q`` and ``joint_qd`` have different layouts.
             **kwargs: Per-DOF controller parameters (e.g. ``kp``, ``kd``).
         """
-        legacy_cls = kwargs.pop("actuator_class", None)
-        if (
-            legacy_cls is None
-            and _LegacyActuator is not None
-            and isinstance(controller_class, type)
-            and issubclass(controller_class, _LegacyActuator)
-        ):
-            legacy_cls = controller_class
-
-        if legacy_cls is not None:
-            warnings.warn(
-                "add_actuator() with a newton_actuators class is deprecated. "
-                "Use newton.actuators controller classes instead "
-                "(e.g. ControllerPD, ControllerPID).",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            input_indices = kwargs.pop("input_indices", index)
-            output_indices = kwargs.pop("output_indices", clamping)
-            if delay_steps is not None:
-                kwargs["delay_steps"] = delay_steps
-            self._add_actuator_legacy(legacy_cls, input_indices, output_indices, **kwargs)
-            return
-
         if controller_class is None:
             raise TypeError("add_actuator() requires 'controller_class'")
 
@@ -2189,7 +2106,7 @@ class ModelBuilder:
         return result
 
     @staticmethod
-    def _build_index_array(indices: list[int], device: Devicelike) -> wp.array:
+    def _build_index_array(indices: list[int], device: Devicelike) -> wp.array[wp.uint32]:
         """Build a 1-D warp index array from a flat list of DOF indices.
 
         Args:
@@ -3958,57 +3875,10 @@ class ModelBuilder:
 
         return wp.mat33(*value)
 
-    @staticmethod
-    def _external_warning_stacklevel() -> int:
-        frame = inspect.currentframe()
-        if frame is None:
-            return 2
-
-        frame = frame.f_back
-        stacklevel = 1
-        try:
-            while frame is not None and frame.f_code.co_filename == __file__:
-                frame = frame.f_back
-                stacklevel += 1
-            return stacklevel
-        finally:
-            del frame
-
-    @classmethod
-    def _warn_body_armature_arg_deprecated(cls) -> None:
-        warnings.warn(
-            cls._BODY_ARMATURE_ARG_DEPRECATION_MESSAGE,
-            DeprecationWarning,
-            stacklevel=cls._external_warning_stacklevel(),
-        )
-
-    @classmethod
-    def _warn_default_body_armature_deprecated(cls) -> None:
-        warnings.warn(
-            cls._DEFAULT_BODY_ARMATURE_DEPRECATION_MESSAGE,
-            DeprecationWarning,
-            stacklevel=cls._external_warning_stacklevel(),
-        )
-
-    @property
-    def default_body_armature(self) -> float:
-        """Deprecated default body armature.
-
-        .. deprecated:: 1.1
-            Add any isotropic artificial inertia directly to ``inertia`` instead.
-        """
-        self._warn_default_body_armature_deprecated()
-        return self._default_body_armature
-
-    @default_body_armature.setter
-    def default_body_armature(self, value: float) -> None:
-        self._warn_default_body_armature_deprecated()
-        self._default_body_armature = value
-
     def add_link(
         self,
+        *,
         xform: Transform | None = None,
-        armature: float | None = None,
         com: Vec3 | None = None,
         inertia: Mat33 | None = None,
         mass: float = 0.0,
@@ -4025,15 +3895,8 @@ class ModelBuilder:
 
         After calling this method and one of the joint methods, ensure that an articulation is created using :meth:`add_articulation`.
 
-        .. deprecated:: 1.1
-            The ``armature`` parameter is deprecated. Add any isotropic artificial
-            inertia directly to ``inertia`` instead.
-
         Args:
             xform: The location of the body in the world frame.
-            armature: Deprecated. Artificial inertia added to the body. If ``None``,
-                the deprecated default value from :attr:`default_body_armature` is used.
-                Add any isotropic artificial inertia directly to ``inertia`` instead.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
@@ -4049,8 +3912,6 @@ class ModelBuilder:
             The index of the body in the model.
 
         """
-        if armature is not None and armature != 0.0:
-            self._warn_body_armature_arg_deprecated()
         if xform is None:
             xform = wp.transform()
         else:
@@ -4067,9 +3928,6 @@ class ModelBuilder:
         body_id = len(self.body_mass)
 
         # body data
-        if armature is None:
-            armature = self._default_body_armature
-        inertia = inertia + wp.mat33(np.eye(3, dtype=np.float32)) * armature
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
         self.body_com.append(com)
@@ -4104,8 +3962,8 @@ class ModelBuilder:
 
     def add_body(
         self,
+        *,
         xform: Transform | None = None,
-        armature: float | None = None,
         com: Vec3 | None = None,
         inertia: Mat33 | None = None,
         mass: float = 0.0,
@@ -4126,15 +3984,8 @@ class ModelBuilder:
         For creating articulations with multiple linked bodies, use :meth:`add_link`,
         the appropriate joint methods, and :meth:`add_articulation` directly.
 
-        .. deprecated:: 1.1
-            The ``armature`` parameter is deprecated. Add any isotropic artificial
-            inertia directly to ``inertia`` instead.
-
         Args:
             xform: The location of the body in the world frame.
-            armature: Deprecated. Artificial inertia added to the body. If ``None``,
-                the deprecated default value from :attr:`default_body_armature` is used.
-                Add any isotropic artificial inertia directly to ``inertia`` instead.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
@@ -4152,7 +4003,6 @@ class ModelBuilder:
         """
         body_id = self.add_link(
             xform=xform,
-            armature=armature,
             com=com,
             inertia=inertia,
             mass=mass,
@@ -5831,10 +5681,11 @@ class ModelBuilder:
         self.joint_constraint_count = len(self.joint_cts)
 
         # Remap equality constraint body/joint indices and transform anchors for merged bodies.
-        # Each ``*_values`` is the dense ``list`` backing the string-frequency CustomAttribute;
-        # the ``mujoco:equality_constraint`` ``add_custom_values`` path populates all twelve in
-        # lockstep so indexed access is safe for every ``i`` in
-        # ``range(self._equality_constraint_count)``.
+        # Each ``*_values`` is the ``list`` backing the string-frequency CustomAttribute. These
+        # lists are sparse: ``add_custom_values`` only populates the fields that were supplied,
+        # so an omitted optional field can be ``None``, shorter than the row count, or absent
+        # entirely. Reads go through ``_at`` (default fallback), and writes pad the list to the
+        # row index before assignment.
         body1_attr = self._eq_attr("equality_constraint_body1")
         body2_attr = self._eq_attr("equality_constraint_body2")
         type_attr = self._eq_attr("equality_constraint_type")
@@ -5846,8 +5697,12 @@ class ModelBuilder:
         body1_values = body1_attr.values or []
         body2_values = body2_attr.values or []
         type_values = type_attr.values or []
-        anchor_values = anchor_attr.values or []
-        relpose_values = relpose_attr.values or []
+        if anchor_attr.values is None:
+            anchor_attr.values = []
+        anchor_values = anchor_attr.values
+        if relpose_attr.values is None:
+            relpose_attr.values = []
+        relpose_values = relpose_attr.values
         joint1_values = joint1_attr.values or []
         joint2_values = joint2_attr.values or []
         if enabled_attr.values is None:
@@ -5876,15 +5731,23 @@ class ModelBuilder:
                 merge_xform = body_merged_transform[old_body1]
                 if constraint_type == EqType.CONNECT:
                     anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
+                    while len(anchor_values) <= i:
+                        anchor_values.append(None)
                     anchor_values[i] = wp.transform_point(merge_xform, anchor)
                 if constraint_type == EqType.WELD:
                     relpose = _at(relpose_values, i, relpose_attr.default)
+                    while len(relpose_values) <= i:
+                        relpose_values.append(None)
                     relpose_values[i] = merge_xform * relpose
 
             if body2_was_merged and constraint_type == EqType.WELD:
                 merge_xform = body_merged_transform[old_body2]
                 anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
                 relpose = _at(relpose_values, i, relpose_attr.default)
+                while len(anchor_values) <= i:
+                    anchor_values.append(None)
+                while len(relpose_values) <= i:
+                    relpose_values.append(None)
                 anchor_values[i] = wp.transform_point(merge_xform, anchor)
                 relpose_values[i] = relpose * wp.transform_inverse(merge_xform)
 
@@ -6839,10 +6702,6 @@ class ModelBuilder:
         The Gaussian is attached as a ``GeoType.GAUSSIAN`` shape for rendering.
         Collision is handled separately via *collision_proxy*.
 
-        .. deprecated:: 1.1
-            Passing ``gaussian`` as the second positional argument is
-            deprecated; pass it via the ``gaussian=`` keyword instead.
-
         Args:
             body: The index of the parent body this shape belongs to.
                 Use ``-1`` for static world geometry.
@@ -6865,20 +6724,6 @@ class ModelBuilder:
         Returns:
             The index of the Gaussian shape.
         """
-        # Backward compat: detect Gaussian passed as second positional arg (old API
-        # had signature add_shape_gaussian(body, gaussian, xform=...)).
-        if isinstance(xform, Gaussian):
-            warnings.warn(
-                "Passing 'gaussian' as the second positional argument is deprecated. "
-                "Use add_shape_gaussian(body, xform=..., gaussian=...) instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            if gaussian is not None:
-                raise TypeError("Cannot pass 'gaussian' both as positional and keyword argument.")
-            gaussian = xform
-            xform = None
-
         if gaussian is None:
             raise TypeError("'gaussian' is required when adding a Gaussian shape.")
 
@@ -7152,7 +6997,7 @@ class ModelBuilder:
                         if method == "coacd":
                             cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
                             coacd_settings = {
-                                "threshold": 0.5,
+                                "threshold": 0.05,
                                 "mcts_nodes": 20,
                                 "mcts_iterations": 5,
                                 "mcts_max_depth": 1,
@@ -7315,6 +7160,8 @@ class ModelBuilder:
         closed: bool = False,
         label: str | None = None,
         wrap_in_articulation: bool = True,
+        color: Vec3 | None = None,
+        body_frame_origin: Literal["start", "com"] | None = None,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by cable joints.
 
@@ -7325,8 +7172,8 @@ class ModelBuilder:
 
         Args:
             positions: Centerline node positions (segment endpoints) in world space. These are the
-                tip/end points of the capsules, with one extra point so that for ``N`` segments there
-                are ``N+1`` positions.
+                cylindrical centerline endpoints of the capsules, with one extra point so that for
+                ``N`` segments there are ``N+1`` positions.
             quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
                 must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
                 local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
@@ -7346,6 +7193,15 @@ class ModelBuilder:
             label: Optional label prefix for bodies, shapes, and joints.
             wrap_in_articulation: If True, the created joints are automatically wrapped into a single
                 articulation. Defaults to True to ensure valid simulation models.
+            color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
+                capsule shapes. If None, the rod uses the default rod color.
+            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
+                the legacy convention where the body origin is at the segment start position
+                (``positions[i]`` for segment ``i``), and the COM/shape are offset by half the
+                segment length. ``"com"`` places the body origin at the segment midpoint so the
+                body origin and COM coincide. If None, preserves ``"start"`` for now with a
+                :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
+                pass ``"start"`` or ``"com"`` explicitly.
 
         Returns:
             A pair ``(body_indices, joint_indices)``. For an open chain,
@@ -7361,16 +7217,20 @@ class ModelBuilder:
         Raises:
             ValueError: If ``positions`` and ``quaternions`` lengths are incompatible.
             ValueError: If the rod has fewer than 2 segments.
+            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
 
         Note:
             - Bend defaults are 0.0 (no bending resistance unless specified). Stretch defaults to 1.0e5;
               pass a larger value when neighboring capsules should remain nearly inextensible.
             - Stretch, bend, and damping values are passed through as provided per joint.
-            - Each segment is implemented as a capsule primitive. The segment's body transform is
-              placed at the start point ``positions[i]`` with a local center-of-mass offset of
-              ``(0, 0, half_height)`` so that the COM lies at the segment midpoint. The capsule shape
-              is added with a local transform of ``(0, 0, half_height)`` so it spans from the start to
-              the end along local +Z.
+            - Each segment is implemented as a capsule primitive. ``half_height`` is the half-length of
+              the cylindrical centerline, excluding the hemispherical caps.
+            - With ``body_frame_origin="start"``, the body origin is at the first centerline endpoint,
+              the COM and shape are at local ``(0, 0, half_height)``, and the second centerline endpoint
+              is at local ``(0, 0, 2 * half_height)``.
+            - With ``body_frame_origin="com"``, the body origin and COM coincide at the segment
+              midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
+              ``(0, 0, half_height)``.
         """
         if cfg is None:
             cfg = self.default_shape_cfg
@@ -7386,6 +7246,7 @@ class ModelBuilder:
         # Input validation
         if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
             raise ValueError("add_rod: stretch_stiffness and bend_stiffness must be >= 0")
+        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
 
         num_segments = len(positions) - 1
         if num_segments < 1:
@@ -7429,6 +7290,8 @@ class ModelBuilder:
             label=label,
             wrap_in_articulation=False,
             quaternions=quaternions,
+            color=color,
+            body_frame_origin=body_frame_origin,
         )
 
         # Wrap all joints into an articulation if requested.
@@ -7458,8 +7321,16 @@ class ModelBuilder:
                 if L_last <= min_segment_length:
                     L_last = min_segment_length
 
-                parent_xform = wp.transform(wp.vec3(0.0, 0.0, L_last), wp.quat_identity())
-                child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+                L_first = float(wp.length(positions_wp[1] - positions_wp[0]))
+                if L_first <= min_segment_length:
+                    L_first = min_segment_length
+
+                if body_frame_origin == "com":
+                    parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.5 * L_last), wp.quat_identity())
+                    child_xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * L_first), wp.quat_identity())
+                else:
+                    parent_xform = wp.transform(wp.vec3(0.0, 0.0, L_last), wp.quat_identity())
+                    child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
                 loop_joint_label = f"{label}_cable_{len(link_joints) + 1}" if label else None
                 j_loop = self.add_joint_cable(
@@ -7493,6 +7364,8 @@ class ModelBuilder:
         wrap_in_articulation: bool = True,
         quaternions: list[Quat] | None = None,
         junction_collision_filter: bool = True,
+        color: Vec3 | None = None,
+        body_frame_origin: Literal["start", "com"] | None = None,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod/cable *graph* (supports junctions) from nodes + edges.
 
@@ -7501,8 +7374,7 @@ class ModelBuilder:
         Representation:
 
         - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
-          ``node_positions[v]`` (body frame is placed at the start node ``u`` and local +Z points
-          toward ``v``).
+          ``node_positions[v]`` (local +Z points toward ``v``).
         - Cable joints are created between edge-bodies that share a node, using a spanning-tree
           traversal so that each body has a single parent when wrapped into an articulation.
 
@@ -7542,10 +7414,22 @@ class ModelBuilder:
                 bodies that are incident to a junction node (degree >= 3). This prevents immediate
                 self-collision impulses at welded junctions, even though the joint set is a spanning
                 tree (so not all incident body pairs are directly jointed).
+            color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
+                capsule shapes. If None, the graph uses the default rod color.
+            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
+                the legacy convention where the body origin is at the edge start node
+                (``node_positions[u]`` for edge ``(u, v)``), and the COM/shape are offset by half
+                the edge length. ``"com"`` places the body origin at the edge midpoint so the body
+                origin and COM coincide. If None, preserves ``"start"`` for now with a
+                :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
+                pass ``"start"`` or ``"com"`` explicitly.
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to
             edges in the same order as ``edges``.
+
+        Raises:
+            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
         """
         if cfg is None:
             cfg = self.default_shape_cfg
@@ -7560,6 +7444,7 @@ class ModelBuilder:
 
         if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
             raise ValueError("add_rod_graph: stretch_stiffness and bend_stiffness must be >= 0")
+        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod_graph", body_frame_origin)
         if len(node_positions) < 2:
             raise ValueError("add_rod_graph: node_positions must contain at least 2 nodes")
         if len(edges) < 1:
@@ -7588,6 +7473,8 @@ class ModelBuilder:
         edge_v: list[int] = []
         edge_len: list[float] = []
         edge_bodies: list[int] = []
+        rod_color = color if color is not None else ModelBuilder._DEFAULT_ROD_COLOR
+        use_com_origin = body_frame_origin == "com"
 
         # Create all edge bodies first.
         for e_idx, (u, v) in enumerate(edges):
@@ -7627,17 +7514,22 @@ class ModelBuilder:
                     )
             half_height = 0.5 * seg_length
 
-            # Position body at start node, with COM offset to segment center
-            body_q = wp.transform(p0, q)
-            com_offset = wp.vec3(0.0, 0.0, half_height)
+            if use_com_origin:
+                # Opt-in convention: place body origin at the segment center so origin and COM coincide.
+                center = p0 + seg_vec * 0.5
+                body_q = wp.transform(center, q)
+                com_offset = wp.vec3(0.0)
+                capsule_xform = wp.transform()
+            else:
+                # Legacy convention: body origin is at node u, with COM and shape offset to the segment center.
+                body_q = wp.transform(p0, q)
+                com_offset = wp.vec3(0.0, 0.0, half_height)
+                capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
 
             body_label = f"{label}_edge_body_{e_idx}" if label else None
             shape_label = f"{label}_edge_capsule_{e_idx}" if label else None
 
             body_id = self.add_link(xform=body_q, com=com_offset, label=body_label)
-
-            # Place capsule so it spans from start to end along +Z
-            capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
 
             self.add_shape_capsule(
                 body_id,
@@ -7646,6 +7538,7 @@ class ModelBuilder:
                 half_height=half_height,
                 cfg=cfg,
                 label=shape_label,
+                color=rod_color,
             )
 
             edge_u.append(u)
@@ -7657,11 +7550,10 @@ class ModelBuilder:
             node_incidence[v].append(e_idx)
 
         def _edge_anchor_xform(e_idx: int, node_idx: int) -> wp.transform:
-            # Body frame is at start node u; end node v is at local z = edge_len.
             if node_idx == edge_u[e_idx]:
-                z = 0.0
+                z = -0.5 * edge_len[e_idx] if use_com_origin else 0.0
             elif node_idx == edge_v[e_idx]:
-                z = edge_len[e_idx]
+                z = 0.5 * edge_len[e_idx] if use_com_origin else edge_len[e_idx]
             else:
                 raise RuntimeError("add_rod_graph: internal error (node not incident to edge)")
             return wp.transform(wp.vec3(0.0, 0.0, float(z)), wp.quat_identity())

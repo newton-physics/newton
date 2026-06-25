@@ -38,19 +38,22 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 5
+        self.sim_substeps = 10
         self.sim_iterations = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         # Cable parameters.
         cable_radius = 0.01
+        contact_gap = 0.002
         num_segments_per_branch = 20
         segment_length = 0.03
 
-        bend_stiffness = 1.0e3
-        bend_damping = 1.0e2
+        stretch_stiffness = 1.0e7
+        bend_stiffness = 1.0e4
+        bend_damping = 1.0e3
 
         builder = newton.ModelBuilder()
+        builder.rigid_gap = contact_gap
         builder.default_shape_cfg.ke = 1.0e4
         builder.default_shape_cfg.kd = 0.0
         builder.default_shape_cfg.mu = 1.0
@@ -80,10 +83,12 @@ class Example:
             edges=edges,
             radius=cable_radius,
             cfg=cable_cfg,
+            stretch_stiffness=stretch_stiffness,
             bend_stiffness=bend_stiffness,
             bend_damping=bend_damping,
             label="y_graph",
             wrap_in_articulation=True,
+            body_frame_origin="com",
         )
 
         # Pin one tip capsule (end of the first branch).
@@ -119,12 +124,14 @@ class Example:
         self.pinned_body_q0 = self.state_0.body_q.numpy()[self.pinned_body].copy()
 
         self.viewer.set_model(self.model)
+        self.viewer.set_picking_linear_only_bodies(self.graph_bodies)
 
-        if hasattr(self.viewer, "picking"):
-            pick_state = self.viewer.picking.pick_state.numpy()
-            pick_state[0]["pick_stiffness"] = 0.2
+        picking = getattr(self.viewer, "picking", None)
+        if picking is not None:
+            pick_state = picking.pick_state.numpy()
+            pick_state[0]["pick_stiffness"] = 2.0
             pick_state[0]["pick_damping"] = 0.0
-            self.viewer.picking.pick_state.assign(pick_state)
+            picking.pick_state.assign(pick_state)
 
         self.viewer.set_camera(
             pos=wp.vec3(2.10, 0.0, z0 - 0.15),

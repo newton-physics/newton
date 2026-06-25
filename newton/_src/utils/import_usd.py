@@ -347,6 +347,12 @@ def parse_usd(
     except Exception as e:
         if verbose:
             print(f"Failed to get mass unit: {e}")
+    if not math.isclose(mass_unit, 1.0):
+        warnings.warn(
+            "USD stages with non-unit mass units are not supported. "
+            f"Set kilogramsPerUnit to 1.0 before import. Found kilogramsPerUnit={mass_unit}.",
+            stacklevel=_external_stacklevel(),
+        )
     linear_unit = 1.0
     try:
         if UsdGeom.StageHasAuthoredMetersPerUnit(stage):
@@ -354,6 +360,12 @@ def parse_usd(
     except Exception as e:
         if verbose:
             print(f"Failed to get linear unit: {e}")
+    if not math.isclose(linear_unit, 1.0):
+        warnings.warn(
+            "USD stages with non-unit linear units are not supported. "
+            f"Set metersPerUnit to 1.0 before import. Found metersPerUnit={linear_unit}.",
+            stacklevel=_external_stacklevel(),
+        )
 
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=non_regex_ignore_paths)
@@ -759,7 +771,6 @@ def parse_usd(
         return imageable.ComputeVisibility() != UsdGeom.Tokens.invisible
 
     bodies_with_visual_shapes: set[int] = set()
-    warned_deprecated_body_armature_paths: set[str] = set()
 
     def _get_prim_world_mat(prim, articulation_root_xform, incoming_world_xform):
         prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
@@ -997,7 +1008,6 @@ def parse_usd(
         prim: Usd.Prim,
         xform: wp.transform,
         label: str,
-        armature: float | None,
         articulation_root_xform: wp.transform | None = None,
         is_kinematic: bool = False,
     ) -> int:
@@ -1006,13 +1016,10 @@ def parse_usd(
         body_custom_attrs = usd.get_custom_attribute_values(
             prim, builder_custom_attr_body, context={"builder": builder}
         )
-        body_inertia = wp.mat33(np.eye(3, dtype=np.float32)) * armature if armature is not None else None
 
         b = builder.add_link(
             xform=xform,
             label=label,
-            inertia=body_inertia,
-            armature=0.0 if armature is not None else None,
             is_kinematic=is_kinematic,
             custom_attributes=body_custom_attrs,
         )
@@ -1044,28 +1051,6 @@ def parse_usd(
             origin = wp.mul(incoming_xform, origin)
         path = str(prim.GetPath())
 
-        body_armature_source_path: str | None = None
-        body_armature = usd.get_float(prim, "newton:armature", None)
-        if body_armature is not None:
-            body_armature_source_path = path
-        if body_armature is None and physics_scene_prim:
-            body_armature = usd.get_float(physics_scene_prim, "newton:armature", None)
-            if body_armature is not None:
-                body_armature_source_path = str(physics_scene_prim.GetPath())
-
-        if (
-            body_armature_source_path is not None
-            and body_armature_source_path not in warned_deprecated_body_armature_paths
-        ):
-            warnings.warn(
-                f"USD-authored 'newton:armature' on {body_armature_source_path} is deprecated and will be "
-                "removed in a future release. Add any isotropic artificial inertia directly to the body's "
-                "inertia instead.",
-                DeprecationWarning,
-                stacklevel=_external_stacklevel(),
-            )
-            warned_deprecated_body_armature_paths.add(body_armature_source_path)
-
         is_kinematic = rigid_body_desc.kinematicBody
 
         if add_body_to_builder:
@@ -1073,7 +1058,6 @@ def parse_usd(
                 prim,
                 origin,
                 path,
-                body_armature,
                 articulation_root_xform=articulation_root_xform,
                 is_kinematic=is_kinematic,
             )
@@ -1082,7 +1066,6 @@ def parse_usd(
                 "prim": prim,
                 "xform": origin,
                 "label": path,
-                "armature": body_armature,
                 "is_kinematic": is_kinematic,
             }
             if articulation_root_xform is not None:
@@ -1852,7 +1835,7 @@ def parse_usd(
             print("Found PhysicsScene:", path)
             print("Gravity direction:", scene_desc.gravityDirection)
             print("Gravity magnitude:", scene_desc.gravityMagnitude)
-        builder.gravity = -scene_desc.gravityMagnitude * linear_unit
+        builder.gravity = -scene_desc.gravityMagnitude
 
         # Storing Physics Scene attributes
         physics_scene_prim = stage.GetPrimAtPath(path)
