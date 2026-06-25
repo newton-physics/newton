@@ -11,6 +11,7 @@ mutation and traversal orchestration stay in :mod:`.import_usd`.
 from __future__ import annotations
 
 import re
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -24,6 +25,41 @@ if TYPE_CHECKING:
 def is_ignored_path(path: str, ignore_paths: Sequence[str]) -> bool:
     """Return whether ``path`` matches any of the ``ignore_paths`` regular expressions."""
     return any(re.match(pattern, path) for pattern in ignore_paths)
+
+
+def validate_attachment_index_pairs(
+    indices0: Sequence[int], count0: int, indices1: Sequence[int], count1: int, path: str
+) -> bool:
+    """Validate a curve-to-curve junction's paired control-point indices.
+
+    The two index arrays pair element-wise (``indices0[k]`` welds to ``indices1[k]``), so they
+    must be non-empty, equal length, and each in range for its source curve's point count.
+    Warns and returns ``False`` for a malformed junction so the caller can skip it instead of
+    welding unintended points or raising ``IndexError``.
+    """
+    if not indices0 or not indices1:
+        warnings.warn(
+            f"{path}: curve-to-curve PhysicsAttachment has empty indices0/indices1; skipping junction.",
+            stacklevel=2,
+        )
+        return False
+    if len(indices0) != len(indices1):
+        warnings.warn(
+            f"{path}: curve-to-curve PhysicsAttachment indices0 (len {len(indices0)}) and indices1 "
+            f"(len {len(indices1)}) differ in length; skipping junction.",
+            stacklevel=2,
+        )
+        return False
+    for indices, count, which in ((indices0, count0, "src0"), (indices1, count1, "src1")):
+        for idx in indices:
+            if idx < 0 or idx >= count:
+                warnings.warn(
+                    f"{path}: curve-to-curve PhysicsAttachment {which} index {idx} is out of range for its "
+                    f"curve ({count} points); skipping junction.",
+                    stacklevel=2,
+                )
+                return False
+    return True
 
 
 @dataclass

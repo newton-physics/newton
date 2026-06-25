@@ -1034,6 +1034,74 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertNotIn("/World/Junction", result["path_attachment_map"])
             self.assertNotIn("/World/Junction", result["path_attachment_attrs"])
 
+    def test_curve_to_curve_junction_out_of_range_index_warns_and_skips(self):
+        """An out-of-range junction index warns and skips the weld instead of raising IndexError."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "junction_oob.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            trunk_pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            branch_pts = [(0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.1, 0.2, 1.0)]
+            _add_cable_curve(stage, "/World/Trunk", trunk_pts)
+            _add_cable_curve(stage, "/World/Branch", branch_pts)
+            _add_physics_attachment(
+                stage,
+                "/World/Junction",
+                src0="/World/Branch",
+                src1="/World/Trunk",
+                type0="point",
+                type1="point",
+                indices0=[99],  # out of range for the 3-point branch
+                indices1=[1],
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "out of range"):
+                result = builder.add_usd(str(usd_path))
+
+            # The malformed junction does not weld: both curves import independently.
+            _trunk_bodies, trunk_joints = result["path_cable_map"]["/World/Trunk"]
+            self.assertIn("/World/Branch", result["path_cable_map"])
+            self.assertNotEqual(trunk_joints, [])
+            self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])
+
+    def test_curve_to_curve_junction_mismatched_indices_warns_and_skips(self):
+        """Mismatched-length junction index arrays warn and skip rather than reusing indices1[0]."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "junction_mismatch.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            trunk_pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            branch_pts = [(0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.1, 0.2, 1.0)]
+            _add_cable_curve(stage, "/World/Trunk", trunk_pts)
+            _add_cable_curve(stage, "/World/Branch", branch_pts)
+            _add_physics_attachment(
+                stage,
+                "/World/Junction",
+                src0="/World/Branch",
+                src1="/World/Trunk",
+                type0="point",
+                type1="point",
+                indices0=[0, 1],  # two sites
+                indices1=[1],  # but only one partner
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "differ in length"):
+                result = builder.add_usd(str(usd_path))
+
+            _trunk_bodies, trunk_joints = result["path_cable_map"]["/World/Trunk"]
+            self.assertNotEqual(trunk_joints, [])
+            self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])
+
     def test_disabled_physics_attachment_is_recorded_but_not_imported(self):
         """attachmentEnabled=false preserves attrs but creates no joint."""
         from pxr import Usd, UsdGeom, UsdPhysics

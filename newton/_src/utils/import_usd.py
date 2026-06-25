@@ -46,7 +46,7 @@ from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
 from .cable import create_cable_stiffness_from_elastic_moduli
-from .import_usd_deformable import CurveDeformableRecord, is_ignored_path
+from .import_usd_deformable import CurveDeformableRecord, is_ignored_path, validate_attachment_index_pairs
 from .import_utils import should_show_collider
 
 logger = logging.getLogger("newton")
@@ -4022,11 +4022,13 @@ def parse_usd(
                 continue
             idx0 = [int(i) for i in (deformable_read(prim, "indices0") or [])]
             idx1 = [int(i) for i in (deformable_read(prim, "indices1") or [])]
-            if not idx0 or not idx1:
-                continue
+            if not validate_attachment_index_pairs(
+                idx0, len(curve_recs[src0].positions), idx1, len(curve_recs[src1].positions), str(prim.GetPath())
+            ):
+                continue  # malformed junction: leave both curves to the per-curve pass
             union(src0, src1)
-            for i, a in enumerate(idx0):
-                welds.append((src0, a, src1, idx1[i] if i < len(idx1) else idx1[0]))
+            for a, b in zip(idx0, idx1, strict=True):
+                welds.append((src0, a, src1, b))
             consumed_attachments.add(str(prim.GetPath()))
 
         components: dict[str, list[str]] = {}
