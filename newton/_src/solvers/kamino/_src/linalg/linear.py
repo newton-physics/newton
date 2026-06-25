@@ -991,6 +991,11 @@ class ConjugateResidualSolverFused(IterativeSolver):
         cj = op.constraint_jacobian
         self._total_nnz = int(cj.nzb_values.shape[0])
         self._max_of_num_nzb = int(cj.max_of_num_nzb)
+        # row_blk packs the body index into the block id's high bits (gb in low 24 bits); guard the range assumptions.
+        if self._total_nnz >= (1 << 24):
+            raise ValueError(f"fused CR row-block packing needs total_nnz < 2^24, got {self._total_nnz}.")
+        if int(model.size.max_of_num_bodies) >= (1 << 7):
+            raise ValueError("fused CR row-block packing needs max bodies/world < 128.")
 
         self._kernel = make_fused_cr_kernel(self._max_rows, self._max_cols, MAX_BLOCKS_PER_ROW, self._block_dim)
 

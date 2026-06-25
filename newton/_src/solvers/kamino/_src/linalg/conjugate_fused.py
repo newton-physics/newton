@@ -53,6 +53,19 @@ __all__ = [
 def warp_subreduce_sum(v: float32, width: int32) -> float32: ...
 
 
+# Butterfly all-reduce over a full 32-lane warp (no barrier): the two-level CR reduction's intra-warp step.
+@wp.func_native(
+    """
+    float r = v;
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1)
+        r += __shfl_xor_sync(0xffffffffu, r, o, 32);
+    return r;
+    """
+)
+def warp_allreduce_sum(v: float32) -> float32: ...
+
+
 # Maximum number of non-zero vec6 blocks per constraint row. Contacts and
 # bilateral constraints touch two bodies (two blocks); limits touch one.
 MAX_BLOCKS_PER_ROW: int = 2
@@ -94,7 +107,9 @@ def make_row_index_kernel(max_blocks: int):
         # corrupting the solve. Hard-error in debug builds; warn once per offending row otherwise.
         assert slot < wp.static(max_blocks)
         if slot < wp.static(max_blocks):
-            row_blk[g, slot] = gb
+            # Pack the body index (col//6) into the high bits so the forward reads it free from row_blk.
+            bl = nzb_coords[gb, 1] // 6
+            row_blk[g, slot] = gb | (bl << 24)
         elif slot == wp.static(max_blocks):
             wp.printf(
                 "[kamino fused CR] WARNING: constraint row %d has more than %d Jacobian blocks; "
@@ -326,6 +341,9 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
     while T * 2 <= 32 and NB * (T * 2) <= BD:
         T *= 2
     vecNR = wp.types.vector(length=NR, dtype=float32)
+    # CR reductions: two-level (warp __shfl + NW-element shared combine) when block_dim % 32 == 0, else tile_sum.
+    NW = BD // 32  # warps per block
+    warp_reduce = BD % 32 == 0 and NW >= 1
 
     @wp.func
     def _minv(im: float32, iI: mat33f, tv: vec6f) -> vec6f:
@@ -335,17 +353,34 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
         return vec6f(lin[0], lin[1], lin[2], ang[0], ang[1], ang[2])
 
     @wp.func
-    def _rsum(x: float32) -> float32:
-        # Reduce a per-thread CR scalar across the block with a cooperative tile_sum.
-        return wp.tile_sum(wp.tile(x))[0]
+    def _rsum(x: float32, t: int32) -> float32:
+        # Block-reduce a per-thread CR scalar: two-level warp-shuffle + shared combine (full warps), else tile_sum.
+        if wp.static(warp_reduce):
+            wv = warp_allreduce_sum(x)
+            sw = wp.tile_zeros(shape=wp.static(NW), dtype=float32, storage="shared")
+            wp.tile_scatter_add(sw, t // 32, wv, (t % 32) == 0, False)
+            s = float32(0.0)
+            for i in range(wp.static(NW)):
+                s += sw[i]
+            return s
+        else:
+            return wp.tile_sum(wp.tile(x))[0]
 
     @wp.func
-    def _rsum2(a: float32, b: float32) -> wp.vec2:
-        # Reduce two co-located CR scalars in one pass: build a (2, block_dim) tile from the
-        # per-thread vec2 and reduce along the thread axis with a single cooperative tile_sum
-        # -- one cross-warp barrier for both sums instead of two.
-        s = wp.tile_sum(wp.tile(wp.vec2(a, b)), axis=1)
-        return wp.vec2(s[0], s[1])
+    def _rsum2(a: float32, b: float32, t: int32) -> wp.vec2:
+        # Reduce two co-located CR scalars in one pass; two-level for full warps, else one axis-1 tile_sum.
+        if wp.static(warp_reduce):
+            wa = warp_allreduce_sum(a)
+            wb = warp_allreduce_sum(b)
+            sw = wp.tile_zeros(shape=wp.static(NW), dtype=wp.vec2, storage="shared")
+            wp.tile_scatter_add(sw, t // 32, wp.vec2(wa, wb), (t % 32) == 0, False)
+            v = wp.vec2(0.0, 0.0)
+            for i in range(wp.static(NW)):
+                v += sw[i]
+            return v
+        else:
+            s = wp.tile_sum(wp.tile(wp.vec2(a, b)), axis=1)
+            return wp.vec2(s[0], s[1])
 
     @wp.func
     def _apply_A(
@@ -413,9 +448,14 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
         q3 = warp_subreduce_sum(q3, T)
         q4 = warp_subreduce_sum(q4, T)
         q5 = warp_subreduce_sum(q5, T)
-        bidx = wp.min(body, NB - 1)  # keep the tile index in-bounds for masked-out lanes
-        wp.tile_scatter_add(st, bidx, vec6f(q0, q1, q2, q3, q4, q5), body < nbod and sub == 0, False)
         bo = bodies_offset[w]  # hoist the per-world body offset out of the row/block loops
+        bidx = wp.min(body, NB - 1)  # keep the tile index in-bounds for masked-out lanes
+        # Apply block-diagonal M^-1 per body here (writing lane) so the forward reads M^-1(J^T P v) directly.
+        qv = vec6f(q0, q1, q2, q3, q4, q5)
+        active = body < nbod and sub == 0
+        if active:
+            qv = _minv(inv_m[bo + body], inv_I[bo + body], qv)
+        wp.tile_scatter_add(st, bidx, qv, active, False)
         out = vecNR()
         for i in range(wp.static(NR)):
             row = t + i * BD
@@ -423,13 +463,11 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
             if row < n:
                 acc = float32(0.0)
                 for k in range(wp.static(MB)):
-                    gb = row_blk[roff + row, k]
-                    if gb >= 0:
-                        col = nzb_coords[gb, 1]
-                        bl = col // 6
-                        body_g = bo + bl
-                        tv = st[bl]  # the body's 6 transpose outputs (one vec6)
-                        acc += wp.dot(nzb_values[gb], _minv(inv_m[body_g], inv_I[body_g], tv))
+                    packed = row_blk[roff + row, k]
+                    if packed >= 0:
+                        gb = packed & 0x00FFFFFF  # low 24 bits: global block id
+                        bl = packed >> 24  # high bits: within-world body index
+                        acc += wp.dot(nzb_values[gb], st[bl])  # st[bl] = M^-1 (J^T P v) for the body
                 av = p_rowv[i] * acc + eta_rowv[i] * vv[i]
             out[i] = av
         return out
@@ -512,7 +550,7 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
             bb += b_rowv[i] * b_rowv[i]
         at = atol[w]
         rt = rtol[w]
-        atol_sq = wp.max(rt * rt * _rsum(bb), at * at)
+        atol_sq = wp.max(rt * rt * _rsum(bb, t), at * at)
 
         # r0 = b - A x0
         ax_v = _apply_A(
@@ -572,7 +610,7 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
                 break
             rAr_local += r_rowv[i] * ar_rowv[i]
             rnorm_local += r_rowv[i] * r_rowv[i]
-        rr0 = _rsum2(rAr_local, rnorm_local)
+        rr0 = _rsum2(rAr_local, rnorm_local, t)
         rAr = rr0[0]
         r_norm_sq = rr0[1]
 
@@ -588,7 +626,7 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
                 if t + i * BD >= n:
                     break
                 denom_local += ap_rowv[i] * ap_rowv[i]
-            denom = _rsum(denom_local)
+            denom = _rsum(denom_local, t)
             alpha = float32(0.0)
             if denom > float32(0.0):
                 alpha = rAr / denom
@@ -629,7 +667,7 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
                     break
                 rAr_new_local += r_rowv[i] * ar_rowv[i]
                 rnorm_local += r_rowv[i] * r_rowv[i]
-            rr = _rsum2(rAr_new_local, rnorm_local)
+            rr = _rsum2(rAr_new_local, rnorm_local, t)
             rAr_new = rr[0]
             r_norm_sq = rr[1]
             beta = float32(0.0)
