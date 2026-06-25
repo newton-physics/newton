@@ -761,10 +761,12 @@ class SolverVBD(SolverBase):
                 self.joint_dahl_tau = wp.zeros(model.joint_count, dtype=float, device=self.device)
                 self.enable_dahl_friction = False
 
-            # Per-joint rest Korner/Audoly angular deformation [bend_x, bend_y, twist_z]
-            # in the joint frame, refreshed per step (see _refresh_cable_rest_bend_twist_cache).
+            # Per-joint DER rest invariants, refreshed at init and on model change
+            # (see _refresh_cable_rest_bend_twist_cache): the parent-local rest
+            # curvature binormal (bend) and the rest transported-material twist.
             # Split cables use local +Z as the material tangent (a SolverVBD convention).
-            self.joint_cable_rest_bend_twist_local = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
+            self.joint_cable_rest_kb_local = wp.zeros(model.joint_count, dtype=wp.vec3, device=self.device)
+            self.joint_cable_rest_twist = wp.zeros(model.joint_count, dtype=float, device=self.device)
             self._refresh_cable_rest_bend_twist_cache()
 
         # -------------------------------------------------------------
@@ -888,7 +890,8 @@ class SolverVBD(SolverBase):
                 self.model.body_q,
             ],
             outputs=[
-                self.joint_cable_rest_bend_twist_local,
+                self.joint_cable_rest_kb_local,
+                self.joint_cable_rest_twist,
             ],
             device=self.device,
         )
@@ -2119,7 +2122,8 @@ class SolverVBD(SolverBase):
                         model.joint_child,
                         model.joint_X_p,
                         model.joint_X_c,
-                        self.joint_cable_rest_bend_twist_local,
+                        self.joint_cable_rest_kb_local,
+                        self.joint_cable_rest_twist,
                         self.body_q_prev,
                         model.body_q,
                         self.joint_constraint_start,
@@ -2154,7 +2158,8 @@ class SolverVBD(SolverBase):
                         self.joint_constraint_start,
                         self.joint_penalty_k_max,
                         self.joint_is_hard,
-                        self.joint_cable_rest_bend_twist_local,
+                        self.joint_cable_rest_kb_local,
+                        self.joint_cable_rest_twist,
                         self.body_q_prev,
                         self.joint_sigma_prev,
                         self.joint_kappa_prev,
@@ -2596,7 +2601,8 @@ class SolverVBD(SolverBase):
                     model.joint_X_p,
                     model.joint_X_c,
                     model.joint_axis,
-                    self.joint_cable_rest_bend_twist_local,
+                    self.joint_cable_rest_kb_local,
+                    self.joint_cable_rest_twist,
                     model.joint_qd_start,
                     model.joint_target_q_start,
                     self.joint_constraint_start,
@@ -2703,7 +2709,8 @@ class SolverVBD(SolverBase):
                     model.joint_X_p,
                     model.joint_X_c,
                     model.joint_axis,
-                    self.joint_cable_rest_bend_twist_local,
+                    self.joint_cable_rest_kb_local,
+                    self.joint_cable_rest_twist,
                     model.joint_qd_start,
                     model.joint_target_q_start,
                     self.joint_constraint_start,
@@ -2925,7 +2932,8 @@ class SolverVBD(SolverBase):
                     self.joint_constraint_start,
                     self.joint_penalty_k_max,
                     self.joint_is_hard,
-                    self.joint_cable_rest_bend_twist_local,
+                    self.joint_cable_rest_kb_local,
+                    self.joint_cable_rest_twist,
                     state_out.body_q,
                     self.joint_dahl_eps_max,
                     self.joint_dahl_tau,

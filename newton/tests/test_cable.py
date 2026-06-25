@@ -9,10 +9,14 @@ import warp as wp
 
 import newton
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
-    _cable_bend_twist_deformation_z,
-    _cable_bend_twist_residual_z,
-    _cable_rest_quat_inverse,
+    _bishop_transport_quat,
+    _cable_bend_twist_directional_derivatives_from_measure,
+    _finite_curvature_binormal,
+    _finite_curvature_binormal_derivative,
+    _measure_cable_bend_twist_z,
+    _transported_twist_angle_derivative_from_measure,
     compute_cable_dahl_parameters,
+    compute_geometric_cable_kappa_cached_z,
     evaluate_cable_bend_twist_force_hessian_z,
 )
 from newton.tests.unittest_utils import add_function_test, get_test_devices
@@ -3491,7 +3495,7 @@ def _cable_eval_fk_preserves_body_state_impl(test: unittest.TestCase, device):
         radius=0.01,
         wrap_in_articulation=True,
         label="ut_cable_eval_fk",
-        body_frame_origin="start",
+        body_frame_origin="com",
     )
     test.assertEqual(len(rod_bodies), 2)
     test.assertEqual(len(rod_joints), 1)
@@ -4277,37 +4281,6 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
 # -----------------------------------------------------------------------------
 
 
-@wp.func
-def _cable_bend_twist_residual_directional_derivative_z(
-    q_wp: wp.quat,
-    q_wc: wp.quat,
-    kb_rest_local: wp.vec3,
-    omega_world: wp.vec3,
-    is_parent: bool,
-) -> wp.vec3:
-    """Directional derivative of the rest-relative bend/twist strain for a world rotation.
-
-    Independent per-column reference for `_cable_bend_twist_jacobian_z`. With
-    ``A = inv(q_rel_rest) * inv(q_wp)`` and ``q_def = A * q_wc = (v, w)`` (sign
-    chosen so ``w >= 0``), the child-rotation derivative is
-    ``(w I - [v]x)(R_A omega_world)`` and the parent derivative is its negation.
-    """
-    A = wp.mul(_cable_rest_quat_inverse(kb_rest_local), wp.quat_inverse(q_wp))
-    q_def = wp.mul(A, q_wc)
-    sign = 1.0
-    if q_def[3] < 0.0:
-        sign = -1.0
-    v = sign * wp.vec3(q_def[0], q_def[1], q_def[2])
-    w = sign * q_def[3]
-    a = wp.quat_rotate(A, omega_world)
-
-    # (w I - [v]x) a == w a - v x a
-    dkappa = w * a - wp.cross(v, a)
-    if is_parent:
-        dkappa = -dkappa
-    return dkappa
-
-
 @wp.kernel
 def _eval_split_cable_material_force_law_kernel(
     bend_stiffness: float,
@@ -4329,6 +4302,7 @@ def _eval_split_cable_material_force_law_kernel(
         q_id,
         q_bend,
         zero,
+        0.0,
         q_id,
         q_id,
         True,
@@ -4345,6 +4319,7 @@ def _eval_split_cable_material_force_law_kernel(
         q_id,
         q_twist,
         zero,
+        0.0,
         q_id,
         q_id,
         True,
@@ -4362,9 +4337,12 @@ def _eval_split_cable_material_force_law_kernel(
     torque_magnitudes[1] = wp.length(tau_twist)
     leakage_errors[0] = wp.length(P_twist * tau_bend)
     leakage_errors[1] = wp.length(P_bend * tau_twist)
-    expected_strain = 2.0 * wp.sin(0.5 * angle)
-    leakage_errors[2] = wp.abs(wp.length(P_bend * kappa_bend) - expected_strain)
-    leakage_errors[3] = wp.abs(wp.length(P_twist * kappa_twist) - expected_strain)
+    # DER strain: bend is the curvature-binormal magnitude 2*tan(theta/2); twist
+    # is the transported material-frame angle, which equals the applied angle.
+    expected_bend_strain = 2.0 * wp.tan(0.5 * angle)
+    expected_twist_strain = angle
+    leakage_errors[2] = wp.abs(wp.length(P_bend * kappa_bend) - expected_bend_strain)
+    leakage_errors[3] = wp.abs(wp.length(P_twist * kappa_twist) - expected_twist_strain)
 
 
 @wp.kernel
@@ -4385,12 +4363,16 @@ def _eval_split_cable_cantilever_moment_law_kernel(
 
     expected_moment = tip_force * lever_arms[tid]
     theta = wp.asin(expected_moment / bend_stiffness)
+    # DER bend torque at this angle: dE/dtheta = K * kappa * dkappa/dtheta with
+    # kappa = 2*tan(theta/2). Equals the beam moment to O(theta^3) (small angle).
+    expected_der_moment = bend_stiffness * 2.0 * wp.tan(0.5 * theta) / (wp.cos(0.5 * theta) * wp.cos(0.5 * theta))
     q_bend = wp.quat_from_axis_angle(bend_axis, theta)
 
     tau_bend, _H_bend, kappa_bend, _J_bend = evaluate_cable_bend_twist_force_hessian_z(
         q_id,
         q_bend,
         zero,
+        0.0,
         q_id,
         q_id,
         True,
@@ -4406,10 +4388,10 @@ def _eval_split_cable_cantilever_moment_law_kernel(
 
     measured_moment = wp.length(tau_bend)
     measured_strain = wp.length(P_bend * kappa_bend)
-    expected_measured_strain = 2.0 * wp.sin(0.5 * theta)
+    expected_measured_strain = 2.0 * wp.tan(0.5 * theta)
 
     errors[tid] = wp.vec3(
-        wp.abs(measured_moment - expected_moment),
+        wp.abs(measured_moment - expected_der_moment),
         wp.length(P_twist * tau_bend),
         wp.abs(measured_strain - expected_measured_strain),
     )
@@ -4428,8 +4410,9 @@ def _geometric_cable_test_energy(
     q_wc_rest: wp.quat,
     K_elastic_diag: wp.vec3,
 ) -> float:
-    kb_rest_local = _cable_bend_twist_deformation_z(q_wp_rest, q_wc_rest)
-    residual = _cable_bend_twist_residual_z(q_wp, q_wc, kb_rest_local)
+    rest = _measure_cable_bend_twist_z(q_wp_rest, q_wc_rest)
+    kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest.kb_world)
+    residual = compute_geometric_cable_kappa_cached_z(q_wp, q_wc, kb_rest_local, rest.twist)
     return 0.5 * wp.dot(wp.cw_mul(K_elastic_diag, residual), residual)
 
 
@@ -4443,11 +4426,13 @@ def _eval_geometric_cable_test_force_hessian(
     K_elastic_diag: wp.vec3,
 ) -> tuple[wp.vec3, wp.mat33]:
     zero = wp.vec3(0.0)
-    kb_rest_local = _cable_bend_twist_deformation_z(q_wp_rest, q_wc_rest)
+    rest = _measure_cable_bend_twist_z(q_wp_rest, q_wc_rest)
+    kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest.kb_world)
     tau, H, _kappa, _J = evaluate_cable_bend_twist_force_hessian_z(
         q_wp,
         q_wc,
         kb_rest_local,
+        rest.twist,
         q_wp,
         q_wc,
         is_parent,
@@ -4629,13 +4614,14 @@ def _eval_geometric_precurved_twist_is_pure_twist_kernel(errors: wp.array[wp.vec
     q_wp = q_wp_rest
     q_wc = wp.quat_from_axis_angle(child_tangent_world, twist_angle) * q_wc_rest
 
-    # Validate the production rest-relative Korner residual directly (not a test
+    # Validate the production rest-relative DER residual directly (not a test
     # reference): pure twist on a pre-curved rest must not leak into bend, and the
-    # twist magnitude is the Korner value 2 sin(twist/2).
-    kb_rest_local = _cable_bend_twist_deformation_z(q_wp_rest, q_wc_rest)
-    kappa = _cable_bend_twist_residual_z(q_wp, q_wc, kb_rest_local)
+    # transported-twist magnitude equals the applied twist angle.
+    rest = _measure_cable_bend_twist_z(q_wp_rest, q_wc_rest)
+    kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest.kb_world)
+    kappa = compute_geometric_cable_kappa_cached_z(q_wp, q_wc, kb_rest_local, rest.twist)
     bend_leak = wp.length(P_bend * kappa)
-    expected_twist = 2.0 * wp.sin(0.5 * twist_angle)
+    expected_twist = twist_angle
     twist_err = wp.abs(wp.length(P_twist * kappa) - expected_twist)
     errors[0] = wp.vec3(bend_leak, twist_err, wp.length(kappa))
 
@@ -4656,8 +4642,9 @@ def _eval_geometric_global_rotation_preserves_rest_strain_kernel(errors: wp.arra
     q_wp = q_global * q_wp_rest
     q_wc = q_global * q_wc_rest
 
-    kb_rest_local = _cable_bend_twist_deformation_z(q_wp_rest, q_wc_rest)
-    kappa = _cable_bend_twist_residual_z(q_wp, q_wc, kb_rest_local)
+    rest = _measure_cable_bend_twist_z(q_wp_rest, q_wc_rest)
+    kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest.kb_world)
+    kappa = compute_geometric_cable_kappa_cached_z(q_wp, q_wc, kb_rest_local, rest.twist)
     errors[0] = wp.vec3(wp.length(kappa), wp.length(kappa), wp.length(kappa))
 
 
@@ -4672,6 +4659,7 @@ def _eval_geometric_sharp_turn_kernel(errors: wp.array[wp.vec3]):
         q_wp,
         q_wc,
         zero,
+        0.0,
         q_wp,
         q_wc,
         True,
@@ -4684,7 +4672,9 @@ def _eval_geometric_sharp_turn_kernel(errors: wp.array[wp.vec3]):
         False,
         0.01,
     )
-    expected = 2.0 * wp.sin(0.5 * angle)
+    # DER caps the curvature binormal at _CABLE_KB_CURVATURE_CAP near a hairpin,
+    # so the bend strain saturates at the cap instead of Korner's +/-2 bound.
+    expected = 20.0
     twist_leak = wp.abs(kappa[2])
     errors[0] = wp.vec3(wp.abs(wp.length(kappa) - expected), twist_leak, wp.length(kappa))
 
@@ -4699,7 +4689,8 @@ def _eval_bend_twist_deformation_derivative_kernel(errors: wp.array[wp.vec3]):
     q_wp_rest = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.2, -0.3, 0.5)), 0.4)
     bend_axis = wp.quat_rotate(q_wp_rest, wp.vec3(0.0, 1.0, 0.0))
     q_wc_rest = wp.quat_from_axis_angle(bend_axis, 0.5) * q_wp_rest
-    kb_rest_local = _cable_bend_twist_deformation_z(q_wp_rest, q_wc_rest)
+    rest = _measure_cable_bend_twist_z(q_wp_rest, q_wc_rest)
+    kb_rest_local = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest.kb_world)
 
     q_wp = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.7, -0.2)), 0.55) * q_wp_rest
     q_wc = wp.quat_from_axis_angle(wp.normalize(wp.vec3(-0.6, 0.2, 0.4)), 0.62) * q_wc_rest
@@ -4710,7 +4701,9 @@ def _eval_bend_twist_deformation_derivative_kernel(errors: wp.array[wp.vec3]):
     omega_len = wp.length(omega)
     axis = omega / omega_len
 
-    analytic = _cable_bend_twist_residual_directional_derivative_z(q_wp, q_wc, kb_rest_local, omega, is_parent)
+    measure = _measure_cable_bend_twist_z(q_wp, q_wc)
+    d_bend_local, d_twist = _cable_bend_twist_directional_derivatives_from_measure(q_wp, measure, omega, is_parent)
+    analytic = wp.vec3(d_bend_local[0], d_bend_local[1], d_twist)
 
     h = 1.0e-3
     q_wp_p = q_wp
@@ -4725,10 +4718,220 @@ def _eval_bend_twist_deformation_derivative_kernel(errors: wp.array[wp.vec3]):
         q_wc_m = _quat_perturb_world(q_wc, axis, -h * omega_len)
 
     fd = (
-        _cable_bend_twist_residual_z(q_wp_p, q_wc_p, kb_rest_local)
-        - _cable_bend_twist_residual_z(q_wp_m, q_wc_m, kb_rest_local)
+        compute_geometric_cable_kappa_cached_z(q_wp_p, q_wc_p, kb_rest_local, rest.twist)
+        - compute_geometric_cable_kappa_cached_z(q_wp_m, q_wc_m, kb_rest_local, rest.twist)
     ) / (2.0 * h)
     errors[tid] = wp.vec3(wp.length(analytic - fd), wp.length(analytic), wp.length(fd))
+
+
+# DER-primitive unit tests: exercise the singular fallback paths and the
+# per-primitive analytic derivatives directly, not only through the composite
+# residual/Jacobian, so a bug in one primitive cannot hide behind another.
+
+
+@wp.kernel
+def _eval_bishop_transport_antiparallel_fallback_kernel(errors: wp.array[wp.vec3]):
+    t0 = wp.vec3(1.0, 0.0, 0.0)
+    t1 = wp.vec3(-1.0, 0.0, 0.0)
+    fallback_parallel_to_t0 = wp.vec3(1.0, 0.0, 0.0)
+
+    q = _bishop_transport_quat(t0, t1, fallback_parallel_to_t0)
+    mapped = wp.quat_rotate(q, t0)
+    errors[0] = wp.vec3(wp.length(mapped - t1), wp.abs(wp.dot(mapped, t0) + 1.0), wp.length(mapped))
+
+
+@wp.func
+def _rotate_tangent_for_fd(t: wp.vec3, omega: wp.vec3, h: float) -> wp.vec3:
+    omega_len = wp.length(omega)
+    if omega_len <= 1.0e-12:
+        return t
+    q = wp.quat_from_axis_angle(omega / omega_len, h * omega_len)
+    return wp.quat_rotate(q, t)
+
+
+@wp.func
+def _curvature_binormal_derivative_fd_error(t0: wp.vec3, t1: wp.vec3, fallback: wp.vec3, h: float) -> wp.vec3:
+    omega0 = wp.vec3(0.31, -0.27, 0.19)
+    omega1 = wp.vec3(-0.17, 0.23, 0.29)
+    dt0 = wp.cross(omega0, t0)
+    dt1 = wp.cross(omega1, t1)
+
+    analytic = _finite_curvature_binormal_derivative(t0, t1, dt0, dt1)
+    t0_p = _rotate_tangent_for_fd(t0, omega0, h)
+    t1_p = _rotate_tangent_for_fd(t1, omega1, h)
+    t0_m = _rotate_tangent_for_fd(t0, omega0, -h)
+    t1_m = _rotate_tangent_for_fd(t1, omega1, -h)
+    fd = (_finite_curvature_binormal(t0_p, t1_p, fallback) - _finite_curvature_binormal(t0_m, t1_m, fallback)) / (
+        2.0 * h
+    )
+
+    kb = _finite_curvature_binormal(t0, t1, fallback)
+    cap_tangent_error = wp.abs(wp.dot(kb, analytic))
+    if wp.length(kb) > 1.0e-8:
+        cap_tangent_error = cap_tangent_error / wp.length(kb)
+    return wp.vec3(wp.length(analytic - fd), wp.length(analytic), cap_tangent_error)
+
+
+@wp.kernel
+def _eval_geometric_curvature_binormal_derivative_kernel(errors: wp.array[wp.vec3]):
+    t0 = wp.vec3(0.0, 0.0, 1.0)
+    fallback = wp.vec3(0.0, 1.0, 0.0)
+
+    t1_regular = wp.normalize(wp.vec3(0.25, -0.12, 0.96))
+    regular = _curvature_binormal_derivative_fd_error(t0, t1_regular, fallback, 1.0e-3)
+
+    q_hairpin = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 3.05)
+    t1_capped = wp.quat_rotate(q_hairpin, t0)
+    capped = _curvature_binormal_derivative_fd_error(t0, t1_capped, fallback, 1.0e-3)
+
+    errors[0] = wp.vec3(regular[0], capped[0], capped[2])
+
+
+@wp.func
+def _transported_twist_angle_derivative_fd_error(
+    q_wp: wp.quat,
+    q_wc: wp.quat,
+    omega: wp.vec3,
+    is_parent: bool,
+    h: float,
+) -> wp.vec3:
+    measure = _measure_cable_bend_twist_z(q_wp, q_wc)
+    analytic = _transported_twist_angle_derivative_from_measure(measure, omega, is_parent)
+    q_wp_p = q_wp
+    q_wp_m = q_wp
+    q_wc_p = q_wc
+    q_wc_m = q_wc
+    omega_len = wp.length(omega)
+    axis = omega / omega_len
+    if is_parent:
+        q_wp_p = _quat_perturb_world(q_wp, axis, h * omega_len)
+        q_wp_m = _quat_perturb_world(q_wp, axis, -h * omega_len)
+    else:
+        q_wc_p = _quat_perturb_world(q_wc, axis, h * omega_len)
+        q_wc_m = _quat_perturb_world(q_wc, axis, -h * omega_len)
+
+    twist_p = _measure_cable_bend_twist_z(q_wp_p, q_wc_p).twist
+    twist_m = _measure_cable_bend_twist_z(q_wp_m, q_wc_m).twist
+    fd = (twist_p - twist_m) / (2.0 * h)
+    return wp.vec3(wp.abs(analytic - fd), wp.abs(analytic), wp.abs(fd))
+
+
+@wp.kernel
+def _eval_transported_twist_angle_derivative_kernel(errors: wp.array[wp.vec3]):
+    tid = wp.tid()
+    is_parent = tid == 0 or tid == 2
+    omega = wp.vec3(0.19, -0.31, 0.23)
+    if not is_parent:
+        omega = wp.vec3(-0.17, 0.29, 0.21)
+
+    q_wp = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.7, -0.2)), 0.31)
+    q_wc = wp.quat_from_axis_angle(wp.normalize(wp.vec3(-0.6, 0.2, 0.4)), 0.42) * q_wp
+
+    if tid >= 2:
+        # Pre-curved local +Z rest: bend, then twist about the child tangent.
+        tangent = wp.vec3(0.0, 0.0, 1.0)
+        q_wp = wp.quat_identity()
+        q_bend = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.55)
+        child_tangent = wp.quat_rotate(q_bend, tangent)
+        q_wc = wp.quat_from_axis_angle(child_tangent, 0.41) * q_bend
+
+    errors[tid] = _transported_twist_angle_derivative_fd_error(q_wp, q_wc, omega, is_parent, 1.0e-3)
+
+
+@wp.kernel
+def _eval_geometric_curvature_binormal_cap_kernel(errors: wp.array[wp.vec3]):
+    q_wp = wp.quat_identity()
+    q_wc = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 3.05)
+    zero = wp.vec3(0.0)
+
+    kappa = compute_geometric_cable_kappa_cached_z(q_wp, q_wc, zero, 0.0)
+    cap_error = wp.abs(wp.length(kappa) - 20.0)
+    errors[0] = wp.vec3(cap_error, 0.0, wp.length(kappa))
+
+
+def _split_cable_bishop_transport_handles_antiparallel_fallback(test, device):
+    """Bishop transport at an exact 180-degree fold must still map t0 to -t0."""
+    errors = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(_eval_bishop_transport_antiparallel_fallback_kernel, dim=1, outputs=[errors], device=device)
+    map_error, antiparallel_error, mapped_len = errors.numpy()[0]
+    test.assertLess(map_error, 1.0e-6, "Bishop fallback did not map t0 to -t0")
+    test.assertLess(antiparallel_error, 1.0e-6, "Bishop fallback result was not antiparallel")
+    test.assertGreater(mapped_len, 0.9, "Bishop fallback produced a degenerate vector")
+
+
+def _split_cable_curvature_binormal_derivative_matches_finite_difference(test, device):
+    """Analytic curvature-binormal derivative matches finite differences, capped and uncapped."""
+    errors = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(_eval_geometric_curvature_binormal_derivative_kernel, dim=1, outputs=[errors], device=device)
+    regular_error, capped_error, capped_tangent_error = errors.numpy()[0]
+    test.assertLess(regular_error, 5.0e-4, "regular curvature derivative finite-difference mismatch")
+    test.assertLess(capped_error, 5.0e-3, "capped curvature derivative finite-difference mismatch")
+    test.assertLess(capped_tangent_error, 1.0e-5, "capped derivative changed the capped magnitude")
+
+
+def _split_cable_transported_twist_derivative_matches_finite_difference(test, device):
+    """Analytic transported-twist derivative matches finite differences for parent and child."""
+    errors = wp.zeros(4, dtype=wp.vec3, device=device)
+    wp.launch(_eval_transported_twist_angle_derivative_kernel, dim=4, outputs=[errors], device=device)
+    errors_np = errors.numpy()
+    test.assertLess(float(np.max(errors_np[:, 0])), 5.0e-4, "transported twist derivative finite-difference mismatch")
+    test.assertGreater(float(np.max(errors_np[:, 1:])), 0.05, "transported twist derivative test is vacuous")
+
+
+def _split_cable_geometric_curvature_binormal_is_capped(test, device):
+    """Near-fold bend saturates at the DER curvature-binormal cap (20)."""
+    errors = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(_eval_geometric_curvature_binormal_cap_kernel, dim=1, outputs=[errors], device=device)
+    cap_error, _placeholder, kappa_mag = errors.numpy()[0]
+    test.assertLess(cap_error, 1.0e-5, "near-fold curvature was not capped at 20")
+    test.assertGreater(kappa_mag, 19.9, "cap regression test is vacuous")
+
+
+@wp.kernel
+def _eval_geometric_curvature_binormal_growth_kernel(angles: wp.array[float], bend_mag: wp.array[float]):
+    tid = wp.tid()
+    # Pure bend about a fixed axis perpendicular to the local +Z tangent: the angle
+    # between parent and child tangents is exactly angles[tid], so the curvature
+    # binormal magnitude is the DER law 2*tan(theta/2) and twist stays 0.
+    q_wc = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), angles[tid])
+    kappa = compute_geometric_cable_kappa_cached_z(wp.quat_identity(), q_wc, wp.vec3(0.0), 0.0)
+    bend_mag[tid] = wp.sqrt(kappa[0] * kappa[0] + kappa[1] * kappa[1])
+
+
+def _split_cable_curvature_binormal_grows_then_caps(test, device):
+    """DER bend strain grows monotonically as 2*tan(theta/2), then saturates at the cap.
+
+    The DER replacement for a bounded-near-fold check: unlike the Korner measure the
+    curvature binormal is unbounded until the conditioning cap (20) engages at
+    2*tan(theta/2) = 20, i.e. theta = 2*atan(10) ~= 2.9413 rad (~168.6 deg).
+    """
+    cap = 20.0
+    angles_np = np.array([0.2, 0.6, 1.0, 1.5, 2.0, 2.5, 2.9, 3.05, 3.1], dtype=np.float32)
+    angles = wp.array(angles_np, dtype=float, device=device)
+    bend_mag = wp.zeros(len(angles_np), dtype=float, device=device)
+    wp.launch(
+        _eval_geometric_curvature_binormal_growth_kernel,
+        dim=len(angles_np),
+        inputs=[angles],
+        outputs=[bend_mag],
+        device=device,
+    )
+    mags = bend_mag.numpy()
+
+    # Monotonic non-decreasing across the whole sweep (the capped tail is flat).
+    for i in range(1, len(mags)):
+        test.assertGreaterEqual(
+            float(mags[i]) + 1.0e-5, float(mags[i - 1]), f"bend strain decreased across sweep: {mags}"
+        )
+
+    for theta, mag in zip(angles_np, mags, strict=True):
+        expected = 2.0 * np.tan(0.5 * float(theta))
+        if expected < cap:
+            # Below the engage angle the strain follows the unbounded DER law.
+            test.assertAlmostEqual(float(mag), expected, delta=1.0e-3, msg=f"bend != 2*tan(theta/2) at theta={theta}")
+        else:
+            # Past the engage angle the strain saturates at the cap.
+            test.assertAlmostEqual(float(mag), cap, delta=1.0e-4, msg=f"bend not capped at theta={theta}")
 
 
 def _split_cable_angular_slot_layout(test, device):
@@ -4807,7 +5010,8 @@ def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
         joint_constraint_start = wp.array([0, 4], dtype=wp.int32, device=device)
         joint_penalty_k = wp.array([0.0, 0.0, 10.0, 2.0, 0.0, 0.0, 10.0, 2.0], dtype=float, device=device)
         joint_is_hard = wp.array([0, 0, 0, 0, 0, 0, 0, 0], dtype=wp.int32, device=device)
-        joint_cable_rest_bend_twist_local = wp.zeros(2, dtype=wp.vec3, device=device)
+        joint_cable_rest_kb_local = wp.zeros(2, dtype=wp.vec3, device=device)
+        joint_cable_rest_twist = wp.zeros(2, dtype=float, device=device)
 
         q_bend = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.1)
         q_twist = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.1)
@@ -4838,7 +5042,8 @@ def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
                 joint_constraint_start,
                 joint_penalty_k,
                 joint_is_hard,
-                joint_cable_rest_bend_twist_local,
+                joint_cable_rest_kb_local,
+                joint_cable_rest_twist,
                 body_q,
                 zero_vec3,
                 zero_vec3,
@@ -4852,10 +5057,10 @@ def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
 
         sigma = np.abs(sigma_start.numpy())
         c_fric = C_fric.numpy()
-        # Korner/Audoly bend/twist strain has magnitude 2*sin(theta/2).
-        expected_bend_strain = 2.0 * np.sin(0.5 * 0.1)
+        # DER strain magnitude: bend is 2*tan(theta/2), twist is the applied angle.
+        expected_bend_strain = 2.0 * np.tan(0.5 * 0.1)
         expected_bend_sigma = 10.0 * 0.2 * (1.0 - np.exp(-expected_bend_strain / 0.2))
-        expected_twist_strain = 2.0 * np.sin(0.5 * 0.1)
+        expected_twist_strain = 0.1
         expected_twist_sigma = 2.0 * 0.2 * (1.0 - np.exp(-expected_twist_strain / 0.2))
 
         np.testing.assert_allclose(sigma[0, 0], expected_bend_sigma, rtol=1.0e-5, atol=1.0e-6)
@@ -4924,8 +5129,11 @@ def _split_cable_material_force_law_matches_ei_gj(test, device):
 
     measured_bend, measured_twist = torque_magnitudes.numpy()
     leak_bend_to_twist, leak_twist_to_bend, bend_strain_error, twist_strain_error = leakage_errors.numpy()
-    expected_bend = bend_stiffness * np.sin(angle)
-    expected_twist = twist_stiffness * np.sin(angle)
+    # DER restoring torque is dE/dtheta = K * kappa * dkappa/dtheta. Bend uses
+    # kappa = 2*tan(theta/2) -> 2*tan(theta/2)*sec^2(theta/2); twist uses
+    # kappa = theta -> torque linear in the angle.
+    expected_bend = bend_stiffness * 2.0 * np.tan(0.5 * angle) / np.cos(0.5 * angle) ** 2
+    expected_twist = twist_stiffness * angle
 
     np.testing.assert_allclose(measured_bend, expected_bend, rtol=1.0e-5, atol=1.0e-8)
     np.testing.assert_allclose(measured_twist, expected_twist, rtol=1.0e-5, atol=1.0e-8)
@@ -4936,7 +5144,7 @@ def _split_cable_material_force_law_matches_ei_gj(test, device):
 
     polar_inertia = 0.5 * np.pi * radius**4
     shear_modulus = youngs_modulus / (2.0 * (1.0 + poissons_ratio))
-    expected_chain_torque = shear_modulus * polar_inertia * np.sin(angle) / segment_length
+    expected_chain_torque = shear_modulus * polar_inertia * angle / segment_length
     np.testing.assert_allclose(measured_twist, expected_chain_torque, rtol=1.0e-5, atol=1.0e-8)
 
 
@@ -5019,6 +5227,20 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
         b /= max(float(np.linalg.norm(b)), 1.0e-12)
         return float(min(np.linalg.norm(a - b), np.linalg.norm(a + b)))
 
+    def _quat_rotate_np(quats, v):
+        # Rotate vector v by each quaternion [x, y, z, w]; quats may be (4,) or (N, 4).
+        quats = np.atleast_2d(np.asarray(quats, dtype=np.float64))
+        v = np.asarray(v, dtype=np.float64)
+        xyz = quats[:, :3]
+        w = quats[:, 3:4]
+        t = 2.0 * np.cross(xyz, v)
+        return v + w * t + np.cross(xyz, t)
+
+    # With body_frame_origin="com" the body origin sits at the segment midpoint, so the
+    # start-node of each capsule (and the tip kinematic target) is reconstructed from the
+    # body orientation and the half-segment offset along local +Z.
+    half_segment = 0.5 * segment_length
+
     builder = newton.ModelBuilder(gravity=0.0)
     newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
 
@@ -5039,7 +5261,7 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
         twist_stiffness=twist_stiffness,
         twist_damping=10.0,
         label="kinematic_arc",
-        body_frame_origin="start",
+        body_frame_origin="com",
     )
 
     for body_idx in (int(rod_bodies[0]), int(rod_bodies[-1])):
@@ -5067,7 +5289,8 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
             [np.cos(theta), 0.0, -np.sin(theta)], dtype=np.float64
         )
 
-    tip_target_pos = analytic_points[num_segments - 1]
+    # Tip body spans nodes [num_segments-1, num_segments]; its "com" origin is their midpoint.
+    tip_target_pos = 0.5 * (analytic_points[num_segments - 1] + analytic_points[num_segments])
     tip_angle = (num_segments - 1) * delta_theta
     half = 0.5 * tip_angle
     tip_target_quat = np.array([0.0, np.sin(half), 0.0, np.cos(half)], dtype=np.float64)
@@ -5084,6 +5307,8 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
     min_hold_frames = 30
     max_hold_frames = 240
     settle_speed = 5.0e-5
+    max_residual_lin_speed = 1.5e-4
+    max_residual_ang_speed = 8.0e-4
 
     def _set_tip(scale):
         tip_pos_now = (1.0 - scale) * rest_tip_pos + scale * tip_target_pos
@@ -5120,7 +5345,11 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
             break
 
     body_q = state_0.body_q.numpy().astype(np.float64)
-    centerline = body_q[body_indices, :3]
+    # Reconstruct each segment's start node from the "com" body frame so the centerline
+    # is expressed in the same node coordinates as the analytic arc.
+    centerline = body_q[body_indices, :3] + _quat_rotate_np(
+        body_q[body_indices, 3:7], np.array([0.0, 0.0, -half_segment])
+    )
     edges = np.diff(centerline, axis=0)
     edge_norms = np.linalg.norm(edges, axis=1)
     edges_unit = edges / edge_norms[:, None]
@@ -5154,8 +5383,8 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
     test.assertGreater(float(np.min(edge_norms)), 0.5 * segment_length, f"segment collapsed: {diag}")
     test.assertLess(tip_pos_err, 1.0e-5, f"kinematic tip position drifted: {diag}")
     test.assertLess(tip_quat_err, 1.0e-5, f"kinematic tip orientation drifted: {diag}")
-    test.assertLess(max_lin_speed, 1.0e-4, f"arc did not settle translationally: {diag}")
-    test.assertLess(max_ang_speed, 2.5e-4, f"arc did not settle rotationally: {diag}")
+    test.assertLess(max_lin_speed, max_residual_lin_speed, f"arc did not settle translationally: {diag}")
+    test.assertLess(max_ang_speed, max_residual_ang_speed, f"arc did not settle rotationally: {diag}")
     test.assertLess(y_drift_rel, 1.0e-4, f"pure bend produced out-of-plane drift: {diag}")
     test.assertLess(max_stretch_rel, 1.0e-3, f"segment lengths changed under pure bend: {diag}")
     test.assertLess(angle_rms_deg, 0.12, f"non-uniform per-joint bend: {diag}")
@@ -5217,7 +5446,7 @@ def _split_cable_geometric_rest_strain_is_global_rotation_invariant(test, device
 
 
 def _split_cable_geometric_sharp_turn_is_bounded(test, device):
-    """Near-fold bend should stay bounded under the Korner/Audoly strain measure."""
+    """Near-fold bend should stay bounded by the DER curvature-binormal cap."""
     errors = wp.zeros(1, dtype=wp.vec3, device=device)
     wp.launch(
         _eval_geometric_sharp_turn_kernel,
@@ -5230,7 +5459,7 @@ def _split_cable_geometric_sharp_turn_is_bounded(test, device):
     expected_error, twist_leak, kappa_mag = errors_np[0]
     test.assertLess(expected_error, 1.0e-5, f"near-fold bend/twist strain changed magnitude: {errors_np}")
     test.assertLess(twist_leak, 1.0e-6, f"pure near-fold bend leaked into twist: {errors_np}")
-    test.assertGreater(kappa_mag, 1.9, f"sharp-turn regression test is vacuous: {errors_np}")
+    test.assertGreater(kappa_mag, 19.9, f"sharp-turn regression test is vacuous: {errors_np}")
 
 
 def _split_cable_bend_twist_deformation_derivative_matches_finite_difference(test, device):
@@ -5560,6 +5789,36 @@ add_function_test(
     TestCable,
     "test_split_cable_bend_twist_deformation_derivative_matches_finite_difference",
     _split_cable_bend_twist_deformation_derivative_matches_finite_difference,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_bishop_transport_handles_antiparallel_fallback",
+    _split_cable_bishop_transport_handles_antiparallel_fallback,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_curvature_binormal_derivative_matches_finite_difference",
+    _split_cable_curvature_binormal_derivative_matches_finite_difference,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_transported_twist_derivative_matches_finite_difference",
+    _split_cable_transported_twist_derivative_matches_finite_difference,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_geometric_curvature_binormal_is_capped",
+    _split_cable_geometric_curvature_binormal_is_capped,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_curvature_binormal_grows_then_caps",
+    _split_cable_curvature_binormal_grows_then_caps,
     devices=devices,
 )
 add_function_test(
