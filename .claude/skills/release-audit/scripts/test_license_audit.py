@@ -13,7 +13,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 MODULE_PATH = Path(__file__).with_name("license_audit.py")
 SPEC = importlib.util.spec_from_file_location("license_audit", MODULE_PATH)
 license_audit = importlib.util.module_from_spec(SPEC)
