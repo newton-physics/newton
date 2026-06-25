@@ -30,6 +30,7 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
    :toctree: _generated
    :signatures: long
 
+   LEGACY_DEFORMABLE_NAMESPACES
    find_tetmesh_prims
    get_attribute
    get_attributes_in_namespace

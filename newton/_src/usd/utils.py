@@ -1218,6 +1218,12 @@ _TETMESH_SCHEMA_ATTRS = frozenset(
 )
 
 
+# Vendor attribute namespaces that get_tetmesh() read by default before the canonical
+# ``physics:`` deformable schema existed. Pass as ``compat_namespaces`` to recover that
+# pre-canonical behavior (read moduli off any bound material, under these namespaces).
+LEGACY_DEFORMABLE_NAMESPACES: tuple[str, ...] = ("omniphysics", "physxDeformableBody")
+
+
 def get_tetmesh(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> TetMesh:
     """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
@@ -1229,6 +1235,14 @@ def get_tetmesh(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> TetMes
     those values are read and converted to Lame parameters (``k_mu``,
     ``k_lambda``) and density on the returned TetMesh. Material properties
     are set to ``None`` if not present.
+
+    By default the moduli are read only from a material that applies
+    ``PhysicsVolumeDeformableMaterialAPI``. Passing ``compat_namespaces``
+    additionally reads the listed vendor namespaces and lifts that gate, reading
+    moduli off any bound material. Pass
+    ``compat_namespaces=newton.usd.LEGACY_DEFORMABLE_NAMESPACES`` to recover the
+    pre-canonical behavior of reading ``omniphysics:`` / ``physxDeformableBody:``
+    material attributes by default.
 
     Example:
 
@@ -1280,9 +1294,14 @@ def get_tetmesh(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> TetMes
     density = None
 
     material_prim = _find_physics_material_prim(prim)
-    # Moduli are scoped to the volume deformable material API, so don't read them
-    # off an unrelated physics material.
-    if material_prim is not None and has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI"):
+    # Default (canonical) behavior scopes the moduli to the volume deformable material API, so they
+    # are not read off an unrelated physics material. Passing ``compat_namespaces`` opts back into
+    # the legacy behavior of reading moduli off any bound material (use
+    # ``LEGACY_DEFORMABLE_NAMESPACES`` to fully restore the pre-canonical defaults).
+    read_material = material_prim is not None and (
+        bool(compat_namespaces) or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI")
+    )
+    if read_material:
         youngs = _read_physics_attr(material_prim, "youngsModulus", compat_namespaces)
         poissons = _read_physics_attr(material_prim, "poissonsRatio", compat_namespaces)
         density_val = _read_physics_attr(material_prim, "density", compat_namespaces)

@@ -1824,6 +1824,14 @@ class TetMesh:
         ``k_lambda``) and density on the returned TetMesh. Material properties
         are set to ``None`` if not present.
 
+        By default the moduli are read only from a material that applies
+        ``PhysicsVolumeDeformableMaterialAPI``. Passing ``compat_namespaces``
+        additionally reads the listed vendor namespaces and lifts that gate, reading
+        moduli off any bound material. Pass
+        ``compat_namespaces=newton.usd.LEGACY_DEFORMABLE_NAMESPACES`` to recover the
+        pre-canonical behavior of reading ``omniphysics:`` / ``physxDeformableBody:``
+        material attributes by default.
+
         Example:
 
             .. code-block:: python

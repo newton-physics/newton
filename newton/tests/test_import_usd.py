@@ -9830,6 +9830,28 @@ def Mesh "JustAMesh" ()
         self.assertAlmostEqual(tm.density, 40.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh_vendor_namespace_legacy_recovery(self):
+        """A vendor-namespaced material needs an explicit ``compat_namespaces`` opt-in.
+
+        The canonical default reads moduli only from a ``physics:`` material that applies
+        ``PhysicsVolumeDeformableMaterialAPI``; ``LEGACY_DEFORMABLE_NAMESPACES`` recovers the
+        pre-canonical behavior of reading vendor-namespaced material attributes off any material.
+        """
+        from pxr import Usd
+
+        stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_vendor_material.usda"))
+        prim = stage.GetPrimAtPath("/World/SoftBody")
+
+        tm_default = usd.get_tetmesh(prim)
+        self.assertIsNone(tm_default.k_mu)
+        self.assertIsNone(tm_default.density)
+
+        tm_legacy = usd.get_tetmesh(prim, compat_namespaces=usd.LEGACY_DEFORMABLE_NAMESPACES)
+        self.assertIsNotNone(tm_legacy.k_mu)
+        self.assertAlmostEqual(tm_legacy.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
+        self.assertAlmostEqual(tm_legacy.density, 40.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_tetmesh_no_material(self):
         """Test that TetMesh without material binding has None material properties."""
         from pxr import Usd
