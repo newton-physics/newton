@@ -1250,19 +1250,63 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertIn("unsupported_reason", attrs)
 
 
-# Authored .usda cable asset (T7): loading it should replace the programmatic
+# Authored .usda cable asset (T7): loading it should reproduce the programmatic
 # cable construction used by the cable examples.
-_CABLE_ASSET = Path(__file__).parent / "assets" / "cable_curve_deformable.usda"
+_CABLE_ASSET_USDA = """#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1.0
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def PhysicsScene "PhysicsScene"
+    {
+    }
+
+    def Material "CableMat" (
+        prepend apiSchemas = ["PhysicsCurvesDeformableMaterialAPI"]
+    )
+    {
+        float physics:thickness = 0.02
+        float physics:stretchStiffness = 2000000
+        float physics:bendStiffness = 50000
+        float physics:density = 1000
+    }
+
+    def BasisCurves "Cable" (
+        prepend apiSchemas = ["PhysicsCurvesDeformableSimAPI", "MaterialBindingAPI"]
+    )
+    {
+        uniform token type = "linear"
+        uniform token wrap = "nonperiodic"
+        int[] curveVertexCounts = [6]
+        point3f[] points = [(0, 0, 1), (0.1, 0, 1), (0.2, 0, 1), (0.3, 0, 1), (0.4, 0, 1), (0.5, 0, 1)]
+        float[] widths = [0.02, 0.02, 0.02, 0.02, 0.02, 0.02]
+        rel material:binding:physics = </World/CableMat>
+    }
+}
+"""
+
+
+def _stage_from_usda(usda: str):
+    """Open an in-memory USD stage from an inline ``.usda`` string."""
+    from pxr import Usd
+
+    stage = Usd.Stage.CreateInMemory()
+    stage.GetRootLayer().ImportFromString(usda)
+    return stage
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableCableAsset(unittest.TestCase):
-    """Round-trip a committed .usda cable asset through the importer and the VBD solver (T7)."""
+    """Round-trip an authored .usda cable asset through the importer and the VBD solver (T7)."""
 
     def test_asset_parses_to_cable(self):
-        """The committed .usda cable asset imports into rod bodies + cable joints (device-free)."""
+        """The authored .usda cable asset imports into rod bodies + cable joints (device-free)."""
         builder = newton.ModelBuilder()
-        result = builder.add_usd(str(_CABLE_ASSET))
+        result = builder.add_usd(_stage_from_usda(_CABLE_ASSET_USDA))
         bodies, joints = result["path_cable_map"]["/World/Cable"]
         # 6 points -> 5 segments -> 5 bodies, 4 cable joints (open chain).
         self.assertEqual(len(bodies), 5)
@@ -1275,7 +1319,7 @@ class TestUSDDeformableCableAsset(unittest.TestCase):
 
         with wp.ScopedDevice(device):
             builder = newton.ModelBuilder()
-            _bodies, joints = builder.add_usd(str(_CABLE_ASSET))["path_cable_map"]["/World/Cable"]
+            _bodies, joints = builder.add_usd(_stage_from_usda(_CABLE_ASSET_USDA))["path_cable_map"]["/World/Cable"]
             builder.add_articulation(joints)  # imported cables are unwrapped; the caller wraps them.
             builder.color()  # SolverVBD requires a coloring before finalize.
             model = builder.finalize()

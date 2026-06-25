@@ -9839,7 +9839,33 @@ def Mesh "JustAMesh" ()
         """
         from pxr import Usd
 
-        stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_vendor_material.usda"))
+        # Legacy-style asset: a vendor-namespaced material with no PhysicsVolumeDeformableMaterialAPI.
+        usda = """#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+def Xform "World" ()
+{
+    def TetMesh "SoftBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/PhysicsMaterial>
+    }
+    def Material "PhysicsMaterial"
+    {
+        float omniphysics:density = 40
+        float omniphysics:youngsModulus = 300000
+        float omniphysics:poissonsRatio = 0.3
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usda)
         prim = stage.GetPrimAtPath("/World/SoftBody")
 
         tm_default = usd.get_tetmesh(prim)
