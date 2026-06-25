@@ -14,6 +14,14 @@ and constraint parameters, so that :attr:`~Model.shape_material_ke` and
 :ref:`Simulation Tuning` for the diagnostic workflow and
 :ref:`Tuning Solver Reference` for the full knob list.
 
+.. important::
+
+   The specific values, mode names, and formulas on this page reflect the code at
+   a point in time and can drift. Treat them as starting points and verify any you
+   rely on against the cited source (for example
+   :class:`~newton.solvers.SolverMuJoCo` and its kernels). See
+   :ref:`Simulation Tuning` for the full guidance.
+
 Constraint Mental Model
 -----------------------
 
@@ -230,7 +238,8 @@ geometry, joint, and controller problems early.*
 - Start with conservative contact: low ``ke``. The default ``solimp``
   ``(0.9, 0.95, 0.001, 0.5, 2.0)`` is already firm — high plateau impedance
   (``dmax = 0.95``) with a narrow transition (``width = 0.001``) — so soften via
-  ``ke``/``kd`` rather than assuming the default impedance is loose.
+  ``ke``/``kd`` rather than assuming the default impedance is loose. (Confirm the
+  current default in :class:`~newton.solvers.SolverMuJoCo` before relying on it.)
 - Inspect initial contacts — overlapping geometries at spawn cause immediate
   instability.
 - Check joint parameters: ranges, armature, and damping; flag joints with zero

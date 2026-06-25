@@ -16,6 +16,15 @@ This page is intentionally operational: it is written as a checklist for humans
 and agents. Parameter names are Newton parameter names unless explicitly marked
 as external references.
 
+.. important::
+
+   Rely on this guide for the durable reasoning — the constraint model, the
+   "diagnose before tuning" workflow, and the principle that harder is not always
+   more stable. For **specifics** — default values, enum and mode names, which
+   knobs a solver exposes, APIs, and exact behavior — the code is the source of
+   truth. These evolve with the codebase, so verify the ones you rely on against
+   the cited source (and the solver's own constructor or config) before acting.
+
 .. toctree::
    :maxdepth: 1
 

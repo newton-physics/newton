@@ -13,6 +13,13 @@ concepts followed by the supported knobs per Newton solver, and
 order-of-magnitude sanity checks. Start from the :ref:`Simulation Tuning`
 landing page for the diagnostic workflow.
 
+.. important::
+
+   The knob tables below are last-known, not a contract. Each solver's own
+   constructor or ``Config`` is the source of truth for which options exist;
+   confirm an option against it before using it. See :ref:`Simulation Tuning` for
+   the full "verify specifics against code" guidance.
+
 Shared Concepts, Not Shared Options
 -----------------------------------
 
