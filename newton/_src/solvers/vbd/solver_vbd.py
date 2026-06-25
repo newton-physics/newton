@@ -86,9 +86,6 @@ from .tri_mesh_collision import (
 __all__ = ["SolverVBD"]
 
 
-_vbd_damping_migration_warned = {"value": False}
-
-
 class SolverVBD(SolverBase):
     """An implicit solver using Vertex Block Descent (VBD) for particles and Augmented VBD (AVBD) for rigid bodies.
 
@@ -249,7 +246,6 @@ class SolverVBD(SolverBase):
         rigid_joint_angular_k_start: float = 1.0e1,  # Angular penalty seed (used when angular beta > 0)
         rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-cable angular joint constraints
-        rigid_enable_dahl_friction: bool | None = None,  # Deprecated: controlled by model attributes
     ):
         """
         Args:
@@ -357,8 +353,6 @@ class SolverVBD(SolverBase):
                 Negative values are clamped to 0.
             rigid_joint_angular_kd: Damping coefficient for non-cable angular joint constraints [N·m·s/rad].
                 Negative values are clamped to 0.
-            rigid_enable_dahl_friction: Deprecated and ignored. Dahl friction is controlled
-                by ``model.vbd.dahl_eps_max`` / ``model.vbd.dahl_tau``.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
@@ -376,32 +370,6 @@ class SolverVBD(SolverBase):
               enabled only when positive Dahl parameters are authored.
 
         """
-        if rigid_enable_dahl_friction is not None:
-            warnings.warn(
-                "rigid_enable_dahl_friction is deprecated and ignored. "
-                "Dahl friction is now controlled by model attributes "
-                "(model.vbd.dahl_eps_max / model.vbd.dahl_tau). "
-                "It is enabled only where both values are positive.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
-        # TODO: Remove this temporary warning after the Newton 1.4 migration window.
-        if (
-            model.particle_count > 0 or (model.body_count > 0 and not integrate_with_external_rigid_solver)
-        ) and not _vbd_damping_migration_warned["value"]:
-            warnings.warn(
-                "SolverVBD damping behavior changed in Newton 1.4.0:\n"
-                "  - Damping coefficients are interpreted as absolute physical coefficients, "
-                "not stiffness-relative multipliers.\n"
-                "To preserve previous behavior, compute the new damping coefficient as "
-                "kd_new = kd_old * k, where kd_old is the old relative damping value and k is "
-                "the stiffness or penalty coefficient for the same constraint, contact, or material.",
-                UserWarning,
-                stacklevel=2,
-            )
-            _vbd_damping_migration_warned["value"] = True
-
         if rigid_avbd_beta < 0:
             raise ValueError(f"rigid_avbd_beta must be >= 0, got {rigid_avbd_beta}")
         rigid_avbd_linear_beta = rigid_avbd_linear_beta if rigid_avbd_linear_beta is not None else rigid_avbd_beta

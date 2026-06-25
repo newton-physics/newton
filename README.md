@@ -137,14 +137,20 @@ If you run the examples from a source checkout with uv, use
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_plotting.jpg" alt="Plotting">
       </a>
     </td>
-    <td></td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_dzhanibekov.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_dzhanibekov.jpg" alt="Dzhanibekov">
+      </a>
+    </td>
     <td></td>
   </tr>
   <tr>
     <td align="center" width="33%">
       <code>python -m newton.examples basic_plotting</code>
     </td>
-    <td></td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_dzhanibekov</code>
+    </td>
     <td></td>
   </tr>
   <tr>
