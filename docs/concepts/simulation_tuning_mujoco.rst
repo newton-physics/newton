@@ -316,3 +316,9 @@ jitter; drives behave as intended.*
   limit jitter usually requires raising ``kd`` on the limit, not on the contact.
 - Clip controller targets to the joint range; drives that demand positions beyond
   the limits fight the limit constraint and destabilize the joint.
+
+Further Reading
+---------------
+
+- `MuJoCo Modeling: Solver Parameters <https://mujoco.readthedocs.io/en/stable/modeling.html#solver-parameters>`__
+- `MuJoCo Modeling: Solver Settings <https://mujoco.readthedocs.io/en/stable/modeling.html#solver-settings>`__

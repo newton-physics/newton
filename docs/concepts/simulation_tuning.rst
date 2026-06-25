@@ -26,7 +26,7 @@ as external references.
    the cited source (and the solver's own constructor or config) before acting.
 
 .. toctree::
-   :maxdepth: 1
+   :hidden:
 
    simulation_tuning_solvers
    simulation_tuning_mujoco
@@ -158,33 +158,3 @@ Going Deeper
   math.
 - :ref:`Tuning MuJoCo` — the MuJoCo-Warp constraint model, ``ke``/``kd`` to
   ``solref``/``solimp`` mapping, and task templates.
-
-Agent Checklist
----------------
-
-When tuning a scene, follow this order and verification checklist:
-
-1. Classify the symptom (initialization/geometry, control, model, capacity, or
-   contact/solver — see "Diagnose Before Tuning" above).
-2. Identify the active solver class and confirm each parameter you plan to change
-   is actually supported by it — check the "Joint feature support" table in
-   ``docs/api/newton_solvers.rst``. Do not copy option names across solvers or
-   from external MuJoCo/Omniverse docs.
-3. Record ``dt``, substeps, contact-refresh cadence, solver parameters, contact
-   materials, and drive gains before changing anything.
-4. Reproduce the symptom in a minimal scene.
-5. Change one category at a time, in the tuning order above, applying the
-   acceptance procedure before keeping a change.
-6. Keep the final recommendation solver-specific.
-
-Agents using the Newton skill harness can invoke the ``simulation-tuning`` skill,
-which packages this checklist; it is an optional helper, not the canonical
-source — this guide is.
-
-Further Reading
----------------
-
-- `Omniverse Articulation and Robot Simulation Stability Guide <https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.3/dev_guide/guides/articulation_stability_guide.html>`__
-- `Omniverse Robotiq Gripper Joint Parameter Tuning Example <https://docs.omniverse.nvidia.com/kit/docs/omni_physics/107.3/dev_guide/guides/gripper_tuning_example.html>`__
-- `MuJoCo Modeling: Solver Parameters <https://mujoco.readthedocs.io/en/stable/modeling.html#solver-parameters>`__
-- `MuJoCo Modeling: Solver Settings <https://mujoco.readthedocs.io/en/stable/modeling.html#solver-settings>`__
