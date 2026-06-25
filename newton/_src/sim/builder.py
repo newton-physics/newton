@@ -259,27 +259,32 @@ class ModelBuilder:
     @dataclass
     class ShapeConfig:
         """
-        Represents the properties of a collision shape used in simulation.
+        Represents per-shape collision, material, mass, and SDF settings.
+
+        These fields are general model data, and not every field is respected
+        or needed by every solver. Solvers and contact backends may use,
+        combine, or ignore individual fields according to their formulation;
+        see solver-specific documentation for behavior.
         """
 
         density: float = 1000.0
         """The density of the shape material."""
         ke: float = 2.5e3
-        """The contact elastic stiffness [N/m]. Used by SemiImplicit, Featherstone, MuJoCo, VBD."""
+        """The normal contact stiffness [N/m]."""
         kd: float = 100.0
-        """The contact damping coefficient [N·s/m]. Used by SemiImplicit, Featherstone, MuJoCo, VBD."""
+        """The normal contact damping coefficient [N·s/m]."""
         kf: float = 1000.0
-        """The friction damping coefficient. Used by SemiImplicit, Featherstone."""
+        """The tangential friction response gain [N·s/m]."""
         ka: float = 0.0
-        """The contact adhesion distance. Used by SemiImplicit, Featherstone."""
+        """The contact adhesion distance [m]."""
         mu: float = 1.0
-        """The coefficient of friction. Used by all solvers."""
+        """The coefficient of friction."""
         restitution: float = 0.0
-        """The coefficient of restitution. Used by XPBD. To take effect, enable restitution in solver constructor via ``enable_restitution=True``."""
+        """The coefficient of restitution. Some solvers require enabling restitution explicitly."""
         mu_torsional: float = 0.005
-        """The coefficient of torsional friction (resistance to spinning at contact point). Used by XPBD, MuJoCo."""
+        """The coefficient of torsional friction (resistance to spinning at contact point)."""
         mu_rolling: float = 0.0001
-        """The coefficient of rolling friction (resistance to rolling motion). Used by XPBD, MuJoCo."""
+        """The coefficient of rolling friction (resistance to rolling motion)."""
         margin: float = 0.0
         """Outward offset from the shape's surface [m] for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,
@@ -325,11 +330,12 @@ class ModelBuilder:
             This flag will be automatically set to False for planes and heightfields in :meth:`ModelBuilder.add_shape`.
         """
         kh: float = 1.0e10
-        """Contact stiffness coefficient for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when is_hydroelastic is True.
+        """Hydroelastic contact stiffness coefficient [N/m^3].
 
         .. note::
-            For MuJoCo, stiffness values will internally be scaled by masses.
-            Users should choose kh to match their desired force-to-penetration ratio.
+            Solvers may scale or otherwise interpret this coefficient according
+            to their contact model. Choose kh to match the desired
+            force-to-penetration ratio.
         """
         sdf_padding: float | None = None
         """SDF AABB padding [m] for primitive texture SDFs. Falls back to
@@ -968,7 +974,7 @@ class ModelBuilder:
         self.shape_material_kd: list[float] = []
         """Contact damping values accumulated for :attr:`Model.shape_material_kd`."""
         self.shape_material_kf: list[float] = []
-        """Friction stiffness values accumulated for :attr:`Model.shape_material_kf`."""
+        """Tangential friction response gains accumulated for :attr:`Model.shape_material_kf`."""
         self.shape_material_ka: list[float] = []
         """Adhesion distances [m] accumulated for :attr:`Model.shape_material_ka`."""
         self.shape_material_mu: list[float] = []

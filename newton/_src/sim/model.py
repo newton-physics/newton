@@ -258,7 +258,7 @@ class Model:
         self.shape_material_kd: wp.array[wp.float32] | None = None
         """Shape contact damping [N·s/m], shape [shape_count], float."""
         self.shape_material_kf: wp.array[wp.float32] | None = None
-        """Shape contact friction stiffness [N·s/m], shape [shape_count], float."""
+        """Shape tangential friction response gain [N·s/m], shape [shape_count], float."""
         self.shape_material_ka: wp.array[wp.float32] | None = None
         """Shape contact adhesion distance [m], shape [shape_count], float."""
         self.shape_material_mu: wp.array[wp.float32] | None = None
