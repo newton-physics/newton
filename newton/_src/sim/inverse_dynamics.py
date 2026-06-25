@@ -456,15 +456,9 @@ def eval_inverse_dynamics(
     ``state.body_q``) before this function.
 
     Note:
-        The underlying algorithms (RNEA for ``g(q)`` / ``C(q, q_dot)*q_dot``
-        and a Jacobian-product mass matrix) traverse only the joint
-        spanning tree (``Model.joint_parent`` / ``Model.joint_ancestor``).
-        Closed kinematic loops expressed via equality constraints
-        (``EqType.CONNECT`` / ``EqType.WELD`` / ``EqType.JOINT``) are
-        ignored — the returned ``M(q)``, ``g(q)``, and
-        ``C(q, q_dot)*q_dot`` are those of the tree-only system,
-        without the constraint-Jacobian contribution required to model
-        the constrained dynamics.
+        Inverse dynamics considers only the kinematic tree. As a consequence,
+        loop-closure joints (``EqType.CONNECT``, ``EqType.WELD``, ``EqType.JOINT``)
+        play no role in the inverse dynamics evaluation.
 
     Note:
         A D6 joint with more than one angular DOF uses a stacked
@@ -473,8 +467,8 @@ def eval_inverse_dynamics(
         by ``q_0``, and so on) but an independent-axis sum for its
         angular velocity (``ω = sum_i axis_i * qd_i`` using the raw
         body-frame axes). These two models are not time-derivatives
-        of each other if any angular ``joint_q`` is non-zero, so
-        the ``tau`` produced for such a joint cannot be round-tripped
+        of each other if any angular ``joint_q`` is non-zero.
+        The ``tau`` produced for such a joint cannot be round-tripped
         through any forward-dynamics integrator that advances
         ``joint_q`` from ``joint_qd``. D6 joints with at most one
         angular axis are unaffected.
