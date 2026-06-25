@@ -952,6 +952,51 @@ class TestUSDDeformableCable(unittest.TestCase):
             model = builder.finalize()
             self.assertEqual(model.body_count, 5)
 
+    def test_ignored_curve_to_curve_junction_does_not_weld(self):
+        """An ``ignore_paths`` junction must not alter topology: the curves stay independent.
+
+        Without honoring ``ignore_paths`` in the graph pre-pass, an ignored junction would
+        still weld its curves into a pre-wrapped rod graph (and silently vanish from the
+        attachment maps).
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "ignored_junction.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            trunk_pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            branch_pts = [(0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.1, 0.2, 1.0)]
+            _add_cable_curve(stage, "/World/Trunk", trunk_pts)
+            _add_cable_curve(stage, "/World/Branch", branch_pts)
+            _add_physics_attachment(
+                stage,
+                "/World/Junction",
+                src0="/World/Branch",
+                src1="/World/Trunk",
+                type0="point",
+                type1="point",
+                indices0=[0],
+                indices1=[1],
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path), ignore_paths=["/World/Junction"])
+
+            # Both curves still import, but as independent single cables (not a welded graph):
+            # single cables expose their cable joints for the caller to wrap, so joints are non-empty.
+            trunk_bodies, trunk_joints = result["path_cable_map"]["/World/Trunk"]
+            _branch_bodies, branch_joints = result["path_cable_map"]["/World/Branch"]
+            self.assertEqual(len(trunk_bodies), 3)
+            self.assertNotEqual(trunk_joints, [], "an ignored junction must leave the cable unwelded")
+            self.assertNotEqual(branch_joints, [], "an ignored junction must leave the cable unwelded")
+            self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])
+            # The ignored junction is consumed by nothing: it is absent from the attachment maps.
+            self.assertNotIn("/World/Junction", result["path_attachment_map"])
+            self.assertNotIn("/World/Junction", result["path_attachment_attrs"])
+
     def test_disabled_physics_attachment_is_recorded_but_not_imported(self):
         """attachmentEnabled=false preserves attrs but creates no joint."""
         from pxr import Usd, UsdGeom, UsdPhysics

@@ -46,6 +46,7 @@ from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
 from .cable import create_cable_stiffness_from_elastic_moduli
+from .import_usd_deformable import CurveDeformableRecord, is_ignored_path
 from .import_utils import should_show_collider
 
 logger = logging.getLogger("newton")
@@ -3820,7 +3821,7 @@ def parse_usd(
             # Per-instance proxies are imported via TraverseInstanceProxies above; USD does
             # not surface prototype masters under a scene-root traversal, so no prototype
             # filter is needed (a non-rendered template is authored as a class/inactive prim).
-            if any(re.match(pattern, path) for pattern in ignore_paths):
+            if is_ignored_path(path, ignore_paths):
                 continue
 
             is_volume_deformable = (
@@ -3943,14 +3944,14 @@ def parse_usd(
         # Collect single-curve curve deformables eligible for graph welding. Junctions reference a
         # whole BasisCurves prim (not an individual curve within it), so a multi-curve prim is left
         # to the per-curve pass.
-        curve_recs: dict[str, dict] = {}
+        curve_recs: dict[str, CurveDeformableRecord] = {}
         for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
             if not prim.IsA(UsdGeom.BasisCurves):
                 continue
             if not usd.has_applied_api_schema(prim, "PhysicsCurvesDeformableSimAPI"):
                 continue
             path = str(prim.GetPath())
-            if any(re.match(pattern, path) for pattern in ignore_paths):
+            if is_ignored_path(path, ignore_paths):
                 continue
             curves = UsdGeom.BasisCurves(prim)
             if curves.GetTypeAttr().Get() != UsdGeom.Tokens.linear:
@@ -3971,14 +3972,14 @@ def parse_usd(
             mat = usd._get_curve_deformable_material(prim, deformable_read) or {}
             radius = 0.5 * mat["thickness"] if "thickness" in mat else 0.05 / linear_unit
             density = _resolve_deformable_density(prim, mat.get("density"))
-            curve_recs[path] = {
-                "prim": prim,
-                "positions": positions,
-                "closed": curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic,
-                "material": mat,
-                "radius": radius,
-                "density": density if density is not None else builder.default_shape_cfg.density,
-            }
+            curve_recs[path] = CurveDeformableRecord(
+                prim=prim,
+                positions=positions,
+                closed=curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic,
+                material=mat,
+                radius=radius,
+                density=density if density is not None else builder.default_shape_cfg.density,
+            )
 
         if not curve_recs:
             return consumed_curves, consumed_attachments
@@ -4000,6 +4001,9 @@ def parse_usd(
         welds: list[tuple[str, int, str, int]] = []
         for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
             if prim.GetTypeName() != "PhysicsAttachment":
+                continue
+            # An ignored junction must not alter topology; leave its curves to the per-curve pass.
+            if is_ignored_path(str(prim.GetPath()), ignore_paths):
                 continue
             s0 = prim.GetRelationship("physics:src0").GetTargets()
             s1 = prim.GetRelationship("physics:src1").GetTargets()
@@ -4049,7 +4053,7 @@ def parse_usd(
                     node_parent[rb] = ra
 
             for key in comp_paths:
-                for i in range(len(curve_recs[key]["positions"])):
+                for i in range(len(curve_recs[key].positions)):
                     node_find((key, i))
             for s0, i0, s1, i1 in comp_welds:
                 node_union((s0, i0), (s1, i1))
@@ -4062,16 +4066,16 @@ def parse_usd(
                 if root not in node_id:
                     node_id[root] = len(node_positions)
                     rk, ri = root
-                    node_positions.append(curve_recs[rk]["positions"][ri])
+                    node_positions.append(curve_recs[rk].positions[ri])
                 return node_id[root]
 
             edges: list[tuple[int, int]] = []
             edge_owner: list[tuple[str, int]] = []  # (curve path, local segment index)
             for key in comp_paths:
                 rec = curve_recs[key]
-                n = len(rec["positions"])
+                n = len(rec.positions)
                 local_edges = [(i, i + 1) for i in range(n - 1)]
-                if rec["closed"]:
+                if rec.closed:
                     local_edges.append((n - 1, 0))
                 for seg, (u, v) in enumerate(local_edges):
                     gu, gv = global_node((key, u)), global_node((key, v))
@@ -4084,16 +4088,16 @@ def parse_usd(
                 return
 
             rep = curve_recs[comp_paths[0]]
-            radius = rep["radius"]
+            radius = rep.radius
             seg_len = sum(float(wp.length(node_positions[v] - node_positions[u])) for u, v in edges) / len(edges)
-            mat = rep["material"]
+            mat = rep.material
             stretch = bend = None
             if seg_len > 0.0:
                 if "stretchStiffness" in mat:
                     stretch = create_cable_stiffness_from_elastic_moduli(mat["stretchStiffness"], radius, seg_len)[0]
                 if "bendStiffness" in mat:
                     bend = create_cable_stiffness_from_elastic_moduli(mat["bendStiffness"], radius, seg_len)[1]
-            cfg = replace(builder.default_shape_cfg, density=rep["density"])
+            cfg = replace(builder.default_shape_cfg, density=rep.density)
             # Unlike single cables, the graph junction spanning tree is intrinsic topology, not a
             # caller choice, and only a tree (not the all-incident-edges joint set produced when
             # unwrapped) is articulation-safe. So the importer wraps each component into its own
@@ -4122,11 +4126,11 @@ def parse_usd(
 
             for key in comp_paths:
                 rec = curve_recs[key]
-                n = len(rec["positions"])
+                n = len(rec.positions)
                 segs = per_prim_segments.get(key, {})
                 anchors: dict[int, list[tuple[int, wp.vec3]]] = {}
                 for pi in range(n):
-                    if rec["closed"]:
+                    if rec.closed:
                         incident = (((pi - 1) % n, "end"), (pi % n, "start"))
                     elif pi == 0:
                         incident = ((0, "start"),)
@@ -4145,13 +4149,13 @@ def parse_usd(
                 # empty: callers using the "if joints: add_articulation(joints)" pattern skip them.
                 path_cable_map[key] = (per_prim_bodies.get(key, []), [])
                 path_cable_attrs[key] = {
-                    "material": dict(rec["material"]),
-                    "resolved_density": rec["density"],
-                    "closed": rec["closed"],
+                    "material": dict(rec.material),
+                    "resolved_density": rec.density,
+                    "closed": rec.closed,
                     "graph_component": cid,
                 }
                 key_bodies = per_prim_bodies.get(key, [])
-                _apply_cable_masses(rec["prim"], key_bodies, [(0, n, key_bodies)], rec["closed"])
+                _apply_cable_masses(rec.prim, key_bodies, [(0, n, key_bodies)], rec.closed)
                 consumed_curves.add(key)
             if verbose:
                 print(f"Added cable graph {cid} with {len(body_ids)} segments across {len(comp_paths)} curves.")
@@ -4180,7 +4184,7 @@ def parse_usd(
             # Per-instance proxies are imported via TraverseInstanceProxies above; USD does
             # not surface prototype masters under a scene-root traversal, so no prototype
             # filter is needed (a non-rendered template is authored as a class/inactive prim).
-            if any(re.match(pattern, path) for pattern in ignore_paths):
+            if is_ignored_path(path, ignore_paths):
                 continue
 
             curves = UsdGeom.BasisCurves(prim)
@@ -4433,7 +4437,7 @@ def parse_usd(
             # Per-instance proxies are imported via TraverseInstanceProxies above; USD does
             # not surface prototype masters under a scene-root traversal, so no prototype
             # filter is needed (a non-rendered template is authored as a class/inactive prim).
-            if any(re.match(pattern, path) for pattern in ignore_paths):
+            if is_ignored_path(path, ignore_paths):
                 continue
 
             mesh = UsdGeom.Mesh(prim)
@@ -4650,7 +4654,7 @@ def parse_usd(
                 continue
 
             path = str(prim.GetPath())
-            if any(re.match(pattern, path) for pattern in ignore_paths):
+            if is_ignored_path(path, ignore_paths):
                 continue
             if path in consumed_junction_attachment_paths:
                 continue  # already consumed as rod-graph topology (curve-to-curve junction)
