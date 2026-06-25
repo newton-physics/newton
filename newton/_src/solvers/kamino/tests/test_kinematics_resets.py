@@ -20,6 +20,12 @@ from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneo
 from newton._src.solvers.kamino._src.solvers import ForwardKinematicsSolver
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.tests import setup_tests, test_context
+from newton._src.solvers.kamino.tests.utils.sampling import (
+    sample_actuator_coords,
+    sample_actuator_velocities,
+    sample_base_state,
+    sample_world_mask,
+)
 
 ###
 # Utils
@@ -270,7 +276,7 @@ def run_set_floating_base_check(
 
 
 def setup_test_fourbar_model(
-    base_joint: bool, num_worlds: int, rng: np.random._generator.Generator, device: wp.DeviceLike
+    base_joint: bool, num_worlds: int, rng: np.random.Generator, device: wp.DeviceLike
 ) -> ModelKamino:
     """Helper setting up a floating-base actuated four-bar model, with a base joint or a base body."""
     build_fn = functools.partial(
@@ -295,43 +301,33 @@ def setup_test_fourbar_model(
     return model
 
 
-def sample_world_mask(num_worlds: int, rng: np.random._generator.Generator, device: wp.DeviceLike):
-    """Helper sampling a random non-trivial world mask given the number of worlds."""
-    # Target about 10% of inactive worlds, at least one, and at most num_worlds - 1
-    num_false = min(num_worlds - 1, max(1, round(0.1 * num_worlds)))
-    false_ids = rng.integers(low=0, high=num_worlds, endpoint=False, size=num_false)
-    mask = np.full(num_worlds, True)
-    mask[false_ids] = False  # Note: non-unique false_ids do not affect the min/max number of inactive worlds
-    return wp.array(mask, shape=num_worlds, dtype=wp.bool, device=device)
-
-
-def sample_base_state(num_worlds: int, rng: np.random._generator.Generator, device: wp.DeviceLike):
-    """Helper sampling a random base_q, base_u given the number of worlds."""
-    base_q_np = np.resize(rng.uniform(-1.0, 1.0, 7 * num_worlds), (num_worlds, 7))
-    base_q_np[:, 3:] /= np.linalg.norm(base_q_np[:, 3:], axis=1)[:, None]  # Normalize quaternions
-    base_u_np = np.resize(rng.uniform(-0.0, 1.0, 6 * num_worlds), (num_worlds, 6))
-    with wp.ScopedDevice(device):
-        base_q = wp.from_numpy(base_q_np, dtype=transformf)
-        base_u = wp.from_numpy(base_u_np, dtype=vec6f)
+def sample_base_state_wp(model: ModelKamino, rng: np.random.Generator):
+    base_q_np, base_u_np = sample_base_state(model.size.num_worlds, rng)
+    base_q = wp.from_numpy(base_q_np[0], dtype=transformf, device=model.device)
+    base_u = wp.from_numpy(base_u_np[0], dtype=vec6f, device=model.device)
     return base_q, base_u
 
 
-def set_fourbar_to_random_pose(
+def sample_actuator_state_wp(model: ModelKamino, rng: np.random.Generator):
+    actuator_q_np = sample_actuator_coords(model, rng)[0]
+    actuator_u_np = sample_actuator_velocities(model, rng)[0]
+    actuator_q = wp.from_numpy(actuator_q_np, dtype=float32, device=model.device)
+    actuator_u = wp.from_numpy(actuator_u_np, dtype=float32, device=model.device)
+    return actuator_q, actuator_u
+
+
+def set_model_to_random_pose(
     test_case: unittest.TestCase,
     model: ModelKamino,
-    rng: np.random._generator.Generator,
+    rng: np.random.Generator,
 ):
     """
-    Helper sampling a random valid pose & velocity for the four-bar model, setting the model
+    Helper sampling a random valid pose & velocity for a model, setting the model
     into this pose with FK, and computing joint data as a post-processing.
     """
     # Sample random pose
-    base_q, base_u = sample_base_state(model.size.num_worlds, rng, model.device)
-    actuator_q_np = rng.uniform(-np.degrees(20.0), np.degrees(20.0), model.size.num_worlds)
-    actuator_u_np = rng.uniform(-1.0, 1.0, model.size.num_worlds)
-    with wp.ScopedDevice(model.device):
-        actuator_q = wp.from_numpy(actuator_q_np, dtype=float32)
-        actuator_u = wp.from_numpy(actuator_u_np, dtype=float32)
+    base_q, base_u = sample_base_state_wp(model, rng)
+    actuator_q, actuator_u = sample_actuator_state_wp(model, rng)
 
     # Set the model into generated non-trivial pose using FK
     fk_solver = ForwardKinematicsSolver(model=model)
@@ -393,11 +389,11 @@ class TestSetFloatingBase(unittest.TestCase):
         model = setup_test_fourbar_model(base_joint=True, num_worlds=num_worlds, rng=rng, device=self.default_device)
 
         # Set model into non-trivial pose
-        data = set_fourbar_to_random_pose(self, model, rng)
+        data = set_model_to_random_pose(self, model, rng)
 
         # Sample non-trivial world mask and base state
-        world_mask = sample_world_mask(num_worlds, rng, self.default_device)
-        base_q, base_u = sample_base_state(num_worlds, rng, self.default_device)
+        world_mask = wp.array(sample_world_mask(num_worlds, rng)[0], dtype=bool, device=self.default_device)
+        base_q, base_u = sample_base_state_wp(model, rng)
 
         # Check validity of set_floating_base for all options combinations
         run_set_floating_base_check(model, base_q, base_u, world_mask, data)
@@ -418,11 +414,11 @@ class TestSetFloatingBase(unittest.TestCase):
         model = setup_test_fourbar_model(base_joint=False, num_worlds=num_worlds, rng=rng, device=self.default_device)
 
         # Set model into non-trivial pose
-        data = set_fourbar_to_random_pose(self, model, rng)
+        data = set_model_to_random_pose(self, model, rng)
 
         # Sample non-trivial world mask and base state
-        world_mask = sample_world_mask(num_worlds, rng, self.default_device)
-        base_q, base_u = sample_base_state(num_worlds, rng, self.default_device)
+        world_mask = wp.array(sample_world_mask(num_worlds, rng)[0], dtype=bool, device=self.default_device)
+        base_q, base_u = sample_base_state_wp(model, rng)
 
         # Check validity of set_floating_base for all options combinations
         run_set_floating_base_check(model, base_q, base_u, world_mask, data)
@@ -442,11 +438,11 @@ class TestSetFloatingBase(unittest.TestCase):
         model = setup_test_fourbar_model(base_joint=True, num_worlds=num_worlds, rng=rng, device=self.default_device)
 
         # Set model into non-trivial pose
-        data = set_fourbar_to_random_pose(self, model, rng)
+        data = set_model_to_random_pose(self, model, rng)
 
         # Sample non-trivial world mask and base state
-        world_mask = sample_world_mask(num_worlds, rng, self.default_device)
-        base_q, base_u = sample_base_state(num_worlds, rng, self.default_device)
+        world_mask = wp.array(sample_world_mask(num_worlds, rng)[0], dtype=bool, device=self.default_device)
+        base_q, base_u = sample_base_state_wp(model, rng)
 
         # Check that a call to set_floating_base() with relative_base_u enabled is equivalent
         # to a first call changing only base_u, followed by a second call changing only base_q
@@ -496,11 +492,11 @@ class TestSetFloatingBase(unittest.TestCase):
         model = setup_test_fourbar_model(base_joint=False, num_worlds=num_worlds, rng=rng, device=self.default_device)
 
         # Set model into non-trivial pose
-        data = set_fourbar_to_random_pose(self, model, rng)
+        data = set_model_to_random_pose(self, model, rng)
 
         # Sample non-trivial world mask and base state
-        world_mask = sample_world_mask(num_worlds, rng, self.default_device)
-        base_q, base_u = sample_base_state(num_worlds, rng, self.default_device)
+        world_mask = wp.array(sample_world_mask(num_worlds, rng)[0], dtype=bool, device=self.default_device)
+        base_q, base_u = sample_base_state_wp(model, rng)
 
         # Check that a call to set_floating_base() with relative_base_u enabled is equivalent
         # to a first call changing only base_u, followed by a second call changing only base_q
