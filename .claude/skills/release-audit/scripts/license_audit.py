@@ -7,6 +7,13 @@ Compares direct requirements, uv.lock package variants, project license
 metadata, and in-tree license notice files between two git refs. Stdlib-only.
 Network use is limited to optional PyPI JSON metadata lookups for newly added
 packages and changed locked package versions.
+
+The stdlib-only implementation is intentional: this helper runs before releases
+across arbitrary git refs without bootstrapping the target environment or adding
+release-only dependencies. Existing tools such as pip-licenses, cyclonedx-py,
+pip-audit, and syft remain useful for broader inventory work, but they do not
+replace this script's deterministic git-ref diff over pyproject metadata,
+uv.lock, declared license-file pathspecs, and version-specific PyPI JSON.
 """
 
 from __future__ import annotations
@@ -30,6 +37,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on Python < 3.1
 
 _REQ_NAME_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)")
 _PYPI_REGISTRY = "https://pypi.org/simple"
+_SKIP_PYPI_LICENSE = "not checked (--skip-pypi)"
+_LICENSE_REVIEW_RE = re.compile(
+    r"(^|[^a-z0-9])(proprietary|agpl|lgpl|gpl|commercial|unknown)([^a-z0-9]|$)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -55,6 +67,7 @@ class LockedPackage:
     normalized_name: str
     version: str | None
     registry: str | None
+    source: str | None
     markers: tuple[str, ...]
 
 
@@ -73,6 +86,12 @@ def _git(repo: Path, *args: str, required: bool = True) -> str:
             sys.exit(
                 f"license_audit: git {' '.join(args)} failed in {repo} "
                 f"(exit {result.returncode}): {result.stderr.strip()}"
+            )
+        if result.stderr.strip():
+            print(
+                f"license_audit: optional git {' '.join(args)} unavailable in {repo} "
+                f"(exit {result.returncode}): {result.stderr.strip()}",
+                file=sys.stderr,
             )
         return ""
     return result.stdout
@@ -137,7 +156,7 @@ def _parse_pyproject(text: str) -> ProjectMetadata:
             )
 
     extras = {group.removeprefix("extra:") for group in groups if group.startswith("extra:")}
-    license_files = tuple(str(item) for item in project.get("license-files", []))
+    license_files = tuple(str(item) for item in project.get("license-files") or [])
     return ProjectMetadata(
         requirements=requirements,
         extras=extras,
@@ -148,6 +167,17 @@ def _parse_pyproject(text: str) -> ProjectMetadata:
 
 def _requirements_by_key(requirements: list[Requirement]) -> dict[tuple[str, str], Requirement]:
     return {(req.group, req.normalized_name): req for req in requirements}
+
+
+def _source_description(source: object) -> str | None:
+    if not isinstance(source, dict) or not source:
+        return None
+    if registry := source.get("registry"):
+        return f"registry: {registry}"
+    for key in ("git", "path", "directory", "url"):
+        if key in source:
+            return f"{key}: {source[key]}"
+    return ", ".join(sorted(str(key) for key in source))
 
 
 def _parse_lock(text: str) -> list[LockedPackage]:
@@ -161,14 +191,18 @@ def _parse_lock(text: str) -> list[LockedPackage]:
             continue
         source = package.get("source", {})
         registry = source.get("registry") if isinstance(source, dict) else None
-        markers = tuple(str(marker) for marker in package.get("resolution-markers", []))
+        markers = []
+        if marker := package.get("marker"):
+            markers.append(str(marker))
+        markers.extend(str(marker) for marker in package.get("resolution-markers", []))
         packages.append(
             LockedPackage(
                 name=name,
                 normalized_name=_normalize_name(name),
                 version=str(package["version"]) if package.get("version") is not None else None,
                 registry=registry,
-                markers=markers,
+                source=_source_description(source),
+                markers=tuple(dict.fromkeys(markers)),
             )
         )
     return packages
@@ -228,12 +262,15 @@ def _locked_license(
     timeout: float,
     cache: dict[tuple[str, str | None, str | None], dict[str, str]],
 ) -> dict[str, str]:
-    cache_key = (package.normalized_name, package.version, package.registry)
+    cache_key = (package.normalized_name, package.version, package.registry or package.source)
     if cache_key in cache:
         return cache[cache_key]
     if skip_pypi:
-        metadata = {"license": "not checked (--skip-pypi)", "url": ""}
-    elif package.registry and package.registry.rstrip("/") != _PYPI_REGISTRY:
+        metadata = {"license": _SKIP_PYPI_LICENSE, "url": ""}
+    elif package.registry is None:
+        source = package.source or "source unavailable"
+        metadata = {"license": f"not checked (non-PyPI source: {source})", "url": ""}
+    elif package.registry.rstrip("/") != _PYPI_REGISTRY:
         metadata = {"license": f"not checked (non-PyPI registry: {package.registry})", "url": package.registry}
     else:
         metadata = _fetch_pypi_license(package.name, package.version, timeout)
@@ -252,7 +289,7 @@ def _name_license(
     if cache_key in cache:
         return cache[cache_key]
     if skip_pypi:
-        metadata = {"license": "not checked (--skip-pypi)", "url": ""}
+        metadata = {"license": _SKIP_PYPI_LICENSE, "url": ""}
     else:
         metadata = _fetch_pypi_license(package_name, None, timeout)
     cache[cache_key] = metadata
@@ -263,12 +300,11 @@ def _license_needs_review(license_value: str) -> bool:
     lowered = license_value.lower()
     if "not checked" in lowered or "not declared" in lowered:
         return True
-    review_tokens = ("proprietary", "gpl", "agpl", "lgpl", "commercial", "unknown")
-    return any(token in lowered for token in review_tokens)
+    return _LICENSE_REVIEW_RE.search(lowered) is not None
 
 
 def _metadata_needs_review(metadata: dict[str, str]) -> bool:
-    return _license_needs_review(metadata["license"])
+    return metadata["license"] != _SKIP_PYPI_LICENSE and _license_needs_review(metadata["license"])
 
 
 def _md(value: object) -> str:
@@ -297,6 +333,14 @@ def _format_markers(package: LockedPackage) -> str:
     if not package.markers:
         return ""
     return "; ".join(package.markers)
+
+
+def _format_source(package: LockedPackage) -> str:
+    return package.registry or package.source or ""
+
+
+def _license_file_pathspecs(base_project: ProjectMetadata, head_project: ProjectMetadata) -> tuple[str, ...]:
+    return tuple(dict.fromkeys([*base_project.license_files, *head_project.license_files]))
 
 
 def _license_summary(
@@ -372,16 +416,11 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
             ]
         )
 
-    license_diff = _git(
-        repo,
-        "diff",
-        "--name-status",
-        f"{base}..{head}",
-        "--",
-        "LICENSE",
-        "LICENSE.md",
-        "newton/licenses",
-        required=False,
+    license_pathspecs = _license_file_pathspecs(base_project, head_project)
+    license_diff = (
+        _git(repo, "diff", "--name-status", f"{base}..{head}", "--", *license_pathspecs, required=False)
+        if license_pathspecs
+        else ""
     )
     license_rows = [line.split("\t", 1) for line in license_diff.splitlines() if line.strip()]
 
@@ -411,11 +450,18 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
             pypi_timeout,
             license_cache,
         )
-        if base_license != head_license and _license_needs_review(head_license):
+        if not skip_pypi and base_license != head_license and _license_needs_review(head_license):
             review_packages.add(name)
 
+    direct_external_names = {
+        req.normalized_name for req in [*base_project.requirements, *head_project.requirements] if _is_external(req)
+    }
+    direct_version_changes = sum(name in direct_external_names for name in changed_version_names)
+    transitive_version_changes = len(changed_version_names) - direct_version_changes
+    license_scope = ", ".join(f"`{path}`" for path in license_pathspecs) or "none declared"
+
     lines = [
-        f"Compared `pyproject.toml`, `uv.lock`, `LICENSE`, `LICENSE.md`, and `newton/licenses/**` between `{base}` and `{head}`.",
+        f"Compared `pyproject.toml`, `uv.lock`, and declared license-file pathspecs between `{base}` and `{head}`.",
         "",
         "### Summary",
         "",
@@ -423,11 +469,15 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
         f"- Added external direct requirement scopes: {len(added_external_reqs)}",
         f"- New resolved package names: {len(added_locked_names)}",
         f"- Removed resolved package names: {len(removed_locked_names)}",
-        f"- Existing resolved package version-set changes: {len(changed_version_names)}",
+        f"- Existing resolved package version-set changes: {len(changed_version_names)} "
+        f"({direct_version_changes} direct, {transitive_version_changes} transitive)",
         f"- Project license metadata changes: {len(project_license_rows)}",
         f"- In-tree license notice file changes: {len(license_rows)}",
+        f"- License notice pathspecs compared: {license_scope}",
     ]
-    if review_packages:
+    if skip_pypi:
+        lines.append("- License metadata needing review: not evaluated (--skip-pypi)")
+    elif review_packages:
         lines.append(f"- License metadata needing review: {', '.join(sorted(review_packages))}")
     else:
         lines.append("- License metadata needing review: none detected")
@@ -479,7 +529,7 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
                     [
                         package.name,
                         package.version or "",
-                        package.registry or "",
+                        _format_source(package),
                         _format_markers(package),
                         metadata["license"],
                         metadata["url"],
@@ -491,7 +541,7 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
                 "### New Resolved Packages",
                 "",
                 _render_table(
-                    ["Package", "Version", "Registry", "Markers", "License metadata", "Evidence"],
+                    ["Package", "Version", "Source", "Markers", "License metadata", "Evidence"],
                     rows,
                 ),
             ]
@@ -531,6 +581,7 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
             rows.append(
                 [
                     head_lock_by_name[name][0].name,
+                    "direct" if name in direct_external_names else "transitive",
                     _format_versions(base_lock_by_name[name]),
                     _format_versions(head_lock_by_name[name]),
                     _license_delta(base_license, head_license),
@@ -542,7 +593,9 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
                 "",
                 "### Existing Resolved Package Version-Set Changes",
                 "",
-                _render_table(["Package", "Base versions", "Head versions", "License metadata", "Evidence"], rows),
+                _render_table(
+                    ["Package", "Scope", "Base versions", "Head versions", "License metadata", "Evidence"], rows
+                ),
             ]
         )
 
@@ -576,13 +629,13 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
         rows = []
         for name in removed_locked_names:
             for package in base_lock_by_name[name]:
-                rows.append([package.name, package.version or "", package.registry or "", _format_markers(package)])
+                rows.append([package.name, package.version or "", _format_source(package), _format_markers(package)])
         lines.extend(
             [
                 "",
                 "### Removed Resolved Packages",
                 "",
-                _render_table(["Package", "Version", "Registry", "Markers"], rows),
+                _render_table(["Package", "Version", "Source", "Markers"], rows),
             ]
         )
 

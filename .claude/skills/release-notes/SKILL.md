@@ -121,15 +121,17 @@ Do not default to a large table. Keep dependency updates high signal:
 Before listing outside contributors, verify they are not in Newton's maintainer
 or project-member groups.
 
-1. Read `newton-governance/CONTRIBUTORS.md` when reachable.
-2. If GitHub access is available, check relevant org teams:
+1. Read `newton-governance/CONTRIBUTORS.md` or the current governance source
+   when reachable. Treat it as the authority for maintainer and project-member
+   membership.
+2. If GitHub access is available and governance points to org teams, query the
+   current team slugs from GitHub rather than relying on a hardcoded list:
    ```bash
-   gh api orgs/newton-physics/teams/maintainers/members --paginate --jq '.[] | .login'
-   gh api orgs/newton-physics/teams/newton-tsc/members --paginate --jq '.[] | .login'
-   gh api orgs/newton-physics/teams/project-members/members --paginate --jq '.[] | .login'
-   gh api orgs/newton-physics/teams/disney-research/members --paginate --jq '.[] | .login'
-   gh api orgs/newton-physics/teams/style3d-research/members --paginate --jq '.[] | .login'
+   gh api orgs/newton-physics/teams --paginate --jq '.[] | [.slug, .name] | @tsv'
+   gh api orgs/newton-physics/teams/<team-slug>/members --paginate --jq '.[] | .login'
    ```
+   Prioritize teams named by governance, or teams whose current names clearly
+   identify maintainers, TSC, project members, or project-member organizations.
 3. Cross-check candidate PR authors with `gh pr view <number> --json author`
    and commit emails. Commit email/company is a hint, not a substitute for the
    team/governance check.

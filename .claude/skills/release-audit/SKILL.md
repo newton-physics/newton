@@ -144,8 +144,19 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
    - Direct requirements in `pyproject.toml`, grouped by runtime and optional extra.
    - Resolved package names, duplicate variants, and version sets in `uv.lock` when present.
    - `project.license` and `project.license-files` metadata in `pyproject.toml`.
-   - In-tree notice files: `LICENSE`, `LICENSE.md`, and `newton/licenses/**`.
-   - Version-specific PyPI license metadata for newly introduced package names and changed locked package versions when network access is available. If metadata lookup fails, keep the helper's "not checked" text and surface that uncertainty rather than filling in a guessed license.
+   - In-tree notice files matched by the `project.license-files` pathspecs declared at the base or head ref.
+   - Version-specific PyPI license metadata for newly introduced package names and changed locked package versions when network access is available. If metadata lookup fails, keep the helper's "not checked" text and surface that uncertainty rather than filling in a guessed license. If the helper was run with `--skip-pypi`, treat package-index metadata as deliberately deferred, not as per-package review failures.
+
+   The helper is intentionally stdlib-only. Do not replace it with a dependency inventory tool during the audit run: Newton avoids new release-only dependencies, and this script needs deterministic comparisons across arbitrary git refs without installing the target environment. External tools such as `pip-licenses`, `cyclonedx-py`, `pip-audit`, or `syft` can supplement a deeper investigation, but they do not replace this git-ref diff over `pyproject.toml`, `uv.lock`, declared license files, and version-specific PyPI metadata.
+
+   Interpretation rules for `dependency_license_audit_md`:
+   - A newly introduced external direct dependency or new resolved package name is license-relevant even when it lives behind an optional extra. Do not dismiss optional dependencies; state the extra or install path that pulls them in.
+   - A new optional extra whose dependencies are all already present is a support/install-surface change, but not a new package-license change.
+   - Existing package version bumps are not new licenses by themselves. The helper separates direct requirement moves from transitive-only churn; only elevate version bumps to release highlights or Behavioral & Support Changes when the package pin or compatibility constraint is user-visible.
+   - In-tree notice-file additions, removals, or modifications under the declared `project.license-files` pathspecs always appear in the dependency/license section. If a notice file is missing for a new bundled asset or vendored component, flag it in CHANGELOG Review Notes.
+   - If the helper reports license metadata as "not checked" due to lookup failure or "not declared" for a new package, keep that wording and mark it as needing release-manager review. Do not infer a license from package authorship or project name.
+   - If the helper reports "not evaluated (--skip-pypi)", say that package-index metadata was deferred and should be checked before final release sign-off. Do not turn that into a per-package review list.
+   - If a new package is proprietary, copyleft, commercial, unknown, not declared, or not checked due to lookup failure, mention that in the release highlights only when users can install it through a published extra or documented workflow.
 
 3. Read `CHANGELOG.md` using the Read tool. Choose the section by mode:
    - **Pre-release / RC**: read `CHANGELOG.md` at HEAD. Locate the `## [Unreleased]` header. Collect all content from that header up to (but not including) the next `## [X.Y.Z]` header.
@@ -307,14 +318,7 @@ From `commit_list_json`:
 
 ### 5c — Dependency and license audit
 
-Use `dependency_license_audit_md` from Phase 2 as the report's `{{DEPENDENCY_LICENSE_AUDIT}}` section. Also apply these interpretation rules:
-
-- A newly introduced external direct dependency or new resolved package name is license-relevant even when it lives behind an optional extra. Do not dismiss optional dependencies; state the extra or install path that pulls them in.
-- A new optional extra whose dependencies are all already present is a support/install-surface change, but not a new package-license change.
-- Existing package version bumps are not new licenses by themselves. Note them in the dependency audit table, but only elevate them to release highlights or Behavioral & Support Changes when the package pin or compatibility constraint is user-visible.
-- In-tree notice-file additions, removals, or modifications (`LICENSE`, `LICENSE.md`, `newton/licenses/**`) always appear in the dependency/license section. If a notice file is missing for a new bundled asset or vendored component, flag it in CHANGELOG Review Notes.
-- If the helper reports license metadata as "not checked" or "not declared" for a new package, keep that wording and mark it as needing release-manager review. Do not infer a license from package authorship or project name.
-- If a new package is proprietary, copyleft, commercial, unknown, not declared, or not checked, mention that in the release highlights only when users can install it through a published extra or documented workflow.
+Use `dependency_license_audit_md` from Phase 2 as the report's `{{DEPENDENCY_LICENSE_AUDIT}}` section. Apply the interpretation rules listed with the helper invocation in Phase 2.
 
 ## Phase 6 — Calibration Notes (retrospective mode only)
 

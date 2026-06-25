@@ -10,7 +10,7 @@ This reference is loaded during Phase 7b of the release-audit skill. It defines 
 - Anomaly banner appears ONLY if any commit has `main_equivalent_sha: null`.
 - **Table of contents** sits immediately after the Release Highlights section (so the front matter reads: counts → bake → highlights → TOC → body). Link every top-level `##` section and every per-symbol / per-topic `###` heading under them.
 - **Behavioral & Support Changes** section: group by topic with short descriptive titles (e.g., "Deterministic contact ordering", "Dependency pins", "Build requirements"). Claude synthesizes the titles from the entry content.
-- **Dependency & License Audit** section: render immediately after Behavioral & Support Changes and before Fixed. Use the `scripts/license_audit.py` output as-is except for global output-style cleanup. Keep uncertainty text such as "not checked" or "not declared"; do not replace it with guessed license metadata.
+- **Dependency & License Audit** section: render immediately after Behavioral & Support Changes and before Fixed. Use the `scripts/license_audit.py` output as-is except for global output-style cleanup. Keep uncertainty text such as "not checked", "not evaluated (--skip-pypi)", or "not declared"; do not replace it with guessed license metadata.
 
 ## Output style — hard constraints on the generated report
 

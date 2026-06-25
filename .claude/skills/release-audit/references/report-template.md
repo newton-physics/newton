@@ -470,9 +470,10 @@ access), deprecates the old names, and adjusts default Gaussian sorting modes.
 
 <!-- Render the markdown emitted by scripts/license_audit.py. This section is
      always present. It compares direct dependencies, resolved lockfile package
-     names, version changes, and in-tree license notice files across the release
-     range. Preserve "not checked" / "not declared" license metadata exactly
-     when package-index lookup was unavailable or inconclusive. -->
+     names, version changes, and declared license-file pathspecs across the
+     release range. Preserve "not checked", "not evaluated (--skip-pypi)", and
+     "not declared" license metadata exactly when package-index lookup was
+     unavailable, deferred, or inconclusive. -->
 
 ---
 
