@@ -149,13 +149,15 @@ formulation.
   :class:`~newton.solvers.SolverVBD`.
 - ``kf`` / ``ka``: :class:`~newton.solvers.SolverFeatherstone` and
   :class:`~newton.solvers.SolverSemiImplicit`.
-- ``restitution``: :class:`~newton.solvers.SolverXPBD` when restitution is
-  enabled, and :class:`~newton.solvers.SolverKamino`.
+- ``restitution``: :class:`~newton.solvers.SolverXPBD` when
+  ``enable_restitution=True``, and :class:`~newton.solvers.SolverKamino`.
 - ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and
   :class:`~newton.solvers.SolverMuJoCo`.
-- ``kh``: consumed by hydroelastic contact generation before the solver step.
-  Any solver that consumes those generated contacts receives the resulting
-  hydroelastic contact data.
+- ``kh``: consumed by hydroelastic contact generation for Newton-generated
+  contacts used by :class:`~newton.solvers.SolverFeatherstone`,
+  :class:`~newton.solvers.SolverSemiImplicit`, and
+  :class:`~newton.solvers.SolverMuJoCo` when ``use_mujoco_contacts=False``. See
+  :ref:`Hydroelastic Contacts`.
 
 .. _Joint feature support:
 

@@ -1640,65 +1640,55 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
 
 .. list-table::
    :header-rows: 1
-   :widths: 10 25 18 9 19 19
+   :widths: 12 34 10 22 22
 
    * - Property
      - Description
-     - Role
      - Default
      - ShapeConfig
      - Model Array
    * - ``mu``
      - Dynamic friction coefficient
-     - Coulomb friction limit
      - 1.0
      - :attr:`~ModelBuilder.ShapeConfig.mu`
      - :attr:`~Model.shape_material_mu`
    * - ``ke``
      - Normal contact stiffness
-     - Normal contact response
      - 2.5e3
      - :attr:`~ModelBuilder.ShapeConfig.ke`
      - :attr:`~Model.shape_material_ke`
    * - ``kd``
      - Normal contact damping
-     - Normal contact response
      - 100.0
      - :attr:`~ModelBuilder.ShapeConfig.kd`
      - :attr:`~Model.shape_material_kd`
    * - ``kf``
      - Tangential friction response gain
-     - Tangential slip resistance
      - 1000.0
      - :attr:`~ModelBuilder.ShapeConfig.kf`
      - :attr:`~Model.shape_material_kf`
    * - ``ka``
      - Adhesion distance
-     - Adhesive contact response
      - 0.0
      - :attr:`~ModelBuilder.ShapeConfig.ka`
      - :attr:`~Model.shape_material_ka`
    * - ``restitution``
      - Bounciness
-     - Restitution response
      - 0.0
      - :attr:`~ModelBuilder.ShapeConfig.restitution`
      - :attr:`~Model.shape_material_restitution`
    * - ``mu_torsional``
      - Resistance to spinning at contact
-     - Torsional friction
      - 0.005
      - :attr:`~ModelBuilder.ShapeConfig.mu_torsional`
      - :attr:`~Model.shape_material_mu_torsional`
    * - ``mu_rolling``
      - Resistance to rolling motion
-     - Rolling friction
      - 0.0001
      - :attr:`~ModelBuilder.ShapeConfig.mu_rolling`
      - :attr:`~Model.shape_material_mu_rolling`
    * - ``kh``
      - Hydroelastic stiffness coefficient
-     - Hydroelastic pressure law
      - 1.0e10
      - :attr:`~ModelBuilder.ShapeConfig.kh`
      - :attr:`~Model.shape_material_kh`
@@ -1707,8 +1697,11 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
    Material properties are generic model data. Solvers and contact backends may
    use, combine, or ignore fields according to their formulation. See the
    :ref:`Contact material support` reference for built-in solver behavior, and
-   external solver documentation for third-party solvers. Some solvers require
-   enabling restitution explicitly before ``restitution`` takes effect.
+   external solver documentation for third-party solvers.
+
+.. note::
+   :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True`` on
+   the solver constructor before ``restitution`` takes effect.
 
 Example:
 
@@ -1719,7 +1712,7 @@ Example:
         mu=0.8,           # High friction
         ke=1.0e6,         # Stiff contact
         kd=1000.0,        # Damping
-        restitution=0.5,  # Bouncy (XPBD only)
+        restitution=0.5,  # Bouncy where supported
     )
 
 .. _USD Collision:

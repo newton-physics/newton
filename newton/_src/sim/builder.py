@@ -280,7 +280,11 @@ class ModelBuilder:
         mu: float = 1.0
         """The coefficient of friction."""
         restitution: float = 0.0
-        """The coefficient of restitution. Some solvers require enabling restitution explicitly."""
+        """The coefficient of restitution.
+
+        :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True``
+        on the solver constructor for this field to take effect.
+        """
         mu_torsional: float = 0.005
         """The coefficient of torsional friction (resistance to spinning at contact point)."""
         mu_rolling: float = 0.0001
@@ -339,6 +343,11 @@ class ModelBuilder:
             not a direct force-to-penetration ratio. Solvers and contact
             backends may scale or otherwise interpret this coefficient
             according to their formulation.
+
+            For :class:`~newton.solvers.SolverMuJoCo`, stiffness values are
+            internally scaled by masses when Newton-generated contacts are
+            passed through the MuJoCo contact path. Tune ``kh`` with that
+            scaling in mind.
         """
         sdf_padding: float | None = None
         """SDF AABB padding [m] for primitive texture SDFs. Falls back to
