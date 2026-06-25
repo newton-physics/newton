@@ -813,6 +813,43 @@ class TestUSDDeformableCable(unittest.TestCase):
             np.testing.assert_allclose(np.array(builder.joint_X_p[j].p), [0.15, 0.0, 1.0], atol=1e-6)
             np.testing.assert_allclose(np.array(builder.joint_X_c[j].p), [0.0, 0.0, 0.0], atol=1e-6)
 
+    def test_physics_attachment_world_anchor_follows_import_xform(self):
+        """A world-target anchor rides the import ``xform`` along with the cable geometry.
+
+        Without transforming the world ``coords1``, the cable bodies move under ``xform`` but
+        the world ball-joint anchor stays in original USD coordinates, pulling the cable off.
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_attachment_world_xform.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
+            _add_physics_attachment(
+                stage,
+                "/World/AttachMid",
+                src0="/World/Cable",
+                type0="segment",
+                indices0=[1],
+                coords0=[(0.5, 0.0, 0.0)],
+                coords1=[(0.15, 0.0, 1.0)],
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path), xform=wp.transform(wp.vec3(10.0, 0.0, 0.0), wp.quat_identity()))
+
+            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            j = result["path_attachment_map"]["/World/AttachMid"][0]
+            self.assertEqual(builder.joint_parent[j], -1)
+            # The cable body and its world anchor both translate by xform's +10 in x.
+            np.testing.assert_allclose(np.array(builder.body_q[bodies[1]].p)[0], 10.15, atol=1e-5)
+            np.testing.assert_allclose(np.array(builder.joint_X_p[j].p), [10.15, 0.0, 1.0], atol=1e-5)
+
     def test_physics_attachment_interior_point_to_rigid_imports_incident_segment_joints(self):
         """A cable point attachment maps an interior point to both incident segment bodies."""
         from pxr import Usd, UsdGeom, UsdPhysics

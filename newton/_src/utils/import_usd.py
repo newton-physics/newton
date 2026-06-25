@@ -4562,7 +4562,10 @@ def parse_usd(
 
     def _attachment_world_point_from_xform(target_path: str, local_point: wp.vec3) -> tuple[int, wp.vec3] | None:
         if target_path in ("", "/"):
-            return -1, local_point
+            # A world target's coords are authored in stage space, so they ride the same
+            # import/up-axis transform applied to the cable geometry (otherwise the anchor
+            # stays in original USD coordinates and yanks a translated cable off-position).
+            return -1, wp.transform_point(incoming_world_xform, local_point)
 
         target_prim = stage.GetPrimAtPath(target_path)
         if not target_prim or not target_prim.IsValid():
