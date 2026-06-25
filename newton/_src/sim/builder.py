@@ -333,9 +333,12 @@ class ModelBuilder:
         """Hydroelastic contact stiffness coefficient [N/m^3].
 
         .. note::
-            Solvers may scale or otherwise interpret this coefficient according
-            to their contact model. Choose kh to match the desired
-            force-to-penetration ratio.
+            The default linear pressure law is
+            ``pressure = -kh * signed_depth``. Effective contact force scales
+            with contact area, so ``kh`` sets a pressure-to-penetration ratio,
+            not a direct force-to-penetration ratio. Solvers and contact
+            backends may scale or otherwise interpret this coefficient
+            according to their formulation.
         """
         sdf_padding: float | None = None
         """SDF AABB padding [m] for primitive texture SDFs. Falls back to
@@ -366,7 +369,7 @@ class ModelBuilder:
                     SDF generation and clears any previous max_resolution setting.
                 is_hydroelastic: Whether to use SDF-based hydroelastic contacts. Both shapes
                     in a pair must have this enabled.
-                kh: Contact stiffness coefficient for hydroelastic collisions.
+                kh: Hydroelastic contact stiffness coefficient.
                 texture_format: Subgrid texture storage format. ``"uint16"``
                     (default) uses 16-bit normalized textures. ``"float32"``
                     uses full-precision. ``"uint8"`` uses 8-bit textures.

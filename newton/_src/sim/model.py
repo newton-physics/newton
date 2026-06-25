@@ -271,7 +271,8 @@ class Model:
         """Shape rolling friction coefficient [dimensionless] (resistance to rolling motion), shape [shape_count], float."""
         self.shape_material_kh: wp.array[wp.float32] | None = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
-        Contact stiffness is computed as ``area * kh``, yielding an effective spring constant [N/m]."""
+        Under the default linear pressure law, contact force scales with
+        contact area, ``kh``, and penetration depth."""
         self.shape_gap: wp.array[wp.float32] | None = None
         """Shape additional contact detection gap [m], shape [shape_count], float."""
 

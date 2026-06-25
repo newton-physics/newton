@@ -1059,7 +1059,9 @@ Shape collision behavior is controlled via :class:`~ModelBuilder.ShapeConfig`:
    * - ``is_hydroelastic``
      - Whether the shape uses SDF-based hydroelastic contacts. Both shapes in a pair must have this enabled. See :ref:`Hydroelastic Contacts`. Default: False.
    * - ``kh``
-     - Hydroelastic contact stiffness coefficient. Contact force scales with effective stiffness, contact area, and penetration depth. Default: 1.0e10.
+     - Hydroelastic contact stiffness coefficient. Under the default linear
+       pressure law, pressure scales with ``kh`` and penetration depth; contact
+       force also scales with contact area. Default: 1.0e10.
 
 .. _margin-gap-semantics:
 
@@ -1696,7 +1698,7 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
      - :attr:`~Model.shape_material_mu_rolling`
    * - ``kh``
      - Hydroelastic stiffness coefficient
-     - Hydroelastic contact response
+     - Hydroelastic pressure law
      - 1.0e10
      - :attr:`~ModelBuilder.ShapeConfig.kh`
      - :attr:`~Model.shape_material_kh`
@@ -1704,7 +1706,7 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
 .. note::
    Material properties are generic model data. Solvers and contact backends may
    use, combine, or ignore fields according to their formulation. See the
-   :doc:`../api/newton_solvers` API reference for built-in solver behavior, and
+   :ref:`Contact material support` reference for built-in solver behavior, and
    external solver documentation for third-party solvers. Some solvers require
    enabling restitution explicitly before ``restitution`` takes effect.
 
