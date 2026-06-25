@@ -1005,7 +1005,6 @@ class HydroelasticSDF:
             grid_size=self.grid_size,
         )
         self.contact_reduction.export(
-            shape_material_k_hydro=self.shape_material_kh,
             shape_gap=shape_gap,
             shape_transform=shape_transform,
             writer_data=writer_data,
@@ -1687,6 +1686,9 @@ def get_generate_contacts_kernel(
                         wp.atomic_add(reducer_data.agg_force, entry_idx, force_weight * normal)
                         wp.atomic_add(reducer_data.weighted_pos_sum, entry_idx, force_weight * face_center)
                         wp.atomic_add(reducer_data.weight_sum, entry_idx, force_weight)
+                        # Pressure-law-agnostic geometric depth-volume used for the
+                        # direction-reliability gate during reduction/export.
+                        wp.atomic_add(reducer_data.agg_depth_volume, entry_idx, (area * (-pen_depth)) * normal)
                         # ``entry_k_eff`` is retained as the linear-law slope used
                         # for margin (non-penetrating) contact regularization, where
                         # the user pressure law is documented as undefined.

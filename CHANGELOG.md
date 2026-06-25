@@ -34,6 +34,7 @@
 - Fix USD import so non-unit `metersPerUnit` and `kilogramsPerUnit` warn as unsupported, and stop scaling `PhysicsScene` gravity magnitude by `metersPerUnit`.
 - Fix `SolverMuJoCo` reporting incorrect `State.body_qd` angular velocity for `JointType.D6` joints with two or three angular DOFs at non-identity configurations.
 - Fix VBD collision damping to use relative normal gap rate so uniform contact-stencil motion and tangential sliding do not create artificial normal damping.
+- Fix hydroelastic contact reduction gating the aggregate-direction reliability check on a pressure-scaled force magnitude, which became unreliable at high stiffness and for custom pressure laws. The gate now uses a pressure-law-independent geometric depth-volume, restoring nut/bolt thread engagement. (#3201)
 - Fix `RenderContext` triangle mesh construction by removing the unsupported `device=` keyword from `wp.Mesh(...)`.
 - Fix MJCF `euler` producing wrong orientations for multi-component angles by treating angles as intrinsic rotations. (#3030)
 - Fix `newton.eval_fk` / `newton.eval_ik` producing wrong rotations and joint velocities for `JointType.D6` with three angular DOFs whose axes form a left-handed orthonormal basis.

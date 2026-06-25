@@ -72,10 +72,15 @@ def _compute_normal_matching_rotation(
     agg_force_vec: wp.vec3,
     agg_force_mag: wp.float32,
 ) -> wp.quat:
-    """Compute rotation quaternion that aligns selected_normal_sum with agg_force direction."""
+    """Compute rotation quaternion that aligns selected_normal_sum with agg_force direction.
+
+    Callers gate reliability on the aggregate depth-volume magnitude; this helper
+    only needs ``agg_force_mag`` above ``EPS_SMALL`` so the
+    ``agg_force_vec / agg_force_mag`` normalization is well-defined.
+    """
     rotation_q = wp.quat_identity()
     selected_mag = wp.length(selected_normal_sum)
-    if selected_mag > EPS_LARGE and agg_force_mag > EPS_LARGE:
+    if selected_mag > EPS_LARGE and agg_force_mag > EPS_SMALL:
         selected_dir = selected_normal_sum / selected_mag
         agg_dir = agg_force_vec / agg_force_mag
 
@@ -102,13 +107,6 @@ def _effective_stiffness(k_a: wp.float32, k_b: wp.float32) -> wp.float32:
     if denom <= 0.0:
         return 0.0
     return (k_a * k_b) / denom
-
-
-@wp.func
-def _pressure_to_depth_scale(k_b: wp.float32) -> wp.float32:
-    if k_b <= 0.0:
-        return 1.0
-    return k_b
 
 
 # =============================================================================
@@ -395,11 +393,10 @@ def _create_accumulate_moments_kernel(normal_matching: bool = True):
         weighted_pos_sum: wp.array[wp.vec3],
         weight_sum: wp.array[wp.float32],
         agg_force: wp.array[wp.vec3],
+        agg_depth_volume: wp.array[wp.vec3],
         total_normal_reduced: wp.array[wp.vec3],
         agg_moment_reduced: wp.array[wp.float32],
         agg_moment2_reduced: wp.array[wp.float32],
-        shape_pairs: wp.array[wp.vec2i],
-        shape_material_k_hydro: wp.array[wp.float32],
         total_num_threads: int,
     ):
         """Accumulate reduced friction moments per normal bin."""
@@ -455,11 +452,10 @@ def _create_accumulate_moments_kernel(normal_matching: bool = True):
                 if wp.static(normal_matching):
                     nbin_agg_force = agg_force[nbin_idx]
                     nbin_agg_mag = wp.length(nbin_agg_force)
-                    # Same rescale as the export kernel: keep the EPS_LARGE gate
-                    # independent of the pressure-law magnitude.
-                    pair = shape_pairs[contact_id]
-                    nbin_direction_mag = nbin_agg_mag / _pressure_to_depth_scale(shape_material_k_hydro[pair[1]])
-                    if nbin_direction_mag > EPS_LARGE:
+                    # Gate on the geometric depth-volume magnitude, which is
+                    # independent of the pressure law. Same gate as the export kernel.
+                    nbin_dv_mag = wp.length(agg_depth_volume[nbin_idx])
+                    if nbin_dv_mag > EPS_LARGE:
                         nbin_nsum = total_normal_reduced[nbin_idx]
                         rot_q = _compute_normal_matching_rotation(nbin_nsum, nbin_agg_force, nbin_agg_mag)
                         rotated_normal = wp.normalize(wp.quat_rotate(rot_q, contact_normal))
@@ -534,6 +530,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
         ht_active_slots: wp.array[wp.int32],
         # Aggregate data per entry (from generate kernel)
         agg_force: wp.array[wp.vec3],
+        agg_depth_volume: wp.array[wp.vec3],
         weighted_pos_sum: wp.array[wp.vec3],
         weight_sum: wp.array[wp.float32],
         # Contact buffer arrays
@@ -552,7 +549,6 @@ def create_export_hydroelastic_reduced_contacts_kernel(
         agg_moment_reduced: wp.array[wp.float32],
         agg_moment2_reduced: wp.array[wp.float32],
         # Shape data for margin
-        shape_material_k_hydro: wp.array[wp.float32],
         shape_gap: wp.array[float],
         shape_transform: wp.array[wp.transform],
         # User pressure-callback state (recomputed on demand from depth+shape_b)
@@ -642,9 +638,12 @@ def create_export_hydroelastic_reduced_contacts_kernel(
             agg_force_vec = agg_force[entry_idx]
             agg_force_mag = wp.length(agg_force_vec)
 
-            # Rescale by shape_b's pressure coefficient so the EPS_LARGE gate is
-            # independent of the pressure-law magnitude (exact for the linear law).
-            agg_direction_mag = agg_force_mag / _pressure_to_depth_scale(shape_material_k_hydro[shape_b_first])
+            # Gate normal matching / anchor placement on the geometric depth-volume
+            # magnitude |sum(area*depth*normal)|, which is independent of the
+            # pressure-law magnitude (and therefore of kh and any custom
+            # pressure_func). For the default linear law this equals
+            # |agg_force| / kh, preserving the original threshold behavior.
+            agg_direction_mag = wp.length(agg_depth_volume[entry_idx])
             has_reliable_agg_direction = agg_direction_mag > wp.static(EPS_LARGE)
 
             # Compute anchor position (center of pressure) for normal bin entries
@@ -792,7 +791,9 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                     if nbin_entry_idx >= 0 and depth < 0.0:
                         nbin_agg_force = agg_force[nbin_entry_idx]
                         nbin_agg_mag = wp.length(nbin_agg_force)
-                        nbin_direction_mag = nbin_agg_mag / _pressure_to_depth_scale(shape_material_k_hydro[shape_b])
+                        # Depth-volume reliability gate (see aggregate path above):
+                        # pressure-law-independent reliability of the bin direction.
+                        nbin_direction_mag = wp.length(agg_depth_volume[nbin_entry_idx])
 
                         # Normal matching from the normal bin's rotation
                         if wp.static(normal_matching) and nbin_direction_mag > wp.static(EPS_LARGE):
@@ -1003,7 +1004,7 @@ class HydroelasticContactReduction:
             # export_hydroelastic_contact_to_buffer(..., reduction.get_data_struct())
 
             reduction.reduce(shape_material_k_hydro, shape_transform, aabb_lower, aabb_upper, voxel_res, grid_size)
-            reduction.export(shape_material_k_hydro, shape_gap, shape_transform, writer_data, grid_size)
+            reduction.export(shape_gap, shape_transform, writer_data, grid_size)
 
     Attributes:
         reducer: The underlying ``GlobalContactReducer`` instance.
@@ -1155,7 +1156,6 @@ class HydroelasticContactReduction:
 
     def export(
         self,
-        shape_material_k_hydro: wp.array[wp.float32],
         shape_gap: wp.array,
         shape_transform: wp.array,
         writer_data: Any,
@@ -1170,7 +1170,6 @@ class HydroelasticContactReduction:
         global memory barrier).
 
         Args:
-            shape_material_k_hydro: Per-shape hydroelastic material stiffness (dtype: float).
             shape_gap: Per-shape contact gap (detection threshold) (dtype: float).
             shape_transform: Per-shape world transforms (dtype: wp.transform).
             writer_data: Data struct for the writer function.
@@ -1208,11 +1207,10 @@ class HydroelasticContactReduction:
                     self.reducer.weighted_pos_sum,
                     self.reducer.weight_sum,
                     self.reducer.agg_force,
+                    self.reducer.agg_depth_volume,
                     self.reducer.total_normal_reduced,
                     self.reducer.agg_moment_reduced,
                     self.reducer.agg_moment2_reduced,
-                    self.reducer.shape_pairs,
-                    shape_material_k_hydro,
                     grid_size,
                 ],
                 device=self.device,
@@ -1226,6 +1224,7 @@ class HydroelasticContactReduction:
                 self.reducer.ht_values,
                 self.reducer.hashtable.active_slots,
                 self.reducer.agg_force,
+                self.reducer.agg_depth_volume,
                 self.reducer.weighted_pos_sum,
                 self.reducer.weight_sum,
                 self.reducer.position_depth,
@@ -1239,7 +1238,6 @@ class HydroelasticContactReduction:
                 self.reducer.agg_moment_unreduced,
                 self.reducer.agg_moment_reduced,
                 self.reducer.agg_moment2_reduced,
-                shape_material_k_hydro,
                 shape_gap,
                 shape_transform,
                 self.pressure_data,
@@ -1283,4 +1281,4 @@ class HydroelasticContactReduction:
             shape_voxel_resolution,
             grid_size,
         )
-        self.export(shape_material_k_hydro, shape_gap, shape_transform, writer_data, grid_size)
+        self.export(shape_gap, shape_transform, writer_data, grid_size)
