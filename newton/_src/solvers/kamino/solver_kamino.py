@@ -370,6 +370,35 @@ class SolverKamino(SolverBase):
         """
         Configuration for a call to the reset() operation, specifying the behaviour (common or separate)
         for body poses, body velocities as well as floating base pose and velocity.
+
+        Example
+        -------
+
+            .. code-block:: python
+
+                # Reset all worlds to the initial state
+                reset_config = newton.solvers.SolverKamino.ResetConfig.to_default()
+                solver.reset(state=state, config=reset_config)
+
+                # Preserve the current body/joint state, while resetting time, forces/torques and solver internals
+                reset_config = newton.solvers.SolverKamino.ResetConfig.preserve()
+                solver.reset(state=state, config=reset_config)
+
+                # Set a custom pose from joint state with FK
+                wp.copy(state.joint_q, custom_joint_coords)
+                wp.copy(state.joint_qd, custom_joint_velocities)
+                reset_config = newton.solvers.SolverKamino.ResetConfig.from_joints()
+                solver.reset(state=state, config=reset_config)
+
+                # Advanced reset with custom configuration
+                # E.g. here, set custom actuator coords and base pose, and reset velocities to default (=zero)
+                reset_config = newton.solvers.SolverKamino.ResetConfig(
+                    body_poses=newton.solvers.SolverKamino.ResetConfig.FromActuatorQ(new_actuator_coords),
+                    body_velocities=newton.solvers.SolverKamino.ResetConfig.ToDefault(),
+                    base_pose=newton.solvers.SolverKamino.ResetConfig.FromBaseQ(new_base_pose),
+                    base_velocity=newton.solvers.SolverKamino.ResetConfig.ToDefault(),
+                )
+                solver.reset(state=state, config=reset_config)
         """
 
         @dataclass(frozen=True)
@@ -426,6 +455,8 @@ class SolverKamino(SolverBase):
             Reset option, to set a new pose for the base body, and transform all bodies accordingly.
             If a base joint is set, the prescribed pose is interpreted in the frame of the base joint;
             else it is directly interpreted as the new pose of the base body.
+            Note: if a base joint is set that is not a free joint, no check is made that the new pose is
+            compatible with the base joint's DoFs. To guarantee a feasible pose, use instead FromJointQ.
             """
 
             base_q: wp.array[wp.transformf]
@@ -437,6 +468,8 @@ class SolverKamino(SolverBase):
             Reset option, to set a new velocity for the base body, and compose with body velocities accordingly.
             If a base joint is set, the prescribed velocity is interpreted in the frame of the base joint;
             else it is directly interpreted as the new velocity of the base body.
+            Note: if a base joint is set that is not a free joint, no check is made that the new velocity is
+            compatible with the base joint's DoFs. To guarantee a feasible velocity, use instead FromJointU.
             """
 
             base_u: wp.array[wp.spatial_vectorf]
