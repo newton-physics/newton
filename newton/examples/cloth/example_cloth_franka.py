@@ -129,7 +129,7 @@ class Example:
         self.table_shape_idx = self.scene.shape_count
         self.scene.add_shape_box(
             -1,
-            wp.transform(
+            xform=wp.transform(
                 self.table_pos_cm,
                 wp.quat_identity(),
             ),
