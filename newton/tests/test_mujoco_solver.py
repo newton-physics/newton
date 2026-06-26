@@ -94,6 +94,13 @@ class TestMuJoCoSolver(unittest.TestCase):
 
         self.assertEqual(caught, [])
 
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _warn_unsupported_joint_velocity_limits(np.array([1.0e6 - 0.5], dtype=np.float64))
+
+        self.assertEqual(len(caught), 1)
+        self.assertIn("[0]", str(caught[0].message))
+
     def test_tolerance_options(self):
         """Test that tolerance and ls_tolerance options are properly set on the MuJoCo Warp model."""
         # Create minimal model with proper inertia

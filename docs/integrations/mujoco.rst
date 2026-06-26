@@ -272,8 +272,8 @@ Newton's per-DOF :attr:`~newton.Model.joint_target_mode` creates MuJoCo general 
 :attr:`~newton.Model.joint_velocity_limit` is stored on the Newton model but
 has no MuJoCo equivalent; :class:`~newton.solvers.SolverMuJoCo` emits a
 runtime warning when a model contains non-default finite velocity limits.
-Use effort limits, damping, controller limits, or a custom actuator to bound
-joint speed in MuJoCo.
+Use a controller or custom actuator for hard speed limits in MuJoCo; effort
+limits and damping can only mitigate joint speed indirectly.
 
 The full MuJoCo general-actuator model (arbitrary gain/bias/dynamics types
 and parameters, explicit transmission targets, ctrl/force/act ranges) is

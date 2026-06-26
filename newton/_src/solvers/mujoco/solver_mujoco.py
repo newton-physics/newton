@@ -120,12 +120,7 @@ def _warn_unsupported_joint_velocity_limits(joint_velocity_limit: np.ndarray | N
         return
 
     finite_limits = np.isfinite(joint_velocity_limit)
-    non_default_limits = finite_limits & ~np.isclose(
-        joint_velocity_limit,
-        _DEFAULT_JOINT_VELOCITY_LIMIT,
-        rtol=1.0e-6,
-        atol=0.0,
-    )
+    non_default_limits = finite_limits & (joint_velocity_limit != _DEFAULT_JOINT_VELOCITY_LIMIT)
     if not np.any(non_default_limits):
         return
 
@@ -135,9 +130,10 @@ def _warn_unsupported_joint_velocity_limits(joint_velocity_limit: np.ndarray | N
     warnings.warn(
         "SolverMuJoCo does not support Model.joint_velocity_limit because MuJoCo has no equivalent "
         f"joint velocity clamp. Authored limits at DOF indices {shown}{suffix} will be ignored; "
-        "use joint_effort_limit, joint_damping/controller limits, or a custom actuator to bound speed.",
+        "use a controller or custom actuator for hard speed limits; joint_effort_limit and joint_damping "
+        "can only mitigate speed indirectly.",
         RuntimeWarning,
-        stacklevel=3,
+        stacklevel=4,
     )
 
 
