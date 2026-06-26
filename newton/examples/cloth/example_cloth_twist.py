@@ -179,7 +179,7 @@ class Example:
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
-            self.iterations,
+            iterations=self.iterations,
             particle_enable_self_contact=True,
             particle_self_contact_radius=0.002,
             particle_self_contact_margin=0.0035,
