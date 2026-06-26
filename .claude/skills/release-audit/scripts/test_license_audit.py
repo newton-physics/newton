@@ -130,6 +130,29 @@ source = { git = "https://example.com/fork.git" }
         self.assertIn("- License metadata needing review: not evaluated (--skip-pypi)", audit)
         self.assertNotIn("- License metadata needing review: bar", audit)
 
+    def test_license_file_glob_detects_direct_child_notice_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            self._git(repo, "init")
+            self._git(repo, "config", "user.email", "test@example.com")
+            self._git(repo, "config", "user.name", "Test User")
+            self._write_release_files(repo, "foo==1.0", "foo", "1.0")
+            self._git(repo, "add", "pyproject.toml", "uv.lock", "LICENSE.md")
+            self._git(repo, "commit", "-m", "base")
+            self._git(repo, "tag", "base")
+
+            notice_path = repo / "newton" / "licenses" / "NOTICE.txt"
+            notice_path.parent.mkdir(parents=True)
+            notice_path.write_text("notice\n", encoding="utf-8")
+            self._git(repo, "add", "newton/licenses/NOTICE.txt")
+            self._git(repo, "commit", "-m", "add notice")
+            self._git(repo, "tag", "head")
+
+            audit = license_audit.build_audit(repo, "base", "head", True, 1.0)
+
+        self.assertIn("- In-tree license notice file changes: 1", audit)
+        self.assertIn("| A | newton/licenses/NOTICE.txt |", audit)
+
     def _write_release_files(self, repo: Path, requirement: str, package: str, version: str) -> None:
         (repo / "pyproject.toml").write_text(
             "\n".join(
@@ -137,7 +160,7 @@ source = { git = "https://example.com/fork.git" }
                     "[project]",
                     'name = "newton"',
                     'license = "Apache-2.0"',
-                    'license-files = ["LICENSE.md"]',
+                    'license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]',
                     f'dependencies = ["{requirement}"]',
                     "",
                 ]

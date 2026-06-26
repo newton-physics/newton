@@ -343,6 +343,12 @@ def _license_file_pathspecs(base_project: ProjectMetadata, head_project: Project
     return tuple(dict.fromkeys([*base_project.license_files, *head_project.license_files]))
 
 
+def _git_glob_pathspec(pathspec: str) -> str:
+    if pathspec.startswith(":("):
+        return pathspec
+    return f":(glob){pathspec}"
+
+
 def _license_summary(
     packages: list[LockedPackage],
     skip_pypi: bool,
@@ -417,8 +423,9 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
         )
 
     license_pathspecs = _license_file_pathspecs(base_project, head_project)
+    git_license_pathspecs = tuple(_git_glob_pathspec(pathspec) for pathspec in license_pathspecs)
     license_diff = (
-        _git(repo, "diff", "--name-status", f"{base}..{head}", "--", *license_pathspecs, required=False)
+        _git(repo, "diff", "--name-status", f"{base}..{head}", "--", *git_license_pathspecs, required=False)
         if license_pathspecs
         else ""
     )
