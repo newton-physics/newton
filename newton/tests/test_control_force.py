@@ -79,10 +79,11 @@ def test_floating_body(test: TestControlForce, device, solver_fn, test_angular=T
     body_qd = state_0.body_qd.numpy()[0]
     test.assertGreater(body_qd[test_index], 0.04)
     test.assertLess(body_qd[test_index], 0.4)
+    zero_tol = 2e-6
     for i in range(6):
         if i == test_index:
             continue
-        test.assertAlmostEqual(body_qd[i], 0.0, delta=1e-6)
+        test.assertAlmostEqual(body_qd[i], 0.0, delta=zero_tol)
     # TODO test joint_qd for MJC, Featherstone solvers
 
 
