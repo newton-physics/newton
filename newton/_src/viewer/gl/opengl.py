@@ -108,9 +108,6 @@ class RenderVertex:
     pos: wp.vec3
     normal: wp.vec3
     uv: wp.vec2
-    # Optional per-vertex albedo. A negative x component is a sentinel meaning
-    # "no per-vertex color" so the shader falls back to the instance color.
-    color: wp.vec3
 
 
 @wp.struct
@@ -124,7 +121,6 @@ def fill_vertex_data(
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
     uvs: wp.array[wp.vec2],
-    colors: wp.array[wp.vec3],
     vertices: wp.array[RenderVertex],
 ):
     tid = wp.tid()
@@ -136,11 +132,6 @@ def fill_vertex_data(
 
     if uvs:
         vertices[tid].uv = uvs[tid]
-
-    if colors:
-        vertices[tid].color = colors[tid]
-    else:
-        vertices[tid].color = wp.vec3(-1.0, -1.0, -1.0)
 
 
 @wp.kernel
@@ -185,8 +176,7 @@ class MeshGL:
         self.texture_id = None
 
         # Set up vertex attributes in the packed format the shaders expect
-        # (pos[12] + normal[12] + uv[8] + color[12]).
-        self.vertex_byte_size = 12 + 12 + 8 + 12
+        self.vertex_byte_size = 12 + 12 + 8
         self.index_byte_size = 4
 
         self.vbo_size = self.vertex_byte_size * num_points
@@ -218,10 +208,6 @@ class MeshGL:
         # uv coordinates (location 2)
         gl.glVertexAttribPointer(2, 2, gl.GL_FLOAT, gl.GL_FALSE, self.vertex_byte_size, ctypes.c_void_p(6 * 4))
         gl.glEnableVertexAttribArray(2)
-
-        # per-vertex color (location 9); negative .x disables it in the shader
-        gl.glVertexAttribPointer(9, 3, gl.GL_FLOAT, gl.GL_FALSE, self.vertex_byte_size, ctypes.c_void_p(8 * 4))
-        gl.glEnableVertexAttribArray(9)
 
         # set constant instance transform
         gl.glDisableVertexAttribArray(3)
@@ -270,13 +256,12 @@ class MeshGL:
             # Ignore any errors if the GL context has already been torn down
             pass
 
-    def update(self, points, indices, normals, uvs, texture=None, colors=None):
+    def update(self, points, indices, normals, uvs, texture=None):
         """Update vertex positions in the VBO.
 
         Args:
             points: New point positions (warp array or numpy array)
             scale: Scaling factor for positions
-            colors: Optional per-vertex colors (warp vec3 array) or None
         """
         gl = RendererGL.gl
 
@@ -305,7 +290,7 @@ class MeshGL:
         wp.launch(
             fill_vertex_data,
             dim=len(self.vertices),
-            inputs=[points, normals, uvs, colors],
+            inputs=[points, normals, uvs],
             outputs=[self.vertices],
             device=self.device,
         )
