@@ -108,7 +108,7 @@ def parse_usd(
     See :ref:`usd_parsing` for more information.
 
     Args:
-        builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
+        builder: The :class:`ModelBuilder` to add the bodies and joints to.
         source: The file path to the USD file, or an existing USD stage instance.
         xform: The transform to apply to the entire scene.
         override_root_xform: If ``True``, the articulation root's world-space
@@ -856,7 +856,7 @@ def parse_usd(
                 side_lengths = scale * size
                 shape_id = builder.add_shape_box(
                     parent_body_id,
-                    xform,
+                    xform=xform,
                     hx=side_lengths[0] / 2,
                     hy=side_lengths[1] / 2,
                     hz=side_lengths[2] / 2,
@@ -871,8 +871,8 @@ def parse_usd(
                 radius = usd.get_float(prim, "radius", 1.0) * max(scale)
                 shape_id = builder.add_shape_sphere(
                     parent_body_id,
-                    xform,
-                    radius,
+                    xform=xform,
+                    radius=radius,
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     as_site=is_site,
@@ -902,9 +902,9 @@ def parse_usd(
                 xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
                 shape_id = builder.add_shape_capsule(
                     parent_body_id,
-                    xform,
-                    radius,
-                    half_height,
+                    xform=xform,
+                    radius=radius,
+                    half_height=half_height,
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     as_site=is_site,
@@ -918,9 +918,9 @@ def parse_usd(
                 xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
                 shape_id = builder.add_shape_cylinder(
                     parent_body_id,
-                    xform,
-                    radius,
-                    half_height,
+                    xform=xform,
+                    radius=radius,
+                    half_height=half_height,
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     as_site=is_site,
@@ -934,9 +934,9 @@ def parse_usd(
                 xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
                 shape_id = builder.add_shape_cone(
                     parent_body_id,
-                    xform,
-                    radius,
-                    half_height,
+                    xform=xform,
+                    radius=radius,
+                    half_height=half_height,
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     as_site=is_site,
@@ -948,7 +948,7 @@ def parse_usd(
                     for subset_path, subset_mesh in subset_meshes:
                         subset_shape_id = builder.add_shape_mesh(
                             parent_body_id,
-                            xform,
+                            xform=xform,
                             scale=scale,
                             mesh=subset_mesh,
                             cfg=visual_shape_cfg_for_prim,
@@ -968,7 +968,7 @@ def parse_usd(
                     mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
                     shape_id = builder.add_shape_mesh(
                         parent_body_id,
-                        xform,
+                        xform=xform,
                         scale=scale,
                         mesh=mesh,
                         cfg=visual_shape_cfg_for_prim,
