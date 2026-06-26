@@ -3,14 +3,19 @@
 
 from __future__ import annotations
 
+import logging
 import warnings
 from typing import Any, Literal
 
 import numpy as np
 import warp as wp
 
+from newton._src.utils.diagnostics import log_verbose
+
 from ..sim import Contacts, Model, State
 from ..utils.selection import match_labels
+
+_logger = logging.getLogger(__name__)
 
 _UNSET = object()
 
@@ -591,15 +596,17 @@ class SensorContact:
         self.counterpart_indices = [counterparts_by_world[w] for w in worlds]
 
         if self.verbose:
-            print("SensorContact initialized:")
-            print(f"  Sensing objects: {n_rows} ({self.sensing_type}s)")
-            print(
+            log_verbose(_logger, "SensorContact initialized:")
+            log_verbose(_logger, f"  Sensing objects: {n_rows} ({self.sensing_type}s)")
+            log_verbose(
+                _logger,
                 f"  Counterpart columns: {max_readings}"
-                + (f" ({self.counterpart_type}s)" if self.counterpart_type else "")
+                + (f" ({self.counterpart_type}s)" if self.counterpart_type else ""),
             )
-            print(
+            log_verbose(
+                _logger,
                 f"  total_force: {'yes' if measure_total else 'no'}, "
-                f"force_matrix: {'yes' if max_readings > 0 else 'no'}"
+                f"force_matrix: {'yes' if max_readings > 0 else 'no'}",
             )
 
         self._model = model

@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import warp as wp
 
+from newton._src.utils.diagnostics import log_verbose
+
 from ..core.types import MAXVAL, Axis, Devicelike
 from .kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_ellipsoid, sdf_sphere
 from .sdf_mc import (
@@ -913,7 +915,7 @@ def _compute_sdf_from_shape_impl(
             signed_volume = compute_mesh_signed_volume(pos, indices)
             winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
             if verbose and signed_volume < 0:
-                print("Mesh has inverted winding (negative volume), using threshold -0.5")
+                log_verbose(logger, "Mesh has inverted winding (negative volume), using threshold -0.5")
             m_id = mesh.id
 
             min_ext = np.min(verts, axis=0).tolist()
@@ -946,8 +948,9 @@ def _compute_sdf_from_shape_impl(
         actual_voxel_size = ext / (grid_dims - 1)
 
         if verbose:
-            print(
-                f"Extent: {ext}, Grid dims: {grid_dims}, voxel size: {actual_voxel_size} target_voxel_size: {target_voxel_size}"
+            log_verbose(
+                logger,
+                f"Extent: {ext}, Grid dims: {grid_dims}, voxel size: {actual_voxel_size} target_voxel_size: {target_voxel_size}",
             )
 
         tile_max = np.around((max_ext - min_ext) / actual_voxel_size).astype(np.int32) // 8
@@ -982,7 +985,7 @@ def _compute_sdf_from_shape_impl(
             )
 
         if verbose:
-            print("Occupancy: ", tile_occupied.numpy().sum() / len(tile_points))
+            log_verbose(logger, "Occupancy: ", tile_occupied.numpy().sum() / len(tile_points))
 
         tile_points = tile_points[tile_occupied.numpy()]
         tile_points_wp = wp.array(tile_points, dtype=wp.vec3i)
@@ -1046,7 +1049,9 @@ def _compute_sdf_from_shape_impl(
             wp.synchronize()
 
         if verbose:
-            print(f"Coarse SDF: dims={coarse_dims}x{coarse_dims}x{coarse_dims}, voxel size: {coarse_voxel_size}")
+            log_verbose(
+                logger, f"Coarse SDF: dims={coarse_dims}x{coarse_dims}x{coarse_dims}, voxel size: {coarse_voxel_size}"
+            )
 
         # Create and populate SDFData struct
         sdf_data = SDFData()

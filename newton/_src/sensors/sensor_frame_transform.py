@@ -3,12 +3,18 @@
 
 """Frame Transform Sensor - measures transforms relative to sites."""
 
+import logging
+
 import warp as wp
+
+from newton._src.utils.diagnostics import log_verbose
 
 from ..geometry import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
 from ..utils.selection import match_labels
+
+_logger = logging.getLogger(__name__)
 
 
 @wp.kernel
@@ -208,11 +214,12 @@ class SensorFrameTransform:
         self._reference_indices_arr = wp.array(reference_sites_matched, dtype=int, device=model.device)
 
         if self.verbose:
-            print("SensorFrameTransform initialized:")
-            print(f"  Shapes: {len(shapes)}")
-            print(f"  Reference sites: {len(set(reference_sites_matched))} unique")
-            print(
-                f"  Unique shapes to compute: {len(self._unique_shape_indices)} (optimized from {len(shapes) + len(reference_sites_matched)})"
+            log_verbose(_logger, "SensorFrameTransform initialized:")
+            log_verbose(_logger, f"  Shapes: {len(shapes)}")
+            log_verbose(_logger, f"  Reference sites: {len(set(reference_sites_matched))} unique")
+            log_verbose(
+                _logger,
+                f"  Unique shapes to compute: {len(self._unique_shape_indices)} (optimized from {len(shapes) + len(reference_sites_matched)})",
             )
 
     def update(self, state: State):

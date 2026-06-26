@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import ctypes
 import inspect
+import logging
 import math
 import warnings
 from collections import Counter, deque
@@ -49,6 +50,7 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
+from ..utils.diagnostics import log_verbose
 from ..utils.mesh import MeshAdjacency
 from .enums import (
     BodyFlags,
@@ -75,6 +77,8 @@ if TYPE_CHECKING:
     UsdStage = Usd.Stage
 else:
     UsdStage = Any
+
+_logger = logging.getLogger(__name__)
 
 
 class ModelBuilder:
@@ -5190,7 +5194,7 @@ class ModelBuilder:
         """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.
 
         Args:
-            verbose: If True, print additional information about the collapsed joints.
+            verbose: If True, log additional information about the collapsed joints, falling back to stdout.
             joints_to_keep: An optional sequence of joint labels or original joint indices to be excluded from
                 the collapse process.
         """
@@ -5322,9 +5326,10 @@ class ModelBuilder:
                 if verbose:
                     parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
                     child_lbl = self.body_label[child_body]
-                    print(
+                    log_verbose(
+                        _logger,
                         f"Skipping collapse of fixed joint {joint['label']} between {parent_lbl} and {child_lbl}: "
-                        f"{child_lbl} is referenced in an equality constraint and cannot be merged into world"
+                        f"{child_lbl} is referenced in an equality constraint and cannot be merged into world",
                     )
 
             if joint_in_keep_list and joint["type"] == JointType.FIXED:
@@ -5332,9 +5337,10 @@ class ModelBuilder:
                 parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
                 child_lbl = self.body_label[child_body]
                 if verbose:
-                    print(
+                    log_verbose(
+                        _logger,
                         f"Skipping collapse of joint {joint['label']} between {parent_lbl} and {child_lbl}: "
-                        f"{child_lbl} is listed in joints_to_keep and this fixed joint will be preserved"
+                        f"{child_lbl} is listed in joints_to_keep and this fixed joint will be preserved",
                     )
                 # Warn if the child_body of skipped joint has zero or negative mass
                 if body_data[child_body]["mass"] <= 0:
@@ -5352,9 +5358,10 @@ class ModelBuilder:
                 child_lbl = self.body_label[child_body]
                 last_dynamic_body_label = self.body_label[last_dynamic_body] if last_dynamic_body > -1 else "world"
                 if verbose:
-                    print(
+                    log_verbose(
+                        _logger,
                         f"Remove fixed joint {joint['label']} between {parent_lbl} and {child_lbl}, "
-                        f"merging {child_lbl} into {last_dynamic_body_label}"
+                        f"merging {child_lbl} into {last_dynamic_body_label}",
                     )
                 child_id = body_data[child_body]["original_id"]
                 relative_xform = incoming_xform
@@ -5368,8 +5375,9 @@ class ModelBuilder:
                     shape_tf = self.shape_transform[shape]
                     self.shape_transform[shape] = incoming_xform * shape_tf
                     if verbose:
-                        print(
-                            f"  Shape {shape} moved to body {last_dynamic_body_label} with transform {self.shape_transform[shape]}"
+                        log_verbose(
+                            _logger,
+                            f"  Shape {shape} moved to body {last_dynamic_body_label} with transform {self.shape_transform[shape]}",
                         )
                     if last_dynamic_body > -1:
                         self.shape_body[shape] = body_data[last_dynamic_body]["id"]
@@ -5756,14 +5764,20 @@ class ModelBuilder:
 
             if old_joint1 != -1 and old_joint1 not in joint_remap:
                 if verbose:
-                    print(f"Warning: Equality constraint references removed joint {old_joint1}, disabling constraint")
+                    log_verbose(
+                        _logger,
+                        f"Warning: Equality constraint references removed joint {old_joint1}, disabling constraint",
+                    )
                 while len(enabled_values) <= i:
                     enabled_values.append(None)
                 enabled_values[i] = False
 
             if old_joint2 != -1 and old_joint2 not in joint_remap:
                 if verbose:
-                    print(f"Warning: Equality constraint references removed joint {old_joint2}, disabling constraint")
+                    log_verbose(
+                        _logger,
+                        f"Warning: Equality constraint references removed joint {old_joint2}, disabling constraint",
+                    )
                 while len(enabled_values) <= i:
                     enabled_values.append(None)
                 enabled_values[i] = False
@@ -5777,14 +5791,20 @@ class ModelBuilder:
                 self.constraint_mimic_joint0[i] = joint_remap[old_joint0]
             elif old_joint0 != -1:
                 if verbose:
-                    print(f"Warning: Mimic constraint references removed joint {old_joint0}, disabling constraint")
+                    log_verbose(
+                        _logger,
+                        f"Warning: Mimic constraint references removed joint {old_joint0}, disabling constraint",
+                    )
                 self.constraint_mimic_enabled[i] = False
 
             if old_joint1 in joint_remap:
                 self.constraint_mimic_joint1[i] = joint_remap[old_joint1]
             elif old_joint1 != -1:
                 if verbose:
-                    print(f"Warning: Mimic constraint references removed joint {old_joint1}, disabling constraint")
+                    log_verbose(
+                        _logger,
+                        f"Warning: Mimic constraint references removed joint {old_joint1}, disabling constraint",
+                    )
                 self.constraint_mimic_enabled[i] = False
 
         target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")

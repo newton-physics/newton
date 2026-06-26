@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import functools
+import logging
 from fnmatch import fnmatch
 from types import NoneType
 from typing import TYPE_CHECKING, Any
@@ -11,7 +12,11 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 from warp.types import is_array
 
+from newton._src.utils.diagnostics import log_verbose
+
 from ..sim import Control, JointType, Model, State, eval_fk, eval_jacobian, eval_mass_matrix
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
@@ -1110,25 +1115,32 @@ class ArticulationView:
         )
 
         if verbose:
-            print(f"Articulation '{pattern}': {self.count}")
-            print(f"  Link count:     {self.link_count} ({'' if self.links_contiguous else 'non-'}contiguous)")
-            print(f"  Shape count:    {self.shape_count} ({'' if self.shapes_contiguous else 'non-'}contiguous)")
-            print(f"  Joint count:    {self.joint_count} ({'' if self.joints_contiguous else 'non-'}contiguous)")
-            print(
-                f"  DOF count:      {self.joint_dof_count} ({'' if self.joint_dofs_contiguous else 'non-'}contiguous)"
+            log_verbose(_logger, f"Articulation '{pattern}': {self.count}")
+            log_verbose(
+                _logger, f"  Link count:     {self.link_count} ({'' if self.links_contiguous else 'non-'}contiguous)"
             )
-            print(f"  Fixed base?     {self.is_fixed_base}")
-            print(f"  Floating base?  {self.is_floating_base}")
-            print("Link names:")
-            print(f"  {self.link_names}")
-            print("Joint names:")
-            print(f"  {self.joint_names}")
-            print("Joint DOF names:")
-            print(f"  {self.joint_dof_names}")
-            print("Shapes:")
+            log_verbose(
+                _logger, f"  Shape count:    {self.shape_count} ({'' if self.shapes_contiguous else 'non-'}contiguous)"
+            )
+            log_verbose(
+                _logger, f"  Joint count:    {self.joint_count} ({'' if self.joints_contiguous else 'non-'}contiguous)"
+            )
+            log_verbose(
+                _logger,
+                f"  DOF count:      {self.joint_dof_count} ({'' if self.joint_dofs_contiguous else 'non-'}contiguous)",
+            )
+            log_verbose(_logger, f"  Fixed base?     {self.is_fixed_base}")
+            log_verbose(_logger, f"  Floating base?  {self.is_floating_base}")
+            log_verbose(_logger, "Link names:")
+            log_verbose(_logger, f"  {self.link_names}")
+            log_verbose(_logger, "Joint names:")
+            log_verbose(_logger, f"  {self.joint_names}")
+            log_verbose(_logger, "Joint DOF names:")
+            log_verbose(_logger, f"  {self.joint_dof_names}")
+            log_verbose(_logger, "Shapes:")
             for link_idx in range(self.link_count):
                 shape_names = [self.shape_names[shape_idx] for shape_idx in self.link_shapes[link_idx]]
-                print(f"  Link '{self.link_names[link_idx]}': {shape_names}")
+                log_verbose(_logger, f"  Link '{self.link_names[link_idx]}': {shape_names}")
 
     @property
     def body_names(self):

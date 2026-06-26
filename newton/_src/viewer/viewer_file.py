@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -13,10 +14,14 @@ import numpy as np
 import warp as wp
 from warp._src import types as warp_types
 
+from newton._src.utils.diagnostics import log_verbose
+
 from ..core.types import override
 from ..geometry import Mesh
 from ..sim import Model, State
 from .viewer import ViewerBase
+
+_logger = logging.getLogger(__name__)
 
 # Optional CBOR2 support
 try:
@@ -1178,10 +1183,10 @@ class ViewerFile(ViewerBase):
             effective_path = file_path if file_path is not None else str(self.output_path)
             self._save_to_file(effective_path)
             if verbose:
-                print(f"Recording saved to {effective_path} ({self._frame_count} frames)")
+                log_verbose(_logger, f"Recording saved to {effective_path} ({self._frame_count} frames)")
         except Exception as e:
             if verbose:
-                print(f"Error saving recording: {e}")
+                log_verbose(_logger, f"Error saving recording: {e}")
 
     def record(self, state: State):
         """Record a snapshot of the provided simulation state.
@@ -1454,7 +1459,7 @@ class ViewerFile(ViewerBase):
         self._load_from_file(effective_path)
         self._frame_count = len(self.history)
         if verbose:
-            print(f"Loaded recording with {self._frame_count} frames from {effective_path}")
+            log_verbose(_logger, f"Loaded recording with {self._frame_count} frames from {effective_path}")
 
     def get_frame_count(self) -> int:
         """Return the number of frames in the loaded or recorded session.

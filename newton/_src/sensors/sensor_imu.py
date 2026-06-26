@@ -3,12 +3,18 @@
 
 """IMU Sensor - measures accelerations and angular velocities at sensor sites."""
 
+import logging
+
 import warp as wp
+
+from newton._src.utils.diagnostics import log_verbose
 
 from ..geometry.flags import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
 from ..utils.selection import match_labels
+
+_logger = logging.getLogger(__name__)
 
 
 @wp.kernel
@@ -158,8 +164,8 @@ class SensorIMU:
         self.gyroscope = wp.zeros(self.n_sensors, dtype=wp.vec3, device=model.device)
 
         if self.verbose:
-            print("SensorIMU initialized:")
-            print(f"  Sites: {len(set(sites))}")
+            log_verbose(_logger, "SensorIMU initialized:")
+            log_verbose(_logger, f"  Sites: {len(set(sites))}")
             # TODO: body per site
 
     def _validate_sensor_sites(self, sensor_sites: list[int]):
