@@ -1308,7 +1308,8 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
         particle_colors = wp.zeros(4, dtype=int, device=device)
         particle_radius = wp.array([0.1] * 4, dtype=float, device=device)
 
-        contact_count = wp.array([4], dtype=int, device=device)
+        # Soft counter is [particle, edge, face]; only the legacy particle path is exercised here.
+        contact_count = wp.array([4, 0, 0], dtype=int, device=device)
         contact_particle = wp.array([0, 1, 2, 3], dtype=int, device=device)
         contact_penalty_k = wp.array([400.0, 400.0, 100.0, 100.0], dtype=float, device=device)
         contact_material_ke = wp.array([100.0] * 4, dtype=float, device=device)
@@ -1358,6 +1359,12 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
                 contact_body_vel,
                 contact_normal,
                 wp.zeros(0, dtype=float, device=device),
+                # water-tight edge/face params (unused here: edge/face counts are 0)
+                wp.zeros((1, 3), dtype=wp.int32, device=device),
+                wp.zeros(4, dtype=wp.vec3, device=device),
+                0.0,
+                0.0,
+                0.0,
             ],
             outputs=[forces, hessians],
             device=device,
