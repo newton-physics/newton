@@ -284,6 +284,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     last_contact_generation: wp.array[wp.int32],
     tid_to_cid: wp.array[wp.int32],
     last_nacon_count: wp.array[wp.int32],
+    contact_overflow_count: wp.array[wp.int32],
 ):
     # nacon_out must be zeroed before this kernel is launched so that
     # wp.atomic_add below produces the correct compacted count.
@@ -310,6 +311,9 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
         if tid == 0:
             ncollision_out[0] = 0
+            contact_overflow_count[0] = 0
+            if count > naconmax:
+                contact_overflow_count[0] = count - naconmax
 
         if count > naconmax:
             count = naconmax

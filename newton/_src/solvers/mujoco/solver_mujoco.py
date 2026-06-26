@@ -3407,6 +3407,7 @@ class SolverMuJoCo(SolverBase):
         self._contact_tid_to_cid: wp.array[wp.int32] | None = None
         self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
         self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self._contact_overflow_count = wp.zeros(1, dtype=wp.int32, device=self.device)
         # Track the Contacts instance and its capacity, plus the MJWarp
         # naconmax used during the last full pass.  Any change to these
         # invariants invalidates the cached tid_to_cid mapping because the
@@ -3628,6 +3629,7 @@ class SolverMuJoCo(SolverBase):
         """
         self._last_contact_generation.fill_(_GENERATION_SENTINEL)
         self._last_nacon_count.zero_()
+        self._contact_overflow_count.zero_()
 
     def _convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
         # Ensure the inverse shape mapping exists (lazy creation)
@@ -3740,6 +3742,7 @@ class SolverMuJoCo(SolverBase):
                 self._last_contact_generation,
                 self._contact_tid_to_cid,
                 self._last_nacon_count,
+                self._contact_overflow_count,
             ],
             device=model.device,
         )
@@ -4358,6 +4361,12 @@ class SolverMuJoCo(SolverBase):
         if self.use_mujoco_cpu:
             raise NotImplementedError()
         return self.mjw_data.naconmax
+
+    def get_newton_contact_overflow_count(self) -> int:
+        """Return the number of Newton contacts clipped by the last MJWarp conversion."""
+        if self.use_mujoco_cpu:
+            raise NotImplementedError()
+        return int(self._contact_overflow_count.numpy()[0])
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
