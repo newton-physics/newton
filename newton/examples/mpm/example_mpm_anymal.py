@@ -142,7 +142,7 @@ class Example:
             ls_iterations=50,
             njmax=50,  # ls_iterations=50 for determinism
         )
-        self.mpm_solver = SolverImplicitMPM(self.model, mpm_options)
+        self.mpm_solver = SolverImplicitMPM(self.model, config=mpm_options)
 
         # simulation state
         self.state_0 = self.model.state()
@@ -223,7 +223,7 @@ class Example:
             a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
             a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
             # copy action targets to control buffer
-            wp.copy(self.control.joint_target_pos, a_wp)
+            wp.copy(self.control.joint_target_q, a_wp)
 
     def simulate_robot(self):
         # robot substeps

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
@@ -36,6 +37,43 @@ def _physx_gap_from_prim(prim: Usd.Prim) -> float | None:
     if contact_offset == inf or rest_offset == inf:
         return None
     return float(contact_offset) - float(rest_offset)
+
+
+def _newton_legacy_contact_attr(legacy_name: str, material_attr: str):
+    """Return a getter that reads a legacy contact custom attr with a deprecation warning."""
+
+    def _getter(prim: Usd.Prim) -> float | None:
+        value = usd.get_attribute(prim, legacy_name)
+        if value is not None:
+            warnings.warn(
+                f"'{legacy_name}' on shape prim is deprecated; "
+                f"author '{material_attr}' on the bound NewtonMaterialAPI material instead.",
+                DeprecationWarning,
+                stacklevel=4,
+            )
+            return float(value)
+        return None
+
+    return _getter
+
+
+def _mjc_legacy_material_solref(converter, material_attr: str):
+    """Return a getter that reads legacy mjc:solref on a material prim with a deprecation warning."""
+
+    def _getter(prim: Usd.Prim) -> float | None:
+        value = usd.get_attribute(prim, "mjc:solref")
+        if value is not None:
+            warnings.warn(
+                f"'mjc:solref' on material prim is deprecated; author '{material_attr}' on the "
+                f"bound NewtonMaterialAPI material, or use per-shape 'mjc:solref' (MjcGeomAPI) "
+                f"instead.",
+                DeprecationWarning,
+                stacklevel=4,
+            )
+            return converter(value)
+        return None
+
+    return _getter
 
 
 class SchemaResolverNewton(SchemaResolver):
@@ -83,9 +121,41 @@ class SchemaResolverNewton(SchemaResolver):
             # Collisions: newton margin == newton:contactMargin, newton gap == newton:contactGap
             "margin": SchemaAttribute("newton:contactMargin", 0.0),
             "gap": SchemaAttribute("newton:contactGap", float("-inf")),
-            # Contact stiffness/damping
-            "ke": SchemaAttribute("newton:contact_ke", None),
-            "kd": SchemaAttribute("newton:contact_kd", None),
+            # Legacy per-shape contact attrs (deprecated; use NewtonMaterialAPI instead)
+            "ke": SchemaAttribute(
+                "newton:contact_ke",
+                None,
+                usd_value_getter=_newton_legacy_contact_attr("newton:contact_ke", "newton:contactStiffness"),
+            ),
+            "kd": SchemaAttribute(
+                "newton:contact_kd",
+                None,
+                usd_value_getter=_newton_legacy_contact_attr("newton:contact_kd", "newton:contactDamping"),
+            ),
+            "kf": SchemaAttribute(
+                "newton:contact_kf",
+                None,
+                usd_value_getter=_newton_legacy_contact_attr("newton:contact_kf", "newton:contactFrictionGain"),
+            ),
+            "ka": SchemaAttribute(
+                "newton:contact_ka",
+                None,
+                usd_value_getter=_newton_legacy_contact_attr("newton:contact_ka", "newton:contactAdhesion"),
+            ),
+            # SDF configuration — from NewtonSDFCollisionAPI. `-inf` is the
+            # "unset" sentinel (same convention as gap / shell_thickness above).
+            "sdf_max_resolution": SchemaAttribute("newton:sdfMaxResolution", float("-inf")),
+            "sdf_narrow_band_inner": SchemaAttribute("newton:sdfNarrowBandInner", float("-inf")),
+            "sdf_narrow_band_outer": SchemaAttribute("newton:sdfNarrowBandOuter", float("-inf")),
+            "sdf_target_voxel_size": SchemaAttribute("newton:sdfTargetVoxelSize", float("-inf")),
+            "sdf_texture_format": SchemaAttribute("newton:sdfTextureFormat", None),
+            "sdf_padding": SchemaAttribute("newton:sdfPadding", float("-inf")),
+            # Hydroelastic contacts — folded into NewtonSDFCollisionAPI
+            "hydroelastic_enabled": SchemaAttribute("newton:hydroelasticEnabled", None),
+            "kh": SchemaAttribute("newton:hydroelasticStiffness", float("-inf")),
+            # Mass model
+            "mass_model": SchemaAttribute("newton:massModel", "solid"),
+            "shell_thickness": SchemaAttribute("newton:shellThickness", float("-inf")),
         },
         PrimType.BODY: {},
         PrimType.ARTICULATION: {
@@ -94,6 +164,10 @@ class SchemaResolverNewton(SchemaResolver):
         PrimType.MATERIAL: {
             "mu_torsional": SchemaAttribute("newton:torsionalFriction", 0.25),
             "mu_rolling": SchemaAttribute("newton:rollingFriction", 0.0005),
+            "ke": SchemaAttribute("newton:contactStiffness", None),
+            "kd": SchemaAttribute("newton:contactDamping", None),
+            "kf": SchemaAttribute("newton:contactFrictionGain", None),
+            "ka": SchemaAttribute("newton:contactAdhesion", None),
         },
         PrimType.ACTUATOR: {},
     }
@@ -180,8 +254,8 @@ class SchemaResolverPhysx(SchemaResolver):
             ),
         },
         PrimType.MATERIAL: {
-            "stiffness": SchemaAttribute("physxMaterial:compliantContactStiffness", 0.0),
-            "damping": SchemaAttribute("physxMaterial:compliantContactDamping", 0.0),
+            "ke": SchemaAttribute("physxMaterial:compliantContactStiffness", None),
+            "kd": SchemaAttribute("physxMaterial:compliantContactDamping", None),
         },
         PrimType.BODY: {
             # Rigid body damping
@@ -250,6 +324,26 @@ def solref_to_damping(solref: Sequence[float] | None) -> float | None:
     return damping
 
 
+# `parse_usd` divides revolute and D6-angular `limit_ke` / `limit_kd` by
+# DegreesToRadian (= pi/180) on the assumption that resolver-supplied gains are
+# authored in per-degree units (UsdPhysics convention). MuJoCo's `mjc:solreflimit`
+# always produces per-radian stiffness/damping (mjModel never expresses stiffness
+# per-degree). Pre-multiplying here cancels the importer's later division so the
+# per-radian value survives. Linear axes are unaffected and use the un-scaled
+# helpers above.
+_RAD_PER_DEG = math.pi / 180.0
+
+
+def _solref_to_stiffness_per_rad(solref: Sequence[float] | None) -> float | None:
+    s = solref_to_stiffness(solref)
+    return s * _RAD_PER_DEG if s is not None else None
+
+
+def _solref_to_damping_per_rad(solref: Sequence[float] | None) -> float | None:
+    d = solref_to_damping(solref)
+    return d * _RAD_PER_DEG if d is not None else None
+
+
 def _mjc_margin_from_prim(prim: Usd.Prim) -> float | None:
     """Compute Newton margin from MuJoCo: margin - gap [m].
 
@@ -300,15 +394,15 @@ class SchemaResolverMjc(SchemaResolver):
             "limit_transY_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
             "limit_transZ_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
             "limit_linear_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_angular_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_rotX_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_rotY_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_rotZ_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
+            "limit_angular_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
+            "limit_rotX_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
+            "limit_rotY_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
+            "limit_rotZ_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
             "limit_linear_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_angular_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_rotX_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_rotY_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_rotZ_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
+            "limit_angular_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
+            "limit_rotX_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
+            "limit_rotY_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
+            "limit_rotZ_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
         },
         PrimType.SHAPE: {
             # Mesh
@@ -322,9 +416,15 @@ class SchemaResolverMjc(SchemaResolver):
                 attribute_names=("mjc:margin", "mjc:gap"),
             ),
             "gap": SchemaAttribute("mjc:gap", 0.0),
-            # Contact stiffness/damping from per-geom solref
-            "ke": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
-            "kd": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
+            # Mass model: mjc:shellinertia (bool) → "shell" / "solid"
+            "mass_model": SchemaAttribute("mjc:shellinertia", False, lambda v: "shell" if v else "solid"),
+            # mjc:solref also fills shape_material_ke/kd via the legacy lossy
+            # conversion for back-compat with the convert_solref(ke, kd, 1, 1)
+            # round-trip; raw solref is preserved in mujoco.solref. See
+            # docs/integrations/mujoco.rst > "Shape-material contact stiffness
+            # and damping".
+            "ke": SchemaAttribute("mjc:solref", None, solref_to_stiffness),
+            "kd": SchemaAttribute("mjc:solref", None, solref_to_damping),
         },
         PrimType.MATERIAL: {
             # Materials
@@ -333,8 +433,18 @@ class SchemaResolverMjc(SchemaResolver):
             # Contact models
             "priority": SchemaAttribute("mjc:priority", 0),
             "weight": SchemaAttribute("mjc:solmix", 1.0),
-            "stiffness": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_stiffness),
-            "damping": SchemaAttribute("mjc:solref", [0.02, 1.0], solref_to_damping),
+            # See PrimType.SHAPE above for the mjc:solref → stiffness/damping
+            # back-compat mirror.
+            "ke": SchemaAttribute(
+                "mjc:solref",
+                None,
+                usd_value_getter=_mjc_legacy_material_solref(solref_to_stiffness, "newton:contactStiffness"),
+            ),
+            "kd": SchemaAttribute(
+                "mjc:solref",
+                None,
+                usd_value_getter=_mjc_legacy_material_solref(solref_to_damping, "newton:contactDamping"),
+            ),
         },
         PrimType.ACTUATOR: {
             # Actuators

@@ -429,7 +429,7 @@ def _update_body_wrenches(
 @wp.kernel
 def _convert_body_origin_to_com(
     # Inputs
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
     body_wid: wp.array[int32],
     body_com: wp.array[vec3f],
     body_q: wp.array[transformf],
@@ -456,7 +456,7 @@ def _convert_body_origin_to_com(
 @wp.kernel
 def _convert_body_com_to_origin(
     # Inputs
-    world_mask: wp.array[int32],
+    world_mask: wp.array[bool],
     body_wid: wp.array[int32],
     body_com: wp.array[vec3f],
     body_q_com: wp.array[transformf],

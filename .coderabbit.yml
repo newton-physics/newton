@@ -25,6 +25,13 @@ reviews:
         placement order. For Deprecated, Changed, and Removed entries, verify
         the entry includes migration guidance telling users what replaces the
         old behavior.
+    - path: "**/*.py"
+      instructions: |
+        Flag inline code comments (not docstrings) that are verbose or
+        redundant: comments that restate what the code already shows, repeat
+        the same point in multiple places, or narrate obvious steps. Comments
+        should be brief and reserved for non-obvious code, explaining why
+        rather than what.
 chat:
   auto_reply: true
 issue_enrichment:

@@ -5,6 +5,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import Contacts, Control, Model, State
+from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..solver import SolverBase
 from .kernels_body import (
     eval_body_joint_forces,
@@ -66,9 +67,11 @@ class SolverSemiImplicit(SolverBase):
 
     """
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,
+        *,
         angular_damping: float = 0.05,
         friction_smoothing: float = 1.0,
         joint_attach_ke: float = 1.0e4,
@@ -170,9 +173,7 @@ class SolverSemiImplicit(SolverBase):
             )
 
             # particle shape contact
-            eval_particle_body_contact_forces(
-                model, state_in, contacts, particle_f, body_f_work, body_f_in_world_frame=False
-            )
+            eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f_work)
 
             self.integrate_particles(model, state_in, state_out, dt)
 

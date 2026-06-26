@@ -51,7 +51,7 @@ def test_sand_cube_on_plane(test, device):
     options.grid_type = "dense"  # use dense grid as sparse grid is GPU-only
     options.voxel_size = voxel_size
 
-    solver = SolverImplicitMPM(model, options)
+    solver = SolverImplicitMPM(model, config=options)
 
     init_pos = state_0.particle_q.numpy()
 
@@ -155,7 +155,7 @@ def test_finite_difference_collider_velocity(test, device):
         options.grid_type = "dense"
         options.collider_velocity_mode = velocity_mode
 
-        solver = SolverImplicitMPM(model, options)
+        solver = SolverImplicitMPM(model, config=options)
 
         init_mean_x = np.mean(state_0.particle_q.numpy()[:, 0])
 
@@ -179,9 +179,10 @@ def test_finite_difference_collider_velocity(test, device):
         end_mean_x = np.mean(state_0.particle_q.numpy()[:, 0])
         return end_mean_x - init_mean_x
 
-    # Run with both modes
-    displacement_instantaneous = run_simulation("instantaneous")
-    displacement_finite_diff = run_simulation("finite_difference")
+    # 'forward' sees the current collider velocity; 'backward' derives it from
+    # the previous-step collider position.
+    displacement_instantaneous = run_simulation("forward")
+    displacement_finite_diff = run_simulation("backward")
 
     # With instantaneous mode and body_qd=0, particles should barely move
     # (they see zero collider velocity, so no friction drag)
@@ -210,7 +211,7 @@ def test_finite_difference_collider_velocity(test, device):
     )
 
 
-devices = get_test_devices(mode="basic")
+devices = get_test_devices()
 
 
 class TestImplicitMPM(unittest.TestCase):

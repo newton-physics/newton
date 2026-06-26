@@ -88,6 +88,10 @@ BETA_THRESHOLD = 0.0001  # 0.1mm
 
 VALUES_PER_KEY = NUM_SPATIAL_DIRECTIONS + 1
 
+# Open-addressed linear probing gets expensive at high load and failed inserts
+# scan the whole table.
+HASHTABLE_WARN_LOAD_PERCENT = 80
+
 # Vector type for tracking exported contact IDs (used in export kernels)
 exported_ids_vec_type = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
 
@@ -541,8 +545,14 @@ class GlobalContactReducerData:
 
     # Aggregate force per hashtable entry (indexed by ht_capacity)
     # Used for hydroelastic stiffness calculation: c_stiffness = k_eff * |agg_force| / total_depth
-    # Accumulates sum(area * depth * normal) for all penetrating contacts per entry
+    # Accumulates sum(area * pressure_func(depth) * normal) for all penetrating contacts per entry
     agg_force: wp.array[wp.vec3]
+
+    # Aggregate geometric depth-volume per hashtable entry: sum(area * |depth| * normal)
+    # for all penetrating contacts. Unlike ``agg_force`` this is independent of the
+    # pressure law, so its magnitude is used as the pressure-law-agnostic
+    # direction-reliability gate for normal matching / anchor placement.
+    agg_depth_volume: wp.array[wp.vec3]
 
     # Weighted position sum per hashtable entry (for anchor contact computation)
     # Accumulates sum(area * depth * position) for penetrating contacts
@@ -582,6 +592,7 @@ def _clear_active_kernel(
     ht_active_slots: wp.array[wp.int32],
     # Hydroelastic per-entry arrays
     agg_force: wp.array[wp.vec3],
+    agg_depth_volume: wp.array[wp.vec3],
     weighted_pos_sum: wp.array[wp.vec3],
     weight_sum: wp.array[wp.float32],
     entry_k_eff: wp.array[wp.float32],
@@ -637,6 +648,7 @@ def _clear_active_kernel(
             # Clear hydroelastic aggregates if arrays are not empty
             if agg_force.shape[0] > 0:
                 agg_force[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
+                agg_depth_volume[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
                 weighted_pos_sum[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
                 weight_sum[entry_idx] = 0.0
                 entry_k_eff[entry_idx] = 0.0
@@ -723,6 +735,7 @@ class GlobalContactReducer:
         store_hydroelastic_data: bool = False,
         store_moment_data: bool = False,
         deterministic: bool = False,
+        hashtable_size_factor: float = 0.25,
     ):
         """Initialize the global contact reducer.
 
@@ -735,7 +748,13 @@ class GlobalContactReducer:
             deterministic: If True, use deterministic fingerprint-based tiebreaking
                 in contact reduction and replace the pre-prune probe with a
                 deterministic variant.
+            hashtable_size_factor: Multiplier applied to ``capacity`` when sizing
+                the reduction hashtable. Must be positive.
         """
+        hashtable_size_factor = float(hashtable_size_factor)
+        if not hashtable_size_factor > 0.0:
+            raise ValueError(f"hashtable_size_factor must be > 0.0, got {hashtable_size_factor}")
+
         max_det_contacts = 1 << int(CONTACT_ID_BITS)
         if deterministic and capacity > max_det_contacts:
             raise ValueError(
@@ -748,6 +767,7 @@ class GlobalContactReducer:
         self.device = device
         self.store_hydroelastic_data = store_hydroelastic_data
         self.deterministic = deterministic
+        self.hashtable_size_factor = hashtable_size_factor
 
         self.values_per_key = NUM_SPATIAL_DIRECTIONS + 1
 
@@ -773,13 +793,10 @@ class GlobalContactReducer:
         # Count failed hashtable inserts (e.g., table full)
         self.ht_insert_failures = wp.zeros(1, dtype=wp.int32, device=device)
 
-        # Hashtable sizing: estimate unique (shape_pair, bin) keys needed
-        # - NUM_NORMAL_BINS + ceil(NUM_VOXEL_DEPTH_SLOTS / values_per_key) bins per pair
-        # - Dense hydroelastic contacts: many contacts share the same bin
-        # - Assume ~8 contacts per unique key on average (conservative for dense contacts)
-        # - Provides 2x load factor headroom within the /4 estimate
-        # - If table fills, contacts gracefully skip reduction (still in buffer)
-        hashtable_size = max(capacity // 4, 1024)  # minimum 1024 for small scenes
+        # Hashtable sizing: keep the historical default at capacity / 4 for
+        # memory compatibility, while exposing a factor for dense batched scenes.
+        # A full open-addressed table can turn failed inserts into whole-table probes.
+        hashtable_size = max(int(capacity * hashtable_size_factor), 1024)
         self.hashtable = HashTable(hashtable_size, device=device)
 
         # Values array for hashtable - managed here, not by HashTable
@@ -790,6 +807,7 @@ class GlobalContactReducer:
         # Accumulates sum(area * depth * normal) for all penetrating contacts per entry
         if store_hydroelastic_data:
             self.agg_force = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
+            self.agg_depth_volume = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
             self.weighted_pos_sum = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
             self.weight_sum = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
             # k_eff per entry (constant per shape pair, set once on first insert)
@@ -809,6 +827,7 @@ class GlobalContactReducer:
                 self.agg_moment2_reduced = wp.zeros(0, dtype=wp.float32, device=device)
         else:
             self.agg_force = wp.zeros(0, dtype=wp.vec3, device=device)
+            self.agg_depth_volume = wp.zeros(0, dtype=wp.vec3, device=device)
             self.weighted_pos_sum = wp.zeros(0, dtype=wp.vec3, device=device)
             self.weight_sum = wp.zeros(0, dtype=wp.float32, device=device)
             self.entry_k_eff = wp.zeros(0, dtype=wp.float32, device=device)
@@ -853,6 +872,7 @@ class GlobalContactReducer:
                 self.ht_values,
                 self.hashtable.active_slots,
                 self.agg_force,
+                self.agg_depth_volume,
                 self.weighted_pos_sum,
                 self.weight_sum,
                 self.entry_k_eff,
@@ -896,6 +916,7 @@ class GlobalContactReducer:
         data.contact_nbin_entry = self.contact_nbin_entry
         data.entry_k_eff = self.entry_k_eff
         data.agg_force = self.agg_force
+        data.agg_depth_volume = self.agg_depth_volume
         data.weighted_pos_sum = self.weighted_pos_sum
         data.weight_sum = self.weight_sum
         data.total_depth_reduced = self.total_depth_reduced

@@ -1,6 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
+from collections.abc import Iterable
+
 import numpy as np
 import warp as wp
 
@@ -25,7 +29,7 @@ class Picking:
         pick_stiffness: float = 50.0,
         pick_damping: float = 5.0,
         pick_max_acceleration: float = 5.0,
-        world_offsets: wp.array | None = None,
+        world_offsets: wp.array[wp.vec3] | None = None,
     ) -> None:
         """
         Initializes the picking system.
@@ -43,7 +47,7 @@ class Picking:
         self.pick_stiffness = pick_stiffness
         self.pick_damping = pick_damping
         self.world_offsets = world_offsets
-        self.visible_worlds_mask: wp.array | None = None
+        self.visible_worlds_mask: wp.array[int] | None = None
 
         self.min_dist = None
         self.min_index = None
@@ -69,6 +73,10 @@ class Picking:
         self.picking_active = False
 
         self._default_on_mouse_drag = None
+
+        body_count = model.body_count if model else 0
+        device = model.device if model else "cpu"
+        self._linear_only_body_mask = wp.zeros(body_count, dtype=wp.int32, device=device)
 
         # Pre-compute effective mass per body for picking force clamping.
         # For articulated bodies, use the total articulation mass so that
@@ -100,12 +108,57 @@ class Picking:
                 self.model.body_com,
                 self.model.body_mass,
                 self._pick_effective_mass,
+                self._linear_only_body_mask,
             ],
             device=self.model.device,
         )
 
+    def set_linear_only_bodies(self, body_ids: Iterable[int] | None) -> None:
+        """Configure bodies that should receive no torque from mouse picking.
+
+        Mouse picking normally applies an offset-induced torque whenever the
+        click point is off-center relative to the body's COM. Bodies listed
+        here only receive the linear (translation) component, which is useful
+        for cables and other low-inertia articulated chains where spurious
+        picking torques would destabilize the solver.
+
+        Args:
+            body_ids: Iterable of body indices into ``model.body_q``. Pass
+                ``None`` (or call :meth:`clear_linear_only_bodies`) to
+                restore normal picking torque for every body.
+
+        Raises:
+            ValueError: If any ``body_id`` falls outside
+                ``[0, model.body_count)``.
+        """
+        if self.model is None:
+            return
+        if body_ids is None:
+            self.clear_linear_only_bodies()
+            return
+
+        mask = np.zeros(self.model.body_count, dtype=np.int32)
+        for raw_body_id in body_ids:
+            body_id = int(raw_body_id)
+            if body_id < 0 or body_id >= self.model.body_count:
+                raise ValueError(f"Body id {body_id} is outside the model body range [0, {self.model.body_count}).")
+            mask[body_id] = 1
+
+        self._linear_only_body_mask.assign(mask)
+
+    def clear_linear_only_bodies(self) -> None:
+        """Restore normal mouse picking torque for all bodies.
+
+        Reverts any previous :meth:`set_linear_only_bodies` configuration so
+        every picked body once again receives both linear force and the
+        offset-induced torque.
+        """
+        if self.model is None:
+            return
+        self._linear_only_body_mask.fill_(0)
+
     @staticmethod
-    def _compute_effective_mass(model: newton.Model) -> wp.array:
+    def _compute_effective_mass(model: newton.Model) -> wp.array[float]:
         """Compute per-body effective mass for picking force clamping.
 
         For bodies in an articulation, returns the total mass of that
@@ -236,11 +289,8 @@ class Picking:
         else:
             world_offsets = wp.array([], dtype=wp.vec3, device=self.model.device)
 
-        # Pick the lean (no-HFIELD) kernel variant when the scene has no heightfields,
-        # so non-HFIELD scenes don't pay the per-thread HeightfieldData overhead.
-        kernel = raycast.raycast_kernel if self.model.has_heightfields else raycast.raycast_kernel_no_hfield
         wp.launch(
-            kernel=kernel,
+            kernel=raycast.raycast_kernel,
             dim=num_geoms,
             inputs=[
                 state.body_q,
@@ -249,9 +299,6 @@ class Picking:
                 self.model.shape_type,
                 self.model.shape_scale,
                 self.model.shape_source_ptr,
-                self.model.shape_heightfield_index,
-                self.model.heightfield_data,
-                self.model.heightfield_elevations,
                 p,
                 d,
                 self.lock,

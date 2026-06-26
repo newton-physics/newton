@@ -533,10 +533,10 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
 
         Returns:
             Tuple of:
-                collision detected (bool): True if shapes are colliding
-                signed_distance (float): Signed distance (negative indicates overlap)
-                contact point center (wp.vec3): Midpoint between witness points in world space
-                normal (wp.vec3): Contact normal from A to B in world space
+                collision detected: True if shapes are colliding
+                signed_distance: Signed distance (negative indicates overlap)
+                contact point center: Midpoint between witness points in world space
+                normal: Contact normal from A to B in world space
         """
         # Transform shape B to local space of shape A
         relative_orientation_b = wp.quat_inverse(orientation_a) * orientation_b

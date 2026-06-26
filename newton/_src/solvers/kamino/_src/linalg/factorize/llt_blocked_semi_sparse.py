@@ -8,6 +8,11 @@ from functools import cache
 import numpy as np
 import warp as wp
 
+from ._tile_builtins import (
+    HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE,
+    HAS_TILE_MATMUL_TRANSPOSE_UPDATE,
+)
+
 ###
 # Module interface
 ###
@@ -75,12 +80,12 @@ def reorder_rows_kernel(
     ordering: wp.array2d[int],
     n_rows_arr: wp.array[int],
     n_cols_arr: wp.array[int],
-    batch_mask: wp.array[int],
+    batch_mask: wp.array[bool],
 ):
     batch_id, i, j = wp.tid()  # 2D launch: (n_rows, n_cols)
     n_rows = n_rows_arr[batch_id]
     n_cols = n_cols_arr[batch_id]
-    if i < n_rows and j < n_cols and batch_mask[batch_id] != 0:
+    if i < n_rows and j < n_cols and batch_mask[batch_id]:
         src_row = ordering[batch_id, i]
         src_col = ordering[batch_id, j]
         dst[batch_id, i, j] = src[batch_id, src_row, src_col]
@@ -92,11 +97,11 @@ def reorder_rows_kernel_col_vector(
     dst: wp.array3d[float],
     ordering: wp.array2d[int],
     n_rows_arr: wp.array[int],
-    batch_mask: wp.array[int],
+    batch_mask: wp.array[bool],
 ):
     batch_id, i = wp.tid()
     n_rows = n_rows_arr[batch_id]
-    if i < n_rows and batch_mask[batch_id] != 0:
+    if i < n_rows and batch_mask[batch_id]:
         src_row = ordering[batch_id, i]
         # For column vectors (2d arrays with shape (n, 1)), just copy columns directly
         dst[batch_id, i, 0] = src[batch_id, src_row, 0]
@@ -171,7 +176,7 @@ def create_blocked_cholesky_kernel(block_size: int):
         L_batched: wp.array3d[float],
         L_tile_pattern_batched: wp.array3d[int],
         active_matrix_size_arr: wp.array[int],
-        batch_mask: wp.array[int],
+        batch_mask: wp.array[bool],
     ):
         """
         Batched Cholesky factorization of symmetric positive definite matrices in blocks.
@@ -182,7 +187,7 @@ def create_blocked_cholesky_kernel(block_size: int):
             L_batched: Output Cholesky factors (batch_size, n, n)
             L_tile_pattern_batched: Sparsity pattern for L tiles (1=nonzero, 0=zero)
             active_matrix_size_arr: Size of each active matrix in batch
-            batch_mask: Flag for each matrix in the batch, indicating whether to process it (0 = skip)
+            batch_mask: Boolean flag for each matrix in the batch, indicating whether to process it (False = skip)
 
         Notes:
             - Parallel processing across batch dimension
@@ -193,7 +198,7 @@ def create_blocked_cholesky_kernel(block_size: int):
         batch_id, tid_block = wp.tid()
         num_threads_per_block = wp.block_dim()
 
-        if batch_mask[batch_id] == 0:
+        if not batch_mask[batch_id]:
             return
 
         A = A_batched[batch_id]
@@ -237,8 +242,11 @@ def create_blocked_cholesky_kernel(block_size: int):
                     if L_tile_pattern[tile_k, tile_j] == 0:
                         continue
                     L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j))
-                    L_block_T = wp.tile_transpose(L_block)
-                    wp.tile_matmul(L_block, L_block_T, A_kk_tile, alpha=-1.0)
+                    if wp.static(HAS_TILE_MATMUL_TRANSPOSE_UPDATE):
+                        wp.tile_matmul_transpose_update(A_kk_tile, L_block, L_block, alpha=-1.0)
+                    else:
+                        L_block_T = wp.tile_transpose(L_block)
+                        wp.tile_matmul(L_block, L_block_T, A_kk_tile, alpha=-1.0)
                     # equivalent to A_kk_tile -= L_block * L_block_T, without intermediate allocation
 
             # Compute the Cholesky factorization for the block
@@ -277,8 +285,11 @@ def create_blocked_cholesky_kernel(block_size: int):
                             continue
                         L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j))
                         L_2_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j))
-                        L_T_tile = wp.tile_transpose(L_2_tile)
-                        wp.tile_matmul(L_tile, L_T_tile, A_ik_tile, alpha=-1.0)
+                        if wp.static(HAS_TILE_MATMUL_TRANSPOSE_UPDATE):
+                            wp.tile_matmul_transpose_update(A_ik_tile, L_tile, L_2_tile, alpha=-1.0)
+                        else:
+                            L_T_tile = wp.tile_transpose(L_2_tile)
+                            wp.tile_matmul(L_tile, L_T_tile, A_ik_tile, alpha=-1.0)
                         # equivalent to A_ik_tile -= L_tile * L_T_tile, without intermediate allocation
 
                 t = wp.tile_transpose(A_ik_tile)
@@ -300,7 +311,7 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
         x_batched: wp.array3d[float],
         y_batched: wp.array3d[float],
         active_matrix_size_arr: wp.array[int],
-        batch_mask: wp.array[int],
+        batch_mask: wp.array[bool],
     ):
         """
         Batched blocked Cholesky solver kernel. For each batch, solves A x = b using L L^T = A.
@@ -309,7 +320,7 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
 
         batch_id, _tid_block = wp.tid()
 
-        if batch_mask[batch_id] == 0:
+        if not batch_mask[batch_id]:
             return
 
         L = L_batched[batch_id]
@@ -366,9 +377,12 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
                     if L_tile_pattern[tile_j, tile_i] == 0:
                         continue
                     L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(j, i_start))
-                    L_T_tile = wp.tile_transpose(L_tile)
                     x_tile = wp.tile_load(x, shape=(block_size, 1), offset=(j, 0))
-                    wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
+                    if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
+                        wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
+                    else:
+                        L_T_tile = wp.tile_transpose(L_tile)
+                        wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
                     # equivalent to rhs_tile -= L_T_tile * x_tile, without intermediate allocation
             wp.tile_upper_solve_inplace(wp.tile_transpose(L_diag), rhs_tile)  # In-place solve to avoid extra allocation
             wp.tile_store(x, rhs_tile, offset=(i_start, 0))
@@ -509,7 +523,7 @@ class SemiSparseBlockCholeskySolverBatched:
         self,
         A: wp.array3d[float],
         num_active_equations: wp.array[int],
-        batch_mask: wp.array[int],
+        batch_mask: wp.array[bool],
     ):
         """
         Computes the Cholesky factorization of a symmetric positive definite matrix A in blocks.
@@ -518,7 +532,7 @@ class SemiSparseBlockCholeskySolverBatched:
         Args:
             A: Input SPD matrices of shape (batch_size, n, n).
             num_active_equations: Size of the top-left block to factorize for each matrix in the batch.
-            batch_mask: Flag for each matrix in the batch, indicating whether to process it (0 = skip)
+            batch_mask: Boolean flag for each matrix in the batch, indicating whether to process it (False = skip)
         """
 
         self.num_active_equations = num_active_equations
@@ -552,7 +566,7 @@ class SemiSparseBlockCholeskySolverBatched:
         self,
         rhs: wp.array3d[float],
         result: wp.array3d[float],
-        batch_mask: wp.array[int],
+        batch_mask: wp.array[bool],
     ):
         """
         Solves A x = b given the Cholesky factor L (A = L L^T) using
@@ -561,7 +575,7 @@ class SemiSparseBlockCholeskySolverBatched:
         Args:
             rhs: Input right-hand-side matrices of shape (batch_size, n, p).
             result: Output solution matrices of shape (batch_size, n, p).
-            batch_mask: Flag for each matrix in the batch, indicating whether to process it (0 = skip)
+            batch_mask: Boolean flag for each matrix in the batch, indicating whether to process it (False = skip)
         """
 
         R = result
