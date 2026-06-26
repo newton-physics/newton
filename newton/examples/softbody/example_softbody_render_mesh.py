@@ -58,7 +58,8 @@ class Example:
         )
 
         # High-resolution render mesh: a UV sphere that fits inside the cube,
-        # so every render vertex embeds in a tetrahedron.
+        # so every render vertex embeds in a tetrahedron. A checkerboard texture
+        # makes the deformation of the embedded surface easy to see.
         center = np.array([origin[0], origin[1], origin[2]], dtype=np.float32) + 0.5 * length
         sphere = newton.Mesh.create_sphere(radius=0.45 * length, num_latitudes=48, num_longitudes=48)
         render_verts = np.asarray(sphere.vertices, dtype=np.float32) + center
@@ -70,6 +71,7 @@ class Example:
             render_indices,
             kind="tet",
             uvs=render_uvs,
+            texture=self._checker_texture(),
             label="sphere_skin",
         )
 
@@ -93,7 +95,19 @@ class Example:
         self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
+        self.viewer.set_camera(pos=wp.vec3(0.4, -1.3, 1.45), pitch=-8.0, yaw=90.0)
         self.capture()
+
+    @staticmethod
+    def _checker_texture(tiles: int = 8, size: int = 512) -> np.ndarray:
+        """Build an RGB checkerboard texture (H, W, 3) uint8."""
+        image = np.zeros((size, size, 3), dtype=np.uint8)
+        step = size // tiles
+        for i in range(tiles):
+            for j in range(tiles):
+                color = (235, 90, 40) if (i + j) % 2 else (40, 120, 255)
+                image[i * step : (i + 1) * step, j * step : (j + 1) * step] = color
+        return image
 
     def capture(self):
         if wp.get_device().is_cuda:
