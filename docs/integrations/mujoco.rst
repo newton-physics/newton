@@ -590,6 +590,14 @@ Caveats
   Newton's :attr:`~newton.Model.joint_velocity_limit` has no MuJoCo equivalent and is
   ignored.
 
+**Per-body gravity disable maps to MuJoCo gravcomp.**
+  When MuJoCo custom attributes are registered before USD import, authored
+  body-level ``physxRigidBody:disableGravity = true`` is imported as
+  ``mujoco:gravcomp = 1.0``. An explicit ``mjc:gravcomp`` value on the same
+  body takes precedence. This mapping affects MuJoCo gravity compensation; it
+  does not add a solver-independent per-body gravity flag to Newton's core
+  model.
+
 **Kinematic-root armature override.**
   DOFs of kinematic articulation roots have their
   :attr:`~newton.Model.joint_armature` replaced with a very large

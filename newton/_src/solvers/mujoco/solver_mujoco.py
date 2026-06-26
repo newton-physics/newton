@@ -677,6 +677,20 @@ class SolverMuJoCo(SolverBase):
                 return SOLREF_MODE_RAW
             return SOLREF_MODE_MJCF_DEFAULT
 
+        def parse_body_gravcomp_usd(_value: Any, context: dict[str, Any]) -> float | None:
+            prim = context.get("prim")
+            if prim is None:
+                return None
+
+            gravcomp_attr = prim.GetAttribute("mjc:gravcomp")
+            if gravcomp_attr is not None and gravcomp_attr.HasAuthoredValue():
+                return float(gravcomp_attr.Get())
+
+            disable_gravity_attr = prim.GetAttribute("physxRigidBody:disableGravity")
+            if disable_gravity_attr is not None and disable_gravity_attr.HasAuthoredValue():
+                return 1.0 if bool(disable_gravity_attr.Get()) else None
+            return None
+
         # region custom frequencies
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="pair", namespace="mujoco"))
         builder.add_custom_frequency(
@@ -878,7 +892,8 @@ class SolverMuJoCo(SolverBase):
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
-                usd_attribute_name="mjc:gravcomp",
+                usd_attribute_name="*",
+                usd_value_transformer=parse_body_gravcomp_usd,
                 mjcf_attribute_name="gravcomp",
             )
         )

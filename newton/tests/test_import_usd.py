@@ -4298,6 +4298,38 @@ def Xform "NotPSD" (
         self.assertTrue(np.any(np.isclose(gravcomp, 0.0)))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_usd_physx_disable_gravity_as_gravcomp(self):
+        """Test that body-level PhysX disableGravity maps to MuJoCo gravcomp."""
+        from pxr import Sdf, Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        prim1 = stage.DefinePrim("/Body1", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(prim1)
+        prim1.CreateAttribute("physxRigidBody:disableGravity", Sdf.ValueTypeNames.Bool).Set(True)
+
+        prim2 = stage.DefinePrim("/Body2", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(prim2)
+        prim2.CreateAttribute("physxRigidBody:disableGravity", Sdf.ValueTypeNames.Bool).Set(False)
+
+        prim3 = stage.DefinePrim("/Body3", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(prim3)
+        prim3.CreateAttribute("physxRigidBody:disableGravity", Sdf.ValueTypeNames.Bool).Set(True)
+        prim3.CreateAttribute("mjc:gravcomp", Sdf.ValueTypeNames.Float).Set(0.25)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        gravcomp = model.mujoco.gravcomp.numpy()
+        self.assertEqual(len(gravcomp), 3)
+        self.assertTrue(np.any(np.isclose(gravcomp, 1.0)))
+        self.assertTrue(np.any(np.isclose(gravcomp, 0.0)))
+        self.assertTrue(np.any(np.isclose(gravcomp, 0.25)))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_stiffness_damping(self):
         """Test that joint stiffness and damping are parsed correctly from USD."""
         from pxr import Usd
