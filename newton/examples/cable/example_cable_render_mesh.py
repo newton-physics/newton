@@ -99,7 +99,7 @@ class Example:
         tangents /= np.linalg.norm(tangents, axis=1, keepdims=True) + 1e-12
 
         verts, uvs = [], []
-        for i, (p, t) in enumerate(zip(centerline, tangents)):
+        for i, (p, t) in enumerate(zip(centerline, tangents, strict=True)):
             up = np.array([0.0, 0.0, 1.0]) if abs(t[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
             nrm = np.cross(t, up)
             nrm /= np.linalg.norm(nrm) + 1e-12
