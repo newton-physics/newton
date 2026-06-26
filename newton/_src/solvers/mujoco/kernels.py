@@ -309,12 +309,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
         # the original kernel plus recording the tid→cid mapping.
 
         if tid == 0:
-            if count > naconmax:
-                wp.printf(
-                    "Number of Newton contacts (%d) exceeded MJWarp limit (%d). Increase nconmax.\n",
-                    count,
-                    naconmax,
-                )
             ncollision_out[0] = 0
 
         if count > naconmax:
