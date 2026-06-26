@@ -4331,6 +4331,57 @@ def Xform "NotPSD" (
         self.assertAlmostEqual(float(gravcomp_by_body["/Body3"]), 0.25)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_usd_articulation_disable_gravity_as_gravcomp(self):
+        """Test disableGravity mapping on an articulated child body through one MuJoCo step."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        robot = UsdGeom.Xform.Define(stage, "/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(robot.GetPrim())
+
+        bodies = {}
+        for name in ("Base", "Link"):
+            body = UsdGeom.Xform.Define(stage, f"/Robot/{name}")
+            prim = body.GetPrim()
+            UsdPhysics.RigidBodyAPI.Apply(prim)
+            mass_api = UsdPhysics.MassAPI.Apply(prim)
+            mass_api.CreateMassAttr().Set(1.0)
+            mass_api.CreateDiagonalInertiaAttr().Set((1.0, 1.0, 1.0))
+            bodies[name] = body
+
+        bodies["Link"].GetPrim().CreateAttribute("physxRigidBody:disableGravity", Sdf.ValueTypeNames.Bool).Set(True)
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/Robot/Joint")
+        joint.CreateBody0Rel().SetTargets([bodies["Base"].GetPath()])
+        joint.CreateBody1Rel().SetTargets([bodies["Link"].GetPath()])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        gravcomp_by_body = dict(zip(model.body_label, model.mujoco.gravcomp.numpy(), strict=True))
+        self.assertAlmostEqual(float(gravcomp_by_body["/Robot/Base"]), 0.0)
+        self.assertAlmostEqual(float(gravcomp_by_body["/Robot/Link"]), 1.0)
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        mj_body_id = solver.mj_model.body(model.body_label[model.body_label.index("/Robot/Link")].replace("/", "_")).id
+        self.assertAlmostEqual(float(solver.mj_model.body_gravcomp[mj_body_id]), 1.0)
+
+        state_in = model.state()
+        state_out = model.state()
+        solver.step(state_in, state_out, model.control(), model.contacts(), 1.0 / 60.0)
+        self.assertTrue(np.all(np.isfinite(state_out.body_q.numpy())))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_stiffness_damping(self):
         """Test that joint stiffness and damping are parsed correctly from USD."""
         from pxr import Usd

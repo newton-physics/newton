@@ -678,6 +678,7 @@ class SolverMuJoCo(SolverBase):
             return SOLREF_MODE_MJCF_DEFAULT
 
         def parse_body_gravcomp_usd(_value: Any, context: dict[str, Any]) -> float | None:
+            """Map USD body gravity controls to MuJoCo body ``gravcomp``."""
             prim = context.get("prim")
             if prim is None:
                 return None
