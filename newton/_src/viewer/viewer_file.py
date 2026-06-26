@@ -1308,6 +1308,7 @@ class ViewerFile(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """File viewer does not render meshes.
 

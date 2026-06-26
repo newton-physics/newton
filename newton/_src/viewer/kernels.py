@@ -840,3 +840,91 @@ def transform_points(
 ):
     i = wp.tid()
     transformed_points[i] = wp.transform_point(xform, points[i])
+
+
+@wp.kernel
+def skin_render_mesh_cloth(
+    particle_q: wp.array[wp.vec3],
+    parent: wp.array[wp.int32],
+    world_offset: wp.vec3,
+    layer_xform: wp.transform,
+    out_points: wp.array[wp.vec3],
+):
+    """Skin a surface render mesh: each vertex follows its bound particle."""
+    i = wp.tid()
+    p = particle_q[parent[i]] + world_offset
+    out_points[i] = wp.transform_point(layer_xform, p)
+
+
+@wp.kernel
+def skin_render_mesh_tet(
+    particle_q: wp.array[wp.vec3],
+    tet_indices: wp.array[wp.int32],
+    parent: wp.array[wp.int32],
+    weights: wp.array[wp.vec4],
+    world_offset: wp.vec3,
+    layer_xform: wp.transform,
+    out_points: wp.array[wp.vec3],
+):
+    """Skin a volumetric render mesh by barycentric blend of its parent tet."""
+    i = wp.tid()
+    t = parent[i]
+    w = weights[i]
+    p = (
+        w[0] * particle_q[tet_indices[4 * t + 0]]
+        + w[1] * particle_q[tet_indices[4 * t + 1]]
+        + w[2] * particle_q[tet_indices[4 * t + 2]]
+        + w[3] * particle_q[tet_indices[4 * t + 3]]
+    ) + world_offset
+    out_points[i] = wp.transform_point(layer_xform, p)
+
+
+@wp.kernel
+def accumulate_face_normals(
+    points: wp.array[wp.vec3],
+    indices: wp.array[wp.int32],
+    normals: wp.array[wp.vec3],
+):
+    """Atomically scatter unnormalized face normals to each triangle's vertices.
+
+    Face normals are weighted by triangle area (the un-normalized cross product),
+    which yields area-weighted vertex normals after accumulation.
+    """
+    f = wp.tid()
+    i0 = indices[3 * f + 0]
+    i1 = indices[3 * f + 1]
+    i2 = indices[3 * f + 2]
+    n = wp.cross(points[i1] - points[i0], points[i2] - points[i0])
+    wp.atomic_add(normals, i0, n)
+    wp.atomic_add(normals, i1, n)
+    wp.atomic_add(normals, i2, n)
+
+
+@wp.kernel
+def normalize_normals(normals: wp.array[wp.vec3]):
+    i = wp.tid()
+    n = normals[i]
+    length = wp.length(n)
+    if length > 1.0e-12:
+        normals[i] = n / length
+
+
+@wp.kernel
+def render_mesh_strain_colors(
+    sim_points: wp.array[wp.vec3],
+    rest_points: wp.array[wp.vec3],
+    inv_max_displacement: float,
+    out_colors: wp.array[wp.vec3],
+):
+    """Map per-vertex displacement magnitude to the Matlab "jet" color ramp.
+
+    ``sim_points`` are the skinned positions in the simulation frame (no world
+    offset / layer transform), so the displacement from ``rest_points`` measures
+    deformation rather than rigid placement.
+    """
+    i = wp.tid()
+    t = wp.clamp(wp.length(sim_points[i] - rest_points[i]) * inv_max_displacement, 0.0, 1.0)
+    r = wp.clamp(1.5 - wp.abs(4.0 * t - 3.0), 0.0, 1.0)
+    g = wp.clamp(1.5 - wp.abs(4.0 * t - 2.0), 0.0, 1.0)
+    b = wp.clamp(1.5 - wp.abs(4.0 * t - 1.0), 0.0, 1.0)
+    out_colors[i] = wp.vec3(r, g, b)

@@ -606,6 +606,7 @@ class ViewerViser(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Log a mesh to viser for visualization.
@@ -659,6 +660,22 @@ class ViewerViser(ViewerBase):
                     "Viser textured meshes require trimesh; falling back to untextured rendering.",
                     stacklevel=2,
                 )
+
+        # Per-vertex colors (no texture): build a vertex-colored trimesh.
+        if trimesh_mesh is None and colors is not None:
+            colors_np = self._to_numpy(colors).astype(np.float32)
+            if len(colors_np) == len(points_np):
+                try:
+                    import trimesh
+
+                    rgba = np.empty((len(colors_np), 4), dtype=np.uint8)
+                    rgba[:, :3] = np.clip(colors_np * 255.0, 0, 255).astype(np.uint8)
+                    rgba[:, 3] = 255
+                    trimesh_mesh = trimesh.Trimesh(
+                        vertices=points_np, faces=indices_np, vertex_colors=rgba, process=False
+                    )
+                except Exception:
+                    trimesh_mesh = None
 
         # Store mesh data for instancing
         self._meshes[name] = {

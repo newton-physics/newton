@@ -813,6 +813,11 @@ class ViewerGui:
                     if viewer.show_com and renderer is not None and hasattr(renderer, "com_scale"):
                         _, renderer.com_scale = imgui.slider_float("COM Scale", renderer.com_scale, 0.25, 5.0)
                     _changed, viewer.show_triangles = imgui.checkbox("Show Cloth", viewer.show_triangles)
+                    if getattr(viewer.model, "deformable_render_mesh_count", 0) > 0:
+                        _changed, viewer.show_render_mesh = imgui.checkbox("Show Render Mesh", viewer.show_render_mesh)
+                        _changed, viewer.show_render_strain = imgui.checkbox(
+                            "Show Render Strain", viewer.show_render_strain
+                        )
                     _changed, viewer.show_collision = imgui.checkbox("Show Collision", viewer.show_collision)
                     if renderer is not None and hasattr(renderer, "draw_edges"):
                         _changed, renderer.draw_edges = imgui.checkbox("Show Edges", renderer.draw_edges)

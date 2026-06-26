@@ -825,6 +825,49 @@ def parse_usd(
             tetmesh_cache[prim_path] = usd.get_tetmesh(prim, compat_namespaces=compat_ns)
         return tetmesh_cache[prim_path]
 
+    def _attach_deformable_render_meshes(tet_prim: Usd.Prim, particle_range: tuple[int, int]) -> None:
+        """Embed render meshes referenced by a deformable's ``newton:renderMesh`` rel.
+
+        Each target :class:`UsdGeom.Mesh` is read in world space (so it aligns
+        with the soft body's rest particles) and embedded in the body's tets via
+        :meth:`~newton.ModelBuilder.add_deformable_render_mesh`. This follows the
+        AOUSD Deformable-Body pattern of authoring a high-res render Gprim
+        alongside the simulation tet mesh.
+        """
+        rel = tet_prim.GetRelationship("newton:renderMesh")
+        if not rel or not rel.IsValid():
+            return
+
+        def _rotate(quat, points):
+            axis = np.array([quat[0], quat[1], quat[2]], dtype=np.float64)
+            t = 2.0 * np.cross(axis, points)
+            return points + float(quat[3]) * t + np.cross(axis, t)
+
+        for target in rel.GetTargets():
+            render_prim = stage.GetPrimAtPath(target)
+            if not render_prim or not render_prim.IsValid() or not render_prim.IsA(UsdGeom.Mesh):
+                continue
+            mesh = _get_mesh_cached(render_prim, load_uvs=True)
+            if mesh is None or len(mesh.vertices) == 0:
+                continue
+
+            world_mat = _get_prim_world_mat(render_prim, None, incoming_world_xform)
+            r_pos, r_rot, r_scale = wp.transform_decompose(world_mat)
+            scaled = np.asarray(mesh.vertices, dtype=np.float64) * np.array(r_scale, dtype=np.float64)
+            world_verts = (_rotate(r_rot, scaled) + np.array(r_pos, dtype=np.float64)).astype(np.float32)
+
+            builder.add_deformable_render_mesh(
+                world_verts,
+                np.asarray(mesh.indices, dtype=np.int32),
+                kind="tet",
+                particle_range=particle_range,
+                uvs=mesh._uvs,
+                texture=getattr(mesh, "texture", None),
+                label=str(render_prim.GetPath()),
+            )
+            if verbose:
+                print(f"  Embedded render mesh {render_prim.GetPath()} ({len(world_verts)} verts) in soft body.")
+
     def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:
         # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
         return any(material_props.get(key) is not None for key in ("texture", "roughness", "metallic"))
@@ -3773,6 +3816,15 @@ def parse_usd(
             _deformable_import_cloth(_deformable_ctx)
         if _deformable_prims.tetmeshes:
             _deformable_import_volume(_deformable_ctx)
+
+        # Embed authored render meshes (newton:renderMesh) for each imported soft body, skinned to its
+        # tets. Runs after the volume pass so each prim's particle range (start, count) is known.
+        if load_visual_shapes:
+            for soft_path, soft_ranges in path_soft_map.items():
+                soft_prim = stage.GetPrimAtPath(soft_path)
+                if soft_prim and soft_prim.IsValid():
+                    p0, p1 = soft_ranges["particle"]
+                    _attach_deformable_render_meshes(soft_prim, (p0, p1 - p0))
 
         # PhysicsAttachment prims from the AOUSD deformables proposal. The current
         # builder can faithfully lower the cable/rod subset because imported cables

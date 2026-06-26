@@ -27,6 +27,7 @@ from ..core.types import (
     Mat33,
     Quat,
     Transform,
+    Vec2,
     Vec3,
     Vec4,
     Vec6,
@@ -51,6 +52,7 @@ from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.mesh import MeshAdjacency
+from .deformable_render import DeformableRenderKind, DeformableRenderMesh
 from .enums import (
     BodyFlags,
     EqType,
@@ -1093,6 +1095,12 @@ class ModelBuilder:
         """Tetrahedral activations accumulated for :attr:`Model.tet_activations`."""
         self.tet_materials: list[tuple[float, float, float]] = []
         """Tetrahedral material rows accumulated for :attr:`Model.tet_materials`."""
+
+        # deformable render meshes (visualization-only, skinned from sim state)
+        self._deformable_render_meshes: list[dict] = []
+        """Raw render-mesh specs accumulated for :attr:`Model.deformable_render_meshes`.
+        Each entry stores numpy asset data and per-vertex embedding; converted to
+        :class:`~newton.DeformableRenderMesh` objects in :meth:`finalize`."""
 
         # muscles
         self.muscle_start: list[int] = []
@@ -3535,6 +3543,18 @@ class ModelBuilder:
             self.tri_indices.extend((np.array(builder.tri_indices, dtype=np.int32) + start_particle_idx).tolist())
         if builder.tet_count:
             self.tet_indices.extend((np.array(builder.tet_indices, dtype=np.int32) + start_particle_idx).tolist())
+
+        for spec in builder._deformable_render_meshes:
+            # Re-base the per-vertex driver indices into the merged index space:
+            # cloth meshes point at particles, tet-embedded meshes point at tets.
+            merged = dict(spec)
+            parent = np.array(spec["parent"], dtype=np.int32)
+            if spec["kind"] == DeformableRenderKind.TET_EMBED:
+                parent = parent + start_tetrahedron_idx
+            else:
+                parent = parent + start_particle_idx
+            merged["parent"] = parent
+            self._deformable_render_meshes.append(merged)
 
         builder_coloring_translated = [group + start_particle_idx for group in builder.particle_color_groups]
         self.particle_color_groups = combine_independent_particle_coloring(
@@ -9354,6 +9374,171 @@ class ModelBuilder:
                     for o1, o2, v1, v2 in edge_indices:
                         self.add_edge(o1, o2, v1, v2, rest=None, edge_ke=edge_ke, edge_kd=edge_kd)
 
+    def add_deformable_render_mesh(
+        self,
+        vertices: list[Vec3] | np.ndarray,
+        indices: list[int] | np.ndarray,
+        *,
+        kind: str = "auto",
+        particle_indices: list[int] | np.ndarray | None = None,
+        particle_range: tuple[int, int] | None = None,
+        uvs: list[Vec2] | np.ndarray | None = None,
+        normals: list[Vec3] | np.ndarray | None = None,
+        texture: np.ndarray | str | None = None,
+        label: str = "",
+    ) -> int:
+        """Attach a high-resolution render mesh to a deformable for visualization.
+
+        The render mesh is embedded in the coarse simulation deformable and
+        skinned from the simulation state each frame by the viewer; it never
+        participates in the solve. Vertices must be given in the same coordinate
+        frame as the simulation particles at rest (i.e. the deformed world-space
+        rest pose), so the embedding lines up with ``particle_q``.
+
+        Two embedding modes are supported (see :class:`~newton.DeformableRenderKind`):
+
+        - ``"cloth"`` — surface binding. Provide ``particle_indices`` mapping each
+          render vertex to a simulation particle; the deformed render vertex is
+          the particle position directly. Use for cloth/shells whose render mesh
+          shares (or maps 1:1 onto) the simulation topology.
+        - ``"tet"`` — volumetric embedding into a tetrahedral soft body via
+          barycentric weights (see :meth:`add_soft_mesh`). Restrict the search to
+          the body's tets with ``particle_range`` ``(start, count)``.
+
+        Args:
+            vertices: Render vertex positions [m], shape [vertex_count, 3].
+            indices: Flattened triangle indices into ``vertices``, length
+                ``tri_count * 3``.
+            kind: ``"cloth"``, ``"tet"``, or ``"auto"`` (cloth when
+                ``particle_indices`` is given, otherwise tet).
+            particle_indices: Per-render-vertex simulation particle index (cloth
+                mode), shape [vertex_count].
+            particle_range: ``(start, count)`` particle range of the soft body to
+                embed into (tet mode); defaults to all particles.
+            uvs: Per-render-vertex texture coordinates, shape [vertex_count, 2].
+            normals: Per-render-vertex bind-pose normals, shape [vertex_count, 3].
+            texture: Albedo texture image array (H, W, C) or path.
+            label: Display label used to build a stable viewer object name.
+
+        Returns:
+            The index of the new render mesh in
+            :attr:`~newton.Model.deformable_render_meshes`.
+        """
+        vertices = np.asarray(vertices, dtype=np.float32).reshape(-1, 3)
+        indices = np.asarray(indices, dtype=np.int32).reshape(-1)
+        vertex_count = len(vertices)
+        if vertex_count == 0 or len(indices) == 0:
+            raise ValueError("add_deformable_render_mesh requires non-empty vertices and indices")
+        if int(indices.max()) >= vertex_count or int(indices.min()) < 0:
+            raise ValueError("render mesh indices reference vertices outside the provided vertex array")
+
+        if kind == "auto":
+            kind = "cloth" if particle_indices is not None else "tet"
+
+        if uvs is not None:
+            uvs = np.asarray(uvs, dtype=np.float32).reshape(-1, 2)
+            if len(uvs) != vertex_count:
+                raise ValueError("uvs length must match the number of render vertices")
+        if normals is not None:
+            normals = np.asarray(normals, dtype=np.float32).reshape(-1, 3)
+            if len(normals) != vertex_count:
+                raise ValueError("normals length must match the number of render vertices")
+
+        spec: dict = {
+            "rest_vertices": vertices,
+            "indices": indices,
+            "uvs": uvs,
+            "normals_rest": normals,
+            "texture": texture,
+            "label": label,
+            "weights": None,
+        }
+
+        if kind == "cloth":
+            if particle_indices is None:
+                raise ValueError('add_deformable_render_mesh(kind="cloth") requires particle_indices')
+            parent = np.asarray(particle_indices, dtype=np.int32).reshape(-1)
+            if len(parent) != vertex_count:
+                raise ValueError("particle_indices length must match the number of render vertices")
+            if len(parent) and (int(parent.max()) >= self.particle_count or int(parent.min()) < 0):
+                raise ValueError("particle_indices reference particles outside the current builder")
+            spec["kind"] = DeformableRenderKind.CLOTH_SHARED
+            spec["parent"] = parent
+        elif kind == "tet":
+            parent, weights = self._embed_render_vertices_in_tets(vertices, particle_range)
+            spec["kind"] = DeformableRenderKind.TET_EMBED
+            spec["parent"] = parent
+            spec["weights"] = weights
+        else:
+            raise ValueError(f"unknown render-mesh kind {kind!r}; expected 'cloth', 'tet', or 'auto'")
+
+        self._deformable_render_meshes.append(spec)
+        return len(self._deformable_render_meshes) - 1
+
+    def _embed_render_vertices_in_tets(
+        self, vertices: np.ndarray, particle_range: tuple[int, int] | None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Compute the containing tet and barycentric weights for each render vertex.
+
+        Build-time, host-side embedding. For every render vertex the containing
+        tetrahedron is found via barycentric coordinates; vertices that fall
+        outside every tet (gaps, surface overhang) are clamped to the nearest tet
+        by centroid distance and a warning is emitted. Returns ``(parent, weights)``
+        where ``parent`` is the per-vertex tet index and ``weights`` are the four
+        barycentric coordinates (summing to one).
+        """
+        if self.tet_count == 0:
+            raise ValueError("add_deformable_render_mesh(kind='tet') requires tetrahedra; add a soft body first")
+
+        tet_idx = np.asarray(self.tet_indices, dtype=np.int64).reshape(-1, 4)
+        particles = np.asarray(self.particle_q, dtype=np.float64)
+
+        if particle_range is not None:
+            lo, hi = int(particle_range[0]), int(particle_range[0]) + int(particle_range[1])
+            keep = np.all((tet_idx >= lo) & (tet_idx < hi), axis=1)
+            tet_ids = np.nonzero(keep)[0]
+        else:
+            tet_ids = np.arange(len(tet_idx))
+        if len(tet_ids) == 0:
+            raise ValueError("no tetrahedra found in the requested particle_range for render-mesh embedding")
+
+        tets = tet_idx[tet_ids]
+        v0, v1, v2, v3 = (particles[tets[:, i]] for i in range(4))
+        # Columns are the tet edge vectors; bary123 = T^-1 (p - v0), bary0 = 1 - sum.
+        edge_mats = np.stack([v1 - v0, v2 - v0, v3 - v0], axis=2)
+        det = np.linalg.det(edge_mats)
+        nonsingular = np.abs(det) > 1.0e-20
+        inv_mats = np.zeros_like(edge_mats)
+        inv_mats[nonsingular] = np.linalg.inv(edge_mats[nonsingular])
+        centroids = 0.25 * (v0 + v1 + v2 + v3)
+
+        parent = np.empty(len(vertices), dtype=np.int32)
+        weights = np.empty((len(vertices), 4), dtype=np.float32)
+        eps = 1.0e-6
+        clamped = 0
+        for i, p in enumerate(np.asarray(vertices, dtype=np.float64)):
+            bary123 = np.einsum("tij,tj->ti", inv_mats, p - v0)
+            bary = np.column_stack([1.0 - bary123.sum(axis=1), bary123])
+            inside = nonsingular & np.all(bary >= -eps, axis=1)
+            if np.any(inside):
+                cand = np.nonzero(inside)[0]
+                best = cand[np.argmax(bary[cand].min(axis=1))]
+            else:
+                best = int(np.argmin(np.linalg.norm(centroids - p, axis=1)))
+                clamped += 1
+            w = np.clip(bary[best], 0.0, None)
+            total = w.sum()
+            weights[i] = w / total if total > 1.0e-12 else np.full(4, 0.25, dtype=np.float64)
+            parent[i] = tet_ids[best]
+
+        if clamped:
+            warnings.warn(
+                f"add_deformable_render_mesh: {clamped} of {len(vertices)} render vertices fell outside "
+                "the tet mesh and were clamped to the nearest tetrahedron.",
+                stacklevel=2,
+            )
+        return parent, weights
+
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
         if i == -1:
@@ -10615,6 +10800,59 @@ class ModelBuilder:
                     f"expected final index {total_count}, found {world_start_array[-1]}."
                 )
 
+    def _finalize_deformable_render_meshes(self) -> list[DeformableRenderMesh]:
+        """Convert accumulated render-mesh specs to device-resident objects.
+
+        Runs inside the :meth:`finalize` ``wp.ScopedDevice`` block so the created
+        :class:`warp.array` buffers land on the simulation device. The owning
+        world is derived from the first driver particle so it stays correct after
+        :meth:`add_builder` re-bases indices.
+        """
+        if not self._deformable_render_meshes:
+            return []
+
+        particle_world = np.array(self.particle_world, dtype=np.int32) if self.particle_world else None
+        tet_indices = np.array(self.tet_indices, dtype=np.int32).reshape(-1, 4) if self.tet_indices else None
+
+        def _world_of(kind: DeformableRenderKind, parent: np.ndarray) -> int:
+            if particle_world is None or len(parent) == 0:
+                return -1
+            if kind == DeformableRenderKind.TET_EMBED:
+                if tet_indices is None:
+                    return -1
+                first_particle = int(tet_indices[int(parent[0]), 0])
+            else:
+                first_particle = int(parent[0])
+            if 0 <= first_particle < len(particle_world):
+                return int(particle_world[first_particle])
+            return -1
+
+        meshes: list[DeformableRenderMesh] = []
+        for spec in self._deformable_render_meshes:
+            parent = np.asarray(spec["parent"], dtype=np.int32)
+            weights = spec.get("weights")
+            uvs = spec.get("uvs")
+            normals_rest = spec.get("normals_rest")
+            meshes.append(
+                DeformableRenderMesh(
+                    kind=spec["kind"],
+                    rest_vertices=wp.array(spec["rest_vertices"], dtype=wp.vec3),
+                    indices=wp.array(np.asarray(spec["indices"], dtype=np.int32), dtype=wp.int32),
+                    parent=wp.array(parent, dtype=wp.int32),
+                    weights=wp.array(np.asarray(weights, dtype=np.float32), dtype=wp.vec4)
+                    if weights is not None
+                    else None,
+                    uvs=wp.array(np.asarray(uvs, dtype=np.float32), dtype=wp.vec2) if uvs is not None else None,
+                    normals_rest=wp.array(np.asarray(normals_rest, dtype=np.float32), dtype=wp.vec3)
+                    if normals_rest is not None
+                    else None,
+                    texture=spec.get("texture"),
+                    world=_world_of(spec["kind"], parent),
+                    label=spec.get("label", ""),
+                )
+            )
+        return meshes
+
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -11391,6 +11629,11 @@ class ModelBuilder:
             m.tet_poses = _to_wp_array(self.tet_poses, wp.mat33, requires_grad=requires_grad)
             m.tet_activations = _to_wp_array(self.tet_activations, wp.float32, requires_grad=requires_grad)
             m.tet_materials = _to_wp_array(self.tet_materials, wp.float32, requires_grad=requires_grad)
+
+            # ---------------------
+            # deformable render meshes
+            m.deformable_render_meshes = self._finalize_deformable_render_meshes()
+            m.deformable_render_mesh_count = len(m.deformable_render_meshes)
 
             # -----------------------
             # muscles

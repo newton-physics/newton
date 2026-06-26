@@ -550,6 +550,10 @@ class ViewerBase(ABC):
         layer.show_contacts = False
         layer.show_springs = False
         layer.show_triangles = True
+        layer.show_render_mesh = True
+        # Color deformable render meshes by per-vertex displacement (debug viz).
+        layer.show_render_strain = False
+        layer.render_strain_fraction = 0.1
         layer.show_gaussians = False
         layer.show_collision = False
         layer.show_visual = True
@@ -571,6 +575,12 @@ class ViewerBase(ABC):
         layer._slot_to_shape: np.ndarray | None = None
         layer._slot_to_shape_wp: wp.array | None = None
         layer._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
+
+        # Deformable render-mesh skinning scratch (render mesh index -> (points, normals))
+        layer._render_mesh_scratch: dict[int, tuple[wp.array, wp.array]] = {}
+        # Strain-coloring scratch: sim-frame skinned points and cached inverse scale.
+        layer._render_strain_scratch: dict[int, wp.array] = {}
+        layer._render_strain_inv_max: dict[int, float] = {}
 
         # Isomesh cache for SDF collision visualization
         layer._isomesh_cache: dict[int, newton.Mesh | None] = {}
@@ -1073,6 +1083,7 @@ class ViewerBase(ABC):
         self._log_inertia_boxes(state)
         self._log_sdf_margin_wireframes(state)
 
+        self._log_deformable_render_meshes(state)
         self._log_triangles(state)
         self._log_particles(state)
         self._log_joints(state)
@@ -1501,6 +1512,7 @@ class ViewerBase(ABC):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Register or update a mesh prototype in the viewer backend.
@@ -1525,6 +1537,10 @@ class ViewerBase(ABC):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            colors: Optional per-vertex colors as a Warp vec3 array (one RGB
+                per vertex). When provided they override ``color``/``texture``
+                per vertex; backends that cannot render per-vertex colors fall
+                back to the uniform ``color``.
         """
         pass
 
@@ -2710,14 +2726,146 @@ class ViewerBase(ABC):
 
     def _log_triangles(self, state: newton.State):
         if self.model.tri_count:
+            # When render meshes are shown they replace the bare simulation
+            # surface, so hide the raw triangle view to avoid a double draw.
+            render_meshes_shown = self.show_render_mesh and getattr(self.model, "deformable_render_mesh_count", 0) > 0
             points = self._apply_layer_transform_to_points(state.particle_q)
             self.log_mesh(
                 self._qualify("/model/triangles"),
                 points,
                 self.model.tri_indices.flatten(),
-                hidden=not self.show_triangles or self._layer_force_hidden(),
+                hidden=not self.show_triangles or render_meshes_shown or self._layer_force_hidden(),
                 backface_culling=False,
             )
+
+    def _log_deformable_render_meshes(self, state: newton.State):
+        """Skin and draw high-resolution render meshes embedded in deformables.
+
+        All skinning and per-frame normal recomputation runs on-device (Warp);
+        the deformed mesh is emitted through :meth:`log_mesh` so every backend
+        renders it without backend-specific code (see
+        :meth:`~newton.ModelBuilder.add_deformable_render_mesh`).
+        """
+        meshes = getattr(self.model, "deformable_render_meshes", None)
+        if not meshes:
+            return
+
+        from ..sim.deformable_render import DeformableRenderKind  # noqa: PLC0415
+        from .kernels import (  # noqa: PLC0415
+            accumulate_face_normals,
+            normalize_normals,
+            render_mesh_strain_colors,
+            skin_render_mesh_cloth,
+            skin_render_mesh_tet,
+        )
+
+        def _skin(rm, out_points, world_offset, layer_xform):
+            if rm.kind == DeformableRenderKind.TET_EMBED:
+                wp.launch(
+                    skin_render_mesh_tet,
+                    dim=len(out_points),
+                    inputs=[
+                        state.particle_q,
+                        self.model.tet_indices.flatten(),
+                        rm.parent,
+                        rm.weights,
+                        world_offset,
+                        layer_xform,
+                    ],
+                    outputs=[out_points],
+                    device=self.device,
+                )
+            else:
+                wp.launch(
+                    skin_render_mesh_cloth,
+                    dim=len(out_points),
+                    inputs=[state.particle_q, rm.parent, world_offset, layer_xform],
+                    outputs=[out_points],
+                    device=self.device,
+                )
+
+        show = self.show_render_mesh and not self._layer_force_hidden()
+        offsets_np = self.world_offsets.numpy() if self.world_offsets is not None else None
+        identity_xform = wp.transform_identity()
+        zero_offset = wp.vec3(0.0, 0.0, 0.0)
+
+        for idx, rm in enumerate(meshes):
+            name = self._qualify(f"/model/render_meshes/{rm.label or idx}")
+            n = rm.vertex_count
+            visible = show and self._should_render_world(rm.world)
+
+            if not visible:
+                # Register/keep the mesh but hide it; reuse the rest pose so the
+                # backend has valid geometry cached for when it becomes visible.
+                self.log_mesh(name, rm.rest_vertices, rm.indices, uvs=rm.uvs, hidden=True, backface_culling=False)
+                continue
+
+            scratch = self._render_mesh_scratch.get(idx)
+            if scratch is None or len(scratch[0]) != n:
+                scratch = (
+                    wp.empty(n, dtype=wp.vec3, device=self.device),
+                    wp.zeros(n, dtype=wp.vec3, device=self.device),
+                )
+                self._render_mesh_scratch[idx] = scratch
+            points, normals = scratch
+
+            if offsets_np is not None and rm.world >= 0:
+                off = offsets_np[rm.world]
+                world_offset = wp.vec3(float(off[0]), float(off[1]), float(off[2]))
+            else:
+                world_offset = zero_offset
+
+            _skin(rm, points, world_offset, self.layer.xform)
+
+            normals.zero_()
+            wp.launch(
+                accumulate_face_normals,
+                dim=len(rm.indices) // 3,
+                inputs=[points, rm.indices, normals],
+                device=self.device,
+            )
+            wp.launch(normalize_normals, dim=n, inputs=[normals], device=self.device)
+
+            colors = None
+            if self.show_render_strain and rm.rest_vertices is not None:
+                # Skin again in the simulation frame so the displacement vs. the
+                # rest pose measures deformation, not the viewer's rigid placement.
+                sim_points = self._render_strain_scratch.get(idx)
+                if sim_points is None or len(sim_points) != n:
+                    sim_points = wp.empty(n, dtype=wp.vec3, device=self.device)
+                    self._render_strain_scratch[idx] = sim_points
+                _skin(rm, sim_points, zero_offset, identity_xform)
+                inv_max = self._render_strain_inv_max.get(idx)
+                if inv_max is None:
+                    inv_max = self._compute_strain_inv_max(rm.rest_vertices.numpy())
+                    self._render_strain_inv_max[idx] = inv_max
+                colors = wp.empty(n, dtype=wp.vec3, device=self.device)
+                wp.launch(
+                    render_mesh_strain_colors,
+                    dim=n,
+                    inputs=[sim_points, rm.rest_vertices, float(inv_max)],
+                    outputs=[colors],
+                    device=self.device,
+                )
+
+            self.log_mesh(
+                name,
+                points,
+                rm.indices,
+                normals=normals,
+                uvs=None if colors is not None else rm.uvs,
+                texture=None if colors is not None else rm.texture,
+                hidden=False,
+                backface_culling=False,
+                colors=colors,
+            )
+
+    def _compute_strain_inv_max(self, rest_vertices: np.ndarray) -> float:
+        """Reciprocal displacement scale for strain coloring from the rest bounds."""
+        if rest_vertices is None or len(rest_vertices) == 0:
+            return 1.0
+        diagonal = float(np.linalg.norm(np.ptp(rest_vertices, axis=0)))
+        return 1.0 / max(self.render_strain_fraction * diagonal, 1.0e-6)
 
     def _log_particles(self, state: newton.State):
         if self.model.particle_count:

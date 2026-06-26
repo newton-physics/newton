@@ -849,6 +849,7 @@ class ViewerGL(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Log a mesh for rendering.
@@ -868,11 +869,14 @@ class ViewerGL(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            colors: Optional per-vertex colors as a Warp vec3 array; overrides
+                ``color``/``texture`` per vertex when provided.
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
         assert normals is None or isinstance(normals, wp.array)
         assert uvs is None or isinstance(uvs, wp.array)
+        assert colors is None or isinstance(colors, wp.array)
 
         # Route user-supplied names through the active layer (idempotent).
         name = self._qualify(name)
@@ -882,7 +886,7 @@ class ViewerGL(ViewerBase):
                 len(points), len(indices), self.device, hidden=hidden, backface_culling=backface_culling
             )
 
-        self.objects[name].update(points, indices, normals, uvs, texture)
+        self.objects[name].update(points, indices, normals, uvs, texture, colors=colors)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
 
