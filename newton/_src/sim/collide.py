@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Literal
 
 import numpy as np
@@ -19,6 +20,7 @@ from ..geometry.flags import ShapeFlags
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
 from ..geometry.sdf_hydroelastic import HydroelasticSDF
+from ..geometry.soft_contacts_sdf import launch_soft_ef_contacts
 from ..geometry.support_function import (
     GenericShapeData,
     SupportMapDataProvider,
@@ -580,6 +582,7 @@ class CollisionPipeline:
         include_static_kinematic_pairs: bool = True,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
+        enable_water_tight_rigid_soft_contact: bool = False,
         requires_grad: bool | None = None,
         broad_phase: Literal["nxn", "sap", "explicit"]
         | BroadPhaseAllPairs
@@ -939,10 +942,35 @@ class CollisionPipeline:
         # Host-side, so not graph-capture-safe -- construct the pipeline before any capture.
         self.soft_rigid_contact_pairs = _build_soft_rigid_contact_pairs(model)
         self._soft_rigid_contact_pair_count = len(self.soft_rigid_contact_pairs)
+        self.enable_water_tight_rigid_soft_contact = enable_water_tight_rigid_soft_contact
         if soft_contact_max is None:
             soft_contact_max = self.soft_rigid_contact_pair_count
+            # Flag-aware headroom: the EDGE/FACE passes emit up to one record per (shape, soft edge)
+            # and per (shape, soft tri). Flag off keeps the pair-count default (strict bit-for-bit).
+            if enable_water_tight_rigid_soft_contact and model.soft_mesh_adjacency is not None:
+                n_soft_edges = model.soft_mesh_adjacency.edge_indices.shape[0]
+                soft_contact_max += shape_count * (model.tri_count + n_soft_edges)
         self.soft_contact_margin = soft_contact_margin
         self._soft_contact_max = soft_contact_max
+
+        # One-time warning: participating mesh/convex shapes with no provisioned SDF are skipped by
+        # the water-tight edge/face passes (the legacy per-particle path still covers them). This is
+        # host-side at construction, so it never runs inside a captured collide().
+        if enable_water_tight_rigid_soft_contact and model.shape_count > 0 and model._shape_sdf_index is not None:
+            _stype = model.shape_type.numpy()
+            _sflags = model.shape_flags.numpy()
+            _sidx = model._shape_sdf_index.numpy()
+            _is_mesh = np.isin(_stype, (int(GeoType.MESH), int(GeoType.CONVEX_MESH)))
+            _collide_particles = (_sflags & int(ShapeFlags.COLLIDE_PARTICLES)) != 0
+            if bool(np.any(_is_mesh & _collide_particles & (_sidx < 0))):
+                warnings.warn(
+                    "enable_water_tight_rigid_soft_contact: one or more participating mesh/convex shapes "
+                    "have no SDF and are skipped by the water-tight edge/face passes (the legacy "
+                    "per-particle path still covers them). Pass enable_water_tight_rigid_soft_contact=True "
+                    "to ModelBuilder.finalize (or configure_sdf) to provision their SDFs.",
+                    stacklevel=2,
+                )
+
         self.requires_grad = requires_grad
         self.deterministic = deterministic
         per_contact_props = self.narrow_phase.hydroelastic_sdf is not None
@@ -1042,6 +1070,7 @@ class CollisionPipeline:
         contacts: Contacts,
         *,
         soft_contact_margin: float | None = None,
+        enable_water_tight_rigid_soft_contact: bool | None = None,
     ):
         """Run the collision pipeline using NarrowPhase.
 
@@ -1375,12 +1404,29 @@ class CollisionPipeline:
                 ],
                 outputs=[
                     contacts.soft_contact_count,
-                    contacts.soft_contact_particle,
+                    contacts.soft_contact_primitive,
                     contacts.soft_contact_shape,
                     contacts.soft_contact_body_pos,
                     contacts.soft_contact_body_vel,
                     contacts.soft_contact_normal,
                     contacts.soft_contact_tids,
                 ],
+                device=self.device,
+            )
+
+        # Water-tight EDGE/FACE passes (opt-in): add the soft edge/face contacts the per-particle
+        # path cannot detect. Run after the legacy launch on the same stream so the passes read the
+        # final particle (then edge) counts as their packing offsets.
+        enable_wt = (
+            self.enable_water_tight_rigid_soft_contact
+            if enable_water_tight_rigid_soft_contact is None
+            else enable_water_tight_rigid_soft_contact
+        )
+        if enable_wt and state.particle_q and model.soft_mesh_adjacency is not None:
+            launch_soft_ef_contacts(
+                model=model,
+                state=state,
+                contacts=contacts,
+                margin=soft_contact_margin,
                 device=self.device,
             )
