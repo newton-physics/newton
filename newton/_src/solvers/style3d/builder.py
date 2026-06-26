@@ -19,10 +19,10 @@ def add_connection(v0: int, v1: int, counts: wp.array[int], neighbors: wp.array2
     Otherwise, adds the connection in the next available slot and returns the new slot index.
 
     Args:
-        v0 (int): Index of the source vertex.
-        v1 (int): Index of the target vertex (to be added as neighbor of v0).
-        counts (wp.array): 1D array storing how many neighbors each vertex currently has.
-        neighbors (wp.array2d): 2D array storing the neighbor list for each vertex.
+        v0: Index of the source vertex.
+        v1: Index of the target vertex (to be added as neighbor of v0).
+        counts: 1D array storing how many neighbors each vertex currently has.
+        neighbors: 2D array storing the neighbor list for each vertex.
 
     Returns:
         int: The slot index in `neighbors[v0]` where `v1` is stored,

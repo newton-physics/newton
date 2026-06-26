@@ -136,13 +136,13 @@ class Collision:
         based on broad-phase collision candidates computed in frame_begin().
 
         Args:
-            dt (float): Time step.
-            state_in (State): Current simulation state (input).
-            state_out (State): Next simulation state (output).
-            contacts (Contacts): Contact data structure containing contact information.
-            particle_forces (wp.array): Output array for computed contact forces.
-            particle_q_prev (wp.array): Previous positions (optional, for velocity-based damping).
-            particle_stiff (wp.array): Optional stiffness array for particles.
+            dt: Time step.
+            state_in: Current simulation state (input).
+            state_out: Next simulation state (output).
+            contacts: Contact data structure containing contact information.
+            particle_forces: Output array for computed contact forces.
+            particle_q_prev: Previous positions for velocity-based damping.
+            particle_stiff: Optional stiffness array for particles.
         """
         thickness = 2.0 * self.radius
         self.contact_hessian_diags.zero_()

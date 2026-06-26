@@ -16,6 +16,11 @@ def _param_list(sig: inspect.Signature):
     return list(sig.parameters.values())[1:]
 
 
+def _is_builder_arg_doc_line(line: str) -> bool:
+    """Return True for legacy and type-less Google-style builder arg docs."""
+    return line.startswith("builder (ModelBuilder):") or line.startswith("builder:")
+
+
 def _check_builder_method_matches_importer_function_signature(func, method):
     func_name = func.__name__
     method_name = method.__name__
@@ -75,11 +80,12 @@ def _check_builder_method_matches_importer_function_signature(func, method):
     lines_doc_func = [line.strip() for line in (func.__doc__ or "").splitlines()]
     # Remove line that contains the docstring for the ModelBuilder argument
     # because this argument does not exist in the method
-    doc_func = "\n".join(line for line in lines_doc_func if "builder (ModelBuilder)" not in line).strip()
-    doc_method = "\n".join(line.strip() for line in (method.__doc__ or "").splitlines()).strip()
-    assert "builder (ModelBuilder)" not in doc_method, (
-        f"Docstring for {method_name} must not contain 'builder (ModelBuilder)'"
+    doc_func = "\n".join(line for line in lines_doc_func if not _is_builder_arg_doc_line(line)).strip()
+    lines_doc_method = [line.strip() for line in (method.__doc__ or "").splitlines()]
+    assert not any(_is_builder_arg_doc_line(line) for line in lines_doc_method), (
+        f"Docstring for {method_name} must not document the builder argument"
     )
+    doc_method = "\n".join(lines_doc_method).strip()
     assert doc_func == doc_method, f"Docstring mismatch between {func_name} and {method_name}"
 
 
