@@ -14,15 +14,8 @@
 #   - Kinetic and potential energy (world 0 — replicated worlds are identical)
 #   - Active constraint count (world 0 — replicated worlds are identical)
 #
-# All worlds are deterministic replicates of the same humanoid, so they
-# produce identical trajectories; we report world 0 directly rather than
-# pretending aggregation across worlds adds information. The exception is
-# solver iteration count, which we report as a max to highlight worst-case
-# cost in case future variants introduce per-world variation.
-#
-# The numeric overlay drawn on top of each live plot is the most recent
-# logged value (matching the right-most point on the plot and the values
-# in the side panel).
+# Worlds are deterministic replicates, so per-world values are identical;
+# iteration count is reported as a max to surface worst-case solver cost.
 #
 # Command: python -m newton.examples basic_plotting --world-count 4
 #
@@ -114,20 +107,16 @@ class Example:
     def _read_status(self):
         d = self.solver.mjw_data if hasattr(self.solver, "mjw_data") else self.solver.mj_data
 
-        # Max across worlds: iteration count is a worst-case solver difficulty
-        # metric — the slowest world determines overall simulation cost.
+        # Max across worlds: worst-case solver cost.
         niter_np = d.solver_niter.numpy() if hasattr(d.solver_niter, "numpy") else d.solver_niter
         self.log_iterations.append(float(np.max(niter_np)))
 
-        # Energy column order is (potential, kinetic) per MuJoCo convention; see
-        # mujoco_warp Data.energy. Worlds are identical replicates, so we report
-        # world 0 directly.
+        # mjData.energy columns are (potential, kinetic); read world 0.
         energy_np = d.energy.numpy() if hasattr(d.energy, "numpy") else np.asarray(d.energy)
         self.log_energy_potential.append(float(energy_np[0, 0]))
         self.log_energy_kinetic.append(float(energy_np[0, 1]))
 
-        # nefc counts active constraint rows (contacts * condim + joint limits +
-        # equality). Worlds are identical replicates, so we report world 0.
+        # nefc = active constraint rows; read world 0.
         nefc_np = d.nefc.numpy() if hasattr(d.nefc, "numpy") else d.nefc
         self.log_nefc.append(float(nefc_np[0]) if hasattr(nefc_np, "__len__") else float(nefc_np))
 
@@ -140,8 +129,7 @@ class Example:
 
         self._read_status()
 
-        # Plots show raw per-frame values so the overlay number (the latest
-        # buffered value) matches the right-most plot point and the side panel.
+        # Raw per-frame values so the overlay matches the latest plot point and side panel.
         self.viewer.log_scalar("Solver Iterations (max)", self.log_iterations[-1])
         self.viewer.log_scalar("Kinetic Energy [J]", self.log_energy_kinetic[-1])
         self.viewer.log_scalar("Potential Energy [J]", self.log_energy_potential[-1])
