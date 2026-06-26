@@ -46,6 +46,7 @@ from .rigid_vbd_kernels import (
     _fill_adjacent_joints,
     accumulate_body_body_contacts_per_body,
     accumulate_body_particle_contacts_per_body,
+    accumulate_body_soft_ef_contacts,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
     check_contact_overflow,
@@ -1943,7 +1944,7 @@ class SolverVBD(SolverBase):
                         # body-particle contact
                         self.friction_epsilon,
                         model.particle_radius,
-                        contacts.soft_contact_particle,
+                        contacts.soft_contact_primitive,
                         contacts.soft_contact_count,
                         contacts.soft_contact_max,
                         self.body_particle_contact_penalty_k,
@@ -1961,6 +1962,12 @@ class SolverVBD(SolverBase):
                         contacts.soft_contact_body_vel,
                         contacts.soft_contact_normal,
                         model.shape_margin,
+                        # water-tight EDGE/FACE soft contacts (section 2)
+                        model.tri_indices,
+                        contacts.soft_contact_barycentric,
+                        model.soft_contact_ke,
+                        model.soft_contact_kd,
+                        model.soft_contact_mu,
                     ],
                     outputs=[
                         self.particle_forces,
@@ -2107,7 +2114,7 @@ class SolverVBD(SolverBase):
                     dim=contacts.soft_contact_max,
                     inputs=[
                         contacts.soft_contact_count,
-                        contacts.soft_contact_particle,
+                        contacts.soft_contact_primitive,
                         contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_normal,
@@ -2158,7 +2165,7 @@ class SolverVBD(SolverBase):
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
                         contacts.soft_contact_count,
-                        contacts.soft_contact_particle,
+                        contacts.soft_contact_primitive,
                         contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_body_vel,
@@ -2167,6 +2174,49 @@ class SolverVBD(SolverBase):
                         self.body_particle_contact_buffer_pre_alloc,
                         self.body_particle_contact_counts,
                         self.body_particle_contact_indices,
+                    ],
+                    outputs=[
+                        self.body_forces,
+                        self.body_torques,
+                        self.body_hessian_ll,
+                        self.body_hessian_al,
+                        self.body_hessian_aa,
+                    ],
+                    device=self.device,
+                )
+
+                # Body-side reaction for the water-tight EDGE/FACE soft contacts (one thread
+                # per slot, range-dispatched over the edge/face records). Empty when the flag
+                # is off (n_edge = n_face = 0).
+                wp.launch(
+                    kernel=accumulate_body_soft_ef_contacts,
+                    dim=contacts.soft_contact_max,
+                    inputs=[
+                        dt,
+                        color,
+                        state_in.particle_q,
+                        self.particle_q_prev,
+                        model.particle_radius,
+                        model.tri_indices,
+                        state_in.body_q,
+                        self.body_q_prev,
+                        state_in.body_qd,
+                        model.body_com,
+                        self.body_inv_mass_effective,
+                        model.body_colors,
+                        model.shape_body,
+                        self.friction_epsilon,
+                        model.soft_contact_ke,
+                        model.soft_contact_kd,
+                        model.soft_contact_mu,
+                        contacts.soft_contact_count,
+                        contacts.soft_contact_max,
+                        contacts.soft_contact_primitive,
+                        contacts.soft_contact_barycentric,
+                        contacts.soft_contact_shape,
+                        contacts.soft_contact_body_pos,
+                        contacts.soft_contact_body_vel,
+                        contacts.soft_contact_normal,
                     ],
                     outputs=[
                         self.body_forces,
@@ -2324,7 +2374,7 @@ class SolverVBD(SolverBase):
                     dim=soft_contact_launch_dim,
                     inputs=[
                         contacts.soft_contact_count,
-                        contacts.soft_contact_particle,
+                        contacts.soft_contact_primitive,
                         contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_normal,

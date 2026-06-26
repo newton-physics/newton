@@ -15,7 +15,11 @@ from __future__ import annotations
 import warp as wp
 
 from newton._src.math import orthonormal_basis
-from newton._src.solvers.vbd.rigid_vbd_kernels import _eval_body_particle_contact, evaluate_body_particle_contact
+from newton._src.solvers.vbd.rigid_vbd_kernels import (
+    _eval_body_particle_contact,
+    _eval_soft_ef_contact,
+    evaluate_body_particle_contact,
+)
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point
@@ -1471,7 +1475,7 @@ def update_velocity(dt: float, pos_prev: wp.array[wp.vec3], pos: wp.array[wp.vec
 def convert_body_particle_contact_data_kernel(
     # inputs
     body_particle_contact_buffer_pre_alloc: int,
-    soft_contact_particle: wp.array[int],
+    soft_contact_primitive: wp.array[int],
     contact_count: wp.array[int],
     contact_max: int,
     # outputs
@@ -1483,7 +1487,7 @@ def convert_body_particle_contact_data_kernel(
     if contact_index >= count:
         return
 
-    particle_index = soft_contact_particle[contact_index]
+    particle_index = soft_contact_primitive[contact_index]
     offset = particle_index * body_particle_contact_buffer_pre_alloc
 
     contact_counter = wp.atomic_add(body_particle_contact_count, particle_index, 1)
@@ -2312,6 +2316,12 @@ def accumulate_particle_body_contact_force_and_hessian(
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
     shape_margin: wp.array[float],
+    # water-tight EDGE/FACE soft contacts (section 2)
+    tri_indices: wp.array2d[wp.int32],
+    contact_barycentric: wp.array[wp.vec3],
+    soft_contact_ke: float,
+    soft_contact_kd: float,
+    soft_contact_mu: float,
     # outputs: particle force and hessian
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
@@ -2353,6 +2363,53 @@ def accumulate_particle_body_contact_force_and_hessian(
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
+
+    # Section 2 — water-tight EDGE/FACE soft contacts.
+    # Records pack contiguously after the legacy particle range: [c0, c0 + n_edge + n_face).
+    # The contact point is x = sum_i bary[i] * v_i over the soft triangle's three corners,
+    # so a contact energy E(x) contributes bary[i] * force to vertex i and bary[i]^2 * hessian
+    # to its Hessian block. An edge contact leaves one barycentric weight at zero, so the same
+    # three-corner loop handles both edges and faces. Flag off => n_edge = n_face = 0 => the
+    # range is empty and only section 1 runs.
+    c0 = body_particle_contact_count[0]
+    n_ef = body_particle_contact_count[1] + body_particle_contact_count[2]
+    if c0 <= t_id and t_id < c0 + n_ef:
+        tri = body_particle_contact_particle[t_id]
+        bary = contact_barycentric[t_id]
+
+        ef_force, ef_hessian, _cp_world = _eval_soft_ef_contact(
+            t_id,
+            tri,
+            bary,
+            tri_indices,
+            pos,
+            pos_anchor,
+            particle_radius,
+            soft_contact_ke,
+            soft_contact_kd,
+            soft_contact_mu,
+            friction_epsilon,
+            shape_body,
+            body_q,
+            body_q_prev,
+            body_qd,
+            body_com,
+            contact_shape,
+            contact_body_pos,
+            contact_body_vel,
+            contact_normal,
+            dt,
+        )
+
+        for i in range(3):
+            w = bary[i]
+            if w > 0.0:
+                vi = tri_indices[tri, i]
+                # VBD solves one color per launch; only scatter to this record's own
+                # vertices that belong to the active color (matches section 1).
+                if particle_colors[vi] == current_color:
+                    wp.atomic_add(particle_forces, vi, w * ef_force)
+                    wp.atomic_add(particle_hessians, vi, (w * w) * ef_hessian)
 
 
 @wp.kernel
@@ -2681,7 +2738,7 @@ def accumulate_contact_force_and_hessian(
     edge_edge_parallel_epsilon: float,
     # body-particle contact
     particle_radius: wp.array[float],
-    soft_contact_particle: wp.array[int],
+    soft_contact_primitive: wp.array[int],
     contact_count: wp.array[int],
     contact_max: int,
     shape_material_mu: wp.array[float],
@@ -2823,7 +2880,7 @@ def accumulate_contact_force_and_hessian(
     particle_body_contact_count = min(contact_max, contact_count[0])
 
     if t_id < particle_body_contact_count:
-        particle_idx = soft_contact_particle[t_id]
+        particle_idx = soft_contact_primitive[t_id]
 
         if particle_colors[particle_idx] == current_color:
             body_contact_force, body_contact_hessian = evaluate_body_particle_contact(
