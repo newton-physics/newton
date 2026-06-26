@@ -480,6 +480,74 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize(device="cpu")
         self.assertAlmostEqual(model.approx_attr.numpy()[extra_shape], shape_attr, places=6)
 
+    def test_mesh_approximation_convex_decomposition_splits_disconnected_components(self):
+        def cube(offset=(0.0, 0.0, 0.0), start=0):
+            vertices = np.array(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                    [1.0, 0.0, 1.0],
+                    [1.0, 1.0, 1.0],
+                    [0.0, 1.0, 1.0],
+                ],
+                dtype=np.float32,
+            )
+            vertices += np.asarray(offset, dtype=np.float32)
+            faces = np.array(
+                [
+                    [0, 1, 2],
+                    [0, 2, 3],
+                    [4, 6, 5],
+                    [4, 7, 6],
+                    [1, 5, 6],
+                    [1, 6, 2],
+                    [0, 3, 7],
+                    [0, 7, 4],
+                    [3, 2, 6],
+                    [3, 6, 7],
+                    [0, 4, 5],
+                    [0, 5, 1],
+                ],
+                dtype=np.int32,
+            )
+            return vertices, faces + start
+
+        vertices_a, faces_a = cube()
+        vertices_b, faces_b = cube(offset=(3.0, 0.0, 0.0), start=len(vertices_a))
+        mesh = newton.Mesh(
+            np.concatenate((vertices_a, vertices_b), axis=0),
+            np.concatenate((faces_a, faces_b), axis=0).flatten(),
+            compute_inertia=False,
+        )
+        builder = ModelBuilder()
+        shape = builder.add_shape_mesh(body=-1, mesh=mesh, label="disconnected")
+
+        calls = []
+
+        class FakeCoacdMesh:
+            def __init__(self, vertices, faces):
+                self.vertices = vertices
+                self.faces = faces
+
+        def fake_run_coacd(cmesh, **_kwargs):
+            calls.append((len(cmesh.vertices), len(cmesh.faces)))
+            return [(np.asarray(cmesh.vertices).copy(), np.asarray(cmesh.faces).copy())]
+
+        fake_coacd = SimpleNamespace(Mesh=FakeCoacdMesh, run_coacd=fake_run_coacd)
+
+        with mock.patch.dict(sys.modules, {"coacd": fake_coacd}):
+            builder.approximate_meshes(method="coacd", shape_indices=[shape], raise_on_failure=True)
+
+        self.assertEqual(calls, [(8, 12), (8, 12)])
+        self.assertEqual(builder.shape_count, 2)
+        self.assertEqual(builder.shape_type[0], newton.GeoType.CONVEX_MESH)
+        self.assertEqual(builder.shape_type[1], newton.GeoType.CONVEX_MESH)
+        centers_x = sorted(float(np.mean(source.vertices[:, 0])) for source in builder.shape_source)
+        np.testing.assert_allclose(centers_x, [0.5, 3.5], atol=1e-6, rtol=1e-6)
+
     def test_approximate_meshes_collision_filter_child_bodies(self):
         def normalize_pair(a, b):
             return (min(a, b), max(a, b))
