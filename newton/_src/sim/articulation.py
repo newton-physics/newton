@@ -621,14 +621,14 @@ def reconstruct_angular_q_qd(q_pc: wp.quat, w_err: wp.vec3, X_wp: wp.transform, 
     between a parent and child body.
 
     Args:
-        q_pc (quat): The relative rotation between the parent and child body.
-        w_err (vec3): The angular velocity between the parent and child body.
-        X_wp (transform): The transform from the parent body frame to the joint parent anchor frame.
-        axis (vec3): The joint axis in the joint parent anchor frame.
+        q_pc: The relative rotation between the parent and child body.
+        w_err: The angular velocity between the parent and child body.
+        X_wp: The transform from the parent body frame to the joint parent anchor frame.
+        axis: The joint axis in the joint parent anchor frame.
 
     Returns:
-        q (float): The joint position coordinate.
-        qd (float): The joint velocity coordinate.
+        q: The joint position coordinate.
+        qd: The joint velocity coordinate.
     """
     axis_p = wp.transform_vector(X_wp, axis)
     twist = wp.quat_twist(axis, q_pc)
