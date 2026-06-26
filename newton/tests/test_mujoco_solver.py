@@ -81,12 +81,14 @@ class TestMuJoCoSolver(unittest.TestCase):
     def test_warn_unsupported_joint_velocity_limits(self):
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            _warn_unsupported_joint_velocity_limits(np.array([1.0, 1.0e6], dtype=np.float32))
+            _warn_unsupported_joint_velocity_limits(np.array([1.0, 1.0e6, 2.0], dtype=np.float32))
 
         self.assertEqual(len(caught), 1)
         self.assertEqual(caught[0].category, RuntimeWarning)
-        self.assertIn("joint_velocity_limit", str(caught[0].message))
-        self.assertIn("will be ignored", str(caught[0].message))
+        message = str(caught[0].message)
+        self.assertIn("joint_velocity_limit", message)
+        self.assertIn("will be ignored", message)
+        self.assertIn("DOF indices [0, 2]", message)
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")

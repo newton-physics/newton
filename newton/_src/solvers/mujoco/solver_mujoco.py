@@ -7,6 +7,7 @@ import importlib.metadata as importlib_metadata
 import math
 import os
 import re
+import sys
 import warnings
 from collections.abc import Iterable
 from enum import IntEnum
@@ -113,6 +114,19 @@ _DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE = (
     "Use Model.joint_damping instead."
 )
 _DEFAULT_JOINT_VELOCITY_LIMIT = ModelBuilder.JointDofConfig().velocity_limit
+_NEWTON_PACKAGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")) + os.sep
+
+
+def _external_warning_stacklevel() -> int:
+    stacklevel = 1
+    frame = sys._getframe(1)
+    while frame is not None:
+        filename = os.path.abspath(frame.f_code.co_filename)
+        if not filename.startswith(_NEWTON_PACKAGE_ROOT):
+            return stacklevel
+        frame = frame.f_back
+        stacklevel += 1
+    return 2
 
 
 def _warn_unsupported_joint_velocity_limits(joint_velocity_limit: np.ndarray | None) -> None:
@@ -133,7 +147,7 @@ def _warn_unsupported_joint_velocity_limits(joint_velocity_limit: np.ndarray | N
         "use a controller or custom actuator for hard speed limits; joint_effort_limit and joint_damping "
         "can only mitigate speed indirectly.",
         RuntimeWarning,
-        stacklevel=4,
+        stacklevel=_external_warning_stacklevel(),
     )
 
 
