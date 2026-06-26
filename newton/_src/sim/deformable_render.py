@@ -32,6 +32,12 @@ class DeformableRenderKind(IntEnum):
     via barycentric weights. The deformed position is the weighted sum of the
     tet's four particle positions."""
 
+    RIGID_BODY = 2
+    """Each render vertex is rigidly bound to a single rigid body (e.g. a cable
+    or rod capsule segment) by a body-local offset. The deformed position is
+    that offset transformed by the body's current pose. Use for render meshes
+    skinned to chains of rigid bodies such as cables/rods."""
+
 
 class DeformableRenderMesh:
     """A textured render mesh skinned from a deformable's simulation state.
@@ -51,6 +57,7 @@ class DeformableRenderMesh:
         indices: wp.array[wp.int32],
         parent: wp.array[wp.int32],
         weights: wp.array[wp.vec4] | None = None,
+        local_offsets: wp.array[wp.vec3] | None = None,
         uvs: wp.array[wp.vec2] | None = None,
         normals_rest: wp.array[wp.vec3] | None = None,
         texture: np.ndarray | str | None = None,
@@ -67,10 +74,14 @@ class DeformableRenderMesh:
         """Per-render-vertex driver index, shape [vertex_count]. For
         :attr:`DeformableRenderKind.CLOTH_SHARED` this is a particle index; for
         :attr:`DeformableRenderKind.TET_EMBED` this is a tetrahedron index into
-        :attr:`newton.Model.tet_indices`."""
+        :attr:`newton.Model.tet_indices`; for :attr:`DeformableRenderKind.RIGID_BODY`
+        this is a body index into ``State.body_q``."""
         self.weights = weights
         """Barycentric weights for :attr:`DeformableRenderKind.TET_EMBED`,
-        shape [vertex_count, 4]; ``None`` for cloth meshes."""
+        shape [vertex_count, 4]; ``None`` for other kinds."""
+        self.local_offsets = local_offsets
+        """Body-local rest offsets for :attr:`DeformableRenderKind.RIGID_BODY`,
+        shape [vertex_count, 3]; ``None`` for other kinds."""
         self.uvs = uvs
         """Per-render-vertex texture coordinates, shape [vertex_count, 2], or ``None``."""
         self.normals_rest = normals_rest

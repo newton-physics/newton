@@ -880,6 +880,21 @@ def skin_render_mesh_tet(
 
 
 @wp.kernel
+def skin_render_mesh_rigid(
+    body_q: wp.array[wp.transform],
+    parent: wp.array[wp.int32],
+    local_offsets: wp.array[wp.vec3],
+    world_offset: wp.vec3,
+    layer_xform: wp.transform,
+    out_points: wp.array[wp.vec3],
+):
+    """Skin a render mesh rigidly bound to rigid bodies (e.g. a cable/rod)."""
+    i = wp.tid()
+    p = wp.transform_point(body_q[parent[i]], local_offsets[i]) + world_offset
+    out_points[i] = wp.transform_point(layer_xform, p)
+
+
+@wp.kernel
 def accumulate_face_normals(
     points: wp.array[wp.vec3],
     indices: wp.array[wp.int32],

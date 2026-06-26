@@ -204,6 +204,48 @@ class TestDeformableRenderMesh(unittest.TestCase):
         self.assertGreaterEqual(float(call["colors"].min()), 0.0)
         self.assertLessEqual(float(call["colors"].max()), 1.0)
 
+    def test_rigid_skin_follows_bodies(self):
+        """A rigid render mesh follows a rigid-body translation exactly."""
+        builder = newton.ModelBuilder()
+        nodes = np.stack([np.linspace(0.0, 1.0, 11), np.zeros(11), np.full(11, 1.0)], axis=1).astype(np.float32)
+        bodies, _ = builder.add_rod(positions=[wp.vec3(*p) for p in nodes], radius=0.05, body_frame_origin="com")
+        # A simple ring of render vertices around each node.
+        verts, idx = [], []
+        ring = 6
+        for p in nodes:
+            for j in range(ring):
+                ang = 2.0 * np.pi * j / ring
+                verts.append(p + 0.06 * np.array([0.0, np.cos(ang), np.sin(ang)], dtype=np.float32))
+        for i in range(len(nodes) - 1):
+            for j in range(ring):
+                a, b, c, d = (
+                    i * ring + j,
+                    i * ring + (j + 1) % ring,
+                    (i + 1) * ring + j,
+                    (i + 1) * ring + (j + 1) % ring,
+                )
+                idx += [a, c, b, b, c, d]
+        verts = np.asarray(verts, dtype=np.float32)
+        builder.add_deformable_render_mesh(
+            verts, np.asarray(idx, dtype=np.int32), kind="rigid", bodies=bodies, label="skin"
+        )
+        model = builder.finalize()
+        rm = model.deformable_render_meshes[0]
+        self.assertEqual(rm.kind, newton.DeformableRenderKind.RIGID_BODY)
+        self.assertIsNotNone(rm.local_offsets)
+
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+        state = model.state()
+        shift = np.array([0.5, -0.3, 0.2], dtype=np.float32)
+        bq = state.body_q.numpy()
+        bq[:, :3] += shift
+        state.body_q = wp.array(bq, dtype=wp.transform)
+        viewer.begin_frame(0.0)
+        viewer.log_state(state)
+        viewer.end_frame()
+        assert_np_equal(viewer.calls["/model/render_meshes/skin"]["points"], verts + shift, tol=1.0e-4)
+
     def test_add_builder_rebases_parent_indices(self):
         """Merging a sub-builder must offset render-mesh driver indices."""
         sub = newton.ModelBuilder()

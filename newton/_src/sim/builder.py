@@ -3546,11 +3546,14 @@ class ModelBuilder:
 
         for spec in builder._deformable_render_meshes:
             # Re-base the per-vertex driver indices into the merged index space:
-            # cloth meshes point at particles, tet-embedded meshes point at tets.
+            # cloth meshes point at particles, tet-embedded meshes point at tets,
+            # rigid meshes point at bodies.
             merged = dict(spec)
             parent = np.array(spec["parent"], dtype=np.int32)
             if spec["kind"] == DeformableRenderKind.TET_EMBED:
                 parent = parent + start_tetrahedron_idx
+            elif spec["kind"] == DeformableRenderKind.RIGID_BODY:
+                parent = parent + start_body_idx
             else:
                 parent = parent + start_particle_idx
             merged["parent"] = parent
@@ -9382,6 +9385,7 @@ class ModelBuilder:
         kind: str = "auto",
         particle_indices: list[int] | np.ndarray | None = None,
         particle_range: tuple[int, int] | None = None,
+        bodies: list[int] | np.ndarray | None = None,
         uvs: list[Vec2] | np.ndarray | None = None,
         normals: list[Vec3] | np.ndarray | None = None,
         texture: np.ndarray | str | None = None,
@@ -9404,17 +9408,24 @@ class ModelBuilder:
         - ``"tet"`` — volumetric embedding into a tetrahedral soft body via
           barycentric weights (see :meth:`add_soft_mesh`). Restrict the search to
           the body's tets with ``particle_range`` ``(start, count)``.
+        - ``"rigid"`` — rigid binding to a chain of rigid bodies (e.g. a cable or
+          rod from :meth:`add_rod`). Provide candidate ``bodies``; each render
+          vertex is bound to the nearest one by a body-local offset and follows
+          that body's pose.
 
         Args:
             vertices: Render vertex positions [m], shape [vertex_count, 3].
             indices: Flattened triangle indices into ``vertices``, length
                 ``tri_count * 3``.
-            kind: ``"cloth"``, ``"tet"``, or ``"auto"`` (cloth when
-                ``particle_indices`` is given, otherwise tet).
+            kind: ``"cloth"``, ``"tet"``, ``"rigid"``, or ``"auto"`` (cloth when
+                ``particle_indices`` is given, rigid when ``bodies`` is given,
+                otherwise tet).
             particle_indices: Per-render-vertex simulation particle index (cloth
                 mode), shape [vertex_count].
             particle_range: ``(start, count)`` particle range of the soft body to
                 embed into (tet mode); defaults to all particles.
+            bodies: Candidate rigid body indices to bind to (rigid mode); each
+                render vertex binds to the nearest one.
             uvs: Per-render-vertex texture coordinates, shape [vertex_count, 2].
             normals: Per-render-vertex bind-pose normals, shape [vertex_count, 3].
             texture: Albedo texture image array (H, W, C) or path.
@@ -9433,7 +9444,12 @@ class ModelBuilder:
             raise ValueError("render mesh indices reference vertices outside the provided vertex array")
 
         if kind == "auto":
-            kind = "cloth" if particle_indices is not None else "tet"
+            if particle_indices is not None:
+                kind = "cloth"
+            elif bodies is not None:
+                kind = "rigid"
+            else:
+                kind = "tet"
 
         if uvs is not None:
             uvs = np.asarray(uvs, dtype=np.float32).reshape(-1, 2)
@@ -9452,6 +9468,7 @@ class ModelBuilder:
             "texture": texture,
             "label": label,
             "weights": None,
+            "local_offsets": None,
         }
 
         if kind == "cloth":
@@ -9469,8 +9486,15 @@ class ModelBuilder:
             spec["kind"] = DeformableRenderKind.TET_EMBED
             spec["parent"] = parent
             spec["weights"] = weights
+        elif kind == "rigid":
+            if bodies is None:
+                raise ValueError('add_deformable_render_mesh(kind="rigid") requires bodies')
+            parent, local_offsets = self._bind_render_vertices_to_bodies(vertices, bodies)
+            spec["kind"] = DeformableRenderKind.RIGID_BODY
+            spec["parent"] = parent
+            spec["local_offsets"] = local_offsets
         else:
-            raise ValueError(f"unknown render-mesh kind {kind!r}; expected 'cloth', 'tet', or 'auto'")
+            raise ValueError(f"unknown render-mesh kind {kind!r}; expected 'cloth', 'tet', 'rigid', or 'auto'")
 
         self._deformable_render_meshes.append(spec)
         return len(self._deformable_render_meshes) - 1
@@ -9538,6 +9562,37 @@ class ModelBuilder:
                 stacklevel=2,
             )
         return parent, weights
+
+    def _bind_render_vertices_to_bodies(
+        self, vertices: np.ndarray, bodies: list[int] | np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Bind each render vertex to its nearest rigid body.
+
+        Returns ``(parent, local_offsets)`` where ``parent`` is the per-vertex
+        body index and ``local_offsets`` is the bind-pose render vertex expressed
+        in that body's local frame, so the viewer can reconstruct the world
+        position from the body's current pose each frame.
+        """
+        bodies = np.asarray(bodies, dtype=np.int64).reshape(-1)
+        if len(bodies) == 0:
+            raise ValueError("rigid render mesh requires at least one body")
+        body_q = np.asarray(self.body_q, dtype=np.float64).reshape(-1, 7)
+        pos = body_q[bodies, :3]
+        quat = body_q[bodies, 3:7]  # (x, y, z, w)
+        verts = np.asarray(vertices, dtype=np.float64)
+
+        # Nearest body per vertex (bodies count is small for a cable/rod).
+        dist = np.linalg.norm(verts[:, None, :] - pos[None, :, :], axis=2)
+        nearest = np.argmin(dist, axis=1)
+        parent = bodies[nearest].astype(np.int32)
+
+        # local_offset = conjugate(q) rotated (vertex - body_pos)
+        rel = verts - pos[nearest]
+        axis = -quat[nearest, :3]
+        w = quat[nearest, 3:4]
+        t = 2.0 * np.cross(axis, rel)
+        local = rel + w * t + np.cross(axis, t)
+        return parent, local.astype(np.float32)
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
@@ -10813,9 +10868,16 @@ class ModelBuilder:
 
         particle_world = np.array(self.particle_world, dtype=np.int32) if self.particle_world else None
         tet_indices = np.array(self.tet_indices, dtype=np.int32).reshape(-1, 4) if self.tet_indices else None
+        body_world = np.array(self.body_world, dtype=np.int32) if self.body_world else None
 
         def _world_of(kind: DeformableRenderKind, parent: np.ndarray) -> int:
-            if particle_world is None or len(parent) == 0:
+            if len(parent) == 0:
+                return -1
+            if kind == DeformableRenderKind.RIGID_BODY:
+                if body_world is None or not (0 <= int(parent[0]) < len(body_world)):
+                    return -1
+                return int(body_world[int(parent[0])])
+            if particle_world is None:
                 return -1
             if kind == DeformableRenderKind.TET_EMBED:
                 if tet_indices is None:
@@ -10831,6 +10893,7 @@ class ModelBuilder:
         for spec in self._deformable_render_meshes:
             parent = np.asarray(spec["parent"], dtype=np.int32)
             weights = spec.get("weights")
+            local_offsets = spec.get("local_offsets")
             uvs = spec.get("uvs")
             normals_rest = spec.get("normals_rest")
             meshes.append(
@@ -10841,6 +10904,9 @@ class ModelBuilder:
                     parent=wp.array(parent, dtype=wp.int32),
                     weights=wp.array(np.asarray(weights, dtype=np.float32), dtype=wp.vec4)
                     if weights is not None
+                    else None,
+                    local_offsets=wp.array(np.asarray(local_offsets, dtype=np.float32), dtype=wp.vec3)
+                    if local_offsets is not None
                     else None,
                     uvs=wp.array(np.asarray(uvs, dtype=np.float32), dtype=wp.vec2) if uvs is not None else None,
                     normals_rest=wp.array(np.asarray(normals_rest, dtype=np.float32), dtype=wp.vec3)

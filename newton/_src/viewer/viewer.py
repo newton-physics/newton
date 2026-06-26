@@ -2756,6 +2756,7 @@ class ViewerBase(ABC):
             normalize_normals,
             render_mesh_strain_colors,
             skin_render_mesh_cloth,
+            skin_render_mesh_rigid,
             skin_render_mesh_tet,
         )
 
@@ -2772,6 +2773,14 @@ class ViewerBase(ABC):
                         world_offset,
                         layer_xform,
                     ],
+                    outputs=[out_points],
+                    device=self.device,
+                )
+            elif rm.kind == DeformableRenderKind.RIGID_BODY:
+                wp.launch(
+                    skin_render_mesh_rigid,
+                    dim=len(out_points),
+                    inputs=[state.body_q, rm.parent, rm.local_offsets, world_offset, layer_xform],
                     outputs=[out_points],
                     device=self.device,
                 )
