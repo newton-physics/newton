@@ -4325,9 +4325,10 @@ def Xform "NotPSD" (
 
         gravcomp = model.mujoco.gravcomp.numpy()
         self.assertEqual(len(gravcomp), 3)
-        self.assertTrue(np.any(np.isclose(gravcomp, 1.0)))
-        self.assertTrue(np.any(np.isclose(gravcomp, 0.0)))
-        self.assertTrue(np.any(np.isclose(gravcomp, 0.25)))
+        gravcomp_by_body = dict(zip(model.body_label, gravcomp, strict=True))
+        self.assertAlmostEqual(float(gravcomp_by_body["/Body1"]), 1.0)
+        self.assertAlmostEqual(float(gravcomp_by_body["/Body2"]), 0.0)
+        self.assertAlmostEqual(float(gravcomp_by_body["/Body3"]), 0.25)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_stiffness_damping(self):
