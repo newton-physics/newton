@@ -907,6 +907,98 @@ def _eval_body_particle_contact(
 
 
 @wp.func
+def _eval_soft_ef_contact(
+    contact_index: int,
+    tri: int,
+    bary: wp.vec3,
+    tri_indices: wp.array2d[wp.int32],
+    pos: wp.array[wp.vec3],
+    pos_prev: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    contact_ke: float,
+    contact_kd: float,
+    contact_mu: float,
+    friction_epsilon: float,
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    dt: float,
+):
+    """Edge/face soft-contact force/Hessian at a barycentric contact point on a soft triangle.
+
+    The contact point is ``x = sum_i bary[i] * pos[v_i]`` over the triangle's three corners
+    (for an edge contact one weight is zero). Geometry and body kinematics are resolved
+    exactly as in :func:`_eval_body_particle_contact`, then the shared force law
+    :func:`_compute_body_particle_contact_force` is applied. Returns the contact force and
+    Hessian *at the contact point* (the caller distributes them by barycentric weight) and
+    the world-space rigid contact point ``bx`` for the body-side reaction. Force/Hessian are
+    zero when there is no penetration.
+    """
+    v0 = tri_indices[tri, 0]
+    v1 = tri_indices[tri, 1]
+    v2 = tri_indices[tri, 2]
+
+    x = bary[0] * pos[v0] + bary[1] * pos[v1] + bary[2] * pos[v2]
+    x_prev = bary[0] * pos_prev[v0] + bary[1] * pos_prev[v1] + bary[2] * pos_prev[v2]
+    radius = wp.max(particle_radius[v0], wp.max(particle_radius[v1], particle_radius[v2]))
+
+    shape_index = contact_shape[contact_index]
+    body_index = shape_body[shape_index]
+
+    X_wb = wp.transform_identity()
+    X_com = wp.vec3()
+    if body_index >= 0:
+        X_wb = body_q[body_index]
+        X_com = body_com[body_index]
+
+    bx = wp.transform_point(X_wb, contact_body_pos[contact_index])
+    n = contact_normal[contact_index]
+
+    force = wp.vec3(0.0)
+    hessian = wp.mat33(0.0)
+
+    penetration_depth = -(wp.dot(n, x - bx) - radius)
+    if penetration_depth > 0.0:
+        dx = x - x_prev
+
+        if body_q_prev:
+            X_wb_prev = wp.transform_identity()
+            if body_index >= 0:
+                X_wb_prev = body_q_prev[body_index]
+            bx_prev = wp.transform_point(X_wb_prev, contact_body_pos[contact_index])
+            bv = (bx - bx_prev) / dt + wp.transform_vector(X_wb, contact_body_vel[contact_index])
+        else:
+            r = bx - wp.transform_point(X_wb, X_com)
+            body_v_s = wp.spatial_vector()
+            if body_index >= 0:
+                body_v_s = body_qd[body_index]
+            body_w = wp.spatial_bottom(body_v_s)
+            body_v = wp.spatial_top(body_v_s)
+            bv = body_v + wp.cross(body_w, r) + wp.transform_vector(X_wb, contact_body_vel[contact_index])
+
+        relative_translation = dx - bv * dt
+
+        force, hessian = _compute_body_particle_contact_force(
+            penetration_depth,
+            n,
+            relative_translation,
+            contact_ke,
+            contact_kd,
+            contact_mu,
+            friction_epsilon,
+            dt,
+        )
+
+    return force, hessian, bx
+
+
+@wp.func
 def evaluate_body_particle_contact(
     particle_index: int,
     particle_pos: wp.vec3,
@@ -3161,6 +3253,115 @@ def accumulate_body_particle_contacts_per_body(
     wp.atomic_add(body_hessian_ll, body_id, h_ll_acc)
     wp.atomic_add(body_hessian_al, body_id, h_al_acc)
     wp.atomic_add(body_hessian_aa, body_id, h_aa_acc)
+
+
+@wp.kernel
+def accumulate_body_soft_ef_contacts(
+    dt: float,
+    current_color: int,
+    # Particle state
+    particle_q: wp.array[wp.vec3],
+    particle_q_prev: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    tri_indices: wp.array2d[wp.int32],
+    # Rigid body state
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_inv_mass: wp.array[float],
+    body_colors: wp.array[int],
+    shape_body: wp.array[int],
+    # Contact material (water-tight edge/face uses fixed soft-contact stiffness)
+    friction_epsilon: float,
+    soft_contact_ke: float,
+    soft_contact_kd: float,
+    soft_contact_mu: float,
+    # Soft contact data (one thread per buffer slot)
+    soft_contact_count: wp.array[int],
+    soft_contact_max: int,
+    soft_contact_primitive: wp.array[int],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    soft_contact_shape: wp.array[int],
+    soft_contact_body_pos: wp.array[wp.vec3],
+    soft_contact_body_vel: wp.array[wp.vec3],
+    soft_contact_normal: wp.array[wp.vec3],
+    # Outputs
+    body_forces: wp.array[wp.vec3],
+    body_torques: wp.array[wp.vec3],
+    body_hessian_ll: wp.array[wp.mat33],
+    body_hessian_al: wp.array[wp.mat33],
+    body_hessian_aa: wp.array[wp.mat33],
+):
+    """Body-side reaction for water-tight EDGE/FACE soft contacts (one thread per slot).
+
+    The per-body kernel ``accumulate_body_particle_contacts_per_body`` handles the legacy
+    particle-vs-surface contacts via a per-body buffer; this kernel is its analogue for the
+    new EDGE/FACE records, which are not in that buffer. It range-dispatches over the
+    ``[c0, c0 + n_edge + n_face)`` slots, evaluates the same per-slot force as section 2 of
+    the particle side, and applies the equal-and-opposite reaction ``-force`` at the rigid
+    contact point to the body (force, torque, and the linear/angular Hessian blocks). Only
+    dynamic bodies (``inv_mass > 0``) in the active VBD color group are updated.
+    """
+    t_id = wp.tid()
+
+    c0 = soft_contact_count[0]
+    n_ef = soft_contact_count[1] + soft_contact_count[2]
+    if t_id < c0 or t_id >= c0 + n_ef:
+        return
+    if t_id >= soft_contact_max:
+        return
+
+    shape = soft_contact_shape[t_id]
+    body = shape_body[shape]
+    if body < 0:
+        return
+    if body_inv_mass[body] <= 0.0:
+        return
+    if body_colors[body] != current_color:
+        return
+
+    tri = soft_contact_primitive[t_id]
+    bary = soft_contact_barycentric[t_id]
+
+    force, hessian, cp_world = _eval_soft_ef_contact(
+        t_id,
+        tri,
+        bary,
+        tri_indices,
+        particle_q,
+        particle_q_prev,
+        particle_radius,
+        soft_contact_ke,
+        soft_contact_kd,
+        soft_contact_mu,
+        friction_epsilon,
+        shape_body,
+        body_q,
+        body_q_prev,
+        body_qd,
+        body_com,
+        soft_contact_shape,
+        soft_contact_body_pos,
+        soft_contact_body_vel,
+        soft_contact_normal,
+        dt,
+    )
+
+    f_body = -force
+
+    com_world = wp.transform_point(body_q[body], body_com[body])
+    r = cp_world - com_world
+    tau_body = wp.cross(r, f_body)
+
+    r_skew = wp.skew(r)
+    r_skew_T_K = wp.transpose(r_skew) * hessian
+
+    wp.atomic_add(body_forces, body, f_body)
+    wp.atomic_add(body_torques, body, tau_body)
+    wp.atomic_add(body_hessian_ll, body, hessian)
+    wp.atomic_add(body_hessian_al, body, -r_skew_T_K)
+    wp.atomic_add(body_hessian_aa, body, r_skew_T_K * r_skew)
 
 
 @wp.kernel
