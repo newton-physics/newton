@@ -1,0 +1,553 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+"""SDF local-optimization primitives for water-tight rigid-soft contact.
+
+Implements the Macklin et al. (2020) "Local Optimization for Robust Signed Distance Field
+Collision" face (barycentric simplex) and edge (1-D golden-section) optimizers over a rigid
+shape's signed-distance field, plus the shape-agnostic ``eval_shape_sdf`` dispatch.
+
+This lives in its own module (not ``kernels.py``) because it needs the volume-SDF sampler from
+``sdf_texture``, and ``sdf_texture -> sdf_utils -> kernels`` would make a ``kernels`` import cyclic.
+Nothing imports this module except the collision launcher, so it is cycle-free.
+"""
+
+import numpy as np
+import warp as wp
+
+from .flags import ShapeFlags
+from .kernels import (
+    sdf_box,
+    sdf_box_grad,
+    sdf_capsule,
+    sdf_capsule_grad,
+    sdf_cone,
+    sdf_cone_grad,
+    sdf_cylinder,
+    sdf_cylinder_grad,
+    sdf_ellipsoid,
+    sdf_ellipsoid_grad,
+    sdf_plane,
+    sdf_sphere,
+    sdf_sphere_grad,
+)
+from .sdf_texture import TextureSDFData, texture_sample_sdf_grad
+from .types import SOFT_CONTACT_KIND_EDGE, SOFT_CONTACT_KIND_FACE, Axis, GeoType
+
+# Fixed iteration counts -> data-independent loops -> CUDA-graph-capturable. Passed as kernel args
+# (uniform across threads/launches). Tuned against a brute-force grid reference
+# (tests/test_water_tight_soft_contact.py): edge golden-section is accurate (~1e-4); the face
+# Frank-Wolfe tail is ~O(1/iters) (~3e-3 at 24 iters), sufficient for contact within margin.
+SDF_EDGE_ITERS = 24
+SDF_FACE_ITERS = 24
+SDF_LS_ITERS = 16
+
+
+@wp.func
+def _is_analytic(geo: wp.int32):
+    """True for primitives that evaluate phi/grad in closed form (no volume SDF needed)."""
+    return (
+        geo == GeoType.SPHERE
+        or geo == GeoType.BOX
+        or geo == GeoType.CAPSULE
+        or geo == GeoType.CYLINDER
+        or geo == GeoType.CONE
+        or geo == GeoType.ELLIPSOID
+        or geo == GeoType.PLANE
+    )
+
+
+@wp.func
+def circumradius(a: wp.vec3, b: wp.vec3, c: wp.vec3):
+    """Triangle circumradius (cull reach for the centroid test). 0 for a degenerate tri."""
+    ab = wp.length(b - a)
+    bc = wp.length(c - b)
+    ca = wp.length(a - c)
+    cross2 = wp.length(wp.cross(b - a, c - a))  # 2 * area
+    if cross2 < 1.0e-12:
+        return 0.5 * wp.max(ab, wp.max(bc, ca))
+    return (ab * bc * ca) / (2.0 * cross2)
+
+
+@wp.func
+def eval_shape_sdf(
+    geo: wp.int32,
+    scale: wp.vec3,
+    x_local: wp.vec3,
+    shape_sdf_index: wp.int32,
+    texture_sdf_table: wp.array[TextureSDFData],
+):
+    """Return ``(phi, grad)`` for the rigid shape at shape-local ``x_local``.
+
+    Analytic primitives evaluate closed-form (Z-up, matching ``create_soft_contacts``); shapes with a
+    provisioned volume SDF (``shape_sdf_index >= 0``) sample the texture SDF with query-time scaling.
+    ``grad`` is the unit outward gradient.
+    """
+    if geo == GeoType.SPHERE:
+        return sdf_sphere(x_local, scale[0]), sdf_sphere_grad(x_local, scale[0])
+    if geo == GeoType.BOX:
+        return sdf_box(x_local, scale[0], scale[1], scale[2]), sdf_box_grad(x_local, scale[0], scale[1], scale[2])
+    if geo == GeoType.CAPSULE:
+        return (
+            sdf_capsule(x_local, scale[0], scale[1], int(Axis.Z)),
+            sdf_capsule_grad(x_local, scale[0], scale[1], int(Axis.Z)),
+        )
+    if geo == GeoType.CYLINDER:
+        return (
+            sdf_cylinder(x_local, scale[0], scale[1], int(Axis.Z)),
+            sdf_cylinder_grad(x_local, scale[0], scale[1], int(Axis.Z)),
+        )
+    if geo == GeoType.CONE:
+        return (
+            sdf_cone(x_local, scale[0], scale[1], int(Axis.Z)),
+            sdf_cone_grad(x_local, scale[0], scale[1], int(Axis.Z)),
+        )
+    if geo == GeoType.ELLIPSOID:
+        return sdf_ellipsoid(x_local, scale), sdf_ellipsoid_grad(x_local, scale)
+    if geo == GeoType.PLANE:
+        return sdf_plane(x_local, scale[0] * 0.5, scale[1] * 0.5), wp.vec3(0.0, 0.0, 1.0)
+
+    # Volume SDF (mesh / convex / other). Honor the descriptor's scale_baked flag: if the shape
+    # scale was baked into the grid (e.g. hydroelastic primitives), query directly in shape-local
+    # (= scaled) space; otherwise apply query-time scaling (mirrors mesh_sdf_collision_kernel +
+    # scale_sdf_result_to_world).
+    tex = texture_sdf_table[shape_sdf_index]
+    if tex.scale_baked:
+        return texture_sample_sdf_grad(tex, x_local)
+    inv_scale = wp.vec3(1.0 / scale[0], 1.0 / scale[1], 1.0 / scale[2])
+    min_scale = wp.min(scale)
+    dist, grad = texture_sample_sdf_grad(tex, wp.cw_div(x_local, scale))
+    scaled_dist = dist * min_scale
+    scaled_grad = wp.cw_mul(grad, inv_scale)
+    grad_len = wp.length(scaled_grad)
+    if grad_len > 0.0:
+        scaled_grad = scaled_grad / grad_len
+    else:
+        scaled_grad = grad
+    return scaled_dist, scaled_grad
+
+
+@wp.func
+def optimize_edge_sdf(
+    geo: wp.int32,
+    scale: wp.vec3,
+    p: wp.vec3,
+    q: wp.vec3,
+    shape_sdf_index: wp.int32,
+    texture_sdf_table: wp.array[TextureSDFData],
+    n_iter: wp.int32,
+):
+    """argmin_{u in [0,1]} phi((1-u) p + u q) by golden-section search (Macklin sec. 4).
+
+    Fixed ``n_iter`` iterations -> graph-capturable. Returns ``(u, x_local, phi, grad)`` at the
+    minimizing point. Also used as the line search inside :func:`optimize_face_sdf`.
+    """
+    inv_phi = float(0.6180339887498949)  # 1 / golden ratio
+    lo = float(0.0)
+    hi = float(1.0)
+    c = hi - (hi - lo) * inv_phi
+    d = lo + (hi - lo) * inv_phi
+    fc, _gc = eval_shape_sdf(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
+    fd, _gd = eval_shape_sdf(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
+    for _i in range(n_iter):
+        if fc < fd:
+            hi = d
+            d = c
+            fd = fc
+            c = hi - (hi - lo) * inv_phi
+            fc, _gc = eval_shape_sdf(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
+        else:
+            lo = c
+            c = d
+            fc = fd
+            d = lo + (hi - lo) * inv_phi
+            fd, _gd = eval_shape_sdf(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
+    u = 0.5 * (lo + hi)
+    x = (1.0 - u) * p + u * q
+    phi, grad = eval_shape_sdf(geo, scale, x, shape_sdf_index, texture_sdf_table)
+    return u, x, phi, grad
+
+
+@wp.func
+def optimize_face_sdf(
+    geo: wp.int32,
+    scale: wp.vec3,
+    a: wp.vec3,
+    b: wp.vec3,
+    c: wp.vec3,
+    shape_sdf_index: wp.int32,
+    texture_sdf_table: wp.array[TextureSDFData],
+    n_iter: wp.int32,
+    ls_iter: wp.int32,
+):
+    """argmin phi over the soft triangle by Frank-Wolfe on the barycentric simplex (Macklin sec. 3).
+
+    Each step picks the simplex vertex minimizing the linearized objective ``grad . corner`` (eq. 4)
+    and line-searches phi toward it with :func:`optimize_edge_sdf`. Fixed ``n_iter`` / ``ls_iter``
+    iterations -> graph-capturable. Returns ``(bary, x_local, phi, grad)``.
+    """
+    # Start at the centroid (interior). A corner start can strand Frank-Wolfe on a simplex edge
+    # for non-smooth fields (e.g. a box-corner ridge), because the analytic gradient is single-axis
+    # and never selects the third vertex. From the centroid, FW can move toward any vertex.
+    bary = wp.vec3(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
+
+    for _i in range(n_iter):
+        x = bary[0] * a + bary[1] * b + bary[2] * c
+        _phi_x, grad = eval_shape_sdf(geo, scale, x, shape_sdf_index, texture_sdf_table)
+        # Frank-Wolfe vertex: argmin_k grad . corner_k (Macklin eq. 4).
+        da = wp.dot(grad, a)
+        db = wp.dot(grad, b)
+        dc = wp.dot(grad, c)
+        s = wp.vec3(1.0, 0.0, 0.0)
+        if db <= da and db <= dc:
+            s = wp.vec3(0.0, 1.0, 0.0)
+        elif dc <= da and dc <= db:
+            s = wp.vec3(0.0, 0.0, 1.0)
+        target = s[0] * a + s[1] * b + s[2] * c
+        gamma, _lx, _lphi, _lgrad = optimize_edge_sdf(
+            geo, scale, x, target, shape_sdf_index, texture_sdf_table, ls_iter
+        )
+        bary = (1.0 - gamma) * bary + gamma * s
+
+    x = bary[0] * a + bary[1] * b + bary[2] * c
+    phi, grad = eval_shape_sdf(geo, scale, x, shape_sdf_index, texture_sdf_table)
+    return bary, x, phi, grad
+
+
+@wp.func
+def _shape_frames(
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    shape_transform: wp.array[wp.transform],
+    shape_index: wp.int32,
+):
+    """Return (X_bs, X_ws, X_sw): shape-local->body, shape-local->world, world->shape-local."""
+    rigid_body = shape_body[shape_index]
+    X_wb = wp.transform_identity()
+    if rigid_body >= 0:
+        X_wb = body_q[rigid_body]
+    X_bs = shape_transform[shape_index]
+    X_ws = wp.transform_multiply(X_wb, X_bs)
+    X_sw = wp.transform_inverse(X_ws)
+    return X_bs, X_ws, X_sw
+
+
+@wp.func
+def _emit_soft_ef_contact(
+    base: wp.int32,
+    slot: wp.int32,
+    soft_contact_max: wp.int32,
+    soft_contact_count: wp.array[wp.int32],
+    soft_contact_primitive: wp.array[wp.int32],
+    soft_contact_kind: wp.array[wp.uint8],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    soft_contact_shape: wp.array[wp.int32],
+    soft_contact_body_pos: wp.array[wp.vec3],
+    soft_contact_body_vel: wp.array[wp.vec3],
+    soft_contact_normal: wp.array[wp.vec3],
+    prim_id: wp.int32,
+    kind: wp.uint8,
+    bary: wp.vec3,
+    shape_index: wp.int32,
+    body_pos: wp.vec3,
+    body_vel: wp.vec3,
+    normal: wp.vec3,
+):
+    """Append one E/F record. ``base`` is the sum of prior passes' counts; ``slot`` is this pass's
+    own counter (1 = EDGE, 2 = FACE). One global index writes both the shared and new-only fields.
+
+    The counter is incremented even when the record overflows ``soft_contact_max`` (the write is
+    guarded, so never out of bounds). Contiguous packing of the particle | edge | face ranges
+    therefore assumes no overflow; the default flag-on ``soft_contact_max`` is an exact upper bound
+    (``shape_count * (particle_count + tri_count + edge_count)``), so this only matters if a caller
+    supplies a smaller ``soft_contact_max`` — in which case the overflow flag trips."""
+    idx = base + wp.atomic_add(soft_contact_count, slot, 1)
+    if idx < soft_contact_max:
+        soft_contact_primitive[idx] = prim_id
+        soft_contact_kind[idx] = kind
+        soft_contact_barycentric[idx] = bary
+        soft_contact_shape[idx] = shape_index
+        soft_contact_body_pos[idx] = body_pos
+        soft_contact_body_vel[idx] = body_vel
+        soft_contact_normal[idx] = normal
+
+
+@wp.kernel
+def create_soft_face_contacts(
+    n_soft_tris: wp.int32,
+    particle_q: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    particle_world: wp.array[wp.int32],
+    tri_indices: wp.array2d[wp.int32],
+    shape_body: wp.array[wp.int32],
+    shape_world: wp.array[wp.int32],
+    shape_type: wp.array[wp.int32],
+    shape_flags: wp.array[wp.int32],
+    shape_transform: wp.array[wp.transform],
+    shape_scale: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    shape_sdf_index: wp.array[wp.int32],
+    texture_sdf_table: wp.array[TextureSDFData],
+    sdf_face_iters: wp.int32,
+    sdf_ls_iters: wp.int32,
+    margin: float,
+    soft_contact_max: wp.int32,
+    soft_contact_count: wp.array[wp.int32],
+    soft_contact_primitive: wp.array[wp.int32],
+    soft_contact_kind: wp.array[wp.uint8],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    soft_contact_shape: wp.array[wp.int32],
+    soft_contact_body_pos: wp.array[wp.vec3],
+    soft_contact_body_vel: wp.array[wp.vec3],
+    soft_contact_normal: wp.array[wp.vec3],
+):
+    """One thread per (shape, soft triangle). Minimizes the rigid SDF over the triangle interior and
+    emits a FACE record into slot 2 if within margin. ``shape = tid // n_soft_tris`` keeps the shape
+    uniform within a warp."""
+    tid = wp.tid()
+    shape_index = tid // n_soft_tris
+    t = tid % n_soft_tris
+    if (shape_flags[shape_index] & ShapeFlags.COLLIDE_PARTICLES) == 0:
+        return
+    geo = shape_type[shape_index]
+    sdf_idx = shape_sdf_index[shape_index]
+    if (not _is_analytic(geo)) and sdf_idx < 0:
+        return  # mesh without a provisioned SDF -> legacy V-path covers it (host warns once, T5)
+
+    v0 = tri_indices[t, 0]
+    v1 = tri_indices[t, 1]
+    v2 = tri_indices[t, 2]
+    w = particle_world[v0]
+    if w != -1 and shape_world[shape_index] != -1 and w != shape_world[shape_index]:
+        return
+    radius = wp.max(particle_radius[v0], wp.max(particle_radius[v1], particle_radius[v2]))
+
+    X_bs, X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
+    a = wp.transform_point(X_sw, particle_q[v0])
+    b = wp.transform_point(X_sw, particle_q[v1])
+    c = wp.transform_point(X_sw, particle_q[v2])
+    scale = shape_scale[shape_index]
+    threshold = margin + radius
+
+    centroid = (a + b + c) / 3.0
+    phi_c, _grad_c = eval_shape_sdf(geo, scale, centroid, sdf_idx, texture_sdf_table)
+    if phi_c > threshold + circumradius(a, b, c):
+        return
+
+    bary, x, phi, grad = optimize_face_sdf(
+        geo, scale, a, b, c, sdf_idx, texture_sdf_table, sdf_face_iters, sdf_ls_iters
+    )
+    if phi < threshold:
+        y = x - phi * grad
+        base = soft_contact_count[0] + soft_contact_count[1]  # particle + edge counts (both final)
+        _emit_soft_ef_contact(
+            base,
+            2,
+            soft_contact_max,
+            soft_contact_count,
+            soft_contact_primitive,
+            soft_contact_kind,
+            soft_contact_barycentric,
+            soft_contact_shape,
+            soft_contact_body_pos,
+            soft_contact_body_vel,
+            soft_contact_normal,
+            t,
+            SOFT_CONTACT_KIND_FACE,
+            bary,
+            shape_index,
+            wp.transform_point(X_bs, y),
+            wp.vec3(0.0, 0.0, 0.0),
+            wp.transform_vector(X_ws, grad),
+        )
+
+
+@wp.kernel
+def create_soft_edge_contacts(
+    n_soft_edges: wp.int32,
+    particle_q: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    particle_world: wp.array[wp.int32],
+    tri_indices: wp.array2d[wp.int32],
+    tri_edge_indices: wp.array2d[wp.int32],
+    edge_tri_indices: wp.array2d[wp.int32],
+    shape_body: wp.array[wp.int32],
+    shape_world: wp.array[wp.int32],
+    shape_type: wp.array[wp.int32],
+    shape_flags: wp.array[wp.int32],
+    shape_transform: wp.array[wp.transform],
+    shape_scale: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    shape_sdf_index: wp.array[wp.int32],
+    texture_sdf_table: wp.array[TextureSDFData],
+    sdf_edge_iters: wp.int32,
+    margin: float,
+    soft_contact_max: wp.int32,
+    soft_contact_count: wp.array[wp.int32],
+    soft_contact_primitive: wp.array[wp.int32],
+    soft_contact_kind: wp.array[wp.uint8],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    soft_contact_shape: wp.array[wp.int32],
+    soft_contact_body_pos: wp.array[wp.vec3],
+    soft_contact_body_vel: wp.array[wp.vec3],
+    soft_contact_normal: wp.array[wp.vec3],
+):
+    """One thread per (shape, unique soft edge). Minimizes the rigid SDF along the edge and emits an
+    EDGE record into slot 1 if within margin. Unique edges -> structural dedup; the record names the
+    owner triangle ``edge_tri_indices[e, 0]`` and the bary on its local corners ``k, (k+1)%3``."""
+    tid = wp.tid()
+    shape_index = tid // n_soft_edges
+    e = tid % n_soft_edges
+
+    t0 = edge_tri_indices[e, 0]  # owner triangle (always valid for a real edge)
+    if t0 < 0:
+        return
+    k = int(0)  # local slot of edge e within triangle t0
+    if tri_edge_indices[t0, 1] == e:
+        k = 1
+    elif tri_edge_indices[t0, 2] == e:
+        k = 2
+    i1 = (k + 1) % 3
+    vk0 = tri_indices[t0, k]
+    vk1 = tri_indices[t0, i1]
+
+    if (shape_flags[shape_index] & ShapeFlags.COLLIDE_PARTICLES) == 0:
+        return
+    geo = shape_type[shape_index]
+    sdf_idx = shape_sdf_index[shape_index]
+    if (not _is_analytic(geo)) and sdf_idx < 0:
+        return
+
+    w = particle_world[vk0]
+    if w != -1 and shape_world[shape_index] != -1 and w != shape_world[shape_index]:
+        return
+    radius = wp.max(particle_radius[vk0], particle_radius[vk1])
+
+    X_bs, X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
+    p = wp.transform_point(X_sw, particle_q[vk0])
+    q = wp.transform_point(X_sw, particle_q[vk1])
+    scale = shape_scale[shape_index]
+    threshold = margin + radius
+
+    mid = 0.5 * (p + q)
+    phi_m, _grad_m = eval_shape_sdf(geo, scale, mid, sdf_idx, texture_sdf_table)
+    if phi_m > threshold + 0.5 * wp.length(q - p):
+        return
+
+    u, x, phi, grad = optimize_edge_sdf(geo, scale, p, q, sdf_idx, texture_sdf_table, sdf_edge_iters)
+    if phi < threshold:
+        y = x - phi * grad
+        if k == 0:
+            bary = wp.vec3(1.0 - u, u, 0.0)
+        elif k == 1:
+            bary = wp.vec3(0.0, 1.0 - u, u)
+        else:
+            bary = wp.vec3(u, 0.0, 1.0 - u)
+        base = soft_contact_count[0]  # particle count (final after the legacy launch)
+        _emit_soft_ef_contact(
+            base,
+            1,
+            soft_contact_max,
+            soft_contact_count,
+            soft_contact_primitive,
+            soft_contact_kind,
+            soft_contact_barycentric,
+            soft_contact_shape,
+            soft_contact_body_pos,
+            soft_contact_body_vel,
+            soft_contact_normal,
+            t0,
+            SOFT_CONTACT_KIND_EDGE,
+            bary,
+            shape_index,
+            wp.transform_point(X_bs, y),
+            wp.vec3(0.0, 0.0, 0.0),
+            wp.transform_vector(X_ws, grad),
+        )
+
+
+def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device):
+    """Launch the soft EDGE then FACE passes (the soft-particle pass is the legacy kernel).
+
+    Order matters: EDGE before FACE, because the face pass's write base reads the final edge count.
+    """
+    adj = model.soft_mesh_adjacency
+    if adj is None or model.shape_count == 0:
+        return
+    n_tris = model.tri_count
+    n_edges = int(adj.edge_indices.shape[0])
+
+    # MeshAdjacency keeps the edge/edge-tri/tri-edge tables on the host (numpy); upload the two
+    # the edge kernel needs to the device once and cache on the model (keyed by device). Built
+    # here (outside any solver graph capture) so the launch itself allocates nothing.
+    dev = wp.get_device(device)
+    dev_adj = getattr(model, "_soft_ef_dev_adjacency", None)
+    if dev_adj is None or dev_adj[0] != str(dev):
+        tri_edge_dev = wp.array(np.ascontiguousarray(adj.tri_edge_indices, dtype=np.int32), dtype=wp.int32, device=dev)
+        edge_tri_dev = wp.array(np.ascontiguousarray(adj.edge_tri_indices, dtype=np.int32), dtype=wp.int32, device=dev)
+        dev_adj = (str(dev), tri_edge_dev, edge_tri_dev)
+        model._soft_ef_dev_adjacency = dev_adj
+    tri_edge_indices_dev = dev_adj[1]
+    edge_tri_indices_dev = dev_adj[2]
+
+    shape_args = [
+        model.shape_body,
+        model.shape_world,
+        model.shape_type,
+        model.shape_flags,
+        model.shape_transform,
+        model.shape_scale,
+        state.body_q,
+        model._shape_sdf_index,
+        model._texture_sdf_data,
+    ]
+    outputs = [
+        contacts.soft_contact_count,
+        contacts.soft_contact_primitive,
+        contacts.soft_contact_kind,
+        contacts.soft_contact_barycentric,
+        contacts.soft_contact_shape,
+        contacts.soft_contact_body_pos,
+        contacts.soft_contact_body_vel,
+        contacts.soft_contact_normal,
+    ]
+
+    if n_edges > 0:
+        wp.launch(
+            create_soft_edge_contacts,
+            dim=model.shape_count * n_edges,
+            inputs=[
+                n_edges,
+                state.particle_q,
+                model.particle_radius,
+                model.particle_world,
+                model.tri_indices,
+                tri_edge_indices_dev,
+                edge_tri_indices_dev,
+                *shape_args,
+                SDF_EDGE_ITERS,
+                margin,
+                contacts.soft_contact_max,
+            ],
+            outputs=outputs,
+            device=device,
+        )
+    if n_tris > 0:
+        wp.launch(
+            create_soft_face_contacts,
+            dim=model.shape_count * n_tris,
+            inputs=[
+                n_tris,
+                state.particle_q,
+                model.particle_radius,
+                model.particle_world,
+                model.tri_indices,
+                *shape_args,
+                SDF_FACE_ITERS,
+                SDF_LS_ITERS,
+                margin,
+                contacts.soft_contact_max,
+            ],
+            outputs=outputs,
+            device=device,
+        )

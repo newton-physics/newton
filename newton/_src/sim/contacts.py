@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import warp as wp
 from warp import DeviceLike as Devicelike
 
@@ -192,12 +194,13 @@ class Contacts:
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
         with wp.ScopedDevice(device):
-            # Packed counter array [rigid_contact_count, soft_contact_count] so
-            # all counts can be zeroed together in one fused kernel launch.
-            # Every entry must be safe to reset to zero at the start of a
-            # collision pass.
-            self.contact_counters = wp.zeros(2, dtype=wp.int32)
-            # Create sliced views for individual counters (no additional allocation)
+            # Packed counter array [rigid, soft_particle, soft_edge, soft_face] so all
+            # counts can be zeroed together in one fused kernel launch. The soft counter is
+            # the length-3 slice below: a separate counter from rigid (not combined), just
+            # sharing this backing array. Zeroed at the start of a collision pass (fused into
+            # ``compute_shape_aabbs``; also by :meth:`clear`).
+            self.contact_counters = wp.zeros(4, dtype=wp.int32)
+            # Sliced view for the rigid counter (no additional allocation)
             self.rigid_contact_count = self.contact_counters[0:1]
 
             self.contact_generation = wp.zeros(1, dtype=wp.int32)
@@ -316,9 +319,18 @@ class Contacts:
                 self.rigid_contact_broken_indices = None
                 self.rigid_contact_broken_count = None
 
-            # soft contacts — requires_grad flows through here for differentiable simulation
-            self.soft_contact_count = self.contact_counters[1:2]
-            self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)
+            # soft contacts — requires_grad flows through here for differentiable simulation.
+            # Soft counter is the length-3 slice [1:4] of contact_counters (a separate
+            # counter from rigid, not combined): [0] particle (V x surface, legacy)
+            #   [1] edge   [2] face
+            self.soft_contact_count = self.contact_counters[1:4]
+            # Soft feature id: particle id in the particle range, soft-triangle id in the
+            # edge/face ranges (renamed from soft_contact_particle).
+            self.soft_contact_primitive = wp.full(soft_contact_max, -1, dtype=int)
+            self.soft_contact_kind = wp.zeros(soft_contact_max, dtype=wp.uint8)
+            """Soft contact feature kind (``SOFT_CONTACT_KIND_EDGE`` / ``_FACE``) for edge/face records; unused in the particle range. Shape (soft_contact_max,), dtype uint8."""
+            self.soft_contact_barycentric = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            """Barycentric coordinates on the soft triangle for edge/face contacts [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact position on body [m], shape (soft_contact_max,), dtype :class:`vec3`.
@@ -402,7 +414,7 @@ class Contacts:
             if self.rigid_contact_match_index is not None:
                 self.rigid_contact_match_index.fill_(-1)
 
-            self.soft_contact_particle.fill_(-1)
+            self.soft_contact_primitive.fill_(-1)
             self.soft_contact_shape.fill_(-1)
             self.soft_contact_tids.fill_(-1)
         # else: Optimized path (default) - only counter clear needed
@@ -415,3 +427,18 @@ class Contacts:
         Returns the device on which the contact buffers are allocated.
         """
         return self.rigid_contact_count.device
+
+    @property
+    def soft_contact_particle(self) -> wp.array:
+        """Deprecated alias for :attr:`soft_contact_primitive`.
+
+        .. deprecated::
+            Use :attr:`soft_contact_primitive`, which holds the soft feature id: a particle id in the
+            particle range and a soft-triangle id in the edge/face ranges.
+        """
+        warnings.warn(
+            "Contacts.soft_contact_particle is deprecated; use Contacts.soft_contact_primitive instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.soft_contact_primitive

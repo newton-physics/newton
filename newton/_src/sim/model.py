@@ -2252,17 +2252,24 @@ class Model:
                 raise ValueError(f"Expected {self.world_count} gravity vectors, got {len(gravity_np)}")
             self.gravity.assign(gravity_np)
 
-    def _init_collision_pipeline(self):
+    def _init_collision_pipeline(self, enable_water_tight_rigid_soft_contact: bool = False):
         """
         Initialize a :class:`CollisionPipeline` for this model.
 
         This method creates a default collision pipeline for the model. The pipeline is cached on
         the model for subsequent use by :meth:`collide`.
 
+        Args:
+            enable_water_tight_rigid_soft_contact: Size the soft-contact buffer for the water-tight
+                EDGE/FACE passes (see :meth:`collide`).
         """
         from .collide import CollisionPipeline  # noqa: PLC0415
 
-        self._collision_pipeline = CollisionPipeline(self, broad_phase="explicit")
+        self._collision_pipeline = CollisionPipeline(
+            self,
+            broad_phase="explicit",
+            enable_water_tight_rigid_soft_contact=enable_water_tight_rigid_soft_contact,
+        )
 
     def contacts(
         self: Model,
@@ -2296,6 +2303,7 @@ class Model:
         contacts: Contacts | None = None,
         *,
         collision_pipeline: CollisionPipeline | None = None,
+        enable_water_tight_rigid_soft_contact: bool = False,
     ) -> Contacts:
         """
         Generate contact points for the particles and rigid bodies in the model using the default collision
@@ -2306,16 +2314,24 @@ class Model:
             contacts: The contacts buffer to populate (will be cleared first). If None, a new
                 contacts buffer is allocated via :meth:`contacts`.
             collision_pipeline: Optional collision pipeline override.
+            enable_water_tight_rigid_soft_contact: When ``True``, additionally run the triangle-driven
+                soft EDGE/FACE passes that detect soft edge / face vs rigid contacts the per-particle
+                SDF path misses, written into the E/F ranges of ``Contacts.soft_contact_*``. Default
+                ``False`` reproduces the per-particle behaviour bit-for-bit. When this call allocates
+                the pipeline (no override and none cached), the soft-contact buffer is sized for the
+                extra records.
         """
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
         if self._collision_pipeline is None:
-            self._init_collision_pipeline()
+            self._init_collision_pipeline(enable_water_tight_rigid_soft_contact=enable_water_tight_rigid_soft_contact)
 
         if contacts is None:
             contacts = self._collision_pipeline.contacts()
 
-        self._collision_pipeline.collide(state, contacts)
+        self._collision_pipeline.collide(
+            state, contacts, enable_water_tight_rigid_soft_contact=enable_water_tight_rigid_soft_contact
+        )
         return contacts
 
     def request_state_attributes(self, *attributes: str) -> None:

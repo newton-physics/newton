@@ -1608,7 +1608,7 @@ def test_particle_shape_contacts(test, device, shape_type: GeoType):
 
         # Verify contact data is valid
         if soft_count > 0:
-            contact_particles = contacts.soft_contact_particle.numpy()[:soft_count]
+            contact_particles = contacts.soft_contact_primitive.numpy()[:soft_count]
             contact_shapes = contacts.soft_contact_shape.numpy()[:soft_count]
             contact_normals = contacts.soft_contact_normal.numpy()[:soft_count]
 

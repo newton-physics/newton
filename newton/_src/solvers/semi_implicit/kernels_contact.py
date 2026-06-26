@@ -685,7 +685,7 @@ def eval_particle_body_contact_forces(
                 model.soft_contact_mu,
                 model.particle_adhesion,
                 contacts.soft_contact_count,
-                contacts.soft_contact_particle,
+                contacts.soft_contact_primitive,
                 contacts.soft_contact_shape,
                 contacts.soft_contact_body_pos,
                 contacts.soft_contact_body_vel,

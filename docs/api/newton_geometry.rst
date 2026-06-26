@@ -64,3 +64,7 @@ newton.geometry
      - ``-2``
    * - ``MATCH_NOT_FOUND``
      - ``-1``
+   * - ``SOFT_CONTACT_KIND_EDGE``
+     - ``2``
+   * - ``SOFT_CONTACT_KIND_FACE``
+     - ``3``
