@@ -112,6 +112,33 @@ _DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE = (
     "Model.mujoco.dof_passive_damping is deprecated and will be removed in a future release. "
     "Use Model.joint_damping instead."
 )
+_DEFAULT_JOINT_VELOCITY_LIMIT = ModelBuilder.JointDofConfig().velocity_limit
+
+
+def _warn_unsupported_joint_velocity_limits(joint_velocity_limit: np.ndarray | None) -> None:
+    if joint_velocity_limit is None or joint_velocity_limit.size == 0:
+        return
+
+    finite_limits = np.isfinite(joint_velocity_limit)
+    non_default_limits = finite_limits & ~np.isclose(
+        joint_velocity_limit,
+        _DEFAULT_JOINT_VELOCITY_LIMIT,
+        rtol=1.0e-6,
+        atol=0.0,
+    )
+    if not np.any(non_default_limits):
+        return
+
+    dof_indices = np.flatnonzero(non_default_limits)
+    shown = dof_indices[:8].tolist()
+    suffix = "" if len(dof_indices) <= len(shown) else f" and {len(dof_indices) - len(shown)} more"
+    warnings.warn(
+        "SolverMuJoCo does not support Model.joint_velocity_limit because MuJoCo has no equivalent "
+        f"joint velocity clamp. Authored limits at DOF indices {shown}{suffix} will be ignored; "
+        "use joint_effort_limit, joint_damping/controller limits, or a custom actuator to bound speed.",
+        RuntimeWarning,
+        stacklevel=3,
+    )
 
 
 def _finalize_deprecated_dof_passive_damping(
@@ -4694,12 +4721,12 @@ class SolverMuJoCo(SolverBase):
         joint_q_start = model.joint_q_start.numpy()
         joint_armature = model.joint_armature.numpy()
         joint_effort_limit = model.joint_effort_limit.numpy()
+        joint_velocity_limit = model.joint_velocity_limit.numpy()
+        _warn_unsupported_joint_velocity_limits(joint_velocity_limit)
         # Per-DOF actuator arrays
         joint_target_mode = model.joint_target_mode.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
-        # MoJoCo doesn't have velocity limit
-        # joint_velocity_limit = model.joint_velocity_limit.numpy()
         joint_friction = model.joint_friction.numpy()
         joint_world = model.joint_world.numpy()
         body_flags = model.body_flags.numpy()

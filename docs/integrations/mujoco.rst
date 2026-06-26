@@ -269,6 +269,11 @@ Newton's per-DOF :attr:`~newton.Model.joint_target_mode` creates MuJoCo general 
 
 :attr:`~newton.Model.joint_effort_limit` is forwarded as ``actfrcrange`` on the joint
 (prismatic, revolute, and D6) or as ``forcerange`` on the actuator (ball).
+:attr:`~newton.Model.joint_velocity_limit` is stored on the Newton model but
+has no MuJoCo equivalent; :class:`~newton.solvers.SolverMuJoCo` emits a
+runtime warning when a model contains non-default finite velocity limits.
+Use effort limits, damping, controller limits, or a custom actuator to bound
+joint speed in MuJoCo.
 
 The full MuJoCo general-actuator model (arbitrary gain/bias/dynamics types
 and parameters, explicit transmission targets, ctrl/force/act ranges) is
@@ -588,7 +593,8 @@ Caveats
 
 **Velocity limits are not forwarded.**
   Newton's :attr:`~newton.Model.joint_velocity_limit` has no MuJoCo equivalent and is
-  ignored.
+  ignored. Non-default finite limits produce a construction-time warning from
+  :class:`~newton.solvers.SolverMuJoCo`.
 
 **Kinematic-root armature override.**
   DOFs of kinematic articulation roots have their
