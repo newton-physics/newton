@@ -1303,6 +1303,11 @@ def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_u_m
             status.r_d = r_d_max
             status.r_c = r_c_max
 
+            # Inexact-ADMM: schedule the inner linear-solver tolerance from the primal residual
+            # (looser early, tighter as PADMM converges). A 0 ratio keeps the fixed inner tolerance.
+            if linear_solver_atol and config.linear_solver_tolerance_ratio > 0.0:
+                linear_solver_atol[wid] = wp.max(config.linear_solver_tolerance_ratio * r_p_max, FLOAT32_EPS)
+
             # Check and store convergence state
             if status.iterations > 1 and r_p_max <= eps_p and r_d_max <= eps_d and r_c_max <= eps_c:
                 status.converged = 1
@@ -1492,6 +1497,11 @@ def _make_compute_infnorm_residuals_accel_kernel(tile_size: int, n_cts_max: int,
             status.r_p = r_p_max
             status.r_d = r_d_max
             status.r_c = r_c_max
+
+            # Inexact-ADMM: schedule the inner linear-solver tolerance from the primal residual
+            # (looser early, tighter as PADMM converges). A 0 ratio keeps the fixed inner tolerance.
+            if linear_solver_atol and config.linear_solver_tolerance_ratio > 0.0:
+                linear_solver_atol[wid] = wp.max(config.linear_solver_tolerance_ratio * r_p_max, FLOAT32_EPS)
             status.r_dx = wp.sqrt(r_dx_l2_sum)
             status.r_dy = wp.sqrt(r_dy_l2_sum)
             status.r_dz = wp.sqrt(r_dz_l2_sum)

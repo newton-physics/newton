@@ -367,10 +367,15 @@ class PADMMSolver:
         Args:
             problem (DualProblem): The dual forward dynamics problem to be solved.
         """
-        # Pass the PADMM-owned tolerance array to the iterative linear solver (if present).
+        # Pass the PADMM-owned tolerance array to the iterative linear solver (if present), so the
+        # inexact-ADMM tolerance schedule (set in the convergence kernel) drives the inner solve.
         inner = getattr(problem._delassus._solver, "solver", None)
         if inner is not None:
             inner.atol = self._data.linear_solver_atol
+        elif problem.sparse:
+            # The fused single-kernel CR has no wrapped ``solver``; it reads its own ``.atol`` array
+            # live each solve (see ConjugateResidualSolverFused._solve_impl).
+            problem._delassus._solver.atol = self._data.linear_solver_atol
 
         # Initialize the solver status, ALM penalty, and iterative solver tolerance
         self._initialize()
@@ -480,7 +485,25 @@ class PADMMSolver:
             ],
             device=self.device,
         )
-        problem.delassus.set_needs_update()
+        # Only eta changed (not the Jacobian sparsity), so flag a regularization-only refresh:
+        # a raw-Jacobian solver (fused CR) refreshes its combined regularization and skips the
+        # index rebuild + segmented sort, which is both wasted work per PADMM iteration and unsafe
+        # inside wp.capture_while (the sort allocates).
+        problem.delassus.set_regularization_needs_update()
+
+    def _refresh_solver_regularization(self, problem: DualProblem):
+        """Re-record a raw-Jacobian solver's combined-eta refresh after an in-loop (adaptive-penalty)
+        eta update, so the new regularization is captured inside ``wp.capture_while``.
+
+        Under graph-conditional capture the iteration body is traced once: the lazy refresh inside the
+        linear solve runs *before* the eta update in that single trace, so it records the stale eta and
+        the replayed graph never picks up the per-iteration update (-> divergence/NaN). Calling
+        ``prepare_step`` here, *after* the update, records the refresh in the body. It is cheap and
+        capture-safe: only eta changed, so it refreshes the combined regularization and skips the
+        index rebuild + segmented sort (see the dirty-flag split in ``delassus``)."""
+        prepare_step = getattr(problem._delassus._solver, "prepare_step", None)
+        if prepare_step is not None:
+            prepare_step()
 
     def _update_regularization(self, problem: DualProblem):
         """
@@ -493,6 +516,10 @@ class PADMMSolver:
         """
         if problem.sparse:
             self._update_sparse_regularization(problem)
+            # Let a raw-Jacobian linear solver (e.g. the fused single-kernel CR) rebuild its
+            # per-step index structures here, before the (possibly graph-captured) iteration loop,
+            # so that one-off work stays out of the replayed graph. No-op for other solvers.
+            problem._delassus._solver.prepare_step()
         else:
             # Update the proximal regularization term in the Delassus matrix
             wp.launch(
@@ -541,6 +568,7 @@ class PADMMSolver:
         # Update sparse Delassus regularization if penalty was updated adaptively
         if problem.sparse and self._use_adaptive_penalty:
             self._update_sparse_regularization(problem)
+            self._refresh_solver_regularization(problem)
 
         # Optionally record internal solver info
         if self._collect_info:
@@ -580,6 +608,7 @@ class PADMMSolver:
         # Update sparse Delassus regularization if penalty was updated adaptively
         if problem.sparse and self._use_adaptive_penalty:
             self._update_sparse_regularization(problem)
+            self._refresh_solver_regularization(problem)
 
         # Optionally record internal solver info (before caching previous state)
         if self._collect_info:
