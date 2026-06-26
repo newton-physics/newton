@@ -452,9 +452,7 @@ def _create_accumulate_moments_kernel(normal_matching: bool = True):
                 if wp.static(normal_matching):
                     nbin_agg_force = agg_force[nbin_idx]
                     nbin_agg_mag = wp.length(nbin_agg_force)
-                    # Gate on the geometric depth-volume magnitude (pressure-law
-                    # independent) and a non-degenerate force direction. Same gate
-                    # as the export kernel.
+                    # Same reliability gate as the export kernel.
                     nbin_dv_mag = wp.length(agg_depth_volume[nbin_idx])
                     if nbin_dv_mag > EPS_LARGE and nbin_agg_mag > EPS_SMALL:
                         nbin_nsum = total_normal_reduced[nbin_idx]
@@ -639,15 +637,10 @@ def create_export_hydroelastic_reduced_contacts_kernel(
             agg_force_vec = agg_force[entry_idx]
             agg_force_mag = wp.length(agg_force_vec)
 
-            # Gate normal matching / anchor placement on the geometric depth-volume
-            # magnitude |sum(area*depth*normal)|, which is independent of the
-            # pressure-law magnitude (and therefore of kh and any custom
-            # pressure_func). For the default linear law this equals
-            # |agg_force| / kh, preserving the original threshold behavior.
-            # Also require a non-degenerate aggregate force: the anchor normal and
-            # normal-matching rotation derive their direction from ``agg_force_vec``,
-            # so a custom pressure law producing tiny/degenerate force (while the
-            # geometric depth-volume is non-zero) must not reach normalization.
+            # Reliability gate for normal matching / anchor placement. The geometric
+            # depth-volume is pressure-law-independent (= |agg_force| / kh for the
+            # linear law); the EPS_SMALL term keeps agg_force_vec safe to normalize
+            # for the direction even under a degenerate custom pressure law.
             agg_direction_mag = wp.length(agg_depth_volume[entry_idx])
             has_reliable_agg_direction = agg_direction_mag > wp.static(EPS_LARGE) and agg_force_mag > wp.static(
                 EPS_SMALL
@@ -798,9 +791,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                     if nbin_entry_idx >= 0 and depth < 0.0:
                         nbin_agg_force = agg_force[nbin_entry_idx]
                         nbin_agg_mag = wp.length(nbin_agg_force)
-                        # Depth-volume reliability gate (see aggregate path above):
-                        # pressure-law-independent magnitude, plus a non-degenerate
-                        # force direction guard for the normal/anchor normalization.
+                        # Same reliability gate as the aggregate path above.
                         nbin_direction_mag = wp.length(agg_depth_volume[nbin_entry_idx])
                         nbin_dir_reliable = nbin_direction_mag > wp.static(EPS_LARGE) and nbin_agg_mag > wp.static(
                             EPS_SMALL
