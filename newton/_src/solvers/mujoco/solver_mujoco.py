@@ -7,6 +7,7 @@ import importlib.metadata as importlib_metadata
 import math
 import os
 import re
+import sys
 import warnings
 from collections.abc import Iterable
 from enum import IntEnum
@@ -112,6 +113,42 @@ _DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE = (
     "Model.mujoco.dof_passive_damping is deprecated and will be removed in a future release. "
     "Use Model.joint_damping instead."
 )
+_DEFAULT_JOINT_VELOCITY_LIMIT = ModelBuilder.JointDofConfig().velocity_limit
+_NEWTON_PACKAGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")) + os.sep
+
+
+def _external_warning_stacklevel() -> int:
+    stacklevel = 1
+    frame = sys._getframe(1)
+    while frame is not None:
+        filename = os.path.abspath(frame.f_code.co_filename)
+        if not filename.startswith(_NEWTON_PACKAGE_ROOT):
+            return stacklevel
+        frame = frame.f_back
+        stacklevel += 1
+    return 2
+
+
+def _warn_unsupported_joint_velocity_limits(joint_velocity_limit: np.ndarray | None) -> None:
+    if joint_velocity_limit is None or joint_velocity_limit.size == 0:
+        return
+
+    finite_limits = np.isfinite(joint_velocity_limit)
+    non_default_limits = finite_limits & (joint_velocity_limit != _DEFAULT_JOINT_VELOCITY_LIMIT)
+    if not np.any(non_default_limits):
+        return
+
+    dof_indices = np.flatnonzero(non_default_limits)
+    shown = dof_indices[:8].tolist()
+    suffix = "" if len(dof_indices) <= len(shown) else f" and {len(dof_indices) - len(shown)} more"
+    warnings.warn(
+        "SolverMuJoCo does not support Model.joint_velocity_limit because MuJoCo has no equivalent "
+        f"joint velocity clamp. Authored limits at DOF indices {shown}{suffix} will be ignored; "
+        "use a controller or custom actuator for hard speed limits; joint_effort_limit and joint_damping "
+        "can only mitigate speed indirectly.",
+        RuntimeWarning,
+        stacklevel=_external_warning_stacklevel(),
+    )
 
 
 def _finalize_deprecated_dof_passive_damping(
@@ -4694,12 +4731,12 @@ class SolverMuJoCo(SolverBase):
         joint_q_start = model.joint_q_start.numpy()
         joint_armature = model.joint_armature.numpy()
         joint_effort_limit = model.joint_effort_limit.numpy()
+        joint_velocity_limit = model.joint_velocity_limit.numpy()
+        _warn_unsupported_joint_velocity_limits(joint_velocity_limit)
         # Per-DOF actuator arrays
         joint_target_mode = model.joint_target_mode.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
-        # MoJoCo doesn't have velocity limit
-        # joint_velocity_limit = model.joint_velocity_limit.numpy()
         joint_friction = model.joint_friction.numpy()
         joint_world = model.joint_world.numpy()
         body_flags = model.body_flags.numpy()

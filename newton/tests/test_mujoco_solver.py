@@ -26,6 +26,7 @@ from newton._src.solvers.mujoco.constants import (
 )
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.kernels import convert_solref
+from newton._src.solvers.mujoco.solver_mujoco import _warn_unsupported_joint_velocity_limits
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
@@ -76,6 +77,31 @@ class TestMuJoCoSolver(unittest.TestCase):
         with warnings.catch_warnings():
             warnings.simplefilter("error", DeprecationWarning)
             SolverMuJoCo(model)
+
+    def test_warn_unsupported_joint_velocity_limits(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _warn_unsupported_joint_velocity_limits(np.array([1.0, 1.0e6, 2.0], dtype=np.float32))
+
+        self.assertEqual(len(caught), 1)
+        self.assertEqual(caught[0].category, RuntimeWarning)
+        message = str(caught[0].message)
+        self.assertIn("joint_velocity_limit", message)
+        self.assertIn("will be ignored", message)
+        self.assertIn("DOF indices [0, 2]", message)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _warn_unsupported_joint_velocity_limits(np.array([1.0e6], dtype=np.float32))
+
+        self.assertEqual(caught, [])
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _warn_unsupported_joint_velocity_limits(np.array([1.0e6 - 0.5], dtype=np.float64))
+
+        self.assertEqual(len(caught), 1)
+        self.assertIn("[0]", str(caught[0].message))
 
     def test_tolerance_options(self):
         """Test that tolerance and ls_tolerance options are properly set on the MuJoCo Warp model."""
@@ -962,7 +988,8 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         self.model.joint_armature.assign(initial_armature)
 
         # Step 2: Create solver (this should apply values to MuJoCo)
-        solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
+        with self.assertWarnsRegex(RuntimeWarning, "joint_velocity_limit"):
+            solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
 
         # Check armature: Newton value should appear directly in MuJoCo DOF armature
         for world_idx in range(self.model.world_count):
