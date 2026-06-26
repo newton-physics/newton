@@ -6,6 +6,8 @@ from __future__ import annotations
 import warp as wp
 from warp import DeviceLike as Devicelike
 
+from ..utils.deprecation import deprecate_nonkeyword_arguments
+
 GENERATION_SENTINEL = -1
 """Value reserved as an impossible generation; the increment kernel skips it."""
 
@@ -134,10 +136,12 @@ class Contacts:
             bad = ", ".join(invalid)
             raise ValueError(f"Unknown extended contact attribute(s): {bad}. Allowed: {allowed}.")
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         rigid_contact_max: int,
         soft_contact_max: int,
+        *,
         requires_grad: bool = False,
         device: Devicelike = None,
         per_contact_shape_properties: bool = False,
