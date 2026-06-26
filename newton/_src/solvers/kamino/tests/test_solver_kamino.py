@@ -152,13 +152,47 @@ def assert_states_close_masked(
     state_true: StateKamino | None,
     state_false: StateKamino | None,
     world_mask: wp.array[wp.bool],
+    positions: bool = True,
+    velocities: bool = True,
+    forces: bool = True,
+    match_q_j_p_with_q_j: bool = False,
 ):
-    """Check that state attributes match one of two reference states, based on the world mask."""
+    """
+    Check that state attributes match one of two reference states, based on the world mask.
+
+    Args:
+        model: Kamino model.
+        state: Kamino state to compare to reference states.
+        state_true: Kamino reference state for worlds in which the mask is True.
+        state_false: Kamino reference state for worlds in which the mask is False.
+        world_mask: Per-world boolean mask.
+        positions: Whether to compare position attributes, i.e. q_i, q_j, q_j_p (skipped if False).
+        velocities: Whether to compare velocity attributes, i.e. u_i, dq_j (skipped if False).
+        forces: Whether to compare force attributes, i.e. w_i, w_i_e, lambda_j (skipped if False).
+        match_q_j_p_with_q_j: Whether to compare q_j_p against q_j in the reference (instead of q_j_p).
+    """
     bodies_offset = model.info.bodies_offset.numpy()
     coords_offset = np.array([*model.info.joint_coords_offset.numpy(), model.size.sum_of_num_joint_coords])
     dofs_offset = np.array([*model.info.joint_dofs_offset.numpy(), model.size.sum_of_num_joint_dofs])
     cts_offset = np.array([*model.info.joint_cts_offset.numpy(), model.size.sum_of_num_joint_cts])
     world_mask_np = world_mask.numpy()
+
+    # List state attributes to compare
+    body_attributes = []
+    coord_attributes = []
+    dof_attributes = []
+    cts_attributes = []
+    if positions:
+        body_attributes.append("q_i")
+        coord_attributes.append("q_j")
+        if not match_q_j_p_with_q_j:
+            coord_attributes.append("q_j_p")
+    if velocities:
+        body_attributes.append("u_i")
+        dof_attributes.append("dq_j")
+    if forces:
+        body_attributes.extend(["w_i", "w_i_e"])
+        cts_attributes.append("lambda_j")
 
     for wid in range(model.size.num_worlds):
         # Select reference state based on world mask
@@ -167,7 +201,7 @@ def assert_states_close_masked(
             continue
 
         # Check state attributes for the current world
-        for attr in ["q_i", "u_i", "w_i", "w_i_e"]:
+        for attr in body_attributes:
             np.testing.assert_allclose(
                 getattr(state, attr).numpy()[bodies_offset[wid] : bodies_offset[wid + 1]],
                 getattr(state_ref, attr).numpy()[bodies_offset[wid] : bodies_offset[wid + 1]],
@@ -175,7 +209,7 @@ def assert_states_close_masked(
                 atol=atol,
                 err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
             )
-        for attr in ["q_j", "q_j_p"]:
+        for attr in coord_attributes:
             np.testing.assert_allclose(
                 getattr(state, attr).numpy()[coords_offset[wid] : coords_offset[wid + 1]],
                 getattr(state_ref, attr).numpy()[coords_offset[wid] : coords_offset[wid + 1]],
@@ -183,7 +217,7 @@ def assert_states_close_masked(
                 atol=atol,
                 err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
             )
-        for attr in ["dq_j"]:
+        for attr in dof_attributes:
             np.testing.assert_allclose(
                 getattr(state, attr).numpy()[dofs_offset[wid] : dofs_offset[wid + 1]],
                 getattr(state_ref, attr).numpy()[dofs_offset[wid] : dofs_offset[wid + 1]],
@@ -191,10 +225,18 @@ def assert_states_close_masked(
                 atol=atol,
                 err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
             )
-        for attr in ["lambda_j"]:
+        for attr in cts_attributes:
             np.testing.assert_allclose(
                 getattr(state, attr).numpy()[cts_offset[wid] : cts_offset[wid + 1]],
                 getattr(state_ref, attr).numpy()[cts_offset[wid] : cts_offset[wid + 1]],
+                rtol=rtol,
+                atol=atol,
+                err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
+            )
+        if positions and match_q_j_p_with_q_j:
+            np.testing.assert_allclose(
+                state.q_j_p.numpy()[cts_offset[wid] : cts_offset[wid + 1]],
+                state_ref.q_j.numpy()[cts_offset[wid] : cts_offset[wid + 1]],
                 rtol=rtol,
                 atol=atol,
                 err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
@@ -464,7 +506,73 @@ class TestSolverKaminoImpl(unittest.TestCase):
         # Check that only the specified worlds were reset
         assert_states_close_masked(model, state_n, state_0, state_n_ref, world_mask)
 
-    def test_06_reset_to_base_state(self):
+    def test_06_reset_but_preserve_state(self):
+        """
+        Test resetting multiple world solvers while preserving the state.
+        """
+        builder = make_homogeneous_builder(num_worlds=3, build_fn=build_boxes_fourbar, limits=False)
+        model = builder.finalize(device=self.default_device)
+        solver = SolverKaminoImpl(model=model)
+
+        # Set a pre-step control callback to apply external forces
+        # that will sufficiently perturb the system state
+        solver.set_pre_step_callback(test_prestep_callback)
+
+        # Create a state container to hold the output of the reset
+        # and a world_mask array to specify which worlds to reset
+        state_0 = model.state()
+        state_p = model.state()
+        state_n = model.state()
+        control = model.control()
+        world_mask = wp.array([False, True, False], dtype=wp.bool, device=self.default_device)
+
+        # Step the solver a few times to change the state
+        step_solver(
+            num_steps=11,
+            solver=solver,
+            state_p=state_p,
+            state_n=state_n,
+            control=control,
+            show_progress=self.progress or self.verbose,
+        )
+
+        # Create a copy of the current state before reset
+        state_n_ref = model.state()
+        state_n_ref.copy_from(state_n)
+
+        # Reset select worlds, while preserving the state
+        solver.reset(state=state_n, world_mask=world_mask, config=SolverKamino.ResetConfig.preserve())
+
+        # Check that masked out worlds are fully preserved
+        assert_states_close_masked(model, state_n, None, state_n_ref, world_mask=world_mask)
+
+        # Check that positions/velocities are preserved in reset worlds
+        # (except q_j_p, reset to match q_j)
+        assert_states_close_masked(
+            model,
+            state_n,
+            state_n_ref,
+            None,
+            world_mask=world_mask,
+            positions=True,
+            velocities=True,
+            forces=False,
+            match_q_j_p_with_q_j=True,
+        )
+
+        # Check that wrenches and multipliers are reset in reset worlds
+        assert_states_close_masked(
+            model,
+            state_n,
+            state_0,
+            None,
+            world_mask=world_mask,
+            positions=False,
+            velocities=False,
+            forces=True,
+        )
+
+    def test_07_reset_to_base_state(self):
         """
         Test resetting multiple world solvers to specified floating base states.
         """
@@ -589,7 +697,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         # Check that state was correctly preserved or reset based on mask
         assert_states_close_masked(model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)
 
-    def test_07_reset_to_joint_state(self):
+    def test_08_reset_to_joint_state(self):
         """
         Test resetting multiple world solvers to specified joint states.
         """
@@ -723,7 +831,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         # Check that state was correctly preserved or reset based on mask
         assert_states_close_masked(model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)
 
-    def test_08_reset_to_actuator_state(self):
+    def test_09_reset_to_actuator_state(self):
         """
         Test resetting multiple world solvers to specified actuator states.
         """
