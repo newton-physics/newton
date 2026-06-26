@@ -4297,10 +4297,12 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         self.assertEqual(solver._last_nacon_count.dtype, wp.int32)
         self.assertEqual(solver._last_contact_generation.shape, (1,))
         self.assertEqual(solver._last_nacon_count.shape, (1,))
-        self.assertEqual(solver._contact_overflow_count.shape, (1,))
+        self.assertEqual(solver._contact_overflow_counts.shape, (2,))
+        self.assertEqual(solver._contact_overflow_warned.shape, (1,))
         self.assertEqual(solver._last_contact_generation.device, model.device)
         self.assertEqual(solver._last_nacon_count.device, model.device)
-        self.assertEqual(solver._contact_overflow_count.device, model.device)
+        self.assertEqual(solver._contact_overflow_counts.device, model.device)
+        self.assertEqual(solver._contact_overflow_warned.device, model.device)
 
         # Calling _invalidate_contact_fast_path() before any step must succeed
         # cleanly — this is the exact path that previously hit stale captured
@@ -4308,15 +4310,15 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         solver._invalidate_contact_fast_path()
         self.assertEqual(int(solver._last_contact_generation.numpy()[0]), -1)
         self.assertEqual(int(solver._last_nacon_count.numpy()[0]), 0)
-        self.assertEqual(int(solver._contact_overflow_count.numpy()[0]), 0)
+        np.testing.assert_array_equal(solver._contact_overflow_counts.numpy(), np.zeros(2, dtype=np.int32))
 
         # And again immediately after a notify before any step — the CUDA 700
         # repro path from the bug report.
         solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
         wp.synchronize()  # surface any async device errors
 
-    def test_contact_overflow_counter_replaces_device_printf(self):
-        """Oversized Newton contact batches record clipping without device printing."""
+    def test_contact_overflow_warning_and_counts_replace_printf_spam(self):
+        """Oversized Newton contact batches warn once and record clipping counts."""
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1e4
         builder.default_shape_cfg.kd = 1000.0
@@ -4336,8 +4338,15 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
 
         solver._convert_contacts_to_mjwarp(model, model.state(), contacts)
 
+        self.assertEqual(solver.get_newton_contact_overflow_counts(), (5, 3))
         self.assertEqual(solver.get_newton_contact_overflow_count(), 3)
+        self.assertEqual(int(solver._contact_overflow_warned.numpy()[0]), 1)
         self.assertEqual(int(solver.mjw_data.nacon.numpy()[0]), 0)
+
+        # The fast path reuses the last full conversion's contact set, so the
+        # overflow diagnostic remains tied to that full conversion.
+        solver._convert_contacts_to_mjwarp(model, model.state(), contacts)
+        self.assertEqual(solver.get_newton_contact_overflow_counts(), (5, 3))
 
     def test_ephemeral_contacts_wrapper_keeps_fast_path_armed(self):
         """A new ``Contacts`` wrapper that shares the same underlying
