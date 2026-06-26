@@ -478,7 +478,6 @@ class SolverVBD(SolverBase):
                 vertex_collision_buffer_pre_alloc=particle_vertex_contact_buffer_size,
                 edge_collision_buffer_pre_alloc=particle_edge_contact_buffer_size,
                 edge_edge_parallel_epsilon=particle_edge_parallel_epsilon,
-                mesh_adjacency=self.particle_adjacency,
                 topological_contact_filter_threshold=particle_topological_contact_filter_threshold,
                 external_vertex_triangle_filtering_map=particle_external_vertex_contact_filtering_map,
                 external_edge_edge_filtering_map=particle_external_edge_contact_filtering_map,

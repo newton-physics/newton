@@ -3412,8 +3412,6 @@ class ModelBuilder:
         if builder.tet_count:
             self.tet_indices.extend((np.array(builder.tet_indices, dtype=np.int32) + start_particle_idx).tolist())
 
-        # The soft-mesh adjacency is rebuilt from the merged edge/triangle tables in finalize().
-
         builder_coloring_translated = [group + start_particle_idx for group in builder.particle_color_groups]
         self.particle_color_groups = combine_independent_particle_coloring(
             self.particle_color_groups, builder_coloring_translated

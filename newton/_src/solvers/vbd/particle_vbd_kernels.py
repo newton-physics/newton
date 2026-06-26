@@ -19,7 +19,15 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import _eval_body_particle_contac
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point
-from ...utils.mesh import MeshAdjacencyDeviceData
+from ...utils.mesh import (
+    MeshAdjacencyDeviceData,
+    get_vertex_adjacent_edge_id_order,
+    get_vertex_adjacent_face_id_order,
+    get_vertex_adjacent_tet_id_order,
+    get_vertex_num_adjacent_edges,
+    get_vertex_num_adjacent_faces,
+    get_vertex_num_adjacent_tets,
+)
 from .tri_mesh_collision import TriMeshCollisionInfo
 
 # TODO: Grab changes from Warp that has fixed the backward pass
@@ -59,50 +67,6 @@ class mat43(wp.types.matrix(shape=(4, 3), dtype=wp.float32)):
 
 class vec9(wp.types.vector(length=9, dtype=wp.float32)):
     pass
-
-
-@wp.func
-def get_vertex_num_adjacent_edges(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32):
-    return (adjacency.v_adj_hinges_offsets[vertex + 1] - adjacency.v_adj_hinges_offsets[vertex]) >> 1
-
-
-@wp.func
-def get_vertex_adjacent_edge_id_order(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32, edge: wp.int32):
-    offset = adjacency.v_adj_hinges_offsets[vertex]
-    return adjacency.v_adj_hinges[offset + edge * 2], adjacency.v_adj_hinges[offset + edge * 2 + 1]
-
-
-@wp.func
-def get_vertex_num_adjacent_faces(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32):
-    return (adjacency.v_adj_tris_offsets[vertex + 1] - adjacency.v_adj_tris_offsets[vertex]) >> 1
-
-
-@wp.func
-def get_vertex_adjacent_face_id_order(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32, face: wp.int32):
-    offset = adjacency.v_adj_tris_offsets[vertex]
-    return adjacency.v_adj_tris[offset + face * 2], adjacency.v_adj_tris[offset + face * 2 + 1]
-
-
-@wp.func
-def get_vertex_num_adjacent_springs(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32):
-    return adjacency.v_adj_springs_offsets[vertex + 1] - adjacency.v_adj_springs_offsets[vertex]
-
-
-@wp.func
-def get_vertex_adjacent_spring_id(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32, spring: wp.int32):
-    offset = adjacency.v_adj_springs_offsets[vertex]
-    return adjacency.v_adj_springs[offset + spring]
-
-
-@wp.func
-def get_vertex_num_adjacent_tets(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32):
-    return (adjacency.v_adj_tets_offsets[vertex + 1] - adjacency.v_adj_tets_offsets[vertex]) >> 1
-
-
-@wp.func
-def get_vertex_adjacent_tet_id_order(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32, tet: wp.int32):
-    offset = adjacency.v_adj_tets_offsets[vertex]
-    return adjacency.v_adj_tets[offset + tet * 2], adjacency.v_adj_tets[offset + tet * 2 + 1]
 
 
 @wp.func
@@ -498,8 +462,8 @@ def _test_compute_force_element_adjacency(
     edge_indices: wp.array2d[wp.int32],
     face_indices: wp.array2d[wp.int32],
 ):
-    wp.printf("num vertices: %d\n", adjacency.v_adj_hinges_offsets.shape[0] - 1)
-    for vertex in range(adjacency.v_adj_hinges_offsets.shape[0] - 1):
+    wp.printf("num vertices: %d\n", adjacency.v_adj_edges_offsets.shape[0] - 1)
+    for vertex in range(adjacency.v_adj_edges_offsets.shape[0] - 1):
         num_adj_edges = get_vertex_num_adjacent_edges(adjacency, vertex)
         for i_bd in range(num_adj_edges):
             bd_id, v_order = get_vertex_adjacent_edge_id_order(adjacency, vertex, i_bd)

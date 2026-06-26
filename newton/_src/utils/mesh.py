@@ -191,30 +191,94 @@ class MeshAdjacencyDeviceData:
 
     v_adj_tris: wp.array[wp.int32]
     v_adj_tris_offsets: wp.array[wp.int32]
-    v_adj_hinges: wp.array[wp.int32]
-    v_adj_hinges_offsets: wp.array[wp.int32]
+    v_adj_edges: wp.array[wp.int32]
+    v_adj_edges_offsets: wp.array[wp.int32]
     v_adj_springs: wp.array[wp.int32]
     v_adj_springs_offsets: wp.array[wp.int32]
     v_adj_tets: wp.array[wp.int32]
     v_adj_tets_offsets: wp.array[wp.int32]
 
 
-class MeshAdjacency:
-    """Soft-mesh topology for collision and solver data.
+@wp.func
+def get_vertex_num_adjacent_edges(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32):
+    return (adjacency.v_adj_edges_offsets[vertex + 1] - adjacency.v_adj_edges_offsets[vertex]) >> 1
 
-    Construct directly from triangle indices — ``MeshAdjacency(tri_indices)`` —
-    or obtain the simulation's instance from
-    :attr:`newton.Model.soft_mesh_adjacency` (built by
-    :meth:`~newton.ModelBuilder.finalize`). The constructor computes the edge
-    tables eagerly; the vertex-adjacency CSR tables are built on demand by
-    :meth:`init_vertex_adjacency`. Call :meth:`to` to deploy the kernel-facing
-    subset into a :class:`MeshAdjacencyDeviceData` struct for use inside Warp
-    kernels.
+
+@wp.func
+def get_vertex_adjacent_edge_id_order(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32, edge: wp.int32):
+    offset = adjacency.v_adj_edges_offsets[vertex]
+    return adjacency.v_adj_edges[offset + edge * 2], adjacency.v_adj_edges[offset + edge * 2 + 1]
+
+
+@wp.func
+def get_vertex_num_adjacent_faces(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32):
+    return (adjacency.v_adj_tris_offsets[vertex + 1] - adjacency.v_adj_tris_offsets[vertex]) >> 1
+
+
+@wp.func
+def get_vertex_adjacent_face_id_order(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32, face: wp.int32):
+    offset = adjacency.v_adj_tris_offsets[vertex]
+    return adjacency.v_adj_tris[offset + face * 2], adjacency.v_adj_tris[offset + face * 2 + 1]
+
+
+@wp.func
+def get_vertex_num_adjacent_springs(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32):
+    return adjacency.v_adj_springs_offsets[vertex + 1] - adjacency.v_adj_springs_offsets[vertex]
+
+
+@wp.func
+def get_vertex_adjacent_spring_id(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32, spring: wp.int32):
+    offset = adjacency.v_adj_springs_offsets[vertex]
+    return adjacency.v_adj_springs[offset + spring]
+
+
+@wp.func
+def get_vertex_num_adjacent_tets(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32):
+    return (adjacency.v_adj_tets_offsets[vertex + 1] - adjacency.v_adj_tets_offsets[vertex]) >> 1
+
+
+@wp.func
+def get_vertex_adjacent_tet_id_order(adjacency: MeshAdjacencyDeviceData, vertex: wp.int32, tet: wp.int32):
+    offset = adjacency.v_adj_tets_offsets[vertex]
+    return adjacency.v_adj_tets[offset + tet * 2], adjacency.v_adj_tets[offset + tet * 2 + 1]
+
+
+class MeshAdjacency:
+    """Connectivity tables of a soft (triangle) mesh, consumed by collision and the solvers.
+
+    Three kinds of topology are stored, all derived from a triangle mesh and its bending
+    edges. The edge/triangle tables are dense arrays indexed by element and are computed
+    eagerly in the constructor (independent of the vertex count). The vertex-adjacency CSR
+    tables are built on demand by :meth:`init_vertex_adjacency`, which additionally needs the
+    particle count and the spring/tet indices — data outside the triangle topology. Every
+    table is a host NumPy array; :meth:`to` copies the vertex-adjacency CSR into a
+    :class:`MeshAdjacencyDeviceData` struct for use inside Warp kernels.
+
+    Obtain an instance by construction — ``MeshAdjacency(tri_indices)`` — or from a finalized
+    model via :attr:`newton.Model.soft_mesh_adjacency`.
+
+    Attributes:
+        edge_indices: Undirected edges as ``[o0, o1, v0, v1]`` rows, ``int32`` shape
+            ``[edge_count, 4]``: the edge connects ``v0``-``v1``, and ``o0``/``o1`` are the
+            opposite vertices of its two adjacent triangles (``o1 == -1`` on a boundary edge).
+        edge_tri_indices: The two triangles sharing each edge as ``[f0, f1]`` rows, ``int32``
+            shape ``[edge_count, 2]`` (``f1 == -1`` on a boundary edge); ``f0`` is the
+            triangle whose opposite vertex is ``o0``.
+        tri_edge_indices: Each triangle's three edges, ``int32`` shape ``[tri_count, 3]``;
+            column ``k`` is the edge between the triangle's local vertices ``k`` and
+            ``(k + 1) % 3``, or ``-1`` if that edge was never registered (e.g. a bare triangle).
+        v_adj_edges, v_adj_tris, v_adj_springs, v_adj_tets: Per-vertex CSR adjacency to
+            bending edges / triangles / springs / tetrahedra, each paired with its matching
+            ``*_offsets``. ``*_offsets`` is ``int32`` of length ``particle_count + 1``, and
+            vertex ``i``'s records occupy ``v_adj_X[offsets[i] : offsets[i + 1]]``; a record
+            is an ``(element_id, local_slot)`` pair (a single ``element_id`` for springs). All
+            eight arrays are ``None`` until :meth:`init_vertex_adjacency` runs.
+        vertex_adjacency_initialized: Whether the vertex-adjacency CSR has been built;
+            :meth:`init_vertex_adjacency` returns early when this is already ``True``.
 
     .. note::
-        The :attr:`edges` dict is a deprecated legacy compatibility shim (it
-        emits a ``DeprecationWarning``); use the ``edge_indices`` /
-        ``edge_tri_indices`` arrays instead.
+        The :attr:`edges` dict is a deprecated compatibility shim (it emits a
+        ``DeprecationWarning``); use the ``edge_indices`` / ``edge_tri_indices`` arrays instead.
     """
 
     @dataclass(slots=True)
@@ -262,12 +326,14 @@ class MeshAdjacency:
         # Vertex-to-element CSR tables; built explicitly by init_vertex_adjacency.
         self.v_adj_tris = None
         self.v_adj_tris_offsets = None
-        self.v_adj_hinges = None
-        self.v_adj_hinges_offsets = None
+        self.v_adj_edges = None
+        self.v_adj_edges_offsets = None
         self.v_adj_springs = None
         self.v_adj_springs_offsets = None
         self.v_adj_tets = None
         self.v_adj_tets_offsets = None
+        # Set once init_vertex_adjacency has built the CSR tables; guards recomputation.
+        self.vertex_adjacency_initialized = False
 
     @property
     def edges(self) -> dict[tuple[int, int], "MeshAdjacency.Edge"]:
@@ -297,16 +363,16 @@ class MeshAdjacency:
         This is the only place the host NumPy tables become Warp arrays;
         :meth:`init_vertex_adjacency` must have populated them first.
         """
-        dev = wp.get_device(device)
+        device = wp.get_device(device)
         data = MeshAdjacencyDeviceData()
-        data.v_adj_tris = wp.array(self.v_adj_tris, dtype=wp.int32, device=dev)
-        data.v_adj_tris_offsets = wp.array(self.v_adj_tris_offsets, dtype=wp.int32, device=dev)
-        data.v_adj_hinges = wp.array(self.v_adj_hinges, dtype=wp.int32, device=dev)
-        data.v_adj_hinges_offsets = wp.array(self.v_adj_hinges_offsets, dtype=wp.int32, device=dev)
-        data.v_adj_springs = wp.array(self.v_adj_springs, dtype=wp.int32, device=dev)
-        data.v_adj_springs_offsets = wp.array(self.v_adj_springs_offsets, dtype=wp.int32, device=dev)
-        data.v_adj_tets = wp.array(self.v_adj_tets, dtype=wp.int32, device=dev)
-        data.v_adj_tets_offsets = wp.array(self.v_adj_tets_offsets, dtype=wp.int32, device=dev)
+        data.v_adj_tris = wp.array(self.v_adj_tris, dtype=wp.int32, device=device)
+        data.v_adj_tris_offsets = wp.array(self.v_adj_tris_offsets, dtype=wp.int32, device=device)
+        data.v_adj_edges = wp.array(self.v_adj_edges, dtype=wp.int32, device=device)
+        data.v_adj_edges_offsets = wp.array(self.v_adj_edges_offsets, dtype=wp.int32, device=device)
+        data.v_adj_springs = wp.array(self.v_adj_springs, dtype=wp.int32, device=device)
+        data.v_adj_springs_offsets = wp.array(self.v_adj_springs_offsets, dtype=wp.int32, device=device)
+        data.v_adj_tets = wp.array(self.v_adj_tets, dtype=wp.int32, device=device)
+        data.v_adj_tets_offsets = wp.array(self.v_adj_tets_offsets, dtype=wp.int32, device=device)
         return data
 
     @staticmethod
@@ -393,37 +459,44 @@ class MeshAdjacency:
         if edge_count == 0 or tri_count == 0:
             return edge_tri_indices, tri_edge_indices
 
-        # Map each edge's endpoint pair to its row (edges are unique per vertex pair).
-        edge_of: dict[tuple[int, int], int] = {}
-        for e in range(edge_count):
-            v0, v1 = int(edge_indices[e, 2]), int(edge_indices[e, 3])
-            edge_of[(min(v0, v1), max(v0, v1))] = e
+        edges = edge_indices.astype(np.int64, copy=False)
+        tris = tri_indices.astype(np.int64, copy=False)
 
-        for t in range(tri_count):
-            verts = (int(tri_indices[t, 0]), int(tri_indices[t, 1]), int(tri_indices[t, 2]))
-            for k in range(3):
-                v0, v1 = verts[k], verts[(k + 1) % 3]
-                e = edge_of.get((min(v0, v1), max(v0, v1)))
-                if e is None:
-                    continue
-                # Slot k spans local verts (k, k+1); the opposite vertex picks the side.
-                opposite = verts[(k + 2) % 3]
-                if opposite == edge_indices[e, 0]:
-                    tri_edge_indices[t, k] = e
-                    edge_tri_indices[e, 0] = t
-                elif opposite == edge_indices[e, 1]:
-                    tri_edge_indices[t, k] = e
-                    edge_tri_indices[e, 1] = t
+        # Encode each undirected vertex pair as one key (min * stride + max) so edges and
+        # triangle sides can be matched with a single vectorized searchsorted.
+        stride = max(int(edges[:, 2:4].max()), int(tris.max())) + 1
+        edge_key = np.minimum(edges[:, 2], edges[:, 3]) * stride + np.maximum(edges[:, 2], edges[:, 3])
+
+        # Triangle local slots: slot k spans verts (k, k+1); the opposite vertex is (k+2).
+        nxt = np.roll(tris, -1, axis=1)
+        slot_key = np.minimum(tris, nxt) * stride + np.maximum(tris, nxt)  # (tri_count, 3)
+        slot_opp = np.roll(tris, -2, axis=1)  # (tri_count, 3)
+
+        # Map each slot key to its edge id; -1 where the pair is not a registered edge.
+        order = np.argsort(edge_key, kind="stable")
+        pos = np.clip(np.searchsorted(edge_key[order], slot_key), 0, edge_count - 1)
+        cand = order[pos]  # (tri_count, 3)
+        found = edge_key[cand] == slot_key
+
+        # Link a slot to its candidate only if the opposite vertex matches a stored
+        # opposite (o0 -> side 0, o1 -> side 1), mirroring _compute_edge_adjacency.
+        side0 = found & (slot_opp == edges[cand, 0])
+        side1 = found & ~side0 & (slot_opp == edges[cand, 1])
+
+        tri_edge_indices = np.where(side0 | side1, cand, -1).astype(np.int32)
+        tri_ids = np.broadcast_to(np.arange(tri_count, dtype=np.int32)[:, None], (tri_count, 3))
+        edge_tri_indices[cand[side0], 0] = tri_ids[side0]
+        edge_tri_indices[cand[side1], 1] = tri_ids[side1]
         return edge_tri_indices, tri_edge_indices
 
     @staticmethod
     def compute_vertex_adjacency(
         particle_count: int,
         *,
-        edge_indices=None,
-        tri_indices=None,
-        spring_indices=None,
-        tet_indices=None,
+        edge_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
+        tri_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
+        spring_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
+        tet_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
     ) -> "MeshAdjacency":
         """Build a temporary adjacency holding only the vertex-to-element CSR tables."""
         adjacency = MeshAdjacency()
@@ -439,30 +512,41 @@ class MeshAdjacency:
         self,
         particle_count: int,
         *,
-        edge_indices=None,
-        tri_indices=None,
-        spring_indices=None,
-        tet_indices=None,
+        edge_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
+        tri_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
+        spring_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
+        tet_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
     ) -> "MeshAdjacency":
-        """Compute and store the vertex-to-element CSR tables (hinges/tris/springs/tets) as NumPy.
+        """Compute and store the vertex-to-element CSR tables (edges/tris/springs/tets) as NumPy.
 
-        Hinge adjacency uses ``edge_indices`` (defaulting to :attr:`edge_indices`);
-        triangle/spring/tet adjacency use the supplied indices. Built on the host
-        (the count/fill Warp kernels run on CPU); :meth:`to` uploads to a device.
+        Bending-edge adjacency uses ``edge_indices`` (defaulting to :attr:`edge_indices`);
+        triangle/spring/tet adjacency use the supplied indices. Inputs may live on any
+        device (CPU or CUDA) — they are copied to the host, where the count/fill Warp
+        kernels run; :meth:`to` later uploads the result back to a device.
+
+        Args:
+            particle_count: Number of particles; sizes the per-vertex CSR offsets.
+            edge_indices: Bending edges ``[o0, o1, v0, v1]``, shape ``[edge_count, 4]``.
+                Defaults to :attr:`edge_indices`.
+            tri_indices: Triangle vertex ids, shape ``[tri_count, 3]``.
+            spring_indices: Spring endpoint pairs, flat shape ``[2 * spring_count]``.
+            tet_indices: Tetrahedron vertex ids, shape ``[tet_count, 4]``.
         """
+        if self.vertex_adjacency_initialized:
+            return self
         if edge_indices is None:
             edge_indices = self.edge_indices
 
         if _has_entries(edge_indices):
-            self.v_adj_hinges, self.v_adj_hinges_offsets = _build_vertex_adjacency_with_warp(
+            self.v_adj_edges, self.v_adj_edges_offsets = _build_vertex_adjacency_with_warp(
                 _as_cpu_int_array2d(edge_indices, 4),
                 particle_count,
-                count_kernel=_count_num_adjacent_hinges,
-                fill_kernel=_fill_adjacent_hinges,
+                count_kernel=_count_num_adjacent_edges,
+                fill_kernel=_fill_adjacent_edges,
                 values_per_entry=2,
             )
         else:
-            self.v_adj_hinges, self.v_adj_hinges_offsets = _empty_vertex_adjacency()
+            self.v_adj_edges, self.v_adj_edges_offsets = _empty_vertex_adjacency()
 
         if _has_entries(tri_indices):
             self.v_adj_tris, self.v_adj_tris_offsets = _build_vertex_adjacency_with_warp(
@@ -497,6 +581,7 @@ class MeshAdjacency:
         else:
             self.v_adj_springs, self.v_adj_springs_offsets = _empty_vertex_adjacency()
 
+        self.vertex_adjacency_initialized = True
         return self
 
 
@@ -518,60 +603,60 @@ def _numpy_int_rows(data, width: int) -> np.ndarray:
 
 
 @wp.kernel
-def _count_num_adjacent_hinges(edge_indices: wp.array2d[wp.int32], num_vertex_adjacent_hinges: wp.array[wp.int32]):
+def _count_num_adjacent_edges(edge_indices: wp.array2d[wp.int32], num_vertex_adjacent_edges: wp.array[wp.int32]):
     for edge_id in range(edge_indices.shape[0]):
         o0 = edge_indices[edge_id, 0]
         o1 = edge_indices[edge_id, 1]
         v0 = edge_indices[edge_id, 2]
         v1 = edge_indices[edge_id, 3]
 
-        num_vertex_adjacent_hinges[v0] = num_vertex_adjacent_hinges[v0] + 1
-        num_vertex_adjacent_hinges[v1] = num_vertex_adjacent_hinges[v1] + 1
+        num_vertex_adjacent_edges[v0] = num_vertex_adjacent_edges[v0] + 1
+        num_vertex_adjacent_edges[v1] = num_vertex_adjacent_edges[v1] + 1
 
         if o0 != -1:
-            num_vertex_adjacent_hinges[o0] = num_vertex_adjacent_hinges[o0] + 1
+            num_vertex_adjacent_edges[o0] = num_vertex_adjacent_edges[o0] + 1
         if o1 != -1:
-            num_vertex_adjacent_hinges[o1] = num_vertex_adjacent_hinges[o1] + 1
+            num_vertex_adjacent_edges[o1] = num_vertex_adjacent_edges[o1] + 1
 
 
 @wp.kernel
-def _fill_adjacent_hinges(
+def _fill_adjacent_edges(
     edge_indices: wp.array2d[wp.int32],
-    vertex_adjacent_hinges_offsets: wp.array[wp.int32],
-    vertex_adjacent_hinges_fill_count: wp.array[wp.int32],
-    vertex_adjacent_hinges: wp.array[wp.int32],
+    vertex_adjacent_edges_offsets: wp.array[wp.int32],
+    vertex_adjacent_edges_fill_count: wp.array[wp.int32],
+    vertex_adjacent_edges: wp.array[wp.int32],
 ):
     for edge_id in range(edge_indices.shape[0]):
         v0 = edge_indices[edge_id, 2]
         v1 = edge_indices[edge_id, 3]
 
-        fill_count_v0 = vertex_adjacent_hinges_fill_count[v0]
-        buffer_offset_v0 = vertex_adjacent_hinges_offsets[v0]
-        vertex_adjacent_hinges[buffer_offset_v0 + fill_count_v0 * 2] = edge_id
-        vertex_adjacent_hinges[buffer_offset_v0 + fill_count_v0 * 2 + 1] = 2
-        vertex_adjacent_hinges_fill_count[v0] = fill_count_v0 + 1
+        fill_count_v0 = vertex_adjacent_edges_fill_count[v0]
+        buffer_offset_v0 = vertex_adjacent_edges_offsets[v0]
+        vertex_adjacent_edges[buffer_offset_v0 + fill_count_v0 * 2] = edge_id
+        vertex_adjacent_edges[buffer_offset_v0 + fill_count_v0 * 2 + 1] = 2
+        vertex_adjacent_edges_fill_count[v0] = fill_count_v0 + 1
 
-        fill_count_v1 = vertex_adjacent_hinges_fill_count[v1]
-        buffer_offset_v1 = vertex_adjacent_hinges_offsets[v1]
-        vertex_adjacent_hinges[buffer_offset_v1 + fill_count_v1 * 2] = edge_id
-        vertex_adjacent_hinges[buffer_offset_v1 + fill_count_v1 * 2 + 1] = 3
-        vertex_adjacent_hinges_fill_count[v1] = fill_count_v1 + 1
+        fill_count_v1 = vertex_adjacent_edges_fill_count[v1]
+        buffer_offset_v1 = vertex_adjacent_edges_offsets[v1]
+        vertex_adjacent_edges[buffer_offset_v1 + fill_count_v1 * 2] = edge_id
+        vertex_adjacent_edges[buffer_offset_v1 + fill_count_v1 * 2 + 1] = 3
+        vertex_adjacent_edges_fill_count[v1] = fill_count_v1 + 1
 
         o0 = edge_indices[edge_id, 0]
         if o0 != -1:
-            fill_count_o0 = vertex_adjacent_hinges_fill_count[o0]
-            buffer_offset_o0 = vertex_adjacent_hinges_offsets[o0]
-            vertex_adjacent_hinges[buffer_offset_o0 + fill_count_o0 * 2] = edge_id
-            vertex_adjacent_hinges[buffer_offset_o0 + fill_count_o0 * 2 + 1] = 0
-            vertex_adjacent_hinges_fill_count[o0] = fill_count_o0 + 1
+            fill_count_o0 = vertex_adjacent_edges_fill_count[o0]
+            buffer_offset_o0 = vertex_adjacent_edges_offsets[o0]
+            vertex_adjacent_edges[buffer_offset_o0 + fill_count_o0 * 2] = edge_id
+            vertex_adjacent_edges[buffer_offset_o0 + fill_count_o0 * 2 + 1] = 0
+            vertex_adjacent_edges_fill_count[o0] = fill_count_o0 + 1
 
         o1 = edge_indices[edge_id, 1]
         if o1 != -1:
-            fill_count_o1 = vertex_adjacent_hinges_fill_count[o1]
-            buffer_offset_o1 = vertex_adjacent_hinges_offsets[o1]
-            vertex_adjacent_hinges[buffer_offset_o1 + fill_count_o1 * 2] = edge_id
-            vertex_adjacent_hinges[buffer_offset_o1 + fill_count_o1 * 2 + 1] = 1
-            vertex_adjacent_hinges_fill_count[o1] = fill_count_o1 + 1
+            fill_count_o1 = vertex_adjacent_edges_fill_count[o1]
+            buffer_offset_o1 = vertex_adjacent_edges_offsets[o1]
+            vertex_adjacent_edges[buffer_offset_o1 + fill_count_o1 * 2] = edge_id
+            vertex_adjacent_edges[buffer_offset_o1 + fill_count_o1 * 2 + 1] = 1
+            vertex_adjacent_edges_fill_count[o1] = fill_count_o1 + 1
 
 
 @wp.kernel

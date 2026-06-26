@@ -366,7 +366,7 @@ class TestModelMesh(unittest.TestCase):
         )
         # Vertex adjacency stays unset until the solver builds it via init_vertex_adjacency.
         self.assertIsNone(adjacency.v_adj_tris)
-        self.assertIsNone(adjacency.v_adj_hinges_offsets)
+        self.assertIsNone(adjacency.v_adj_edges_offsets)
 
     def test_manual_soft_mesh_adjacency_placeholders_finalize(self):
         builder = ModelBuilder()

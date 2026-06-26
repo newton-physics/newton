@@ -15,7 +15,7 @@ from ...geometry.kernels import (
     vertex_triangle_collision_detection_kernel,
 )
 from ...sim import Model
-from ...utils.mesh import MeshAdjacency, MeshAdjacencyDeviceData
+from ...utils.mesh import MeshAdjacency
 
 
 @wp.struct
@@ -118,14 +118,14 @@ def set_to_csr(
 
 
 def one_ring_vertices(
-    vertex: int, edge_indices: np.ndarray, v_adj_hinges: np.ndarray, v_adj_hinges_offsets: np.ndarray
+    vertex: int, edge_indices: np.ndarray, v_adj_edges: np.ndarray, v_adj_edges_offsets: np.ndarray
 ) -> np.ndarray:
     """Return vertices sharing a collision edge with ``vertex``."""
     edge_v0 = edge_indices[:, 2]
     edge_v1 = edge_indices[:, 3]
-    hinge_rows = _csr_row(v_adj_hinges, v_adj_hinges_offsets, vertex)
-    edge_ids = hinge_rows[::2]
-    local_slots = hinge_rows[1::2]
+    edge_rows = _csr_row(v_adj_edges, v_adj_edges_offsets, vertex)
+    edge_ids = edge_rows[::2]
+    local_slots = edge_rows[1::2]
     if edge_ids.size == 0:
         return np.empty(0, dtype=np.int32)
 
@@ -139,7 +139,7 @@ def one_ring_vertices(
 
 
 def leq_n_ring_vertices(
-    vertex: int, edge_indices: np.ndarray, n: int, v_adj_hinges: np.ndarray, v_adj_hinges_offsets: np.ndarray
+    vertex: int, edge_indices: np.ndarray, n: int, v_adj_edges: np.ndarray, v_adj_edges_offsets: np.ndarray
 ) -> np.ndarray:
     """Return vertices within ``n`` edge rings of ``vertex``, including itself."""
     visited = {vertex}
@@ -147,7 +147,7 @@ def leq_n_ring_vertices(
     for _ in range(n):
         next_frontier = set()
         for current in frontier:
-            for neighbor in one_ring_vertices(current, edge_indices, v_adj_hinges, v_adj_hinges_offsets):
+            for neighbor in one_ring_vertices(current, edge_indices, v_adj_edges, v_adj_edges_offsets):
                 if neighbor not in visited:
                     visited.add(neighbor)
                     next_frontier.add(neighbor)
@@ -161,8 +161,8 @@ def build_vertex_n_ring_tris_collision_filter(
     n: int,
     particle_count: int,
     edge_indices: np.ndarray,
-    v_adj_hinges: np.ndarray,
-    v_adj_hinges_offsets: np.ndarray,
+    v_adj_edges: np.ndarray,
+    v_adj_edges_offsets: np.ndarray,
     v_adj_tris: np.ndarray,
     v_adj_tris_offsets: np.ndarray,
 ) -> list[set[int]] | None:
@@ -173,9 +173,9 @@ def build_vertex_n_ring_tris_collision_filter(
     vertex_triangle_sets = [set() for _ in range(particle_count)]
     for vertex in range(particle_count):
         if n == 2:
-            neighbor_vertices = one_ring_vertices(vertex, edge_indices, v_adj_hinges, v_adj_hinges_offsets)
+            neighbor_vertices = one_ring_vertices(vertex, edge_indices, v_adj_edges, v_adj_edges_offsets)
         else:
-            neighbor_vertices = leq_n_ring_vertices(vertex, edge_indices, n - 1, v_adj_hinges, v_adj_hinges_offsets)
+            neighbor_vertices = leq_n_ring_vertices(vertex, edge_indices, n - 1, v_adj_edges, v_adj_edges_offsets)
 
         incident_tris = set(_csr_row(v_adj_tris, v_adj_tris_offsets, vertex)[::2])
         filter_set = vertex_triangle_sets[vertex]
@@ -190,8 +190,8 @@ def build_vertex_n_ring_tris_collision_filter(
 def build_edge_n_ring_edge_collision_filter(
     n: int,
     edge_indices: np.ndarray,
-    v_adj_hinges: np.ndarray,
-    v_adj_hinges_offsets: np.ndarray,
+    v_adj_edges: np.ndarray,
+    v_adj_edges_offsets: np.ndarray,
 ) -> list[set[int]] | None:
     """Build edge-edge filters from adjacency within ``n`` edge rings."""
     if n <= 1:
@@ -203,24 +203,24 @@ def build_edge_n_ring_edge_collision_filter(
         v1 = edge_indices[edge_id, 3]
 
         if n == 2:
-            v0_neighbors = one_ring_vertices(v0, edge_indices, v_adj_hinges, v_adj_hinges_offsets)
-            v1_neighbors = one_ring_vertices(v1, edge_indices, v_adj_hinges, v_adj_hinges_offsets)
+            v0_neighbors = one_ring_vertices(v0, edge_indices, v_adj_edges, v_adj_edges_offsets)
+            v1_neighbors = one_ring_vertices(v1, edge_indices, v_adj_edges, v_adj_edges_offsets)
         else:
-            v0_neighbors = leq_n_ring_vertices(v0, edge_indices, n - 1, v_adj_hinges, v_adj_hinges_offsets)
-            v1_neighbors = leq_n_ring_vertices(v1, edge_indices, n - 1, v_adj_hinges, v_adj_hinges_offsets)
+            v0_neighbors = leq_n_ring_vertices(v0, edge_indices, n - 1, v_adj_edges, v_adj_edges_offsets)
+            v1_neighbors = leq_n_ring_vertices(v1, edge_indices, n - 1, v_adj_edges, v_adj_edges_offsets)
 
         neighbor_vertices = set(v0_neighbors)
         neighbor_vertices.update(v1_neighbors)
 
-        incident_to_v0 = set(_csr_row(v_adj_hinges, v_adj_hinges_offsets, v0)[::2])
-        incident_to_v1 = set(_csr_row(v_adj_hinges, v_adj_hinges_offsets, v1)[::2])
+        incident_to_v0 = set(_csr_row(v_adj_edges, v_adj_edges_offsets, v0)[::2])
+        incident_to_v1 = set(_csr_row(v_adj_edges, v_adj_edges_offsets, v1)[::2])
 
         filter_set = edge_sets[edge_id]
         for neighbor in neighbor_vertices:
             if neighbor != v0 and neighbor != v1:
-                hinge_rows = _csr_row(v_adj_hinges, v_adj_hinges_offsets, neighbor)
-                adj_edges = hinge_rows[::2]
-                local_slots = hinge_rows[1::2]
+                edge_rows = _csr_row(v_adj_edges, v_adj_edges_offsets, neighbor)
+                adj_edges = edge_rows[::2]
+                local_slots = edge_rows[1::2]
                 filter_set.update(adj_edges[np.where(local_slots >= 2)])
 
         filter_set.difference_update(incident_to_v0)
@@ -245,7 +245,6 @@ class TriMeshCollisionDetector:
         edge_collision_buffer_max_alloc=256,
         edge_filtering_list=None,
         edge_filtering_list_offsets=None,
-        mesh_adjacency: MeshAdjacency | MeshAdjacencyDeviceData | None = None,
         topological_contact_filter_threshold: int = 0,
         external_vertex_triangle_filtering_map: dict | None = None,
         external_edge_edge_filtering_map: dict | None = None,
@@ -274,7 +273,16 @@ class TriMeshCollisionDetector:
         self.edge_filtering_list_offsets = edge_filtering_list_offsets
 
         self.edge_edge_parallel_epsilon = edge_edge_parallel_epsilon
-        self.mesh_adjacency = mesh_adjacency if mesh_adjacency is not None else model.soft_mesh_adjacency
+        # The soft-mesh adjacency comes from the model; ensure its vertex-adjacency CSR is built.
+        # init_vertex_adjacency is idempotent (vertex_adjacency_initialized flag), so this is a no-op
+        # once the solver has built it.
+        self.mesh_adjacency = model.soft_mesh_adjacency.init_vertex_adjacency(
+            model.particle_count,
+            edge_indices=model.edge_indices,
+            tri_indices=model.tri_indices,
+            spring_indices=model.spring_indices,
+            tet_indices=model.tet_indices,
+        )
 
         self.collision_detection_block_size = collision_detection_block_size
 
@@ -427,13 +435,13 @@ class TriMeshCollisionDetector:
             edge_indices = self.model.edge_indices.numpy()
             if (
                 adjacency is not None
-                and adjacency.v_adj_hinges is not None
-                and adjacency.v_adj_hinges.size > 0
-                and adjacency.v_adj_hinges_offsets.size > 0
+                and adjacency.v_adj_edges is not None
+                and adjacency.v_adj_edges.size > 0
+                and adjacency.v_adj_edges_offsets.size > 0
                 and adjacency.v_adj_tris_offsets.size > 0
             ):
-                v_adj_hinges = _as_numpy(adjacency.v_adj_hinges)
-                v_adj_hinges_offsets = _as_numpy(adjacency.v_adj_hinges_offsets)
+                v_adj_edges = _as_numpy(adjacency.v_adj_edges)
+                v_adj_edges_offsets = _as_numpy(adjacency.v_adj_edges_offsets)
                 v_adj_tris = _as_numpy(adjacency.v_adj_tris)
                 v_adj_tris_offsets = _as_numpy(adjacency.v_adj_tris_offsets)
             else:
@@ -442,8 +450,8 @@ class TriMeshCollisionDetector:
                     edge_indices=self.model.edge_indices,
                     tri_indices=self.model.tri_indices,
                 )
-                v_adj_hinges = _as_numpy(filter_adjacency.v_adj_hinges)
-                v_adj_hinges_offsets = _as_numpy(filter_adjacency.v_adj_hinges_offsets)
+                v_adj_edges = _as_numpy(filter_adjacency.v_adj_edges)
+                v_adj_edges_offsets = _as_numpy(filter_adjacency.v_adj_edges_offsets)
                 v_adj_tris = _as_numpy(filter_adjacency.v_adj_tris)
                 v_adj_tris_offsets = _as_numpy(filter_adjacency.v_adj_tris_offsets)
 
@@ -451,16 +459,16 @@ class TriMeshCollisionDetector:
                 topological_contact_filter_threshold,
                 self.model.particle_count,
                 edge_indices,
-                v_adj_hinges,
-                v_adj_hinges_offsets,
+                v_adj_edges,
+                v_adj_edges_offsets,
                 v_adj_tris,
                 v_adj_tris_offsets,
             )
             edge_edge_filter_sets = build_edge_n_ring_edge_collision_filter(
                 topological_contact_filter_threshold,
                 edge_indices,
-                v_adj_hinges,
-                v_adj_hinges_offsets,
+                v_adj_edges,
+                v_adj_edges_offsets,
             )
 
         if external_vertex_triangle_filtering_map is not None:
