@@ -1044,14 +1044,16 @@ def _build_offset_cube_sphere_scene(device, kh, cube_half=0.1, sphere_radius=0.1
 def test_reduction_preserves_force_at_high_kh_decoupled_pressure(test, device):
     """Reduction must preserve net force under a kh-decoupled pressure law at high kh.
 
-    The direction-reliability gate rescales the aggregate force magnitude by
-    ``shape_material_kh`` before the ``EPS_LARGE`` comparison, which is exact
-    only for the default linear law. Under a custom ``pressure_func`` whose
-    magnitude does not scale with kh, a large kh drives the rescaled magnitude
-    below ``EPS_LARGE`` and silently disables anchor / normal matching, so the
-    reduced contacts no longer reproduce the unreduced aggregate force. The
-    sphere-over-edge geometry spreads the contact normals so the resulting
-    direction error is observable in the net force.
+    The direction-reliability gate uses a pressure-law-agnostic geometric
+    depth-volume, so reduction must reproduce the unreduced aggregate force at
+    any stiffness and for any pressure law. This guards against a regression to a
+    pressure-scaled gate (e.g. dividing the aggregate force magnitude by
+    ``shape_material_kh`` before the ``EPS_LARGE`` comparison): under a custom
+    ``pressure_func`` whose magnitude does not scale with kh, a large kh would
+    drive that scaled magnitude below ``EPS_LARGE`` and silently disable anchor /
+    normal matching, so the reduced contacts would stop reproducing the unreduced
+    force. The sphere-over-edge geometry spreads the contact normals so the
+    resulting direction error is observable in the net force.
     """
     kh = 1.0e10
     model, state, sphere_body, rest_z = _build_offset_cube_sphere_scene(device, kh=kh, x_offset=0.1)

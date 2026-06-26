@@ -452,10 +452,11 @@ def _create_accumulate_moments_kernel(normal_matching: bool = True):
                 if wp.static(normal_matching):
                     nbin_agg_force = agg_force[nbin_idx]
                     nbin_agg_mag = wp.length(nbin_agg_force)
-                    # Gate on the geometric depth-volume magnitude, which is
-                    # independent of the pressure law. Same gate as the export kernel.
+                    # Gate on the geometric depth-volume magnitude (pressure-law
+                    # independent) and a non-degenerate force direction. Same gate
+                    # as the export kernel.
                     nbin_dv_mag = wp.length(agg_depth_volume[nbin_idx])
-                    if nbin_dv_mag > EPS_LARGE:
+                    if nbin_dv_mag > EPS_LARGE and nbin_agg_mag > EPS_SMALL:
                         nbin_nsum = total_normal_reduced[nbin_idx]
                         rot_q = _compute_normal_matching_rotation(nbin_nsum, nbin_agg_force, nbin_agg_mag)
                         rotated_normal = wp.normalize(wp.quat_rotate(rot_q, contact_normal))
@@ -643,8 +644,14 @@ def create_export_hydroelastic_reduced_contacts_kernel(
             # pressure-law magnitude (and therefore of kh and any custom
             # pressure_func). For the default linear law this equals
             # |agg_force| / kh, preserving the original threshold behavior.
+            # Also require a non-degenerate aggregate force: the anchor normal and
+            # normal-matching rotation derive their direction from ``agg_force_vec``,
+            # so a custom pressure law producing tiny/degenerate force (while the
+            # geometric depth-volume is non-zero) must not reach normalization.
             agg_direction_mag = wp.length(agg_depth_volume[entry_idx])
-            has_reliable_agg_direction = agg_direction_mag > wp.static(EPS_LARGE)
+            has_reliable_agg_direction = agg_direction_mag > wp.static(EPS_LARGE) and agg_force_mag > wp.static(
+                EPS_SMALL
+            )
 
             # Compute anchor position (center of pressure) for normal bin entries
             anchor_pos = wp.vec3(0.0, 0.0, 0.0)
@@ -792,11 +799,15 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                         nbin_agg_force = agg_force[nbin_entry_idx]
                         nbin_agg_mag = wp.length(nbin_agg_force)
                         # Depth-volume reliability gate (see aggregate path above):
-                        # pressure-law-independent reliability of the bin direction.
+                        # pressure-law-independent magnitude, plus a non-degenerate
+                        # force direction guard for the normal/anchor normalization.
                         nbin_direction_mag = wp.length(agg_depth_volume[nbin_entry_idx])
+                        nbin_dir_reliable = nbin_direction_mag > wp.static(EPS_LARGE) and nbin_agg_mag > wp.static(
+                            EPS_SMALL
+                        )
 
                         # Normal matching from the normal bin's rotation
-                        if wp.static(normal_matching) and nbin_direction_mag > wp.static(EPS_LARGE):
+                        if wp.static(normal_matching) and nbin_dir_reliable:
                             voxel_nsum = total_normal_reduced[nbin_entry_idx]
                             voxel_rot_q = _compute_normal_matching_rotation(voxel_nsum, nbin_agg_force, nbin_agg_mag)
                             final_normal = wp.normalize(wp.quat_rotate(voxel_rot_q, contact_normal))
@@ -810,7 +821,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
                             nbin_effective_depth_no_anchor = total_depth_reduced[nbin_entry_idx]
                         nbin_effective_depth = nbin_effective_depth_no_anchor
                         nbin_anchor_depth = float(0.0)
-                        if wp.static(anchor_contact) and nbin_direction_mag > wp.static(EPS_LARGE):
+                        if wp.static(anchor_contact) and nbin_dir_reliable:
                             nbin_max_depth_value = ht_values[
                                 wp.static(NUM_SPATIAL_DIRECTIONS) * ht_capacity + nbin_entry_idx
                             ]
