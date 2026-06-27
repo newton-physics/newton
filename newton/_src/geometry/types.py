@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
+from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
@@ -1433,9 +1434,11 @@ class Mesh:
         self._cached_hash = None
 
     # construct simulation ready buffers from points
+    @deprecate_nonkeyword_arguments
     def finalize(
         self,
         device: Devicelike = None,
+        *,
         requires_grad: bool = False,
         bvh_constructor: str | None = None,
     ) -> wp.uint64:
@@ -2385,7 +2388,7 @@ class Gaussian:
 
     # ---- Finalize (GPU upload) -----------------------------------------------
 
-    def finalize(self, device: Devicelike = None, bvh_constructor: str | None = None) -> Data:
+    def finalize(self, device: Devicelike = None, *, bvh_constructor: str | None = None) -> Data:
         """Upload Gaussian data to the GPU as Warp arrays.
 
         Args:
