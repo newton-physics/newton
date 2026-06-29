@@ -7,7 +7,7 @@ This module owns the cable / cloth / volume / attachment / collision-filter impo
 they traverse the stage, mutate the :class:`~newton.ModelBuilder`, and populate the
 ``path_*`` result maps via a :class:`_DeformableImportContext` carrying that shared state.
 :func:`parse_usd` in :mod:`.import_usd` builds the context and drives the passes in order.
-A few leaf helpers (e.g. :func:`validate_mass_array`) are pure and builder-independent.
+A few leaf helpers (e.g. :func:`_validate_mass_array`) are pure and builder-independent.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
 
 
-def validate_mass_array(values: Iterable[float], path: str) -> list[float] | None:
+def _validate_mass_array(values: Iterable[float], path: str) -> list[float] | None:
     """Validate an authored per-point ``physics:masses`` array.
 
     Per-point masses have the highest precedence in the deformable mass resolution, so a poisoned
@@ -437,7 +437,6 @@ class _DeformableImportContext:
     get_rigid_body_ancestor_path: Callable
     get_first_target: Callable
     get_tetmesh_cached: Callable
-    is_uniform_scale: Callable
     incoming_world_xform: wp.transform
     linear_unit: float
     ignore_paths: Sequence[str]

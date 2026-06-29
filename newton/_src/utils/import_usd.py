@@ -808,11 +808,6 @@ def parse_usd(
             tetmesh_cache[prim_path] = usd.get_tetmesh(prim, compat_namespaces=deformable_compat_ns)
         return tetmesh_cache[prim_path]
 
-    def _is_uniform_scale(scale: wp.vec3) -> bool:
-        """Return whether a decomposed scale vector is effectively uniform."""
-        scale_np = np.array(scale, dtype=np.float32)
-        return bool(np.allclose(scale_np, scale_np[0], rtol=1e-6, atol=1e-6))
-
     def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:
         # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
         return any(material_props.get(key) is not None for key in ("texture", "roughness", "metallic"))
@@ -3708,7 +3703,6 @@ def parse_usd(
         get_rigid_body_ancestor_path=_get_rigid_body_ancestor_path,
         get_first_target=_get_first_target,
         get_tetmesh_cached=_get_tetmesh_cached,
-        is_uniform_scale=_is_uniform_scale,
         incoming_world_xform=incoming_world_xform,
         linear_unit=linear_unit,
         ignore_paths=ignore_paths,

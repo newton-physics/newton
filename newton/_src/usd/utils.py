@@ -17,7 +17,7 @@ from ..core.types import Axis, AxisType
 from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
 from ..utils.color import color_linear_to_srgb
-from ..utils.import_usd_deformable import validate_mass_array
+from ..utils.import_usd_deformable import _validate_mass_array
 from ..utils.texture import linear_texture_to_srgb, load_texture
 
 logger = logging.getLogger("newton")
@@ -1549,7 +1549,7 @@ def _get_deformable_point_masses(prim: Usd.Prim, read_attr: Callable[[Usd.Prim, 
     val = read_attr(prim, "masses")
     if val is None:
         return None
-    return validate_mass_array(val, str(prim.GetPath()))
+    return _validate_mass_array(val, str(prim.GetPath()))
 
 
 def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:
