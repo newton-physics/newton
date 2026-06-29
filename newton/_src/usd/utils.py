@@ -1221,7 +1221,7 @@ _TETMESH_SCHEMA_ATTRS = frozenset(
 # Vendor attribute namespaces that get_tetmesh() read by default before the canonical
 # ``physics:`` deformable schema existed. Pass as ``compat_namespaces`` to read these
 # vendor namespaces off any bound material (under these namespaces).
-LEGACY_DEFORMABLE_NAMESPACES: tuple[str, ...] = ("omniphysics", "physxDeformableBody")
+DEFORMABLE_LEGACY_NAMESPACES: tuple[str, ...] = ("omniphysics", "physxDeformableBody")
 
 
 def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = None) -> TetMesh:
@@ -1243,7 +1243,7 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
     release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
     the canonical-only behavior now -- moduli are then read only from a material that applies
     ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.
-    ``newton.usd.LEGACY_DEFORMABLE_NAMESPACES``) to keep reading vendor namespaces without the
+    ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to keep reading vendor namespaces without the
     warning.
 
     Example:
@@ -1307,11 +1307,11 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
                 "(omniphysics: / physxDeformableBody:) off any bound material by default is deprecated; "
                 "a future release will default to canonical physics:-only. Pass compat_namespaces=() to "
                 "adopt the canonical-only behavior now, or compat_namespaces="
-                "newton.usd.LEGACY_DEFORMABLE_NAMESPACES to keep the current behavior explicitly.",
+                "newton.usd.DEFORMABLE_LEGACY_NAMESPACES to keep the current behavior explicitly.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-        compat_namespaces = LEGACY_DEFORMABLE_NAMESPACES
+        compat_namespaces = DEFORMABLE_LEGACY_NAMESPACES
     # Canonical behavior (compat_namespaces=()) scopes the moduli to the volume deformable material
     # API, so they are not read off an unrelated physics material. A non-empty compat_namespaces reads
     # the listed vendor namespaces off any bound material.
@@ -1429,94 +1429,77 @@ def _read_physics_attr(prim: Usd.Prim, name: str, compat_namespaces: Sequence[st
     return None
 
 
-def _get_curve_deformable_material(
-    prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]
+def _read_deformable_material(
+    prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any], api_schema: str, attr_names: Sequence[str]
 ) -> dict[str, float] | None:
-    """Read curve-deformable (cable) material parameters bound to a prim.
+    """Read a per-family deformable material's authored, in-range parameters bound to a prim.
 
-    Resolves the physics material bound via ``material:binding:physics`` and reads
-    the ``PhysicsCurvesDeformableMaterialAPI`` attributes through ``read_attr`` (the
-    resolver's single-source namespace read, see
-    :meth:`SchemaResolverManager.read_deformable_attr`).
+    Shared by the per-family readers (:func:`_get_curve_deformable_material`,
+    :func:`_get_surface_deformable_material`): resolves the physics material bound via
+    ``material:binding:physics`` and reads ``attr_names`` through ``read_attr`` (the resolver's
+    single-source namespace read, see :meth:`SchemaResolverManager.read_deformable_attr`) when the
+    bound material declares ``api_schema``.
 
-    Args:
-        prim: The curve prim whose bound physics material is read.
-        read_attr: Resolver read ``(prim, name) -> value`` for a deformable attribute.
-
-    Returns:
-        A dict of authored, finite values among ``thickness``,
-        ``stretchStiffness``, ``shearStiffness``, ``bendStiffness``,
-        ``twistStiffness`` and ``density``; or ``None`` if the bound material does
-        not declare ``PhysicsCurvesDeformableMaterialAPI``. Stiffness fields keep an
-        authored zero (the proposal's range is
-        ``[0, inf)``); ``thickness`` and ``density`` must be positive. The
-        schema's ``-inf`` "simulator default" sentinel (and any out-of-range
-        value) is dropped so the caller falls back to its defaults.
+    Returns a dict of the authored, finite values among ``attr_names``, or ``None`` if the bound
+    material does not declare ``api_schema``. Stiffness fields keep an authored zero (the proposal's
+    range is ``[0, inf)``); ``thickness`` and ``density`` must be positive. The schema's ``-inf``
+    "simulator default" sentinel (and any out-of-range value) is dropped so the caller falls back to
+    its defaults.
     """
     material_prim = _find_physics_material_prim(prim)
-    if material_prim is None or not has_applied_api_schema(material_prim, "PhysicsCurvesDeformableMaterialAPI"):
+    if material_prim is None or not has_applied_api_schema(material_prim, api_schema):
         return None
     out: dict[str, float] = {}
-    for name in ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "twistStiffness", "density"):
+    for name in attr_names:
         val = read_attr(material_prim, name)
         if val is None:
             continue
         val = float(val)
         if not math.isfinite(val):
             continue  # drops the -inf "simulator default" sentinel
-        # Stiffness range is [0, inf): preserve an authored zero. thickness / density
-        # are strictly positive.
+        # Stiffness range is [0, inf): preserve an authored zero. thickness / density are strictly positive.
         if name in ("thickness", "density"):
             if val > 0.0:
                 out[name] = val
         elif val >= 0.0:
             out[name] = val
     return out
+
+
+def _get_curve_deformable_material(
+    prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]
+) -> dict[str, float] | None:
+    """Read curve-deformable (cable) ``PhysicsCurvesDeformableMaterialAPI`` parameters bound to a prim.
+
+    Returns a dict of authored, finite values among ``thickness``, ``stretchStiffness``,
+    ``shearStiffness``, ``bendStiffness``, ``twistStiffness`` and ``density``; or ``None`` if the
+    bound material does not declare ``PhysicsCurvesDeformableMaterialAPI``. See
+    :func:`_read_deformable_material` for the value-validation rules.
+    """
+    return _read_deformable_material(
+        prim,
+        read_attr,
+        "PhysicsCurvesDeformableMaterialAPI",
+        ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "twistStiffness", "density"),
+    )
 
 
 def _get_surface_deformable_material(
     prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]
 ) -> dict[str, float] | None:
-    """Read surface-deformable (cloth) material parameters bound to a prim.
+    """Read surface-deformable (cloth) ``PhysicsSurfaceDeformableMaterialAPI`` parameters bound to a prim.
 
-    Resolves the physics material bound via ``material:binding:physics`` and reads
-    the ``PhysicsSurfaceDeformableMaterialAPI`` attributes through ``read_attr`` (the
-    resolver's single-source namespace read, see
-    :meth:`SchemaResolverManager.read_deformable_attr`).
-
-    Args:
-        prim: The surface (triangle mesh) prim whose bound physics material is read.
-        read_attr: Resolver read ``(prim, name) -> value`` for a deformable attribute.
-
-    Returns:
-        A dict of authored, finite values among ``thickness``,
-        ``stretchStiffness``, ``shearStiffness``, ``bendStiffness`` and
-        ``density``; or ``None`` if the bound material does not declare
-        ``PhysicsSurfaceDeformableMaterialAPI``. Stiffness fields keep an authored
-        zero (the proposal's range is ``[0, inf)``); ``thickness``
-        and ``density`` must be positive. The schema's ``-inf`` "simulator default"
-        sentinel (and any out-of-range value) is dropped so the caller falls back
-        to its defaults.
+    Returns a dict of authored, finite values among ``thickness``, ``stretchStiffness``,
+    ``shearStiffness``, ``bendStiffness`` and ``density``; or ``None`` if the bound material does not
+    declare ``PhysicsSurfaceDeformableMaterialAPI``. See :func:`_read_deformable_material` for the
+    value-validation rules.
     """
-    material_prim = _find_physics_material_prim(prim)
-    if material_prim is None or not has_applied_api_schema(material_prim, "PhysicsSurfaceDeformableMaterialAPI"):
-        return None
-    out: dict[str, float] = {}
-    for name in ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "density"):
-        val = read_attr(material_prim, name)
-        if val is None:
-            continue
-        val = float(val)
-        if not math.isfinite(val):
-            continue  # drops the -inf "simulator default" sentinel
-        # Stiffness range is [0, inf): preserve an authored zero. thickness / density
-        # are strictly positive.
-        if name in ("thickness", "density"):
-            if val > 0.0:
-                out[name] = val
-        elif val >= 0.0:
-            out[name] = val
-    return out
+    return _read_deformable_material(
+        prim,
+        read_attr,
+        "PhysicsSurfaceDeformableMaterialAPI",
+        ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "density"),
+    )
 
 
 def _find_deformable_body_prim(prim: Usd.Prim) -> Usd.Prim | None:

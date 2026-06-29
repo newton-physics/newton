@@ -30,7 +30,6 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
    :toctree: _generated
    :signatures: long
 
-   LEGACY_DEFORMABLE_NAMESPACES
    find_tetmesh_prims
    get_attribute
    get_attributes_in_namespace
@@ -47,3 +46,13 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
    has_attribute
    type_to_warp
    value_to_warp
+
+.. rubric:: Constants
+
+.. list-table::
+   :header-rows: 1
+
+   * - Name
+     - Value
+   * - ``DEFORMABLE_LEGACY_NAMESPACES``
+     - ``('omniphysics', 'physxDeformableBody')``

@@ -9836,7 +9836,7 @@ def Mesh "JustAMesh" ()
         Canonical-only (``compat_namespaces=()``) reads moduli only from a ``physics:`` material
         that applies ``PhysicsVolumeDeformableMaterialAPI``. The deprecated default (``None``) reads
         vendor namespaces off any bound material and emits a ``DeprecationWarning``;
-        ``LEGACY_DEFORMABLE_NAMESPACES`` keeps that behavior explicitly (without the warning).
+        ``DEFORMABLE_LEGACY_NAMESPACES`` keeps that behavior explicitly (without the warning).
         """
         from pxr import Usd
 
@@ -9881,7 +9881,7 @@ def Xform "World" ()
         self.assertAlmostEqual(tm_default.density, 40.0)
 
         # Explicit legacy namespaces: same reads, no deprecation warning.
-        tm_legacy = usd.get_tetmesh(prim, compat_namespaces=usd.LEGACY_DEFORMABLE_NAMESPACES)
+        tm_legacy = usd.get_tetmesh(prim, compat_namespaces=usd.DEFORMABLE_LEGACY_NAMESPACES)
         self.assertIsNotNone(tm_legacy.k_mu)
         self.assertAlmostEqual(tm_legacy.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
         self.assertAlmostEqual(tm_legacy.density, 40.0)

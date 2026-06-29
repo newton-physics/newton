@@ -1831,7 +1831,7 @@ class TetMesh:
         release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
         the canonical-only behavior now -- moduli are then read only from a material that applies
         ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.
-        ``newton.usd.LEGACY_DEFORMABLE_NAMESPACES``) to keep reading vendor namespaces without the
+        ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to keep reading vendor namespaces without the
         warning.
 
         Example:
