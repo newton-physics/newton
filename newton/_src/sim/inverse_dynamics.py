@@ -38,6 +38,9 @@ class InverseDynamicsScratchBuffer:
     are sized for the topology supplied at construction time; rebuilding
     the model with a different body, joint, articulation, or DOF count
     requires a new instance.
+
+    All attributes are internal implementation details. Callers must not
+    read from or write to them directly.
     """
 
     def __init__(
