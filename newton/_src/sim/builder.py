@@ -6981,6 +6981,69 @@ class ModelBuilder:
             }
             return custom_attributes or None
 
+        # Decomposition backends may merge disconnected convex parts into one hull.
+        def split_mesh_components(mesh: Mesh) -> list[Mesh]:
+            faces = np.asarray(mesh.indices, dtype=np.int32).reshape(-1, 3)
+            if len(faces) <= 1:
+                return [mesh]
+
+            vertex_faces: dict[int, list[int]] = {}
+            for face_idx, face in enumerate(faces):
+                for vertex in face:
+                    vertex_faces.setdefault(int(vertex), []).append(face_idx)
+
+            visited = np.zeros(len(faces), dtype=bool)
+            components: list[list[int]] = []
+            for start_face in range(len(faces)):
+                if visited[start_face]:
+                    continue
+
+                queue = [start_face]
+                visited[start_face] = True
+                component = []
+                while queue:
+                    face_idx = queue.pop()
+                    component.append(face_idx)
+                    for vertex in faces[face_idx]:
+                        for neighbor_face in vertex_faces[int(vertex)]:
+                            if not visited[neighbor_face]:
+                                visited[neighbor_face] = True
+                                queue.append(neighbor_face)
+                components.append(component)
+
+            if len(components) == 1:
+                return [mesh]
+
+            split_meshes = []
+            for component in components:
+                component_faces = faces[np.asarray(component, dtype=np.int32)]
+                used_vertices, inverse = np.unique(component_faces.reshape(-1), return_inverse=True)
+                component_vertices = mesh.vertices[used_vertices]
+                component_indices = inverse.astype(np.int32, copy=False)
+                component_normals = None
+                if mesh.normals is not None and len(mesh.normals) == len(mesh.vertices):
+                    component_normals = mesh.normals[used_vertices]
+                component_uvs = None
+                if mesh.uvs is not None and len(mesh.uvs) == len(mesh.vertices):
+                    component_uvs = mesh.uvs[used_vertices]
+                split_meshes.append(
+                    Mesh(
+                        component_vertices,
+                        component_indices,
+                        normals=component_normals,
+                        uvs=component_uvs,
+                        compute_inertia=False,
+                        is_solid=mesh.is_solid,
+                        maxhullvert=mesh.maxhullvert,
+                        color=mesh.color,
+                        roughness=mesh.roughness,
+                        metallic=mesh.metallic,
+                        texture=mesh.texture,
+                    )
+                )
+
+            return split_meshes
+
         if shape_indices is None:
             shape_indices = [
                 i
@@ -7061,26 +7124,30 @@ class ModelBuilder:
                     if hash_m in decompositions:
                         decomposition = decompositions[hash_m]
                     else:
-                        if method == "coacd":
-                            cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
-                            coacd_settings = {
-                                "threshold": 0.05,
-                                "mcts_nodes": 20,
-                                "mcts_iterations": 5,
-                                "mcts_max_depth": 1,
-                                "merge": False,
-                                "max_convex_hull": mesh.maxhullvert,
-                            }
-                            coacd_settings.update(remeshing_kwargs)
-                            decomposition = coacd.run_coacd(cmesh, **coacd_settings)
-                        else:
-                            tmesh = trimesh.Trimesh(mesh.vertices, mesh.indices.reshape(-1, 3))
-                            vhacd_settings = {
-                                "maxNumVerticesPerCH": mesh.maxhullvert,
-                            }
-                            vhacd_settings.update(remeshing_kwargs)
-                            decomposition = trimesh.decomposition.convex_decomposition(tmesh, **vhacd_settings)
-                            decomposition = [(d["vertices"], d["faces"]) for d in decomposition]
+                        decomposition = []
+                        for component_mesh in split_mesh_components(mesh):
+                            if method == "coacd":
+                                cmesh = coacd.Mesh(component_mesh.vertices, component_mesh.indices.reshape(-1, 3))
+                                coacd_settings = {
+                                    "threshold": 0.05,
+                                    "mcts_nodes": 20,
+                                    "mcts_iterations": 5,
+                                    "mcts_max_depth": 1,
+                                    "merge": False,
+                                    "max_convex_hull": component_mesh.maxhullvert,
+                                }
+                                coacd_settings.update(remeshing_kwargs)
+                                decomposition.extend(coacd.run_coacd(cmesh, **coacd_settings))
+                            else:
+                                tmesh = trimesh.Trimesh(component_mesh.vertices, component_mesh.indices.reshape(-1, 3))
+                                vhacd_settings = {
+                                    "maxNumVerticesPerCH": component_mesh.maxhullvert,
+                                }
+                                vhacd_settings.update(remeshing_kwargs)
+                                component_decomposition = trimesh.decomposition.convex_decomposition(
+                                    tmesh, **vhacd_settings
+                                )
+                                decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
                         decompositions[hash_m] = decomposition
                     if len(decomposition) == 0:
                         continue
