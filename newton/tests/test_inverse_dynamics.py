@@ -1869,6 +1869,77 @@ class TestMassMatrix(TestInverseDynamicsBase):
 class TestManipulatorEquation(TestInverseDynamicsBase):
     """Manipulator-equation tests covering combined inverse-dynamics outputs."""
 
+    def test_eval_inverse_dynamics_finite_on_degenerate_joint_types(self):
+        """Finite-only guard for DISTANCE, CABLE, and multi-angular-DOF D6.
+
+        These paths are either unsupported by the inverse-dynamics pipeline
+        (CABLE is not reconstructed by ``eval_fk``; DISTANCE is treated as
+        FREE) or have a known round-trip omission (D6 with more than one
+        angular DOF, deferred to #2749). Correctness is not asserted, but
+        a NaN regression on their outputs would currently go uncaught.
+        """
+        identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
+        def _build_single_link(add_joint_fn):
+            b = newton.ModelBuilder()
+            link = b.add_link(
+                xform=identity_xform,
+                mass=1.0,
+                inertia=self.I_UNIT,
+                com=wp.vec3(0.0, 0.0, 0.0),
+            )
+            j = add_joint_fn(b, link)
+            b.add_articulation([j])
+            return b.finalize(device=self.device)
+
+        cases = [
+            (
+                "distance",
+                lambda b, link: b.add_joint_distance(
+                    parent=-1, child=link,
+                    parent_xform=identity_xform, child_xform=identity_xform,
+                ),
+            ),
+            (
+                "cable",
+                lambda b, link: b.add_joint_cable(
+                    parent=-1, child=link,
+                    parent_xform=identity_xform, child_xform=identity_xform,
+                ),
+            ),
+            (
+                "d6_two_angular",
+                lambda b, link: b.add_joint_d6(
+                    parent=-1, child=link,
+                    parent_xform=identity_xform, child_xform=identity_xform,
+                    angular_axes=[
+                        newton.ModelBuilder.JointDofConfig(axis=wp.vec3(1.0, 0.0, 0.0)),
+                        newton.ModelBuilder.JointDofConfig(axis=wp.vec3(0.0, 0.0, 1.0)),
+                    ],
+                ),
+            ),
+        ]
+
+        for name, add_joint_fn in cases:
+            with self.subTest(joint_type=name):
+                model = _build_single_link(add_joint_fn)
+                state = model.state()
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                # Non-zero velocities so Coriolis paths are exercised.
+                if model.joint_dof_count > 0:
+                    joint_qd = np.ones(model.joint_dof_count, dtype=np.float32) * 0.5
+                    state.joint_qd.assign(joint_qd)
+
+                inverse_dynamics, scratch = model.inverse_dynamics()
+                newton.eval_inverse_dynamics(
+                    model, state, newton.InverseDynamics.EvalType.ALL,
+                    inverse_dynamics, scratch,
+                )
+
+                self.assertTrue(np.all(np.isfinite(inverse_dynamics.mass_matrix.numpy())))
+                self.assertTrue(np.all(np.isfinite(inverse_dynamics.gravity_force.numpy())))
+                self.assertTrue(np.all(np.isfinite(inverse_dynamics.coriolis_force.numpy())))
+
     def test_eval_inverse_dynamics_force_hand_crafted_inputs(self):
         """White-box test of ``eval_inverse_dynamics_force`` with hand-chosen inputs.
 
