@@ -1120,16 +1120,16 @@ class ViewerFile(ViewerBase):
 
         self._frame_count = 0
         self._model_recorded = False
+        self._running = True
 
     @override
-    def set_model(self, model: Model | None, max_worlds: int | None = None):
+    def set_model(self, model: Model | None):
         """Override set_model to record the model when it is set.
 
         Args:
             model: Model to bind to this viewer.
-            max_worlds: Optional cap on rendered worlds.
         """
-        super().set_model(model, max_worlds=max_worlds)
+        super().set_model(model)
 
         if model is not None and not self._model_recorded:
             self.record_model(model)
@@ -1151,6 +1151,15 @@ class ViewerFile(ViewerBase):
         # Auto-save if enabled
         if self.auto_save and self._frame_count % self.save_interval == 0:
             self._save_recording()
+
+    @override
+    def is_running(self) -> bool:
+        """Report whether the file viewer should continue recording.
+
+        Returns:
+            bool: False after :meth:`close` has been called.
+        """
+        return self._running
 
     def save_recording(self, file_path: str | None = None, verbose: bool = False):
         """Save the recorded data to file.
@@ -1427,6 +1436,7 @@ class ViewerFile(ViewerBase):
         """Save final recording and cleanup."""
         if self._frame_count > 0:
             self._save_recording()
+        self._running = False
         print(f"ViewerFile closed. Total frames recorded: {self._frame_count}")
 
     def load_recording(self, file_path: str | None = None, verbose: bool = False):

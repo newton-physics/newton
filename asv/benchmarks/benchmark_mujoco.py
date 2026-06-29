@@ -26,15 +26,15 @@ from newton.utils import EventTracer
 _NEW_LAYOUT_AVAILABLE = hasattr(newton, "use_coord_layout_targets")
 
 
-def _target_q(obj):
+def _target_q(owner):
     """Resolve the joint-position-target array across pre/post #2556 layouts.
 
     On pre-PR Newton (no ``joint_target_q``) falls back to ``joint_target_pos``.
     Used by the benchmark harness so ``asv compare`` works against both refs.
     """
-    target = getattr(obj, "joint_target_q", None)
+    target = getattr(owner, "joint_target_q", None)
     if target is None:
-        target = getattr(obj, "joint_target_pos", None)
+        target = getattr(owner, "joint_target_pos", None)
     return target
 
 
@@ -366,7 +366,7 @@ class Example:
         self.sensor_contact = None
         sensing_bodies = ROBOT_CONFIGS.get(robot, {}).get("sensing_bodies", None)
         if sensing_bodies is not None:
-            self.sensor_contact = SensorContact(self.model, sensing_obj_bodies=sensing_bodies, counterpart_bodies="*")
+            self.sensor_contact = SensorContact(self.model, sensing_bodies=sensing_bodies, counterpart_bodies="*")
             self.contacts = newton.Contacts(
                 self.solver.get_max_contact_count(),
                 0,

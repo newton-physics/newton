@@ -119,77 +119,6 @@ class TestModelBuilderDeprecations(unittest.TestCase):
         self.assertEqual(len(caught), 1)
         self.assertEqual(model.mujoco.equality_constraint_count, 3)
 
-    def test_default_body_armature_get_and_set_warn(self):
-        builder = ModelBuilder()
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            builder.default_body_armature = 0.25
-            value = builder.default_body_armature
-
-        self.assertAlmostEqual(value, 0.25)
-        self.assertEqual(len(caught), 2)
-        self.assertTrue(all(issubclass(item.category, DeprecationWarning) for item in caught))
-        self.assertTrue(all("default_body_armature" in str(item.message) for item in caught))
-        self.assertTrue(all(item.filename.endswith("test_model.py") for item in caught))
-
-    def test_add_link_armature_warns_and_preserves_inertia(self):
-        builder = ModelBuilder()
-        inertia = np.diag([1.0, 2.0, 3.0]).astype(np.float32)
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            body = builder.add_link(mass=1.0, inertia=inertia, armature=0.5)
-
-        self.assertEqual(body, 0)
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        self.assertIn("add_link(..., armature=...)", str(caught[0].message))
-        self.assertTrue(caught[0].filename.endswith("test_model.py"))
-        np.testing.assert_allclose(
-            np.asarray(builder.body_inertia[body]).reshape(3, 3),
-            inertia + np.eye(3, dtype=np.float32) * 0.5,
-            atol=1e-6,
-        )
-
-    def test_add_body_armature_warns_and_preserves_inertia(self):
-        builder = ModelBuilder()
-        inertia = np.diag([1.5, 2.5, 3.5]).astype(np.float32)
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            body = builder.add_body(mass=1.0, inertia=inertia, armature=0.25)
-
-        self.assertEqual(body, 0)
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        self.assertIn("add_body(..., armature=...)", str(caught[0].message))
-        self.assertTrue(caught[0].filename.endswith("test_model.py"))
-        np.testing.assert_allclose(
-            np.asarray(builder.body_inertia[body]).reshape(3, 3),
-            inertia + np.eye(3, dtype=np.float32) * 0.25,
-            atol=1e-6,
-        )
-
-    def test_add_link_uses_default_body_armature_without_extra_warning(self):
-        builder = ModelBuilder()
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            builder.default_body_armature = 0.125
-            body = builder.add_link()
-
-        self.assertEqual(body, 0)
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        self.assertIn("default_body_armature", str(caught[0].message))
-        self.assertTrue(caught[0].filename.endswith("test_model.py"))
-        np.testing.assert_allclose(
-            np.asarray(builder.body_inertia[body]).reshape(3, 3),
-            np.eye(3, dtype=np.float32) * 0.125,
-            atol=1e-6,
-        )
-
     def test_joint_target_pos_vel_aliases_warn(self):
         """Legacy ``joint_target_pos`` / ``joint_target_vel`` warn under the
         default flag and raise under ``use_coord_layout_targets=True``;
@@ -244,6 +173,104 @@ class TestModelBuilderDeprecations(unittest.TestCase):
             _ = model.joint_target_qd
         self.assertFalse(any(issubclass(w.category, DeprecationWarning) for w in caught))
 
+    def test_model_builder_joint_target_pos_vel_setters_warn_and_forward(self):
+        prev_flag = newton.use_coord_layout_targets
+        try:
+            newton.use_coord_layout_targets = False
+
+            builder = ModelBuilder()
+            inertia = np.eye(3, dtype=np.float32)
+            b0 = builder.add_link(mass=1.0, inertia=inertia)
+            j_free = builder.add_joint_free(child=b0)
+            b1 = builder.add_link(mass=1.0, inertia=inertia)
+            j_ball = builder.add_joint_ball(parent=-1, child=b1)
+            b2 = builder.add_link(mass=1.0, inertia=inertia)
+            j_revolute = builder.add_joint_revolute(parent=b1, child=b2, axis=newton.Axis.Z)
+            builder.add_articulation([j_free])
+            builder.add_articulation([j_ball, j_revolute])
+
+            target_pos = [1.0, 2.0, 3.0, 0.1, 0.2, 0.3, -0.4, 0.5, 0.6, 0.7]
+            target_vel = [10.0 + i for i in range(builder.joint_dof_count)]
+
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                builder.joint_target_pos = target_pos
+                builder.joint_target_vel = target_vel
+
+            deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+            self.assertEqual(len(deprecations), 2)
+            self.assertTrue(any("ModelBuilder.joint_target_pos" in str(w.message) for w in deprecations))
+            self.assertTrue(any("ModelBuilder.joint_target_vel" in str(w.message) for w in deprecations))
+
+            free_q_start = builder.joint_q_start[j_free]
+            ball_q_start = builder.joint_q_start[j_ball]
+            self.assertEqual(builder.joint_target_q[free_q_start + 6], 1.0)
+            self.assertEqual(builder.joint_target_q[ball_q_start + 3], 1.0)
+
+            model = builder.finalize(skip_all_validations=True)
+            np.testing.assert_allclose(model.joint_target_q.numpy(), target_pos, rtol=0.0, atol=1e-6)
+            np.testing.assert_allclose(model.joint_target_qd.numpy(), target_vel, rtol=0.0, atol=1e-6)
+
+            newton.use_coord_layout_targets = True
+            coord_builder = ModelBuilder()
+            with self.assertRaises(AttributeError):
+                coord_builder.joint_target_pos = []
+            with self.assertRaises(AttributeError):
+                coord_builder.joint_target_vel = []
+        finally:
+            newton.use_coord_layout_targets = prev_flag
+
+
+class TestModelBuilderBvhConstructor(unittest.TestCase):
+    def test_model_builder_forwards_bvh_constructors(self):
+        builder = ModelBuilder()
+        builder.default_bvh_cfg.mesh_constructor = "cubql"
+        builder.default_bvh_cfg.gaussian_constructor = "sah"
+        builder.default_bvh_cfg.shape_constructor = "lbvh"
+
+        mesh = newton.Mesh(
+            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+            indices=np.array([0, 1, 2], dtype=np.int32),
+            compute_inertia=False,
+        )
+        gaussian = newton.Gaussian(positions=np.zeros((1, 3), dtype=np.float32))
+        builder.add_shape_mesh(body=-1, mesh=mesh)
+        builder.add_shape_gaussian(body=-1, gaussian=gaussian)
+
+        with (
+            mock.patch("newton._src.geometry.types.wp.Mesh") as wp_mesh,
+            mock.patch.object(
+                newton.Gaussian, "finalize", autospec=True, return_value=newton.Gaussian.Data()
+            ) as finalize,
+            mock.patch.object(newton.Model, "bvh_build_shapes", autospec=True) as build_shapes,
+            mock.patch.object(newton.Model, "bvh_build_particles", autospec=True),
+        ):
+            wp_mesh.return_value.id = 123
+            model = builder.finalize(device="cpu")
+
+        wp_mesh.assert_called_once()
+        self.assertEqual(wp_mesh.call_args.kwargs["bvh_constructor"], "cubql")
+        finalize.assert_called_once_with(gaussian, device="cpu", bvh_constructor="sah")
+        build_shapes.assert_called_once_with(model, model, bvh_constructor="lbvh")
+
+    def test_gaussian_finalize_forwards_bvh_constructor_to_warp_bvh(self):
+        gaussian = newton.Gaussian(
+            positions=np.zeros((1, 3), dtype=np.float32),
+            rotations=np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32),
+            scales=np.ones((1, 3), dtype=np.float32),
+            opacities=np.ones(1, dtype=np.float32),
+            sh_coeffs=np.ones((1, 3), dtype=np.float32),
+        )
+
+        with (
+            mock.patch("newton._src.geometry.types.wp.launch"),
+            mock.patch("newton._src.geometry.types.wp.Bvh") as wp_bvh,
+        ):
+            wp_bvh.return_value.id = 456
+            gaussian.finalize(device="cpu", bvh_constructor="sah")
+
+        self.assertEqual(wp_bvh.call_args.kwargs["constructor"], "sah")
+
 
 class TestModelMesh(unittest.TestCase):
     def test_add_triangles(self):
@@ -283,13 +310,22 @@ class TestModelMesh(unittest.TestCase):
                 t[0],
                 t[1],
                 t[2],
-                tri_ke[i],
-                tri_ka[i],
-                tri_kd[i],
-                tri_drag[i],
-                tri_lift[i],
+                tri_ke=tri_ke[i],
+                tri_ka=tri_ka[i],
+                tri_kd=tri_kd[i],
+                tri_drag=tri_drag[i],
+                tri_lift=tri_lift[i],
             )
-        builder2.add_triangles(tris[:, 0], tris[:, 1], tris[:, 2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+        builder2.add_triangles(
+            tris[:, 0],
+            tris[:, 1],
+            tris[:, 2],
+            tri_ke=tri_ke,
+            tri_ka=tri_ka,
+            tri_kd=tri_kd,
+            tri_drag=tri_drag,
+            tri_lift=tri_lift,
+        )
 
         assert_np_equal(np.array(builder1.tri_indices), np.array(builder2.tri_indices))
         assert_np_equal(np.array(builder1.tri_poses), np.array(builder2.tri_poses), tol=1.0e-6)
@@ -326,8 +362,24 @@ class TestModelMesh(unittest.TestCase):
         edge_ke = rng.standard_normal(size=2)
         edge_kd = rng.standard_normal(size=2)
         for i in range(2):
-            builder1.add_edge(edges[i, 0], edges[i, 1], edges[i, 2], edges[i, 3], rest[i], edge_ke[i], edge_kd[i])
-        builder2.add_edges(edges[:, 0], edges[:, 1], edges[:, 2], edges[:, 3], rest, edge_ke, edge_kd)
+            builder1.add_edge(
+                edges[i, 0],
+                edges[i, 1],
+                edges[i, 2],
+                edges[i, 3],
+                rest=rest[i],
+                edge_ke=edge_ke[i],
+                edge_kd=edge_kd[i],
+            )
+        builder2.add_edges(
+            edges[:, 0],
+            edges[:, 1],
+            edges[:, 2],
+            edges[:, 3],
+            rest=rest,
+            edge_ke=edge_ke,
+            edge_kd=edge_kd,
+        )
 
         assert_np_equal(np.array(builder1.edge_indices), np.array(builder2.edge_indices))
         assert_np_equal(np.array(builder1.edge_rest_angle), np.array(builder2.edge_rest_angle), tol=1.0e-4)
@@ -1845,11 +1897,11 @@ class TestModelJoints(unittest.TestCase):
     def test_add_base_joint_fixed_to_parent(self):
         """Test that add_base_joint with parent creates fixed joint."""
         builder = ModelBuilder()
-        parent_body = builder.add_body(wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
+        parent_body = builder.add_body(xform=wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
         parent_joint = builder.add_joint_fixed(parent=-1, child=parent_body)
         builder.add_articulation([parent_joint])  # Register parent body into an articulation
 
-        child_body = builder.add_body(wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
+        child_body = builder.add_body(xform=wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
         joint_id = builder._add_base_joint(child_body, parent=parent_body, floating=False)
 
         self.assertEqual(builder.joint_type[joint_id], newton.JointType.FIXED)

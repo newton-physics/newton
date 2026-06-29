@@ -140,7 +140,7 @@ class JointType(IntEnum):
         in position for this joint type.
 
         Args:
-            num_axes (int): The number of axes for the joint.
+            num_axes: The number of axes for the joint.
 
         Returns:
             tuple[int, int]: A tuple (dof_count, coord_count) where:
@@ -171,7 +171,7 @@ class JointType(IntEnum):
         Returns the number of velocity-level bilateral kinematic constraints for this joint type.
 
         Args:
-            num_axes (int): The number of DoF axes for the joint.
+            num_axes: The number of DoF axes for the joint.
 
         Returns:
             int: The number of bilateral kinematic constraints for the joint.

@@ -54,7 +54,7 @@ creating the sensor before allocating contacts is sufficient:
    builder.add_shape_sphere(body, radius=0.1, label="ball")
    model = builder.finalize()
 
-   sensor = SensorContact(model, sensing_obj_shapes="ball")
+   sensor = SensorContact(model, sensing_shapes="ball")
    contacts = model.contacts()
    print(contacts.force is not None)
 

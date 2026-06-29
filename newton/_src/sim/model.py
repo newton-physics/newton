@@ -256,11 +256,9 @@ class Model:
         self.shape_material_ke: wp.array[wp.float32] | None = None
         """Shape contact elastic stiffness [N/m], shape [shape_count], float."""
         self.shape_material_kd: wp.array[wp.float32] | None = None
-        """Shape contact damping stiffness, shape [shape_count], float.
-        Interpretation is solver-dependent: used directly as damping [N·s/m] by SemiImplicit,
-        but multiplied by ke as a relative damping factor by VBD."""
+        """Shape contact damping [N·s/m], shape [shape_count], float."""
         self.shape_material_kf: wp.array[wp.float32] | None = None
-        """Shape contact friction stiffness [N·s/m], shape [shape_count], float."""
+        """Shape tangential friction response gain [N·s/m], shape [shape_count], float."""
         self.shape_material_ka: wp.array[wp.float32] | None = None
         """Shape contact adhesion distance [m], shape [shape_count], float."""
         self.shape_material_mu: wp.array[wp.float32] | None = None
@@ -273,7 +271,8 @@ class Model:
         """Shape rolling friction coefficient [dimensionless] (resistance to rolling motion), shape [shape_count], float."""
         self.shape_material_kh: wp.array[wp.float32] | None = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
-        Contact stiffness is computed as ``area * kh``, yielding an effective spring constant [N/m]."""
+        Under the default linear pressure law, contact force scales with
+        contact area, ``kh``, and penetration depth."""
         self.shape_gap: wp.array[wp.float32] | None = None
         """Shape additional contact detection gap [m], shape [shape_count], float."""
 
@@ -697,9 +696,7 @@ class Model:
         self.soft_contact_ke: float = 1.0e3
         """Stiffness of soft contacts [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_kd: float = 10.0
-        """Damping of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`).
-        Interpretation is solver-dependent: used directly as damping [N·s/m] by SemiImplicit,
-        but multiplied by ke as a relative damping factor by VBD."""
+        """Damping of soft contacts [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_kf: float = 1.0e3
         """Stiffness of friction force in soft contacts [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_mu: float = 0.5
