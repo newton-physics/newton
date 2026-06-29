@@ -3714,6 +3714,7 @@ def parse_usd(
         ignore_paths=ignore_paths,
         verbose=verbose,
         path_body_map=path_body_map,
+        path_shape_map=path_shape_map,
         path_cable_map=path_cable_map,
         path_cable_attrs=path_cable_attrs,
         path_cable_segments=path_cable_segments,

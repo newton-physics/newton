@@ -118,8 +118,14 @@ def _add_physics_attachment(
     return prim
 
 
-def _add_element_collision_filter(stage, path, *, src0, src1, indices0=None, indices1=None, enabled=True):
-    """Author an AOUSD ``PhysicsElementCollisionFilter`` prim by token."""
+def _add_element_collision_filter(
+    stage, path, *, src0, src1, indices0=None, indices1=None, counts0=None, counts1=None, enabled=True
+):
+    """Author an AOUSD ``PhysicsElementCollisionFilter`` prim by token.
+
+    ``counts0`` / ``counts1`` author the optional ``groupElemCounts`` arrays that slice the indices
+    into paired groups; omit them to leave a single implicit group.
+    """
     from pxr import Sdf
 
     prim = stage.DefinePrim(path, "PhysicsElementCollisionFilter")
@@ -128,6 +134,10 @@ def _add_element_collision_filter(stage, path, *, src0, src1, indices0=None, ind
     prim.CreateAttribute("physics:filterEnabled", Sdf.ValueTypeNames.Bool).Set(enabled)
     prim.CreateAttribute("physics:groupElemIndices0", Sdf.ValueTypeNames.IntArray).Set(list(indices0 or []))
     prim.CreateAttribute("physics:groupElemIndices1", Sdf.ValueTypeNames.IntArray).Set(list(indices1 or []))
+    if counts0 is not None:
+        prim.CreateAttribute("physics:groupElemCounts0", Sdf.ValueTypeNames.IntArray).Set(list(counts0))
+    if counts1 is not None:
+        prim.CreateAttribute("physics:groupElemCounts1", Sdf.ValueTypeNames.IntArray).Set(list(counts1))
     return prim
 
 
@@ -1007,6 +1017,144 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertIn(tuple(sorted((seg_shapes[0], box_shape))), pairs)
             self.assertIn(tuple(sorted((seg_shapes[1], box_shape))), pairs)
             self.assertNotIn(tuple(sorted((seg_shapes[2], box_shape))), pairs, "segment 2 was not listed")
+
+    def _two_cable_filter_stage(self, tmpdir, **filter_kwargs):
+        """Two 3-segment cables plus a PhysicsElementCollisionFilter; returns (builder, result, pairs)."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        usd_path = Path(tmpdir) / "two_cable_filter.usda"
+        stage = Usd.Stage.CreateNew(str(usd_path))
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+        a = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]  # 3 segments
+        b = [(0.0, 1.0, 1.0), (0.1, 1.0, 1.0), (0.2, 1.0, 1.0), (0.3, 1.0, 1.0)]  # 3 segments
+        _add_cable_curve(stage, "/World/CableA", a)
+        _add_cable_curve(stage, "/World/CableB", b)
+        _add_element_collision_filter(
+            stage, "/World/Filter", src0="/World/CableA", src1="/World/CableB", **filter_kwargs
+        )
+        stage.Save()
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(str(usd_path))
+        pairs = {tuple(sorted(p)) for p in builder.shape_collision_filter_pairs}
+        return builder, result, pairs
+
+    @staticmethod
+    def _cable_seg_shapes(builder, result, path):
+        bodies, _ = result["path_cable_map"][path]
+        return [builder.body_shapes[b][0] for b in bodies]
+
+    def test_element_collision_filter_paired_groups(self):
+        """groupElemCounts pair indices element-wise: only the paired (i, j) elements filter,
+        not the full Cartesian product of the two index arrays."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # counts [1, 1] / [1, 1] pairs (A0 with B2) and (A1 with B0) only.
+            builder, result, pairs = self._two_cable_filter_stage(
+                tmpdir, indices0=[0, 1], counts0=[1, 1], indices1=[2, 0], counts1=[1, 1]
+            )
+            a = self._cable_seg_shapes(builder, result, "/World/CableA")
+            b = self._cable_seg_shapes(builder, result, "/World/CableB")
+            self.assertIn(tuple(sorted((a[0], b[2]))), pairs)
+            self.assertIn(tuple(sorted((a[1], b[0]))), pairs)
+            # The cross-product pairs that a non-paired reading would add must be absent.
+            self.assertNotIn(tuple(sorted((a[0], b[0]))), pairs, "cross-product pair must not be filtered")
+            self.assertNotIn(tuple(sorted((a[1], b[2]))), pairs, "cross-product pair must not be filtered")
+
+    def test_element_collision_filter_zero_count_means_all(self):
+        """A groupElemCount of 0 selects all elements of that source for the paired group."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # src0 group is count-0 (all of CableA) paired with CableB segments {0, 1}.
+            builder, result, pairs = self._two_cable_filter_stage(
+                tmpdir, indices0=[], counts0=[0], indices1=[0, 1], counts1=[2]
+            )
+            a = self._cable_seg_shapes(builder, result, "/World/CableA")
+            b = self._cable_seg_shapes(builder, result, "/World/CableB")
+            for sa in a:  # all of CableA filtered against B0 and B1
+                self.assertIn(tuple(sorted((sa, b[0]))), pairs)
+                self.assertIn(tuple(sorted((sa, b[1]))), pairs)
+                self.assertNotIn(tuple(sorted((sa, b[2]))), pairs, "B segment 2 was not in the group")
+
+    def test_element_collision_filter_single_group_broadcasts(self):
+        """A single group on one side (e.g. empty counts) broadcasts against every group of the other."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # src0 has no counts -> one implicit all-elements group; src1 has two single-element groups.
+            builder, result, pairs = self._two_cable_filter_stage(tmpdir, indices0=[], indices1=[0, 1], counts1=[1, 1])
+            a = self._cable_seg_shapes(builder, result, "/World/CableA")
+            b = self._cable_seg_shapes(builder, result, "/World/CableB")
+            for sa in a:
+                self.assertIn(tuple(sorted((sa, b[0]))), pairs)
+                self.assertIn(tuple(sorted((sa, b[1]))), pairs)
+                self.assertNotIn(tuple(sorted((sa, b[2]))), pairs, "B segment 2 was not in any group")
+
+    def test_element_collision_filter_malformed_counts_warns_and_skips(self):
+        """groupElemCounts whose sum exceeds the index array warns and applies no filter pairs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertWarnsRegex(UserWarning, "sum exceeds"):
+                builder, result, pairs = self._two_cable_filter_stage(
+                    tmpdir, indices0=[0], counts0=[2], indices1=[0], counts1=[1]
+                )
+            # No cross-source pair is added (intra-cable adjacency filters from add_rod still exist).
+            a = self._cable_seg_shapes(builder, result, "/World/CableA")
+            b = self._cable_seg_shapes(builder, result, "/World/CableB")
+            cross = {tuple(sorted((sa, sb))) for sa in a for sb in b}
+            self.assertTrue(cross.isdisjoint(pairs), "a malformed counts array must add no cross-source filter pairs")
+
+    def test_element_collision_filter_resolves_child_collider(self):
+        """A filter source that is a child collider under a rigid Xform resolves to that shape."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "child_collider.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            # Rigid body Xform with the collider on a *child* geom (not the body prim itself).
+            rigid = UsdGeom.Xform.Define(stage, "/World/Rigid")
+            UsdPhysics.RigidBodyAPI.Apply(rigid.GetPrim()).CreateKinematicEnabledAttr(True)
+            collider = UsdGeom.Cube.Define(stage, "/World/Rigid/Collider")
+            collider.CreateSizeAttr(0.1)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            _add_cable_curve(stage, "/World/Cable", pts)
+            _add_element_collision_filter(
+                stage, "/World/Filter", src0="/World/Cable", src1="/World/Rigid/Collider", indices0=[0], indices1=[]
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            seg0 = self._cable_seg_shapes(builder, result, "/World/Cable")[0]
+            collider_shape = result["path_shape_map"]["/World/Rigid/Collider"]
+            pairs = {tuple(sorted(p)) for p in builder.shape_collision_filter_pairs}
+            self.assertIn(tuple(sorted((seg0, collider_shape))), pairs)
+
+    def test_element_collision_filter_resolves_bodyless_static_collider(self):
+        """A filter source that is a bodyless static collider resolves to its shape."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "static_collider.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            # Static collider: CollisionAPI but no RigidBodyAPI, so it has no body in path_body_map.
+            ground = UsdGeom.Cube.Define(stage, "/World/Ground")
+            ground.CreateSizeAttr(0.1)
+            UsdPhysics.CollisionAPI.Apply(ground.GetPrim())
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            _add_cable_curve(stage, "/World/Cable", pts)
+            _add_element_collision_filter(
+                stage, "/World/Filter", src0="/World/Cable", src1="/World/Ground", indices0=[0], indices1=[]
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            seg0 = self._cable_seg_shapes(builder, result, "/World/Cable")[0]
+            ground_shape = result["path_shape_map"]["/World/Ground"]
+            pairs = {tuple(sorted(p)) for p in builder.shape_collision_filter_pairs}
+            self.assertIn(tuple(sorted((seg0, ground_shape))), pairs)
 
     def test_curve_to_curve_attachment_builds_rod_graph(self):
         """A curve->curve point attachment welds two curve deformables into one rod graph.

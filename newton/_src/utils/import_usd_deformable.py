@@ -416,6 +416,7 @@ class _DeformableImportContext:
     ignore_paths: Sequence[str]
     verbose: bool
     path_body_map: dict
+    path_shape_map: dict
     path_cable_map: dict
     path_cable_attrs: dict
     path_cable_segments: dict
@@ -1496,14 +1497,66 @@ def _deformable_remap_collapsed(
     return path_cable_map, path_attachment_map
 
 
+def _element_collision_filter_groups(
+    counts: Sequence[int], indices: Sequence[int], which: str, filter_path: str
+) -> list[list[int]] | None:
+    """Partition a source's flat ``groupElemIndices`` into per-group index lists by ``groupElemCounts``.
+
+    Each count slices the next run of indices into one group; a count of ``0`` selects *all* elements
+    of the source for that paired group (represented as an empty list, resolved downstream). With no
+    counts authored the whole index array is a single group (an empty array then meaning *all*).
+    Returns ``None`` (after warning) for malformed counts: negative, or a total that does not match
+    the index-array length.
+    """
+    if not counts:
+        return [list(indices)]  # single implicit group (empty indices -> all elements)
+    groups: list[list[int]] = []
+    offset = 0
+    for count in counts:
+        if count < 0:
+            warnings.warn(
+                f"{filter_path}: PhysicsElementCollisionFilter groupElemCounts{which} has a negative "
+                f"count {count}; skipping.",
+                stacklevel=2,
+            )
+            return None
+        if count == 0:
+            groups.append([])  # count 0 -> all elements of this source for the paired group
+            continue
+        if offset + count > len(indices):
+            warnings.warn(
+                f"{filter_path}: PhysicsElementCollisionFilter groupElemCounts{which} sum exceeds the "
+                f"groupElemIndices{which} length ({len(indices)}); skipping.",
+                stacklevel=2,
+            )
+            return None
+        groups.append([int(i) for i in indices[offset : offset + count]])
+        offset += count
+    if offset != len(indices):
+        warnings.warn(
+            f"{filter_path}: PhysicsElementCollisionFilter groupElemIndices{which} has "
+            f"{len(indices) - offset} trailing index(es) not covered by groupElemCounts{which}; skipping.",
+            stacklevel=2,
+        )
+        return None
+    return groups
+
+
 def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) -> None:
     """Lower AOUSD ``PhysicsElementCollisionFilter`` prims to shape collision filter pairs.
 
-    Each prim suppresses collision between selected *elements* of ``src0`` and ``src1``. Supported
-    element sources are imported cables (``groupElemIndices`` index the cable's segments) and rigid
-    colliders (all of the collider's shapes). An empty index array means *all* elements of that
-    source. Cloth/volume (triangle/tet) element sources have no per-element rigid shape in Newton's
-    shape-filter model and are warned and skipped.
+    Each prim suppresses collision between paired *element groups* of ``src0`` and ``src1``.
+    ``groupElemCounts0`` / ``groupElemCounts1`` slice the flat ``groupElemIndices0`` /
+    ``groupElemIndices1`` arrays into groups that pair up element-wise; collisions are filtered only
+    within each paired group (not across the full Cartesian product). A count of ``0`` -- or an empty
+    counts array -- means *all* elements of that source. When one side has a single group it is
+    broadcast against every group of the other side.
+
+    Supported element sources are imported cables (indices select the cable's segments), rigid bodies
+    (all of the body's collider shapes), and collider prims (the exact shape, e.g. a child collider
+    under a rigid Xform or a bodyless static collider). Element indices are not meaningful for a rigid
+    collider, so its whole shape set is filtered. Cloth/volume (triangle/tet) element sources have no
+    per-element rigid shape in Newton's shape-filter model and are warned and skipped.
     """
     from pxr import Usd
 
@@ -1515,6 +1568,7 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
     verbose = ctx.verbose
     path_cable_segments = ctx.path_cable_segments
     path_body_map = ctx.path_body_map
+    path_shape_map = ctx.path_shape_map
     path_cloth_map = ctx.path_cloth_map
     path_soft_map = ctx.path_soft_map
 
@@ -1522,7 +1576,8 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
         return
 
     def _src_shapes(src_path: str, indices: list[int], filter_path: str) -> list[int] | None:
-        # Resolve a source prim + element indices to the builder shape ids to filter.
+        # Resolve a source prim + element indices to the builder shape ids to filter. Returns None for
+        # an unsupported source (already warned), or a (possibly empty) shape list otherwise.
         if src_path in path_cable_segments:
             segs = path_cable_segments[src_path]  # flat segment index -> (body, length)
             if indices:
@@ -1543,8 +1598,12 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
                 shapes.extend(builder.body_shapes.get(b, []))
             return shapes
         if src_path in path_body_map:
-            # A rigid collider: filter against all of its shapes (per-element indices not meaningful).
+            # A rigid body: filter against all of its collider shapes (per-element indices not meaningful).
             return list(builder.body_shapes.get(path_body_map[src_path], []))
+        if src_path in path_shape_map:
+            # An exact collider prim: a child collider under a rigid Xform, or a bodyless static
+            # collider. Filter just that shape (a single rigid collider has no per-element shapes).
+            return [path_shape_map[src_path]]
         if src_path in path_cloth_map or src_path in path_soft_map:
             warnings.warn(
                 f"{filter_path}: PhysicsElementCollisionFilter on cloth/volume source '{src_path}' is not "
@@ -1572,15 +1631,42 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
         src1 = get_first_target(prim, "physics:src1")
         idx0 = [int(i) for i in (deformable_read(prim, "groupElemIndices0") or [])]
         idx1 = [int(i) for i in (deformable_read(prim, "groupElemIndices1") or [])]
-        shapes0 = _src_shapes(src0, idx0, path)
-        shapes1 = _src_shapes(src1, idx1, path)
-        if not shapes0 or not shapes1:
+        counts0 = [int(c) for c in (deformable_read(prim, "groupElemCounts0") or [])]
+        counts1 = [int(c) for c in (deformable_read(prim, "groupElemCounts1") or [])]
+        groups0 = _element_collision_filter_groups(counts0, idx0, "0", path)
+        groups1 = _element_collision_filter_groups(counts1, idx1, "1", path)
+        if groups0 is None or groups1 is None:
+            continue
+        # Pair groups element-wise; a single group on one side broadcasts against all groups of the
+        # other (covers the "all elements of this source" case authored as an empty counts array).
+        if len(groups0) == len(groups1):
+            pairs = list(zip(groups0, groups1, strict=True))
+        elif len(groups0) == 1:
+            pairs = [(groups0[0], g1) for g1 in groups1]
+        elif len(groups1) == 1:
+            pairs = [(g0, groups1[0]) for g0 in groups0]
+        else:
+            warnings.warn(
+                f"{path}: PhysicsElementCollisionFilter has {len(groups0)} src0 group(s) but "
+                f"{len(groups1)} src1 group(s); groups must pair one-to-one (or one side be a single "
+                "group); skipping.",
+                stacklevel=2,
+            )
             continue
         pair_count = 0
-        for sa in shapes0:
-            for sb in shapes1:
-                if sa != sb:
-                    builder.add_shape_collision_filter_pair(sa, sb)
-                    pair_count += 1
+        skip = False
+        for g0, g1 in pairs:
+            shapes0 = _src_shapes(src0, g0, path)
+            shapes1 = _src_shapes(src1, g1, path)
+            if shapes0 is None or shapes1 is None:
+                skip = True  # unsupported source (already warned); the same kind repeats per group
+                break
+            for sa in shapes0:
+                for sb in shapes1:
+                    if sa != sb:
+                        builder.add_shape_collision_filter_pair(sa, sb)
+                        pair_count += 1
+        if skip:
+            continue
         if verbose:
             print(f"Applied PhysicsElementCollisionFilter {path}: {pair_count} shape pair(s).")
