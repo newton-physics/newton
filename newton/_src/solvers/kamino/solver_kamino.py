@@ -712,6 +712,19 @@ class SolverKamino(SolverBase):
             )
             # Note: we convert all worlds if callbacks are set, so they see the full state correctly
 
+        # Convert base pose from origin to CoM if needed
+        if isinstance(config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
+            base_q_com = wp.zeros_like(config.base_pose.base_q)
+            self._kamino.convert_base_origin_to_com(
+                base_joint_index=self._model_kamino.info.base_joint_index,
+                base_body_index=self._model_kamino.info.base_body_index,
+                body_com=self._model_kamino.bodies.i_r_com_i,
+                base_q=config.base_pose.base_q,
+                base_q_com=base_q_com,
+            )
+            config_cache = config.base_pose
+            config.base_pose = SolverKamino.ResetConfig.FromBaseQ(base_q_com)
+
         # Cache fields excluded from the reset op, to restore them afterwards
         restore_after_reset: list[tuple[wp.array, wp.array]] = []
 
@@ -746,6 +759,10 @@ class SolverKamino(SolverBase):
                 world_mask=world_mask if not has_callbacks else None,
                 body_wid=self._model_kamino.bodies.wid,
             )
+
+        # Revert changes to config
+        if isinstance(config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
+            config.base_pose = config_cache
 
     @override
     def step(self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float):
