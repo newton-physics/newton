@@ -3,9 +3,11 @@
 
 """Test examples in the newton.examples package.
 
-Currently, this script mainly checks that the examples can run. It also treats
-deprecation warnings as failures by default so examples do not regress onto
-deprecated APIs.
+Currently, this script mainly checks that the examples can run. When the test
+runner is invoked with ``--strict-warnings`` (as CI does), example subprocesses
+treat deprecation warnings as failures so examples do not regress onto deprecated
+APIs; otherwise deprecations are non-fatal. (The broader newton.* escalation of
+``--strict-warnings`` applies to the in-process tests, not example subprocesses.)
 
 The test parameters are typically tuned so that each test can run in 10 seconds
 or less, ignoring module compilation time. A notable exception is the robot
@@ -106,9 +108,11 @@ def add_example_test(
         if usd_required and not USD_AVAILABLE:
             test.skipTest("Requires usd-core")
 
-        # Deprecations should fail example tests by default. Opt out only for
-        # a known third-party or asset issue that still needs follow-up.
+        # Escalate deprecations to errors in the example subprocess only when the
+        # runner was invoked with --strict-warnings (CI) and the example has not
+        # opted out.
         allow_deprecation_warnings = options.pop("allow_deprecation_warnings", False)
+        strict_warnings = newton.tests.unittest_utils.strict_warnings and not allow_deprecation_warnings
 
         # Pass the parent dir; the subprocess's init_kernel_cache appends the version.
         warp_cache_path = wp.config.kernel_cache_dir
@@ -116,10 +120,15 @@ def add_example_test(
         env_vars = os.environ.copy()
         if warp_cache_path is not None:
             env_vars["WARP_CACHE_PATH"] = os.path.dirname(warp_cache_path)
-        if not allow_deprecation_warnings:
-            env_vars["PYTHONWARNINGS"] = "error::DeprecationWarning"
-        else:
-            env_vars.pop("PYTHONWARNINGS", None)
+        # Drop any ambient PYTHONWARNINGS so a stray policy in the caller's
+        # environment cannot turn a lenient run strict; govern the policy solely
+        # through the -W flag below.
+        env_vars.pop("PYTHONWARNINGS", None)
+
+        # Escalate deprecations from interpreter startup for strict runs.
+        # newton.examples defers to any explicit -W policy (via sys.warnoptions),
+        # so this governs instead of the helper's lenient "default" filter.
+        warning_args = ["-W", "error::DeprecationWarning"] if strict_warnings else []
 
         if newton.tests.unittest_utils.coverage_enabled:
             # Generate a random coverage data file name - file is deleted along with containing directory
@@ -128,13 +137,13 @@ def add_example_test(
             ) as coverage_file:
                 pass
 
-            command = ["coverage", "run", f"--data-file={coverage_file.name}"]
+            command = [sys.executable, *warning_args, "-m", "coverage", "run", f"--data-file={coverage_file.name}"]
 
             if newton.tests.unittest_utils.coverage_branch:
                 command.append("--branch")
 
         else:
-            command = [sys.executable]
+            command = [sys.executable, *warning_args]
 
         # Append Warp commands
         command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test", "--quiet"])
@@ -260,6 +269,30 @@ add_example_test(
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 100},
+)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_dzhanibekov",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 230, "solver": "vbd"},
+    test_suffix="vbd",
+)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_dzhanibekov",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 230, "solver": "xpbd"},
+    test_suffix="xpbd",
+)
+add_example_test(
+    TestBasicExamples,
+    name="basic.example_basic_dzhanibekov",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 230, "solver": "mujoco"},
+    test_suffix="mujoco",
 )
 
 add_example_test(
