@@ -1381,6 +1381,7 @@ def eval_articulation_mass_matrix(
 @wp.kernel
 def eval_articulation_inverse_dynamics_force_kernel(
     articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
     articulation_count: int,
     joint_qd_start: wp.array[int],
     H: wp.array3d[float],
@@ -1409,7 +1410,7 @@ def eval_articulation_inverse_dynamics_force_kernel(
         return
 
     joint_start = articulation_start[art_idx]
-    joint_end = articulation_start[art_idx + 1]
+    joint_end = articulation_end[art_idx]
     dof_start = joint_qd_start[joint_start]
     dof_end = joint_qd_start[joint_end]
     dof_count = dof_end - dof_start
@@ -1476,6 +1477,7 @@ def eval_inverse_dynamics_force(
         dim=model.articulation_count,
         inputs=[
             model.articulation_start,
+            model.articulation_end,
             model.articulation_count,
             model.joint_qd_start,
             H,

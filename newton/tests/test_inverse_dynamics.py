@@ -2289,6 +2289,126 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         """Manipulator equation with non-zero gravity and non-zero initial DOF velocities."""
         self._test_inverse_dynamics_force(non_zero_gravity=True, non_zero_initial_dof_velocities=True)
 
+    def test_loop_closing_joint_does_not_contaminate_eval_inverse_dynamics_force(self):
+        """A loop-closing joint appended after tree joints must not affect tau.
+
+        Two worlds contain identical fixed-base 2-revolute chains. World 1 also
+        has a loop-closing revolute joint (NOT added to the articulation) whose
+        single DOF is appended after the tree DOFs. Both
+        :func:`newton.eval_inverse_dynamics` and
+        :func:`newton.eval_inverse_dynamics_force` must produce identical results
+        for both articulations.
+
+        Regression guard for :func:`eval_articulation_inverse_dynamics_force_kernel`
+        using ``articulation_end`` (not ``articulation_start[i+1]``) to bound the
+        DOF range. With the wrong boundary the kernel includes the loop-closing
+        DOF in art 1's ``dof_count`` and reads an off-diagonal entry of the mass
+        matrix as a spurious third column, scaled by the large orphan ``qddot``
+        value set below.
+        """
+        gravity_val = -10.0
+        mass = 2.0
+        I = self.I_UNIT
+        identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+        pos_one = wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity())
+        neg_one = wp.transform(wp.vec3(-1.0, 0.0, 0.0), wp.quat_identity())
+        z_axis = wp.vec3(0.0, 0.0, 1.0)
+
+        def build_world(with_loop_closing: bool) -> newton.ModelBuilder:
+            b = newton.ModelBuilder(gravity=gravity_val, up_axis=newton.Axis.Z)
+            body0 = b.add_link(xform=identity_xform, mass=mass, inertia=I, com=wp.vec3(0.0, 0.0, 0.0))
+            body1 = b.add_link(xform=identity_xform, mass=mass, inertia=I, com=wp.vec3(0.0, 0.0, 0.0))
+            body2 = b.add_link(xform=identity_xform, mass=mass, inertia=I, com=wp.vec3(0.0, 0.0, 0.0))
+            j_fixed = b.add_joint_fixed(parent=-1, child=body0, parent_xform=identity_xform, child_xform=identity_xform)
+            j_rev0 = b.add_joint_revolute(
+                parent=body0, child=body1, axis=z_axis,
+                parent_xform=pos_one, child_xform=neg_one,
+                target_ke=0.0, target_kd=0.0, friction=0.0,
+            )
+            j_rev1 = b.add_joint_revolute(
+                parent=body1, child=body2, axis=z_axis,
+                parent_xform=pos_one, child_xform=neg_one,
+                target_ke=0.0, target_kd=0.0, friction=0.0,
+            )
+            b.add_articulation([j_fixed, j_rev0, j_rev1])
+            if with_loop_closing:
+                # This joint is NOT passed to add_articulation — it is a
+                # loop-closing joint (joint_articulation == -1). Its single DOF
+                # must not enter the articulation's DOF range.
+                b.add_joint_revolute(
+                    parent=body0, child=body2, axis=z_axis,
+                    parent_xform=pos_one, child_xform=neg_one,
+                    target_ke=0.0, target_kd=0.0, friction=0.0,
+                )
+            return b
+
+        builder = newton.ModelBuilder(gravity=gravity_val, up_axis=newton.Axis.Z)
+        builder.add_world(build_world(with_loop_closing=False))
+        builder.add_world(build_world(with_loop_closing=True))
+        model = builder.finalize(device=self.device)
+        state = model.state()
+
+        # Art0: 2 tree DOFs (slots 0-1); art1: 2 tree DOFs (slots 2-3);
+        # loop-closing revolute: 1 DOF (slot 4).
+        self.assertEqual(model.joint_dof_count, 5)
+
+        # Identical non-zero angles and velocities for both articulations so
+        # all three manipulator-equation terms are non-trivial.
+        joint_q = state.joint_q.numpy()
+        joint_qd = state.joint_qd.numpy()
+        joint_q[0] = np.pi / 4.0   # art0 j_rev0
+        joint_q[1] = np.pi / 6.0   # art0 j_rev1
+        joint_q[2] = np.pi / 4.0   # art1 j_rev0 (identical)
+        joint_q[3] = np.pi / 6.0   # art1 j_rev1 (identical)
+        joint_qd[0] = 0.3           # art0 j_rev0 velocity
+        joint_qd[1] = -0.2          # art0 j_rev1 velocity
+        joint_qd[2] = 0.3           # art1 j_rev0 velocity (identical)
+        joint_qd[3] = -0.2          # art1 j_rev1 velocity (identical)
+        state.joint_q.assign(joint_q)
+        state.joint_qd.assign(joint_qd)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+        inverse_dynamics, scratch = model.inverse_dynamics()
+        newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.ALL, inverse_dynamics, scratch)
+
+        H = inverse_dynamics.mass_matrix.numpy()
+        g = inverse_dynamics.gravity_force.numpy()
+        c = inverse_dynamics.coriolis_force.numpy()
+
+        # Both articulations are physically identical: M(q), g(q), C(q,qd)*qd
+        # must be equal.
+        np.testing.assert_allclose(H[0], H[1], atol=1e-5,
+                                   err_msg="mass_matrix differs between articulations")
+        np.testing.assert_allclose(g[0:2], g[2:4], atol=1e-5,
+                                   err_msg="gravity_force differs between articulations")
+        np.testing.assert_allclose(c[0:2], c[2:4], atol=1e-5,
+                                   err_msg="coriolis_force differs between articulations")
+
+        # qddot: same for both tree DOF ranges; large sentinel at the
+        # loop-closing slot. With the bug (wrong DOF boundary), the kernel
+        # reads H[art1, 0, 2] — which aliases H[art1, 1, 0] (off-diagonal,
+        # non-zero for a coupled chain) — multiplied by 99, producing a
+        # large detectable contamination in tau[2].
+        qddot_np = np.zeros(model.joint_dof_count, dtype=np.float32)
+        qddot_np[0] = 0.5   # art0 first DOF acceleration
+        qddot_np[1] = 0.3   # art0 second DOF acceleration
+        qddot_np[2] = 0.5   # art1 first DOF acceleration (identical)
+        qddot_np[3] = 0.3   # art1 second DOF acceleration (identical)
+        qddot_np[4] = 99.0  # loop-closing DOF: must NOT enter tau[2:4]
+        qddot = wp.array(qddot_np, dtype=wp.float32, device=self.device)
+        newton.eval_inverse_dynamics_force(
+            model,
+            inverse_dynamics.mass_matrix,
+            qddot,
+            inverse_dynamics.coriolis_force,
+            inverse_dynamics.gravity_force,
+            inverse_dynamics.tau,
+        )
+
+        tau = inverse_dynamics.tau.numpy()
+        np.testing.assert_allclose(tau[0:2], tau[2:4], atol=1e-5,
+                                   err_msg="tau differs between articulations — loop-closing DOF contaminated result")
+
 
 class TestInverseDynamicsAPI(TestInverseDynamicsBase):
     """API-surface tests: flag dispatch, error paths, and degenerate-model
