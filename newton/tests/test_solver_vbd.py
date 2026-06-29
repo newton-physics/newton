@@ -293,8 +293,6 @@ def _eval_directional_joint_projection_kernel(
         True,
         2.0,
         P,
-        wp.vec3(0.0),
-        wp.vec3(0.0),
         wp.vec3(5.0, 7.0, 11.0),
         wp.vec3(0.0),
         0.0,
@@ -1008,6 +1006,8 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
         joint_x_p = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
         joint_x_c = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
         joint_axis = wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+        joint_cable_rest_kb_local = wp.zeros(1, dtype=wp.vec3, device=device)
+        joint_cable_rest_twist = wp.zeros(1, dtype=float, device=device)
         joint_qd_start = wp.array([0], dtype=wp.int32, device=device)
         joint_target_q_start = wp.array([0], dtype=wp.int32, device=device)
         joint_constraint_start = wp.array([0], dtype=wp.int32, device=device)
@@ -1039,6 +1039,8 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
                 joint_x_p,
                 joint_x_c,
                 joint_axis,
+                joint_cable_rest_kb_local,
+                joint_cable_rest_twist,
                 joint_qd_start,
                 joint_target_q_start,
                 joint_constraint_start,
@@ -1064,6 +1066,83 @@ def _joint_angular_dual_projects_free_axis_lambda(test, device):
         )
 
         np.testing.assert_allclose(lambda_ang.numpy(), [[0.0, 2.0, 3.0]])
+
+
+def _cable_soft_dual_slots_clear_preserved_lambda(test, device):
+    """Soft cable slots should not preserve stale lambda components when recombined."""
+    with wp.ScopedDevice(device):
+        joint_type = wp.array([int(newton.JointType.CABLE)], dtype=wp.int32, device=device)
+        joint_enabled = wp.array([True], dtype=bool, device=device)
+        joint_parent = wp.array([-1], dtype=wp.int32, device=device)
+        joint_child = wp.array([0], dtype=wp.int32, device=device)
+        joint_x_p = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+        joint_x_c = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+        joint_axis = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
+        joint_cable_rest_kb_local = wp.zeros(1, dtype=wp.vec3, device=device)
+        joint_cable_rest_twist = wp.zeros(1, dtype=float, device=device)
+        joint_qd_start = wp.array([0], dtype=wp.int32, device=device)
+        joint_target_q_start = wp.array([0], dtype=wp.int32, device=device)
+        joint_constraint_start = wp.array([0], dtype=wp.int32, device=device)
+        body_q = wp.array(
+            [wp.transform(wp.vec3(0.2, 0.3, 0.4), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.3))],
+            dtype=wp.transform,
+            device=device,
+        )
+        body_q_rest = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+        joint_dof_dim = wp.array([[0, 0]], dtype=wp.int32, device=device)
+        joint_c0_lin = wp.zeros(1, dtype=wp.vec3, device=device)
+        joint_c0_ang = wp.zeros(1, dtype=wp.vec3, device=device)
+        joint_is_hard = wp.array([0, 0, 0, 0], dtype=wp.int32, device=device)
+        joint_penalty_k_max = wp.array([10.0, 10.0, 10.0, 10.0], dtype=float, device=device)
+        joint_target_ke = wp.array([0.0], dtype=float, device=device)
+        joint_target_pos = wp.array([0.0], dtype=float, device=device)
+        joint_limit_lower = wp.array([-1.0], dtype=float, device=device)
+        joint_limit_upper = wp.array([1.0], dtype=float, device=device)
+        joint_limit_ke = wp.array([0.0], dtype=float, device=device)
+        joint_rest_angle = wp.array([0.0], dtype=float, device=device)
+        joint_penalty_k = wp.array([10.0, 10.0, 10.0, 10.0], dtype=float, device=device)
+        lambda_lin = wp.array([[1.0, 2.0, 3.0]], dtype=wp.vec3, device=device)
+        lambda_ang = wp.array([[4.0, 5.0, 6.0]], dtype=wp.vec3, device=device)
+
+        wp.launch(
+            update_duals_joint,
+            dim=1,
+            inputs=[
+                joint_type,
+                joint_enabled,
+                joint_parent,
+                joint_child,
+                joint_x_p,
+                joint_x_c,
+                joint_axis,
+                joint_cable_rest_kb_local,
+                joint_cable_rest_twist,
+                joint_qd_start,
+                joint_target_q_start,
+                joint_constraint_start,
+                body_q,
+                body_q_rest,
+                joint_dof_dim,
+                joint_c0_lin,
+                joint_c0_ang,
+                joint_is_hard,
+                0.0,
+                joint_penalty_k_max,
+                0.0,
+                0.0,
+                joint_target_ke,
+                joint_target_pos,
+                joint_limit_lower,
+                joint_limit_upper,
+                joint_limit_ke,
+                joint_rest_angle,
+            ],
+            outputs=[joint_penalty_k, lambda_lin, lambda_ang],
+            device=device,
+        )
+
+        np.testing.assert_allclose(lambda_lin.numpy(), [[0.0, 0.0, 0.0]])
+        np.testing.assert_allclose(lambda_ang.numpy(), [[0.0, 0.0, 0.0]])
 
 
 def _joint_force_projection_filters_free_direction(test, device):
@@ -2035,6 +2114,12 @@ add_function_test(
     TestSolverVBD,
     "test_joint_angular_dual_projects_free_axis_lambda",
     _joint_angular_dual_projects_free_axis_lambda,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_cable_soft_dual_slots_clear_preserved_lambda",
+    _cable_soft_dual_slots_clear_preserved_lambda,
     devices=devices,
 )
 add_function_test(

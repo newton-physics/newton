@@ -9,6 +9,12 @@
 # orientations (X/Y axis) and sinusoidal waviness. Tests multi-body contact
 # resolution, stacking stability, and friction in dense cable assemblies.
 #
+# Run interactively:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_pile
+#
+# Run as a test:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_pile --test --viewer null
+#
 ###########################################################################
 
 import math

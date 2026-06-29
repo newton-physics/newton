@@ -5,10 +5,16 @@
 # Example Cable Twist
 #
 # Demonstrates twist propagation along cables with dynamic spinning.
-# Shows 3 cables side-by-side with zigzag paths and increasing bend stiffness.
+# Shows 3 cables side-by-side with zigzag paths and increasing isotropic angular stiffness.
 # The first segment of each cable continuously spins, propagating twist along the cable.
 # The zigzag routing introduces multiple 90-degree turns, demonstrating how twist
 # is transported through cable joints and across bends.
+#
+# Run interactively:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_twist
+#
+# Run as a test:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_twist --test --viewer null
 #
 ###########################################################################
 
@@ -128,11 +134,11 @@ class Example:
 
         stretch_stiffness = 1.0e6
 
-        # Stiffness sweep (increasing) for bend stiffness
-        bend_stiffness_values = [1.0e2, 1.0e3, 1.0e4]
+        # Isotropic angular stiffness sweep: bend and twist use matching values.
+        angular_stiffness_values = [1.0e2, 1.0e3, 1.0e4]
 
         # All cables start untwisted, will be spun dynamically
-        self.num_cables = len(bend_stiffness_values)
+        self.num_cables = len(angular_stiffness_values)
 
         # Create builder for the simulation
         builder = newton.ModelBuilder()
@@ -149,7 +155,7 @@ class Example:
         y_separation = 3.0
 
         # Create 3 cables in a row along the y-axis, centered around origin
-        for i, bend_stiffness in enumerate(bend_stiffness_values):
+        for i, angular_stiffness in enumerate(angular_stiffness_values):
             # Center cables around origin: vary by y_separation
             y_pos = (i - (self.num_cables - 1) / 2.0) * y_separation
 
@@ -169,8 +175,10 @@ class Example:
                 quaternions=cable_edge_q,
                 radius=cable_radius,
                 stretch_stiffness=stretch_stiffness,
-                bend_stiffness=bend_stiffness,
-                bend_damping=1.0e-2 * bend_stiffness,
+                bend_stiffness=angular_stiffness,
+                twist_stiffness=angular_stiffness,
+                bend_damping=1.0e-2 * angular_stiffness,
+                twist_damping=1.0e-2 * angular_stiffness,
                 label=f"cable_{i}",
                 body_frame_origin="com",
             )
@@ -306,7 +314,8 @@ class Example:
                     expected_distance = segment_length
                     joint_tolerance = expected_distance * 0.1  # Allow 10% stretch max
                     assert distance < expected_distance + joint_tolerance, (
-                        f"Cable {cable_idx} segments {segment}-{segment + 1} too far apart: {distance:.3f} > {expected_distance + joint_tolerance:.3f}"
+                        f"Cable {cable_idx} segments {segment}-{segment + 1} too far apart: "
+                        f"{distance:.3f} > {expected_distance + joint_tolerance:.3f}"
                     )
 
             # Test 3: Check ground interaction
