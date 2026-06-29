@@ -887,29 +887,27 @@ class TestGravCompForce(TestInverseDynamicsBase):
                 expected_grav_comp_forces=expected_grav_comp_forces,
             )
 
-    def test_two_link_prismatic_grav_comp_force_axis_perpendicular_to_gravity(self):
-        """A prismatic DOF whose axis is perpendicular to gravity carries zero G(q).
+    def test_two_link_grav_comp_force_zero_internal_dof_degenerate_axis(self):
+        """Internal-DOF G(q) is zero when the joint axis cannot do work against gravity.
 
-        With gravity along -y and the internal prismatic axis along +x, the
-        projection of the gravity force on the joint axis is ``g . axis = 0``,
-        so the generalized force on the internal DOF vanishes regardless of
-        the distal link's mass. The per-articulation internal-DOF entry in
-        G(q) must be exactly zero. On the floating-root articulations the
-        base's linear-y entry still picks up the total weight, which acts as
-        a sanity check that gravity is actually being applied.
+        Two joint types are checked:
+
+        * prismatic along +x with gravity along -y: the force projection
+          g . axis is zero, so the generalized force on the prismatic DOF
+          vanishes regardless of distal mass.
+        * revolute about +y with gravity along -y: the gravity force on
+          the distal link is collinear with the joint axis, so the moment
+          (r x F) . axis is identically zero for any lever arm.
+
+        In both cases the per-articulation internal-DOF entry in G(q) must be
+        exactly zero. On floating-root articulations the base linear-y entry
+        still picks up the total weight, confirming gravity is applied.
         """
         gravity_vec = wp.vec3(0.0, -10.0, 0.0)
 
         is_floating_base = [
             [False, True],  # World0, articulation0 fixed, articulation1 free
             [False, True],  # World1, articulation0 fixed, articulation1 free
-        ]
-
-        # Prismatic axis perpendicular to gravity: zero projection on the axis.
-        prismatic_x = wp.vec3(1.0, 0.0, 0.0)
-        joint_axis = [
-            [prismatic_x, prismatic_x],  # World0, articulation0/articulation1
-            [prismatic_x, prismatic_x],  # World1, articulation0/articulation1
         ]
 
         identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -926,9 +924,6 @@ class TestGravCompForce(TestInverseDynamicsBase):
 
         joint_q = self._default_joint_q(is_floating_base)
 
-        # Zero CoMs and identity joint anchors keep the non-internal entries
-        # analytically tractable; the invariant under test is the internal
-        # DOF entry, which is zero independent of these choices.
         link_coms = [
             [
                 [wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],  # World0, articulation0, link0/link1
@@ -944,12 +939,12 @@ class TestGravCompForce(TestInverseDynamicsBase):
             [[1.0, 2.0], [1.0, 2.0]],  # World1
         ]
 
-        # Fixed root: only DOF is the internal prismatic -> 0 (invariant).
+        # Fixed root: only DOF is the internal joint -> 0 (invariant).
         # Floating root: (v_x, v_y, v_z, omega_x, omega_y, omega_z, q_internal).
         #   Linear y = M_total * |g| = 3 * 10 = 30 (total weight).
-        #   Angular and internal = 0 (both CoMs at root origin; axis perp to gravity).
+        #   Angular and internal = 0 (both CoMs at root origin; degenerate axis).
         expected_grav_comp_forces = [
-            0.0,  # World 0, fixed root, 1 dof (internal prismatic)
+            0.0,  # World 0, fixed root, 1 dof (internal joint)
             0.0,  # World 0, floating root, 6+1 dofs
             30.0,
             0.0,
@@ -957,7 +952,7 @@ class TestGravCompForce(TestInverseDynamicsBase):
             0.0,
             0.0,
             0.0,
-            0.0,  # World 1, fixed root, 1 dof (internal prismatic)
+            0.0,  # World 1, fixed root, 1 dof (internal joint)
             0.0,  # World 1, floating root, 6+1 dofs
             30.0,
             0.0,
@@ -967,234 +962,35 @@ class TestGravCompForce(TestInverseDynamicsBase):
             0.0,
         ]
 
-        for I in self.INERTIA_PASSES:
-            link_inertias = [
-                [[I, I], [I, I]],
-                [[I, I], [I, I]],
+        cases = [
+            # prismatic perp gravity: g . axis = 0
+            ("prismatic", wp.vec3(1.0, 0.0, 0.0)),
+            # revolute parallel gravity: (r x F) . axis = 0
+            ("revolute", wp.vec3(0.0, 1.0, 0.0)),
+        ]
+        for joint_type, axis in cases:
+            joint_axis = [
+                [axis, axis],  # World0, articulation0/articulation1
+                [axis, axis],  # World1, articulation0/articulation1
             ]
-            self._test_two_link_grav_comp_force(
-                gravity_vec=gravity_vec,
-                joint_type="prismatic",
-                is_floating_base=is_floating_base,
-                joint_axis=joint_axis,
-                joint_frames=joint_frames,
-                joint_q=joint_q,
-                link_coms=link_coms,
-                link_masses=link_masses,
-                link_inertias=link_inertias,
-                expected_grav_comp_forces=expected_grav_comp_forces,
-            )
-
-    def test_two_link_revolute_grav_comp_force_from_jnt_frame(self):
-        """Sweeps the internal-joint ``child_xform`` to verify ``g(q)`` for
-        a revolute DOF tracks the moment arm of the distal link.
-
-        Each articulation has a revolute-about-+z internal joint with zero
-        body CoMs and identity ``parent_xform``. The per-articulation
-        ``child_xform`` translation (and one ``+y`` rotation) displaces the
-        distal link's origin — and therefore its CoM, since the body CoM
-        is zero — to a known world position at zero internal q. With
-        gravity along ``-y`` and revolute axis ``+z``, the internal-DOF
-        entry of ``g(q) = ∂U/∂q`` reduces to ``m_distal * |g| * x_world``.
-        Articulations whose displacement is along ``+/- y`` or ``+/- z``
-        therefore have a zero internal entry. Floating-root articulations
-        additionally carry ``M_total * |g|`` on the base linear-y entry
-        and ``r_com x (0, -g, 0)`` on the angular entries — confirming the
-        solver correctly picks up the joint-frame placement (translation
-        and rotation) on every block of the floating base, not just on
-        the internal DOF. Concretely:
-
-        - W0 a0 (fixed, child = (-4, 0, 0) identity): CoM at (4, 0, 0),
-          internal entry = ``2 * 10 * 4 = 80``.
-        - W0 a1 (floating, child = (0, -4, 0) rotated 90 deg about +y):
-          CoM at (0, 4, 0), internal entry zero, base linear-y = 30.
-        - W1 a0 (fixed, child = (0, -4, 0) identity): CoM at (0, 4, 0),
-          internal entry zero (CoM offset parallel to gravity).
-        - W1 a1 (floating, child = (0, 0, -4) identity): CoM at
-          (0, 0, 4), base angular-x = ``-80``, base linear-y = 30,
-          internal entry zero.
-        """
-        gravity_vec = wp.vec3(0.0, -10.0, 0.0)
-
-        is_floating_base = [
-            [False, True],  # World0, articulation0 fixed, articulation1 free
-            [False, True],  # World1, articulation0 fixed, articulation1 free
-        ]
-
-        revolute_z = wp.vec3(0.0, 0.0, 1.0)
-        joint_axis = [
-            [revolute_z, revolute_z],  # World0, articulation0/articulation1
-            [revolute_z, revolute_z],  # World1, articulation0/articulation1
-        ]
-
-        identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
-        child_anchor_0 = wp.transform(wp.vec3(-4.0, 0.0, 0.0), wp.quat_identity())
-        child_anchor_1 = wp.transform(wp.vec3(0.0, -4.0, 0.0), wp.quat(0.0, 0.7071068, 0.0, 0.7071068))
-        child_anchor_2 = wp.transform(wp.vec3(0.0, -4.0, 0.0), wp.quat_identity())
-        child_anchor_3 = wp.transform(wp.vec3(0.0, 0.0, -4.0), wp.quat_identity())
-        joint_frames = [
-            [
-                [identity_xform, child_anchor_0],  # World0, articulation0, internal joint parent/child xforms
-                [identity_xform, child_anchor_1],  # World0, articulation1, internal joint parent/child xforms
-            ],
-            [
-                [identity_xform, child_anchor_2],  # World1, articulation0, internal joint parent/child xforms
-                [identity_xform, child_anchor_3],  # World1, articulation1, internal joint parent/child xforms
-            ],
-        ]
-
-        joint_q = self._default_joint_q(is_floating_base)
-
-        link_coms = [
-            [
-                [wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],  # World0, articulation0, link0/link1
-                [wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],  # World0, articulation1, link0/link1
-            ],
-            [
-                [wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],  # World1, articulation0, link0/link1
-                [wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],  # World1, articulation1, link0/link1
-            ],
-        ]
-        link_masses = [
-            [[1.0, 2.0], [1.0, 2.0]],  # World0,
-            [[1.0, 2.0], [1.0, 2.0]],  # World1
-        ]
-
-        expected_grav_comp_forces = [
-            80.0,  # World 0, fixed root, 1 dof
-            0.0,  # World 0, floating root, 6+1 dofs
-            30.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,  # World 1, fixed root, 1 dof
-            0.0,  # World 1, floating root, 6+1 dofs
-            30.0,
-            0.0,
-            -80.0,
-            0.0,
-            0.0,
-            0.0,
-        ]
-
-        for I in self.INERTIA_PASSES:
-            link_inertias = [
-                [[I, I], [I, I]],
-                [[I, I], [I, I]],
-            ]
-            self._test_two_link_grav_comp_force(
-                gravity_vec=gravity_vec,
-                joint_type="revolute",
-                is_floating_base=is_floating_base,
-                joint_axis=joint_axis,
-                joint_frames=joint_frames,
-                joint_q=joint_q,
-                link_coms=link_coms,
-                link_masses=link_masses,
-                link_inertias=link_inertias,
-                expected_grav_comp_forces=expected_grav_comp_forces,
-            )
-
-    def test_two_link_revolute_grav_comp_force_axis_parallel_to_gravity(self):
-        """A revolute DOF whose axis is parallel to gravity carries zero G(q).
-
-        With gravity along -y and the internal revolute axis along +y, the
-        gravity force on the distal link is always collinear with the joint
-        axis, so the moment ``(r x F).axis`` is identically zero for any
-        lever arm ``r``. The per-articulation internal-DOF entry in G(q)
-        must therefore be exactly zero, regardless of CoM, mass, joint
-        anchor, or base pose. On the floating-root articulations, the base's
-        linear-y entry still picks up the total weight, which acts as a
-        sanity check that gravity is actually being applied.
-        """
-        gravity_vec = wp.vec3(0.0, -10.0, 0.0)
-
-        is_floating_base = [
-            [False, True],  # World0, articulation0 fixed, articulation1 free
-            [False, True],  # World1, articulation0 fixed, articulation1 free
-        ]
-
-        # Revolute axis aligned with gravity: zero moment about the axis.
-        revolute_y = wp.vec3(0.0, 1.0, 0.0)
-        joint_axis = [
-            [revolute_y, revolute_y],  # World0, articulation0/articulation1
-            [revolute_y, revolute_y],  # World1, articulation0/articulation1
-        ]
-
-        identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
-        joint_frames = [
-            [
-                [identity_xform, identity_xform],  # World0, articulation0, internal joint parent/child xforms
-                [identity_xform, identity_xform],  # World0, articulation1, internal joint parent/child xforms
-            ],
-            [
-                [identity_xform, identity_xform],  # World1, articulation0, internal joint parent/child xforms
-                [identity_xform, identity_xform],  # World1, articulation1, internal joint parent/child xforms
-            ],
-        ]
-
-        joint_q = self._default_joint_q(is_floating_base)
-
-        # Zero CoMs and identity joint anchors keep the non-internal entries
-        # analytically tractable; the invariant under test is the internal
-        # DOF entry, which is zero independent of these choices.
-        link_coms = [
-            [
-                [wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],  # World0, articulation0, link0/link1
-                [wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],  # World0, articulation1, link0/link1
-            ],
-            [
-                [wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],  # World1, articulation0, link0/link1
-                [wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],  # World1, articulation1, link0/link1
-            ],
-        ]
-        link_masses = [
-            [[1.0, 2.0], [1.0, 2.0]],  # World0
-            [[1.0, 2.0], [1.0, 2.0]],  # World1
-        ]
-
-        # Fixed root: only DOF is the internal revolute -> 0 (invariant).
-        # Floating root: (v_x, v_y, v_z, omega_x, omega_y, omega_z, q_internal).
-        #   Linear y = M_total * |g| = 3 * 10 = 30 (total weight).
-        #   Angular and internal = 0 (both CoMs at root origin; axis ∥ gravity).
-        expected_grav_comp_forces = [
-            0.0,  # World 0, fixed root, 1 dof (internal revolute)
-            0.0,  # World 0, floating root, 6+1 dofs
-            30.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,  # World 1, fixed root, 1 dof (internal revolute)
-            0.0,  # World 1, floating root, 6+1 dofs
-            30.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-        ]
-
-        for I in self.INERTIA_PASSES:
-            link_inertias = [
-                [[I, I], [I, I]],
-                [[I, I], [I, I]],
-            ]
-            self._test_two_link_grav_comp_force(
-                gravity_vec=gravity_vec,
-                joint_type="revolute",
-                is_floating_base=is_floating_base,
-                joint_axis=joint_axis,
-                joint_frames=joint_frames,
-                joint_q=joint_q,
-                link_coms=link_coms,
-                link_masses=link_masses,
-                link_inertias=link_inertias,
-                expected_grav_comp_forces=expected_grav_comp_forces,
-            )
+            with self.subTest(joint_type=joint_type):
+                for I in self.INERTIA_PASSES:
+                    link_inertias = [
+                        [[I, I], [I, I]],
+                        [[I, I], [I, I]],
+                    ]
+                    self._test_two_link_grav_comp_force(
+                        gravity_vec=gravity_vec,
+                        joint_type=joint_type,
+                        is_floating_base=is_floating_base,
+                        joint_axis=joint_axis,
+                        joint_frames=joint_frames,
+                        joint_q=joint_q,
+                        link_coms=link_coms,
+                        link_masses=link_masses,
+                        link_inertias=link_inertias,
+                        expected_grav_comp_forces=expected_grav_comp_forces,
+                    )
 
     def test_two_link_fixed_revolute_gravity_force_matches_closed_form(self):
         """Internal revolute DOF matches the closed-form ``m * g * arm_length * cos(q)``.
