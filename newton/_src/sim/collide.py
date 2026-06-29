@@ -566,6 +566,10 @@ class CollisionPipeline:
                 non-disabled mode implies ``deterministic=True`` and
                 populates :attr:`Contacts.rigid_contact_match_index`.
                 Defaults to ``"disabled"``.
+
+                .. experimental::
+
+                    The ``"sticky"`` mode may change without prior notice.
             contact_matching_pos_threshold: World-space distance threshold [m]
                 between the previous and current contact midpoints
                 ``0.5 * (world(point0) + world(point1))``.  Contacts whose
@@ -597,7 +601,6 @@ class CollisionPipeline:
             raise ValueError(
                 f"contact_matching must be one of 'disabled', 'latest', 'sticky', got {contact_matching!r}"
             )
-
         if contact_matching_pos_threshold < 0.0:
             raise ValueError(
                 f"contact_matching_pos_threshold must be non-negative, got {contact_matching_pos_threshold}"
@@ -667,7 +670,6 @@ class CollisionPipeline:
                     "contact_reduction_hashtable_size_factor cannot be used when narrow_phase is provided; "
                     "construct the NarrowPhase with that value instead"
                 )
-
             inferred_mode = _infer_broad_phase_mode_from_instance(broad_phase_instance)
             self.broad_phase_mode = inferred_mode
             self.broad_phase = broad_phase_instance
@@ -755,11 +757,9 @@ class CollisionPipeline:
             # Keep mesh and heightfield flags independent: heightfield-only scenes
             # should not trigger mesh-only kernel setup/launches.
             has_meshes = False
-            has_heightfields = False
             use_lean_gjk_mpr = False
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
-                has_heightfields = bool((shape_types == int(GeoType.HFIELD)).any())
                 has_meshes = bool((shape_types == int(GeoType.MESH)).any())
                 # Use lean GJK/MPR kernel when scene has no capsules, ellipsoids,
                 # cylinders, or cones (which need full support function and axial
@@ -794,7 +794,7 @@ class CollisionPipeline:
                 shape_voxel_resolution=model._shape_voxel_resolution,
                 hydroelastic_sdf=hydroelastic_sdf,
                 has_meshes=has_meshes,
-                has_heightfields=has_heightfields,
+                has_heightfields=model.heightfield_count > 0,
                 use_lean_gjk_mpr=use_lean_gjk_mpr,
                 deterministic=deterministic,
                 contact_max=rigid_contact_max,
@@ -946,7 +946,9 @@ class CollisionPipeline:
             state: The current simulation state.
             contacts: The contacts buffer to populate (will be cleared first).
             soft_contact_margin: Margin for soft contact generation.
-                If ``None``, uses the value from construction.
+                If ``None``, uses the value from construction. The effective
+                contact threshold also incorporates per-shape margins from
+                ``model.shape_margin``.
         """
 
         # Counter zeroing and generation bump are fused into compute_shape_aabbs.
@@ -1155,6 +1157,12 @@ class CollisionPipeline:
                 offset0=contacts.rigid_contact_offset0,
                 offset1=contacts.rigid_contact_offset1,
                 normal=contacts.rigid_contact_normal,
+                shape0=contacts.rigid_contact_shape0,
+                shape1=contacts.rigid_contact_shape1,
+                margin0=contacts.rigid_contact_margin0,
+                margin1=contacts.rigid_contact_margin1,
+                body_q=state.body_q,
+                shape_body=writer_data.shape_body,
                 device=self.device,
             )
 
@@ -1228,6 +1236,7 @@ class CollisionPipeline:
                     model.shape_source_ptr,
                     model.shape_world,
                     soft_contact_margin,
+                    model.shape_margin,
                     self.soft_contact_max,
                     model.shape_count,
                     model.shape_flags,

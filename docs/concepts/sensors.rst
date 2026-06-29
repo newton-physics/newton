@@ -87,7 +87,7 @@ Examples::
    SensorIMU(model, sites="foot_*")
 
    # list of patterns: union of two groups
-   SensorContact(model, sensing_obj_shapes=["*Plate*", "*Flap*"])
+   SensorContact(model, sensing_shapes=["*Plate*", "*Flap*"])
 
    # list of indices: explicit selection
    SensorFrameTransform(model, shapes=[0, 3, 7], reference_sites=[1])
@@ -95,7 +95,7 @@ Examples::
 Available Sensors
 -----------------
 
-Newton provides four sensor types. See the
+Newton provides five sensor types. See the
 :doc:`API reference <../api/newton_sensors>` for constructor arguments,
 attributes, and usage examples.
 

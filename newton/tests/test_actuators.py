@@ -40,13 +40,6 @@ try:
 except ImportError:
     HAS_USD = False
 
-try:
-    from newton_actuators import ActuatorDelayedPD, ActuatorPD, ActuatorPID
-
-    _HAS_LEGACY_ACTUATORS = True
-except ImportError:
-    _HAS_LEGACY_ACTUATORS = False
-
 
 try:
     import torch as _torch
@@ -81,6 +74,24 @@ def _write_dof_values(model, array, dof_indices, values):
     for dof, val in zip(dof_indices, values, strict=True):
         arr_np[dof] = val
     wp.copy(array, wp.array(arr_np, dtype=float, device=model.device))
+
+
+def _ignore_torchscript_deprecation(test_case):
+    """Tolerate torch's TorchScript-family deprecation notices for one test.
+
+    The neural-controller tests deliberately exercise the TorchScript checkpoint
+    path (``torch.jit.script``/``save``/``load``), which PyTorch now deprecates in
+    favor of ``torch.export``. Ignore just those advisories, scoped to the calling
+    test, so strict-warnings mode still surfaces everything else.
+    """
+    ctx = warnings.catch_warnings()
+    ctx.__enter__()
+    test_case.addCleanup(ctx.__exit__, None, None, None)
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*torch\.jit\..* is deprecated",
+        category=DeprecationWarning,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +214,7 @@ class TestControllerNeuralMLP(unittest.TestCase):
             self.skipTest(f"{e}")
 
         self.torch = torch
+        _ignore_torchscript_deprecation(self)
         self.device = wp.get_device()
         self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
@@ -327,6 +339,7 @@ class TestControllerNeuralLSTM(unittest.TestCase):
             self.skipTest(f"{e}")
 
         self.torch = torch
+        _ignore_torchscript_deprecation(self)
         self.device = wp.get_device()
         self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
@@ -671,7 +684,7 @@ class TestActuatorStep(unittest.TestCase):
         control = model.control()
         for step_i in range(5):
             tgt = target_schedule[step_i]
-            _write_dof_values(model, control.joint_target_pos, dofs, [tgt] * n)
+            _write_dof_values(model, control.joint_target_q, dofs, [tgt] * n)
             written_targets.append(tgt)
 
             control.joint_f.zero_()
@@ -905,109 +918,6 @@ class TestActuatorBuilder(unittest.TestCase):
         act_state = act.state()
         self.assertEqual(act_state.delay_state.buffer_pos.shape, (3, n))
         np.testing.assert_array_equal(act_state.delay_state.num_pushes.numpy(), [0] * n)
-
-
-# ---------------------------------------------------------------------------
-# 6. Legacy newton_actuators backward compatibility
-# ---------------------------------------------------------------------------
-
-
-@unittest.skipUnless(_HAS_LEGACY_ACTUATORS, "newton_actuators not installed")
-class TestLegacyActuatorCompat(unittest.TestCase):
-    """Deprecated ``newton_actuators`` calling conventions must still work."""
-
-    def _make_builder(self, n_joints=2):
-        builder = newton.ModelBuilder()
-        links = [builder.add_link() for _ in range(n_joints)]
-        joints = []
-        for i, link in enumerate(links):
-            parent = -1 if i == 0 else links[i - 1]
-            joints.append(builder.add_joint_revolute(parent=parent, child=link, axis=newton.Axis.Z))
-        builder.add_articulation(joints)
-        dofs = [builder.joint_qd_start[j] for j in joints]
-        return builder, dofs
-
-    def test_legacy_positional_list(self):
-        """add_actuator(ActuatorPD, [dof], kp=...) — old positional style."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPD, [dofs[0]], kp=50.0, kd=5.0)
-        model = builder.finalize()
-        self.assertEqual(len(model.actuators), 1)
-        self.assertIsInstance(model.actuators[0].controller, ControllerPD)
-        np.testing.assert_array_almost_equal(model.actuators[0].controller.kp.numpy(), [50.0])
-
-    def test_legacy_keyword_input_indices(self):
-        """add_actuator(ActuatorPD, input_indices=[dof], kp=...)."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
-        model = builder.finalize()
-        self.assertEqual(len(model.actuators), 1)
-        np.testing.assert_array_almost_equal(model.actuators[0].controller.kp.numpy(), [100.0])
-
-    def test_legacy_keyword_actuator_class(self):
-        """add_actuator(actuator_class=ActuatorPD, input_indices=[dof], kp=...)."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(actuator_class=ActuatorPD, input_indices=[dofs[0]], kp=75.0)
-        model = builder.finalize()
-        self.assertEqual(len(model.actuators), 1)
-        np.testing.assert_array_almost_equal(model.actuators[0].controller.kp.numpy(), [75.0])
-
-    def test_legacy_delayed_pd(self):
-        """ActuatorDelayedPD maps to ControllerPD + delay."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[0]], kp=200.0, delay=3)
-        model = builder.finalize()
-        act = model.actuators[0]
-        self.assertIsInstance(act.controller, ControllerPD)
-        self.assertIsNotNone(act.delay)
-        np.testing.assert_array_equal(act.delay.delay_steps.numpy(), [3])
-
-    def test_legacy_pid(self):
-        """ActuatorPID maps to ControllerPID."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPID, [dofs[0]], kp=100.0, ki=10.0, kd=20.0)
-        model = builder.finalize()
-        act = model.actuators[0]
-        self.assertIsInstance(act.controller, ControllerPID)
-        np.testing.assert_array_almost_equal(act.controller.ki.numpy(), [10.0])
-
-    def test_legacy_max_force_becomes_clamping(self):
-        """max_force kwarg creates a ClampingMaxEffort on the new actuator."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=150.0, max_force=50.0)
-        model = builder.finalize()
-        act = model.actuators[0]
-        self.assertEqual(len(act.clamping), 1)
-        self.assertIsInstance(act.clamping[0], ClampingMaxEffort)
-        np.testing.assert_array_almost_equal(act.clamping[0].max_effort.numpy(), [50.0])
-
-    def test_legacy_output_indices_warns(self):
-        """output_indices != input_indices emits extra deprecation warning."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPD, [dofs[0]], [dofs[1]], kp=50.0)
-
-    def test_legacy_gear_warns(self):
-        """Non-unity gear emits a deprecation warning."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=50.0, gear=2.0)
-
-    def test_new_api_no_warning(self):
-        """New-style calls must not emit DeprecationWarning."""
-        builder, dofs = self._make_builder()
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            builder.add_actuator(ControllerPD, index=dofs[0], kp=50.0)
-        dep = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        self.assertEqual(len(dep), 0, f"Unexpected warnings: {[str(x.message) for x in dep]}")
 
 
 # ---------------------------------------------------------------------------
@@ -1362,7 +1272,7 @@ class TestStateReset(unittest.TestCase):
 
         control = model.control()
         for _step in range(3):
-            _write_dof_values(model, control.joint_target_pos, dofs, [10.0] * n)
+            _write_dof_values(model, control.joint_target_q, dofs, [10.0] * n)
             control.joint_f.zero_()
             actuator.step(state, control, state_0, state_1, 0.01)
             state_0, state_1 = state_1, state_0
@@ -1458,17 +1368,17 @@ class TestDelayGraphCapture(unittest.TestCase):
 
         # --- Eager ---
         solver, s0, s1, ctrl, act, act_a, act_b = _setup()
-        wp.copy(ctrl.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        wp.copy(ctrl.joint_target_q, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
         s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, max_delay)
         eager_results = []
         for tgt in cycle_targets:
-            wp.copy(ctrl.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            wp.copy(ctrl.joint_target_q, wp.full(ndof, tgt, dtype=wp.float32, device=device))
             s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, N)
             eager_results.append(s0.joint_q.numpy().copy())
 
         # --- Graph ---
         solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g = _setup()
-        wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        wp.copy(ctrl_g.joint_target_q, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
         s0_g, s1_g, act_a_g, act_b_g = _loop(solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g, max_delay)
         sub_dt = dt / K
         with wp.ScopedCapture(device=device) as capture:
@@ -1484,7 +1394,7 @@ class TestDelayGraphCapture(unittest.TestCase):
 
         graph_results = []
         for tgt in cycle_targets:
-            wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            wp.copy(ctrl_g.joint_target_q, wp.full(ndof, tgt, dtype=wp.float32, device=device))
             wp.capture_launch(graph)
             graph_results.append(s0_g.joint_q.numpy().copy())
 
@@ -1525,6 +1435,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
             self.skipTest(f"{e}")
 
         self.torch = torch
+        _ignore_torchscript_deprecation(self)
         self._tmp_dir = tempfile.mkdtemp()
 
     def tearDown(self):
@@ -1662,12 +1573,15 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
         target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (joint_target_pos layout)
 
         ctrl = ControllerPD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
-        actuator = Actuator(
-            indices=indices,
-            controller=ctrl,
-            pos_indices=pos_indices,
-            target_pos_indices=target_pos_indices,
-        )
+        # This test deliberately exercises the legacy DOF-shaped target layout via
+        # the default attr resolution, which is deprecated and warns.
+        with self.assertWarns(DeprecationWarning):
+            actuator = Actuator(
+                indices=indices,
+                controller=ctrl,
+                pos_indices=pos_indices,
+                target_pos_indices=target_pos_indices,
+            )
 
         # joint_q is coord-shaped; actual position at coord index 3
         joint_q = _a([0.0, 0.0, 0.0, actual_pos])

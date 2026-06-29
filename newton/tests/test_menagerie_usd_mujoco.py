@@ -198,7 +198,7 @@ class TestMenagerieUsdImport(unittest.TestCase):
         self.assertEqual(builder.body_count, 11)
         self.assertEqual(builder.joint_count, 11)
         self.assertEqual(builder.shape_count, 28)
-        self.assertEqual(model.equality_constraint_count, 3)
+        self.assertEqual(model.mujoco.equality_constraint_count, 3)
         self._assert_no_nan(model, "robotiq_2f85_v4")
 
     def test_import_apptronik_apollo(self):

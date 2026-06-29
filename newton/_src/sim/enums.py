@@ -31,7 +31,7 @@ class ModelFlags(IntEnum):
     """Indicates model property updates: gravity and other global parameters."""
 
     CONSTRAINT_PROPERTIES = 1 << 6
-    """Indicates constraint property updates: equality constraints (equality_constraint_anchor, equality_constraint_relpose, equality_constraint_polycoef, equality_constraint_torquescale, equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp) and mimic constraints (constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled)."""
+    """Indicates constraint property updates: equality constraints (mujoco.equality_constraint_anchor, mujoco.equality_constraint_relpose, mujoco.equality_constraint_polycoef, mujoco.equality_constraint_torquescale, mujoco.equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp) and mimic constraints (constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled)."""
 
     TENDON_PROPERTIES = 1 << 7
     """Indicates tendon properties: eg tendon_stiffness."""
@@ -140,7 +140,7 @@ class JointType(IntEnum):
         in position for this joint type.
 
         Args:
-            num_axes (int): The number of axes for the joint.
+            num_axes: The number of axes for the joint.
 
         Returns:
             tuple[int, int]: A tuple (dof_count, coord_count) where:
@@ -171,7 +171,7 @@ class JointType(IntEnum):
         Returns the number of velocity-level bilateral kinematic constraints for this joint type.
 
         Args:
-            num_axes (int): The number of DoF axes for the joint.
+            num_axes: The number of DoF axes for the joint.
 
         Returns:
             int: The number of bilateral kinematic constraints for the joint.

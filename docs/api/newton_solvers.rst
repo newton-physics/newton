@@ -120,6 +120,45 @@ Supported Features
 | :sup:`2` ``basic`` means Newton includes several examples that use these solvers in diffsim workflows,
   see :ref:`Differentiability` for further details.
 
+.. experimental::
+    :class:`~newton.solvers.SolverKamino`'s public API and behavior may change without prior notice.
+
+.. experimental::
+    :class:`~newton.solvers.SolverVBD`'s public API and behavior may change without prior notice.
+
+.. _Contact material support:
+
+Contact Material Support
+------------------------
+
+:class:`~newton.ModelBuilder.ShapeConfig` and the matching :class:`~newton.Model`
+shape material arrays store solver-neutral contact data. This section documents
+which fields are currently used by Newton's built-in solvers. External solvers
+may use different subsets or interpret these fields according to their own
+formulation.
+
+- ``mu``: :class:`~newton.solvers.SolverFeatherstone`,
+  :class:`~newton.solvers.SolverSemiImplicit`,
+  :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverMuJoCo`,
+  :class:`~newton.solvers.SolverVBD`, :class:`~newton.solvers.SolverKamino`,
+  :class:`~newton.solvers.SolverStyle3D`, and
+  :class:`~newton.solvers.SolverImplicitMPM`.
+- ``ke`` / ``kd``: :class:`~newton.solvers.SolverFeatherstone`,
+  :class:`~newton.solvers.SolverSemiImplicit`,
+  :class:`~newton.solvers.SolverMuJoCo`, and
+  :class:`~newton.solvers.SolverVBD`.
+- ``kf`` / ``ka``: :class:`~newton.solvers.SolverFeatherstone` and
+  :class:`~newton.solvers.SolverSemiImplicit`.
+- ``restitution``: :class:`~newton.solvers.SolverXPBD` when
+  ``enable_restitution=True``, and :class:`~newton.solvers.SolverKamino`.
+- ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and
+  :class:`~newton.solvers.SolverMuJoCo`.
+- ``kh``: consumed by hydroelastic contact generation for Newton-generated
+  contacts used by :class:`~newton.solvers.SolverFeatherstone`,
+  :class:`~newton.solvers.SolverSemiImplicit`, and
+  :class:`~newton.solvers.SolverMuJoCo` when ``use_mujoco_contacts=False``. See
+  :ref:`Hydroelastic Contacts`.
+
 .. _Joint feature support:
 
 Joint Feature Support
@@ -341,7 +380,7 @@ enforce joints as pairwise body constraints but do not use the articulation kine
      - |no|
 
 | :sup:`3` Mimic constraints in MuJoCo are supported for REVOLUTE and PRISMATIC joints only.
-| :sup:`4` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as dimensionless Rayleigh damping coefficients (``D = kd * ke``), not absolute units.
+| :sup:`4` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
 
 
 

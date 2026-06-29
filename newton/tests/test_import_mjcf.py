@@ -405,6 +405,135 @@ class TestImportMjcfBasic(unittest.TestCase):
         negated = np.allclose(newton_xyzw, -native_xyzw, rtol=1e-6, atol=1e-6)
         self.assertTrue(same or negated, "Site quaternion mismatch (accounting for q/-q equivalence)")
 
+    def test_body_euler_matches_mujoco(self):
+        """Sweep every 3-character ``eulerseq`` from ``{x,y,z,X,Y,Z}`` (216
+        combinations, including Tait-Bryan, proper-Euler, and degenerate
+        repeated-axis sequences) and assert Newton's body quaternion matches
+        MuJoCo's for a fixed non-trivial ``euler``. Skips sequences MuJoCo
+        itself rejects; flags any sequence Newton accepts that MuJoCo doesn't.
+        """
+        from itertools import product  # noqa: PLC0415
+
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        euler = "0.3 1.2 -0.7"
+        chars = "xyzXYZ"
+        compared = 0
+        for triple in product(chars, repeat=3):
+            seq = "".join(triple)
+            mjcf = f"""<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <compiler angle="radian" eulerseq="{seq}"/>
+    <worldbody>
+        <body name="test_body" euler="{euler}">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            try:
+                native_m = mujoco.MjModel.from_xml_string(mjcf)
+            except Exception:
+                # MuJoCo rejected this eulerseq; Newton must too. Either side
+                # may raise an MJCF-parsing-specific exception type we don't
+                # want to enumerate, so the assertion is intentionally broad.
+                with self.assertRaises(Exception, msg=f"Newton accepts eulerseq={seq!r} that MuJoCo rejects"):  # noqa: B017
+                    newton.ModelBuilder().add_mjcf(mjcf)
+                continue
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf)
+            model = builder.finalize()
+            body_idx = model.body_label.index("test/worldbody/test_body")
+            newton_xyzw = np.array(model.body_q.numpy()[body_idx, 3:], dtype=np.float64)
+
+            native_wxyz = np.array(native_m.body_quat[1], dtype=np.float64)
+            native_xyzw = np.array([native_wxyz[1], native_wxyz[2], native_wxyz[3], native_wxyz[0]], dtype=np.float64)
+            same = np.allclose(newton_xyzw, native_xyzw, rtol=1e-6, atol=1e-6)
+            negated = np.allclose(newton_xyzw, -native_xyzw, rtol=1e-6, atol=1e-6)
+            self.assertTrue(same or negated, f"eulerseq={seq!r}: newton={newton_xyzw} native={native_xyzw}")
+            compared += 1
+
+        # Sanity: at least the default-style sequences must have run.
+        self.assertGreater(compared, 0, "no eulerseq combinations actually compared")
+
+    def test_compiler_merge_across_includes(self):
+        """``<compiler>`` attributes merge globally across ``<include>``-expanded
+        files (document order, later wins, scope is not file-local).
+
+        Both layouts (inner-compiler-after-outer and outer-compiler-after-inner)
+        check that the latest compiler wins for ALL bodies regardless of which
+        file authored them.
+        """
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+
+        inner_xml = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="inner">
+    <compiler angle="radian"/>
+    <worldbody>
+        <body name="inner_body" euler="0 1.57 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        layouts = {
+            "inner_compiler_wins": """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="outer">
+    <compiler angle="degree"/>
+    <worldbody>
+        <body name="outer_body" euler="0 1.57 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <include file="inner.xml"/>
+</mujoco>
+""",
+            "outer_compiler_wins": """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="outer">
+    <include file="inner.xml"/>
+    <worldbody>
+        <body name="outer_body" euler="0 1.57 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <compiler angle="degree"/>
+</mujoco>
+""",
+        }
+
+        for layout_name, outer_xml in layouts.items():
+            with tempfile.TemporaryDirectory() as d:
+                with open(os.path.join(d, "outer.xml"), "w") as f:
+                    f.write(outer_xml)
+                with open(os.path.join(d, "inner.xml"), "w") as f:
+                    f.write(inner_xml)
+
+                # MuJoCo (the ground truth) — loads and merges across includes
+                native = mujoco.MjModel.from_xml_path(os.path.join(d, "outer.xml"))
+
+                # Newton — must produce the same body quats
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(os.path.join(d, "outer.xml"))
+                model = builder.finalize()
+
+            for native_idx in range(1, native.nbody):  # skip worldbody
+                name = native.body(native_idx).name
+                native_wxyz = np.array(native.body_quat[native_idx], dtype=np.float64)
+                native_xyzw = np.array(
+                    [native_wxyz[1], native_wxyz[2], native_wxyz[3], native_wxyz[0]], dtype=np.float64
+                )
+                # Find the body in Newton's label-path scheme (`outer/worldbody/<name>`)
+                matches = [j for j in range(model.body_count) if model.body_label[j].endswith(name)]
+                self.assertEqual(len(matches), 1, f"Body {name!r} not uniquely found in Newton model")
+                newton_xyzw = np.array(model.body_q.numpy()[matches[0], 3:], dtype=np.float64)
+
+                same = np.allclose(newton_xyzw, native_xyzw, rtol=1e-6, atol=1e-6)
+                negated = np.allclose(newton_xyzw, -native_xyzw, rtol=1e-6, atol=1e-6)
+                self.assertTrue(
+                    same or negated,
+                    f"Compiler-merge layout={layout_name!r} body={name!r}: newton={newton_xyzw} native={native_xyzw}",
+                )
+
     def test_root_body_with_custom_xform(self):
         """Test 1: Root body with custom xform parameter (with rotation) → verify transform is properly applied."""
         # Add a 45-degree rotation around Z to the body
@@ -4238,7 +4367,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         self.assertTrue(hasattr(model.mujoco, "eq_solref"), "Model should have eq_solref attribute")
 
         eq_solref = model.mujoco.eq_solref.numpy()
-        self.assertEqual(model.equality_constraint_count, 3, "Should have 3 equality constraints")
+        self.assertEqual(model.mujoco.equality_constraint_count, 3, "Should have 3 equality constraints")
 
         # Note: Newton parses equality constraints in type order: connect, then weld, then joint
         # So the order is: connect (default), weld (0.03, 0.8), weld (0.05, 1.2)
@@ -4283,7 +4412,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         builder.add_mjcf(mjcf, convert_mjc_equality_constraints=False)
         model = builder.finalize()
 
-        self.assertEqual(model.equality_constraint_count, 1)
+        self.assertEqual(model.mujoco.equality_constraint_count, 1)
         eq_solref = model.mujoco.eq_solref.numpy()[0].tolist()
         self.assertAlmostEqual(eq_solref[0], 0.005, places=6)
         self.assertAlmostEqual(eq_solref[1], 1.0, places=6)
@@ -4329,10 +4458,10 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         converted_model = converted_builder.finalize()
         converted_solver = SolverMuJoCo(converted_model)
 
-        self.assertEqual(converted_model.equality_constraint_count, 3)
+        self.assertEqual(converted_model.mujoco.equality_constraint_count, 3)
         self.assertEqual(converted_model.constraint_mimic_count, 1)
         np.testing.assert_array_equal(
-            converted_model.equality_constraint_type.numpy(),
+            converted_model.mujoco.equality_constraint_type.numpy(),
             np.array([int(newton.EqType.CONNECT), int(newton.EqType.WELD), int(newton.EqType.JOINT)]),
         )
         np.testing.assert_array_equal(
@@ -4346,7 +4475,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             ),
         )
         np.testing.assert_allclose(
-            converted_model.equality_constraint_polycoef.numpy()[2],
+            converted_model.mujoco.equality_constraint_polycoef.numpy()[2],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
         )
 
@@ -4386,7 +4515,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             parse_mjcf(builder, mjcf)
         model = builder.finalize()
 
-        self.assertEqual(model.equality_constraint_count, 3)
+        self.assertEqual(model.mujoco.equality_constraint_count, 3)
         self.assertEqual(model.constraint_mimic_count, 1)
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "equality_constraint_target_kind"))
@@ -4402,7 +4531,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             ),
         )
         np.testing.assert_allclose(
-            model.equality_constraint_polycoef.numpy()[2],
+            model.mujoco.equality_constraint_polycoef.numpy()[2],
             np.array([0.5, 1.5, 0.1, 0.05, 0.02], dtype=np.float32),
         )
 

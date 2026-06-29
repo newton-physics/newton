@@ -160,7 +160,7 @@ def _compute_edge_bending_data(
         np.abs(cross2d(panel_x43_f0, panel_x1_f0 - panel_x3_f0))
         + np.abs(cross2d(panel_x43_f1, panel_x2_f1 - panel_x3_f1))
         + 1.0e-8
-    ) / 3.0
+    ) / 2.0
 
     def cot2d(a, b, c):
         ba = b - a

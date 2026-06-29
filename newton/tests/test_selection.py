@@ -444,12 +444,12 @@ class TestSelection(unittest.TestCase):
 
         # test default mask
         model_mask = view.get_model_articulation_mask()
-        expected = np.full(num_artis, 1, dtype=np.bool)
+        expected = np.full(num_artis, 1, dtype=bool)
         assert_np_equal(model_mask.numpy(), expected)
 
         # test per-world mask
         model_mask = view.get_model_articulation_mask(mask=[0, 1, 1, 0])
-        expected = np.array([0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0], dtype=np.bool)
+        expected = np.array([0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0], dtype=bool)
         assert_np_equal(model_mask.numpy(), expected)
 
         # test world-arti mask
@@ -460,7 +460,7 @@ class TestSelection(unittest.TestCase):
             [0, 0, 0],
         ]
         model_mask = view.get_model_articulation_mask(mask=m)
-        expected = np.array([0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0], dtype=np.bool)
+        expected = np.array([0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0], dtype=bool)
         assert_np_equal(model_mask.numpy(), expected)
 
     def run_test_joint_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
