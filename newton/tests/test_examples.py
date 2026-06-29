@@ -14,6 +14,7 @@ CUDA device.
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -41,14 +42,14 @@ _WARP_CUDA_DRIVER_WARNING_RE = (
 )
 _MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this may take a moment\.\n?"
 _BASIC_PLOTTING_OUTPUT_RE = (
-    r"(?s)(?:"
+    r"(?:"
     r"Diagnostics plot saved to solver_convergence\.png\n?"
     r"|"
     r"\n?Simulation diagnostics summary \(\d+ steps\):\n"
-    r"  Iterations:   mean=.*\n"
-    r"  Kinetic E:    final=.*\n"
-    r"  Potential E:  final=.*\n"
-    r"  Constraints:  mean=.*\n?"
+    r"  Iterations:   mean=[^\n]*\n"
+    r"  Kinetic E:    final=[^\n]*\n"
+    r"  Potential E:  final=[^\n]*\n"
+    r"  Constraints:  mean=[^\n]*\n?"
     r")"
 )
 _WARP_SDF_CONSTANT_CONVERSION_WARNING_RE = (
@@ -249,6 +250,22 @@ def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpe
         else:
             regex, stream = regex_spec, "any"
         add_regex(regex, stream=stream)
+
+
+class TestExampleOutputRegexes(unittest.TestCase):
+    def test_basic_plotting_output_does_not_consume_trailing_output(self):
+        unexpected_output = "unexpected output\n"
+        output = (
+            "Simulation diagnostics summary (3 steps):\n"
+            "  Iterations:   mean=1.0\n"
+            "  Kinetic E:    final=2.0\n"
+            "  Potential E:  final=3.0\n"
+            "  Constraints:  mean=4.0\n" + unexpected_output
+        )
+
+        unmatched_output = re.sub(_BASIC_PLOTTING_OUTPUT_RE, "", output, flags=re.MULTILINE)
+
+        self.assertEqual(unmatched_output, unexpected_output)
 
 
 cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test on multiple GPUs to save time

@@ -209,6 +209,19 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
 
         self.assertTrue(result.wasSuccessful())
 
+    def test_text_runner_buffering_is_supported(self):
+        class EmitsExpectedOutput(NewtonTestCase):
+            def test_output(self):
+                self.expectOutputRegex(r"expected output")
+                print("expected output")
+
+        stream = io.StringIO()
+        result = unittest.TextTestRunner(stream=stream, buffer=True).run(
+            unittest.defaultTestLoader.loadTestsFromTestCase(EmitsExpectedOutput)
+        )
+
+        self.assertTrue(result.wasSuccessful(), stream.getvalue())
+
     def test_add_function_test_uses_newton_output_contract(self):
         class GeneratedTest(NewtonTestCase):
             pass

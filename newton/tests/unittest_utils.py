@@ -131,6 +131,7 @@ class StreamCapture:
     def __init__(self, stream_name):
         self.stream_name = stream_name  # 'stdout' or 'stderr'
         self.saved = None
+        self.stream_fd = None
         self.target = None
         self.tempfile = None
 
@@ -143,7 +144,11 @@ class StreamCapture:
 
         # Get the stream object (sys.stdout or sys.stderr)
         self.saved = getattr(sys, self.stream_name)
-        self.target = os.dup(self.saved.fileno())
+        try:
+            self.stream_fd = self.saved.fileno()
+        except (AttributeError, io.UnsupportedOperation):
+            self.stream_fd = getattr(sys, f"__{self.stream_name}__").fileno()
+        self.target = os.dup(self.stream_fd)
 
         # Create temporary capture stream
         self.tempfile = io.TextIOWrapper(
@@ -155,7 +160,7 @@ class StreamCapture:
         )
 
         # Redirect the stream
-        os.dup2(self.tempfile.fileno(), self.saved.fileno())
+        os.dup2(self.tempfile.fileno(), self.stream_fd)
         setattr(sys, self.stream_name, self.tempfile)
 
     def end(self):
@@ -169,7 +174,7 @@ class StreamCapture:
             LIBC.fflush(None)
 
         # Restore the original stream
-        os.dup2(self.target, self.saved.fileno())
+        os.dup2(self.target, self.stream_fd)
         os.close(self.target)
 
         # Read the captured output
