@@ -657,7 +657,7 @@ class TestPADMMSolver(unittest.TestCase):
             path = self.output_path / "test_07_padmm_solve_with_acceleration_and_container_warmstart.pdf"
             save_solver_info(solver=solver, path=str(path))
 
-    def test_10_padmm_solve_single_contact(self):
+    def test_08_padmm_solve_single_contact(self):
         """
         Tests the Proximal-ADMM (PADMM) solver with default config on the reference problem (no
         constraints and limits) with a single contact.
@@ -666,7 +666,7 @@ class TestPADMMSolver(unittest.TestCase):
         test = TestSetup(builder_fn=basics.build_box_on_plane, max_world_contacts=1, device=self.default_device)
 
         # Create the PADMM solver
-        solver = PADMMSolver(model=test.model)
+        solver = PADMMSolver(model=test.model, collect_info=True)
 
         # Solve the test problem
         test.build()
@@ -675,9 +675,9 @@ class TestPADMMSolver(unittest.TestCase):
         solver.solve(problem=test.problem)
 
         # Extract solver info
-        if self.savefig:
+        if self.savefig and solver.data.info is not None:
             msg.notif("Generating solver info plots...")
-            path = self.output_path / "test_10_padmm_solve.pdf"
+            path = self.output_path / "test_08_padmm_solve.pdf"
             save_solver_info(solver=solver, path=str(path))
 
         # Check solution
