@@ -19,6 +19,7 @@ from ...sim import (
     ModelFlags,
     State,
 )
+from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..solver import SolverBase
 from ..xpbd.kernels import apply_joint_forces
 from .particle_vbd_kernels import (
@@ -193,9 +194,11 @@ class SolverVBD(SolverBase):
         STRETCH = 0
         BEND = 1
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,
+        *,
         # Common parameters
         iterations: int = 10,
         friction_epsilon: float = 1e-2,
@@ -2202,6 +2205,7 @@ class SolverVBD(SolverBase):
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_body_vel,
                         contacts.soft_contact_normal,
+                        model.shape_margin,
                     ],
                     outputs=[
                         self.particle_forces,
@@ -2355,6 +2359,7 @@ class SolverVBD(SolverBase):
                         state_in.particle_q,
                         model.particle_radius,
                         model.shape_body,
+                        model.shape_margin,
                         body_q,
                         self.body_particle_contact_material_ke,
                         self.rigid_linear_beta,
@@ -2399,9 +2404,11 @@ class SolverVBD(SolverBase):
                         self.body_particle_contact_material_mu,
                         contacts.soft_contact_count,
                         contacts.soft_contact_particle,
+                        contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_body_vel,
                         contacts.soft_contact_normal,
+                        model.shape_margin,
                         self.body_particle_contact_buffer_pre_alloc,
                         self.body_particle_contact_counts,
                         self.body_particle_contact_indices,
@@ -2569,6 +2576,7 @@ class SolverVBD(SolverBase):
                         state_in.particle_q,
                         model.particle_radius,
                         model.shape_body,
+                        model.shape_margin,
                         state_in.body_q,
                         self.body_particle_contact_material_ke,
                         self.rigid_linear_beta,
@@ -2616,22 +2624,33 @@ class SolverVBD(SolverBase):
             )
 
     def collect_rigid_contact_forces(
-        self, body_q: wp.array, body_q_prev: wp.array, contacts: Contacts | None, dt: float
-    ) -> tuple[wp.array, wp.array, wp.array, wp.array, wp.array, wp.array]:
+        self,
+        body_q: wp.array[wp.transform],
+        body_q_prev: wp.array[wp.transform],
+        contacts: Contacts | None,
+        dt: float,
+    ) -> tuple[
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+        wp.array[wp.vec3],
+        wp.array[wp.vec3],
+        wp.array[wp.vec3],
+        wp.array[wp.int32],
+    ]:
         """Collect per-contact rigid contact forces and world-space application points.
 
         Args:
-            body_q (wp.array[wp.transform]): Current body transforms (world frame),
+            body_q: Current body transforms (world frame),
                 typically ``state_out.body_q`` after a ``step()`` call.
-            body_q_prev (wp.array[wp.transform]): Previous body transforms (world frame)
+            body_q_prev: Previous body transforms (world frame)
                 corresponding to the start of the step. The caller must snapshot
                 ``solver.body_q_prev`` **before** calling ``step()``, because
                 ``step()`` advances the solver's internal ``body_q_prev`` to the
                 end-of-step pose.
-            contacts (Optional[Contacts]): Contact data buffers containing rigid
+            contacts: Contact data buffers containing rigid
                 contact geometry/material references. If None, the function
                 returns default zero/sentinel outputs.
-            dt (float): Time step size [s].
+            dt: Time step size [s].
 
         Note:
             Call after collision generation and ``step()`` with the same
@@ -2847,7 +2866,7 @@ class SolverVBD(SolverBase):
         quality. In these cases, rebuilding the entire tree is necessary to achieve better querying efficiency.
 
         Args:
-            state (newton.State):  The state whose particle positions (:attr:`~newton.State.particle_q`) will be used for rebuilding the BVHs.
+            state:  The state whose particle positions (:attr:`~newton.State.particle_q`) will be used for rebuilding the BVHs.
         """
         if self.particle_enable_self_contact:
             self.trimesh_collision_detector.rebuild(state.particle_q)

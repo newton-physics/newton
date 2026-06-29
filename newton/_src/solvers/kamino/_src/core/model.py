@@ -387,13 +387,15 @@ class ModelKaminoInfo:
 
     base_body_index: wp.array | None = None
     """
-    The index of the base body assigned in each world w.r.t the model.\n
+    The index of the base body assigned in each world w.r.t the model.
+    If a base joint is also assigned, must be the follower body of that joint.\n
     Shape of ``(num_worlds,)`` and type :class:`int`.
     """
 
     base_joint_index: wp.array | None = None
     """
-    The index of the base joint assigned in each world w.r.t the model.\n
+    The index of the base joint assigned in each world w.r.t the model (-1 if not assigned).
+    If assigned, must be a unary, non-universal, joint.\n
     Shape of ``(num_worlds,)`` and type :class:`int`.
     """
 

@@ -247,7 +247,7 @@ def _step_with_newton_cd(builder, device, num_steps=200, dt=0.005):
     contacts = ContactsKamino(capacity=[per_world], device=device)
 
     solver = SolverKaminoImpl(model=model, contacts=contacts)
-    solver.reset(state_out=state_n)
+    solver.reset(state=state_n)
     state_p.copy_from(state_n)
 
     newton_state = newton_model.state()

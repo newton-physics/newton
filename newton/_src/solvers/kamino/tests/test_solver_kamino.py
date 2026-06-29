@@ -19,6 +19,7 @@ from newton._src.solvers.kamino._src.core.types import float32, transformf, vec6
 from newton._src.solvers.kamino._src.dynamics import DualProblem
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
+from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMode, compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_fourbar
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
@@ -26,6 +27,7 @@ from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino._src.solvers import PADMMSolver
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.examples import print_progress_bar
+from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 
 ###
@@ -145,60 +147,163 @@ def assert_states_close(testcase: unittest.TestCase, state_0: StateKamino, state
 
 
 def assert_states_close_masked(
-    testcase: unittest.TestCase,
     model: ModelKamino,
-    state_0: StateKamino,
-    state_n: StateKamino,
-    state_n_ref: StateKamino,
-    world_mask: wp.array,
+    state: StateKamino,
+    state_true: StateKamino | None,
+    state_false: StateKamino | None,
+    world_mask: wp.array[wp.bool],
+    positions: bool = True,
+    velocities: bool = True,
+    forces: bool = True,
+    match_q_j_p_with_q_j: bool = False,
 ):
-    testcase.assertIsInstance(model, ModelKamino)
-    testcase.assertIsInstance(state_0, StateKamino)
-    testcase.assertIsInstance(state_n, StateKamino)
+    """
+    Check that state attributes match one of two reference states, based on the world mask.
 
-    num_bodies_per_world = model.size.max_of_num_bodies
-    num_joint_dofs_per_world = model.size.max_of_num_joint_dofs
-    num_joint_cts_per_world = model.size.max_of_num_joint_cts
+    Args:
+        model: Kamino model.
+        state: Kamino state to compare to reference states.
+        state_true: Kamino reference state for worlds in which the mask is True.
+        state_false: Kamino reference state for worlds in which the mask is False.
+        world_mask: Per-world boolean mask.
+        positions: Whether to compare position attributes, i.e. q_i, q_j, q_j_p (skipped if False).
+        velocities: Whether to compare velocity attributes, i.e. u_i, dq_j (skipped if False).
+        forces: Whether to compare force attributes, i.e. w_i, w_i_e, lambda_j (skipped if False).
+        match_q_j_p_with_q_j: Whether to compare q_j_p against q_j in the reference (instead of q_j_p).
+    """
+    bodies_offset = model.info.bodies_offset.numpy()
+    coords_offset = np.array([*model.info.joint_coords_offset.numpy(), model.size.sum_of_num_joint_coords])
+    dofs_offset = np.array([*model.info.joint_dofs_offset.numpy(), model.size.sum_of_num_joint_dofs])
+    cts_offset = np.array([*model.info.joint_cts_offset.numpy(), model.size.sum_of_num_joint_cts])
+    world_mask_np = world_mask.numpy()
 
-    bodies_start = 0
-    joint_dofs_start = 0
-    joint_cts_start = 0
-    world_mask_np = world_mask.numpy().copy()
+    # List state attributes to compare
+    body_attributes = []
+    coord_attributes = []
+    dof_attributes = []
+    cts_attributes = []
+    if positions:
+        body_attributes.append("q_i")
+        coord_attributes.append("q_j")
+        if not match_q_j_p_with_q_j:
+            coord_attributes.append("q_j_p")
+    if velocities:
+        body_attributes.append("u_i")
+        dof_attributes.append("dq_j")
+    if forces:
+        body_attributes.extend(["w_i", "w_i_e"])
+        cts_attributes.append("lambda_j")
+
     for wid in range(model.size.num_worlds):
         # Select reference state based on world mask
-        if world_mask_np[wid]:
-            state_ref = state_0
-        else:
-            state_ref = state_n_ref
+        state_ref = state_true if world_mask_np[wid] else state_false
+        if state_ref is None:
+            continue
+
         # Check state attributes for the current world
-        for attr in ["q_i", "u_i", "w_i"]:
+        for attr in body_attributes:
             np.testing.assert_allclose(
-                getattr(state_n, attr).numpy()[bodies_start : bodies_start + num_bodies_per_world],
-                getattr(state_ref, attr).numpy()[bodies_start : bodies_start + num_bodies_per_world],
+                getattr(state, attr).numpy()[bodies_offset[wid] : bodies_offset[wid + 1]],
+                getattr(state_ref, attr).numpy()[bodies_offset[wid] : bodies_offset[wid + 1]],
                 rtol=rtol,
                 atol=atol,
                 err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
             )
-        for attr in ["q_j", "q_j_p", "dq_j"]:
+        for attr in coord_attributes:
             np.testing.assert_allclose(
-                getattr(state_n, attr).numpy()[joint_dofs_start : joint_dofs_start + num_joint_dofs_per_world],
-                getattr(state_ref, attr).numpy()[joint_dofs_start : joint_dofs_start + num_joint_dofs_per_world],
+                getattr(state, attr).numpy()[coords_offset[wid] : coords_offset[wid + 1]],
+                getattr(state_ref, attr).numpy()[coords_offset[wid] : coords_offset[wid + 1]],
                 rtol=rtol,
                 atol=atol,
                 err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
             )
-        for attr in ["lambda_j"]:
+        for attr in dof_attributes:
             np.testing.assert_allclose(
-                getattr(state_n, attr).numpy()[joint_cts_start : joint_cts_start + num_joint_cts_per_world],
-                getattr(state_ref, attr).numpy()[joint_cts_start : joint_cts_start + num_joint_cts_per_world],
+                getattr(state, attr).numpy()[dofs_offset[wid] : dofs_offset[wid + 1]],
+                getattr(state_ref, attr).numpy()[dofs_offset[wid] : dofs_offset[wid + 1]],
+                rtol=rtol,
+                atol=atol,
+                err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
+            )
+        for attr in cts_attributes:
+            np.testing.assert_allclose(
+                getattr(state, attr).numpy()[cts_offset[wid] : cts_offset[wid + 1]],
+                getattr(state_ref, attr).numpy()[cts_offset[wid] : cts_offset[wid + 1]],
+                rtol=rtol,
+                atol=atol,
+                err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
+            )
+        if positions and match_q_j_p_with_q_j:
+            np.testing.assert_allclose(
+                state.q_j_p.numpy()[cts_offset[wid] : cts_offset[wid + 1]],
+                state_ref.q_j.numpy()[cts_offset[wid] : cts_offset[wid + 1]],
                 rtol=rtol,
                 atol=atol,
                 err_msg=f"\nWorld wid={wid}: attribute `{attr}` mismatch:\n",
             )
 
-        bodies_start += num_bodies_per_world
-        joint_dofs_start += num_joint_dofs_per_world
-        joint_cts_start += num_joint_cts_per_world
+
+def check_body_and_joint_state_consistency(
+    model: ModelKamino,
+    body_q: wp.array[transformf],
+    body_u: wp.array[vec6f],
+    joint_q: wp.array[float32],
+    joint_u: wp.array[float32],
+):
+    """Check that provided joint/body positions and velocities are consistent for a given model."""
+    # Check dimensions
+    np.testing.assert_equal(body_q.shape[0], model.size.sum_of_num_bodies)
+    np.testing.assert_equal(body_u.shape[0], model.size.sum_of_num_bodies)
+    np.testing.assert_equal(joint_q.shape[0], model.size.sum_of_num_joint_coords)
+    np.testing.assert_equal(joint_u.shape[0], model.size.sum_of_num_joint_dofs)
+
+    # Create a model data, and evaluate joint data given provided body states
+    data = model.data(unilateral_cts=False, device=model.device)
+    wp.copy(data.bodies.q_i, body_q)
+    wp.copy(data.bodies.u_i, body_u)
+    compute_joints_data(model=model, data=data, q_j_p=joint_q, correction=JointCorrectionMode.CONTINUOUS)
+
+    # Check that recovered joint coordinates/velocities match provided ones
+    joint_q_np = joint_q.numpy()
+    joint_u_np = joint_u.numpy()
+    joint_q_check_np = data.joints.q_j.numpy()
+    joint_u_check_np = data.joints.dq_j.numpy()
+    coords_offset = np.array([*model.info.joint_coords_offset.numpy(), model.size.sum_of_num_joint_coords])
+    dofs_offset = np.array([*model.info.joint_dofs_offset.numpy(), model.size.sum_of_num_joint_dofs])
+    for wid in range(model.size.num_worlds):
+        np.testing.assert_allclose(
+            joint_q_np[coords_offset[wid] : coords_offset[wid + 1]],
+            joint_q_check_np[coords_offset[wid] : coords_offset[wid + 1]],
+            rtol=rtol,
+            atol=atol,
+            err_msg=f"\nWorld wid={wid}: joint_q mismatch:\n",
+        )
+        np.testing.assert_allclose(
+            joint_u_np[dofs_offset[wid] : dofs_offset[wid + 1]],
+            joint_u_check_np[dofs_offset[wid] : dofs_offset[wid + 1]],
+            rtol=rtol,
+            atol=atol,
+            err_msg=f"\nWorld wid={wid}: joint u_mismatch:\n",
+        )
+
+    # Check that position- and velocity-level joint constraint residuals are below tolerance
+    np.testing.assert_allclose(data.joints.r_j.numpy(), 0.0, rtol=0, atol=atol)
+    np.testing.assert_allclose(data.joints.dr_j.numpy(), 0.0, rtol=0, atol=atol)
+
+
+def check_post_reset_state_consistency(model: ModelKamino, state: StateKamino):
+    """
+    Check that provided state is a valid post-reset state (consistent states for bodies
+    and joints, current and previous joint states matching)
+    """
+    check_body_and_joint_state_consistency(
+        model=model,
+        body_q=state.q_i,
+        body_u=state.u_i,
+        joint_q=state.q_j,
+        joint_u=state.dq_j,
+    )
+    np.testing.assert_allclose(state.q_j.numpy(), state.q_j_p.numpy(), rtol=rtol, atol=atol)
 
 
 def step_solver(
@@ -344,61 +449,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
     # Test Reset Operations
     ###
 
-    def test_05_reset_with_invalid_args(self):
-        """
-        Test resetting multiple world solvers to default state defined in the model.
-        """
-        builder = make_homogeneous_builder(num_worlds=3, build_fn=build_boxes_fourbar, limits=False)
-        model = builder.finalize(device=self.default_device)
-        solver = SolverKaminoImpl(model=model)
-
-        # Create reset argument arrays
-        state_0 = model.state()
-        with wp.ScopedDevice(self.default_device):
-            base_q_0 = wp.zeros(shape=(model.size.num_worlds,), dtype=transformf)
-            base_u_0 = wp.zeros(shape=(model.size.num_worlds,), dtype=vec6f)
-            joint_q_0 = wp.zeros(shape=(model.size.sum_of_num_joint_coords,), dtype=float32)
-            joint_u_0 = wp.zeros(shape=(model.size.sum_of_num_joint_dofs,), dtype=float32)
-            actuator_q_0 = wp.zeros(shape=(model.size.sum_of_num_actuated_joint_coords,), dtype=float32)
-            actuator_u_0 = wp.zeros(shape=(model.size.sum_of_num_actuated_joint_dofs,), dtype=float32)
-
-        ###
-        # Test invalid argument combinations to ensure errors are correctly raised
-        ###
-
-        # Setting only joint or actuator velocities is not supported
-        self.assertRaises(ValueError, lambda: solver.reset(state_out=state_0, joint_u=joint_u_0))
-        self.assertRaises(ValueError, lambda: solver.reset(state_out=state_0, actuator_u=actuator_u_0))
-
-        # Setting both joint and actuator coordinates or velocities is not supported
-        self.assertRaises(
-            ValueError, lambda: solver.reset(state_out=state_0, joint_q=joint_q_0, actuator_q=actuator_q_0)
-        )
-        self.assertRaises(
-            ValueError, lambda: solver.reset(state_out=state_0, joint_q=joint_q_0, actuator_u=actuator_u_0)
-        )
-        self.assertRaises(
-            ValueError, lambda: solver.reset(state_out=state_0, joint_u=joint_u_0, actuator_q=actuator_q_0)
-        )
-        self.assertRaises(
-            ValueError, lambda: solver.reset(state_out=state_0, joint_u=joint_u_0, actuator_u=actuator_u_0)
-        )
-        self.assertRaises(
-            ValueError,
-            lambda: solver.reset(state_out=state_0, base_q=base_q_0, joint_u=joint_u_0, actuator_u=actuator_u_0),
-        )
-        self.assertRaises(
-            ValueError,
-            lambda: solver.reset(state_out=state_0, base_u=base_u_0, joint_u=joint_u_0, actuator_u=actuator_u_0),
-        )
-        self.assertRaises(
-            ValueError,
-            lambda: solver.reset(
-                state_out=state_0, base_q=base_q_0, base_u=base_u_0, joint_u=joint_u_0, actuator_u=actuator_u_0
-            ),
-        )
-
-    def test_06_reset_to_default_state(self):
+    def test_05_reset_to_default_state(self):
         """
         Test resetting multiple world solvers to default state defined in the model.
         """
@@ -429,7 +480,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         )
 
         # Reset all worlds to the initial state
-        solver.reset(state_out=state_n)
+        solver.reset(state=state_n)
 
         # Check that all worlds were reset
         assert_states_equal(self, state_n, state_0)
@@ -450,23 +501,80 @@ class TestSolverKaminoImpl(unittest.TestCase):
         state_n_ref.copy_from(state_n)
 
         # Reset only the specified worlds to the initial state
-        solver.reset(state_out=state_n, world_mask=world_mask)
-
-        # Optionally print the reset state for debugging
-        msg.info("state_n.q_i:\n%s\n", state_n.q_i)
-        msg.info("state_n.u_i:\n%s\n", state_n.u_i)
-        msg.info("state_n.w_i:\n%s\n", state_n.w_i)
-        msg.info("state_n.q_j:\n%s\n", state_n.q_j)
-        msg.info("state_n.q_j_p:\n%s\n", state_n.q_j_p)
-        msg.info("state_n.dq_j:\n%s\n", state_n.dq_j)
-        msg.info("state_n.lambda_j:\n%s\n", state_n.lambda_j)
+        solver.reset(state=state_n, world_mask=world_mask)
 
         # Check that only the specified worlds were reset
-        assert_states_close_masked(self, model, state_0, state_n, state_n_ref, world_mask)
+        assert_states_close_masked(model, state_n, state_0, state_n_ref, world_mask)
+
+    def test_06_reset_but_preserve_state(self):
+        """
+        Test resetting multiple world solvers while preserving the state.
+        """
+        builder = make_homogeneous_builder(num_worlds=3, build_fn=build_boxes_fourbar, limits=False)
+        model = builder.finalize(device=self.default_device)
+        solver = SolverKaminoImpl(model=model)
+
+        # Set a pre-step control callback to apply external forces
+        # that will sufficiently perturb the system state
+        solver.set_pre_step_callback(test_prestep_callback)
+
+        # Create a state container to hold the output of the reset
+        # and a world_mask array to specify which worlds to reset
+        state_0 = model.state()
+        state_p = model.state()
+        state_n = model.state()
+        control = model.control()
+        world_mask = wp.array([False, True, False], dtype=wp.bool, device=self.default_device)
+
+        # Step the solver a few times to change the state
+        step_solver(
+            num_steps=11,
+            solver=solver,
+            state_p=state_p,
+            state_n=state_n,
+            control=control,
+            show_progress=self.progress or self.verbose,
+        )
+
+        # Create a copy of the current state before reset
+        state_n_ref = model.state()
+        state_n_ref.copy_from(state_n)
+
+        # Reset select worlds, while preserving the state
+        solver.reset(state=state_n, world_mask=world_mask, config=SolverKamino.ResetConfig.preserve())
+
+        # Check that masked out worlds are fully preserved
+        assert_states_close_masked(model, state_n, None, state_n_ref, world_mask=world_mask)
+
+        # Check that positions/velocities are preserved in reset worlds
+        # (except q_j_p, reset to match q_j)
+        assert_states_close_masked(
+            model,
+            state_n,
+            state_n_ref,
+            None,
+            world_mask=world_mask,
+            positions=True,
+            velocities=True,
+            forces=False,
+            match_q_j_p_with_q_j=True,
+        )
+
+        # Check that wrenches and multipliers are reset in reset worlds
+        assert_states_close_masked(
+            model,
+            state_n,
+            state_0,
+            None,
+            world_mask=world_mask,
+            positions=False,
+            velocities=False,
+            forces=True,
+        )
 
     def test_07_reset_to_base_state(self):
         """
-        Test resetting multiple world solvers to specified base states.
+        Test resetting multiple world solvers to specified floating base states.
         """
         builder = make_homogeneous_builder(num_worlds=3, build_fn=build_boxes_fourbar, limits=False)
         model = builder.finalize(device=self.default_device)
@@ -505,20 +613,12 @@ class TestSolverKaminoImpl(unittest.TestCase):
             show_progress=self.progress or self.verbose,
         )
 
-        # Reset all worlds to the specified base poses
-        solver.reset(
-            state_out=state_n,
-            base_q=base_q_0,
-        )
+        # Reset all worlds to the specified base pose
+        reset_config = SolverKamino.ResetConfig(base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q_0))
+        solver.reset(state=state_n, config=reset_config)
 
-        # Optionally print the reset state for debugging
-        msg.info("state_n.q_i:\n%s\n", state_n.q_i)
-        msg.info("state_n.u_i:\n%s\n", state_n.u_i)
-        msg.info("state_n.w_i:\n%s\n", state_n.w_i)
-        msg.info("state_n.q_j:\n%s\n", state_n.q_j)
-        msg.info("state_n.q_j_p:\n%s\n", state_n.q_j_p)
-        msg.info("state_n.dq_j:\n%s\n", state_n.dq_j)
-        msg.info("state_n.lambda_j:\n%s\n", state_n.lambda_j)
+        # Check consistency of state after reset
+        check_post_reset_state_consistency(model=model, state=state_n)
 
         # Check if the assigned base body was correctly reset
         base_body_idx = model.info.base_body_index.numpy().copy()
@@ -542,12 +642,15 @@ class TestSolverKaminoImpl(unittest.TestCase):
             show_progress=self.progress or self.verbose,
         )
 
-        # Reset all worlds to the specified base states
-        solver.reset(
-            state_out=state_n,
-            base_q=base_q_0,
-            base_u=base_u_0,
+        # Reset all worlds to the specified base pose + velocity
+        reset_config = SolverKamino.ResetConfig(
+            base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q_0),
+            base_velocity=SolverKamino.ResetConfig.FromBaseU(base_u_0),
         )
+        solver.reset(state=state_n, config=reset_config)
+
+        # Check consistency of state after reset
+        check_post_reset_state_consistency(model=model, state=state_n)
 
         # Check if the assigned base body was correctly reset
         for wid in range(model.size.num_worlds):
@@ -565,14 +668,9 @@ class TestSolverKaminoImpl(unittest.TestCase):
                 atol=atol,
             )
 
-        # Optionally print the reset state for debugging
-        msg.info("state_n.q_i:\n%s\n", state_n.q_i)
-        msg.info("state_n.u_i:\n%s\n", state_n.u_i)
-        msg.info("state_n.w_i:\n%s\n", state_n.w_i)
-        msg.info("state_n.q_j:\n%s\n", state_n.q_j)
-        msg.info("state_n.q_j_p:\n%s\n", state_n.q_j_p)
-        msg.info("state_n.dq_j:\n%s\n", state_n.dq_j)
-        msg.info("state_n.lambda_j:\n%s\n", state_n.lambda_j)
+        # Create a copy of the state after reset in all worlds
+        state_n_reset_ref = model.state()
+        state_n_reset_ref.copy_from(state_n)
 
         # Step the solver a few times to change the state
         solver._reset()
@@ -585,40 +683,19 @@ class TestSolverKaminoImpl(unittest.TestCase):
             show_progress=self.progress or self.verbose,
         )
 
-        # Reset selected worlds to the specified base states
-        solver.reset(
-            state_out=state_n,
-            world_mask=world_mask,
-            base_q=base_q_0,
-            base_u=base_u_0,
+        # Create a copy of the current state after stepping the solver
+        state_n_stepped_ref = model.state()
+        state_n_stepped_ref.copy_from(state_n)
+
+        # Reset selected worlds to the specified base pose + velocity
+        reset_config = SolverKamino.ResetConfig(
+            base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q_0),
+            base_velocity=SolverKamino.ResetConfig.FromBaseU(base_u_0),
         )
+        solver.reset(state=state_n, world_mask=world_mask, config=reset_config)
 
-        # Optionally print the reset state for debugging
-        msg.info("state_n.q_i:\n%s\n", state_n.q_i)
-        msg.info("state_n.u_i:\n%s\n", state_n.u_i)
-        msg.info("state_n.w_i:\n%s\n", state_n.w_i)
-        msg.info("state_n.q_j:\n%s\n", state_n.q_j)
-        msg.info("state_n.q_j_p:\n%s\n", state_n.q_j_p)
-        msg.info("state_n.dq_j:\n%s\n", state_n.dq_j)
-        msg.info("state_n.lambda_j:\n%s\n", state_n.lambda_j)
-
-        # Check if the assigned base body was correctly reset
-        world_mask_np = world_mask.numpy().copy()
-        for wid in range(model.size.num_worlds):
-            if world_mask_np[wid]:
-                base_idx = base_body_idx[wid]
-                np.testing.assert_allclose(
-                    state_n.q_i.numpy()[base_idx],
-                    base_q_0_np[wid],
-                    rtol=rtol,
-                    atol=atol,
-                )
-                np.testing.assert_allclose(
-                    state_n.u_i.numpy()[base_idx],
-                    base_u_0_np[wid],
-                    rtol=rtol,
-                    atol=atol,
-                )
+        # Check that state was correctly preserved or reset based on mask
+        assert_states_close_masked(model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)
 
     def test_08_reset_to_joint_state(self):
         """
@@ -640,12 +717,12 @@ class TestSolverKaminoImpl(unittest.TestCase):
         control = model.control()
         world_mask = wp.array([True, False, True], dtype=wp.bool, device=self.default_device)
 
-        # Set default default reset joint coordinates
+        # Set default reset joint coordinates
         joint_q_0_np = [0.1, 0.1, 0.1, 0.1]
         joint_q_0_np = np.tile(joint_q_0_np, reps=model.size.num_worlds).astype(np.float32)
         joint_q_0: wp.array = wp.array(joint_q_0_np, dtype=float32, device=self.default_device)
 
-        # Set default default reset joint velocities
+        # Set default reset joint velocities
         joint_u_0_np = [0.1, 0.1, 0.1, 0.1]
         joint_u_0_np = np.tile(joint_u_0_np, reps=model.size.num_worlds).astype(np.float32)
         joint_u_0: wp.array = wp.array(joint_u_0_np, dtype=float32, device=self.default_device)
@@ -660,44 +737,28 @@ class TestSolverKaminoImpl(unittest.TestCase):
             show_progress=self.progress or self.verbose,
         )
 
-        # Reset all worlds to the specified joint states
-        solver.reset(
-            state_out=state_n,
-            joint_q=joint_q_0,
+        # Reset all worlds to the specified joint coords
+        reset_config = SolverKamino.ResetConfig(
+            body_poses=SolverKamino.ResetConfig.FromJointQ(joint_q_0),
         )
+        solver.reset(state=state_n, config=reset_config)
 
-        # Optionally print the reset state for debugging
-        msg.info("state_n.q_i:\n%s\n", state_n.q_i)
-        msg.info("state_n.u_i:\n%s\n", state_n.u_i)
-        msg.info("state_n.w_i:\n%s\n", state_n.w_i)
-        msg.info("state_n.q_j:\n%s\n", state_n.q_j)
-        msg.info("state_n.q_j_p:\n%s\n", state_n.q_j_p)
-        msg.info("state_n.dq_j:\n%s\n", state_n.dq_j)
-        msg.info("state_n.lambda_j:\n%s\n", state_n.lambda_j)
+        # Check consistency of state after reset
+        check_post_reset_state_consistency(model=model, state=state_n)
 
-        # Check if the assigned joint states were correctly reset
-        np.testing.assert_allclose(
-            state_n.q_j.numpy(),
-            joint_q_0_np,
-            rtol=rtol,
-            atol=atol,
-            err_msg="\n`state_out.q_j` does not match joint_q target\n",
-        )
-        np.testing.assert_allclose(
-            state_n.q_j_p.numpy(),
-            joint_q_0_np,
-            rtol=rtol,
-            atol=atol,
-            err_msg="\n`state_out.q_j_p` does not match joint_q target\n",
-        )
-        self.assertTrue(
-            np.isfinite(state_n.q_i.numpy()).all(),
-            msg="\n`state_out.q_i` contains non-finite values (Inf/NaN)\n",
-        )
-        self.assertTrue(
-            np.isfinite(state_n.u_i.numpy()).all(),
-            msg="\n`state_out.u_i` contains non-finite values (Inf/NaN)\n",
-        )
+        # Check that joint_q matches prescribed values for actuators
+        joint_q_np = state_n.q_j.numpy()
+        coords_offset = model.joints.coords_offset.numpy()
+        is_actuator = model.joints.act_type.numpy() != JointActuationType.PASSIVE
+        for jid in range(model.size.sum_of_num_joints):
+            if not is_actuator[jid]:
+                continue
+            np.testing.assert_allclose(
+                joint_q_np[coords_offset[jid] : coords_offset[jid + 1]],
+                joint_q_0_np[coords_offset[jid] : coords_offset[jid + 1]],
+                rtol=rtol,
+                atol=atol,
+            )
 
         # Step the solver a few times to change the state
         solver._reset()
@@ -710,52 +771,41 @@ class TestSolverKaminoImpl(unittest.TestCase):
             show_progress=self.progress or self.verbose,
         )
 
-        # Reset all worlds to the specified joint states
-        solver.reset(
-            state_out=state_n,
-            joint_q=joint_q_0,
-            joint_u=joint_u_0,
+        # Reset all worlds to the specified joint coords + velocities
+        reset_config = SolverKamino.ResetConfig(
+            body_poses=SolverKamino.ResetConfig.FromJointQ(joint_q_0),
+            body_velocities=SolverKamino.ResetConfig.FromJointU(joint_u_0),
         )
+        solver.reset(state=state_n, config=reset_config)
 
-        # Optionally print the reset state for debugging
-        msg.info("state_n.q_i:\n%s\n", state_n.q_i)
-        msg.info("state_n.u_i:\n%s\n", state_n.u_i)
-        msg.info("state_n.w_i:\n%s\n", state_n.w_i)
-        msg.info("state_n.q_j:\n%s\n", state_n.q_j)
-        msg.info("state_n.q_j_p:\n%s\n", state_n.q_j_p)
-        msg.info("state_n.dq_j:\n%s\n", state_n.dq_j)
-        msg.info("state_n.lambda_j:\n%s\n", state_n.lambda_j)
+        # Check consistency of state after reset
+        check_post_reset_state_consistency(model=model, state=state_n)
 
-        # Check if the assigned joint states were correctly reset
-        np.testing.assert_allclose(
-            state_n.q_j.numpy(),
-            joint_q_0_np,
-            rtol=rtol,
-            atol=atol,
-            err_msg="\n`state_out.q_j` does not match joint_q target\n",
-        )
-        np.testing.assert_allclose(
-            state_n.q_j_p.numpy(),
-            joint_q_0_np,
-            rtol=rtol,
-            atol=atol,
-            err_msg="\n`state_out.q_j_p` does not match joint_q target\n",
-        )
-        np.testing.assert_allclose(
-            state_n.dq_j.numpy(),
-            joint_u_0_np,
-            rtol=rtol,
-            atol=atol,
-            err_msg="\n`state_out.dq_j` does not match joint_u target\n",
-        )
-        self.assertTrue(
-            np.isfinite(state_n.q_i.numpy()).all(),
-            msg="\n`state_out.q_i` contains non-finite values (Inf/NaN)\n",
-        )
-        self.assertTrue(
-            np.isfinite(state_n.u_i.numpy()).all(),
-            msg="\n`state_out.u_i` contains non-finite values (Inf/NaN)\n",
-        )
+        # Check that joint_q, joint_u matches prescribed values for actuators
+        joint_q_np = state_n.q_j.numpy()
+        joint_u_np = state_n.dq_j.numpy()
+        coords_offset = model.joints.coords_offset.numpy()
+        dofs_offset = model.joints.dofs_offset.numpy()
+        is_actuator = model.joints.act_type.numpy() != JointActuationType.PASSIVE
+        for jid in range(model.size.sum_of_num_joints):
+            if not is_actuator[jid]:
+                continue
+            np.testing.assert_allclose(
+                joint_q_np[coords_offset[jid] : coords_offset[jid + 1]],
+                joint_q_0_np[coords_offset[jid] : coords_offset[jid + 1]],
+                rtol=rtol,
+                atol=atol,
+            )
+            np.testing.assert_allclose(
+                joint_u_np[dofs_offset[jid] : dofs_offset[jid + 1]],
+                joint_u_0_np[dofs_offset[jid] : dofs_offset[jid + 1]],
+                rtol=rtol,
+                atol=atol,
+            )
+
+        # Create a copy of the state after reset in all worlds
+        state_n_reset_ref = model.state()
+        state_n_reset_ref.copy_from(state_n)
 
         # Step the solver a few times to change the state
         step_solver(
@@ -767,84 +817,19 @@ class TestSolverKaminoImpl(unittest.TestCase):
             show_progress=self.progress or self.verbose,
         )
 
-        # Snapshot pre-reset state to verify masked-out worlds are preserved
-        pre_reset_q_j = state_n.q_j.numpy().copy()
-        pre_reset_q_j_p = state_n.q_j_p.numpy().copy()
-        pre_reset_dq_j = state_n.dq_j.numpy().copy()
+        # Create a copy of the current state after stepping the solver
+        state_n_stepped_ref = model.state()
+        state_n_stepped_ref.copy_from(state_n)
 
-        # Reset selected worlds to the specified joint states
-        solver.reset(
-            state_out=state_n,
-            world_mask=world_mask,
-            joint_q=joint_q_0,
-            joint_u=joint_u_0,
+        # Reset selected worlds to the specified joint coords + velocities
+        reset_config = SolverKamino.ResetConfig(
+            body_poses=SolverKamino.ResetConfig.FromJointQ(joint_q_0),
+            body_velocities=SolverKamino.ResetConfig.FromJointU(joint_u_0),
         )
+        solver.reset(state=state_n, world_mask=world_mask, config=reset_config)
 
-        # Optionally print the reset state for debugging
-        msg.info("state_n.q_i:\n%s\n", state_n.q_i)
-        msg.info("state_n.u_i:\n%s\n", state_n.u_i)
-        msg.info("state_n.w_i:\n%s\n", state_n.w_i)
-        msg.info("state_n.q_j:\n%s\n", state_n.q_j)
-        msg.info("state_n.q_j_p:\n%s\n", state_n.q_j_p)
-        msg.info("state_n.dq_j:\n%s\n", state_n.dq_j)
-        msg.info("state_n.lambda_j:\n%s\n", state_n.lambda_j)
-
-        # Check if the assigned joint states were correctly reset
-        num_world_coords = model.size.max_of_num_joint_coords
-        num_world_dofs = model.size.max_of_num_joint_dofs
-        coords_start = 0
-        dofs_start = 0
-        world_mask_np = world_mask.numpy().copy()
-        for wid in range(model.size.num_worlds):
-            if world_mask_np[wid]:
-                np.testing.assert_allclose(
-                    state_n.q_j.numpy()[coords_start : coords_start + num_world_coords],
-                    joint_q_0_np[coords_start : coords_start + num_world_coords],
-                    rtol=rtol,
-                    atol=atol,
-                    err_msg="\n`state_out.q_j` does not match joint_q target\n",
-                )
-                np.testing.assert_allclose(
-                    state_n.q_j_p.numpy()[coords_start : coords_start + num_world_coords],
-                    joint_q_0_np[coords_start : coords_start + num_world_coords],
-                    rtol=rtol,
-                    atol=atol,
-                    err_msg="\n`state_out.q_j_p` does not match joint_q target\n",
-                )
-                np.testing.assert_allclose(
-                    state_n.dq_j.numpy()[dofs_start : dofs_start + num_world_dofs],
-                    joint_u_0_np[dofs_start : dofs_start + num_world_dofs],
-                    rtol=rtol,
-                    atol=atol,
-                    err_msg="\n`state_out.dq_j` does not match joint_u target\n",
-                )
-            else:
-                # Worlds outside the mask must keep their pre-reset values
-                np.testing.assert_array_equal(
-                    state_n.q_j.numpy()[coords_start : coords_start + num_world_coords],
-                    pre_reset_q_j[coords_start : coords_start + num_world_coords],
-                    err_msg="\n`state_out.q_j` was modified for an unmasked world\n",
-                )
-                np.testing.assert_array_equal(
-                    state_n.q_j_p.numpy()[coords_start : coords_start + num_world_coords],
-                    pre_reset_q_j_p[coords_start : coords_start + num_world_coords],
-                    err_msg="\n`state_out.q_j_p` was modified for an unmasked world\n",
-                )
-                np.testing.assert_array_equal(
-                    state_n.dq_j.numpy()[dofs_start : dofs_start + num_world_dofs],
-                    pre_reset_dq_j[dofs_start : dofs_start + num_world_dofs],
-                    err_msg="\n`state_out.dq_j` was modified for an unmasked world\n",
-                )
-            coords_start += num_world_coords
-            dofs_start += num_world_dofs
-        self.assertTrue(
-            np.isfinite(state_n.q_i.numpy()).all(),
-            msg="\n`state_out.q_i` contains non-finite values (Inf/NaN)\n",
-        )
-        self.assertTrue(
-            np.isfinite(state_n.u_i.numpy()).all(),
-            msg="\n`state_out.u_i` contains non-finite values (Inf/NaN)\n",
-        )
+        # Check that state was correctly preserved or reset based on mask
+        assert_states_close_masked(model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)
 
     def test_09_reset_to_actuator_state(self):
         """
@@ -866,12 +851,12 @@ class TestSolverKaminoImpl(unittest.TestCase):
         control = model.control()
         world_mask = wp.array([True, False, True], dtype=wp.bool, device=self.default_device)
 
-        # Set default default reset joint coordinates
+        # Set default reset joint coordinates
         actuator_q_0_np = [0.25, 0.25]
         actuator_q_0_np = np.tile(actuator_q_0_np, reps=model.size.num_worlds)
         actuator_q_0: wp.array = wp.array(actuator_q_0_np, dtype=float32, device=self.default_device)
 
-        # Set default default reset joint velocities
+        # Set default reset joint velocities
         actuator_u_0_np = [-1.0, -1.0]
         actuator_u_0_np = np.tile(actuator_u_0_np, reps=model.size.num_worlds)
         actuator_u_0: wp.array = wp.array(actuator_u_0_np, dtype=float32, device=self.default_device)
@@ -886,62 +871,29 @@ class TestSolverKaminoImpl(unittest.TestCase):
             show_progress=self.progress or self.verbose,
         )
 
-        # Reset all worlds to the specified joint states
-        solver.reset(
-            state_out=state_n,
-            actuator_q=actuator_q_0,
+        # Reset all worlds to the specified actuator coords
+        reset_config = SolverKamino.ResetConfig(
+            body_poses=SolverKamino.ResetConfig.FromActuatorQ(actuator_q_0),
         )
+        solver.reset(state=state_n, config=reset_config)
 
-        # Optionally print the reset state for debugging
-        msg.info("state_n.q_i:\n%s\n", state_n.q_i)
-        msg.info("state_n.u_i:\n%s\n", state_n.u_i)
-        msg.info("state_n.w_i:\n%s\n", state_n.w_i)
-        msg.info("state_n.q_j:\n%s\n", state_n.q_j)
-        msg.info("state_n.q_j_p:\n%s\n", state_n.q_j_p)
-        msg.info("state_n.dq_j:\n%s\n", state_n.dq_j)
-        msg.info("state_n.lambda_j:\n%s\n", state_n.lambda_j)
+        # Check consistency of state after reset
+        check_post_reset_state_consistency(model=model, state=state_n)
 
-        # Create expanded actuator state arrays matching the full joint state size
-        joint_q_0_np = state_n.q_j.numpy().copy()
-        joint_act_type = model.joints.act_type.numpy().copy()
-        joint_num_coords = model.joints.num_coords.numpy().copy()
-        jnt_coords_start = 0
-        act_coords_start = 0
-        for j in range(model.size.max_of_num_joints):
-            nq = joint_num_coords[j]
-            act_type = joint_act_type[j]
-            if act_type > JointActuationType.PASSIVE:
-                joint_q_0_np[jnt_coords_start : jnt_coords_start + nq] = actuator_q_0_np[
-                    act_coords_start : act_coords_start + nq
-                ]
-                act_coords_start += nq
-            jnt_coords_start += nq
-        msg.info("state_n.q_q_j:\n%s\n", state_n.q_j)
-        msg.info("joint_q_0_np:\n%s\n", joint_q_0_np)
-
-        # Check if the assigned joint states were correctly reset
-        np.testing.assert_allclose(
-            state_n.q_j.numpy(),
-            joint_q_0_np,
-            rtol=rtol,
-            atol=atol,
-            err_msg="\n`state_out.q_j` does not match joint_q target\n",
-        )
-        np.testing.assert_allclose(
-            state_n.q_j_p.numpy(),
-            joint_q_0_np,
-            rtol=rtol,
-            atol=atol,
-            err_msg="\n`state_out.q_j_p` does not match joint_q target\n",
-        )
-        self.assertTrue(
-            np.isfinite(state_n.q_i.numpy()).all(),
-            msg="\n`state_out.q_i` contains non-finite values (Inf/NaN)\n",
-        )
-        self.assertTrue(
-            np.isfinite(state_n.u_i.numpy()).all(),
-            msg="\n`state_out.u_i` contains non-finite values (Inf/NaN)\n",
-        )
+        # Check that joint_q matches prescribed values for actuators
+        joint_q_np = state_n.q_j.numpy()
+        coords_offset = model.joints.coords_offset.numpy()
+        act_coords_offset = model.joints.actuated_coords_offset.numpy()
+        is_actuator = model.joints.act_type.numpy() != JointActuationType.PASSIVE
+        for jid in range(model.size.sum_of_num_joints):
+            if not is_actuator[jid]:
+                continue
+            np.testing.assert_allclose(
+                joint_q_np[coords_offset[jid] : coords_offset[jid + 1]],
+                actuator_q_0_np[act_coords_offset[jid] : act_coords_offset[jid + 1]],
+                rtol=rtol,
+                atol=atol,
+            )
 
         # Step the solver a few times to change the state
         step_solver(
@@ -953,74 +905,43 @@ class TestSolverKaminoImpl(unittest.TestCase):
             show_progress=self.progress or self.verbose,
         )
 
-        # Reset all worlds to the specified joint states
-        solver.reset(
-            state_out=state_n,
-            actuator_q=actuator_q_0,
-            actuator_u=actuator_u_0,
+        # Reset all worlds to the specified actuator coords and velocities
+        reset_config = SolverKamino.ResetConfig(
+            body_poses=SolverKamino.ResetConfig.FromActuatorQ(actuator_q_0),
+            body_velocities=SolverKamino.ResetConfig.FromActuatorU(actuator_u_0),
         )
+        solver.reset(state=state_n, config=reset_config)
 
-        # Optionally print the reset state for debugging
-        msg.info("state_n.q_i:\n%s\n", state_n.q_i)
-        msg.info("state_n.u_i:\n%s\n", state_n.u_i)
-        msg.info("state_n.w_i:\n%s\n", state_n.w_i)
-        msg.info("state_n.q_j:\n%s\n", state_n.q_j)
-        msg.info("state_n.q_j_p:\n%s\n", state_n.q_j_p)
-        msg.info("state_n.dq_j:\n%s\n", state_n.dq_j)
-        msg.info("state_n.lambda_j:\n%s\n", state_n.lambda_j)
+        # Check consistency of state after reset
+        check_post_reset_state_consistency(model=model, state=state_n)
 
-        # Create expanded actuator state arrays matching the full joint state size
-        joint_q_0_np = state_n.q_j.numpy().copy()
-        joint_u_0_np = state_n.dq_j.numpy().copy()
-        joint_num_dofs = model.joints.num_dofs.numpy().copy()
-        jnt_coords_start = 0
-        jnt_dofs_start = 0
-        act_coord_start = 0
-        act_dof_start = 0
-        for j in range(model.size.max_of_num_joints):
-            nq = joint_num_coords[j]
-            nu = joint_num_dofs[j]
-            act_type = joint_act_type[j]
-            if act_type > JointActuationType.PASSIVE:
-                joint_q_0_np[jnt_coords_start : jnt_coords_start + nq] = actuator_q_0_np[
-                    act_coord_start : act_coord_start + nq
-                ]
-                joint_u_0_np[jnt_dofs_start : jnt_dofs_start + nu] = actuator_u_0_np[act_dof_start : act_dof_start + nu]
-                act_coord_start += nq
-                act_dof_start += nu
-            jnt_coords_start += nq
-            jnt_dofs_start += nu
+        # Check that joint_q, joint_u matches prescribed values for actuators
+        joint_q_np = state_n.q_j.numpy()
+        joint_u_np = state_n.dq_j.numpy()
+        coords_offset = model.joints.coords_offset.numpy()
+        act_coords_offset = model.joints.actuated_coords_offset.numpy()
+        dofs_offset = model.joints.dofs_offset.numpy()
+        act_dofs_offset = model.joints.actuated_dofs_offset.numpy()
+        is_actuator = model.joints.act_type.numpy() != JointActuationType.PASSIVE
+        for jid in range(model.size.sum_of_num_joints):
+            if not is_actuator[jid]:
+                continue
+            np.testing.assert_allclose(
+                joint_q_np[coords_offset[jid] : coords_offset[jid + 1]],
+                actuator_q_0_np[act_coords_offset[jid] : act_coords_offset[jid + 1]],
+                rtol=rtol,
+                atol=atol,
+            )
+            np.testing.assert_allclose(
+                joint_u_np[dofs_offset[jid] : dofs_offset[jid + 1]],
+                actuator_u_0_np[act_dofs_offset[jid] : act_dofs_offset[jid + 1]],
+                rtol=rtol,
+                atol=atol,
+            )
 
-        # Check if the assigned joint states were correctly reset
-        np.testing.assert_allclose(
-            state_n.q_j.numpy(),
-            joint_q_0_np,
-            rtol=rtol,
-            atol=atol,
-            err_msg="\n`state_out.q_j` does not match joint_q target\n",
-        )
-        np.testing.assert_allclose(
-            state_n.q_j_p.numpy(),
-            joint_q_0_np,
-            rtol=rtol,
-            atol=atol,
-            err_msg="\n`state_out.q_j_p` does not match joint_q target\n",
-        )
-        np.testing.assert_allclose(
-            state_n.dq_j.numpy(),
-            joint_u_0_np,
-            rtol=rtol,
-            atol=atol,
-            err_msg="\n`state_out.dq_j` does not match joint_u target\n",
-        )
-        self.assertTrue(
-            np.isfinite(state_n.q_i.numpy()).all(),
-            msg="\n`state_out.q_i` contains non-finite values (Inf/NaN)\n",
-        )
-        self.assertTrue(
-            np.isfinite(state_n.u_i.numpy()).all(),
-            msg="\n`state_out.u_i` contains non-finite values (Inf/NaN)\n",
-        )
+        # Create a copy of the state after reset in all worlds
+        state_n_reset_ref = model.state()
+        state_n_reset_ref.copy_from(state_n)
 
         # Step the solver a few times to change the state
         step_solver(
@@ -1032,111 +953,25 @@ class TestSolverKaminoImpl(unittest.TestCase):
             show_progress=self.progress or self.verbose,
         )
 
-        # Snapshot pre-reset state to verify masked-out worlds are preserved
-        pre_reset_q_j = state_n.q_j.numpy().copy()
-        pre_reset_q_j_p = state_n.q_j_p.numpy().copy()
-        pre_reset_dq_j = state_n.dq_j.numpy().copy()
+        # Create a copy of the current state after stepping the solver
+        state_n_stepped_ref = model.state()
+        state_n_stepped_ref.copy_from(state_n)
 
-        # Reset all worlds to the specified joint states
-        solver.reset(
-            state_out=state_n,
-            world_mask=world_mask,
-            actuator_q=actuator_q_0,
-            actuator_u=actuator_u_0,
+        # Reset selected worlds to the specified actuator coords + velocities
+        reset_config = SolverKamino.ResetConfig(
+            body_poses=SolverKamino.ResetConfig.FromActuatorQ(actuator_q_0),
+            body_velocities=SolverKamino.ResetConfig.FromActuatorU(actuator_u_0),
         )
+        solver.reset(state=state_n, world_mask=world_mask, config=reset_config)
 
-        # Optionally print the reset state for debugging
-        msg.info("state_n.q_i:\n%s\n", state_n.q_i)
-        msg.info("state_n.u_i:\n%s\n", state_n.u_i)
-        msg.info("state_n.w_i:\n%s\n", state_n.w_i)
-        msg.info("state_n.q_j:\n%s\n", state_n.q_j)
-        msg.info("state_n.q_j_p:\n%s\n", state_n.q_j_p)
-        msg.info("state_n.dq_j:\n%s\n", state_n.dq_j)
-        msg.info("state_n.lambda_j:\n%s\n", state_n.lambda_j)
-
-        # Create expanded actuator state arrays matching the full joint state size
-        joint_q_0_np = state_n.q_j.numpy().copy()
-        joint_u_0_np = state_n.dq_j.numpy().copy()
-        jnt_coords_start = 0
-        jnt_dofs_start = 0
-        act_coord_start = 0
-        act_dof_start = 0
-        for j in range(model.size.max_of_num_joints):
-            nq = joint_num_coords[j]
-            nu = joint_num_dofs[j]
-            act_type = joint_act_type[j]
-            if act_type > JointActuationType.PASSIVE:
-                joint_q_0_np[jnt_coords_start : jnt_coords_start + nq] = actuator_q_0_np[
-                    act_coord_start : act_coord_start + nq
-                ]
-                joint_u_0_np[jnt_dofs_start : jnt_dofs_start + nu] = actuator_u_0_np[act_dof_start : act_dof_start + nu]
-                act_coord_start += nq
-                act_dof_start += nu
-            jnt_coords_start += nq
-            jnt_dofs_start += nu
-
-        # Check if the assigned joint states were correctly reset
-        num_world_coords = model.size.max_of_num_joint_coords
-        num_world_dofs = model.size.max_of_num_joint_dofs
-        coords_start = 0
-        dofs_start = 0
-        world_mask_np = world_mask.numpy().copy()
-        for wid in range(model.size.num_worlds):
-            if world_mask_np[wid]:
-                np.testing.assert_allclose(
-                    state_n.q_j.numpy()[coords_start : coords_start + num_world_coords],
-                    joint_q_0_np[coords_start : coords_start + num_world_coords],
-                    rtol=rtol,
-                    atol=atol,
-                    err_msg="\n`state_out.q_j` does not match joint_q target\n",
-                )
-                np.testing.assert_allclose(
-                    state_n.q_j_p.numpy()[coords_start : coords_start + num_world_coords],
-                    joint_q_0_np[coords_start : coords_start + num_world_coords],
-                    rtol=rtol,
-                    atol=atol,
-                    err_msg="\n`state_out.q_j_p` does not match joint_q target\n",
-                )
-                np.testing.assert_allclose(
-                    state_n.dq_j.numpy()[dofs_start : dofs_start + num_world_dofs],
-                    joint_u_0_np[dofs_start : dofs_start + num_world_dofs],
-                    rtol=rtol,
-                    atol=atol,
-                    err_msg="\n`state_out.dq_j` does not match joint_u target\n",
-                )
-            else:
-                # Worlds outside the mask must keep their pre-reset values
-                np.testing.assert_array_equal(
-                    state_n.q_j.numpy()[coords_start : coords_start + num_world_coords],
-                    pre_reset_q_j[coords_start : coords_start + num_world_coords],
-                    err_msg="\n`state_out.q_j` was modified for an unmasked world\n",
-                )
-                np.testing.assert_array_equal(
-                    state_n.q_j_p.numpy()[coords_start : coords_start + num_world_coords],
-                    pre_reset_q_j_p[coords_start : coords_start + num_world_coords],
-                    err_msg="\n`state_out.q_j_p` was modified for an unmasked world\n",
-                )
-                np.testing.assert_array_equal(
-                    state_n.dq_j.numpy()[dofs_start : dofs_start + num_world_dofs],
-                    pre_reset_dq_j[dofs_start : dofs_start + num_world_dofs],
-                    err_msg="\n`state_out.dq_j` was modified for an unmasked world\n",
-                )
-            coords_start += num_world_coords
-            dofs_start += num_world_dofs
-        self.assertTrue(
-            np.isfinite(state_n.q_i.numpy()).all(),
-            msg="\n`state_out.q_i` contains non-finite values (Inf/NaN)\n",
-        )
-        self.assertTrue(
-            np.isfinite(state_n.u_i.numpy()).all(),
-            msg="\n`state_out.u_i` contains non-finite values (Inf/NaN)\n",
-        )
+        # Check that state was correctly preserved or reset based on mask
+        assert_states_close_masked(model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)
 
     ###
     # Test Step Operations
     ###
 
-    def test_10_step_multiple_worlds_from_initial_state_without_contacts(self):
+    def test_09_step_multiple_worlds_from_initial_state_without_contacts(self):
         """
         Test stepping multiple worlds solvers initialized
         uniformly from the default initial state multiple times.
@@ -1313,7 +1148,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         np.testing.assert_allclose(multi_state_n.q_j.numpy(), multi_final_q_j, rtol=rtol, atol=atol)
         np.testing.assert_allclose(multi_state_n.dq_j.numpy(), multi_final_dq_j, rtol=rtol, atol=atol)
 
-    def test_11_step_multiple_worlds_from_initial_state_with_contacts(self):
+    def test_10_step_multiple_worlds_from_initial_state_with_contacts(self):
         """
         Test stepping multiple world solvers initialized
         uniformly from the default initial state multiple times.
