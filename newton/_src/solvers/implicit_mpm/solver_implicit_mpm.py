@@ -3,7 +3,6 @@
 
 """Implicit MPM solver."""
 
-import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -17,6 +16,7 @@ import newton
 
 from ...core.types import override
 from ...sim import ModelFlags
+from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
 from .rasterized_collisions import (
@@ -664,14 +664,9 @@ class SolverImplicitMPM(SolverBase):
         ``("cg", "jacobi", "gs")``."""
         warmstart_mode: Literal["none", "auto", "particles", "grid", "smoothed"] = "auto"
         """Warmstart mode to use for the rheology solver."""
-        collider_velocity_mode: Literal["forward", "backward", "instantaneous", "finite_difference"] = "forward"
+        collider_velocity_mode: Literal["forward", "backward"] = "forward"
         """Collider velocity computation mode. ``'forward'`` uses the current velocity,
-        ``'backward'`` uses the previous timestep position.
-
-        .. deprecated:: 1.1
-            Aliases ``'instantaneous'`` (= ``'forward'``) and ``'finite_difference'``
-            (= ``'backward'``) are deprecated and will be removed in a future release.
-        """
+        ``'backward'`` uses the previous timestep position."""
 
         # grid
         voxel_size: float = 0.1
@@ -914,10 +909,12 @@ class SolverImplicitMPM(SolverBase):
             )
         )
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: newton.Model,
         config: Config,
+        *,
         temporary_store: fem.TemporaryStore | None = None,
         verbose: bool | None = None,
         enable_timers: bool = False,
@@ -948,25 +945,9 @@ class SolverImplicitMPM(SolverBase):
         self.collider_normal_from_sdf_gradient = config.collider_normal_from_sdf_gradient
         self.collider_basis = config.collider_basis
 
-        # Map deprecated aliases to canonical values
-        if config.collider_velocity_mode == "finite_difference":
-            warnings.warn(
-                "collider_velocity_mode='finite_difference' is deprecated, use 'backward' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            self.collider_velocity_mode = "backward"
-        elif config.collider_velocity_mode == "instantaneous":
-            warnings.warn(
-                "collider_velocity_mode='instantaneous' is deprecated, use 'forward' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            self.collider_velocity_mode = "forward"
-        else:
-            if config.collider_velocity_mode not in ("forward", "backward"):
-                raise ValueError(f"Invalid collider velocity mode: {config.collider_velocity_mode}")
-            self.collider_velocity_mode = config.collider_velocity_mode
+        if config.collider_velocity_mode not in ("forward", "backward"):
+            raise ValueError(f"Invalid collider velocity mode: {config.collider_velocity_mode}")
+        self.collider_velocity_mode = config.collider_velocity_mode
 
         if config.warmstart_mode == "none":
             self._stress_warmstart = ""

@@ -601,7 +601,6 @@ class CollisionPipeline:
             raise ValueError(
                 f"contact_matching must be one of 'disabled', 'latest', 'sticky', got {contact_matching!r}"
             )
-
         if contact_matching_pos_threshold < 0.0:
             raise ValueError(
                 f"contact_matching_pos_threshold must be non-negative, got {contact_matching_pos_threshold}"
@@ -671,7 +670,6 @@ class CollisionPipeline:
                     "contact_reduction_hashtable_size_factor cannot be used when narrow_phase is provided; "
                     "construct the NarrowPhase with that value instead"
                 )
-
             inferred_mode = _infer_broad_phase_mode_from_instance(broad_phase_instance)
             self.broad_phase_mode = inferred_mode
             self.broad_phase = broad_phase_instance
@@ -948,7 +946,9 @@ class CollisionPipeline:
             state: The current simulation state.
             contacts: The contacts buffer to populate (will be cleared first).
             soft_contact_margin: Margin for soft contact generation.
-                If ``None``, uses the value from construction.
+                If ``None``, uses the value from construction. The effective
+                contact threshold also incorporates per-shape margins from
+                ``model.shape_margin``.
         """
 
         # Counter zeroing and generation bump are fused into compute_shape_aabbs.
@@ -1157,6 +1157,12 @@ class CollisionPipeline:
                 offset0=contacts.rigid_contact_offset0,
                 offset1=contacts.rigid_contact_offset1,
                 normal=contacts.rigid_contact_normal,
+                shape0=contacts.rigid_contact_shape0,
+                shape1=contacts.rigid_contact_shape1,
+                margin0=contacts.rigid_contact_margin0,
+                margin1=contacts.rigid_contact_margin1,
+                body_q=state.body_q,
+                shape_body=writer_data.shape_body,
                 device=self.device,
             )
 
@@ -1230,6 +1236,7 @@ class CollisionPipeline:
                     model.shape_source_ptr,
                     model.shape_world,
                     soft_contact_margin,
+                    model.shape_margin,
                     self.soft_contact_max,
                     model.shape_count,
                     model.shape_flags,

@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import docutils.nodes
+
 # Set environment variable to indicate we're in a Sphinx build.
 # This is inherited by subprocesses (e.g., Jupyter kernels run by nbsphinx).
 os.environ["NEWTON_SPHINX_BUILD"] = "1"
@@ -481,6 +483,37 @@ def _on_builder_inited(_app: Any) -> None:
     _copy_viser_client_into_output_static(outdir=outdir)
 
 
+_RE_REPR_ADDRESS = re.compile(r"<([\w.]+) object at 0x[0-9a-f]+>")
+
+
+def strip_repr_addresses(app: Any, doctree: Any, docname: str) -> None:
+    """Drop memory addresses from default-repr leaks in the resolved doctree.
+
+    When an attribute or default is documented without an explicit type
+    annotation, autodoc falls back to ``repr(obj)``.  For an object whose class
+    has no ``__repr__`` that yields ``<some.module.Class object at 0x7f...>``
+    (or ``<property object at 0x...>`` for a descriptor).  The address differs
+    every Python process (ASLR), which makes the rendered HTML byte-unstable
+    across builds -- every deploy to ``gh-pages`` then writes a different tree
+    even when the docs haven't changed (GH-2726).
+
+    ``sphinx.ext.autodoc.typehints`` injects these directly into the doctree via
+    the ``object-description-transform`` event, bypassing the
+    ``autodoc-process-signature`` / ``autodoc-process-docstring`` hooks (and not
+    covered by ``autodoc_preserve_defaults``), so the cleanup has to happen at
+    the doctree level.  Newton's public API does not currently surface such an
+    object; this runs as defense-in-depth so a future one can't silently
+    reintroduce per-build churn.
+    """
+    for text_node in list(doctree.findall(docutils.nodes.Text)):
+        original = text_node.astext()
+        if "object at 0x" not in original:
+            continue
+        cleaned = _RE_REPR_ADDRESS.sub(r"<\1 object>", original)
+        if cleaned != original:
+            text_node.parent.replace(text_node, docutils.nodes.Text(cleaned))
+
+
 def setup(app: Any) -> None:
     app.add_config_value("github_version", github_version, "env")
 
@@ -490,3 +523,4 @@ def setup(app: Any) -> None:
     generate_all()
 
     app.connect("builder-inited", _on_builder_inited)
+    app.connect("doctree-resolved", strip_repr_addresses)

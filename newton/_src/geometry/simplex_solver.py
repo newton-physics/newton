@@ -341,11 +341,11 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
 
         Returns:
             Tuple of:
-                separated (bool): True if shapes are separated, False if overlapping
-                point_a (wp.vec3): Witness point on shape A (in A's local frame)
-                point_b (wp.vec3): Witness point on shape B (in A's local frame)
-                normal (wp.vec3): Contact normal from A to B (in A's local frame)
-                distance (float): Minimum distance between shapes (0 if overlapping)
+                separated: True if shapes are separated, False if overlapping
+                point_a: Witness point on shape A (in A's local frame)
+                point_b: Witness point on shape B (in A's local frame)
+                normal: Contact normal from A to B (in A's local frame)
+                distance: Minimum distance between shapes (0 if overlapping)
         """
         # Initialize variables
         distance = float(0.0)
