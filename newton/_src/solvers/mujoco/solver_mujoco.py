@@ -6671,7 +6671,6 @@ class SolverMuJoCo(SolverBase):
             self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
             self._mujoco.mj_setConst(self.mj_model, self.mj_data)
             self.mj_model.stat.meaninertia = physical_meaninertia
-            self.mjw_model.stat.meaninertia.fill_(physical_meaninertia)
         else:
             actuator_biasprm = wp.clone(self.mjw_model.actuator_biasprm)
             self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
