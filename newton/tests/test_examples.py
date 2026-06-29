@@ -48,10 +48,10 @@ _BASIC_PLOTTING_OUTPUT_RE = (
     r"Diagnostics plot saved to solver_convergence\.png\n?"
     r"|"
     r"\n?Simulation diagnostics summary \(\d+ steps\):\n"
-    r"  Iterations:   mean=[^\n]*\n"
-    r"  Kinetic E:    final=[^\n]*\n"
-    r"  Potential E:  final=[^\n]*\n"
-    r"  Constraints:  mean=[^\n]*\n?"
+    r"  Iterations \(max\):   mean=[^\n]*\n"
+    r"  Kinetic E \[J\]:    final=[^\n]*\n"
+    r"  Potential E \[J\]:  final=[^\n]*\n"
+    r"  Constraints:        mean=[^\n]*\n?"
     r")"
 )
 _WARP_SDF_CONSTANT_CONVERSION_WARNING_RE = (
@@ -266,10 +266,10 @@ class TestExampleOutputRegexes(unittest.TestCase):
         unexpected_output = "unexpected output\n"
         output = (
             "Simulation diagnostics summary (3 steps):\n"
-            "  Iterations:   mean=1.0\n"
-            "  Kinetic E:    final=2.0\n"
-            "  Potential E:  final=3.0\n"
-            "  Constraints:  mean=4.0\n" + unexpected_output
+            "  Iterations (max):   mean=1.0, peak=2\n"
+            "  Kinetic E [J]:    final=2.0\n"
+            "  Potential E [J]:  final=3.0\n"
+            "  Constraints:        mean=4.0, peak=5.0\n" + unexpected_output
         )
 
         unmatched_output = re.sub(_BASIC_PLOTTING_OUTPUT_RE, "", output, flags=re.MULTILINE)
