@@ -2207,11 +2207,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
         dt: float,
         *,
         filter_contacts: bool = True,
+        control_callback: Callable[[Control | None], None] | None = None,
     ) -> Contacts | None:
         """Step one sub-solver entry, honoring its local substep count."""
         if filter_contacts:
             contacts = self._contacts_for_entry(entry, contacts)
         control = _copy_control_to_entry(control, entry)
+        if control_callback is not None:
+            control_callback(control)
         if entry.in_place:
             substep_dt = dt / float(entry.substeps)
             for _ in range(entry.substeps):

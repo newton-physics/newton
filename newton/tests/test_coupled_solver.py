@@ -27,7 +27,6 @@ from newton.solvers import (
 from newton.solvers.experimental.coupled import (
     ModelView,
     SolverCoupled,
-    SolverCoupledADMM,
     SolverCoupledProxy,
 )
 
@@ -101,12 +100,20 @@ class _ControlRecordingSolver(SolverBase, CouplingInterface):
     def __init__(self, model):
         super().__init__(model)
         self.joint_f = []
+        self.joint_target_q = []
+        self.joint_target_qd = []
         self.joint_target_pos = []
         self.instances.append(self)
 
     def step(self, state_in, state_out, control, contacts, dt):
         del contacts, dt
         self.joint_f.append(None if control is None or control.joint_f is None else control.joint_f.numpy().copy())
+        self.joint_target_q.append(
+            None if control is None or control.joint_target_q is None else control.joint_target_q.numpy().copy()
+        )
+        self.joint_target_qd.append(
+            None if control is None or control.joint_target_qd is None else control.joint_target_qd.numpy().copy()
+        )
         self.joint_target_pos.append(
             None if control is None or control.joint_target_pos is None else control.joint_target_pos.numpy().copy()
         )
@@ -1167,6 +1174,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 ),
             )
 
+
 class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
     """MuJoCo-specific coupling hook behavior."""
 
@@ -1222,6 +1230,61 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
             np.array([[0.0, 0.0, -7.5], [0.0, 0.0, -5.0], [0.0, 0.0, -2.5]], dtype=np.float32),
             atol=1.0e-6,
         )
+
+
+class TestSolverCoupledProxyJoints(unittest.TestCase):
+    """Proxy joints preserve source drive commands in destination solves."""
+
+    def test_aliased_proxy_joint_copies_control_target_each_iteration(self):
+        _ControlRecordingSolver.instances.clear()
+        builder = newton.ModelBuilder(gravity=0.0)
+        source_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        proxy_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        source_joint = builder.add_joint_prismatic(parent=-1, child=source_body, axis=(1.0, 0.0, 0.0))
+        proxy_joint = builder.add_joint_prismatic(parent=-1, child=proxy_body, axis=(1.0, 0.0, 0.0))
+        builder.add_articulation([source_joint])
+        builder.add_articulation([proxy_joint])
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupledProxy(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="src",
+                    solver=_ControlRecordingSolver,
+                    bodies=[source_body],
+                    joints=[source_joint],
+                ),
+                SolverCoupled.Entry(name="dst", solver=_ControlRecordingSolver, bodies=[proxy_body]),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(
+                        source="src",
+                        destination="dst",
+                        joints=[source_joint],
+                        proxy_joints=[proxy_joint],
+                    )
+                ],
+                iterations=3,
+            ),
+        )
+        control = model.control()
+        control.joint_target_q.assign(np.array([0.25, 0.75], dtype=np.float32))
+        control.joint_target_qd.assign(np.array([0.5, 1.5], dtype=np.float32))
+
+        coupled.step(model.state(), model.state(), control, contacts=None, dt=1.0 / 60.0)
+
+        source_solver, destination_solver = _ControlRecordingSolver.instances
+        self.assertEqual(len(source_solver.joint_target_q), 3)
+        self.assertEqual(len(destination_solver.joint_target_q), 3)
+        for target_q, target_qd in zip(
+            destination_solver.joint_target_q,
+            destination_solver.joint_target_qd,
+            strict=True,
+        ):
+            np.testing.assert_array_equal(target_q, np.array([0.25], dtype=np.float32))
+            np.testing.assert_array_equal(target_qd, np.array([0.5], dtype=np.float32))
 
 
 class TestSolverCoupledMuJoCoVBDMultiEnv(unittest.TestCase):
@@ -1445,6 +1508,7 @@ class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
         src_solver = _BodyForceRecordingSolver.instances[-1]
         expected = 0.25 * np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
         np.testing.assert_allclose(src_solver.input_body_f[1][0], expected, atol=1.0e-6)
+
 
 class TestSolverCoupledParticleProxy(unittest.TestCase):
     """Particle proxy mappings keep proxy particles dynamic in the destination view."""
@@ -1735,6 +1799,7 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         solver.step(state_0, state_1, control=None, contacts=contacts, dt=1.0 / 60.0)
 
         np.testing.assert_allclose(state_1.particle_q.numpy(), q_before, atol=1.0e-6)
+
 
 class TestSmoothTeleportRecovery(unittest.TestCase):
     """Validate that sync + smooth teleportation + VBD forward integration

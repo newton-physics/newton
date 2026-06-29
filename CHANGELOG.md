@@ -16,6 +16,8 @@
 - Add `SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)` for applying the checkerboard texture to selected shapes.
 - Add `--render-fps` to cap example rendering rate without changing simulation frame timing
 - Add `ModelBuilder.BvhConfig` for selecting Warp BVH constructors during model finalization for mesh, Gaussian, and shape BVHs.
+- Add `--solver vbd` to `franka_cloth_newton` alongside the default `--solver coupled` mode.
+- Add proxy joint support to experimental `SolverCoupledProxy` via `Proxy.joints` / `Proxy.proxy_joints`, keeping source-owned fixed, prismatic, and revolute joints active in destination proxy views.
 - Add an experimental coupled solver framework:
   - Introduce `newton.solvers.experimental.coupled` with `SolverCoupled`, `SolverCoupledProxy`, `SolverCoupledADMM`, and `ModelView` for multi-solver ownership, state mapping, and view-local model overrides.
   - Support body and particle proxy coupling with virtual inertia, solver hooks, MPM collider/transfer proxies, and convergence diagnostics.

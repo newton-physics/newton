@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import warp as wp
 
-from ...sim import ModelFlags, StateFlags
+from ...sim import JointType, ModelFlags, StateFlags
 from .interface import (
     CouplingEndpointKind,
 )
@@ -84,6 +84,20 @@ class _ProxyParticleMapping:
 
 
 @dataclass
+class _ProxyJointMapping:
+    """Runtime mapping from source joints to destination proxy joints."""
+
+    src_name: str
+    dst_name: str
+    src_joint_ids: wp.array = field(default=None)
+    proxy_joint_ids_global: wp.array = field(default=None)
+    source_target_q_indices_global: wp.array = field(default=None)
+    source_target_qd_indices_global: wp.array = field(default=None)
+    destination_target_q_indices_local: wp.array = field(default=None)
+    destination_target_qd_indices_local: wp.array = field(default=None)
+
+
+@dataclass
 class _ProxyCollisionConfig:
     """Runtime collision pipeline for one proxy source/destination solve."""
 
@@ -106,6 +120,20 @@ class _ProxyMode(IntEnum):
 _PROXY_MODE_BY_NAME = {"lagged": _ProxyMode.LAGGED, "staggered": _ProxyMode.STAGGERED}
 
 
+@wp.kernel(enable_backward=False)
+def _copy_indexed_float_kernel(
+    src_indices: wp.array[int],
+    dst_indices: wp.array[int],
+    src: wp.array[float],
+    dst: wp.array[float],
+):
+    i = wp.tid()
+    src_index = src_indices[i]
+    dst_index = dst_indices[i]
+    if src_index >= 0 and dst_index >= 0:
+        dst[dst_index] = src[src_index]
+
+
 class SolverCoupledProxy(SolverCoupled):
     """Couple two solvers with lagged-impulse virtual proxy bodies or particles."""
 
@@ -120,6 +148,11 @@ class SolverCoupledProxy(SolverCoupled):
             bodies: Source body ids to map into destination proxies.
             proxy_bodies: Optional destination body ids. Defaults to
                 ``bodies``.
+            joints: Source joint ids to keep enabled in the destination
+                proxy view. One-DoF drive targets are copied from the source
+                control before the destination solve.
+            proxy_joints: Optional destination joint ids. Defaults to
+                ``joints``.
             mass_scale: Destination proxy body mass/inertia and particle mass
                 scale factor.
             mode: Proxy transfer mode, ``"lagged"`` or ``"staggered"``.
@@ -150,6 +183,8 @@ class SolverCoupledProxy(SolverCoupled):
         destination: str
         bodies: Sequence[int] = ()
         proxy_bodies: Sequence[int] | None = None
+        joints: Sequence[int] = ()
+        proxy_joints: Sequence[int] | None = None
         mass_scale: float = 1.0
         mode: str = "lagged"
         proxy_relaxation: float = 1.0
@@ -176,12 +211,20 @@ class SolverCoupledProxy(SolverCoupled):
 
         entry_body_sets = {entry.name: {int(i) for i in entry.bodies} for entry in entries}
         entry_particle_sets = {entry.name: {int(i) for i in entry.particles} for entry in entries}
+        entry_joint_sets = {entry.name: {int(i) for i in entry.joints} for entry in entries}
 
         self._proxy_mappings = self._build_proxy_mappings(model, coupling, entry_body_sets)
         self._proxy_particle_mappings = self._build_proxy_particle_mappings(
             model,
             coupling,
             entry_particle_sets,
+        )
+        self._proxy_joint_mappings = self._build_proxy_joint_mappings(
+            model,
+            coupling,
+            entry_body_sets,
+            entry_joint_sets,
+            self._proxy_body_sets_by_destination(),
         )
         self._proxy_collision_configs = self._build_proxy_collision_configs(coupling)
         self._proxy_groups = self._build_proxy_groups()
@@ -248,6 +291,138 @@ class SolverCoupledProxy(SolverCoupled):
                     f"source body {source_id} is in world {source_world}, "
                     f"proxy body {proxy_id} is in world {proxy_world}"
                 )
+
+    def _proxy_body_sets_by_destination(self) -> dict[str, set[int]]:
+        proxy_bodies: dict[str, set[int]] = {}
+        for mapping in self._proxy_mappings:
+            proxy_bodies.setdefault(mapping.dst_name, set()).update(
+                int(i) for i in mapping.proxy_body_ids_global.numpy()
+            )
+        return proxy_bodies
+
+    @staticmethod
+    def _validate_proxy_source_ids_owned(
+        label: str,
+        source_ids: Sequence[int],
+        source: str,
+        source_owned_ids: set[int] | None,
+    ) -> None:
+        if source_owned_ids is None:
+            raise ValueError(f"Unknown proxy source entry {source!r}")
+        missing = sorted({int(i) for i in source_ids} - source_owned_ids)
+        if missing:
+            raise ValueError(f"Proxy source {label} ids must be owned by source entry {source!r}: {missing}")
+
+    @staticmethod
+    def _validate_proxy_joint_body_visibility(
+        model: Model,
+        joint_ids: Sequence[int],
+        visible_bodies: set[int],
+        entry_name: str,
+        label: str,
+    ) -> None:
+        joint_parent = model.joint_parent.numpy()
+        joint_child = model.joint_child.numpy()
+        for joint_id in joint_ids:
+            parent = int(joint_parent[joint_id])
+            child = int(joint_child[joint_id])
+            missing = []
+            if parent >= 0 and parent not in visible_bodies:
+                missing.append(parent)
+            if child not in visible_bodies:
+                missing.append(child)
+            if missing:
+                raise ValueError(
+                    f"{label.capitalize()} joint {joint_id} references bodies not visible in "
+                    f"coupled solver entry {entry_name!r}: {missing}"
+                )
+
+    def _build_proxy_joint_mappings(
+        self,
+        model: Model,
+        coupling: SolverCoupledProxy.Config,
+        entry_body_sets: dict[str, set[int]],
+        entry_joint_sets: dict[str, set[int]],
+        proxy_body_sets_by_destination: dict[str, set[int]],
+    ) -> list[_ProxyJointMapping]:
+        mappings = []
+        device = model.device
+        joint_type = model.joint_type.numpy() if model.joint_count else np.empty(0, dtype=np.int32)
+        supported_types = (int(JointType.FIXED), int(JointType.PRISMATIC), int(JointType.REVOLUTE))
+
+        for proxy in coupling.proxies:
+            src_ids = [int(i) for i in proxy.joints]
+            if not src_ids:
+                continue
+            proxy_local_ids = [int(i) for i in (proxy.proxy_joints if proxy.proxy_joints is not None else proxy.joints)]
+            if len(src_ids) != len(proxy_local_ids):
+                raise ValueError("Proxy source joints and proxy_joints must have the same length")
+            self._validate_proxy_ids("Proxy source joint", src_ids, model.joint_count)
+            self._validate_proxy_ids("Proxy destination joint", proxy_local_ids, model.joint_count)
+            self._validate_unique_proxy_ids("source joint", src_ids)
+            self._validate_unique_proxy_ids("proxy joint", proxy_local_ids)
+            self._validate_proxy_source_ids_owned(
+                "joint",
+                src_ids,
+                proxy.source,
+                entry_joint_sets.get(proxy.source),
+            )
+            self._validate_proxy_destination_ids_not_owned(
+                "joint",
+                proxy_local_ids,
+                proxy.destination,
+                entry_joint_sets.get(proxy.destination),
+            )
+
+            source_visible_bodies = entry_body_sets.get(proxy.source)
+            if source_visible_bodies is None:
+                raise ValueError(f"Unknown proxy source entry {proxy.source!r}")
+            destination_visible_bodies = set(entry_body_sets.get(proxy.destination, set()))
+            destination_visible_bodies.update(proxy_body_sets_by_destination.get(proxy.destination, set()))
+            self._validate_proxy_joint_body_visibility(
+                model,
+                src_ids,
+                source_visible_bodies,
+                proxy.source,
+                "source",
+            )
+            self._validate_proxy_joint_body_visibility(
+                model,
+                proxy_local_ids,
+                destination_visible_bodies,
+                proxy.destination,
+                "proxy",
+            )
+
+            for source_joint, proxy_joint in zip(src_ids, proxy_local_ids, strict=True):
+                source_type = int(joint_type[source_joint])
+                proxy_type = int(joint_type[proxy_joint])
+                if source_type not in supported_types:
+                    raise ValueError(
+                        f"Unsupported proxy source joint type {JointType(source_type).name} for joint {source_joint}; "
+                        "expected FIXED, PRISMATIC, or REVOLUTE"
+                    )
+                if proxy_type not in supported_types:
+                    raise ValueError(
+                        f"Unsupported proxy destination joint type {JointType(proxy_type).name} for joint "
+                        f"{proxy_joint}; expected FIXED, PRISMATIC, or REVOLUTE"
+                    )
+                if source_type != proxy_type:
+                    raise ValueError(
+                        f"Proxy source joint {source_joint} and destination joint {proxy_joint} must have "
+                        "matching joint types"
+                    )
+
+            mappings.append(
+                _ProxyJointMapping(
+                    src_name=proxy.source,
+                    dst_name=proxy.destination,
+                    src_joint_ids=wp.array(src_ids, dtype=int, device=device),
+                    proxy_joint_ids_global=wp.array(proxy_local_ids, dtype=int, device=device),
+                )
+            )
+
+        return mappings
 
     def _build_proxy_mappings(
         self,
@@ -408,6 +583,13 @@ class SolverCoupledProxy(SolverCoupled):
                 proxy_keep.update(int(i) for i in mapping.proxy_particle_ids_global.numpy())
         return proxy_keep
 
+    def _entry_proxy_joint_keep_indices(self, name: str) -> set[int]:
+        proxy_keep: set[int] = set()
+        for mapping in self._proxy_joint_mappings:
+            if mapping.dst_name == name and mapping.proxy_joint_ids_global is not None:
+                proxy_keep.update(int(i) for i in mapping.proxy_joint_ids_global.numpy())
+        return proxy_keep
+
     def _after_entries_constructed(self) -> None:
         self._refresh_proxy_view_maps()
         self._validate_in_place_proxy_entries()
@@ -491,6 +673,38 @@ class SolverCoupledProxy(SolverCoupled):
                 device=device,
             )
 
+        for mapping in self._proxy_joint_mappings:
+            dst = self._entries[mapping.dst_name]
+            src_joint_globals = [int(i) for i in mapping.src_joint_ids.numpy()]
+            proxy_joint_globals = [int(i) for i in mapping.proxy_joint_ids_global.numpy()]
+            (
+                source_target_q_indices_global,
+                source_target_qd_indices_global,
+                destination_target_q_indices_local,
+                destination_target_qd_indices_local,
+            ) = self._proxy_joint_control_index_maps(dst, src_joint_globals, proxy_joint_globals)
+
+            mapping.source_target_q_indices_global = wp.array(
+                source_target_q_indices_global,
+                dtype=int,
+                device=device,
+            )
+            mapping.source_target_qd_indices_global = wp.array(
+                source_target_qd_indices_global,
+                dtype=int,
+                device=device,
+            )
+            mapping.destination_target_q_indices_local = wp.array(
+                destination_target_q_indices_local,
+                dtype=int,
+                device=device,
+            )
+            mapping.destination_target_qd_indices_local = wp.array(
+                destination_target_qd_indices_local,
+                dtype=int,
+                device=device,
+            )
+
     @staticmethod
     def _local_ids_from_global(
         global_to_local: wp.array,
@@ -508,6 +722,86 @@ class SolverCoupledProxy(SolverCoupled):
                 )
             locals_.append(local_id)
         return locals_
+
+    @staticmethod
+    def _local_scalar_id_from_global(
+        mapping: np.ndarray,
+        global_id: int,
+        entry_name: str,
+        label: str,
+    ) -> int:
+        local_id = int(mapping[global_id]) if 0 <= global_id < len(mapping) else -1
+        if local_id < 0:
+            raise ValueError(f"{label.capitalize()} {global_id} is not visible in coupled solver entry {entry_name!r}")
+        return local_id
+
+    def _proxy_joint_control_index_maps(
+        self,
+        dst,
+        src_joint_globals: Sequence[int],
+        proxy_joint_globals: Sequence[int],
+    ) -> tuple[list[int], list[int], list[int], list[int]]:
+        model = self.model
+        joint_type = model.joint_type.numpy()
+        joint_qd_start = model.joint_qd_start.numpy()
+        joint_target_q_start = model.joint_target_q_start.numpy()
+        target_q_global_to_local = (
+            dst.joint_coord_global_to_local.numpy()
+            if bool(model.use_coord_layout_targets)
+            else dst.joint_dof_global_to_local.numpy()
+        )
+        dst_qd_global_to_local = dst.joint_dof_global_to_local.numpy()
+
+        source_target_q_indices_global: list[int] = []
+        source_target_qd_indices_global: list[int] = []
+        destination_target_q_indices_local: list[int] = []
+        destination_target_qd_indices_local: list[int] = []
+
+        for source_joint, proxy_joint in zip(src_joint_globals, proxy_joint_globals, strict=True):
+            if int(joint_type[source_joint]) == int(JointType.FIXED):
+                continue
+
+            source_target_q_count = int(joint_target_q_start[source_joint + 1] - joint_target_q_start[source_joint])
+            source_qd_count = int(joint_qd_start[source_joint + 1] - joint_qd_start[source_joint])
+            proxy_target_q_count = int(joint_target_q_start[proxy_joint + 1] - joint_target_q_start[proxy_joint])
+            proxy_qd_count = int(joint_qd_start[proxy_joint + 1] - joint_qd_start[proxy_joint])
+            if source_target_q_count != 1 or source_qd_count != 1 or proxy_target_q_count != 1 or proxy_qd_count != 1:
+                raise ValueError(
+                    "Proxy joint target synchronization only supports 1-DoF joints; "
+                    f"source joint {source_joint} has ({source_target_q_count}, {source_qd_count}) "
+                    f"target coordinates/DOFs and destination joint {proxy_joint} has "
+                    f"({proxy_target_q_count}, {proxy_qd_count}) target coordinates/DOFs"
+                )
+
+            source_target_q_global = int(joint_target_q_start[source_joint])
+            source_target_qd_global = int(joint_qd_start[source_joint])
+            proxy_target_q_global = int(joint_target_q_start[proxy_joint])
+            proxy_qd_global = int(joint_qd_start[proxy_joint])
+            source_target_q_indices_global.append(source_target_q_global)
+            source_target_qd_indices_global.append(source_target_qd_global)
+            destination_target_q_indices_local.append(
+                self._local_scalar_id_from_global(
+                    target_q_global_to_local,
+                    proxy_target_q_global,
+                    dst.name,
+                    "destination joint target coordinate",
+                )
+            )
+            destination_target_qd_indices_local.append(
+                self._local_scalar_id_from_global(
+                    dst_qd_global_to_local,
+                    proxy_qd_global,
+                    dst.name,
+                    "destination joint target DOF",
+                )
+            )
+
+        return (
+            source_target_q_indices_global,
+            source_target_qd_indices_global,
+            destination_target_q_indices_local,
+            destination_target_qd_indices_local,
+        )
 
     def _validate_in_place_proxy_entries(self) -> None:
         for proxy in [*self._proxy_mappings, *self._proxy_particle_mappings]:
@@ -688,6 +982,54 @@ class SolverCoupledProxy(SolverCoupled):
             device=self.model.device,
         )
 
+    def _sync_proxy_joint_targets(
+        self,
+        joint_proxies: Sequence[_ProxyJointMapping],
+        source_control: Control | None,
+        dst_control: Control | None,
+    ) -> None:
+        if source_control is None or dst_control is None:
+            return
+
+        for proxy in joint_proxies:
+            if (
+                proxy.source_target_q_indices_global is not None
+                and proxy.destination_target_q_indices_local is not None
+                and proxy.source_target_q_indices_global.shape[0] > 0
+                and source_control.joint_target_q is not None
+                and dst_control.joint_target_q is not None
+            ):
+                wp.launch(
+                    _copy_indexed_float_kernel,
+                    dim=proxy.source_target_q_indices_global.shape[0],
+                    inputs=[
+                        proxy.source_target_q_indices_global,
+                        proxy.destination_target_q_indices_local,
+                        source_control.joint_target_q,
+                        dst_control.joint_target_q,
+                    ],
+                    device=self.model.device,
+                )
+
+            if (
+                proxy.source_target_qd_indices_global is not None
+                and proxy.destination_target_qd_indices_local is not None
+                and proxy.source_target_qd_indices_global.shape[0] > 0
+                and source_control.joint_target_qd is not None
+                and dst_control.joint_target_qd is not None
+            ):
+                wp.launch(
+                    _copy_indexed_float_kernel,
+                    dim=proxy.source_target_qd_indices_global.shape[0],
+                    inputs=[
+                        proxy.source_target_qd_indices_global,
+                        proxy.destination_target_qd_indices_local,
+                        source_control.joint_target_qd,
+                        dst_control.joint_target_qd,
+                    ],
+                    device=self.model.device,
+                )
+
     def _entry_has_body_proxy_overrides(self, name: str) -> bool:
         for proxy in self._proxy_mappings:
             if (
@@ -792,11 +1134,17 @@ class SolverCoupledProxy(SolverCoupled):
         """Bucket proxy mappings by (src, dst) once at construction."""
         groups: dict[tuple[str, str], dict[str, list]] = {}
         for proxy in self._proxy_mappings:
-            groups.setdefault((proxy.src_name, proxy.dst_name), {"bodies": [], "particles": []})["bodies"].append(proxy)
+            groups.setdefault((proxy.src_name, proxy.dst_name), {"bodies": [], "particles": [], "joints": []})[
+                "bodies"
+            ].append(proxy)
         for proxy in self._proxy_particle_mappings:
-            groups.setdefault((proxy.src_name, proxy.dst_name), {"bodies": [], "particles": []})["particles"].append(
-                proxy
-            )
+            groups.setdefault((proxy.src_name, proxy.dst_name), {"bodies": [], "particles": [], "joints": []})[
+                "particles"
+            ].append(proxy)
+        for proxy in self._proxy_joint_mappings:
+            groups.setdefault((proxy.src_name, proxy.dst_name), {"bodies": [], "particles": [], "joints": []})[
+                "joints"
+            ].append(proxy)
         return groups
 
     def _step_proxy(
@@ -811,6 +1159,7 @@ class SolverCoupledProxy(SolverCoupled):
         for (src_name, dst_name), group in self._proxy_groups.items():
             body_proxies = group["bodies"]
             particle_proxies = group["particles"]
+            joint_proxies = group["joints"]
             src = self._entries[src_name]
             dst = self._entries[dst_name]
 
@@ -948,9 +1297,20 @@ class SolverCoupledProxy(SolverCoupled):
                 ):
                     restore_external_contacts = contacts_before_prepare
 
+            control_callback = None
+            if joint_proxies:
+
+                def control_callback(dst_control, joint_proxies=joint_proxies, source_control=control):
+                    self._sync_proxy_joint_targets(joint_proxies, source_control, dst_control)
+
             try:
                 dst_contacts_used = self._step_entry(
-                    dst, control, dst_contacts, dt, filter_contacts=filter_dst_contacts
+                    dst,
+                    control,
+                    dst_contacts,
+                    dt,
+                    filter_contacts=filter_dst_contacts,
+                    control_callback=control_callback,
                 )
             finally:
                 if restore_external_contacts is not None:
