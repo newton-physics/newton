@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import math
+import warnings
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -814,22 +816,33 @@ class Utils:
             device=self.__render_context.device,
         )
 
-    def assign_checkerboard_material_to_all_shapes(self, resolution: int = 64, checker_size: int = 32):
-        """Assign a gray checkerboard texture material to all shapes.
-        Creates a gray checkerboard pattern texture and applies it to all shapes
-        in the scene.
+    def assign_checkerboard_material(
+        self,
+        *,
+        shape_indices: Sequence[int] | np.ndarray,
+        resolution: int = 64,
+        checker_size: int = 32,
+    ):
+        """Assign a gray checkerboard texture material to selected shapes.
 
         Args:
+            shape_indices: Shape indices that should use the checkerboard texture.
             resolution: Texture resolution in pixels (square texture).
             checker_size: Size of each checkerboard square in pixels.
         """
+        shape_indices = np.asarray(shape_indices, dtype=np.int64).reshape(-1)
+        invalid = (shape_indices < 0) | (shape_indices >= self.__render_context.shape_count_total)
+        if invalid.any():
+            raise ValueError("shape_indices contains an out-of-range shape index")
+
         checkerboard = (
             (np.arange(resolution) // checker_size)[:, None] + (np.arange(resolution) // checker_size)
         ) % 2 == 0
 
         pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32)
 
-        texture_ids = np.full(self.__render_context.shape_count_total, fill_value=0, dtype=np.int32)
+        texture_ids = np.full(self.__render_context.shape_count_total, fill_value=-1, dtype=np.int32)
+        texture_ids[shape_indices] = 0
 
         self.__checkerboard_data = TextureData()
         self.__checkerboard_data.texture = wp.Texture2D(
@@ -850,6 +863,29 @@ class Utils:
         )
         self.__render_context.shape_texture_ids = wp.array(
             texture_ids, dtype=wp.int32, device=self.__render_context.device
+        )
+
+    def assign_checkerboard_material_to_all_shapes(self, resolution: int = 64, checker_size: int = 32):
+        """Assign a gray checkerboard texture material to all shapes.
+
+        .. deprecated:: 1.4
+            Use :meth:`assign_checkerboard_material` with explicit shape
+            indices instead.
+
+        Args:
+            resolution: Texture resolution in pixels (square texture).
+            checker_size: Size of each checkerboard square in pixels.
+        """
+        warnings.warn(
+            "``SensorTiledCamera.utils.assign_checkerboard_material_to_all_shapes`` is deprecated as of Newton 1.4. "
+            "Use ``SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)`` instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        self.assign_checkerboard_material(
+            shape_indices=np.arange(self.__render_context.shape_count_total, dtype=np.int32),
+            resolution=resolution,
+            checker_size=checker_size,
         )
 
     def __reshape_buffer_for_flatten(

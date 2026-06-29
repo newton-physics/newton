@@ -8,6 +8,11 @@ from functools import cache
 import numpy as np
 import warp as wp
 
+from ._tile_builtins import (
+    HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE,
+    HAS_TILE_MATMUL_TRANSPOSE_UPDATE,
+)
+
 ###
 # Module interface
 ###
@@ -237,8 +242,11 @@ def create_blocked_cholesky_kernel(block_size: int):
                     if L_tile_pattern[tile_k, tile_j] == 0:
                         continue
                     L_block = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j))
-                    L_block_T = wp.tile_transpose(L_block)
-                    wp.tile_matmul(L_block, L_block_T, A_kk_tile, alpha=-1.0)
+                    if wp.static(HAS_TILE_MATMUL_TRANSPOSE_UPDATE):
+                        wp.tile_matmul_transpose_update(A_kk_tile, L_block, L_block, alpha=-1.0)
+                    else:
+                        L_block_T = wp.tile_transpose(L_block)
+                        wp.tile_matmul(L_block, L_block_T, A_kk_tile, alpha=-1.0)
                     # equivalent to A_kk_tile -= L_block * L_block_T, without intermediate allocation
 
             # Compute the Cholesky factorization for the block
@@ -277,8 +285,11 @@ def create_blocked_cholesky_kernel(block_size: int):
                             continue
                         L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(i, j))
                         L_2_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(k, j))
-                        L_T_tile = wp.tile_transpose(L_2_tile)
-                        wp.tile_matmul(L_tile, L_T_tile, A_ik_tile, alpha=-1.0)
+                        if wp.static(HAS_TILE_MATMUL_TRANSPOSE_UPDATE):
+                            wp.tile_matmul_transpose_update(A_ik_tile, L_tile, L_2_tile, alpha=-1.0)
+                        else:
+                            L_T_tile = wp.tile_transpose(L_2_tile)
+                            wp.tile_matmul(L_tile, L_T_tile, A_ik_tile, alpha=-1.0)
                         # equivalent to A_ik_tile -= L_tile * L_T_tile, without intermediate allocation
 
                 t = wp.tile_transpose(A_ik_tile)
@@ -366,9 +377,12 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
                     if L_tile_pattern[tile_j, tile_i] == 0:
                         continue
                     L_tile = wp.tile_load(L, shape=(block_size, block_size), offset=(j, i_start))
-                    L_T_tile = wp.tile_transpose(L_tile)
                     x_tile = wp.tile_load(x, shape=(block_size, 1), offset=(j, 0))
-                    wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
+                    if wp.static(HAS_TILE_MATMUL_LEFT_TRANSPOSE_UPDATE):
+                        wp.tile_matmul_left_transpose_update(rhs_tile, L_tile, x_tile, alpha=-1.0)
+                    else:
+                        L_T_tile = wp.tile_transpose(L_tile)
+                        wp.tile_matmul(L_T_tile, x_tile, rhs_tile, alpha=-1.0)
                     # equivalent to rhs_tile -= L_T_tile * x_tile, without intermediate allocation
             wp.tile_upper_solve_inplace(wp.tile_transpose(L_diag), rhs_tile)  # In-place solve to avoid extra allocation
             wp.tile_store(x, rhs_tile, offset=(i_start, 0))

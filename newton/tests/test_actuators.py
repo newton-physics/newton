@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import types
 import unittest
+import warnings
 from unittest.mock import patch
 
 import numpy as np
@@ -73,6 +74,24 @@ def _write_dof_values(model, array, dof_indices, values):
     for dof, val in zip(dof_indices, values, strict=True):
         arr_np[dof] = val
     wp.copy(array, wp.array(arr_np, dtype=float, device=model.device))
+
+
+def _ignore_torchscript_deprecation(test_case):
+    """Tolerate torch's TorchScript-family deprecation notices for one test.
+
+    The neural-controller tests deliberately exercise the TorchScript checkpoint
+    path (``torch.jit.script``/``save``/``load``), which PyTorch now deprecates in
+    favor of ``torch.export``. Ignore just those advisories, scoped to the calling
+    test, so strict-warnings mode still surfaces everything else.
+    """
+    ctx = warnings.catch_warnings()
+    ctx.__enter__()
+    test_case.addCleanup(ctx.__exit__, None, None, None)
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*torch\.jit\..* is deprecated",
+        category=DeprecationWarning,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +214,7 @@ class TestControllerNeuralMLP(unittest.TestCase):
             self.skipTest(f"{e}")
 
         self.torch = torch
+        _ignore_torchscript_deprecation(self)
         self.device = wp.get_device()
         self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
@@ -319,6 +339,7 @@ class TestControllerNeuralLSTM(unittest.TestCase):
             self.skipTest(f"{e}")
 
         self.torch = torch
+        _ignore_torchscript_deprecation(self)
         self.device = wp.get_device()
         self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
         self._tmp_dir = tempfile.mkdtemp()
@@ -1414,6 +1435,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
             self.skipTest(f"{e}")
 
         self.torch = torch
+        _ignore_torchscript_deprecation(self)
         self._tmp_dir = tempfile.mkdtemp()
 
     def tearDown(self):

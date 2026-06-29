@@ -26,6 +26,8 @@ class Example:
         self.sim_time = 0.0
         self.world_count = args.world_count if args else 1
         self.use_kamino_contacts = args.use_kamino_contacts if args else False
+        self.linear_solver_type = getattr(args, "linear_solver_type", "LLTB") if args else "LLTB"
+        self.linear_solver_kwargs = getattr(args, "linear_solver_kwargs", {}) if args else {}
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -68,11 +70,14 @@ class Example:
         self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
         self.config.use_fk_solver = True
         self.config.use_collision_detector = self.use_kamino_contacts
+        self.config.dynamics.linear_solver_type = self.linear_solver_type
+        self.config.dynamics.linear_solver_kwargs = self.linear_solver_kwargs
         self.config.constraints.delta = 1e-3
         self.config.padmm.max_iterations = 200
         self.config.padmm.primal_tolerance = 1e-4
         self.config.padmm.dual_tolerance = 1e-4
         self.config.padmm.compl_tolerance = 1e-4
+        self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", True) if args else True
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Set joint armature and viscous damping for better
@@ -167,8 +172,22 @@ class Example:
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_kamino_contacts_arg(parser)
+        parser.add_argument(
+            "--linear-solver-type",
+            choices=("LLTB", "LLTBRCM", "CR"),
+            default="LLTB",
+            type=str.upper,
+            help="Kamino dynamics linear solver to use.",
+        )
+        parser.add_argument(
+            "--no-graph-conditionals",
+            dest="use_graph_conditionals",
+            action="store_false",
+            help="Disable CUDA graph conditional nodes in Kamino PADMM.",
+        )
         parser.set_defaults(world_count=1)
         parser.set_defaults(use_kamino_contacts=True)
+        parser.set_defaults(use_graph_conditionals=True)
         return parser
 
 

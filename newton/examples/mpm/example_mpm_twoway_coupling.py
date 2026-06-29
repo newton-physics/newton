@@ -128,7 +128,7 @@ class Example:
         mpm_options.max_iterations = 50
         mpm_options.critical_fraction = 0.0
 
-        self.mpm_solver = SolverImplicitMPM(self.sand_model, mpm_options)
+        self.mpm_solver = SolverImplicitMPM(self.sand_model, config=mpm_options)
         # read colliders from the RB model rather than the sand model
         self.mpm_solver.setup_collider(model=self.model)
 

@@ -1962,6 +1962,7 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/0a/44/b9eb9da81b7dd74eaba8b39af07d8d95717c2b2e251b6c3475d8f95a6195/imgui_bundle-1.92.801-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:74a4ab84bc4336c9025c6c96033f44904a667a285ad188f31ca2c595f4fea1f0", size = 13339617, upload-time = "2026-05-13T13:33:57.848Z" },
     { url = "https://files.pythonhosted.org/packages/82/55/fe08eec7a64989beb2e970a775e279b4d6ab11d113849a4fc60d56154766/imgui_bundle-1.92.801-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:5f56121d0ea45a92a291722ae235e8d8ad00eecf4afbbe5fa683b20dc4d077ed", size = 13297473, upload-time = "2026-05-13T13:34:00.843Z" },
     { url = "https://files.pythonhosted.org/packages/70/00/cab90cfb276a7843091a92899f4ec1d8289daf8add6a48322cd7d6b20b2c/imgui_bundle-1.92.801-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:93e07d4623292b4cb8b0d7d62f5bc066d544c3d1f0902213c9713d9739e21ecf", size = 14199832, upload-time = "2026-05-13T13:34:03.852Z" },
+    { url = "https://files.pythonhosted.org/packages/82/f3/6c3d3e031169bc07244d212f2ba81c52d9d77e53c56881f2c738bbc9f5ff/imgui_bundle-1.92.801-cp314-cp314-pyemscripten_2026_0_wasm32.whl", hash = "sha256:dbfeb4dcd766d8622f76f0f115fe96021e02435dfc98539516de2af1c93f42ba", size = 4962249, upload-time = "2026-06-12T15:31:12.173Z" },
     { url = "https://files.pythonhosted.org/packages/00/b9/5e625a50ff71773752e45145f39452bf2988dc6440089414941341b30bc1/imgui_bundle-1.92.801-cp314-cp314-win_amd64.whl", hash = "sha256:555d37df1fdde62d4d6bfaf985de90cbac6618358d65f1050d0a33269e88e230", size = 11384993, upload-time = "2026-05-13T13:34:06.62Z" },
     { url = "https://files.pythonhosted.org/packages/d1/4c/dbf7b4141694e4841450db778a8f68e98b2bde48d05e985e372cd3b21b06/imgui_bundle-1.92.801-cp314-cp314-win_arm64.whl", hash = "sha256:d0c73b38860996a7e6608d83e9d8d6a4d40f84968085583de58ecf89de479bd8", size = 10937072, upload-time = "2026-05-13T13:34:09.193Z" },
 ]
@@ -2239,6 +2240,20 @@ wheels = [
 ]
 
 [[package]]
+name = "jupyter-builder"
+version = "1.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jupyter-core" },
+    { name = "tomli", marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
+    { name = "traitlets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fb/45/d0df8b43c10a61529c0f4a8af5e19ebe108f0c3af8f57e0fc358969907af/jupyter_builder-1.0.2.tar.gz", hash = "sha256:6155d78a5325010532a6419ffcba89eac643fd1aa56ea83115e661924d6f6aab", size = 968638, upload-time = "2026-06-12T02:33:25.767Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/28/b6/c418e0b3256f67c04933566b80bfce947350682db92c4b786a8653db32d6/jupyter_builder-1.0.2-py3-none-any.whl", hash = "sha256:b024f65d36e1d530542db597b00dd513261aa59842e0d0fbbb1015a9f1935e9c", size = 910789, upload-time = "2026-06-12T02:33:23.317Z" },
+]
+
+[[package]]
 name = "jupyter-client"
 version = "8.9.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2301,7 +2316,7 @@ wheels = [
 
 [[package]]
 name = "jupyter-server"
-version = "2.19.0"
+version = "2.20.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2324,9 +2339,9 @@ dependencies = [
     { name = "traitlets" },
     { name = "websocket-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/76/a0/eb3c511f54df7b54ca5fc7bff3f4d2277d69052d6a7f521643dfed5279d6/jupyter_server-2.19.0.tar.gz", hash = "sha256:1731236bc32b680223e1ceb9d68209a845203475012ef68773a81434b46a31a7", size = 754561, upload-time = "2026-05-29T11:21:26.057Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6b/dc/db3a582633170186f8c8b31298d7eb26ad0eb031a1f53476c258b64eed05/jupyter_server-2.20.0.tar.gz", hash = "sha256:b5778ba337d8015a3dc2b80803ecdd5ac18d3797fddf61a50ea5fb472b4ebe14", size = 756523, upload-time = "2026-06-17T12:09:09.435Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c1/78/d2881e68894cecdcd05912a9c585cfb776ef1fb38b62c8dba98f12ab3adc/jupyter_server-2.19.0-py3-none-any.whl", hash = "sha256:cb76591b76d7093584c2ad2ae72ac3d58614a4b597507a1bb04e1f9f683cf9ea", size = 392244, upload-time = "2026-05-29T11:21:23.871Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/71/8c002223e873a870f5c41dc69b0a7c922301123e4a31d5d01ecb700aef77/jupyter_server-2.20.0-py3-none-any.whl", hash = "sha256:c3b67c93c471e947c18b5026f04f21614218adb706df8f48227d3ee8e0a7cdcc", size = 393143, upload-time = "2026-06-17T12:09:07.234Z" },
 ]
 
 [[package]]
@@ -2373,28 +2388,27 @@ wheels = [
 
 [[package]]
 name = "jupyterlab"
-version = "4.5.8"
+version = "4.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "async-lru" },
     { name = "httpx" },
     { name = "ipykernel" },
     { name = "jinja2" },
+    { name = "jupyter-builder" },
     { name = "jupyter-core" },
     { name = "jupyter-lsp" },
     { name = "jupyter-server" },
     { name = "jupyterlab-server" },
     { name = "notebook-shim" },
     { name = "packaging" },
-    { name = "setuptools", version = "81.0.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-6-newton-torch-cu12' or extra == 'extra-6-newton-torch-cu13'" },
-    { name = "setuptools", version = "82.0.1", source = { registry = "https://pypi.org/simple" }, marker = "(extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13') or (extra != 'extra-6-newton-torch-cu12' and extra != 'extra-6-newton-torch-cu13')" },
     { name = "tomli", marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "tornado" },
     { name = "traitlets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0e/74/089613e6099e851a6130816f2df592c839d8565f8746a701edada05a33e4/jupyterlab-4.5.8.tar.gz", hash = "sha256:af54d7242cc689a1e6c3ad213cc9b6d9781787d9ec67c52ec9a8f4707088cadd", size = 23994076, upload-time = "2026-06-04T12:32:12.906Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/3c/1ebd737b860cdbe61eed71536d06aab4e1781fbdcf07ecd5a1afe05b8adf/jupyterlab-4.6.0.tar.gz", hash = "sha256:6a8b88f2aae7ed4d012c634fc957c1a27f3aa217c32f0ced0175fac9ee17f9e5", size = 28181861, upload-time = "2026-06-18T13:52:56.039Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c9/d1/56a400100559cbf154a23cd29989261941ae5c9f743898fc10e8a5508b7c/jupyterlab-4.5.8-py3-none-any.whl", hash = "sha256:7d514c856d0d607601ec7692374da4f26e2aaf3b6e7cd363136b422a50588d6c", size = 12449443, upload-time = "2026-06-04T12:32:08.442Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/eb/aa48075d0aa3d0188db34ba2704f53791757743c0bb02e18c4eef989b6de/jupyterlab-4.6.0-py3-none-any.whl", hash = "sha256:b6938cb8a1ef3d43860ff4745a680c62cc0a9385f9672295bb56cd2e7cfeebe2", size = 17143447, upload-time = "2026-06-18T13:52:51.42Z" },
 ]
 
 [[package]]
@@ -3886,7 +3900,7 @@ requires-dist = [
     { name = "usd-exchange", marker = "python_full_version < '3.13' and platform_machine == 'aarch64' and extra == 'importers'", specifier = ">=2.2.0" },
     { name = "viser", marker = "extra == 'docs'", specifier = "==1.0.26" },
     { name = "viser", marker = "extra == 'notebook'", specifier = "==1.0.26" },
-    { name = "warp-lang", specifier = ">=1.14.0", index = "https://pypi.nvidia.com/" },
+    { name = "warp-lang", specifier = ">=1.15.0.dev20260626", index = "https://pypi.nvidia.com/" },
 ]
 provides-extras = ["sim", "importers", "remesh", "examples", "rtx", "torch-cu12", "torch-cu13", "dev", "docs", "notebook"]
 
@@ -6245,23 +6259,11 @@ name = "setuptools"
 version = "82.0.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14' and platform_machine != 's390x' and sys_platform == 'win32'",
-    "python_full_version >= '3.14' and platform_machine == 's390x' and sys_platform == 'win32'",
-    "python_full_version >= '3.14' and platform_machine != 's390x' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.14' and platform_machine == 's390x' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.14' and platform_machine != 's390x' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version >= '3.14' and platform_machine == 's390x' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and platform_machine != 's390x' and sys_platform == 'win32'",
     "python_full_version == '3.12.*' and platform_machine != 's390x' and sys_platform == 'win32'",
-    "python_full_version == '3.13.*' and platform_machine == 's390x' and sys_platform == 'win32'",
     "python_full_version == '3.12.*' and platform_machine == 's390x' and sys_platform == 'win32'",
-    "python_full_version == '3.13.*' and platform_machine != 's390x' and sys_platform == 'emscripten'",
     "python_full_version == '3.12.*' and platform_machine != 's390x' and sys_platform == 'emscripten'",
-    "python_full_version == '3.13.*' and platform_machine == 's390x' and sys_platform == 'emscripten'",
     "python_full_version == '3.12.*' and platform_machine == 's390x' and sys_platform == 'emscripten'",
-    "python_full_version == '3.13.*' and platform_machine != 's390x' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version == '3.12.*' and platform_machine != 's390x' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and platform_machine == 's390x' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version == '3.12.*' and platform_machine == 's390x' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version == '3.11.*' and platform_machine != 's390x' and sys_platform == 'win32'",
     "python_full_version == '3.11.*' and platform_machine == 's390x' and sys_platform == 'win32'",
@@ -7172,17 +7174,17 @@ wheels = [
 
 [[package]]
 name = "warp-lang"
-version = "1.15.0.dev20260612"
+version = "1.15.0.dev20260626"
 source = { registry = "https://pypi.nvidia.com/" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 wheels = [
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.15.0.dev20260612-py3-none-macosx_11_0_arm64.whl", hash = "sha256:9ff409ef0143116869f2987d802f610b9d10c797e030d59e1bca049db1d2bfc7" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.15.0.dev20260612-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:f17a22f2b8b4b8767386f6ab592e7af7125ceeb017150407d13bd792307d4616" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.15.0.dev20260612-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:c41ab515b1429b0042d29105c493c8b9d5139c08c5faf3bb12b53c735338e1a7" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.15.0.dev20260612-py3-none-win_amd64.whl", hash = "sha256:42b16713e1f6984bacab9997e0ab617a1d307bebdb081c22fc8b7c4ad8617fd5" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.15.0.dev20260626-py3-none-macosx_11_0_arm64.whl", hash = "sha256:351cb3e0679767f29a7d1fd639537fe40f66fe9f29355d4d19c5cbde8959916d" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.15.0.dev20260626-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:e43f8eedb80300bd4e024a50d2bf9b5177bb16a838d936f1d4a0a2499cf531e2" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.15.0.dev20260626-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:d87dc2f286372cbb2c1c66857e7b9ee62a9d485ecf01b193349ecb6f5b4d938c" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.15.0.dev20260626-py3-none-win_amd64.whl", hash = "sha256:81b2328cc5bfafc70776cad651d99d28d280d3f544bd5e555400d1d379528de4" },
 ]
 
 [[package]]
