@@ -1003,6 +1003,7 @@ def create_soft_contacts(
     shape_source_ptr: wp.array[wp.uint64],
     shape_world: wp.array[int],  # World indices for shapes
     margin: float,
+    shape_margin: wp.array[float],
     soft_contact_max: int,
     shape_count: int,
     shape_flags: wp.array[wp.int32],
@@ -1053,6 +1054,7 @@ def create_soft_contacts(
     # geo description
     geo_type = shape_type[shape_index]
     geo_scale = shape_scale[shape_index]
+    s_margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
 
     # evaluate shape sdf
     d = 1.0e6
@@ -1094,7 +1096,9 @@ def create_soft_contacts(
         # Use magnitude of components: the search radius must always be positive
         # regardless of mirror parity.
         min_scale = wp.min(wp.min(wp.abs(geo_scale[0]), wp.abs(geo_scale[1])), wp.abs(geo_scale[2]))
-        query = wp.mesh_query_point_sign_parity(mesh, wp.cw_div(x_local, geo_scale), margin + radius / min_scale)
+        query = wp.mesh_query_point_sign_parity(
+            mesh, wp.cw_div(x_local, geo_scale), margin + s_margin / min_scale + radius / min_scale
+        )
         if query.result:
             sign = query.sign
             face_index = query.face
@@ -1121,11 +1125,13 @@ def create_soft_contacts(
         hfd = heightfield_data[shape_heightfield_index[shape_index]]
         d, n = sample_sdf_grad_heightfield(hfd, heightfield_elevations, x_local)
 
-    if d < margin + radius:
+    if d < margin + s_margin + radius:
         index = counter_increment(soft_contact_count, 0, soft_contact_tids, tid)
 
         if index < soft_contact_max:
-            # compute contact point in body local space
+            # body_pos is the raw closest-surface point; per-shape margin is applied
+            # analytically at force eval. Inflation is just (SDF - margin), so n is
+            # unchanged and the closest point only slides out by margin along n
             body_pos = wp.transform_point(X_bs, x_local - n * d)
             body_vel = wp.transform_vector(X_bs, v)
 

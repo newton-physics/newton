@@ -946,7 +946,9 @@ class CollisionPipeline:
             state: The current simulation state.
             contacts: The contacts buffer to populate (will be cleared first).
             soft_contact_margin: Margin for soft contact generation.
-                If ``None``, uses the value from construction.
+                If ``None``, uses the value from construction. The effective
+                contact threshold also incorporates per-shape margins from
+                ``model.shape_margin``.
         """
 
         # Counter zeroing and generation bump are fused into compute_shape_aabbs.
@@ -1234,6 +1236,7 @@ class CollisionPipeline:
                     model.shape_source_ptr,
                     model.shape_world,
                     soft_contact_margin,
+                    model.shape_margin,
                     self.soft_contact_max,
                     model.shape_count,
                     model.shape_flags,

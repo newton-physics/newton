@@ -8,12 +8,14 @@
 - Import supported AOUSD proposal `PhysicsAttachment` prims for cable-to-xform attachments in `ModelBuilder.add_usd()`: cable `point` / `segment` sites with `type1 = "xform"` become hard point ball joints to the target xform, rigid body (including a kinematic body), or world frame and are returned in `path_attachment_map`; unsupported cloth/volume attachment sites are warned and preserved in `path_attachment_attrs`. A `point`->`point` attachment between two imported curve deformables is instead treated as graph topology: transitively joined curves are welded at the shared control points and built as one rod via `ModelBuilder.add_rod_graph()` (pre-wrapped in a single articulation).
 - Import AOUSD proposal `PhysicsElementCollisionFilter` prims in `ModelBuilder.add_usd()`: suppress collisions between paired element groups of `src0` and `src1`, lowered to shape collision-filter pairs. `groupElemCounts0` / `groupElemCounts1` slice the flat `groupElemIndices` arrays into groups that pair element-wise (collisions filtered only within each paired group, not the full cross product); a count of `0`, or an empty counts array, means all elements of that source. Sources resolve to imported cables (indices select the cable's segments), rigid bodies (all collider shapes), or collider prims (a child collider under a rigid Xform, or a bodyless static collider); cloth/volume (triangle/tet) element sources are warned and skipped.
 - Add `cloth_stiff_material_hanging` and `cloth_stiff_material_stretch` examples regression-guarding the new Neo-Hookean triangle material (stability under gravity at extreme stiffness, and bulk area-preservation across a Poisson-ratio sweep)
+- Add three VBD contact examples — `vbd_rigid_rigid_contact`, `vbd_soft_rigid_contact`, and `vbd_soft_rigid_mix_contact` — demonstrating rigid-rigid, soft (particle-rigid), and mixed cloth-bag contacts
 - Add viewer layer system to overlay multiple solvers/models in supported rendering viewers; call `ViewerBase.activate(layer_id)` to route subsequent `set_model` / `log_state` / `log_*` calls into a named layer, `ViewerBase.set_layer_visible()` to toggle layers independently, and `ViewerBase.set_layer_transform()` to position layers side-by-side. See `example_basic_multi_solver_overlay.py`
 - Add `viewer.set_picking_linear_only_bodies()` and `viewer.clear_picking_linear_only_bodies()` to mark bodies that should receive only the linear component of mouse-picking force, suppressing offset-induced torque.
 - Add opt-in `body_frame_origin="com"` to `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()` for COM-centered cable capsule body frames.
 - Add user-defined pressure laws to hydroelastic SDF contact via `HydroelasticSDF.Config.pressure_func` (a `@wp.func` mapping `(signed_depth, shape_idx, data) -> pressure`) and `pressure_data` (a `@wp.struct` carrying per-shape state). The contact patch is the iso-pressure surface `p_a == p_b`; the default linear law `pressure = -kh * signed_depth` is preserved when no callback is supplied.
 - Add `SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)` for applying the checkerboard texture to selected shapes.
 - Add `--render-fps` to cap example rendering rate without changing simulation frame timing
+- Add `ModelBuilder.BvhConfig` for selecting Warp BVH constructors during model finalization for mesh, Gaussian, and shape BVHs.
 
 ### Changed
 
@@ -31,6 +33,7 @@
 - Change VBD Neo-Hookean membrane/tet damping to an objective metric based on the rate of `C = FᵀF`, so rigid-body rotations no longer generate damping force.
 - Change VBD spring damping to act only along the spring axis (damping edge-length rate), so transverse and rigid-rotational motion is no longer damped by springs.
 - Deprecate the default of `newton.usd.get_tetmesh()` and `newton.TetMesh.create_from_usd()` reading legacy vendor-namespaced deformable material attributes (`omniphysics:`, `physxDeformableBody:`) off any bound material. The default still reads them during the deprecation window but now emits a `DeprecationWarning` when a physics material is bound; the default will change to canonical `physics:`-only in a future release. Pass `compat_namespaces=()` to opt into the canonical-only behavior now (moduli read only from a material applying `PhysicsVolumeDeformableMaterialAPI`), or `compat_namespaces=newton.usd.DEFORMABLE_LEGACY_NAMESPACES` to keep reading vendor namespaces without the warning. `compat_namespaces` is now keyword-only.
+- `SolverVBD` now applies each shape's `ShapeConfig.margin` (`model.shape_margin`) to particle-rigid (soft) contacts, widening the soft-contact detection shell and reducing penetration depth per shape; previously only the global `soft_contact_margin` and particle radius were used. Re-check VBD scenes that set per-shape margins. (#2994)
 
 ### Fixed
 
@@ -38,8 +41,10 @@
 - Fix `ViewerFile.is_running()` to return `False` after `ViewerFile.close()` so headless recording loops can terminate like interactive viewers. (#3094)
 - Fix `SolverVBD` rigid contact injecting kinetic energy for yawed finite-radius contacts (e.g. small-radius cables blowing up). The normal response now acts at the geometric skeleton point rather than the rotating surface anchor, which was non-conservative under reorientation; friction still uses the surface anchor to preserve finite-radius slip. (#3125)
 - Fix `SolverKamino` contact filtering and constraint stabilization so gap/margin contacts are handled consistently, positive-distance contacts can be filtered as configured, and converted contact forces/wrenches populate matching Newton contact slots for `SensorContact`. (#2908)
+- Fix memory growth in the Style3D solver when CUDA Graph capture is disabled
 - Fix `newton.eval_jacobian`, `SolverFeatherstone`, and the IK analytic Jacobian building `JointType.D6` angular motion-subspace columns from raw axes, so `J @ joint_qd` now matches `State.body_qd` for two- or three-angular-DOF joints at non-identity configurations.
 - Fix mesh inertia computation to produce deterministic results across repeated CUDA runs. (#3136)
+- Fix `SolverImplicitMPM` whole-step CUDA graph capture failing when the rheology inner solver is an iterative linear method such as `solver="cg"`. (#3155)
 - Fix USD import so non-unit `metersPerUnit` and `kilogramsPerUnit` warn as unsupported, and stop scaling `PhysicsScene` gravity magnitude by `metersPerUnit`.
 - Fix swapped kinetic and potential energy labels in the `basic_plotting` example, and report per-world values directly so the live plot overlays match the side-panel readouts
 - Fix `SolverMuJoCo` reporting incorrect `State.body_qd` angular velocity for `JointType.D6` joints with two or three angular DOFs at non-identity configurations.
