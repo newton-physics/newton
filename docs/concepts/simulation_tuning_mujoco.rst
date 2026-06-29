@@ -12,7 +12,9 @@ This page explains how :class:`~newton.solvers.SolverMuJoCo` interprets contact
 and constraint parameters, so that :attr:`~Model.shape_material_ke` and
 :attr:`~Model.shape_material_kd` can be tuned with intent. See
 :ref:`Simulation Tuning` for the diagnostic workflow and
-:ref:`Tuning Solver Reference` for the full knob list.
+:ref:`Tuning Solver Reference` for the full knob list. For more details about
+Newton-to-MuJoCo mappings, contact-pipeline behavior, and solver-option
+resolution, see :doc:`MuJoCo Integration </integrations/mujoco>`.
 
 .. important::
 
@@ -80,7 +82,9 @@ Mapping ``ke``/``kd`` to ``solref``
 
 How ``ke``/``kd`` reach the solver depends on the shape's ``solref_mode``
 (``model.mujoco.solref_mode``; default ``SOLREF_MODE_MJCF_DEFAULT``) and on
-``use_mujoco_contacts`` (default ``True``).
+``use_mujoco_contacts`` (default ``True``). For more details about how each mode
+and contact path affects this mapping, see
+:ref:`shape-material-contact-stiffness-and-damping`.
 
 **Default path (MJCF-default mode).** Each shape's ``ke``/``kd`` are baked into
 its geom ``solref`` at model build, as positive-format ``solref``:
@@ -98,18 +102,6 @@ fixed at ``1`` on every current path, so they are not tuning knobs.) The realize
 response still depends on ``solimp``, ``dmax``, the current impedance ``d(r)``,
 constraint inverse inertia, the friction cone, solver convergence, and the
 timestep.
-
-**Force-space mode** (opt in per shape via
-``model.mujoco.solref_mode[shape] = SOLREF_MODE_FORCE_SPACE``). Here ``ke``/``kd``
-are scaled by the contacting bodies' inverse-weight sum times ``(1 - dmax)``
-before the same conversion, so the effective stiffness accounts for the pair's
-effective mass. This per-contact scaling applies **only when**
-``use_mujoco_contacts=False``; with the default ``use_mujoco_contacts=True`` the
-solver falls back to the MJCF-default mapping above.
-
-**Raw mode** (``SOLREF_MODE_RAW``). The authored MuJoCo ``solref`` is used
-unchanged; ``ke``/``kd`` are ignored. Tune it with MuJoCo ``solref`` semantics
-directly (see the MuJoCo reference linked above).
 
 ``solref`` Formats
 ------------------
@@ -341,5 +333,6 @@ jitter; drives behave as intended.*
 Further Reading
 ---------------
 
+- :doc:`MuJoCo Integration </integrations/mujoco>`
 - `MuJoCo Modeling: Solver Parameters <https://mujoco.readthedocs.io/en/stable/modeling.html#solver-parameters>`__
 - `MuJoCo Modeling: Solver Settings <https://mujoco.readthedocs.io/en/stable/modeling.html#solver-settings>`__
