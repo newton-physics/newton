@@ -2151,11 +2151,16 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
     """Manipulator-equation tests covering combined inverse-dynamics outputs."""
 
     def test_eval_all_populates_every_buffer(self):
-        """EvalType.ALL must write the mass matrix and both bias forces in one call.
+        """EvalType.ALL must produce the same results as three isolated single-flag calls.
 
         Uses a floating base so the articulation has multi-DOF coupling; a
         fixed root with a single revolute DOF has identically-zero Coriolis
         and would trivially defeat that assertion.
+
+        The cross-check against isolated calls directly catches scratch-buffer
+        aliasing: if combining all three flags causes one pass to corrupt the
+        scratch consumed by another, the ALL results will diverge from the
+        per-flag references.
         """
         builder = self._build_two_link_articulation(
             gravity=wp.vec3(0.0, -9.81, 0.0),
@@ -2183,19 +2188,23 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         joint_qd[:] = np.linspace(0.1, 0.7, joint_qd.shape[0])
         state.joint_qd.assign(joint_qd)
 
-        inverse_dynamics, scratch = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.ALL, inverse_dynamics, scratch)
+        EvalType = newton.InverseDynamics.EvalType
 
-        H = inverse_dynamics.mass_matrix.numpy()
-        g = inverse_dynamics.gravity_force.numpy()
-        c = inverse_dynamics.coriolis_force.numpy()
+        # Reference: three isolated single-flag calls, each with a fresh scratch.
+        ref_mm, ref_scratch = model.inverse_dynamics()
+        newton.eval_inverse_dynamics(model, state, EvalType.MASS_MATRIX, ref_mm, ref_scratch)
+        ref_gf, ref_scratch = model.inverse_dynamics()
+        newton.eval_inverse_dynamics(model, state, EvalType.GRAVITY_FORCE, ref_gf, ref_scratch)
+        ref_cf, ref_scratch = model.inverse_dynamics()
+        newton.eval_inverse_dynamics(model, state, EvalType.CORIOLIS_FORCE, ref_cf, ref_scratch)
 
-        self.assertTrue(np.all(np.isfinite(H)))
-        self.assertTrue(np.all(np.isfinite(g)))
-        self.assertTrue(np.all(np.isfinite(c)))
-        self.assertGreater(float(np.max(np.abs(H))), 1e-6)
-        self.assertGreater(float(np.max(np.abs(g))), 1e-6)
-        self.assertGreater(float(np.max(np.abs(c))), 1e-6)
+        # Combined call under test.
+        combined, scratch = model.inverse_dynamics()
+        newton.eval_inverse_dynamics(model, state, EvalType.ALL, combined, scratch)
+
+        np.testing.assert_array_equal(combined.mass_matrix.numpy(), ref_mm.mass_matrix.numpy())
+        np.testing.assert_array_equal(combined.gravity_force.numpy(), ref_gf.gravity_force.numpy())
+        np.testing.assert_array_equal(combined.coriolis_force.numpy(), ref_cf.coriolis_force.numpy())
 
     def _test_inverse_dynamics_force(self, non_zero_gravity: bool, non_zero_initial_dof_velocities: bool):
         """Manipulator-equation test parameterized on whether the bias terms are exercised.
