@@ -2663,8 +2663,9 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         self.assertIn(str(wrong_shape), msg)
 
     def test_eval_inverse_dynamics_raises_on_buffer_shape_mismatch(self):
-        """``eval_inverse_dynamics`` raises ``ValueError`` when any output
-        buffer's shape disagrees with the model's expected shape.
+        """``eval_inverse_dynamics`` and ``eval_inverse_dynamics_force`` raise
+        ``ValueError`` when any output buffer's shape disagrees with the
+        model's expected shape.
         """
         builder = self._build_two_link_articulation(
             gravity=wp.vec3(0.0, 0.0, 0.0),
@@ -2719,6 +2720,23 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
                 msg = str(ctx.exception)
                 self.assertIn(expected_substr, msg)
                 self.assertIn(str(wrong_shape), msg)
+
+        with self.subTest(flag="tau"):
+            inverse_dynamics, scratch = model.inverse_dynamics()
+            wrong_shape = (model.joint_dof_count + 1,)
+            inverse_dynamics.tau = wp.zeros(wrong_shape, dtype=wp.float32, device=self.device)
+            with self.assertRaises(ValueError) as ctx:
+                newton.eval_inverse_dynamics_force(
+                    model,
+                    inverse_dynamics.mass_matrix,
+                    wp.zeros(model.joint_dof_count, dtype=wp.float32, device=self.device),
+                    inverse_dynamics.coriolis_force,
+                    inverse_dynamics.gravity_force,
+                    inverse_dynamics.tau,
+                )
+            msg = str(ctx.exception)
+            self.assertIn("tau", msg)
+            self.assertIn(str(wrong_shape), msg)
 
     def test_eval_inverse_dynamics_raises_on_unrecognized_eval_type(self):
         """``eval_inverse_dynamics`` raises ``ValueError`` for any ``eval_type``

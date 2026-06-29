@@ -1464,6 +1464,12 @@ def eval_inverse_dynamics_force(
     if model.articulation_count == 0:
         return
 
+    expected_shape = (model.joint_dof_count,)
+    if tau.shape != expected_shape:
+        raise ValueError(
+            f"tau has shape {tau.shape}, expected {expected_shape}."
+        )
+
     tau.zero_()
     wp.launch(
         kernel=eval_articulation_inverse_dynamics_force_kernel,
