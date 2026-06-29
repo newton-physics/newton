@@ -61,9 +61,10 @@ Cable body poses and velocities remain maximal-coordinate state in
 :attr:`newton.State.body_q` and :attr:`newton.State.body_qd`, advanced by
 :class:`newton.solvers.SolverVBD`. As with every joint under a maximal-coordinate
 solver, ``joint_q`` is authoritative at construction (or after an explicit
-:func:`newton.eval_ik`), not during stepping. Because the two cable degrees of
-freedom are stiffness slots rather than a spatial twist, ``eval_fk`` contributes
-no kinematic velocity for cable (its ``body_qd`` is owned by the solver).
+:func:`newton.eval_ik`), not during stepping. A cable's two velocity DOFs are
+stretch and bend/twist strain rates rather than velocity coordinates, so
+:func:`newton.eval_fk` only reconstructs cable body poses; ``body_qd`` is
+computed by the solver.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:

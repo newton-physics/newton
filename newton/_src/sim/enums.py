@@ -132,7 +132,7 @@ class JointType(IntEnum):
     """6-DoF joint: Generic joint with up to 3 translational and 3 rotational degrees of freedom."""
 
     CABLE = 7
-    """Cable joint: two velocity DOF slots for linear stretch and angular bend/twist, with a full relative anchor pose in its position coordinates (7 coordinates) for forward kinematics."""
+    """Cable joint: 2 velocity DoF (stretch, bend/twist), 7 position coordinates (relative anchor pose)."""
 
     def dof_count(self, num_axes: int) -> tuple[int, int]:
         """

@@ -319,9 +319,9 @@ def eval_single_articulation_fk(
             v_j = v
 
         if type == JointType.CABLE:
-            # CABLE stores its relative anchor pose (3 translation + 4 quaternion)
-            # in joint_q, so FK reconstructs the rod like a FREE joint. Its two
-            # velocity DOFs (stretch, bend/twist) are not a 6-DoF twist, so v_j stays zero.
+            # CABLE stores its relative anchor pose in joint_q (like FREE), so FK
+            # rebuilds the rod. Its 2 DOFs are currently strain rates, not a body
+            # velocity, so v_j=0.
             X_j = wp.transform(
                 wp.vec3(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2]),
                 wp.quat(joint_q[q_start + 3], joint_q[q_start + 4], joint_q[q_start + 5], joint_q[q_start + 6]),
@@ -823,8 +823,8 @@ def eval_articulation_ik(
     if type == JointType.CABLE:
         # CABLE's joint_q is the relative anchor pose X_j = inv(X_wpj) * X_wcj,
         # the same quantity FREE stores, so eval_fk can reconstruct the rod. Its
-        # two velocity DOFs (stretch, bend/twist) are not a 6-DoF twist, so
-        # joint_qd is left untouched.
+        # 2 DOFs are currently strain rates, not a body velocity, so joint_qd is
+        # left untouched.
         q_pc = wp.quat_inverse(q_p) * q_c
         x_err_c = wp.quat_rotate_inv(q_p, x_err)
 

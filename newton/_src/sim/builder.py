@@ -4201,10 +4201,9 @@ class ModelBuilder:
                     self.joint_target_q[quat_offset + i] = dim.target_pos
                 self.joint_target_q[quat_offset + 3] = 1.0
         elif joint_type == JointType.CABLE:
-            # CABLE position coordinates are a relative anchor pose (like FREE),
-            # so its target is an identity pose: zero translation (already set)
-            # with a valid identity quaternion. Cable drives act through stiffness
-            # (target_ke), not a pose target.
+            # CABLE's joint_q is a relative pose (like FREE); its target is the
+            # identity pose, so only the quaternion w needs setting. Cable drives
+            # use stiffness (target_ke), not a pose target.
             self.joint_target_q[target_q_offset + 6] = 1.0
         elif joint_type != JointType.FIXED:
             for i, dim in enumerate(linear_axes):
@@ -4750,8 +4749,8 @@ class ModelBuilder:
 
         .. note::
 
-            Cable joints use two DOF-indexed VBD stretch and bend/twist slots,
-            while ``joint_q`` stores the full relative anchor pose. This lets
+            Cable joints have two velocity DOFs (stretch and bend/twist), while
+            ``joint_q`` stores the full relative anchor pose. This lets
             :func:`newton.eval_fk` reconstruct cable bodies like other joints;
             :class:`newton.solvers.SolverVBD` advances the cable dynamics.
 
