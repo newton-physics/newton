@@ -523,7 +523,12 @@ class Example:
         newton.examples.add_world_count_arg(parser)
         parser.add_argument("--substeps", type=int, default=10, help="Coupled substeps per rendered frame.")
         parser.add_argument("--proxy-iterations", type=int, default=1, help="Proxy relaxation passes per substep.")
-        parser.add_argument("--mass-scale", type=float, default=1.0, help="Proxy body mass scale in VBD.")
+        parser.add_argument(
+            "--mass-scale",
+            type=float,
+            default=1.0,
+            help="Scale factor for MuJoCo effective mass/inertia used by VBD proxy bodies.",
+        )
         parser.add_argument(
             "--coupling-mode",
             type=str,

@@ -335,7 +335,7 @@ class Example:
         )
         parser.add_argument(
             "--proxy-mass-scale",
-            help="Virtual mass scale applied to the VBD proxy particles inside the MPM view",
+            help="Scale factor for VBD effective particle mass used by MPM proxies",
             type=float,
             default=0.5,
         )

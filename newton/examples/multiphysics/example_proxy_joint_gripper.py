@@ -335,7 +335,12 @@ class Example:
         parser.add_argument("--vbd-iterations", type=int, default=8, help="VBD iterations per substep.")
         parser.add_argument("--mujoco-iterations", type=int, default=60, help="MuJoCo solver iterations.")
         parser.add_argument("--proxy-iterations", type=int, default=1, help="Proxy coupling iterations per substep.")
-        parser.add_argument("--mass-scale", type=float, default=1.0, help="Proxy body inertia scale.")
+        parser.add_argument(
+            "--mass-scale",
+            type=float,
+            default=1.0,
+            help="Scale factor for MuJoCo effective mass/inertia used by VBD proxy bodies.",
+        )
         parser.add_argument(
             "--proxy-relaxation",
             type=float,

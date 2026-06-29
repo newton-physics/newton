@@ -236,7 +236,7 @@ class Example:
         parser.add_argument(
             "--mass-scale",
             "-pmr",
-            help="Scale factor for proxy particle mass in XPBD (< 1 = softer coupling)",
+            help="Scale factor for VBD effective particle mass used by XPBD proxies",
             type=float,
             default=1.0,
         )

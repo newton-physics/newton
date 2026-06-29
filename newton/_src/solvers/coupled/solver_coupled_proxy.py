@@ -270,8 +270,10 @@ class SolverCoupledProxy(SolverCoupled):
                 control before the destination solve.
             proxy_joints: Optional destination joint ids. Defaults to
                 ``joints``.
-            mass_scale: Destination proxy body mass/inertia and particle mass
-                scale factor.
+            mass_scale: Scale factor applied to source effective body
+                mass/inertia and particle mass when assigning destination
+                proxy properties. This does not modify the source modeled
+                free-body mass/inertia or particle mass.
             mode: Proxy transfer mode, ``"lagged"`` or ``"staggered"``.
                 ``"lagged"`` syncs source begin poses and end velocities, then
                 prepares proxies to avoid double-counting lagged feedback.

@@ -385,7 +385,7 @@ class Example:
         parser.add_argument(
             "--mass-scale",
             "-pmr",
-            help="Scale factor for proxy body mass in VBD (< 1 = softer coupling)",
+            help="Scale factor for source effective mass/inertia used by VBD proxy bodies",
             type=float,
             default=1.0,
         )

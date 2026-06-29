@@ -318,7 +318,7 @@ class Example:
         parser.add_argument(
             "--mass-scale",
             "-pmr",
-            help="Scale factor for proxy collider mass in MPM (< 1 = softer coupling)",
+            help="Scale factor for source effective mass used by the MPM proxy collider",
             type=float,
             default=1.0,
         )

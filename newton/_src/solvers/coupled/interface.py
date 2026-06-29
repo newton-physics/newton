@@ -191,7 +191,9 @@ class CouplingInterface:
             endpoint_index: Endpoint-local body or particle ids.
             endpoint_local_pos: Body-frame endpoint positions [m].
             out_mass: Output effective masses [kg].
-            out_inertia: Optional output body inertia tensors [kg m^2].
+            out_inertia: Optional output body inertia tensors [kg m^2]. Body
+                effective inertia must not be smaller than modeled inertia
+                around any axis.
         """
         self.coupling_eval_effective_mass(endpoint_kind, endpoint_index, endpoint_local_pos, out_mass)
         if out_inertia is None or out_inertia.shape[0] == 0:
@@ -562,7 +564,7 @@ def _coupling_eval_effective_inertia_kernel(
             if index < body_mass.shape[0]:
                 mass = body_mass[index]
                 if mass > 0.0:
-                    inertia = inertia * (out_mass[i] / mass)
+                    inertia = inertia * wp.max(out_mass[i] / mass, 1.0)
 
     out_inertia[i] = inertia
 

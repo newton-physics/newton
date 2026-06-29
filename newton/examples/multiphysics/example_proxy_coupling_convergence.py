@@ -479,7 +479,7 @@ class Example:
             type=float,
             nargs="+",
             default=[0.25, 0.5, 1.0, 2.0],
-            help="Virtual inertia scale values applied to the destination proxy mass.",
+            help="Scale factors applied to source effective mass when assigning destination proxy mass.",
         )
         parser.add_argument(
             "--source-mass",

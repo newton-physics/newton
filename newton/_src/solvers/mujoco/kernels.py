@@ -366,11 +366,13 @@ def eval_mujoco_coupling_effective_mass_block_kernel(
                 if inv_eff > 0.0:
                     mass = 1.0 / inv_eff
 
-                trace = wp.trace(inertia)
-                if inv_rot > 0.0 and trace > 1.0e-30:
-                    inertia = inertia * ((1.0 / inv_rot) / (trace / 3.0))
+                determinant = wp.determinant(inertia)
+                if inv_rot > 0.0 and wp.abs(determinant) > 1.0e-30:
+                    # Fit MuJoCo's mean angular compliance without reducing free-body inertia.
+                    free_inv_rot = wp.trace(wp.inverse(inertia)) / 3.0
+                    inertia = inertia * wp.max(free_inv_rot / inv_rot, 1.0)
                 elif index >= 0 and index < body_mass.shape[0] and body_mass[index] > 0.0:
-                    inertia = inertia * (mass / body_mass[index])
+                    inertia = inertia * wp.max(mass / body_mass[index], 1.0)
     elif kind == particle_kind:
         if index >= 0 and index < particle_mass.shape[0]:
             mass = particle_mass[index]

@@ -10,7 +10,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.coupled.interface import CouplingInterface
+from newton._src.solvers.coupled.interface import CouplingEndpointKind, CouplingInterface
 from newton._src.solvers.coupled.proxy_utils import (
     smooth_proxy_teleportation_kernel,
     sync_proxy_states_kernel,
@@ -1227,6 +1227,38 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
 class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
     """MuJoCo-specific coupling hook behavior."""
+
+    def test_effective_inertia_preserves_anisotropic_free_body_inertia(self):
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError as exc:
+            self.skipTest(str(exc))
+
+        builder = newton.ModelBuilder(gravity=0.0)
+        body = builder.add_link(
+            mass=2.0,
+            inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.5),
+        )
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model=model, iterations=1, disable_contacts=True)
+
+        endpoint_kind = wp.array([int(CouplingEndpointKind.BODY)], dtype=int, device=model.device)
+        endpoint_index = wp.array([body], dtype=int, device=model.device)
+        endpoint_local_pos = wp.zeros(1, dtype=wp.vec3, device=model.device)
+        effective_mass = wp.empty(1, dtype=float, device=model.device)
+        effective_inertia = wp.empty(1, dtype=wp.mat33, device=model.device)
+        solver.coupling_eval_effective_mass_block(
+            endpoint_kind,
+            endpoint_index,
+            endpoint_local_pos,
+            effective_mass,
+            effective_inertia,
+        )
+
+        np.testing.assert_allclose(effective_mass.numpy(), model.body_mass.numpy(), rtol=1.0e-5)
+        np.testing.assert_allclose(effective_inertia.numpy(), model.body_inertia.numpy(), rtol=1.0e-5)
 
     def test_gravity_acceleration_hook_uses_body_gravcomp(self):
         try:

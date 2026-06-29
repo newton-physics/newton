@@ -381,7 +381,7 @@ class Example:
         parser.add_argument(
             "--mass-scale",
             "-pmr",
-            help="Scale factor for proxy sphere mass in the soft solver (< 1 = softer coupling)",
+            help="Scale factor for rigid effective mass/inertia used by the soft-solver proxy",
             type=float,
             default=1.0,
         )
