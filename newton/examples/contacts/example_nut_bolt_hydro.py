@@ -432,8 +432,10 @@ class Example:
                 f"Displacement={displacement:.4f} (max allowed={max_bolt_displacement:.4f})"
             )
 
-        # Check nuts rotated and moved down
-        min_rotation_threshold = 0.1  # At least ~5.7 degrees of rotation
+        # The 60 degree threshold catches stalled thread engagement while
+        # tolerating small solver/contact-count variation.
+        min_rotation_threshold = np.radians(60.0)
+        min_descent = 0.005
         for i in range(len(self.nut_body_indices)):
             # Check rotation occurred
             max_rotation = self.nut_max_rotation_change[i]
@@ -446,8 +448,9 @@ class Example:
             # Check nut moved downward (min_z should be less than initial z)
             initial_z = self.nut_initial_transforms[i][2]
             min_z = self.nut_min_z[i]
-            assert min_z < initial_z, (
-                f"Nut {i}: did not move downward. Initial z={initial_z:.4f}, min z reached={min_z:.4f}"
+            descent = initial_z - min_z
+            assert descent > min_descent, (
+                f"Nut {i}: did not move down enough. Descent={descent:.4f} (expected > {min_descent:.4f})"
             )
 
     @staticmethod
