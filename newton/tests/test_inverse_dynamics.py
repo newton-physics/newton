@@ -1869,6 +1869,71 @@ class TestMassMatrix(TestInverseDynamicsBase):
 class TestManipulatorEquation(TestInverseDynamicsBase):
     """Manipulator-equation tests covering combined inverse-dynamics outputs."""
 
+    def test_eval_inverse_dynamics_force_hand_crafted_inputs(self):
+        """White-box test of ``eval_inverse_dynamics_force`` with hand-chosen inputs.
+
+        Builds a two-articulation model where the articulations have *different*
+        DOF counts (1 and 2), then passes synthetic H, qddot, and bias arrays
+        whose values are computed independently in NumPy. Comparing the output
+        ``tau`` against the NumPy result catches DOF-slicing bugs
+        (wrong ``dof_start``, wrong ``art_idx`` into H, off-by-one in
+        ``dof_count``) that self-consistent round-trip tests cannot detect.
+        """
+        identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+        y_axis = wp.vec3(0.0, 1.0, 0.0)
+
+        builder = newton.ModelBuilder()
+        # Articulation 0: single revolute → 1 DOF.
+        b0 = builder.add_link(xform=identity_xform, mass=1.0, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
+        j0 = builder.add_joint_revolute(parent=-1, child=b0, axis=y_axis,
+                                        parent_xform=identity_xform, child_xform=identity_xform)
+        builder.add_articulation([j0])
+
+        # Articulation 1: two revolutes in a chain → 2 DOFs.
+        b1 = builder.add_link(xform=identity_xform, mass=1.0, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
+        j1 = builder.add_joint_revolute(parent=-1, child=b1, axis=y_axis,
+                                        parent_xform=identity_xform, child_xform=identity_xform)
+        b2 = builder.add_link(xform=identity_xform, mass=1.0, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
+        j2 = builder.add_joint_revolute(parent=b1, child=b2, axis=y_axis,
+                                        parent_xform=identity_xform, child_xform=identity_xform)
+        builder.add_articulation([j1, j2])
+
+        model = builder.finalize(device=self.device)
+        self.assertEqual(model.articulation_count, 2)
+        self.assertEqual(model.joint_dof_count, 3)       # art0: 1, art1: 2
+        self.assertEqual(model.max_dofs_per_articulation, 2)
+
+        # Hand-crafted H (2, 2, 2): art0 uses only the [0,0] entry; art1 uses
+        # all four.  Values are chosen so any cross-articulation or index mix-up
+        # produces a visibly wrong result.
+        H_np = np.array([
+            [[7.0, 0.0],   # art0 — only [0,0] active; off-diagonal is padding
+             [0.0, 0.0]],
+            [[3.0, 1.0],   # art1 — full 2×2 block
+             [0.5, 4.0]],
+        ], dtype=np.float32)
+
+        qddot_np = np.array([2.0, 5.0, -1.0], dtype=np.float32)  # [art0_dof0, art1_dof0, art1_dof1]
+        coriolis_np = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+        gravity_np = np.array([1.0, -0.5, 0.25], dtype=np.float32)
+
+        # Reference computed entirely in NumPy, independent of Newton's pipeline.
+        # art0 (1 DOF):  tau[0] = H[0,0,0]*qddot[0] + coriolis[0] + gravity[0]
+        # art1 (2 DOFs): tau[1:3] = H[1,:2,:2] @ qddot[1:3] + coriolis[1:3] + gravity[1:3]
+        tau_expected = np.empty(3, dtype=np.float32)
+        tau_expected[0:1] = H_np[0, :1, :1] @ qddot_np[0:1] + coriolis_np[0:1] + gravity_np[0:1]
+        tau_expected[1:3] = H_np[1, :2, :2] @ qddot_np[1:3] + coriolis_np[1:3] + gravity_np[1:3]
+
+        H = wp.array(H_np, dtype=wp.float32, device=self.device)
+        qddot = wp.array(qddot_np, dtype=wp.float32, device=self.device)
+        coriolis = wp.array(coriolis_np, dtype=wp.float32, device=self.device)
+        gravity = wp.array(gravity_np, dtype=wp.float32, device=self.device)
+        tau = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=self.device)
+
+        newton.eval_inverse_dynamics_force(model, H, qddot, coriolis, gravity, tau)
+
+        np.testing.assert_allclose(tau.numpy(), tau_expected, atol=1e-6)
+
     def test_eval_all_populates_every_buffer(self):
         """EvalType.ALL must produce the same results as three isolated single-flag calls.
 
