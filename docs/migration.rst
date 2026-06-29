@@ -232,41 +232,7 @@ Instead, you can pass them as arguments to the :class:`newton.solvers.SolverXPBD
 apply to all joints and cannot be set individually per joint anymore. So far we have not found applications that require
 per-joint compliance settings and have decided to remove this feature for memory efficiency.
 
-The :meth:`newton.ModelBuilder.add_joint_free()` method now initializes :attr:`newton.State.joint_q`
-to the identity transform (zero translation, identity quaternion) like every other joint type.
-The initial world pose of a floating-base body is carried by ``parent_xform`` (stored in
-:attr:`newton.Model.joint_X_p`) and is propagated to the body via forward kinematics
-(``body_q[child] = body_q[parent] * parent_xform * X_j * inv(child_xform)``).
-:meth:`~newton.ModelBuilder.add_body` forwards ``xform`` as ``parent_xform`` when it creates
-the implicit free joint, so ``builder.add_body(xform=T)`` still places the new body at the
-requested world pose.
-
-This is a breaking change for callers that previously read the first seven entries of
-``joint_q`` as a floating-root world pose (for example ``state.joint_q[:7]``). Those slices
-now contain identity transforms at rest. Use :attr:`newton.State.body_q` for the body's
-world pose, or :meth:`newton.selection.ArticulationView.get_root_transforms` for
-floating-base articulations.
-
-Writing to ``joint_q[:7]`` is still supported and is now interpreted as the body's pose
-*relative to* ``joint_X_p`` (with ``joint_X_c`` applied on the child side). This is the
-natural "reset" path for a floating base: at rest ``joint_q[:7]`` is the identity, and
-subsequent assignments move the body relative to its rest pose. When ``joint_X_c`` is the
-identity (the typical case, including all importer-created free joints) and ``joint_X_p``
-is also the identity, ``joint_q[:7]`` coincides with the body's world pose and can be set
-directly to a desired world pose.
-
-To override the initial pose of a floating base on the builder, you can:
-
-- pass ``xform=`` to :meth:`~newton.ModelBuilder.add_body` (it forwards to ``parent_xform``);
-- pass ``parent_xform=`` to :meth:`~newton.ModelBuilder.add_joint_free` /
-  :meth:`~newton.ModelBuilder._add_base_joint` when constructing the joint manually; or
-- modify ``builder.joint_X_p[root_joint]`` directly, in which case set
-  ``builder.joint_X_p[root_joint] = desired_body_q * builder.joint_X_c[root_joint]`` (this
-  reduces to ``desired_body_q`` when ``joint_X_c`` is the identity) and keep
-  ``builder.body_q[root_body]`` consistent with the new pose.
-
-For runtime updates, :meth:`newton.selection.ArticulationView.set_root_transforms` accepts
-world poses and performs the ``joint_X_p`` / ``joint_X_c`` decomposition internally.
+The :meth:`newton.ModelBuilder.add_joint_free()` method now initializes the positional dofs of the free joint with the child body's transform (``body_q``).
 
 The universal and compound joints have been removed in favor of the more general D6 joint.
 

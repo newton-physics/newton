@@ -277,10 +277,7 @@ class Example:
         # builder's gravity isn't a vec3. use model.set_gravity()
         # builder.gravity = wp.vec3(0.0, 0.0, -9.81)
 
-        # joint_q is the body's pose relative to joint_X_p (the import xform of
-        # (0, 0, 0.8) above, with identity rotation), so a relative translation
-        # of (0, 0, -0.04) places the body at world z = 0.76.
-        builder.joint_q[:3] = [0.0, 0.0, -0.04]
+        builder.joint_q[:3] = [0.0, 0.0, 0.76]
         builder.joint_q[3:7] = [0.0, 0.0, 0.7071, 0.7071]
         builder.joint_q[7:] = config["mjw_joint_pos"]
 

@@ -53,7 +53,6 @@
 - Change `SensorTiledCamera` default packed `color` and `albedo` outputs to sRGB-encoded bytes so authored display colors render at the expected display brightness; pass `RenderConfig(output_color_space=ColorSpace.LINEAR)` to preserve the previous linear-byte behavior.
 - Accept plain `int` flag bitmasks in solver reset and model-change notification APIs so users can define extension bits beyond `StateFlags` and `ModelFlags`.
 - Bump `newton-usd-schemas` to `>=0.3.1`
-- Change `ModelBuilder.add_joint_free` to initialize `joint_q` to the identity transform like every other joint type; the initial world pose of a floating-base body is now carried by `joint_X_p` and applied via forward kinematics (`body_q = parent * joint_X_p * X_j * inv(joint_X_c)`). This is a breaking change: reads and writes of `state.joint_q[:7]` for floating roots no longer return or set the body world pose — use `state.body_q`, `ArticulationView.get_root_transforms`/`set_root_transforms`, or set `builder.joint_X_p[root_joint]` / pass `xform=` to `add_body` instead.
 
 ### Deprecated
 
@@ -189,8 +188,6 @@
 - Deprecate `SDF.texture_block_coords`; the attribute now always returns `None` and will be removed in Newton 1.5. The hydroelastic broadphase now derives block coordinates arithmetically from each SDF's coarse-texture dimensions, so callers no longer need to read them off the `SDF` object
 - Deprecate `Model.sdf_block_coords` and `Model.sdf_index2blocks`; both attributes are now lazily recomputed from each SDF's coarse-texture dimensions (matching the new broadphase semantics) and will be removed in Newton 1.5
 - Deprecate the public attribute names `Model.shape_sdf_index`, `Model.texture_sdf_data`, `Model.texture_sdf_coarse_textures`, `Model.texture_sdf_subgrid_textures`, `Model.texture_sdf_subgrid_start_slots` in favor of their underscore-prefixed private counterparts (`Model._shape_sdf_index`, etc.); the public aliases keep working for one release cycle and will be removed in Newton 1.5
-
-### Removed
 
 ### Fixed
 
