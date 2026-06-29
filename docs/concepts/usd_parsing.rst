@@ -166,6 +166,38 @@ On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArtic
 
 The parser resolves ``self_collision_enabled`` from either ``newton:selfCollisionEnabled`` or ``physxArticulation:enabledSelfCollisions`` (in resolver priority order). The ``enable_self_collisions`` argument to :meth:`newton.ModelBuilder.add_usd` is used as the default when neither attribute is authored.
 
+**Newton Joint Attribute Remapping:**
+
+On joint prims (``RevoluteJoint``, ``PrismaticJoint``, ``D6Joint``), the following ``NewtonJointAPI`` attributes are resolved uniformly across all DOFs of the joint:
+
+.. list-table:: Newton Joint Attribute Remapping
+   :header-rows: 1
+   :widths: 30 30 40
+
+   * - **Newton Attribute**
+     - **Resolved key**
+     - **Notes**
+   * - ``newton:armature``
+     - ``armature``
+     - Direct mapping
+   * - ``newton:damping``
+     - ``damping``
+     - Passive velocity damping
+   * - ``newton:friction``
+     - ``friction``
+     - Direct mapping
+   * - ``newton:velocityLimit``
+     - ``velocity_limit``
+     - ``+inf`` = unlimited (builder default)
+   * - ``newton:limitStiffness``
+     - ``limit_ke``
+     - ``-inf`` = engine default; ``+inf`` = hard limit
+   * - ``newton:limitDamping``
+     - ``limit_kd``
+     - ``-inf`` = engine default; ignored when ``limitStiffness`` is ``+inf``
+
+Angular joints store gains per-degree in USD and the importer converts to per-radian internally.
+
 **MuJoCo Attribute Remapping Examples:**
 
 The table below shows MuJoCo attribute remapping examples, including both direct mappings and transformations:
