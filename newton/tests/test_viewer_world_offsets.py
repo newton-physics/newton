@@ -443,8 +443,8 @@ class TestViewerWorldOffsets(unittest.TestCase):
 
         # Update transforms
         viewer.begin_frame(0.0)
-        ground_instance.update(state, world_offsets=viewer.world_offsets)
-        world_instance.update(state, world_offsets=viewer.world_offsets)
+        ground_instance.update(state, world_offsets=viewer.world_offsets, layer_xform=viewer.layer.xform)
+        world_instance.update(state, world_offsets=viewer.world_offsets, layer_xform=viewer.layer.xform)
 
         # Check ground plane is at origin (unaffected by offsets)
         ground_xform = ground_instance.world_xforms.numpy()[0]
@@ -494,7 +494,7 @@ def test_visual_separation(test: TestViewerWorldOffsets, device):
 
     # Update transforms
     viewer.begin_frame(0.0)
-    shape_instances.update(state, world_offsets=viewer.world_offsets)
+    shape_instances.update(state, world_offsets=viewer.world_offsets, layer_xform=viewer.layer.xform)
 
     # Check that world transforms have been offset
     world_xforms = shape_instances.world_xforms.numpy()
