@@ -2673,6 +2673,31 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
             ]
         )
 
+        # All-deselected case: per-world mask is all-False, so no articulation
+        # is selected and every output slot must be exactly zero.
+        with self.subTest(case_idx="all_deselected"):
+            inverse_dynamics, scratch = model.inverse_dynamics()
+            all_false_mask = wp.array(np.asarray([False, False], dtype=bool), dtype=bool, device=self.device)
+            view.eval_inverse_dynamics(
+                state,
+                newton.InverseDynamics.EvalType.ALL,
+                inverse_dynamics,
+                scratch,
+                mask=all_false_mask,
+            )
+            np.testing.assert_array_equal(
+                inverse_dynamics.mass_matrix.numpy(),
+                np.zeros_like(inverse_dynamics.mass_matrix.numpy()),
+            )
+            np.testing.assert_array_equal(
+                inverse_dynamics.gravity_force.numpy(),
+                np.zeros_like(inverse_dynamics.gravity_force.numpy()),
+            )
+            np.testing.assert_array_equal(
+                inverse_dynamics.coriolis_force.numpy(),
+                np.zeros_like(inverse_dynamics.coriolis_force.numpy()),
+            )
+
         for case_idx in range(len(per_world_masks)):
             with self.subTest(case_idx=case_idx):
                 inverse_dynamics, scratch = model.inverse_dynamics()
