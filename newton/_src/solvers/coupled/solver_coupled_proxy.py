@@ -56,6 +56,13 @@ class _ProxyBodyMapping:
     mass_scale: float = 1.0
     mode: int = 0
     proxy_relaxation: float = 1.0
+    proxy_relaxation_mode: int = 0
+    proxy_relaxation_min: float = 0.1
+    proxy_relaxation_max: float = 1.0
+    aitken_residual_previous: wp.array = field(default=None)
+    aitken_stats: wp.array = field(default=None)
+    aitken_relaxation: wp.array = field(default=None)
+    aitken_has_previous: wp.array = field(default=None)
 
 
 @dataclass
@@ -81,6 +88,13 @@ class _ProxyParticleMapping:
     mass_scale: float = 1.0
     mode: int = 0
     proxy_relaxation: float = 1.0
+    proxy_relaxation_mode: int = 0
+    proxy_relaxation_min: float = 0.1
+    proxy_relaxation_max: float = 1.0
+    aitken_residual_previous: wp.array = field(default=None)
+    aitken_stats: wp.array = field(default=None)
+    aitken_relaxation: wp.array = field(default=None)
+    aitken_has_previous: wp.array = field(default=None)
 
 
 @dataclass
@@ -117,7 +131,18 @@ class _ProxyMode(IntEnum):
     STAGGERED = 1
 
 
+class _ProxyRelaxationMode(IntEnum):
+    """Internal numeric tag for proxy feedback relaxation modes."""
+
+    FIXED = 0
+    AITKEN = 1
+
+
 _PROXY_MODE_BY_NAME = {"lagged": _ProxyMode.LAGGED, "staggered": _ProxyMode.STAGGERED}
+_PROXY_RELAXATION_MODE_BY_NAME = {
+    "fixed": _ProxyRelaxationMode.FIXED,
+    "aitken": _ProxyRelaxationMode.AITKEN,
+}
 
 
 @wp.kernel(enable_backward=False)
@@ -132,6 +157,98 @@ def _copy_indexed_float_kernel(
     dst_index = dst_indices[i]
     if src_index >= 0 and dst_index >= 0:
         dst[dst_index] = src[src_index]
+
+
+@wp.kernel(enable_backward=False)
+def _reset_aitken_state_kernel(
+    initial_relaxation: float,
+    relaxation: wp.array[float],
+    has_previous: wp.array[int],
+):
+    relaxation[0] = initial_relaxation
+    has_previous[0] = 0
+
+
+@wp.kernel(enable_backward=False)
+def _accumulate_aitken_body_stats_kernel(
+    proxy_ids: wp.array[int],
+    force_previous: wp.array[wp.spatial_vector],
+    force_raw: wp.array[wp.spatial_vector],
+    residual_previous: wp.array[wp.spatial_vector],
+    has_previous: wp.array[int],
+    stats: wp.array[float],
+):
+    i = wp.tid()
+    proxy_id = proxy_ids[i]
+    residual = force_raw[proxy_id] - force_previous[i]
+    if has_previous[0] != 0:
+        delta = residual - residual_previous[i]
+        wp.atomic_add(stats, 0, wp.dot(residual_previous[i], delta))
+        wp.atomic_add(stats, 1, wp.dot(delta, delta))
+
+
+@wp.kernel(enable_backward=False)
+def _accumulate_aitken_particle_stats_kernel(
+    proxy_ids: wp.array[int],
+    force_previous: wp.array[wp.vec3],
+    force_raw: wp.array[wp.vec3],
+    residual_previous: wp.array[wp.vec3],
+    has_previous: wp.array[int],
+    stats: wp.array[float],
+):
+    i = wp.tid()
+    proxy_id = proxy_ids[i]
+    residual = force_raw[proxy_id] - force_previous[i]
+    if has_previous[0] != 0:
+        delta = residual - residual_previous[i]
+        wp.atomic_add(stats, 0, wp.dot(residual_previous[i], delta))
+        wp.atomic_add(stats, 1, wp.dot(delta, delta))
+
+
+@wp.kernel(enable_backward=False)
+def _update_aitken_relaxation_kernel(
+    relaxation_min: float,
+    relaxation_max: float,
+    stats: wp.array[float],
+    relaxation: wp.array[float],
+    has_previous: wp.array[int],
+):
+    if has_previous[0] != 0:
+        denominator = stats[1]
+        if denominator > 1.0e-20:
+            candidate = -relaxation[0] * stats[0] / denominator
+            relaxation[0] = wp.clamp(candidate, relaxation_min, relaxation_max)
+    has_previous[0] = 1
+
+
+@wp.kernel(enable_backward=False)
+def _blend_aitken_body_forces_kernel(
+    proxy_ids: wp.array[int],
+    force_previous: wp.array[wp.spatial_vector],
+    residual_previous: wp.array[wp.spatial_vector],
+    relaxation: wp.array[float],
+    force: wp.array[wp.spatial_vector],
+):
+    i = wp.tid()
+    proxy_id = proxy_ids[i]
+    residual = force[proxy_id] - force_previous[i]
+    force[proxy_id] = force_previous[i] + relaxation[0] * residual
+    residual_previous[i] = residual
+
+
+@wp.kernel(enable_backward=False)
+def _blend_aitken_particle_forces_kernel(
+    proxy_ids: wp.array[int],
+    force_previous: wp.array[wp.vec3],
+    residual_previous: wp.array[wp.vec3],
+    relaxation: wp.array[float],
+    force: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    proxy_id = proxy_ids[i]
+    residual = force[proxy_id] - force_previous[i]
+    force[proxy_id] = force_previous[i] + relaxation[0] * residual
+    residual_previous[i] = residual
 
 
 class SolverCoupledProxy(SolverCoupled):
@@ -165,6 +282,11 @@ class SolverCoupledProxy(SolverCoupled):
                 ``proxy_relaxation * coupling_forces_new + (1 - proxy_relaxation) * coupling_forces_old``.
                 Values below ``1`` underrelax the update, ``1`` keeps the
                 harvested force unchanged, and values above ``1`` overrelax it.
+            proxy_relaxation_mode: Feedback relaxation mode. ``"fixed"`` uses
+                ``proxy_relaxation`` directly. ``"aitken"`` updates it from
+                consecutive feedback residuals within one solver step.
+            proxy_relaxation_min: Minimum Aitken relaxation factor.
+            proxy_relaxation_max: Maximum Aitken relaxation factor.
             particles: Source particle ids to map into destination proxies.
             proxy_particles: Optional destination particle ids. Defaults to
                 ``particles``.
@@ -188,6 +310,9 @@ class SolverCoupledProxy(SolverCoupled):
         mass_scale: float = 1.0
         mode: str = "lagged"
         proxy_relaxation: float = 1.0
+        proxy_relaxation_mode: str = "fixed"
+        proxy_relaxation_min: float = 0.1
+        proxy_relaxation_max: float = 1.0
         particles: Sequence[int] = ()
         proxy_particles: Sequence[int] | None = None
         collision_pipeline: Callable[[ModelView], object | None] | None = None
@@ -248,6 +373,37 @@ class SolverCoupledProxy(SolverCoupled):
         if not np.isfinite(relaxation) or relaxation < 0.0:
             raise ValueError(f"Proxy proxy_relaxation must be finite and >= 0, got {proxy_relaxation!r}")
         return relaxation
+
+    @staticmethod
+    def _proxy_relaxation_mode_value(mode: str) -> int:
+        try:
+            return int(_PROXY_RELAXATION_MODE_BY_NAME[mode.lower()])
+        except (AttributeError, KeyError) as err:
+            raise ValueError(f"Unknown proxy relaxation mode {mode!r}; expected 'fixed' or 'aitken'") from err
+
+    @staticmethod
+    def _proxy_relaxation_bounds(
+        proxy: SolverCoupledProxy.Proxy,
+        relaxation: float,
+        relaxation_mode: int,
+    ) -> tuple[float, float]:
+        relaxation_min = float(proxy.proxy_relaxation_min)
+        relaxation_max = float(proxy.proxy_relaxation_max)
+        if not np.isfinite(relaxation_min) or relaxation_min < 0.0:
+            raise ValueError(f"Proxy proxy_relaxation_min must be finite and >= 0, got {proxy.proxy_relaxation_min!r}")
+        if not np.isfinite(relaxation_max) or relaxation_max < relaxation_min:
+            raise ValueError(
+                "Proxy proxy_relaxation_max must be finite and >= proxy_relaxation_min, "
+                f"got {proxy.proxy_relaxation_max!r}"
+            )
+        if int(relaxation_mode) == int(_ProxyRelaxationMode.AITKEN) and (
+            relaxation < relaxation_min or relaxation > relaxation_max
+        ):
+            raise ValueError(
+                f"Proxy proxy_relaxation must be within [{relaxation_min}, {relaxation_max}] "
+                f"for Aitken relaxation, got {relaxation}"
+            )
+        return relaxation_min, relaxation_max
 
     @staticmethod
     def _validate_proxy_ids(label: str, ids: Sequence[int], count: int) -> None:
@@ -434,6 +590,12 @@ class SolverCoupledProxy(SolverCoupled):
         device = model.device
         for proxy in coupling.proxies:
             proxy_relaxation = self._proxy_relaxation_value(proxy.proxy_relaxation)
+            proxy_relaxation_mode = self._proxy_relaxation_mode_value(proxy.proxy_relaxation_mode)
+            proxy_relaxation_min, proxy_relaxation_max = self._proxy_relaxation_bounds(
+                proxy,
+                proxy_relaxation,
+                proxy_relaxation_mode,
+            )
             src_ids = [int(i) for i in proxy.bodies]
             if not src_ids:
                 continue
@@ -476,6 +638,9 @@ class SolverCoupledProxy(SolverCoupled):
                     mass_scale=float(proxy.mass_scale),
                     mode=self._proxy_mode_value(proxy.mode),
                     proxy_relaxation=proxy_relaxation,
+                    proxy_relaxation_mode=proxy_relaxation_mode,
+                    proxy_relaxation_min=proxy_relaxation_min,
+                    proxy_relaxation_max=proxy_relaxation_max,
                 )
             )
         return mappings
@@ -522,6 +687,12 @@ class SolverCoupledProxy(SolverCoupled):
         device = model.device
         for proxy in coupling.proxies:
             proxy_relaxation = self._proxy_relaxation_value(proxy.proxy_relaxation)
+            proxy_relaxation_mode = self._proxy_relaxation_mode_value(proxy.proxy_relaxation_mode)
+            proxy_relaxation_min, proxy_relaxation_max = self._proxy_relaxation_bounds(
+                proxy,
+                proxy_relaxation,
+                proxy_relaxation_mode,
+            )
             src_ids = [int(i) for i in proxy.particles]
             if not src_ids:
                 continue
@@ -565,6 +736,9 @@ class SolverCoupledProxy(SolverCoupled):
                     mass_scale=float(proxy.mass_scale),
                     mode=self._proxy_mode_value(proxy.mode),
                     proxy_relaxation=proxy_relaxation,
+                    proxy_relaxation_mode=proxy_relaxation_mode,
+                    proxy_relaxation_min=proxy_relaxation_min,
+                    proxy_relaxation_max=proxy_relaxation_max,
                 )
             )
         return mappings
@@ -874,21 +1048,43 @@ class SolverCoupledProxy(SolverCoupled):
         device = model.device
         for mapping in self._proxy_mappings:
             mapping.coupling_forces = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
-            if mapping.proxy_relaxation != 1.0:
+            if mapping.proxy_relaxation != 1.0 or int(mapping.proxy_relaxation_mode) == int(
+                _ProxyRelaxationMode.AITKEN
+            ):
                 mapping.coupling_forces_previous = wp.zeros(
                     mapping.proxy_body_ids_global.shape[0],
                     dtype=wp.spatial_vector,
                     device=device,
                 )
+            if int(mapping.proxy_relaxation_mode) == int(_ProxyRelaxationMode.AITKEN):
+                mapping.aitken_residual_previous = wp.zeros(
+                    mapping.proxy_body_ids_global.shape[0],
+                    dtype=wp.spatial_vector,
+                    device=device,
+                )
+                mapping.aitken_stats = wp.zeros(2, dtype=float, device=device)
+                mapping.aitken_relaxation = wp.array([mapping.proxy_relaxation], dtype=float, device=device)
+                mapping.aitken_has_previous = wp.zeros(1, dtype=int, device=device)
             mapping.proxy_qd_before = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
         for mapping in self._proxy_particle_mappings:
             mapping.coupling_forces = wp.zeros(model.particle_count, dtype=wp.vec3, device=device)
-            if mapping.proxy_relaxation != 1.0:
+            if mapping.proxy_relaxation != 1.0 or int(mapping.proxy_relaxation_mode) == int(
+                _ProxyRelaxationMode.AITKEN
+            ):
                 mapping.coupling_forces_previous = wp.zeros(
                     mapping.proxy_particle_ids_global.shape[0],
                     dtype=wp.vec3,
                     device=device,
                 )
+            if int(mapping.proxy_relaxation_mode) == int(_ProxyRelaxationMode.AITKEN):
+                mapping.aitken_residual_previous = wp.zeros(
+                    mapping.proxy_particle_ids_global.shape[0],
+                    dtype=wp.vec3,
+                    device=device,
+                )
+                mapping.aitken_stats = wp.zeros(2, dtype=float, device=device)
+                mapping.aitken_relaxation = wp.array([mapping.proxy_relaxation], dtype=float, device=device)
+                mapping.aitken_has_previous = wp.zeros(1, dtype=int, device=device)
             mapping.proxy_qd_before = wp.zeros(model.particle_count, dtype=wp.vec3, device=device)
 
     def _entry_needs_gravity_acceleration(self, entry) -> bool:
@@ -910,6 +1106,14 @@ class SolverCoupledProxy(SolverCoupled):
                 mapping.coupling_forces.zero_()
             if mapping.coupling_forces_previous is not None:
                 mapping.coupling_forces_previous.zero_()
+            if mapping.aitken_residual_previous is not None:
+                mapping.aitken_residual_previous.zero_()
+            if mapping.aitken_stats is not None:
+                mapping.aitken_stats.zero_()
+            if mapping.aitken_relaxation is not None:
+                mapping.aitken_relaxation.fill_(mapping.proxy_relaxation)
+            if mapping.aitken_has_previous is not None:
+                mapping.aitken_has_previous.zero_()
             if mapping.proxy_qd_before is not None:
                 mapping.proxy_qd_before.zero_()
         for mapping in self._proxy_particle_mappings:
@@ -917,6 +1121,14 @@ class SolverCoupledProxy(SolverCoupled):
                 mapping.coupling_forces.zero_()
             if mapping.coupling_forces_previous is not None:
                 mapping.coupling_forces_previous.zero_()
+            if mapping.aitken_residual_previous is not None:
+                mapping.aitken_residual_previous.zero_()
+            if mapping.aitken_stats is not None:
+                mapping.aitken_stats.zero_()
+            if mapping.aitken_relaxation is not None:
+                mapping.aitken_relaxation.fill_(mapping.proxy_relaxation)
+            if mapping.aitken_has_previous is not None:
+                mapping.aitken_has_previous.zero_()
             if mapping.proxy_qd_before is not None:
                 mapping.proxy_qd_before.zero_()
         for config in self._proxy_collision_configs.values():
@@ -955,6 +1167,46 @@ class SolverCoupledProxy(SolverCoupled):
     def _blend_proxy_body_feedback(self, proxy: _ProxyBodyMapping) -> None:
         if proxy.coupling_forces_previous is None:
             return
+        if int(proxy.proxy_relaxation_mode) == int(_ProxyRelaxationMode.AITKEN):
+            proxy.aitken_stats.zero_()
+            wp.launch(
+                _accumulate_aitken_body_stats_kernel,
+                dim=proxy.proxy_body_ids_global.shape[0],
+                inputs=[
+                    proxy.proxy_body_ids_global,
+                    proxy.coupling_forces_previous,
+                    proxy.coupling_forces,
+                    proxy.aitken_residual_previous,
+                    proxy.aitken_has_previous,
+                    proxy.aitken_stats,
+                ],
+                device=self.model.device,
+            )
+            wp.launch(
+                _update_aitken_relaxation_kernel,
+                dim=1,
+                inputs=[
+                    float(proxy.proxy_relaxation_min),
+                    float(proxy.proxy_relaxation_max),
+                    proxy.aitken_stats,
+                    proxy.aitken_relaxation,
+                    proxy.aitken_has_previous,
+                ],
+                device=self.model.device,
+            )
+            wp.launch(
+                _blend_aitken_body_forces_kernel,
+                dim=proxy.proxy_body_ids_global.shape[0],
+                inputs=[
+                    proxy.proxy_body_ids_global,
+                    proxy.coupling_forces_previous,
+                    proxy.aitken_residual_previous,
+                    proxy.aitken_relaxation,
+                    proxy.coupling_forces,
+                ],
+                device=self.model.device,
+            )
+            return
         wp.launch(
             blend_proxy_body_forces_kernel,
             dim=proxy.proxy_body_ids_global.shape[0],
@@ -969,6 +1221,46 @@ class SolverCoupledProxy(SolverCoupled):
 
     def _blend_proxy_particle_feedback(self, proxy: _ProxyParticleMapping) -> None:
         if proxy.coupling_forces_previous is None:
+            return
+        if int(proxy.proxy_relaxation_mode) == int(_ProxyRelaxationMode.AITKEN):
+            proxy.aitken_stats.zero_()
+            wp.launch(
+                _accumulate_aitken_particle_stats_kernel,
+                dim=proxy.proxy_particle_ids_global.shape[0],
+                inputs=[
+                    proxy.proxy_particle_ids_global,
+                    proxy.coupling_forces_previous,
+                    proxy.coupling_forces,
+                    proxy.aitken_residual_previous,
+                    proxy.aitken_has_previous,
+                    proxy.aitken_stats,
+                ],
+                device=self.model.device,
+            )
+            wp.launch(
+                _update_aitken_relaxation_kernel,
+                dim=1,
+                inputs=[
+                    float(proxy.proxy_relaxation_min),
+                    float(proxy.proxy_relaxation_max),
+                    proxy.aitken_stats,
+                    proxy.aitken_relaxation,
+                    proxy.aitken_has_previous,
+                ],
+                device=self.model.device,
+            )
+            wp.launch(
+                _blend_aitken_particle_forces_kernel,
+                dim=proxy.proxy_particle_ids_global.shape[0],
+                inputs=[
+                    proxy.proxy_particle_ids_global,
+                    proxy.coupling_forces_previous,
+                    proxy.aitken_residual_previous,
+                    proxy.aitken_relaxation,
+                    proxy.coupling_forces,
+                ],
+                device=self.model.device,
+            )
             return
         wp.launch(
             blend_proxy_particle_forces_kernel,
@@ -1120,6 +1412,7 @@ class SolverCoupledProxy(SolverCoupled):
     ) -> None:
         """Run lagged-impulse proxy iterations for one coupled step."""
         del state_out
+        self._reset_aitken_iteration_state()
         iterations = max(1, int(self._coupling.iterations))
         for k in range(iterations):
             # Some solvers use state_in arrays as temporary buffers during a
@@ -1129,6 +1422,21 @@ class SolverCoupledProxy(SolverCoupled):
             if k > 0:
                 self._distribute_state(state_in, dt=dt, iteration_restart=True)
             self._step_proxy(state_in, control, contacts, dt, iteration_restart=k > 0)
+
+    def _reset_aitken_iteration_state(self) -> None:
+        for proxy in [*self._proxy_mappings, *self._proxy_particle_mappings]:
+            if int(proxy.proxy_relaxation_mode) != int(_ProxyRelaxationMode.AITKEN):
+                continue
+            wp.launch(
+                _reset_aitken_state_kernel,
+                dim=1,
+                inputs=[
+                    float(proxy.proxy_relaxation),
+                    proxy.aitken_relaxation,
+                    proxy.aitken_has_previous,
+                ],
+                device=self.model.device,
+            )
 
     def _build_proxy_groups(self) -> dict[tuple[str, str], dict[str, list]]:
         """Bucket proxy mappings by (src, dst) once at construction."""

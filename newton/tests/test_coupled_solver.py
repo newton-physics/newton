@@ -266,6 +266,56 @@ class _ProxyBodyHookSolver(SolverBase, CouplingInterface):
         wp.copy(state_out.body_qd, state_in.body_qd)
 
 
+class _AffineBodyForceSourceSolver(SolverBase, CouplingInterface):
+    """Map the input body-force x component to output linear velocity."""
+
+    def step(self, state_in, state_out, control, contacts, dt):
+        del control, contacts, dt
+        wp.copy(state_out.body_q, state_in.body_q)
+        body_qd = state_in.body_qd.numpy().copy()
+        body_qd[:, 0] = state_in.body_f.numpy()[:, 0]
+        state_out.body_qd.assign(body_qd)
+
+
+class _AffineProxyBodyFeedbackSolver(SolverBase, CouplingInterface):
+    """Return the scalar affine feedback map H(x) = -2x + 1."""
+
+    def coupling_rewind_proxy_body(
+        self,
+        body_local_to_proxy_global,
+        state,
+        coupling_forces,
+        body_gravity_acceleration,
+        dt,
+    ):
+        del body_local_to_proxy_global, state, coupling_forces, body_gravity_acceleration, dt
+
+    def coupling_harvest_proxy_wrenches(
+        self,
+        body_local_to_proxy_global,
+        out_body_f,
+        *,
+        body_qd_before,
+        state,
+        state_out,
+        contacts,
+        dt,
+    ):
+        del state, state_out, contacts, dt
+        proxy_ids = body_local_to_proxy_global.numpy()
+        velocity = body_qd_before.numpy()
+        force = np.zeros_like(out_body_f.numpy())
+        for local_body, proxy_id in enumerate(proxy_ids):
+            if proxy_id >= 0:
+                force[proxy_id, 0] = -2.0 * velocity[local_body, 0] + 1.0
+        out_body_f.assign(force)
+
+    def step(self, state_in, state_out, control, contacts, dt):
+        del control, contacts, dt
+        wp.copy(state_out.body_q, state_in.body_q)
+        wp.copy(state_out.body_qd, state_in.body_qd)
+
+
 class _StepCountingCopySolver(SolverBase, CouplingInterface):
     """Test solver that records how many times it is stepped."""
 
@@ -1356,6 +1406,39 @@ class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
     def _entry_body_local(coupled: SolverCoupledProxy, entry_name: str, body_id: int) -> int:
         return int(coupled._entries[entry_name].body_global_to_local.numpy()[body_id])
 
+    def test_body_proxy_aitken_relaxation_converges_affine_fixed_point(self):
+        builder = newton.ModelBuilder(gravity=0.0)
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupledProxy(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=_AffineBodyForceSourceSolver, bodies=[body]),
+                SolverCoupled.Entry(name="dst", solver=_AffineProxyBodyFeedbackSolver),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(
+                        source="src",
+                        destination="dst",
+                        bodies=[body],
+                        proxy_relaxation_mode="aitken",
+                        proxy_relaxation=1.0,
+                        proxy_relaxation_min=0.1,
+                        proxy_relaxation_max=1.0,
+                    )
+                ],
+                iterations=3,
+            ),
+        )
+
+        coupled.step(model.state(), model.state(), control=None, contacts=None, dt=1.0)
+
+        mapping = coupled._proxy_mappings[0]
+        np.testing.assert_allclose(mapping.coupling_forces.numpy()[body, 0], 1.0 / 3.0, atol=1.0e-6)
+        np.testing.assert_allclose(mapping.aitken_relaxation.numpy()[0], 1.0 / 3.0, atol=1.0e-6)
+
     def test_duplicate_body_proxy_mapping_ids_are_rejected(self):
         builder = newton.ModelBuilder(gravity=0.0)
         for _ in range(3):
@@ -1681,6 +1764,32 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         self.assertEqual(len(solver.input_particle_f), 2)
         np.testing.assert_allclose(solver.input_particle_f[0][0], np.zeros(3), atol=1.0e-6)
         np.testing.assert_allclose(solver.input_particle_f[1][0], np.array([0.0, 10.5, 0.0]), atol=1.0e-6)
+
+    def test_particle_proxy_aitken_relaxation_kernels(self):
+        coupled = SolverCoupledProxy(
+            model=self.model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=_ParticleForceRecordingSolver, particles=[0]),
+                SolverCoupled.Entry(name="dst", solver=_ProxyParticleHookSolver, particles=[1]),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(
+                        source="src",
+                        destination="dst",
+                        particles=[0],
+                        proxy_relaxation_mode="aitken",
+                    )
+                ],
+                iterations=2,
+            ),
+        )
+
+        coupled.step(self.model.state(), self.model.state(), control=None, contacts=None, dt=0.5)
+
+        mapping = coupled._proxy_particle_mappings[0]
+        np.testing.assert_allclose(mapping.coupling_forces.numpy()[0], np.array([0.0, 7.0, 0.0]), atol=1.0e-6)
+        self.assertTrue(np.isfinite(mapping.aitken_relaxation.numpy()[0]))
 
     def test_particle_proxy_maps_proxy_indexed_feedback_to_source(self):
         _ParticleForceRecordingSolver.instances.clear()
