@@ -1684,9 +1684,9 @@ class ArticulationView:
     def eval_inverse_dynamics(
         self,
         state: State,
-        eval_type: "InverseDynamics.EvalType",
-        inverse_dynamics: "InverseDynamics",
-        scratch: "InverseDynamicsScratchBuffer",
+        eval_type: InverseDynamics.EvalType,
+        inverse_dynamics: InverseDynamics,
+        scratch: InverseDynamicsScratchBuffer,
         mask=None,
     ):
         """Compute inverse-dynamics quantities for articulations in this view.
