@@ -149,6 +149,7 @@ def build_unary_revolute_joint_test(
     ground: bool = True,
     dynamic: bool = False,
     implicit_pd: bool = False,
+    force_implicit_actuator_dynamics: bool = False,
     world_index: int = 0,
 ) -> ModelBuilderKamino:
     """
@@ -168,6 +169,8 @@ def build_unary_revolute_joint_test(
         ground (bool): Whether to include a ground plane in the world.
         dynamic (bool): Whether to enable dynamic properties for the joint.
         implicit_pd (bool): Whether to enable implicit PD control for the joint.
+        force_implicit_actuator_dynamics (bool): Whether to force implicit actuator dynamics
+            for supported joint types even when no dynamic properties are set.
         world_index (int): The index of the world in the builder where the test model should be added.
     """
     # Create a new builder if none is provided
@@ -204,6 +207,7 @@ def build_unary_revolute_joint_test(
         b_j=0.01 if dynamic else None,
         k_p_j=10.0 if implicit_pd else None,
         k_d_j=0.01 if implicit_pd else None,
+        force_implicit_actuator_dynamics=force_implicit_actuator_dynamics,
         world_index=world_index,
     )
     _builder.add_geometry(

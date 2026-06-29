@@ -288,7 +288,51 @@ class TestModelConversions(unittest.TestCase):
         # test_util_checks.assert_model_equal(self, model_2, model_1)
         # test_util_checks.assert_data_equal(self, data_2, data_1)
 
-    def test_02_model_conversions_dr_testmech_from_usd(self):
+    def test_02_model_conversion_fourbar_forced_implicit_actuator_dynamics(self):
+        """
+        Test that force_implicit_actuator_dynamics produces matching Kamino models
+        via Newton conversion and direct Kamino USD import.
+        """
+        # Define the path to the USD file for the fourbar model
+        asset_file = get_kamino_basics_asset("boxes_fourbar.usda")
+
+        # Create a fourbar using Newton's ModelBuilder
+        builder_0: ModelBuilder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder_0)
+        builder_0.default_shape_cfg.margin = 0.0
+        builder_0.default_shape_cfg.gap = 0.0
+        builder_0.begin_world()
+        builder_0.add_usd(
+            source=asset_file,
+            joint_ordering=None,
+            force_show_colliders=True,
+            force_position_velocity_actuation=True,
+        )
+        builder_0.end_world()
+        builder_0.shape_material_mu = [0.7] * len(builder_0.shape_material_mu)
+
+        # Convert Newton model to Kamino model with forced implicit actuator dynamics
+        model_0: Model = builder_0.finalize(skip_validation_joints=True)
+        model_2 = ModelKamino.from_newton(model_0, force_implicit_actuator_dynamics=True)
+
+        # Import the same fourbar using Kamino's USDImporter and ModelBuilderKamino
+        importer = USDImporter()
+        builder_1: ModelBuilderKamino = importer.import_from(
+            source=asset_file,
+            load_drive_dynamics=True,
+            load_static_geometry=True,
+            force_show_colliders=True,
+            use_prim_path_names=True,
+            use_angular_drive_scaling=True,
+            force_implicit_actuator_dynamics=True,
+        )
+        model_1: ModelKamino = builder_1.finalize()
+
+        # Check that models are equivalent
+        excluded = ["base_joint_index"]
+        test_util_checks.assert_model_equal(self, model_2, model_1, excluded=excluded)
+
+    def test_03_model_conversions_dr_testmech_from_usd(self):
         """
         Test the conversion operations between newton.Model and kamino.ModelKamino
         on the DR testmechanism model loaded from USD.
@@ -339,7 +383,7 @@ class TestModelConversions(unittest.TestCase):
         atol = {"inv_i_I_i": 1e-6}
         test_util_checks.assert_model_equal(self, model_2, model_1, excluded=["ptr"], rtol=rtol, atol=atol)
 
-    def test_03_model_conversions_dr_legs_from_usd(self):
+    def test_04_model_conversions_dr_legs_from_usd(self):
         """
         Test the conversion operations between newton.Model and kamino.ModelKamino
         on the DR legs model loaded from USD.
@@ -397,7 +441,7 @@ class TestModelConversions(unittest.TestCase):
         atol = {"inv_i_I_i": 1e-6}
         test_util_checks.assert_model_equal(self, model_2, model_1, excluded=excluded, rtol=rtol, atol=atol)
 
-    def test_04_model_conversions_anymal_d_from_usd(self):
+    def test_05_model_conversions_anymal_d_from_usd(self):
         """
         Test the conversion operations between newton.Model and kamino.ModelKamino
         on the Anymal D model loaded from USD.
@@ -465,7 +509,7 @@ class TestModelConversions(unittest.TestCase):
         ]
         test_util_checks.assert_model_equal(self, model_2, model_1, excluded=excluded)
 
-    def test_05_model_conversions_arbitrary_axis(self):
+    def test_10_model_conversions_arbitrary_axis(self):
         """
         Test that Newton→Kamino conversion succeeds for a revolute joint
         with an arbitrary (non-canonical) axis, e.g. ``(1, 1, 0)``.
@@ -535,7 +579,7 @@ class TestModelConversions(unittest.TestCase):
         np.testing.assert_allclose(ax_col_B, expected_ax, atol=1e-6)
         np.testing.assert_allclose(ax_col_F, expected_ax, atol=1e-6)
 
-    def test_06_model_conversions_q_i_0_com_frame(self):
+    def test_11_model_conversions_q_i_0_com_frame(self):
         """
         Test that ``q_i_0`` stores COM world poses (not body-origin poses)
         after Newton→Kamino conversion for bodies with non-zero COM offsets.
@@ -703,7 +747,7 @@ class TestModelConversions(unittest.TestCase):
 
         return builder.finalize(skip_validation_joints=True)
 
-    def test_07_reset_produces_body_origin_frame(self):
+    def test_12_reset_produces_body_origin_frame(self):
         """
         Test that ``SolverKamino.reset()`` writes body-origin frame poses
         into ``state.body_q``, not COM-frame poses, for bodies with non-zero
@@ -736,7 +780,7 @@ class TestModelConversions(unittest.TestCase):
             err_msg="Default reset: body velocities should be zero",
         )
 
-    def test_08_base_reset_produces_body_origin_frame(self):
+    def test_13_base_reset_produces_body_origin_frame(self):
         """
         Test that ``SolverKamino.reset(base_q=..., base_u=...)`` writes
         body-origin frame poses and velocities into ``state.body_q`` and
@@ -797,7 +841,7 @@ class TestModelConversions(unittest.TestCase):
                 err_msg=f"Base reset (translated): body {i} rotation mismatch",
             )
 
-    def test_09_model_conversions_shape_offset_com_relative(self):
+    def test_14_model_conversions_shape_offset_com_relative(self):
         """
         Test that ``geoms.offset`` stores COM-relative shape positions
         after Newton→Kamino conversion, while ground shapes are unchanged.
@@ -853,7 +897,7 @@ class TestModelConversions(unittest.TestCase):
         # Ground shape: pos unchanged at (1.0, 0.0, 0.0)
         np.testing.assert_allclose(offset_np[1, :3], [1.0, 0.0, 0.0], atol=1e-6)
 
-    def test_10_origin_com_roundtrip(self):
+    def test_20_origin_com_roundtrip(self):
         """
         Test that origin→COM→origin is the identity on body_q.
         """
@@ -866,7 +910,7 @@ class TestModelConversions(unittest.TestCase):
 
         np.testing.assert_allclose(body_q.numpy(), q_orig, atol=1e-6, err_msg="body_q roundtrip failed")
 
-    def test_11_model_conversions_material_fourbar_from_builder(self):
+    def test_21_model_conversions_material_fourbar_from_builder(self):
         """
         Test the conversion operations between newton.Model and kamino.ModelKamino
         on a simple fourbar model with different materials, created explicitly using the builder.
@@ -940,7 +984,7 @@ class TestModelConversions(unittest.TestCase):
         # model_2: ModelKamino = ModelKamino.from_newton(model_0)
         # test_util_checks.assert_model_equal(self, model_2, model_1)
 
-    def test_12_model_conversions_material_box_on_plane_from_usd(self):
+    def test_22_model_conversions_material_box_on_plane_from_usd(self):
         """
         Test the conversion operations between newton.Model and kamino.ModelKamino
         on a simple box on plane model loaded from USD, containing different materials.
@@ -1006,7 +1050,7 @@ class TestModelConversions(unittest.TestCase):
         #       runtime material resolution system (see :class:`MaterialMuxMode`).
         # test_util_checks.assert_model_material_pairs_equal(self, model_2.material_pairs, model_1.material_pairs)
 
-    def test_20_state_conversions(self):
+    def test_30_state_conversions(self):
         """
         Test the conversion operations between newton.State and kamino.StateKamino.
         """
@@ -1103,7 +1147,7 @@ class TestModelConversions(unittest.TestCase):
         self.assertIs(state_3.joint_q_prev, state_2.q_j_p)
         self.assertIs(state_3.joint_lambdas, state_2.lambda_j)
 
-    def test_30_control_conversions(self):
+    def test_40_control_conversions(self):
         """
         Test the conversions between newton.Control and kamino.ControlKamino.
         """
@@ -1176,16 +1220,20 @@ class TestModelConversions(unittest.TestCase):
         self.assertIsInstance(control_2.tau_j, wp.array)
         self.assertIs(control_2.tau_j, control_0.joint_f)
         self.assertEqual(control_2.tau_j.size, model_0.joint_dof_count)
+        self.assertIsNone(control_2.tau_j_ref)
         test_util_checks.assert_control_equal(self, control_2, control_1, ["tau_j_ref"])
 
         # Convert back to a Newton control container.
+        control_0.joint_act.fill_(42.0)
         control_3: Control = model_0.control()
+        joint_act_before = control_3.joint_act.numpy().copy()
         control_2.to_newton(control_3, model_1)
         self.assertIsInstance(control_3.joint_f, wp.array)
         self.assertIs(control_3.joint_f, control_2.tau_j)
         self.assertEqual(control_3.joint_f.size, model_0.joint_dof_count)
+        np.testing.assert_array_equal(control_3.joint_act.numpy(), joint_act_before)
         test_util_checks.assert_array_attributes_equal(
-            self, control_3, control_0, ["joint_f", "joint_target_pos", "joint_target_vel", "joint_act"]
+            self, control_3, control_0, ["joint_f", "joint_target_pos", "joint_target_vel"]
         )
 
 
