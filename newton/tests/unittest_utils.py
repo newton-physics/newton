@@ -31,6 +31,13 @@ coverage_enabled = False
 coverage_temp_dir = None
 coverage_branch = None
 
+# Set by the test runner from the --strict-warnings flag. When True, the example
+# subprocesses spawned by test_examples.py escalate DeprecationWarnings to errors
+# (the in-process tests additionally escalate any warning attributed to a newton.*
+# module). Off by default so verifying an installation does not fail on warnings
+# the user cannot act on.
+strict_warnings = False
+
 try:
     if sys.platform == "win32":
         LIBC = ctypes.CDLL("ucrtbase.dll")

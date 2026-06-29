@@ -142,7 +142,7 @@ class Example:
             ls_iterations=50,
             njmax=50,  # ls_iterations=50 for determinism
         )
-        self.mpm_solver = SolverImplicitMPM(self.model, mpm_options)
+        self.mpm_solver = SolverImplicitMPM(self.model, config=mpm_options)
 
         # simulation state
         self.state_0 = self.model.state()

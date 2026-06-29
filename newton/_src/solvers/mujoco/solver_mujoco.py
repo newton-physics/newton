@@ -30,6 +30,7 @@ from ...sim import (
     State,
     StateFlags,
 )
+from ...sim.articulation import eval_articulation_fk, eval_fk
 from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
 from ...sim.graph_coloring import color_graph, plot_graph
 from ...utils import topological_sort
@@ -64,7 +65,6 @@ from .kernels import (
     convert_warp_coords_to_mj_kernel,
     create_convert_mjw_contacts_to_newton_kernel,
     create_inverse_shape_mapping_kernel,
-    eval_articulation_fk,
     recompute_jnt_eq_anchor1_kernel,
     repeat_array_kernel,
     reset_joint_state_kernel,
@@ -3166,7 +3166,7 @@ class SolverMuJoCo(SolverBase):
         disable_contacts: bool = False,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
-        ls_parallel: bool | None = None,  # Deprecated: being removed from mujoco_warp
+        ls_parallel: bool | None = None,  # Deprecated: ignored since mujoco_warp 3.9.1
         use_mujoco_contacts: bool = True,
         include_sites: bool = True,
         skip_visual_only_geoms: bool = True,
@@ -4203,33 +4203,7 @@ class SolverMuJoCo(SolverBase):
             device=model.device,
         )
 
-        # custom forward kinematics for handling multi-dof joints
-        wp.launch(
-            kernel=eval_articulation_fk,
-            dim=model.articulation_count,
-            inputs=[
-                model.articulation_start,
-                model.articulation_end,
-                model.joint_articulation,
-                state.joint_q,
-                state.joint_qd,
-                model.joint_q_start,
-                model.joint_qd_start,
-                model.joint_type,
-                model.joint_parent,
-                model.joint_child,
-                model.joint_X_p,
-                model.joint_X_c,
-                model.joint_axis,
-                model.joint_dof_dim,
-                model.body_com,
-            ],
-            outputs=[
-                state.body_q,
-                state.body_qd,
-            ],
-            device=model.device,
-        )
+        eval_fk(model, state.joint_q, state.joint_qd, state)
 
         # Update rigid force fields on state.
         if state.body_qdd is not None or state.body_parent_f is not None:
@@ -6918,9 +6892,9 @@ class SolverMuJoCo(SolverBase):
     def _compute_body_poses_at_qref(model: Model, ref_q: wp.array) -> wp.array:
         """Compute body transforms at the reference joint configuration.
 
-        Runs ``eval_articulation_fk`` with the given ``ref_q`` and zero
-        velocities to obtain world-space body transforms at the reference
-        pose.
+        Runs :func:`newton.eval_articulation_fk` with the given ``ref_q``
+        and zero velocities to obtain world-space body transforms at the
+        reference pose.
 
         Args:
             model: The Newton :class:`Model`.
@@ -6932,7 +6906,6 @@ class SolverMuJoCo(SolverBase):
             ``wp.array[wp.transform]``, shape ``[body_count]``.
         """
         ref_qd = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
-
         ref_body_q = wp.zeros(model.body_count, dtype=wp.transform, device=model.device)
         ref_body_qd = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=model.device)
 
@@ -6942,6 +6915,9 @@ class SolverMuJoCo(SolverBase):
             inputs=[
                 model.articulation_start,
                 model.articulation_end,
+                model.articulation_count,
+                None,
+                None,
                 model.joint_articulation,
                 ref_q,
                 ref_qd,
@@ -6955,11 +6931,10 @@ class SolverMuJoCo(SolverBase):
                 model.joint_axis,
                 model.joint_dof_dim,
                 model.body_com,
+                model.body_flags,
+                int(BodyFlags.ALL),
             ],
-            outputs=[
-                ref_body_q,
-                ref_body_qd,
-            ],
+            outputs=[ref_body_q, ref_body_qd],
             device=model.device,
         )
         return ref_body_q
@@ -7475,9 +7450,8 @@ class SolverMuJoCo(SolverBase):
                 factor = invw * (1.0 - dmax) if invw > 0.0 and dmax < 1.0 else 1.0
                 direct_stiffness = max(ke * factor, MJ_MINVAL)
                 direct_damping = max(kd * factor, MJ_MINVAL)
-                timeconst = 2.0 / direct_damping
-                dampratio = direct_damping / (2.0 * math.sqrt(direct_stiffness))
-                jnt_solref[mjc_jnt] = (timeconst, dampratio)
+                solref = convert_solref(direct_stiffness, direct_damping, 1.0, 1.0)
+                jnt_solref[mjc_jnt] = (float(solref[0]), float(solref[1]))
 
             self.mj_model.jnt_solref[:] = jnt_solref
             self.mjw_model.jnt_solref.assign(jnt_solref.reshape(1, njnt, 2))
