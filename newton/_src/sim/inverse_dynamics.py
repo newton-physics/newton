@@ -136,7 +136,7 @@ class InverseDynamics:
         floating-base root joint.
 
         The ``gravity_force`` and ``coriolis_force`` buffers share the flat
-        joint-space layout that :func:`~newton.Model.joint_qd` uses.
+        joint-space layout that :attr:`~newton.Model.joint_qd` uses.
 
         Internal scratch lives on a separate
         :class:`InverseDynamicsScratchBuffer`, which is passed alongside
@@ -169,7 +169,9 @@ class InverseDynamics:
 
         self.tau: wp.array[wp.float32] = wp.zeros(jdc, dtype=wp.float32, device=device)
         """Inverse-dynamics joint force ``tau = M(q)*qddot + C(q, q_dot)*q_dot + g(q)`` [N or N·m, depending on joint type], shape (joint_dof_count,), dtype float.
-        Typically populated by :func:`~newton.eval_inverse_dynamics_force` from the other buffers in this container plus a user-supplied ``qddot``."""
+        Populated by :func:`~newton.eval_inverse_dynamics_force` from the other buffers in this container plus a user-supplied ``qddot``.
+        :func:`~newton.eval_inverse_dynamics` does not write this buffer; it remains zero until
+        :func:`~newton.eval_inverse_dynamics_force` is called."""
 
 
 def _rnea_compensation_pass(
