@@ -72,7 +72,6 @@ from .rigid_vbd_kernels import (
     init_body_body_contact_materials,
     init_body_body_contacts_avbd,
     init_body_particle_contacts,
-    initialize_body_forces_and_torques,
     snapshot_body_body_contact_history,
     solve_rigid_body,
     step_body_body_contact_C0_lambda,
@@ -2231,9 +2230,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self.body_body_contact_stick_flag.zero_()
 
             # Accumulate joint_f into body wrenches (scratch buffer avoids mutating user state).
-            body_f_for_integration = self._body_f_for_integration
-            body_f_for_integration.zero_()
+            body_f_for_integration = state_in.body_f
             if model.joint_count > 0 and control is not None and control.joint_f is not None:
+                wp.copy(self._body_f_for_integration, state_in.body_f)
+                body_f_for_integration = self._body_f_for_integration
                 wp.launch(
                     kernel=apply_joint_forces,
                     dim=model.joint_count,
@@ -2260,7 +2260,6 @@ class SolverVBD(SolverBase, CouplingInterface):
                 )
 
             # Forward integrate rigid bodies (body_q modified in-place for dynamic bodies only).
-            # Public body_f are applied inside the AVBD solve rather than in this predictor.
             wp.launch(
                 kernel=forward_step_rigid_bodies,
                 inputs=[
@@ -2648,24 +2647,13 @@ class SolverVBD(SolverBase, CouplingInterface):
             return
 
         # Zero out forces and hessians
+        self.body_torques.zero_()
+        self.body_forces.zero_()
         self.body_hessian_aa.zero_()
         self.body_hessian_al.zero_()
         self.body_hessian_ll.zero_()
 
         body_color_groups = model.body_color_groups
-
-        wp.launch(
-            kernel=initialize_body_forces_and_torques,
-            dim=model.body_count,
-            inputs=[
-                state_in.body_f,
-            ],
-            outputs=[
-                self.body_forces,
-                self.body_torques,
-            ],
-            device=self.device,
-        )
 
         # Gauss-Seidel-style per-color updates
         for color in range(len(body_color_groups)):
