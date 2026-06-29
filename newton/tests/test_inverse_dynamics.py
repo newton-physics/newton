@@ -2662,6 +2662,64 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         self.assertIn("mass_matrix", msg)
         self.assertIn(str(wrong_shape), msg)
 
+    def test_eval_inverse_dynamics_raises_on_buffer_shape_mismatch(self):
+        """``eval_inverse_dynamics`` raises ``ValueError`` when any output
+        buffer's shape disagrees with the model's expected shape.
+        """
+        builder = self._build_two_link_articulation(
+            gravity=wp.vec3(0.0, 0.0, 0.0),
+            floating_base=False,
+            joint_type="revolute",
+            joint_axis=wp.vec3(0.0, 0.0, 1.0),
+            link_coms=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],
+            link_masses=[1.0, 1.0],
+            joint_frames=[
+                wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+                wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            ],
+            link_inertias=[self.I_UNIT, self.I_UNIT],
+        )
+        model = builder.finalize(device=self.device)
+        state = model.state()
+
+        cases = [
+            (
+                "gravity_force",
+                newton.InverseDynamics.EvalType.GRAVITY_FORCE,
+                "gravity_force",
+                (model.joint_dof_count + 1,),
+            ),
+            (
+                "coriolis_force",
+                newton.InverseDynamics.EvalType.CORIOLIS_FORCE,
+                "coriolis_force",
+                (model.joint_dof_count + 1,),
+            ),
+            (
+                "mass_matrix",
+                newton.InverseDynamics.EvalType.MASS_MATRIX,
+                "mass_matrix",
+                (
+                    model.articulation_count,
+                    model.max_dofs_per_articulation + 1,
+                    model.max_dofs_per_articulation + 1,
+                ),
+            ),
+        ]
+        for attr, flag, expected_substr, wrong_shape in cases:
+            with self.subTest(flag=flag):
+                inverse_dynamics, scratch = model.inverse_dynamics()
+                setattr(
+                    inverse_dynamics,
+                    attr,
+                    wp.zeros(wrong_shape, dtype=wp.float32, device=self.device),
+                )
+                with self.assertRaises(ValueError) as ctx:
+                    newton.eval_inverse_dynamics(model, state, flag, inverse_dynamics, scratch)
+                msg = str(ctx.exception)
+                self.assertIn(expected_substr, msg)
+                self.assertIn(str(wrong_shape), msg)
+
     def test_eval_inverse_dynamics_raises_on_unrecognized_eval_type(self):
         """``eval_inverse_dynamics`` raises ``ValueError`` for any ``eval_type``
         with no bits in common with the recognized flags: zero (empty) and 8

@@ -517,7 +517,19 @@ def eval_inverse_dynamics(
         )
 
     if eval_type & InverseDynamics.EvalType.GRAVITY_FORCE:
+        expected_shape = (model.joint_dof_count,)
+        if inverse_dynamics.gravity_force.shape != expected_shape:
+            raise ValueError(
+                f"inverse_dynamics.gravity_force has shape "
+                f"{inverse_dynamics.gravity_force.shape}, expected {expected_shape}."
+            )
         _compute_gravity_force(model, state, inverse_dynamics, scratch, mask=mask)
 
     if eval_type & InverseDynamics.EvalType.CORIOLIS_FORCE:
+        expected_shape = (model.joint_dof_count,)
+        if inverse_dynamics.coriolis_force.shape != expected_shape:
+            raise ValueError(
+                f"inverse_dynamics.coriolis_force has shape "
+                f"{inverse_dynamics.coriolis_force.shape}, expected {expected_shape}."
+            )
         _compute_coriolis_force(model, state, inverse_dynamics, scratch, mask=mask)
