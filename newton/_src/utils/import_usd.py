@@ -803,7 +803,9 @@ def parse_usd(
         """Load and cache TetMesh data to avoid repeated USD extraction."""
         prim_path = str(prim.GetPath())
         if prim_path not in tetmesh_cache:
-            tetmesh_cache[prim_path] = usd.get_tetmesh(prim, deformable_compat_ns)
+            # Pass the resolver-declared namespaces explicitly (never None), so the importer keeps the
+            # canonical physics: default and does not trip get_tetmesh()'s legacy-default deprecation.
+            tetmesh_cache[prim_path] = usd.get_tetmesh(prim, compat_namespaces=deformable_compat_ns)
         return tetmesh_cache[prim_path]
 
     def _is_uniform_scale(scale: wp.vec3) -> bool:

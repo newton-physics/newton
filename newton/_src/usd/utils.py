@@ -1219,12 +1219,12 @@ _TETMESH_SCHEMA_ATTRS = frozenset(
 
 
 # Vendor attribute namespaces that get_tetmesh() read by default before the canonical
-# ``physics:`` deformable schema existed. Pass as ``compat_namespaces`` to recover that
-# pre-canonical behavior (read moduli off any bound material, under these namespaces).
+# ``physics:`` deformable schema existed. Pass as ``compat_namespaces`` to read these
+# vendor namespaces off any bound material (under these namespaces).
 LEGACY_DEFORMABLE_NAMESPACES: tuple[str, ...] = ("omniphysics", "physxDeformableBody")
 
 
-def get_tetmesh(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> TetMesh:
+def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = None) -> TetMesh:
     """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
     Reads vertex positions from the ``points`` attribute and tetrahedral
@@ -1236,13 +1236,15 @@ def get_tetmesh(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> TetMes
     ``k_lambda``) and density on the returned TetMesh. Material properties
     are set to ``None`` if not present.
 
-    By default the moduli are read only from a material that applies
-    ``PhysicsVolumeDeformableMaterialAPI``. Passing ``compat_namespaces``
-    additionally reads the listed vendor namespaces and lifts that gate, reading
-    moduli off any bound material. Pass
-    ``compat_namespaces=newton.usd.LEGACY_DEFORMABLE_NAMESPACES`` to recover the
-    pre-canonical behavior of reading ``omniphysics:`` / ``physxDeformableBody:``
-    material attributes by default.
+    Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
+    (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
+    are read off any bound material, matching the pre-canonical behavior. That default is
+    deprecated and emits a ``DeprecationWarning`` when a physics material is bound; a future
+    release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
+    the canonical-only behavior now -- moduli are then read only from a material that applies
+    ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.
+    ``newton.usd.LEGACY_DEFORMABLE_NAMESPACES``) to keep reading vendor namespaces without the
+    warning.
 
     Example:
 
@@ -1260,8 +1262,10 @@ def get_tetmesh(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> TetMes
 
     Args:
         prim: The USD prim to load the tetrahedral mesh from.
-        compat_namespaces: Vendor attribute namespaces accepted as a fallback to
-            the canonical ``physics:`` material attributes.
+        compat_namespaces: Vendor attribute namespaces accepted as a fallback to the canonical
+            ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
+            gate. ``None`` (the default) selects the deprecated legacy namespaces; pass ``()`` for
+            canonical-only.
 
     Returns:
         TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
@@ -1294,10 +1298,23 @@ def get_tetmesh(prim: Usd.Prim, compat_namespaces: Sequence[str] = ()) -> TetMes
     density = None
 
     material_prim = _find_physics_material_prim(prim)
-    # Default (canonical) behavior scopes the moduli to the volume deformable material API, so they
-    # are not read off an unrelated physics material. Passing ``compat_namespaces`` opts back into
-    # the legacy behavior of reading moduli off any bound material (use
-    # ``LEGACY_DEFORMABLE_NAMESPACES`` to fully restore the pre-canonical defaults).
+    if compat_namespaces is None:
+        # Deprecated legacy default: read vendor namespaces off any bound material. Warn only when a
+        # physics material is actually bound, so the default change is visible exactly where it matters.
+        if material_prim is not None:
+            warnings.warn(
+                "get_tetmesh(): reading legacy vendor-namespaced deformable material attributes "
+                "(omniphysics: / physxDeformableBody:) off any bound material by default is deprecated; "
+                "a future release will default to canonical physics:-only. Pass compat_namespaces=() to "
+                "adopt the canonical-only behavior now, or compat_namespaces="
+                "newton.usd.LEGACY_DEFORMABLE_NAMESPACES to keep the current behavior explicitly.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        compat_namespaces = LEGACY_DEFORMABLE_NAMESPACES
+    # Canonical behavior (compat_namespaces=()) scopes the moduli to the volume deformable material
+    # API, so they are not read off an unrelated physics material. A non-empty compat_namespaces reads
+    # the listed vendor namespaces off any bound material.
     read_material = material_prim is not None and (
         bool(compat_namespaces) or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI")
     )

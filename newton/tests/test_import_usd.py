@@ -9818,7 +9818,7 @@ def Mesh "JustAMesh" ()
 
         stage = Usd.Stage.Open(os.path.join(os.path.dirname(__file__), "assets", "tetmesh_with_material.usda"))
         prim = stage.GetPrimAtPath("/World/SoftBody")
-        tm = usd.get_tetmesh(prim)
+        tm = usd.get_tetmesh(prim, compat_namespaces=())
 
         # E = 300000, nu = 0.3
         # k_mu = E / (2 * (1 + nu)) = 300000 / 2.6 = 115384.615...
@@ -9831,11 +9831,12 @@ def Mesh "JustAMesh" ()
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_tetmesh_vendor_namespace_legacy_recovery(self):
-        """A vendor-namespaced material needs an explicit ``compat_namespaces`` opt-in.
+        """Vendor-namespaced material reads follow the ``compat_namespaces`` opt-in.
 
-        The canonical default reads moduli only from a ``physics:`` material that applies
-        ``PhysicsVolumeDeformableMaterialAPI``; ``LEGACY_DEFORMABLE_NAMESPACES`` recovers the
-        pre-canonical behavior of reading vendor-namespaced material attributes off any material.
+        Canonical-only (``compat_namespaces=()``) reads moduli only from a ``physics:`` material
+        that applies ``PhysicsVolumeDeformableMaterialAPI``. The deprecated default (``None``) reads
+        vendor namespaces off any bound material and emits a ``DeprecationWarning``;
+        ``LEGACY_DEFORMABLE_NAMESPACES`` keeps that behavior explicitly (without the warning).
         """
         from pxr import Usd
 
@@ -9868,10 +9869,18 @@ def Xform "World" ()
         stage.GetRootLayer().ImportFromString(usda)
         prim = stage.GetPrimAtPath("/World/SoftBody")
 
-        tm_default = usd.get_tetmesh(prim)
-        self.assertIsNone(tm_default.k_mu)
-        self.assertIsNone(tm_default.density)
+        # Canonical-only: vendor moduli are ignored.
+        tm_canonical = usd.get_tetmesh(prim, compat_namespaces=())
+        self.assertIsNone(tm_canonical.k_mu)
+        self.assertIsNone(tm_canonical.density)
 
+        # Deprecated default: reads the vendor namespaces off the bound material and warns.
+        with self.assertWarns(DeprecationWarning):
+            tm_default = usd.get_tetmesh(prim)
+        self.assertIsNotNone(tm_default.k_mu)
+        self.assertAlmostEqual(tm_default.density, 40.0)
+
+        # Explicit legacy namespaces: same reads, no deprecation warning.
         tm_legacy = usd.get_tetmesh(prim, compat_namespaces=usd.LEGACY_DEFORMABLE_NAMESPACES)
         self.assertIsNotNone(tm_legacy.k_mu)
         self.assertAlmostEqual(tm_legacy.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
