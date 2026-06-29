@@ -1524,9 +1524,8 @@ def contact_rr_fill_from_rigid_contacts_kernel(
     if use_contact_matching != 0:
         prev_id = rigid_contact_match_index[i]
         if prev_id >= 0 and prev_id < prev_contact_active.shape[0] and prev_contact_active[prev_id] != 0:
-            lambda_out = (
-                contact_matching_force_scale
-                * _rescale_lambda(prev_contact_lambda[prev_id], prev_contact_W[prev_id], weight)
+            lambda_out = contact_matching_force_scale * _rescale_lambda(
+                prev_contact_lambda[prev_id], prev_contact_W[prev_id], weight
             )
 
     lambda_[dst] = lambda_out

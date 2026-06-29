@@ -161,7 +161,7 @@ def subtract_proxy_body_forces_kernel(
     if global_id < 0:
         return
 
-    f = coupling_forces[global_id]# + dst_body_f[local_id]
+    f = coupling_forces[global_id]
 
     inv_m = dst_body_inv_mass[local_id]
     g = body_gravity_acceleration[local_id]
@@ -169,7 +169,7 @@ def subtract_proxy_body_forces_kernel(
     if inv_m > 0.0:
         f_grav = dst_body_mass[local_id] * g
 
-    dst_body_f[local_id] = - f - wp.spatial_vector(f_grav, wp.vec3(0.0, 0.0, 0.0))
+    dst_body_f[local_id] = -f - wp.spatial_vector(f_grav, wp.vec3(0.0, 0.0, 0.0))
 
 
 @wp.kernel(enable_backward=False)

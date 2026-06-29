@@ -250,20 +250,6 @@ class Example:
         builder.joint_armature[:7] = [0.05] * 7
         builder.joint_armature[7:9] = [0.0, 0.0]
 
-        pad_cfg = newton.ModelBuilder.ShapeConfig(ke=8.0e4, kd=2.0e1, mu=1.2, margin=0.001, gap=0.002)
-        for suffix, color in (
-            ("fr3_leftfinger", (0.92, 0.48, 0.18)),
-            ("fr3_rightfinger", (0.92, 0.48, 0.18)),
-        ):
-            finger = _find_label_index(builder.body_label, suffix)
-            # builder.add_shape_sphere(
-            #     finger,
-            #     radius=0.022,
-            #     cfg=pad_cfg,
-            #     color=color,
-            #     label=f"{suffix}_admm_contact_pad",
-            # )
-
         franka_body_end = builder.body_count
         franka_joint_end = builder.joint_count
         franka_shape_end = builder.shape_count

@@ -942,6 +942,7 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         self.assertEqual(len(solver._admm_rp_groups), 1)
         self.assertLess(final_gap, 0.5 * initial_gap)
 
+
 class TestAdmmExternalForces(unittest.TestCase):
     """External forces set on ``state_in.body_f`` / ``particle_f`` by the
     caller (e.g. a viewer gizmo) must reach the sub-solvers."""
