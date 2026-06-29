@@ -415,6 +415,7 @@ class SolverKamino(SolverBase):
             Reset option, to set body poses from actuator coordinates and/or base joint coordinates.
             Extracts relevant data from joint coordinates, and applies position-level Forward Kinematics
             and/or a global transformation at the base.
+            Note: angles outside the [-2pi, 2pi] range around initial coordinates will be remapped automatically.
             """
 
             joint_q: wp.array[wp.float32] | None = None
@@ -435,6 +436,7 @@ class SolverKamino(SolverBase):
         class FromActuatorQ:
             """
             Reset option, to set body poses from actuator coordinates, using position-level Forward Kinematics.
+            Note: angles outside the [-2pi, 2pi] range around initial coordinates will be remapped automatically.
             """
 
             actuator_q: wp.array[wp.float32]

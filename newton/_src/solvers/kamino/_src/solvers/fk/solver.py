@@ -1906,6 +1906,7 @@ class ForwardKinematicsSolver:
             Expects shape of ``(num_fk_joints,)`` and type :class:`transform`
             If not provided, will be inferred from bodies_q, reading actuated coordinates and base pose
             from body poses (assuming they are consistent).
+            If this function is captured in a graph, must be either always or never provided.
         world_mask : wp.array, optional
             Per-world boolean flags selecting which worlds to process (``False`` leaves a world unchanged).
             If not provided, all worlds are processed.
