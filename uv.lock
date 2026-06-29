@@ -3260,7 +3260,7 @@ wheels = [
 
 [[package]]
 name = "mujoco-warp"
-version = "3.10.0"
+version = "3.10.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "absl-py" },
@@ -3271,9 +3271,9 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
     { name = "warp-lang" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/49/7c/660622d84bdb3b5ce131bd3ff1d9ce282305e54ecd4521d5ce54d47f98c7/mujoco_warp-3.10.0.tar.gz", hash = "sha256:4fee4f474180c0a607be45c965540c34e6d5aa17f3d2785dfb99d51f6b649841", size = 2024639, upload-time = "2026-06-22T17:38:57.661Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/e5/37d982ba8bdbad8455fb74da827aa4e8ea1b984db66171d4b66c458da985/mujoco_warp-3.10.0.1.tar.gz", hash = "sha256:adca3e740112bca1aaaa732556aad0f36fb3dea99f86abd22ee1232dc5e2b28d", size = 2046299, upload-time = "2026-06-26T15:59:41.217Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f5/85/a7d5d8fc82c7795371a28964e8e4c69df80f536d5dd359780cdd59b39daa/mujoco_warp-3.10.0-py3-none-any.whl", hash = "sha256:737a096b3e40ebb61eaa361d9f097f0c09ecc02bd1e0ff853f53d2e1fdec9ca1", size = 2104969, upload-time = "2026-06-22T17:38:55.876Z" },
+    { url = "https://files.pythonhosted.org/packages/16/32/9adafac9cf8133cebe5825b306be01ab9209ab0fb5a057cb29e4f5b23bd5/mujoco_warp-3.10.0.1-py3-none-any.whl", hash = "sha256:7a5871a5522796fa36ec5614dc214a180d4fc7de861e413ee1559d2cc4ec79f9", size = 2123960, upload-time = "2026-06-26T15:59:39.77Z" },
 ]
 
 [[package]]
@@ -3853,7 +3853,7 @@ requires-dist = [
     { name = "jupyterlab", marker = "extra == 'notebook'", specifier = ">=4.5.7" },
     { name = "meshio", marker = "extra == 'importers'", specifier = ">=5.3.5" },
     { name = "mujoco", marker = "extra == 'sim'", specifier = "~=3.10.0" },
-    { name = "mujoco-warp", marker = "extra == 'sim'", specifier = "~=3.10.0" },
+    { name = "mujoco-warp", marker = "extra == 'sim'", specifier = "~=3.10.0,>=3.10.0.1" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
     { name = "nbsphinx", marker = "extra == 'docs'", specifier = ">=0.9.0" },
     { name = "newton", extras = ["examples"], marker = "extra == 'dev'" },
