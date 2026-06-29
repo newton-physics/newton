@@ -28,8 +28,14 @@ from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_se
 from newton.usd import SchemaResolverPhysx
 
 
-def _add_cable_curve(stage, path, points, *, periodic=False):
-    """Author a GeomBasisCurves marked as a curve deformable (cable)."""
+def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, density=None):
+    """Author a GeomBasisCurves marked as a curve deformable (cable).
+
+    Binds a minimal canonical curve-deformable material carrying ``thickness`` (and optional
+    ``density``) so the importer does not warn about an unauthored cable thickness. Pass
+    ``thickness=None`` to leave the cable without a bound material, e.g. to exercise the
+    default-radius fallback or a test's own material binding.
+    """
     from pxr import UsdGeom
 
     curves = UsdGeom.BasisCurves.Define(stage, path)
@@ -40,6 +46,11 @@ def _add_cable_curve(stage, path, points, *, periodic=False):
     # Metadata-based discovery: apply the curve-deformable sim API by token so it
     # is found even when the deformable schema is not registered with USD.
     curves.GetPrim().AddAppliedSchema("PhysicsCurvesDeformableSimAPI")
+    if thickness is not None:
+        mat_attrs = {"thickness": thickness}
+        if density is not None:
+            mat_attrs["density"] = density
+        _bind_cable_material(stage, curves.GetPrim(), f"{path}Mat", **mat_attrs)
     return curves
 
 
@@ -295,7 +306,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage = Usd.Stage.CreateNew(str(usd_path))
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
-            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
             # Material carries cable-shaped attributes but does NOT declare the family API.
             mat = UsdShade.Material.Define(stage, "/World/Mat")
             mat.GetPrim().CreateAttribute("physics:stretchStiffness", Sdf.ValueTypeNames.Float).Set(2.0e6)
@@ -304,7 +315,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
+            # The family-less material is ignored, so the cable falls back to the default radius and warns.
+            with self.assertWarnsRegex(UserWarning, "no cable thickness"):
+                result = builder.add_usd(str(usd_path))
             # Without the family API the material is ignored: no attrs, default rod stiffness.
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"], {})
             _bodies, joints = result["path_cable_map"]["/World/Cable"]
@@ -422,7 +435,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage = Usd.Stage.CreateNew(str(usd_path))
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
-            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
             _bind_cable_material(
                 stage, curves.GetPrim(), "/World/CableMat", namespace="omniphysics", thickness=0.02, density=1234.0
             )
@@ -432,9 +445,10 @@ class TestUSDDeformableCable(unittest.TestCase):
                 return builder.shape_scale[builder.body_shapes[0][0]][0]  # capsule radius
 
             # Default resolvers: omniphysics:thickness is ignored, so the radius is the
-            # builder default, not the authored thickness / 2.
+            # builder default, not the authored thickness / 2 (and the importer warns).
             builder_default = newton.ModelBuilder()
-            builder_default.add_usd(str(usd_path))
+            with self.assertWarnsRegex(UserWarning, "no cable thickness"):
+                builder_default.add_usd(str(usd_path))
             default_radius = cable_radius(builder_default)
 
             # With the PhysX resolver active, omniphysics:thickness is honored (radius = thickness / 2).
@@ -453,17 +467,20 @@ class TestUSDDeformableCable(unittest.TestCase):
                 stage = Usd.Stage.CreateNew(str(usd_path))
                 UsdPhysics.Scene.Define(stage, "/PhysicsScene")
                 pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
-                curves = _add_cable_curve(stage, "/World/Cable", pts)
+                curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
                 _bind_cable_material(stage, curves.GetPrim(), "/World/Mat", namespace=namespace, thickness=0.02)
                 stage.Save()
                 builder = newton.ModelBuilder()
                 builder.add_usd(str(usd_path), schema_resolvers=[SchemaResolverPhysx()])
                 return builder.shape_scale[builder.body_shapes[0][0]][0]
 
-        # omniphysics is a deformable vendor namespace -> thickness honored.
+        # omniphysics is a deformable vendor namespace -> thickness honored (no fallback warning).
         self.assertAlmostEqual(cable_radius("omniphysics"), 0.5 * 0.02, places=5)
-        # physxScene is a generic resolver namespace -> NOT read as deformable material.
-        self.assertNotAlmostEqual(cable_radius("physxScene"), 0.5 * 0.02, places=5)
+        # physxScene is a generic resolver namespace -> NOT read as deformable material, so the
+        # cable falls back to the default radius and warns.
+        with self.assertWarnsRegex(UserWarning, "no cable thickness"):
+            physx_radius = cable_radius("physxScene")
+        self.assertNotAlmostEqual(physx_radius, 0.5 * 0.02, places=5)
 
     def test_two_cables_have_disjoint_body_ranges(self):
         """Two cables in one stage map to disjoint body/joint index ranges (addressability)."""
@@ -527,7 +544,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
-            curve = _add_cable_curve(stage, "/World/Cable", pts)
+            curve = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
             _bind_cable_material(
                 stage,
                 curve.GetPrim(),
@@ -541,7 +558,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
+            # shear / twist are preserved in the attrs but not mapped into the VBD rod, so the importer warns.
+            with self.assertWarnsRegex(UserWarning, "not yet mapped"):
+                result = builder.add_usd(str(usd_path))
 
             attrs = result["path_cable_attrs"]["/World/Cable"]
             mat = attrs["material"]
@@ -756,7 +775,10 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
+            # A closed cable is imported unwrapped, with a loop-closing joint the caller must keep
+            # outside any articulation; add_rod warns to flag that contract.
+            with self.assertWarnsRegex(UserWarning, "loop-closing joint"):
+                result = builder.add_usd(str(usd_path))
             bodies, joints = result["path_cable_map"]["/World/Cable"]
             self.assertEqual(len(bodies), 4, "expected one body per segment, incl. the closing segment")
             self.assertEqual(len(joints), 4, "expected 3 chain joints + 1 loop joint")
@@ -783,7 +805,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path), collapse_fixed_joints=True)
+            # The two rigid bodies' fixed joint has no articulation root, so the importer warns.
+            with self.assertWarnsRegex(UserWarning, "No articulation was found"):
+                result = builder.add_usd(str(usd_path), collapse_fixed_joints=True)
             bodies, _ = result["path_cable_map"]["/World/Cable"]
             self.assertTrue(all(0 <= b < builder.body_count for b in bodies), "cable body index out of range")
             self.assertTrue(
@@ -1704,7 +1728,9 @@ class TestUSDDeformableCloth(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            builder.add_usd(str(usd_path))
+            # VBD uses an isotropic membrane, so the authored shearStiffness is preserved but not applied.
+            with self.assertWarnsRegex(UserWarning, "shearStiffness is not applied"):
+                builder.add_usd(str(usd_path))
             builder.add_ground_plane()
             builder.color()
             model = builder.finalize()
@@ -2042,10 +2068,11 @@ class TestUSDDeformableMass(unittest.TestCase):
                 UsdGeom.SetStageMetersPerUnit(stage, meters_per_unit)
                 UsdPhysics.Scene.Define(stage, "/PhysicsScene")
                 pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
-                _add_cable_curve(stage, "/World/Cable", pts)  # no bound material -> no thickness
+                _add_cable_curve(stage, "/World/Cable", pts, thickness=None)  # no bound material -> no thickness
                 stage.Save()
                 builder = newton.ModelBuilder()
-                builder.add_usd(str(usd_path))
+                with self.assertWarnsRegex(UserWarning, "no cable thickness"):
+                    builder.add_usd(str(usd_path))
                 return float(builder.shape_scale[0][0])  # capsule radius is stored as scale.x
 
         # ~0.05 m on a meter stage; 0.05 / 0.01 = 5 stage units on a cm stage (still ~0.05 m physical).
@@ -2057,7 +2084,7 @@ class TestUSDDeformableMass(unittest.TestCase):
             stage = Usd.Stage.CreateNew(str(usd_path))
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
-            _add_cable_curve(stage, "/World/Cable", pts)
+            _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
             stage.Save()
             builder = newton.ModelBuilder()
             with self.assertWarnsRegex(UserWarning, "no cable thickness"):
