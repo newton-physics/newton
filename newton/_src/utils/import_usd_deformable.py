@@ -1,11 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Self-contained helpers for the USD deformable importer.
+"""USD deformable importer passes and their leaf helpers.
 
-These are pure helpers (no dependence on the :func:`parse_usd` builder state) shared
-by the cable / cloth / volume and attachment passes in :mod:`.import_usd`. Builder
-mutation and traversal orchestration stay in :mod:`.import_usd`.
+This module owns the cable / cloth / volume / attachment / collision-filter import passes:
+they traverse the stage, mutate the :class:`~newton.ModelBuilder`, and populate the
+``path_*`` result maps via a :class:`_DeformableImportContext` carrying that shared state.
+:func:`parse_usd` in :mod:`.import_usd` builds the context and drives the passes in order.
+A few leaf helpers (e.g. :func:`validate_mass_array`) are pure and builder-independent.
 """
 
 from __future__ import annotations

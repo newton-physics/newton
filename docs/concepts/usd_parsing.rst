@@ -107,10 +107,21 @@ their junction spanning tree is intrinsic topology, so the importer wraps each c
 articulation and exposes empty ``joint_indices`` for those curves (callers using the
 ``if joints: add_articulation(joints)`` pattern skip them).
 
+.. code-block:: python
+
+    result = builder.add_usd("cables.usda")
+    # Wrap each single cable's joints in its own articulation before finalize. Welded rod
+    # graphs come back pre-wrapped with empty joint lists, so the guard skips them.
+    for _bodies, joints in result["path_cable_map"].values():
+        if joints:
+            builder.add_articulation(joints)
+    model = builder.finalize()
+
 The same return dict also carries ``path_cable_attrs``, ``path_cloth_attrs`` and ``path_soft_attrs``,
 mapping each prim path to its as-authored, solver-neutral attributes. The cable and cloth maps expose the
 parsed ``material`` moduli and the ``resolved_density``; the volume map exposes the ``resolved_density``
-(the proposal's volume material moduli are not parsed yet). The cable / cloth ``material`` preserves moduli
+(a volume material's ``youngsModulus`` / ``poissonsRatio`` are parsed and applied to the built soft body,
+but are not echoed in ``path_soft_attrs``). The cable / cloth ``material`` preserves moduli
 that the default VBD build does not consume -- e.g. cable ``shearStiffness`` / ``twistStiffness`` -- so a
 solver with a different cable or surface representation can rebuild the deformable from the import without
 re-parsing the stage.
