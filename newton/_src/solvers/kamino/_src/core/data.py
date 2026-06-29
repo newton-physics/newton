@@ -261,19 +261,24 @@ class DataKamino:
         if self.joints is None:
             raise RuntimeError("DataKamino.joints is not finalized.")
 
-        # Copy joint control inputs from the source control container
+        # Copy joint control inputs from the source control container, with
+        # fallback options of copying the defaults from the model or zeroing them
         if control.tau_j is not None:
             wp.copy(self.joints.tau_j, control.tau_j)
         else:
             self.joints.tau_j.zero_()
         if control.q_j_ref is not None:
             wp.copy(self.joints.q_j_ref, control.q_j_ref)
-        else:
+        elif model is not None:
             wp.copy(self.joints.q_j_ref, model.joints.q_j_0)
+        else:
+            self.joints.q_j_ref.zero_()
         if control.dq_j_ref is not None:
             wp.copy(self.joints.dq_j_ref, control.dq_j_ref)
-        else:
+        elif model is not None:
             wp.copy(self.joints.dq_j_ref, model.joints.dq_j_0)
+        else:
+            self.joints.dq_j_ref.zero_()
         if control.tau_j_ref is not None:
             wp.copy(self.joints.tau_j_ref, control.tau_j_ref)
         else:

@@ -2215,8 +2215,8 @@ class JointsData:
     ```
     and thus the velocity bias term of the joint-space dynamics of each joint `j` is computed as:\n
     ```
-    tau_j := dt * ( tau_j_ff + k_p_j * (q_j_ref - q_j^{-} ) + k_d_j * dq_j_ref )
-    h_j := a_j * dq_j^{-} + dt * tau_j
+    tau_j_tot := dt * ( tau_j + tau_j_ff + k_p_j * (q_j_ref - q_j^{-} ) + k_d_j * dq_j_ref )
+    h_j := a_j * dq_j^{-} + dt * tau_j_tot
     dq_b_j := inv_m_j * h_j
     ```
     where dt is the simulation time step.
