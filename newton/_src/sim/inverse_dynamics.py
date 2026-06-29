@@ -309,7 +309,7 @@ def _rnea_compensation_pass(
 
     # RNEA backward pass: project body wrenches to joint torques. Pure
     # compensation means zero PD gains, zero limit gains, zero applied force,
-    # and zero external body force — jcalc_tau collapses to -dot(S, body_f_s).
+    # and zero external body force — jcalc_tau collapses to -dot(S, f_total).
     wp.launch(
         eval_rigid_tau,
         dim=model.articulation_count,
