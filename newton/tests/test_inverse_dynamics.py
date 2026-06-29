@@ -2114,6 +2114,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         pos_two = wp.transform(wp.vec3(2.0, 0.0, 0.0), joint_quat)
         neg_two = wp.transform(wp.vec3(-2.0, 0.0, 0.0), joint_quat)
         z_axis = wp.vec3(0.0, 0.0, 1.0)
+        x_axis = wp.vec3(1.0, 0.0, 0.0)
 
         def build_articulation(mass: float, inertia: wp.mat33, root_joint_type: str) -> newton.ModelBuilder:
             b = newton.ModelBuilder(gravity=gravity_value, up_axis=newton.Axis.Z)
@@ -2207,10 +2208,10 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                 inertia=inertia,
                 com=link_com,
             )
-            j2 = b.add_joint_revolute(
+            j2 = b.add_joint_prismatic(
                 parent=link1,
                 child=link2,
-                axis=z_axis,
+                axis=x_axis,
                 parent_xform=pos_two,
                 child_xform=neg_two,
                 target_ke=0.0,
@@ -2275,8 +2276,8 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         solver = newton.solvers.SolverMuJoCo(model)
         dt = 1e-4
 
-        # Each articulation contributes 2 internal-revolute DOFs plus the
-        # root joint's qd-DOFs (free=6, ball=3, fixed=0).
+        # Each articulation contributes 2 internal DOFs (one revolute j1, one
+        # prismatic j2) plus the root joint's qd-DOFs (free=6, ball=3, fixed=0).
         expected_dofs = sum(2 + root_qd_len[t] for t in root_joint_types)
         self.assertEqual(model.body_count, 3 * num_arts)
         self.assertEqual(model.joint_dof_count, expected_dofs)
