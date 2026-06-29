@@ -182,13 +182,15 @@ default_num_segments = 32
 
 @wp.struct
 class MeshAdjacencyDeviceData:
-    """Compact, kernel-facing soft-mesh adjacency.
+    """Kernel-facing soft-mesh adjacency -- pure data, no Python state or methods.
 
-    Pure data: only the device-resident vertex-adjacency CSR arrays read inside
-    VBD/collision kernels. Built on demand from :class:`MeshAdjacency` via
-    :meth:`MeshAdjacency.to`; it holds no Python state and no methods.
+    Uploaded from :class:`MeshAdjacency` via :meth:`MeshAdjacency.to`: the vertex-adjacency
+    CSR arrays (read by the VBD solver's kernels) plus the ``edge_tri_indices`` /
+    ``tri_edge_indices`` topology maps, so kernels can read mesh topology directly on device.
     """
 
+    edge_tri_indices: wp.array2d[wp.int32]
+    tri_edge_indices: wp.array2d[wp.int32]
     v_adj_tris: wp.array[wp.int32]
     v_adj_tris_offsets: wp.array[wp.int32]
     v_adj_edges: wp.array[wp.int32]
@@ -358,13 +360,16 @@ class MeshAdjacency:
         }
 
     def to(self, device) -> MeshAdjacencyDeviceData:
-        """Upload the vertex-adjacency CSR onto ``device`` as a pure data struct.
+        """Upload the device-facing adjacency arrays onto ``device`` as a pure data struct.
 
-        This is the only place the host NumPy tables become Warp arrays;
-        :meth:`init_vertex_adjacency` must have populated them first.
+        Uploads the edge/triangle topology maps and the vertex-adjacency CSR; this is the
+        only place the host NumPy tables become Warp arrays. :meth:`init_vertex_adjacency`
+        must have populated the CSR tables first.
         """
         device = wp.get_device(device)
         data = MeshAdjacencyDeviceData()
+        data.edge_tri_indices = wp.array(self.edge_tri_indices, dtype=wp.int32, device=device)
+        data.tri_edge_indices = wp.array(self.tri_edge_indices, dtype=wp.int32, device=device)
         data.v_adj_tris = wp.array(self.v_adj_tris, dtype=wp.int32, device=device)
         data.v_adj_tris_offsets = wp.array(self.v_adj_tris_offsets, dtype=wp.int32, device=device)
         data.v_adj_edges = wp.array(self.v_adj_edges, dtype=wp.int32, device=device)
