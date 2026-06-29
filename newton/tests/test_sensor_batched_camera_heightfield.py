@@ -3,28 +3,17 @@
 
 import math
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
 
 import newton
 from newton import Heightfield
-from newton.sensors import SensorTiledCamera
+from newton.sensors import SensorBatchedCamera
 
 
-def _create_tiled_camera(*args, **kwargs) -> SensorTiledCamera:
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="SensorTiledCamera is deprecated",
-            category=DeprecationWarning,
-        )
-        return SensorTiledCamera(*args, **kwargs)
-
-
-class TestSensorTiledCameraHeightfield(unittest.TestCase):
-    """The tiled camera must render heightfield (HFIELD) shapes."""
+class TestSensorBatchedCameraHeightfield(unittest.TestCase):
+    """The batched camera must render heightfield (HFIELD) shapes."""
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_renders_flat_heightfield_from_above(self):
@@ -37,13 +26,13 @@ class TestSensorTiledCameraHeightfield(unittest.TestCase):
         state = model.state()
 
         res = 16
-        sensor = _create_tiled_camera(model=model)
+        sensor = SensorBatchedCamera(model=model)
         sensor.utils.create_default_light(enable_shadows=False)
         sensor.utils.assign_checkerboard_material(shape_indices=[0])
         # 30-deg fov: footprint half-extent at depth 4 is 4*tan(15)=1.07 < 2,
         # so the terrain robustly fills the whole frame.
         rays = sensor.utils.compute_pinhole_camera_rays(res, res, math.radians(30.0))
-        depth = sensor.utils.create_depth_image_output(res, res, camera_count=1)
+        depth = sensor.utils.create_depth_image_output(1, res, res)
         model.bvh_build_shapes(state)
         model.bvh_build_particles(state)
         sensor.sync_transforms(state)
@@ -52,13 +41,14 @@ class TestSensorTiledCameraHeightfield(unittest.TestCase):
         # At depth 4 the 45-deg footprint half-extent is 4*tan(22.5)=1.66 < 2,
         # so every ray hits the terrain.
         cam = wp.array(
-            [[wp.transformf(wp.vec3f(0.0, 0.0, 5.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            [wp.transformf(wp.vec3f(0.0, 0.0, 5.0), wp.quatf(0.0, 0.0, 0.0, 1.0))],
             dtype=wp.transformf,
         )
-        sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
-        sensor.update(state, cam, rays, depth_image=depth)
+        camera_indices = wp.array([[0, 0]], dtype=wp.int32)
+        sensor.render_config.render_order = SensorBatchedCamera.RenderOrder.PIXEL_PRIORITY
+        sensor.update(state, cam, rays, camera_indices, depth_image=depth)
 
-        d = depth.numpy()[0, 0]  # .numpy() syncs the device-to-host copy
+        d = depth.numpy()[0]  # .numpy() syncs the device-to-host copy
         hit = int(np.count_nonzero(d > 0.0))
         # The terrain covers the whole frame, but ~10-15% of rays miss along
         # triangle edges (non-watertight mesh_query_ray); measured stable across

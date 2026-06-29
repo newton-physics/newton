@@ -9,9 +9,8 @@ import warp as wp
 
 from ...geometry import Gaussian, GeoType
 from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
-from ..batched_camera_renderer import lighting, raytrace, textures
-from ..batched_camera_renderer.types import ClearData, MeshData, RenderOrder, TextureData
-from . import tiling
+from . import lighting, raytrace, textures, tiling
+from .types import ClearData, MeshData, RenderOrder, TextureData
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
@@ -63,7 +62,8 @@ def create_kernel(
         img_height: wp.int32,
         # Camera
         camera_rays: wp.array4d[wp.vec3f],
-        camera_transforms: wp.array2d[wp.transformf],
+        camera_transforms: wp.array[wp.transformf],
+        camera_indices: wp.array2d[wp.int32],
         # Shapes BVH
         bvh_shapes_size: wp.int32,
         bvh_shapes_id: wp.uint64,
@@ -109,15 +109,11 @@ def create_kernel(
         tid = wp.tid()
 
         if wp.static(config.render_order == RenderOrder.PIXEL_PRIORITY):
-            world_index, camera_index, py, px = tiling.tid_to_coord_pixel_priority(
-                tid, world_count, camera_count, img_width
-            )
+            camera_index, py, px = tiling.tid_to_coord_pixel_priority(tid, camera_count, img_width)
         elif wp.static(config.render_order == RenderOrder.VIEW_PRIORITY):
-            world_index, camera_index, py, px = tiling.tid_to_coord_view_priority(
-                tid, camera_count, img_width, img_height
-            )
+            camera_index, py, px = tiling.tid_to_coord_view_priority(tid, camera_count, img_width, img_height)
         elif wp.static(config.render_order == RenderOrder.TILED):
-            world_index, camera_index, py, px = tiling.tid_to_coord_tiled(
+            camera_index, py, px = tiling.tid_to_coord_tiled(
                 tid, camera_count, img_width, img_height, wp.static(config.tile_width), wp.static(config.tile_height)
             )
         else:
@@ -127,12 +123,17 @@ def create_kernel(
             return
 
         pixels_per_camera = img_width * img_height
-        pixels_per_world = camera_count * pixels_per_camera
-        out_index = world_index * pixels_per_world + camera_index * pixels_per_camera + py * img_width + px
+        out_index = camera_index * pixels_per_camera + py * img_width + px
 
-        camera_transform = camera_transforms[camera_index, world_index]
-        ray_origin_world = wp.transform_point(camera_transform, camera_rays[camera_index, py, px, 0])
-        ray_dir_world = wp.transform_vector(camera_transform, camera_rays[camera_index, py, px, 1])
+        world_index = camera_indices[camera_index, 0]
+        camera_rays_index = camera_indices[camera_index, 1]
+
+        if world_index < 0:
+            return
+
+        camera_transform = camera_transforms[camera_index]
+        ray_origin_world = wp.transform_point(camera_transform, camera_rays[camera_rays_index, py, px, 0])
+        ray_dir_world = wp.transform_vector(camera_transform, camera_rays[camera_rays_index, py, px, 1])
         camera_forward = wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0))
 
         closest_hit = raytrace_closest_hit(

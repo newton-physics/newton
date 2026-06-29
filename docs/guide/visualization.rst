@@ -567,8 +567,8 @@ Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gi
 
 **Logging images:**
 
-Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including batched/tiled
-outputs from :class:`~newton.sensors.SensorTiledCamera`) as dockable windows in
+Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including batched
+outputs from :class:`~newton.sensors.SensorBatchedCamera`) as dockable windows in
 :class:`~newton.viewer.ViewerGL`. Accepted shapes are ``(H, W)``, ``(H, W, C)``,
 ``(N, H, W)``, and ``(N, H, W, C)`` with ``C in (1, 3, 4)``. Accepted dtypes are
 ``uint8`` (values in ``[0, 255]``) and ``float32`` (values in ``[0, 1]``; values
@@ -576,7 +576,7 @@ outside the range are clipped).
 
 .. testcode:: viewer-log-image
 
-    from newton.sensors import SensorTiledCamera
+    from newton.sensors import SensorBatchedCamera
 
     builder = newton.ModelBuilder()
     builder.add_body(mass=1.0)
@@ -591,15 +591,15 @@ outside the range are clipped).
     heatmap = depth_image / max(depth_image.max(), 1e-6)
     viewer.log_image("heatmap", heatmap)
 
-    # Batched color tiles from a tiled-camera sensor. Allocate the sensor
+    # Batched color tiles from a batched-camera sensor. Allocate the sensor
     # output once and reuse it every frame; the RGBA conversion is a
     # zero-copy view.
-    sensor = SensorTiledCamera(model=model)
+    sensor = SensorBatchedCamera(model=model)
     W, H, camera_count = 16, 16, 1
-    color_image = sensor.utils.create_color_image_output(W, H, camera_count)
+    color_image = sensor.utils.create_color_image_output(camera_count, W, H)
     # ... in a real pipeline, sensor.update(...) fills color_image each frame.
     rgba = sensor.utils.to_rgba_from_color(color_image)
-    viewer.log_image("tiled_camera", rgba)
+    viewer.log_image("batched_camera", rgba)
 
 For a 3D input, a last-axis of 1, 3, or 4 is interpreted as channel count
 for a single ``(H, W, C)`` image; otherwise the array is interpreted as a

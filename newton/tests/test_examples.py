@@ -700,7 +700,7 @@ add_example_test(
 
 add_example_test(
     TestSensorExamples,
-    name="sensors.example_sensor_tiled_camera",
+    name="sensors.example_sensor_batched_camera",
     devices=cuda_test_devices,
     test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
     use_viewer=True,
