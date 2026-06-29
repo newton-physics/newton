@@ -54,6 +54,18 @@ def _is_ignored_path(path: str, ignore_paths: Sequence[str]) -> bool:
     return any(re.match(pattern, path) for pattern in ignore_paths)
 
 
+def _world_matrix_reflects(world_mat: wp.mat44) -> bool:
+    """Whether the world transform's linear part has a negative determinant (a reflection).
+
+    A reflective (odd-negative-scale) transform flips triangle/tet winding and is not recoverable
+    from :func:`warp.transform_decompose` (which always returns a positive scale), so deformable
+    points are placed with the full affine and winding is flipped when this is ``True``. The
+    determinant sign is transpose-invariant, so the matrix storage convention does not matter here.
+    """
+    linear = np.array(world_mat, dtype=np.float64).reshape(4, 4)[:3, :3]
+    return bool(np.linalg.det(linear) < 0.0)
+
+
 def _validate_attachment_index_pairs(
     indices0: Sequence[int], count0: int, indices1: Sequence[int], count1: int, path: str
 ) -> bool:
@@ -489,14 +501,8 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         if not pts or not vcounts or len(vcounts) != 1 or int(vcounts[0]) < 3:
             continue
         wmat = get_prim_world_mat(prim, None, incoming_world_xform)
-        wp_pos, wp_rot, wp_scale = wp.transform_decompose(wmat)
-        wxf = wp.transform(wp_pos, wp_rot)
-        positions = [
-            wp.transform_point(
-                wxf, wp.vec3(float(p[0]) * wp_scale[0], float(p[1]) * wp_scale[1], float(p[2]) * wp_scale[2])
-            )
-            for p in pts
-        ]
+        # Apply the full world affine so non-uniform scale, shear, and reflections are exact.
+        positions = [wp.transform_point(wmat, wp.vec3(float(p[0]), float(p[1]), float(p[2]))) for p in pts]
         mat = usd._get_curve_deformable_material(prim, deformable_read) or {}
         radius = 0.5 * mat["thickness"] if "thickness" in mat else 0.05 / linear_unit
         density = _resolve_deformable_density(prim, mat.get("density"), deformable_read)
@@ -788,8 +794,9 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         _warn_geometry_authored_material_attrs(prim, path, "PhysicsCurvesDeformableMaterialAPI", deformable_read)
 
         world_mat = get_prim_world_mat(prim, None, incoming_world_xform)
-        w_pos, w_rot, w_scale = wp.transform_decompose(world_mat)
-        world_xf = wp.transform(w_pos, w_rot)
+        # Centerline points use the full affine (below) so reflections are exact; the decomposed
+        # rot/scale still frame the authored normals and scale the rest lengths.
+        _w_pos, w_rot, w_scale = wp.transform_decompose(world_mat)
 
         # Per-point normals give each segment's cross-section frame (twist).
         # ``primvars:normals`` takes precedence over the schema ``normals`` attribute and
@@ -870,10 +877,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 flat_segment_index += curve_segment_count
                 continue
             positions = [
-                wp.transform_point(
-                    world_xf, wp.vec3(float(p[0]) * w_scale[0], float(p[1]) * w_scale[1], float(p[2]) * w_scale[2])
-                )
-                for p in local_pts
+                wp.transform_point(world_mat, wp.vec3(float(p[0]), float(p[1]), float(p[2]))) for p in local_pts
             ]
             # For a periodic curve the closing segment (v[-1] -> v[0]) is a real
             # segment: close the polyline so add_rod builds a body for it (add_rod
@@ -1044,8 +1048,11 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         # (n-gons such as quads; exact for convex faces, preserving vertex indices so
         # each mesh point stays one particle) and flip winding for left-handed
         # orientation. Subdivision scheme is not consulted -- the polygon cage is simulated.
+        world_mat = get_prim_world_mat(prim, None, incoming_world_xform)
         tri_faces = usd.fan_triangulate_faces(np.asarray(face_counts), np.asarray(face_indices))
-        if mesh.GetOrientationAttr().Get() == UsdGeom.Tokens.leftHanded:
+        # A left-handed mesh and a reflective world transform (negative determinant) each reverse
+        # triangle winding, so flip on their XOR to keep consistent outward orientation.
+        if (mesh.GetOrientationAttr().Get() == UsdGeom.Tokens.leftHanded) != _world_matrix_reflects(world_mat):
             tri_faces = tri_faces[:, ::-1]
         tri_vertex_indices = tri_faces.reshape(-1).tolist()
         _warn_unsupported_rest_fields(
@@ -1056,14 +1063,12 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         )
         _warn_geometry_authored_material_attrs(prim, path, "PhysicsSurfaceDeformableMaterialAPI", deformable_read)
 
-        world_mat = get_prim_world_mat(prim, None, incoming_world_xform)
-        cloth_pos, cloth_rot, cloth_scale = wp.transform_decompose(world_mat)
-        # add_cloth_mesh creates one particle per mesh vertex and takes only a uniform
-        # scale, unlike add_shape_mesh's per-axis Vec3 shape scale. So bake the full world
-        # scale (including non-uniform) into the vertices here and pass scale=1.
-        sx, sy, sz = float(cloth_scale[0]), float(cloth_scale[1]), float(cloth_scale[2])
-        cloth_vertices = [wp.vec3(float(p[0]) * sx, float(p[1]) * sy, float(p[2]) * sz) for p in mesh_points]
-        scale = 1.0
+        # add_cloth_mesh creates one particle per mesh vertex and takes only a uniform scale, so bake
+        # the full world affine (incl. non-uniform scale, shear, reflection) into the vertices and
+        # pass an identity placement -- wp.transform_decompose would drop reflection parity.
+        cloth_vertices = [
+            wp.transform_point(world_mat, wp.vec3(float(p[0]), float(p[1]), float(p[2]))) for p in mesh_points
+        ]
 
         cloth_mat = usd._get_surface_deformable_material(prim, deformable_read) or {}
         # Surface thickness: prefer the material's authored value; otherwise fall back to a
@@ -1116,9 +1121,9 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
 
         p0, t0, e0 = builder.particle_count, builder.tri_count, builder.edge_count
         builder.add_cloth_mesh(
-            pos=cloth_pos,
-            rot=cloth_rot,
-            scale=scale,
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
             vel=wp.vec3(0.0, 0.0, 0.0),
             vertices=cloth_vertices,
             indices=tri_vertex_indices,
@@ -1160,7 +1165,6 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
     deformable_read = ctx.deformable_read
     get_prim_world_mat = ctx.get_prim_world_mat
     get_tetmesh_cached = ctx.get_tetmesh_cached
-    is_uniform_scale = ctx.is_uniform_scale
     resolver = ctx.resolver
     collect_schema_attrs = ctx.collect_schema_attrs
     path_soft_map = ctx.path_soft_map
@@ -1203,27 +1207,37 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
                 tetmesh_for_builder.custom_attributes = filtered_custom_attributes
 
         soft_mesh_mat = get_prim_world_mat(prim, None, incoming_world_xform)
-        soft_mesh_pos, soft_mesh_rot, soft_mesh_scale = wp.transform_decompose(soft_mesh_mat)
-
+        # Bake the full world affine into the tet vertices and pass an identity placement, so a
+        # reflective or sheared transform is applied exactly. wp.transform_decompose drops the
+        # reflection parity, which would mirror the soft body back to a non-reflected pose.
+        world_vertices = np.array(
+            [
+                wp.transform_point(soft_mesh_mat, wp.vec3(float(v[0]), float(v[1]), float(v[2])))
+                for v in tetmesh_for_builder.vertices
+            ],
+            dtype=np.float32,
+        )
         add_soft_mesh_kwargs = {
-            "pos": soft_mesh_pos,
-            "rot": soft_mesh_rot,
+            "pos": wp.vec3(0.0, 0.0, 0.0),
+            "rot": wp.quat_identity(),
             "scale": 1.0,
             "vel": wp.vec3(0.0, 0.0, 0.0),
             "mesh": tetmesh_for_builder,
+            "vertices": world_vertices,
             "label": path,
         }
+        if _world_matrix_reflects(soft_mesh_mat):
+            # A reflection flips each tet's orientation (negative rest volume); swap two vertices per
+            # tet to restore a positive orientation while keeping the same reflected shape. tet_indices
+            # is read-only on TetMesh, so override via the explicit indices argument (it wins over mesh).
+            flipped = np.asarray(tetmesh_for_builder.tet_indices).reshape(-1, 4).copy()
+            flipped[:, [1, 2]] = flipped[:, [2, 1]]
+            add_soft_mesh_kwargs["indices"] = flipped.reshape(-1)
         # Body density overrides the TetMesh's material density.
         if is_volume_deformable:
             resolved_density = _resolve_deformable_density(prim, tetmesh_for_builder.density, deformable_read)
             if resolved_density is not None:
                 add_soft_mesh_kwargs["density"] = resolved_density
-        if is_uniform_scale(soft_mesh_scale):
-            add_soft_mesh_kwargs["scale"] = float(np.array(soft_mesh_scale, dtype=np.float32)[0])
-        else:
-            add_soft_mesh_kwargs["vertices"] = tetmesh_for_builder.vertices * np.array(
-                soft_mesh_scale, dtype=np.float32
-            )
 
         soft_p0, soft_t0 = builder.particle_count, builder.tet_count
         builder.add_soft_mesh(**add_soft_mesh_kwargs)
@@ -1283,13 +1297,8 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
             return None
 
         target_mat = get_prim_world_mat(target_prim, None, incoming_world_xform)
-        target_pos, target_rot, target_scale = wp.transform_decompose(target_mat)
-        scaled_local = wp.vec3(
-            float(local_point[0]) * float(target_scale[0]),
-            float(local_point[1]) * float(target_scale[1]),
-            float(local_point[2]) * float(target_scale[2]),
-        )
-        world_point = wp.transform_point(wp.transform(target_pos, target_rot), scaled_local)
+        # Apply the full affine (incl. non-uniform scale, shear, reflection) to the local anchor.
+        world_point = wp.transform_point(target_mat, local_point)
 
         body_path = get_rigid_body_ancestor_path(target_prim)
         if body_path is None:

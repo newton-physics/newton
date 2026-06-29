@@ -1156,6 +1156,28 @@ class TestUSDDeformableCable(unittest.TestCase):
             pairs = {tuple(sorted(p)) for p in builder.shape_collision_filter_pairs}
             self.assertIn(tuple(sorted((seg0, ground_shape))), pairs)
 
+    def test_cable_negative_scale_mirrors_positions(self):
+        """A reflective xformOp:scale mirrors cable body positions (parity preserved); a
+        rotation+scale decomposition would drop the reflection and leave them un-mirrored."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_reflected.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            UsdGeom.Xformable(curves).AddScaleOp().Set(Gf.Vec3d(-1.0, 1.0, 1.0))
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            xs = [float(np.array(builder.body_q[b][:3])[0]) for b in bodies]
+            # Body i origin sits at segment i's midpoint; midpoints 0.05/0.15/0.25 mirror to negative X.
+            np.testing.assert_allclose(xs, [-0.05, -0.15, -0.25], atol=1e-5)
+
     def test_curve_to_curve_attachment_builds_rod_graph(self):
         """A curve->curve point attachment welds two curve deformables into one rod graph.
 
@@ -1852,6 +1874,35 @@ class TestUSDDeformableCloth(unittest.TestCase):
             expected = np.array([(0.0, 0.0, 4.0), (2.0, 0.0, 4.0), (2.0, 3.0, 4.0), (0.0, 3.0, 4.0)])
             np.testing.assert_allclose(pq, expected, atol=1e-4)
 
+    def test_cloth_negative_scale_mirrors_and_flips_winding(self):
+        """A reflective (negative) xformOp:scale mirrors the particles (parity preserved) and flips
+        triangle winding, which a rotation+scale decomposition would silently drop."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        def import_cloth(scale):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                usd_path = Path(tmpdir) / "cloth.usda"
+                stage = Usd.Stage.CreateNew(str(usd_path))
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+                mesh = _add_cloth_mesh(stage, "/World/Cloth")  # points (0,0,1)(1,0,1)(1,1,1)(0,1,1)
+                UsdGeom.Xformable(mesh).AddScaleOp().Set(Gf.Vec3d(*scale))
+                stage.Save()
+                builder = newton.ModelBuilder()
+                builder.add_usd(str(usd_path))
+                pq = np.array([list(builder.particle_q[i]) for i in range(builder.particle_count)])
+                t0 = builder.tri_indices[0]
+                return pq, list(t0)
+
+        pq, tri0_reflected = import_cloth((-1.0, 1.0, 1.0))
+        # The full affine mirrors X; a decomposition would yield positive X (0, 1, 1, 0).
+        expected_x = np.array([0.0, -1.0, -1.0, 0.0])
+        np.testing.assert_allclose(pq[:, 0], expected_x, atol=1e-4)
+
+        _pq_pos, tri0_positive = import_cloth((1.0, 1.0, 1.0))
+        # The reflection reverses the first triangle's winding relative to the non-reflected import.
+        self.assertEqual(tri0_reflected, tri0_positive[::-1], "reflective scale must flip triangle winding")
+
     def test_cloth_simulates(self, device=None):
         """After parsing, a cloth runs through SolverVBD and stays finite."""
         from pxr import Usd, UsdPhysics
@@ -1921,6 +1972,39 @@ class TestUSDDeformableVolume(unittest.TestCase):
             self.assertEqual(ranges["particle"], (0, 4))  # 4 tet vertices
             self.assertEqual(ranges["tet"], (0, 1))  # 1 tetrahedron
             self.assertEqual(builder.particle_count, 4)
+
+    def test_volume_negative_scale_mirrors_and_reorients_tets(self):
+        """A reflective xformOp:scale mirrors the soft-body particles and reorients each tet to keep a
+        positive rest volume; a rotation+scale decomposition would drop the reflection."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "tet_reflected.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            tet = UsdGeom.TetMesh.Define(stage, "/World/Soft")
+            tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
+            tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+            UsdGeom.Xformable(tet).AddScaleOp().Set(Gf.Vec3d(-1.0, 1.0, 1.0))
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            p0, p1 = result["path_soft_map"]["/World/Soft"]["particle"]
+            pq = np.array([list(builder.particle_q[i]) for i in range(p0, p1)])
+            # Original X {0, 1, 0, 0} mirrors to {0, -1, 0, 0}.
+            np.testing.assert_allclose(sorted(pq[:, 0]), [-1.0, 0.0, 0.0, 0.0], atol=1e-4)
+
+            # The imported tet keeps a positive signed rest volume (winding repaired for the reflection).
+            t0, _t1 = result["path_soft_map"]["/World/Soft"]["tet"]
+            i, j, k, m = builder.tet_indices[t0]
+
+            def pos(n):
+                return np.array(list(builder.particle_q[n]))
+
+            signed_vol = np.dot(pos(j) - pos(i), np.cross(pos(k) - pos(i), pos(m) - pos(i))) / 6.0
+            self.assertGreater(signed_vol, 0.0, "reflected tet must keep a positive rest volume")
 
     def test_rest_shape_points_warns(self):
         """An authored but unsupported physics:restShapePoints warns instead of being silently dropped."""
