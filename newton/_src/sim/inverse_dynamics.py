@@ -487,6 +487,12 @@ def eval_inverse_dynamics(
             :func:`~newton.eval_mass_matrix`'s mask convention). If
             ``None``, all articulations are computed.
     """
+    if not (eval_type & InverseDynamics.EvalType.ALL):
+        raise ValueError(
+            f"eval_type {eval_type!r} does not include any recognized flag "
+            f"(MASS_MATRIX, GRAVITY_FORCE, CORIOLIS_FORCE)."
+        )
+
     if eval_type & InverseDynamics.EvalType.MASS_MATRIX:
         expected_shape = (model.articulation_count, model.max_dofs_per_articulation, model.max_dofs_per_articulation)
         if inverse_dynamics.mass_matrix.shape != expected_shape:

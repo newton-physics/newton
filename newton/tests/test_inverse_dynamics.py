@@ -2662,6 +2662,44 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         self.assertIn("mass_matrix", msg)
         self.assertIn(str(wrong_shape), msg)
 
+    def test_eval_inverse_dynamics_raises_on_unrecognized_eval_type(self):
+        """``eval_inverse_dynamics`` raises ``ValueError`` for any ``eval_type``
+        with no bits in common with the recognized flags: zero (empty) and 8
+        (next power-of-two above ``ALL = 7``, entirely out of range).
+        """
+        builder = self._build_two_link_articulation(
+            gravity=wp.vec3(0.0, 0.0, 0.0),
+            floating_base=False,
+            joint_type="revolute",
+            joint_axis=wp.vec3(0.0, 0.0, 1.0),
+            link_coms=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],
+            link_masses=[1.0, 1.0],
+            joint_frames=[
+                wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+                wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            ],
+            link_inertias=[self.I_UNIT, self.I_UNIT],
+        )
+        model = builder.finalize(device=self.device)
+        state = model.state()
+        inverse_dynamics, scratch = model.inverse_dynamics()
+
+        for value in (0, 8):
+            with self.subTest(eval_type=value):
+                with self.assertRaises(ValueError) as ctx:
+                    newton.eval_inverse_dynamics(
+                        model,
+                        state,
+                        newton.InverseDynamics.EvalType(value),
+                        inverse_dynamics,
+                        scratch,
+                    )
+                msg = str(ctx.exception)
+                self.assertIn("does not include any recognized flag", msg)
+                self.assertIn("MASS_MATRIX", msg)
+                self.assertIn("GRAVITY_FORCE", msg)
+                self.assertIn("CORIOLIS_FORCE", msg)
+
     def test_eval_inverse_dynamics_force_zero_articulations_preserves_tau(self):
         """``eval_inverse_dynamics_force`` short-circuits on a model with
         zero articulations without touching ``tau``.
