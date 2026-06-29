@@ -312,6 +312,7 @@ def _apply_cable_masses(
         )
         point_masses = None
     if point_masses is not None:
+        lumped: list[tuple[Sequence[int], list[float]]] = []
         for start, n, bodies in point_runs:
             pm = [float(point_masses[start + i]) for i in range(n)]
             if closed:
@@ -324,9 +325,23 @@ def _apply_cable_masses(
                     (pm[s] if s == 0 else 0.5 * pm[s]) + (pm[s + 1] if s + 1 == n - 1 else 0.5 * pm[s + 1])
                     for s in range(n - 1)
                 ]
-            for b, m in zip(bodies, seg_masses, strict=True):
-                _set_body_mass(builder, b, m)
-        return
+            if len(bodies) != len(seg_masses):
+                # A welded graph can collapse a segment, so the surviving body count no longer matches
+                # the per-point lumping. Ignore per-point masses (fall back to a body-mass total or the
+                # density-derived masses) instead of raising and aborting the whole import.
+                warnings.warn(
+                    f"{prim.GetPath()}: welded cable collapsed a segment ({len(bodies)} bodies for "
+                    f"{len(seg_masses)} point-derived segment masses); ignoring per-point physics:masses.",
+                    stacklevel=2,
+                )
+                point_masses = None
+                break
+            lumped.append((bodies, seg_masses))
+        else:
+            for bodies, seg_masses in lumped:
+                for b, m in zip(bodies, seg_masses, strict=True):
+                    _set_body_mass(builder, b, m)
+            return
     if body_mass is None:
         return
     current = float(sum(builder.body_mass[b] for b in body_ids))
@@ -619,6 +634,39 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
 
         if len(node_positions) < 2 or not edges:
             return
+
+        # A welded graph would abort inside add_rod_graph on a degenerate (near-zero-length) edge from
+        # duplicate or collapsed points. Reject the component with a warning instead, leaving its curves
+        # to the per-curve pass (which warns and skips any individually-degenerate curve).
+        if min((float(wp.length(node_positions[v] - node_positions[u])) for u, v in edges), default=0.0) <= 1.0e-8:
+            warnings.warn(
+                f"cable graph '{cid}': a welded curve has a zero-length segment (duplicate or collapsed "
+                f"points); skipping the welded component so its curves import individually.",
+                stacklevel=2,
+            )
+            return
+
+        # add_rod_graph applies one scalar stiffness per component and auto-orients its segments, so a
+        # welded curve's authored rest shape and per-point normals cannot be honored. Warn rather than
+        # changing the curve's behavior silently (a single, unwelded curve does honor both).
+        for key in comp_paths:
+            kprim = curve_recs[key].prim
+            if deformable_read(kprim, "restShapePoints") is not None:
+                warnings.warn(
+                    f"{key}: restShapePoints is dropped for a welded cable graph; its stiffness uses the "
+                    f"current segment lengths (add_rod_graph's scalar stiffness cannot express per-segment "
+                    f"rest lengths).",
+                    stacklevel=2,
+                )
+            normals_attr = UsdGeom.BasisCurves(kprim).GetNormalsAttr()
+            if UsdGeom.PrimvarsAPI(kprim).GetPrimvar("normals").HasValue() or (
+                normals_attr and normals_attr.Get() is not None
+            ):
+                warnings.warn(
+                    f"{key}: per-point normals are dropped for a welded cable graph; its segments use "
+                    f"add_rod_graph's auto-orientation instead of the authored cross-section frame.",
+                    stacklevel=2,
+                )
 
         rep = curve_recs[comp_paths[0]]
         # add_rod_graph applies one scalar radius/density/stiffness to the whole component, so a

@@ -1230,6 +1230,111 @@ class TestUSDDeformableCable(unittest.TestCase):
             model = builder.finalize()
             self.assertEqual(model.body_count, 5)
 
+    def test_welded_graph_degenerate_segment_skips_component(self):
+        """A welded curve with a zero-length segment is rejected with a warning instead of aborting
+        the whole import; the component's curves fall back to the per-curve pass."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "graph_degenerate.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            trunk_pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            # The branch has a duplicate consecutive point -> a zero-length segment.
+            branch_pts = [(0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.1, 0.1, 1.0)]
+            _add_cable_curve(stage, "/World/Trunk", trunk_pts)
+            _add_cable_curve(stage, "/World/Branch", branch_pts)
+            _add_physics_attachment(
+                stage,
+                "/World/Junction",
+                src0="/World/Branch",
+                src1="/World/Trunk",
+                type0="point",
+                type1="point",
+                indices0=[0],
+                indices1=[1],
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "zero-length segment"):
+                result = builder.add_usd(str(usd_path))
+            # The import did not abort; the valid trunk imported as a single (unwrapped) cable.
+            self.assertIn("/World/Trunk", result["path_cable_map"])
+            _bodies, joints = result["path_cable_map"]["/World/Trunk"]
+            self.assertNotEqual(joints, [], "the skipped component leaves the trunk as a single cable")
+            self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])
+
+    def test_welded_graph_collapse_with_masses_falls_back(self):
+        """Welding two adjacent points of one curve onto the same node collapses a segment. With
+        authored physics:masses the surviving body count no longer matches the per-point lumping; the
+        importer warns and falls back instead of raising and aborting."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "graph_collapse.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            trunk_pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            branch_pts = [(0.1, 0.0, 1.0), (0.1, 0.05, 1.0), (0.1, 0.1, 1.0), (0.1, 0.15, 1.0)]
+            _add_cable_curve(stage, "/World/Trunk", trunk_pts)
+            branch = _add_cable_curve(stage, "/World/Branch", branch_pts)
+            branch.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([1.0, 1.0, 1.0, 1.0])
+            # Weld branch points 0 and 1 both onto trunk point 1 -> collapses branch edge (0, 1).
+            _add_physics_attachment(
+                stage,
+                "/World/Junction",
+                src0="/World/Branch",
+                src1="/World/Trunk",
+                type0="point",
+                type1="point",
+                indices0=[0, 1],
+                indices1=[1, 1],
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "collapsed a segment"):
+                result = builder.add_usd(str(usd_path))
+            # The welded graph still built (no abort); both curves are present in the graph component.
+            self.assertIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])
+            self.assertIn("graph_component", result["path_cable_attrs"]["/World/Branch"])
+            self.assertEqual(builder.finalize().body_count, builder.body_count)
+
+    def test_welded_graph_drops_rest_shape_warns(self):
+        """A welded curve's authored restShapePoints cannot be honored by add_rod_graph's scalar
+        stiffness, so the importer warns rather than silently using the current segment lengths."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "graph_rest.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            trunk_pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            branch_pts = [(0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.1, 0.2, 1.0)]
+            _add_cable_curve(stage, "/World/Trunk", trunk_pts)
+            branch = _add_cable_curve(stage, "/World/Branch", branch_pts)
+            branch.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(branch_pts)
+            _add_physics_attachment(
+                stage,
+                "/World/Junction",
+                src0="/World/Branch",
+                src1="/World/Trunk",
+                type0="point",
+                type1="point",
+                indices0=[0],
+                indices1=[1],
+            )
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "restShapePoints is dropped"):
+                result = builder.add_usd(str(usd_path))
+            self.assertIn("graph_component", result["path_cable_attrs"]["/World/Branch"])
+
     def test_ignored_curve_to_curve_junction_does_not_weld(self):
         """An ``ignore_paths`` junction must not alter topology: the curves stay independent.
 
