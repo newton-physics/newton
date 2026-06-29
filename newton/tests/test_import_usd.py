@@ -307,9 +307,8 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_stray_joint_does_not_strip_unrelated_floating_bodies(self):
-        """A single authored joint that lives under no articulation root must not suppress
-        base-joint (articulation) creation for unrelated floating rigid bodies in the same
-        add_usd call. Regression test for issue #3002.
+        """A stray authored joint under no articulation root must not suppress base-joint
+        creation for unrelated floating bodies. Regression test for issue #3002.
         """
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
@@ -320,18 +319,13 @@ def Xform "Root" (
         def define_body(path, pos):
             body = UsdGeom.Cube.Define(stage, path)
             UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
-            # CollisionAPI triggers mass computation so the body has positive mass and is
-            # eligible to receive a base joint.
+            # CollisionAPI gives the body positive mass so it is eligible for a base joint.
             UsdPhysics.CollisionAPI.Apply(body.GetPrim())
             body.AddTranslateOp().Set(Gf.Vec3d(*pos))
             return body
 
-        # An unrelated free-floating dynamic body connected to no joint at all.
         define_body("/World/FreeBody", (0, 0, 0))
 
-        # A separate pair of props welded by a single authored fixed joint, not under any
-        # ArticulationRootAPI. This stray joint is what previously suppressed base-joint
-        # creation for FreeBody.
         prop_a = define_body("/World/PropA", (5, 0, 0))
         prop_b = define_body("/World/PropB", (6, 0, 0))
         stray = UsdPhysics.FixedJoint.Define(stage, "/World/StrayFixedJoint")
@@ -343,20 +337,18 @@ def Xform "Root" (
         stray.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
 
         builder = newton.ModelBuilder()
-        with self.assertWarns(UserWarning):
-            # The stray fixed joint is imported as an orphan joint, which warns.
+        with self.assertWarns(UserWarning):  # the orphan stray joint warns
             builder.add_usd(stage)
 
         self.assertEqual(builder.body_count, 3)
 
-        # The unrelated free body must receive its own FREE base joint and articulation.
         free_idx = builder.body_label.index("/World/FreeBody")
         self.assertIn(free_idx, builder.joint_child)
         free_joint = builder.joint_child.index(free_idx)
         self.assertEqual(builder.joint_type[free_joint], JointType.FREE)
         self.assertNotEqual(builder.joint_articulation[free_joint], -1)
 
-        # The stray fixed joint stays an orphan (no articulation), unchanged by the fix.
+        # The authored joint must remain orphaned (no articulation), unchanged by the fix.
         stray_joint = builder.joint_label.index("/World/StrayFixedJoint")
         self.assertEqual(builder.joint_type[stray_joint], JointType.FIXED)
         self.assertEqual(builder.joint_articulation[stray_joint], -1)

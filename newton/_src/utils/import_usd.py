@@ -3622,12 +3622,7 @@ def parse_usd(
     # add joints to floating bodies (bodies not connected as children to any joint)
     new_bodies = list(path_body_map.values())
     if no_articulations and has_joints:
-        # The USD authored a joint graph but no articulation root, so those joints are imported
-        # as orphan joints and we must not inject base joints into that authored graph (see
-        # test_import_non_articulated_joints). Rigid bodies that belong to no joint at all are
-        # not part of that graph, however, and still need a base joint: a stray authored joint
-        # elsewhere in the parse range must not strip articulations from unrelated floating
-        # bodies (issue #3002).
+        # Preserve authored orphan-joint graphs while still articulating unrelated bodies (#3002).
         connected_bodies = set(builder.joint_parent) | set(builder.joint_child)
         bodies_to_articulate = [body_id for body_id in new_bodies if body_id not in connected_bodies]
     else:
