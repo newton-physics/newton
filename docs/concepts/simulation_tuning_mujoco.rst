@@ -221,6 +221,26 @@ Hardness is mainly ``timeconst``/``ke`` and ``d(r)``; stability depends on
 ``timeconst``, ``ke``, ``kd``, ``d(r)``, ``dt``, solver, friction, cone,
 geometry, mass/inertia, and controller.
 
+.. _friction-cone-choice:
+
+Friction Cone Choice
+--------------------
+
+``SolverMuJoCo`` supports ``"elliptic"`` and ``"pyramidal"`` friction cones.
+Prefer elliptic cones when friction accuracy, slip resistance, or fine grasping
+matters. Try pyramidal cones when elliptic contacts have poor convergence,
+jitter, or excessive solver cost: MuJoCo documents them as sometimes making
+the solver faster and more robust, but the result is model-dependent. Hold the
+timestep, solver settings, and contact parameters fixed when comparing them.
+
+Changing the cone changes the soft-contact model, not only the solver. See
+MuJoCo's `solver-setting guidance
+<https://mujoco.readthedocs.io/en/stable/modeling.html#solver-settings>`__,
+`cone option reference
+<https://mujoco.readthedocs.io/en/stable/XMLreference.html#option-cone>`__, and
+`friction-cone formulation
+<https://mujoco.readthedocs.io/en/stable/computation/index.html#friction-cones>`__.
+
 Task Templates
 --------------
 
@@ -292,8 +312,9 @@ stable across the grasp.*
 - Then check friction: raise ``mu`` before touching stiffness.
 - Then check contact stiffness: raise ``ke``/``kd`` to stiffen the contact
   patch if friction is adequate but the grasp deflects.
-- Tune ``impratio`` and the friction cone shape (both ``SolverMuJoCo``-specific)
-  if stick-slip persists after normal force and friction are correct.
+- Prefer an elliptic cone and tune ``impratio`` if stick-slip persists. Try a
+  pyramidal cone if solver robustness or cost is the limiting issue, then
+  revalidate the grasp; see :ref:`Friction Cone Choice <friction-cone-choice>`.
 - Never use higher stiffness as a substitute for insufficient friction capacity;
   it increases constraint load without fixing the root cause.
 
