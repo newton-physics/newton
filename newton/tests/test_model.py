@@ -225,6 +225,57 @@ class TestModelBuilderDeprecations(unittest.TestCase):
             newton.use_coord_layout_targets = prev_flag
 
 
+class TestModelBuilderBvhConstructor(unittest.TestCase):
+    def test_model_builder_forwards_bvh_constructors(self):
+        builder = ModelBuilder()
+        builder.default_bvh_cfg.mesh_constructor = "cubql"
+        builder.default_bvh_cfg.gaussian_constructor = "sah"
+        builder.default_bvh_cfg.shape_constructor = "lbvh"
+
+        mesh = newton.Mesh(
+            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+            indices=np.array([0, 1, 2], dtype=np.int32),
+            compute_inertia=False,
+        )
+        gaussian = newton.Gaussian(positions=np.zeros((1, 3), dtype=np.float32))
+        builder.add_shape_mesh(body=-1, mesh=mesh)
+        builder.add_shape_gaussian(body=-1, gaussian=gaussian)
+
+        with (
+            mock.patch("newton._src.geometry.types.wp.Mesh") as wp_mesh,
+            mock.patch.object(
+                newton.Gaussian, "finalize", autospec=True, return_value=newton.Gaussian.Data()
+            ) as finalize,
+            mock.patch.object(newton.Model, "bvh_build_shapes", autospec=True) as build_shapes,
+            mock.patch.object(newton.Model, "bvh_build_particles", autospec=True),
+        ):
+            wp_mesh.return_value.id = 123
+            model = builder.finalize(device="cpu")
+
+        wp_mesh.assert_called_once()
+        self.assertEqual(wp_mesh.call_args.kwargs["bvh_constructor"], "cubql")
+        finalize.assert_called_once_with(gaussian, device="cpu", bvh_constructor="sah")
+        build_shapes.assert_called_once_with(model, model, bvh_constructor="lbvh")
+
+    def test_gaussian_finalize_forwards_bvh_constructor_to_warp_bvh(self):
+        gaussian = newton.Gaussian(
+            positions=np.zeros((1, 3), dtype=np.float32),
+            rotations=np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32),
+            scales=np.ones((1, 3), dtype=np.float32),
+            opacities=np.ones(1, dtype=np.float32),
+            sh_coeffs=np.ones((1, 3), dtype=np.float32),
+        )
+
+        with (
+            mock.patch("newton._src.geometry.types.wp.launch"),
+            mock.patch("newton._src.geometry.types.wp.Bvh") as wp_bvh,
+        ):
+            wp_bvh.return_value.id = 456
+            gaussian.finalize(device="cpu", bvh_constructor="sah")
+
+        self.assertEqual(wp_bvh.call_args.kwargs["constructor"], "sah")
+
+
 class TestModelMesh(unittest.TestCase):
     def test_empty_numeric_custom_attribute_uses_wp_full_default(self):
         attr = ModelBuilder.CustomAttribute(
@@ -376,13 +427,22 @@ class TestModelMesh(unittest.TestCase):
                 t[0],
                 t[1],
                 t[2],
-                tri_ke[i],
-                tri_ka[i],
-                tri_kd[i],
-                tri_drag[i],
-                tri_lift[i],
+                tri_ke=tri_ke[i],
+                tri_ka=tri_ka[i],
+                tri_kd=tri_kd[i],
+                tri_drag=tri_drag[i],
+                tri_lift=tri_lift[i],
             )
-        builder2.add_triangles(tris[:, 0], tris[:, 1], tris[:, 2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+        builder2.add_triangles(
+            tris[:, 0],
+            tris[:, 1],
+            tris[:, 2],
+            tri_ke=tri_ke,
+            tri_ka=tri_ka,
+            tri_kd=tri_kd,
+            tri_drag=tri_drag,
+            tri_lift=tri_lift,
+        )
 
         assert_np_equal(np.array(builder1.tri_indices), np.array(builder2.tri_indices))
         assert_np_equal(np.array(builder1.tri_poses), np.array(builder2.tri_poses), tol=1.0e-6)
@@ -419,8 +479,24 @@ class TestModelMesh(unittest.TestCase):
         edge_ke = rng.standard_normal(size=2)
         edge_kd = rng.standard_normal(size=2)
         for i in range(2):
-            builder1.add_edge(edges[i, 0], edges[i, 1], edges[i, 2], edges[i, 3], rest[i], edge_ke[i], edge_kd[i])
-        builder2.add_edges(edges[:, 0], edges[:, 1], edges[:, 2], edges[:, 3], rest, edge_ke, edge_kd)
+            builder1.add_edge(
+                edges[i, 0],
+                edges[i, 1],
+                edges[i, 2],
+                edges[i, 3],
+                rest=rest[i],
+                edge_ke=edge_ke[i],
+                edge_kd=edge_kd[i],
+            )
+        builder2.add_edges(
+            edges[:, 0],
+            edges[:, 1],
+            edges[:, 2],
+            edges[:, 3],
+            rest=rest,
+            edge_ke=edge_ke,
+            edge_kd=edge_kd,
+        )
 
         assert_np_equal(np.array(builder1.edge_indices), np.array(builder2.edge_indices))
         assert_np_equal(np.array(builder1.edge_rest_angle), np.array(builder2.edge_rest_angle), tol=1.0e-4)
@@ -755,11 +831,9 @@ class TestModelMesh(unittest.TestCase):
         ground = builder.add_ground_plane()
         builder.replicate(robot, 3)
 
-        self.assertNotIsInstance(builder.shape_collision_filter_pairs, list)
-        self.assertEqual(len(builder.shape_collision_filter_pairs), 3)
-        self.assertIn((1, 2), builder.shape_collision_filter_pairs)
-        self.assertIn((3, 4), builder.shape_collision_filter_pairs)
-        self.assertIn((5, 6), builder.shape_collision_filter_pairs)
+        builder_filters = builder._shape_collision_filter_pairs  # pyright: ignore[reportPrivateUsage]
+        self.assertNotIsInstance(builder_filters, list)
+        self.assertEqual(list(builder_filters), [(1, 2), (3, 4), (5, 6)])
 
         model = builder.finalize()
 
@@ -788,6 +862,44 @@ class TestModelMesh(unittest.TestCase):
         assert shape_contact_pairs is not None
         contact_pairs = {tuple(pair) for pair in shape_contact_pairs.numpy()}
         self.assertEqual(contact_pairs, {(ground, 1), (ground, 2), (ground, 3), (ground, 4), (ground, 5), (ground, 6)})
+
+    def test_builder_collision_filter_pairs_preserve_list_api(self):
+        robot = ModelBuilder()
+        body0 = robot.add_body()
+        shape0 = robot.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = robot.add_body()
+        shape1 = robot.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        robot.add_shape_collision_filter_pair(shape0, shape1)
+
+        builder = ModelBuilder()
+        builder.replicate(robot, 2)
+        builder.add_shape_collision_filter_pair(0, 2)
+
+        filters = builder.shape_collision_filter_pairs
+        self.assertIsInstance(filters, list)
+        self.assertEqual(filters, [(0, 1), (2, 3), (0, 2)])
+        self.assertEqual(filters.copy(), filters)
+        self.assertEqual(filters + [(1, 3)], [(0, 1), (2, 3), (0, 2), (1, 3)])  # noqa: RUF005
+
+    def test_builder_collision_filter_pairs_accept_reassigned_lists(self):
+        source = ModelBuilder()
+        body0 = source.add_body()
+        shape0 = source.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = source.add_body()
+        shape1 = source.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        source_filters = [(shape0, shape1)]
+        source.shape_collision_filter_pairs = source_filters
+        self.assertIs(source.shape_collision_filter_pairs, source_filters)
+
+        builder = ModelBuilder()
+        destination_filters: list[tuple[int, int]] = []
+        builder.shape_collision_filter_pairs = destination_filters
+        builder.add_builder(source)
+        self.assertIs(builder.shape_collision_filter_pairs, destination_filters)
+        self.assertEqual(destination_filters, [(shape0, shape1)])
+
+        model = builder.finalize()
+        self.assertEqual(model.shape_collision_filter_pairs, {(shape0, shape1)})
 
     def test_add_builder_collision_filter_template_cache_tracks_mutations(self):
         """Source-builder filter cache should invalidate when pair contents change."""
@@ -827,9 +939,9 @@ class TestModelMesh(unittest.TestCase):
         # Match robot examples that add one non-block global/local filter per
         # replicated world. The compact block path should handle these residual
         # filters while generating contact pairs.
-        builder.shape_collision_filter_pairs.append((ground, 1))
-        builder.shape_collision_filter_pairs.append((ground, 3))
-        builder.shape_collision_filter_pairs.append((ground, 5))
+        builder.add_shape_collision_filter_pair(ground, 1)
+        builder.add_shape_collision_filter_pair(ground, 3)
+        builder.add_shape_collision_filter_pair(ground, 5)
 
         model = builder.finalize()
 
@@ -859,12 +971,15 @@ class TestModelMesh(unittest.TestCase):
         builder = ModelBuilder()
         ground = builder.add_ground_plane()
         builder.replicate(robot, 2)
-        builder.shape_collision_filter_pairs.append((ground, 1))
+        builder.add_shape_collision_filter_pair(ground, 1)
 
         model = builder.finalize(device="cpu")
-        expected_filters = set(model.shape_collision_filter_pairs)
+        expected_filters = {(1, 2), (3, 4), (ground, 1)}
+        internal_filters = object.__getattribute__(model, "__dict__")["shape_collision_filter_pairs"]
+        self.assertFalse(internal_filters.is_materialized)
 
         serialized = cast(Mapping[str, Any], pointer_as_key({"model": model}, format_type="json"))
+        self.assertTrue(internal_filters.is_materialized)
         deserialized = depointer_as_key(serialized, format_type="json")
         deserialized_model = cast(Mapping[str, Any], cast(Mapping[str, Any], deserialized)["model"])
         restored_model = newton.Model(device="cpu")
@@ -897,13 +1012,13 @@ class TestModelMesh(unittest.TestCase):
         builder = ModelBuilder()
         ground = builder.add_ground_plane()
         builder.replicate(robot, 3)
-        builder.shape_collision_filter_pairs.append((ground, builder.shape_count))
+        builder.add_shape_collision_filter_pair(ground, builder.shape_count)
 
         with self.assertRaisesRegex(ValueError, "shape_collision_filter_pairs contains invalid pair"):
             builder.finalize()
 
-    def test_compact_collision_filter_blocks_invalidate_after_mutation(self):
-        """Mutating compact filters should avoid stale block metadata."""
+    def test_compact_collision_filter_blocks_materialize_before_mutation(self):
+        """Public list mutation should not retain stale compact block metadata."""
 
         robot = ModelBuilder()
         body0 = robot.add_body()

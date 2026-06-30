@@ -233,11 +233,11 @@ class SolverBase:
         Integrate the rigid bodies of the model.
 
         Args:
-            model (Model): The model to integrate.
-            state_in (State): The input state.
-            state_out (State): The output state.
-            dt (float): The time step (typically in seconds).
-            angular_damping (float, optional): The angular damping factor.
+            model: The model to integrate.
+            state_in: The input state.
+            state_out: The output state.
+            dt: The time step (typically in seconds).
+            angular_damping: The angular damping factor.
                 Defaults to 0.0.
         """
         if model.body_count:
@@ -274,10 +274,10 @@ class SolverBase:
         Integrate the particles of the model.
 
         Args:
-            model (Model): The model to integrate.
-            state_in (State): The input state.
-            state_out (State): The output state.
-            dt (float): The time step (typically in seconds).
+            model: The model to integrate.
+            state_in: The input state.
+            state_out: The output state.
+            dt: The time step (typically in seconds).
         """
         if model.particle_count:
             wp.launch(
@@ -395,6 +395,6 @@ class SolverBase:
         Register custom attributes for the solver.
 
         Args:
-            builder (ModelBuilder): The model builder to register the custom attributes to.
+            builder: The model builder to register the custom attributes to.
         """
         pass

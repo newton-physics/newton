@@ -30,6 +30,19 @@ from ..sim.model import Model
 from ..sim.state import State
 
 
+def _shape_collide_mask(model: Model, shape_count: int | None = None) -> np.ndarray:
+    """Return a host mask for shapes participating in shape-shape collision."""
+    shape_flags = getattr(model, "shape_flags", None)
+    if shape_flags is None:
+        count = model.shape_count if shape_count is None else shape_count
+        return np.ones(count, dtype=bool)
+
+    flags = shape_flags.numpy()
+    if shape_count is not None and len(flags) != shape_count:
+        raise ValueError("model.shape_flags and model.shape_type must have the same length")
+    return (flags & int(ShapeFlags.COLLIDE_SHAPES)) != 0
+
+
 @wp.struct
 class ContactWriterData:
     """Contact writer data for collide write_contact function."""
@@ -299,6 +312,7 @@ def _estimate_rigid_contact_max(model: Model) -> int:
         return 1000  # Fallback
 
     shape_types = model.shape_type.numpy()
+    colliding_mask = _shape_collide_mask(model, len(shape_types))
 
     # Primitive pairs (GJK/MPR) produce up to 5 manifold contacts.
     # Mesh-involved pairs (SDF + contact reduction) typically retain ~40.
@@ -306,9 +320,9 @@ def _estimate_rigid_contact_max(model: Model) -> int:
     MESH_CPP = 40
     MAX_NEIGHBORS_PER_SHAPE = 20
 
-    mesh_mask = (shape_types == int(GeoType.MESH)) | (shape_types == int(GeoType.HFIELD))
-    plane_mask = shape_types == int(GeoType.PLANE)
-    non_plane_mask = ~plane_mask
+    mesh_mask = colliding_mask & ((shape_types == int(GeoType.MESH)) | (shape_types == int(GeoType.HFIELD)))
+    plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
+    non_plane_mask = colliding_mask & ~plane_mask
     num_meshes = int(np.count_nonzero(mesh_mask))
     num_non_planes = int(np.count_nonzero(non_plane_mask))
     num_primitives = num_non_planes - num_meshes
@@ -490,6 +504,7 @@ class CollisionPipeline:
         rigid_contact_max: int | None = None,
         max_triangle_pairs: int = 1000000,
         shape_pairs_filtered: wp.array[wp.vec2i] | None = None,
+        include_static_kinematic_pairs: bool = True,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         requires_grad: bool | None = None,
@@ -541,6 +556,11 @@ class CollisionPipeline:
             shape_pairs_filtered: Precomputed shape pairs for EXPLICIT mode.
                 When broad_phase is "explicit", uses model.shape_contact_pairs if not provided. For
                 "nxn"/"sap" modes, ignored.
+            include_static_kinematic_pairs: Whether to generate contacts for
+                pairs where both shapes are immovable. Set to ``False`` to
+                filter static-static, static-kinematic, and
+                kinematic-kinematic pairs. Defaults to ``True`` for backward
+                compatibility.
             sdf_hydroelastic_config: Configuration for hydroelastic collision
                 handling. Defaults to None.
             shape_pairs_max: Override for the broad-phase candidate-pair
@@ -601,7 +621,6 @@ class CollisionPipeline:
             raise ValueError(
                 f"contact_matching must be one of 'disabled', 'latest', 'sticky', got {contact_matching!r}"
             )
-
         if contact_matching_pos_threshold < 0.0:
             raise ValueError(
                 f"contact_matching_pos_threshold must be non-negative, got {contact_matching_pos_threshold}"
@@ -630,6 +649,7 @@ class CollisionPipeline:
         shape_count = model.shape_count
         particle_count = model.particle_count
         device = model.device
+        using_expert_components = broad_phase_instance is not None or narrow_phase is not None
 
         # Resolve rigid contact capacity with explicit > model > estimated precedence.
         if rigid_contact_max is None:
@@ -659,8 +679,8 @@ class CollisionPipeline:
         self.reduce_contacts = reduce_contacts
         self.requires_grad = requires_grad
         self.soft_contact_margin = soft_contact_margin
+        self.include_static_kinematic_pairs = include_static_kinematic_pairs
 
-        using_expert_components = broad_phase_instance is not None or narrow_phase is not None
         if using_expert_components:
             if broad_phase_instance is None or narrow_phase is None:
                 raise ValueError("Provide both broad_phase and narrow_phase for expert component construction")
@@ -671,7 +691,6 @@ class CollisionPipeline:
                     "contact_reduction_hashtable_size_factor cannot be used when narrow_phase is provided; "
                     "construct the NarrowPhase with that value instead"
                 )
-
             inferred_mode = _infer_broad_phase_mode_from_instance(broad_phase_instance)
             self.broad_phase_mode = inferred_mode
             self.broad_phase = broad_phase_instance
@@ -762,7 +781,21 @@ class CollisionPipeline:
             use_lean_gjk_mpr = False
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
-                has_meshes = bool((shape_types == int(GeoType.MESH)).any())
+                colliding_mask = _shape_collide_mask(model, len(shape_types))
+                colliding_shape_types = shape_types[colliding_mask]
+                has_meshes = bool((colliding_shape_types == int(GeoType.MESH)).any())
+                if (
+                    hasattr(model, "_shape_sdf_index")
+                    and model._shape_sdf_index is not None
+                    and hasattr(model, "shape_edge_range")
+                    and model.shape_edge_range is not None
+                ):
+                    shape_sdf_index = model._shape_sdf_index.numpy()
+                    shape_edge_range = model.shape_edge_range.numpy()
+                    has_planar_sdf_shapes = bool(
+                        np.any(colliding_mask & (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0))
+                    )
+                    has_meshes = has_meshes or has_planar_sdf_shapes
                 # Use lean GJK/MPR kernel when scene has no capsules, ellipsoids,
                 # cylinders, or cones (which need full support function and axial
                 # rolling post-processing)
@@ -772,7 +805,7 @@ class CollisionPipeline:
                     int(GeoType.CYLINDER),
                     int(GeoType.CONE),
                 }
-                use_lean_gjk_mpr = not bool(lean_unsupported & set(shape_types.tolist()))
+                use_lean_gjk_mpr = not bool(lean_unsupported & set(colliding_shape_types.tolist()))
 
             # Initialize narrow phase with pre-allocated buffers
             # max_triangle_pairs is a conservative estimate for mesh collision triangle pairs
@@ -945,7 +978,9 @@ class CollisionPipeline:
             state: The current simulation state.
             contacts: The contacts buffer to populate (will be cleared first).
             soft_contact_margin: Margin for soft contact generation.
-                If ``None``, uses the value from construction.
+                If ``None``, uses the value from construction. The effective
+                contact threshold also incorporates per-shape margins from
+                ``model.shape_margin``.
         """
 
         # Counter zeroing and generation bump are fused into compute_shape_aabbs.
@@ -1008,6 +1043,9 @@ class CollisionPipeline:
                 model.shape_count,
                 self.broad_phase_shape_pairs,
                 self.broad_phase_pair_count,
+                shape_body=model.shape_body,
+                body_flags=model.body_flags,
+                include_static_kinematic_pairs=self.include_static_kinematic_pairs,
                 device=self.device,
                 filter_pairs=self.shape_pairs_excluded,
                 num_filter_pairs=self.shape_pairs_excluded_count,
@@ -1023,6 +1061,9 @@ class CollisionPipeline:
                 model.shape_count,
                 self.broad_phase_shape_pairs,
                 self.broad_phase_pair_count,
+                shape_body=model.shape_body,
+                body_flags=model.body_flags,
+                include_static_kinematic_pairs=self.include_static_kinematic_pairs,
                 device=self.device,
                 filter_pairs=self.shape_pairs_excluded,
                 num_filter_pairs=self.shape_pairs_excluded_count,
@@ -1037,6 +1078,9 @@ class CollisionPipeline:
                 len(self.shape_pairs_filtered),
                 self.broad_phase_shape_pairs,
                 self.broad_phase_pair_count,
+                shape_body=model.shape_body,
+                body_flags=model.body_flags,
+                include_static_kinematic_pairs=self.include_static_kinematic_pairs,
                 device=self.device,
                 skip_count_zero=True,  # Already zeroed by compute_shape_aabbs
             )
@@ -1154,6 +1198,12 @@ class CollisionPipeline:
                 offset0=contacts.rigid_contact_offset0,
                 offset1=contacts.rigid_contact_offset1,
                 normal=contacts.rigid_contact_normal,
+                shape0=contacts.rigid_contact_shape0,
+                shape1=contacts.rigid_contact_shape1,
+                margin0=contacts.rigid_contact_margin0,
+                margin1=contacts.rigid_contact_margin1,
+                body_q=state.body_q,
+                shape_body=writer_data.shape_body,
                 device=self.device,
             )
 
@@ -1227,6 +1277,7 @@ class CollisionPipeline:
                     model.shape_source_ptr,
                     model.shape_world,
                     soft_contact_margin,
+                    model.shape_margin,
                     self.soft_contact_max,
                     model.shape_count,
                     model.shape_flags,

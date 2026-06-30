@@ -6,6 +6,8 @@ from __future__ import annotations
 import warp as wp
 from warp import DeviceLike as Devicelike
 
+from ..utils.deprecation import deprecate_nonkeyword_arguments
+
 GENERATION_SENTINEL = -1
 """Value reserved as an impossible generation; the increment kernel skips it."""
 
@@ -134,10 +136,12 @@ class Contacts:
             bad = ", ".join(invalid)
             raise ValueError(f"Unknown extended contact attribute(s): {bad}. Allowed: {allowed}.")
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         rigid_contact_max: int,
         soft_contact_max: int,
+        *,
         requires_grad: bool = False,
         device: Devicelike = None,
         per_contact_shape_properties: bool = False,
@@ -317,7 +321,10 @@ class Contacts:
             self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-            """Contact position on body [m], shape (soft_contact_max,), dtype :class:`vec3`."""
+            """Contact position on body [m], shape (soft_contact_max,), dtype :class:`vec3`.
+
+            Point on the raw (un-inflated) shape surface; per-shape ``shape_margin`` is
+            applied analytically by consumers rather than baked into this point."""
             self.soft_contact_body_vel = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact velocity on body [m/s], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)

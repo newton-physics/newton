@@ -299,6 +299,7 @@ class ViewerGL(ViewerBase):
         # Initialize PBO (Pixel Buffer Object) resources used in the `get_frame` method.
         self._pbo = None
         self._wp_pbo = None
+        self._pbo_host_buffer = None
 
     @override
     def _init_extra_layer_state(self, layer):
@@ -331,6 +332,7 @@ class ViewerGL(ViewerBase):
         """Invalidate PBO resources, forcing reallocation on next get_frame() call."""
         if self._wp_pbo is not None:
             self._wp_pbo = None  # Let Python garbage collect the RegisteredGLBuffer
+        self._pbo_host_buffer = None
         if self._pbo is not None:
             gl = RendererGL.gl
             pbo_id = (gl.GLuint * 1)(self._pbo)
@@ -597,6 +599,9 @@ class ViewerGL(ViewerBase):
         """
         prev_camera = self.camera
         prev_wind = self.wind
+
+        if model is not None and model.device != self.device:
+            self._invalidate_pbo()
 
         super().set_model(model)
 
@@ -1735,8 +1740,9 @@ class ViewerGL(ViewerBase):
         """
         Retrieve the last rendered frame.
 
-        This method uses OpenGL Pixel Buffer Objects (PBO) and CUDA interoperability
-        to transfer pixel data entirely on the GPU, avoiding expensive CPU-GPU transfers.
+        This method uses OpenGL Pixel Buffer Objects (PBO). CUDA viewers use
+        CUDA-OpenGL interoperability, while CPU viewers read the PBO into host
+        memory.
 
         Args:
             target_image:
@@ -1745,8 +1751,9 @@ class ViewerGL(ViewerBase):
             render_ui: Whether to render the UI.
 
         Returns:
-            wp.array: GPU array containing RGB image data with shape `(height, width, 3)`
-                and dtype `wp.uint8`. Origin is top-left (OpenGL's bottom-left is flipped).
+            wp.array: RGB image data on the viewer device with shape
+                `(height, width, 3)` and dtype `wp.uint8`. Origin is top-left
+                (OpenGL's bottom-left is flipped).
         """
 
         gl = RendererGL.gl
@@ -1763,12 +1770,12 @@ class ViewerGL(ViewerBase):
             gl.glBufferData(gl.GL_PIXEL_PACK_BUFFER, gl.GLsizeiptr(w * h * 3), None, gl.GL_STREAM_READ)
             gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, 0)
 
-            # Register with CUDA.
-            self._wp_pbo = wp.RegisteredGLBuffer(
-                gl_buffer_id=int(self._pbo),
-                device=self.device,
-                flags=wp.RegisteredGLBuffer.READ_ONLY,
-            )
+            if self.device.is_cuda:
+                self._wp_pbo = wp.RegisteredGLBuffer(
+                    gl_buffer_id=int(self._pbo),
+                    device=self.device,
+                    flags=wp.RegisteredGLBuffer.READ_ONLY,
+                )
 
             # Set alignment once.
             gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
@@ -1782,12 +1789,27 @@ class ViewerGL(ViewerBase):
             self.gui.render_frame(update_fps=False)
 
         gl.glReadPixels(0, 0, w, h, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, ctypes.c_void_p(0))
+
+        if not self.device.is_cuda:
+            shape = (w * h * 3,)
+            if self._pbo_host_buffer is None or self._pbo_host_buffer.shape != shape:
+                self._pbo_host_buffer = wp.empty(shape=shape, dtype=wp.uint8, device=self.device)
+            gl.glGetBufferSubData(
+                gl.GL_PIXEL_PACK_BUFFER,
+                0,
+                w * h * 3,
+                self._pbo_host_buffer.ptr,
+            )
+
         gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, 0)
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
-        # Map PBO buffer and copy using RGB kernel.
-        assert self._wp_pbo is not None
-        buf = self._wp_pbo.map(dtype=wp.uint8, shape=(w * h * 3,))
+        if self.device.is_cuda:
+            assert self._wp_pbo is not None
+            buf = self._wp_pbo.map(dtype=wp.uint8, shape=(w * h * 3,))
+        else:
+            assert self._pbo_host_buffer is not None
+            buf = self._pbo_host_buffer
 
         if target_image is None:
             target_image = wp.empty(
@@ -1808,8 +1830,9 @@ class ViewerGL(ViewerBase):
             device=self.device,
         )
 
-        # Unmap the PBO buffer.
-        self._wp_pbo.unmap()
+        if self.device.is_cuda:
+            assert self._wp_pbo is not None
+            self._wp_pbo.unmap()
 
         return target_image
 
