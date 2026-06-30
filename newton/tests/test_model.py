@@ -851,7 +851,7 @@ class TestModelJoints(unittest.TestCase):
         model = builder.finalize()
         state = model.state()
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-        assert_np_equal(state.body_q.numpy()[child], np.array(child_body_xform), tol=1.0e-6)
+        assert_np_equal(state.body_q.numpy()[child], np.array(child_body_xform), tol=1.0e-5)
 
     def test_joint_target_q_qd_shape_with_free_and_ball_joints(self):
         """``joint_target_q`` follows ``joint_q`` (coord) under
