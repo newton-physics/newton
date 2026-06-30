@@ -391,7 +391,7 @@ class MeshAdjacency:
         warns (non-manifold). Updates :attr:`edge_indices` / :attr:`edge_tri_indices` (so
         :attr:`edges` reflects it) and invalidates the vertex-adjacency CSR. It does **not**
         update :attr:`tri_edge_indices`, so an edge added this way will not appear in the
-        per-triangle edge map; reconstruct via the constructor if you need that. O(edge_count)
+        per-triangle edge map; users can reconstruct via the constructor if they need that. O(edge_count)
         per call -- a compatibility shim, not a hot path.
 
         Args:
