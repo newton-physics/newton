@@ -5497,7 +5497,9 @@ class SolverMuJoCo(SolverBase):
                         if mode == JointTargetMode.POSITION:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=name, **args)
+                            # A ball joint's authored range lives on a single source row
+                            # (keyed by the joint base DOF); apply it to every axis actuator.
+                            spec.add_actuator(target=name, **joint_target_actuator_kwargs(args, qd_start, True))
                             axis_to_actuator[ai, 0] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
@@ -5508,7 +5510,7 @@ class SolverMuJoCo(SolverBase):
                         elif mode == JointTargetMode.POSITION_VELOCITY:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=name, **args)
+                            spec.add_actuator(target=name, **joint_target_actuator_kwargs(args, qd_start, True))
                             axis_to_actuator[ai, 0] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
@@ -5520,7 +5522,7 @@ class SolverMuJoCo(SolverBase):
                         if mode in (JointTargetMode.VELOCITY, JointTargetMode.POSITION_VELOCITY):
                             args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=name, **args)
+                            spec.add_actuator(target=name, **joint_target_actuator_kwargs(args, qd_start, False))
                             axis_to_actuator[ai, 1] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(-(template_dof + 2))  # negative = velocity

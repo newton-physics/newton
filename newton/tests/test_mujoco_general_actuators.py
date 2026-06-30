@@ -465,6 +465,37 @@ class TestMuJoCoActuators(unittest.TestCase):
         self.assertTrue(seen_position, "no position sub-actuator found")
         self.assertTrue(seen_velocity, "no velocity sub-actuator found")
 
+    def test_ball_joint_target_ranges_applied_to_all_axes(self):
+        """A ball-joint position actuator is rebuilt as three per-axis MuJoCo actuators.
+        The single authored ctrl/force range must be applied to every axis, not dropped
+        (the ball path mirrors the hinge/slide range plumbing)."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="ball">
+    <option gravity="0 0 0"/>
+    <worldbody>
+        <body name="link" pos="0 0 0">
+            <joint name="bj" type="ball"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <position name="p" joint="bj" kp="100" forcerange="-7 7" forcelimited="true" ctrlrange="-2 2" ctrllimited="true"/>
+    </actuator>
+</mujoco>
+"""
+        builder = ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=False)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        mj_model = solver.mj_model
+        self.assertEqual(mj_model.nu, 3)  # one actuator per ball DOF
+        for mj_idx in range(mj_model.nu):
+            np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-7.0, 7.0], atol=1e-5)
+            np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-2.0, 2.0], atol=1e-5)
+            self.assertTrue(bool(mj_model.actuator_forcelimited[mj_idx]))
+            self.assertTrue(bool(mj_model.actuator_ctrllimited[mj_idx]))
+
     def test_parsing_ctrl_direct_true(self):
         """Test parsing with ctrl_direct=True."""
         builder = ModelBuilder()
