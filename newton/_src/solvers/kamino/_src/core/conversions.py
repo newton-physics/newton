@@ -250,6 +250,7 @@ def joint_conversion_kernel(
             kd_j = model_joint_target_kd[dofs_start_j + dof_id]
             is_dynamic_j = is_dynamic_j or (a_j > 0.0) or (b_j > 0.0) or (ke_j > 0.0) or (kd_j > 0.0)
 
+    # Set joint dimensions
     joint_num_kinematic_cts[joint_id] = ncts_j
     if is_dynamic_j:
         joint_num_dynamic_cts[joint_id] = ndofs_j

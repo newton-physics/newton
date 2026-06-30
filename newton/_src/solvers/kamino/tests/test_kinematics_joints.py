@@ -472,7 +472,8 @@ class TestKinematicsJoints(unittest.TestCase):
         np.testing.assert_almost_equal(dq_b_j_np, dq_b_j_expected)
 
     def test_05_implicit_dynamics_minimum_mass(self):
-        # Construct the model description with forced implicit actuator dynamics
+        # Construct the model description with forced implicit actuator dynamics,
+        # with zero joint armature, damping, and gains.
         builder = build_unary_revolute_joint_test(
             dynamic=False,
             implicit_pd=False,
@@ -485,11 +486,19 @@ class TestKinematicsJoints(unittest.TestCase):
         data = model.data(device=self.default_device)
         model.time.set_uniform_timestep(0.01)
 
+        # Check that dynamic joint properties are all zero
+        np.testing.assert_equal(model.joints.a_j.numpy(), 0)
+        np.testing.assert_equal(model.joints.b_j.numpy(), 0)
+        np.testing.assert_equal(model.joints.k_p_j.numpy(), 0)
+        np.testing.assert_equal(model.joints.k_d_j.numpy(), 0)
+
         # Set the state of the Follower body to a known state
         set_joint_follower_body_state(model, data)
         # Update the state of the joints
         compute_joints_data(model=model, data=data, q_j_p=wp.zeros_like(data.joints.q_j))
 
+        # Check that effective inertia is clamped to a small positive value, and
+        # the inverse of it is a valid number
         m_j_np = data.joints.m_j.numpy().copy()
         inv_m_j_np = data.joints.inv_m_j.numpy().copy()
         self.assertTrue(m_j_np[0] > 0, "Internal effective inertia should be positive.")

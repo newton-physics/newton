@@ -725,7 +725,7 @@ def compute_and_write_joint_implicit_dynamics(
     data_joint_tau_j: wp.array[float32],
     data_joint_q_j_ref: wp.array[float32],
     data_joint_dq_j_ref: wp.array[float32],
-    data_joint_tau_j_ref: wp.array[float32],
+    data_joint_tau_j_ref: wp.array[float32],  # Can be `None`
     # Outputs:
     data_joint_m_j: wp.array[float32],
     data_joint_inv_m_j: wp.array[float32],

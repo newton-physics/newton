@@ -653,6 +653,7 @@ class SolverKamino(SolverBase):
             config=self._config,
         )
 
+        # Initialize the internal Kamino control wrapper
         self._control_kamino = self._kamino.ControlKamino()
         self._control_kamino.finalize(self._model_kamino)
 

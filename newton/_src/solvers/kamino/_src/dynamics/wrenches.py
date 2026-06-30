@@ -55,7 +55,7 @@ def _compute_joint_dof_body_wrenches_dense(
     # Retrieve the thread index as the joint index
     jid = wp.tid()
 
-    # If the joint dynamics are modeled, `tau_j` will be taken care there
+    # If the joint dynamics are modeled, `tau_j` will be included there
     if model_joints_num_dynamic_cts[jid] > 0:
         return
 
@@ -125,7 +125,7 @@ def _compute_joint_dof_body_wrenches_sparse(
     # Retrieve the thread index as the joint index
     jid = wp.tid()
 
-    # If the joint dynamics are modeled, `tau_j` will be taken care there
+    # If the joint dynamics are modeled, `tau_j` will be included there
     if model_joints_num_dynamic_cts[jid] > 0:
         return
 
