@@ -931,6 +931,91 @@ class TestGravCompForce(TestInverseDynamicsBase):
                 np.testing.assert_allclose(measured[w * 6 : w * 6 + 3], expected_linear, atol=1e-5, rtol=1e-5)
                 np.testing.assert_allclose(measured[w * 6 + 3 : w * 6 + 6], expected_angular, atol=1e-5, rtol=1e-5)
 
+    def test_free_body_rotated_parent_frame_gravity_is_world_frame(self):
+        """gravity_force for a free/distance body must be expressed in world frame, not parent frame.
+
+        Regression test for a bug where the RNEA bias (gravity and Coriolis
+        contributions) was left in the joint-parent frame rather than rotated
+        to the world frame expected by Newton's free-joint convention
+        (:attr:`~newton.Model.joint_f` documents world-frame forces at CoM).
+        The same code path handles both FREE and DISTANCE joints, so both
+        are exercised as subtests.
+
+        Setup: gravity along world +Z, ``parent_xform`` with a 90-degree
+        rotation about world X. The parent frame's Y-axis points along
+        world +Z, so the buggy parent-frame output would be (0, -m*g, 0)
+        while the correct world-frame output is (0, 0, -m*g).
+        """
+        import math
+
+        m = 2.0
+        g_mag = 10.0
+        I_body = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+
+        # 90-degree rotation about world X: parent Y → world +Z.
+        q_rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2.0)
+        rotated_parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), q_rot)
+        identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
+        def add_joint(jtype, builder, body):
+            if jtype == "free":
+                return builder.add_joint_free(
+                    parent=-1,
+                    child=body,
+                    parent_xform=rotated_parent_xform,
+                    child_xform=identity_xform,
+                )
+            return builder.add_joint_distance(
+                parent=-1,
+                child=body,
+                parent_xform=rotated_parent_xform,
+                child_xform=identity_xform,
+            )
+
+        for jtype in ("free", "distance"):
+            with self.subTest(joint_type=jtype):
+                builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+                body = builder.add_link(
+                    xform=identity_xform,
+                    mass=m,
+                    inertia=I_body,
+                    com=wp.vec3(0.0, 0.0, 0.0),
+                )
+                j = add_joint(jtype, builder, body)
+                builder.add_articulation([j])
+
+                model = builder.finalize(device=self.device)
+                model.set_gravity((0.0, 0.0, g_mag))  # gravity along world +Z
+
+                # Body at rest, identity orientation relative to parent frame.
+                # joint_q: [tx, ty, tz, qx, qy, qz, qw] in parent frame (7 DOFs).
+                state = model.state()
+                joint_q = state.joint_q.numpy()
+                joint_q[0:7] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+                state.joint_q.assign(joint_q)
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+                inverse_dynamics, scratch = model.inverse_dynamics()
+                newton.eval_inverse_dynamics(
+                    model=model,
+                    state=state,
+                    eval_type=newton.InverseDynamics.EvalType.GRAVITY_FORCE,
+                    inverse_dynamics=inverse_dynamics,
+                    scratch=scratch,
+                )
+
+                measured = inverse_dynamics.gravity_force.numpy()
+
+                # Newton convention: gravity_force[0:3] = -m * g_world (world-frame linear force).
+                # With gravity along world +Z: expected linear = (0, 0, -m*g_mag).
+                # Without the world-frame rotation fix the output stays in parent frame:
+                # gravity in parent frame = R_x(-90°) * (0,0,g) = (0,g,0), so the
+                # buggy output would be (0, -m*g_mag, 0).
+                expected_linear = np.array([0.0, 0.0, -m * g_mag])
+                expected_angular = np.zeros(3)
+                np.testing.assert_allclose(measured[0:3], expected_linear, atol=1e-5, rtol=1e-5)
+                np.testing.assert_allclose(measured[3:6], expected_angular, atol=1e-5, rtol=1e-5)
+
 
 class TestCoriolisCompForce(TestInverseDynamicsBase):
     """Coriolis-force tests for the two-link pendulum harness."""

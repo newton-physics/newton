@@ -1188,6 +1188,23 @@ def convert_free_distance_joint_f_internal_to_public(
         joint_f[qd_start + 4] = joint_f[qd_start + 4] + ang_correction[1]
         joint_f[qd_start + 5] = joint_f[qd_start + 5] + ang_correction[2]
 
+        # Rotate the corrected wrench from joint-parent frame to world frame.
+        # Newton's public convention (Model.joint_f) requires world-frame forces
+        # at CoM for FREE/DISTANCE joints. All prior corrections were computed in
+        # parent frame; q_p is the parent-frame orientation in world. Rotation
+        # commutes with the subsequent negation, so applying it here is equivalent
+        # to applying it after the sign flip.
+        f_lin_parent = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
+        f_ang_parent = wp.vec3(joint_f[qd_start + 3], joint_f[qd_start + 4], joint_f[qd_start + 5])
+        f_lin_world = wp.quat_rotate(q_p, f_lin_parent)
+        f_ang_world = wp.quat_rotate(q_p, f_ang_parent)
+        joint_f[qd_start + 0] = f_lin_world[0]
+        joint_f[qd_start + 1] = f_lin_world[1]
+        joint_f[qd_start + 2] = f_lin_world[2]
+        joint_f[qd_start + 3] = f_ang_world[0]
+        joint_f[qd_start + 4] = f_ang_world[1]
+        joint_f[qd_start + 5] = f_ang_world[2]
+
     # Sign flip: ``eval_rigid_tau`` outputs ``-dot(S, body_f_s)`` which is
     # the negation of the standard manipulator-equation bias. Flip every
     # per-DOF entry so the buffer stores the standard ``+g(q)`` /
