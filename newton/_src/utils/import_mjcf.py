@@ -2972,11 +2972,20 @@ def parse_mjcf(
                 if key not in parsed_attrs:
                     parsed_attrs[key] = value
 
+            # Intrinsic actuator kind, known directly from the MJCF shortcut tag.
+            if actuator_type == "position":
+                ctrl_type_val = int(SolverMuJoCo.CtrlType.POSITION)
+            elif actuator_type == "velocity":
+                ctrl_type_val = int(SolverMuJoCo.CtrlType.VELOCITY)
+            else:
+                ctrl_type_val = int(SolverMuJoCo.CtrlType.GENERAL)
+
             # Build full values dict
             actuator_values: dict[str, Any] = {}
             for attr in builder_custom_attr_actuator:
                 if attr.key in (
                     "mujoco:ctrl_source",
+                    "mujoco:ctrl_type",
                     "mujoco:actuator_trntype",
                     "mujoco:actuator_gainprm",
                     "mujoco:actuator_biasprm",
@@ -2986,6 +2995,7 @@ def parse_mjcf(
                 actuator_values[attr.key] = parsed_attrs.get(attr.key, attr.default)
 
             actuator_values["mujoco:ctrl_source"] = ctrl_source_val
+            actuator_values["mujoco:ctrl_type"] = ctrl_type_val
             actuator_values["mujoco:actuator_gainprm"] = gainprm
             actuator_values["mujoco:actuator_biasprm"] = biasprm
             actuator_values["mujoco:actuator_trnid"] = wp.vec2i(target_idx, 0)
