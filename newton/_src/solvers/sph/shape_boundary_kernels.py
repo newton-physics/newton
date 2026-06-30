@@ -75,8 +75,10 @@ def _solve_coulomb_velocity(
     normal: wp.vec3,
     boundary_friction: float,
     shape_friction: float,
+    shape_adhesion: float,
     boundary_velocity: wp.vec3,
     particle_mass: float,
+    particle_radius: float,
     body: int,
     position: wp.vec3,
     body_q: wp.array[wp.transform],
@@ -85,18 +87,34 @@ def _solve_coulomb_velocity(
     body_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
     target_normal_velocity: float,
-) -> wp.vec3:
+    dt: float,
+) -> tuple[wp.vec3, bool]:
     relative_velocity = velocity - boundary_velocity
     normal_velocity = wp.dot(relative_velocity, normal)
-    if normal_velocity >= target_normal_velocity:
-        return velocity
+    if normal_velocity >= target_normal_velocity and shape_adhesion <= 0.0:
+        return velocity, False
 
     particle_inverse_mass = 1.0 / wp.max(particle_mass, 1.0e-12)
     normal_inverse_mass = _contact_inverse_mass(
         normal, particle_mass, body, position, body_q, body_flags, body_com, body_mass, body_inv_inertia
     )
-    normal_impulse = (target_normal_velocity - normal_velocity) / wp.max(normal_inverse_mass, 1.0e-12)
-    particle_impulse = normal * normal_impulse
+    normal_impulse = 0.0
+    adhesion_impulse = 0.0
+    adhesion_sticks = bool(False)
+    # Convert adhesion pressure to a per-step impulse through the particle's projected area.
+    max_adhesion_impulse = wp.max(shape_adhesion, 0.0) * wp.pi * particle_radius * particle_radius * wp.max(dt, 0.0)
+    if normal_velocity < target_normal_velocity:
+        normal_impulse = (target_normal_velocity - normal_velocity) / wp.max(normal_inverse_mass, 1.0e-12)
+    elif normal_velocity > target_normal_velocity and max_adhesion_impulse > 0.0:
+        required_adhesion_impulse = (normal_velocity - target_normal_velocity) / wp.max(normal_inverse_mass, 1.0e-12)
+        adhesion_impulse = wp.min(
+            required_adhesion_impulse,
+            max_adhesion_impulse,
+        )
+        adhesion_sticks = required_adhesion_impulse <= max_adhesion_impulse
+    elif max_adhesion_impulse > 0.0:
+        adhesion_sticks = True
+    particle_impulse = normal * (normal_impulse - adhesion_impulse)
 
     tangential_velocity = relative_velocity - normal * normal_velocity
     tangential_speed = wp.length(tangential_velocity)
@@ -106,10 +124,13 @@ def _solve_coulomb_velocity(
         tangent_inverse_mass = _contact_inverse_mass(
             tangent, particle_mass, body, position, body_q, body_flags, body_com, body_mass, body_inv_inertia
         )
-        tangent_impulse = wp.min(tangential_speed / wp.max(tangent_inverse_mass, 1.0e-12), friction * normal_impulse)
+        tangent_impulse = wp.min(
+            tangential_speed / wp.max(tangent_inverse_mass, 1.0e-12),
+            friction * (normal_impulse + max_adhesion_impulse),
+        )
         particle_impulse -= tangent * tangent_impulse
 
-    return velocity + particle_impulse * particle_inverse_mass
+    return velocity + particle_impulse * particle_inverse_mass, adhesion_sticks
 
 
 @wp.func
@@ -119,12 +140,22 @@ def _project_signed_distance(
     normal: wp.vec3,
     separation: float,
     projection_threshold: float,
-) -> tuple[bool, wp.vec3, wp.vec3]:
+    relative_velocity: wp.vec3,
+    adhesion: float,
+    dt: float,
+) -> tuple[bool, wp.vec3, wp.vec3, bool]:
     normal_length = wp.length(normal)
-    if normal_length <= 1.0e-7 or distance + projection_threshold >= separation:
-        return False, local, wp.vec3(0.0)
+    if normal_length <= 1.0e-7:
+        return False, local, wp.vec3(0.0), False
     normal /= normal_length
-    return True, local + normal * (separation - distance), normal
+    if distance + projection_threshold < separation:
+        return True, local + normal * (separation - distance), normal, False
+
+    normal_velocity = wp.dot(relative_velocity, normal)
+    previous_distance = distance - normal_velocity * dt
+    if adhesion > 0.0 and dt > 0.0 and distance >= separation and previous_distance <= separation + 1.0e-7:
+        return True, local + normal * (separation - distance), normal, True
+    return False, local, wp.vec3(0.0), False
 
 
 @wp.func
@@ -134,23 +165,30 @@ def _project_local_plane(
     length: float,
     separation: float,
     projection_threshold: float,
-) -> tuple[bool, wp.vec3, wp.vec3]:
+    relative_velocity: wp.vec3,
+    adhesion: float,
+    dt: float,
+) -> tuple[bool, wp.vec3, wp.vec3, bool]:
     normal = wp.vec3(0.0, 0.0, 1.0)
     if width <= 0.0 or length <= 0.0:
-        return _project_signed_distance(local, local[2], normal, separation, projection_threshold)
+        return _project_signed_distance(
+            local, local[2], normal, separation, projection_threshold, relative_velocity, adhesion, dt
+        )
 
     closest = closest_point_plane(width, length, local)
     inside_bounds = wp.abs(local[0]) <= width and wp.abs(local[1]) <= length
     if inside_bounds:
-        return _project_signed_distance(local, local[2], normal, separation, projection_threshold)
+        return _project_signed_distance(
+            local, local[2], normal, separation, projection_threshold, relative_velocity, adhesion, dt
+        )
 
     offset = local - closest
     distance = wp.length(offset)
-    if distance + projection_threshold >= separation:
-        return False, local, wp.vec3(0.0)
     if distance > 1.0e-7:
         normal = offset / distance
-    return True, closest + normal * separation, normal
+    return _project_signed_distance(
+        local, distance, normal, separation, projection_threshold, relative_velocity, adhesion, dt
+    )
 
 
 @wp.func
@@ -210,6 +248,7 @@ def _collide_model_shape(
     shape_source_ptr: wp.array[wp.uint64],
     shape_margin: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_adhesion: wp.array[float],
     shape_projection_threshold: wp.array[float],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -244,25 +283,31 @@ def _collide_model_shape(
     point = wp.transform_get_translation(shape_xform)
     quat = wp.transform_get_rotation(shape_xform)
     local = wp.quat_rotate_inv(quat, x - point)
+    relative_velocity_local = wp.quat_rotate_inv(quat, v - boundary_velocity)
     separation = radius + shape_margin[shape] + boundary_margin
     projection_threshold = shape_projection_threshold[shape]
+    adhesion = shape_material_adhesion[shape]
     hit_shape = bool(False)
+    adhesive_contact = bool(False)
     projected_local = local
     normal_local = wp.vec3(0.0)
 
     if shape_type[shape] == GeoType.PLANE:
-        hit_shape, projected_local, normal_local = _project_local_plane(
+        hit_shape, projected_local, normal_local, adhesive_contact = _project_local_plane(
             local,
             0.5 * wp.abs(shape_scale[shape][0]),
             0.5 * wp.abs(shape_scale[shape][1]),
             separation,
             projection_threshold,
+            relative_velocity_local,
+            adhesion,
+            dt,
         )
     elif shape_type[shape] == GeoType.SPHERE:
         distance = sdf_sphere(local, wp.abs(shape_scale[shape][0]))
         normal_local = sdf_sphere_grad(local, wp.abs(shape_scale[shape][0]))
-        hit_shape, projected_local, normal_local = _project_signed_distance(
-            local, distance, normal_local, separation, projection_threshold
+        hit_shape, projected_local, normal_local, adhesive_contact = _project_signed_distance(
+            local, distance, normal_local, separation, projection_threshold, relative_velocity_local, adhesion, dt
         )
     elif shape_type[shape] == GeoType.BOX:
         half_extents = wp.vec3(
@@ -272,24 +317,24 @@ def _collide_model_shape(
         )
         distance = sdf_box(local, half_extents[0], half_extents[1], half_extents[2])
         normal_local = sdf_box_grad(local, half_extents[0], half_extents[1], half_extents[2])
-        hit_shape, projected_local, normal_local = _project_signed_distance(
-            local, distance, normal_local, separation, projection_threshold
+        hit_shape, projected_local, normal_local, adhesive_contact = _project_signed_distance(
+            local, distance, normal_local, separation, projection_threshold, relative_velocity_local, adhesion, dt
         )
     elif shape_type[shape] == GeoType.CAPSULE:
         shape_radius = wp.abs(shape_scale[shape][0])
         half_height = wp.abs(shape_scale[shape][1])
         distance = sdf_capsule(local, shape_radius, half_height, int(Axis.Z))
         normal_local = sdf_capsule_grad(local, shape_radius, half_height, int(Axis.Z))
-        hit_shape, projected_local, normal_local = _project_signed_distance(
-            local, distance, normal_local, separation, projection_threshold
+        hit_shape, projected_local, normal_local, adhesive_contact = _project_signed_distance(
+            local, distance, normal_local, separation, projection_threshold, relative_velocity_local, adhesion, dt
         )
     elif shape_type[shape] == GeoType.CYLINDER:
         shape_radius = wp.abs(shape_scale[shape][0])
         half_height = wp.abs(shape_scale[shape][1])
         distance = sdf_cylinder(local, shape_radius, half_height, int(Axis.Z))
         normal_local = sdf_cylinder_grad(local, shape_radius, half_height, int(Axis.Z))
-        hit_shape, projected_local, normal_local = _project_signed_distance(
-            local, distance, normal_local, separation, projection_threshold
+        hit_shape, projected_local, normal_local, adhesive_contact = _project_signed_distance(
+            local, distance, normal_local, separation, projection_threshold, relative_velocity_local, adhesion, dt
         )
     elif shape_type[shape] == GeoType.ELLIPSOID:
         radii = wp.vec3(
@@ -299,23 +344,26 @@ def _collide_model_shape(
         )
         distance = sdf_ellipsoid(local, radii)
         normal_local = sdf_ellipsoid_grad(local, radii)
-        hit_shape, projected_local, normal_local = _project_signed_distance(
-            local, distance, normal_local, separation, projection_threshold
+        hit_shape, projected_local, normal_local, adhesive_contact = _project_signed_distance(
+            local, distance, normal_local, separation, projection_threshold, relative_velocity_local, adhesion, dt
         )
     elif shape_type[shape] == GeoType.CONE:
         shape_radius = wp.abs(shape_scale[shape][0])
         half_height = wp.abs(shape_scale[shape][1])
         distance = sdf_cone(local, shape_radius, half_height, int(Axis.Z))
         normal_local = sdf_cone_grad(local, shape_radius, half_height, int(Axis.Z))
-        hit_shape, projected_local, normal_local = _project_signed_distance(
-            local, distance, normal_local, separation, projection_threshold
+        hit_shape, projected_local, normal_local, adhesive_contact = _project_signed_distance(
+            local, distance, normal_local, separation, projection_threshold, relative_velocity_local, adhesion, dt
         )
     elif shape_type[shape] == GeoType.MESH or shape_type[shape] == GeoType.CONVEX_MESH:
         mesh = shape_source_ptr[shape]
         mesh_scale = shape_scale[shape]
         min_scale = wp.min(wp.min(wp.abs(mesh_scale[0]), wp.abs(mesh_scale[1])), wp.abs(mesh_scale[2]))
         if mesh != wp.uint64(0) and min_scale > 1.0e-7:
-            query_distance = wp.max(mesh_query_max_distance, separation + projection_threshold)
+            query_distance = wp.max(
+                mesh_query_max_distance,
+                separation + projection_threshold + wp.length(relative_velocity_local) * dt,
+            )
             query = wp.mesh_query_point_sign_parity(mesh, wp.cw_div(local, mesh_scale), query_distance / min_scale)
             if query.result:
                 closest = wp.cw_mul(wp.mesh_eval_position(mesh, query.face, query.u, query.v), mesh_scale)
@@ -324,8 +372,15 @@ def _collide_model_shape(
                 normal_local = wp.cw_div(wp.mesh_eval_face_normal(mesh, query.face), mesh_scale)
                 if wp.length(offset) > 1.0e-7:
                     normal_local = wp.normalize(offset) * query.sign
-                hit_shape, projected_local, normal_local = _project_signed_distance(
-                    local, distance, normal_local, separation, projection_threshold
+                hit_shape, projected_local, normal_local, adhesive_contact = _project_signed_distance(
+                    local,
+                    distance,
+                    normal_local,
+                    separation,
+                    projection_threshold,
+                    relative_velocity_local,
+                    adhesion,
+                    dt,
                 )
 
     if not hit_shape:
@@ -336,13 +391,15 @@ def _collide_model_shape(
     target_velocity = 0.0
     if 0 <= body and body < body_count and body_mass[body] > 0.0 and (body_flags[body] & BodyFlags.KINEMATIC) == 0:
         target_velocity = _depenetration_velocity(wp.dot(x - x_before, normal), dt, max_depenetration_velocity)
-    v = _solve_coulomb_velocity(
+    v, adhesion_sticks = _solve_coulomb_velocity(
         v,
         normal,
         boundary_friction,
         shape_material_mu[shape],
+        shape_material_adhesion[shape],
         boundary_velocity,
         particle_mass,
+        radius,
         body,
         x,
         body_q,
@@ -351,7 +408,10 @@ def _collide_model_shape(
         body_mass,
         body_inv_inertia,
         target_velocity,
+        dt,
     )
+    if adhesive_contact and not adhesion_sticks:
+        x = x_before
     _accumulate_body_impulse(
         body,
         body_count,
@@ -377,6 +437,7 @@ def _collide_explicit_mesh(
     explicit_mesh_ids: wp.array[wp.uint64],
     explicit_mesh_margin: wp.array[float],
     explicit_mesh_friction: wp.array[float],
+    explicit_mesh_adhesion: wp.array[float],
     explicit_mesh_projection_threshold: wp.array[float],
     explicit_mesh_body_ids: wp.array[wp.int32],
     explicit_mesh_world: wp.array[wp.int32],
@@ -418,9 +479,14 @@ def _collide_explicit_mesh(
             body, x, body_q, body_qd, body_q_prev, body_com, collider_velocity_mode, dt
         )
 
+    relative_velocity_local = wp.quat_rotate_inv(quat, v - boundary_velocity)
     separation = radius + explicit_mesh_margin[mesh_index] + boundary_margin
     projection_threshold = explicit_mesh_projection_threshold[mesh_index]
-    query_distance = wp.max(mesh_query_max_distance, separation + projection_threshold)
+    adhesion = explicit_mesh_adhesion[mesh_index]
+    query_distance = wp.max(
+        mesh_query_max_distance,
+        separation + projection_threshold + wp.length(relative_velocity_local) * dt,
+    )
     query = wp.mesh_query_point_sign_parity(mesh, local_x, query_distance)
     if not query.result:
         return x, v, False
@@ -431,7 +497,16 @@ def _collide_explicit_mesh(
     normal = wp.mesh_eval_face_normal(mesh, query.face)
     if wp.length(offset) > 1.0e-7:
         normal = wp.normalize(offset) * query.sign
-    hit_mesh, projected, normal = _project_signed_distance(local_x, distance, normal, separation, projection_threshold)
+    hit_mesh, projected, normal, adhesive_contact = _project_signed_distance(
+        local_x,
+        distance,
+        normal,
+        separation,
+        projection_threshold,
+        relative_velocity_local,
+        adhesion,
+        dt,
+    )
     if not hit_mesh:
         return x, v, False
 
@@ -448,13 +523,15 @@ def _collide_explicit_mesh(
     target_velocity = 0.0
     if 0 <= body and body < body_count and body_mass[body] > 0.0 and (body_flags[body] & BodyFlags.KINEMATIC) == 0:
         target_velocity = _depenetration_velocity(wp.dot(x - x_before, normal), dt, max_depenetration_velocity)
-    v = _solve_coulomb_velocity(
+    v, adhesion_sticks = _solve_coulomb_velocity(
         v,
         normal,
         boundary_friction,
         explicit_mesh_friction[mesh_index],
+        explicit_mesh_adhesion[mesh_index],
         boundary_velocity,
         particle_mass,
+        radius,
         body,
         x,
         body_q,
@@ -463,7 +540,10 @@ def _collide_explicit_mesh(
         body_mass,
         body_inv_inertia,
         target_velocity,
+        dt,
     )
+    if adhesive_contact and not adhesion_sticks:
+        x = x_before
     _accumulate_body_impulse(
         body,
         body_count,
@@ -499,11 +579,13 @@ def collide_particle_shapes(
     shape_source_ptr: wp.array[wp.uint64],
     shape_margin: wp.array[float],
     shape_material_mu: wp.array[float],
+    shape_material_adhesion: wp.array[float],
     shape_projection_threshold: wp.array[float],
     explicit_mesh_count: int,
     explicit_mesh_ids: wp.array[wp.uint64],
     explicit_mesh_margin: wp.array[float],
     explicit_mesh_friction: wp.array[float],
+    explicit_mesh_adhesion: wp.array[float],
     explicit_mesh_projection_threshold: wp.array[float],
     explicit_mesh_body_ids: wp.array[wp.int32],
     explicit_mesh_world: wp.array[wp.int32],
@@ -540,7 +622,10 @@ def collide_particle_shapes(
     hit = bool(False)
 
     if shape_count > 0:
-        query_radius = wp.max(radius + boundary_margin + wp.max(shape_max_margin, 0.0), 1.0e-6)
+        query_radius = wp.max(
+            radius + boundary_margin + wp.max(shape_max_margin, 0.0) + wp.length(v) * dt,
+            1.0e-6,
+        )
         shape_query = wp.bvh_query_aabb(shape_bvh_id, x - wp.vec3(query_radius), x + wp.vec3(query_radius))
         shape_leaf = int(0)
         while wp.bvh_query_next(shape_query, shape_leaf):
@@ -562,6 +647,7 @@ def collide_particle_shapes(
                 shape_source_ptr,
                 shape_margin,
                 shape_material_mu,
+                shape_material_adhesion,
                 shape_projection_threshold,
                 body_q,
                 body_qd,
@@ -582,7 +668,10 @@ def collide_particle_shapes(
             hit = hit or shape_hit
 
     if explicit_mesh_count > 0:
-        query_radius = wp.max(radius + boundary_margin + wp.max(explicit_mesh_max_margin, 0.0), 1.0e-6)
+        query_radius = wp.max(
+            radius + boundary_margin + wp.max(explicit_mesh_max_margin, 0.0) + wp.length(v) * dt,
+            1.0e-6,
+        )
         mesh_query = wp.bvh_query_aabb(explicit_mesh_bvh_id, x - wp.vec3(query_radius), x + wp.vec3(query_radius))
         mesh_index = int(0)
         while wp.bvh_query_next(mesh_query, mesh_index):
@@ -597,6 +686,7 @@ def collide_particle_shapes(
                 explicit_mesh_ids,
                 explicit_mesh_margin,
                 explicit_mesh_friction,
+                explicit_mesh_adhesion,
                 explicit_mesh_projection_threshold,
                 explicit_mesh_body_ids,
                 explicit_mesh_world,

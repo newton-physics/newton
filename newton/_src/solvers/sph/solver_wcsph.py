@@ -110,7 +110,9 @@ class SolverWCSPH(SolverBase):
 
     Solid boundaries are enforced by post-integration shape projection. Reaction
     impulses for explicit partitioned coupling to a rigid-body solver are exposed
-    through :meth:`collect_collider_impulses`.
+    through :meth:`collect_collider_impulses`. Optional collider adhesion is given
+    as an effective contact pressure and acts while a particle is in projected
+    contact with a shape.
 
     Call :meth:`register_custom_attributes` on your :class:`~newton.ModelBuilder`
     before building the model to enable SPH-specific per-particle material and
@@ -230,6 +232,7 @@ class SolverWCSPH(SolverBase):
         collider_body_ids: list[int] | None = None,
         collider_margins: list[float] | None = None,
         collider_friction: list[float] | None = None,
+        collider_adhesion: list[float] | None = None,
         collider_projection_threshold: list[float] | None = None,
         model: Model | None = None,
         body_com: wp.array[wp.vec3] | None = None,
@@ -256,6 +259,7 @@ class SolverWCSPH(SolverBase):
                 when ``collider_meshes`` is provided.
             collider_margins: Per-collider signed distance offsets [m].
             collider_friction: Per-collider Coulomb friction coefficients.
+            collider_adhesion: Per-collider adhesion pressure [Pa].
             collider_projection_threshold: Per-collider projection thresholds [m].
             model: The model to read collider properties from. Defaults to the solver model.
             body_com: For dynamic colliders, per-body center of mass on the solver device.
@@ -268,6 +272,7 @@ class SolverWCSPH(SolverBase):
             collider_body_ids=collider_body_ids,
             collider_margins=collider_margins,
             collider_friction=collider_friction,
+            collider_adhesion=collider_adhesion,
             collider_projection_threshold=collider_projection_threshold,
             model=model,
             body_com=body_com,

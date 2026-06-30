@@ -122,11 +122,13 @@ class SPHBoundaryHandler:
     explicit_collider_meshes: tuple[object, ...] = ()
     explicit_collider_margins: tuple[float, ...] = ()
     explicit_collider_friction: tuple[float, ...] = ()
+    explicit_collider_adhesion: tuple[float, ...] = ()
     explicit_collider_projection_threshold: tuple[float, ...] = ()
     explicit_collider_body_ids: tuple[int, ...] = ()
     explicit_collider_mesh_ids_wp: wp.array[wp.uint64] | None = None
     explicit_collider_margins_wp: wp.array[float] | None = None
     explicit_collider_friction_wp: wp.array[float] | None = None
+    explicit_collider_adhesion_wp: wp.array[float] | None = None
     explicit_collider_projection_threshold_wp: wp.array[float] | None = None
     explicit_collider_body_ids_wp: wp.array[wp.int32] | None = None
     explicit_collider_mesh_world_wp: wp.array[wp.int32] | None = None
@@ -139,6 +141,7 @@ class SPHBoundaryHandler:
     explicit_collider_has_dynamic_meshes: bool = False
     model_collider_shape_margin_wp: wp.array[float] | None = None
     model_collider_shape_friction_wp: wp.array[float] | None = None
+    model_collider_shape_adhesion_wp: wp.array[float] | None = None
     model_collider_shape_projection_threshold_wp: wp.array[float] | None = None
     model_collider_shape_indices_wp: wp.array[wp.uint32] | None = None
     model_collider_shape_local_bounds_wp: wp.array2d[wp.vec3] | None = None
@@ -155,6 +158,7 @@ class SPHBoundaryHandler:
     _model_collider_body_ids: tuple[int, ...] | None = None
     _model_collider_margins: tuple[float | None, ...] | None = None
     _model_collider_friction: tuple[float | None, ...] | None = None
+    _model_collider_adhesion: tuple[float | None, ...] | None = None
     _model_collider_projection_threshold: tuple[float | None, ...] | None = None
 
     def __post_init__(self) -> None:
@@ -163,6 +167,7 @@ class SPHBoundaryHandler:
             None,
             margins=None,
             friction=None,
+            adhesion=None,
             projection_threshold=None,
         )
         self._reset_analytic_body_impulses()
@@ -173,6 +178,7 @@ class SPHBoundaryHandler:
             self._model_collider_body_ids,
             margins=self._model_collider_margins,
             friction=self._model_collider_friction,
+            adhesion=self._model_collider_adhesion,
             projection_threshold=self._model_collider_projection_threshold,
         )
         self._refresh_explicit_collider_mesh_arrays()
@@ -203,6 +209,7 @@ class SPHBoundaryHandler:
         *,
         margins: Sequence[float | None] | None,
         friction: Sequence[float | None] | None,
+        adhesion: Sequence[float | None] | None,
         projection_threshold: Sequence[float | None] | None,
     ) -> None:
         """Build per-shape material arrays for model-owned collider shapes."""
@@ -220,6 +227,12 @@ class SPHBoundaryHandler:
             "SPH collider_friction",
             nonnegative=True,
         )
+        adhesion_tuple = _validated_optional_collider_values(
+            adhesion,
+            len(body_ids),
+            "SPH collider_adhesion",
+            nonnegative=True,
+        )
         projection_threshold_tuple = _validated_optional_collider_values(
             projection_threshold,
             len(body_ids),
@@ -230,6 +243,7 @@ class SPHBoundaryHandler:
         self._model_collider_body_ids = body_ids_tuple
         self._model_collider_margins = margins_tuple
         self._model_collider_friction = friction_tuple
+        self._model_collider_adhesion = adhesion_tuple
         self._model_collider_projection_threshold = projection_threshold_tuple
 
         collider_model = self._collider_model()
@@ -238,6 +252,7 @@ class SPHBoundaryHandler:
             empty = np.zeros(0, dtype=np.float32)
             self.model_collider_shape_margin_wp = wp.array(empty, dtype=wp.float32, device=self.model.device)
             self.model_collider_shape_friction_wp = wp.array(empty, dtype=wp.float32, device=self.model.device)
+            self.model_collider_shape_adhesion_wp = wp.array(empty, dtype=wp.float32, device=self.model.device)
             self.model_collider_shape_projection_threshold_wp = wp.array(
                 empty,
                 dtype=wp.float32,
@@ -249,6 +264,7 @@ class SPHBoundaryHandler:
 
         shape_margin = np.asarray(collider_model.shape_margin.numpy(), dtype=np.float32).copy()
         shape_friction = np.asarray(collider_model.shape_material_mu.numpy(), dtype=np.float32).copy()
+        shape_adhesion = np.zeros(shape_count, dtype=np.float32)
         shape_projection_threshold = np.zeros(shape_count, dtype=np.float32)
         shape_body = np.asarray(collider_model.shape_body.numpy(), dtype=np.int32)
         shape_flags = np.asarray(collider_model.shape_flags.numpy(), dtype=np.int32)
@@ -271,6 +287,13 @@ class SPHBoundaryHandler:
                 mask = (shape_body == body) & ((shape_flags & int(ShapeFlags.COLLIDE_PARTICLES)) != 0)
                 shape_friction[mask] = mu
 
+        if adhesion_tuple is not None:
+            for body, value in zip(body_ids, adhesion_tuple, strict=True):
+                if value is None:
+                    continue
+                mask = (shape_body == body) & ((shape_flags & int(ShapeFlags.COLLIDE_PARTICLES)) != 0)
+                shape_adhesion[mask] = value
+
         if projection_threshold_tuple is not None:
             for body, value in zip(body_ids, projection_threshold_tuple, strict=True):
                 if value is None:
@@ -280,6 +303,7 @@ class SPHBoundaryHandler:
 
         self.model_collider_shape_margin_wp = wp.array(shape_margin, dtype=wp.float32, device=self.model.device)
         self.model_collider_shape_friction_wp = wp.array(shape_friction, dtype=wp.float32, device=self.model.device)
+        self.model_collider_shape_adhesion_wp = wp.array(shape_adhesion, dtype=wp.float32, device=self.model.device)
         self.model_collider_shape_projection_threshold_wp = wp.array(
             shape_projection_threshold,
             dtype=wp.float32,
@@ -381,6 +405,7 @@ class SPHBoundaryHandler:
         body_ids: Sequence[int] | None = None,
         margins: Sequence[float] | None = None,
         friction: Sequence[float] | None = None,
+        adhesion: Sequence[float] | None = None,
         projection_threshold: Sequence[float] | None = None,
     ) -> None:
         """Use standalone triangle meshes as SPH colliders."""
@@ -391,6 +416,7 @@ class SPHBoundaryHandler:
         )
         self.explicit_collider_margins = tuple(0.0 for _ in range(mesh_count)) if margins is None else tuple(margins)
         self.explicit_collider_friction = tuple(0.0 for _ in range(mesh_count)) if friction is None else tuple(friction)
+        self.explicit_collider_adhesion = tuple(0.0 for _ in range(mesh_count)) if adhesion is None else tuple(adhesion)
         self.explicit_collider_projection_threshold = (
             tuple(0.0 for _ in range(mesh_count)) if projection_threshold is None else tuple(projection_threshold)
         )
@@ -400,6 +426,8 @@ class SPHBoundaryHandler:
             raise ValueError("SPH explicit collider mesh margins must match collider_meshes length")
         if len(self.explicit_collider_friction) != mesh_count:
             raise ValueError("SPH explicit collider mesh friction values must match collider_meshes length")
+        if len(self.explicit_collider_adhesion) != mesh_count:
+            raise ValueError("SPH explicit collider mesh adhesion values must match collider_meshes length")
         if len(self.explicit_collider_projection_threshold) != mesh_count:
             raise ValueError("SPH explicit collider mesh projection thresholds must match collider_meshes length")
         self.explicit_collider_margins = tuple(
@@ -409,6 +437,10 @@ class SPHBoundaryHandler:
         self.explicit_collider_friction = tuple(
             _finite_collider_value(value, "SPH explicit collider mesh friction", nonnegative=True)
             for value in self.explicit_collider_friction
+        )
+        self.explicit_collider_adhesion = tuple(
+            _finite_collider_value(value, "SPH explicit collider mesh adhesion", nonnegative=True)
+            for value in self.explicit_collider_adhesion
         )
         self.explicit_collider_projection_threshold = tuple(
             _finite_collider_value(value, "SPH explicit collider mesh projection thresholds", nonnegative=True)
@@ -459,6 +491,11 @@ class SPHBoundaryHandler:
         )
         self.explicit_collider_friction_wp = wp.array(
             np.asarray(self.explicit_collider_friction, dtype=np.float32),
+            dtype=wp.float32,
+            device=self.model.device,
+        )
+        self.explicit_collider_adhesion_wp = wp.array(
+            np.asarray(self.explicit_collider_adhesion, dtype=np.float32),
             dtype=wp.float32,
             device=self.model.device,
         )
@@ -628,11 +665,13 @@ class SPHBoundaryHandler:
                 collider_model.shape_source_ptr,
                 self.model_collider_shape_margin_wp,
                 self.model_collider_shape_friction_wp,
+                self.model_collider_shape_adhesion_wp,
                 self.model_collider_shape_projection_threshold_wp,
                 self.explicit_collider_mesh_count(),
                 self.explicit_collider_mesh_ids_wp,
                 self.explicit_collider_margins_wp,
                 self.explicit_collider_friction_wp,
+                self.explicit_collider_adhesion_wp,
                 self.explicit_collider_projection_threshold_wp,
                 self.explicit_collider_body_ids_wp,
                 self.explicit_collider_mesh_world_wp,

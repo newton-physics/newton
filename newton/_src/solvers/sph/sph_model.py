@@ -152,6 +152,7 @@ class SPHModel:
         collider_body_ids: list[int] | None = None,
         collider_margins: list[float] | None = None,
         collider_friction: list[float] | None = None,
+        collider_adhesion: list[float] | None = None,
         collider_projection_threshold: list[float] | None = None,
         model: Model | None = None,
         body_com: wp.array[wp.vec3] | None = None,
@@ -203,6 +204,7 @@ class SPHModel:
                 body_ids,
                 margins=collider_margins,
                 friction=collider_friction,
+                adhesion=collider_adhesion,
                 projection_threshold=collider_projection_threshold,
             )
         else:
@@ -211,12 +213,14 @@ class SPHModel:
                 body_ids=body_ids,
                 margins=collider_margins,
                 friction=collider_friction,
+                adhesion=collider_adhesion,
                 projection_threshold=collider_projection_threshold,
             )
             self.boundary_handler.set_model_collider_material_overrides(
                 (),
                 margins=None,
                 friction=None,
+                adhesion=None,
                 projection_threshold=None,
             )
         self.collider_body_index = wp.array(body_ids, dtype=int, device=self.model.device)

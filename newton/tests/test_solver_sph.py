@@ -1024,12 +1024,14 @@ def test_sph_model_collider_material_overrides(test, device):
         collider_body_ids=[body],
         collider_margins=[0.03],
         collider_friction=[1.0],
+        collider_adhesion=[2500.0],
         collider_projection_threshold=[0.02],
     )
     solver.step(state_0, state_1, control=None, contacts=None, dt=1.0e-4)
 
     particle_q = state_1.particle_q.numpy()
     particle_qd = state_1.particle_qd.numpy()
+    shape_adhesion = solver._sph_model.boundary_handler.model_collider_shape_adhesion_wp.numpy()
     shape_projection_threshold = solver._sph_model.boundary_handler.model_collider_shape_projection_threshold_wp.numpy()
 
     test.assertGreaterEqual(float(particle_q[0, 0]), 0.17 - 1.0e-6)
@@ -1037,7 +1039,67 @@ def test_sph_model_collider_material_overrides(test, device):
     test.assertLessEqual(float(particle_qd[0, 0]), solver._sph_model.max_depenetration_velocity)
     test.assertGreaterEqual(float(particle_qd[0, 1]), 0.0)
     test.assertLess(float(particle_qd[0, 1]), 1.0)
+    test.assertTrue(np.any(shape_adhesion == 2500.0))
     test.assertTrue(np.any(shape_projection_threshold == 0.02))
+
+
+def test_sph_collider_adhesion_preserves_linear_momentum(test, device):
+    def run(adhesion: float):
+        fluid_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+        sph.add_sph_particle_grid(
+            fluid_builder,
+            pos=wp.vec3(0.14, 0.0, 0.0),
+            vel=wp.vec3(1.0, 0.0, 0.0),
+            dim_x=1,
+            dim_y=1,
+            dim_z=1,
+            cell_x=0.08,
+            cell_y=0.08,
+            cell_z=0.08,
+            material=sph.SPHMaterial(sound_speed=0.0, stiffness=0.0, smoothing_length=0.16),
+            jitter=0.0,
+            radius_mean=0.04,
+        )
+        fluid_model = fluid_builder.finalize(device=device)
+
+        collider_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+        body = collider_builder.add_body(mass=1.0, inertia=wp.diag(wp.vec3(0.01)))
+        collider_builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+        collider_model = collider_builder.finalize(device=device)
+        collider_state = collider_model.state()
+
+        state_0 = fluid_model.state()
+        state_1 = fluid_model.state()
+        for state in (state_0, state_1):
+            state.body_q = wp.clone(collider_state.body_q)
+            state.body_qd = wp.clone(collider_state.body_qd)
+            state.body_f = wp.zeros_like(collider_state.body_f)
+
+        solver = _make_solver(fluid_model, boundary_friction=0.0)
+        solver.setup_collider(
+            model=collider_model,
+            collider_body_ids=[body],
+            collider_adhesion=[adhesion],
+        )
+        initial_velocity = state_0.particle_qd.numpy().copy()
+        solver.step(state_0, state_1, control=None, contacts=None, dt=1.0e-4)
+        impulses, _positions, _ids = solver.collect_collider_impulses(state_1)
+        return fluid_model, collider_model, state_1, initial_velocity, np.sum(impulses.numpy(), axis=0)
+
+    baseline_model, baseline_collider_model, baseline_state, _initial_velocity, _baseline_body_impulse = run(0.0)
+    fluid_model, _collider_model, state, initial_velocity, body_impulse = run(1.0e6)
+    final_velocity = state.particle_qd.numpy()
+    particle_impulse = fluid_model.particle_mass.numpy()[:, None] * (final_velocity - initial_velocity)
+
+    test.assertAlmostEqual(float(baseline_state.particle_qd.numpy()[0, 0]), 1.0, delta=1.0e-6)
+    test.assertGreater(float(final_velocity[0, 0]), 0.0)
+    test.assertLess(float(final_velocity[0, 0]), float(baseline_state.particle_qd.numpy()[0, 0]))
+    test.assertGreater(float(body_impulse[0]), 0.0)
+    np.testing.assert_allclose(np.sum(particle_impulse, axis=0) + body_impulse, np.zeros(3), atol=2.0e-6)
+
+    solver = _make_solver(baseline_model)
+    with test.assertRaisesRegex(ValueError, "collider_adhesion.*non-negative"):
+        solver.setup_collider(model=baseline_collider_model, collider_adhesion=[-1.0])
 
 
 def test_sph_model_collider_selection_excludes_unselected_bodies(test, device):
@@ -1173,12 +1235,14 @@ def test_sph_explicit_mesh_collider_material_options(test, device):
         collider_meshes=[mesh],
         collider_margins=[0.01],
         collider_friction=[0.5],
+        collider_adhesion=[1000.0],
         collider_projection_threshold=[0.02],
     )
     solver.step(state_0, state_1, control=None, contacts=None, dt=1.0e-4)
 
     particle_q = state_1.particle_q.numpy()
     test.assertGreaterEqual(float(particle_q[0, 1]), 0.05 - 1.0e-6)
+    test.assertEqual(solver._sph_model.boundary_handler.explicit_collider_adhesion, (1000.0,))
     test.assertEqual(solver._sph_model.boundary_handler.explicit_collider_projection_threshold, (0.02,))
 
 
@@ -1717,6 +1781,132 @@ def test_sph_tier1_cpu_cuda_parity(test, device):
             test.assertGreater(cuda_metrics["right_mean_vx"], 0.05)
 
 
+def test_sph_multiworld_isolates_neighbors_and_colliders(test, device):
+    material = sph.SPHMaterial(
+        rest_density=1000.0,
+        sound_speed=10.0,
+        viscosity=0.0,
+        smoothing_length=0.16,
+    )
+
+    def build_neighbor_model(*, isolated: bool):
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+        SolverWCSPH.register_custom_attributes(builder)
+        if isolated:
+            positions = (wp.vec3(0.0), wp.vec3(0.08, 0.0, 0.0))
+            for position in positions:
+                builder.begin_world()
+                sph.add_sph_particle_grid(
+                    builder,
+                    pos=position,
+                    dim_x=1,
+                    dim_y=1,
+                    dim_z=1,
+                    cell_x=0.08,
+                    cell_y=0.08,
+                    cell_z=0.08,
+                    material=material,
+                    jitter=0.0,
+                    radius_mean=0.04,
+                )
+                builder.end_world()
+        else:
+            builder.begin_world()
+            sph.add_sph_particle_grid(
+                builder,
+                pos=wp.vec3(0.0),
+                dim_x=2,
+                dim_y=1,
+                dim_z=1,
+                cell_x=0.08,
+                cell_y=0.08,
+                cell_z=0.08,
+                material=material,
+                jitter=0.0,
+                radius_mean=0.04,
+            )
+            builder.end_world()
+        return builder.finalize(device=device)
+
+    isolated_model = build_neighbor_model(isolated=True)
+    coupled_model = build_neighbor_model(isolated=False)
+    isolated_state = isolated_model.state()
+    coupled_state = coupled_model.state()
+    _make_solver(isolated_model)._compute_density_pressure(isolated_state)
+    _make_solver(coupled_model)._compute_density_pressure(coupled_state)
+
+    test.assertEqual(isolated_model.particle_world.numpy().tolist(), [0, 1])
+    test.assertEqual(coupled_model.particle_world.numpy().tolist(), [0, 0])
+    test.assertTrue(np.all(coupled_state.sph.density.numpy() > isolated_state.sph.density.numpy() + 1.0e-5))
+
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    SolverWCSPH.register_custom_attributes(builder)
+    builder.begin_world()
+    sph.add_sph_particle_grid(
+        builder,
+        pos=wp.vec3(0.09, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        dim_z=1,
+        cell_x=0.08,
+        cell_y=0.08,
+        cell_z=0.08,
+        material=material,
+        jitter=0.0,
+        radius_mean=0.04,
+    )
+    builder.add_shape_box(body=-1, hx=0.1, hy=0.1, hz=0.1)
+    builder.end_world()
+    builder.begin_world()
+    sph.add_sph_particle_grid(
+        builder,
+        pos=wp.vec3(0.09, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        dim_z=1,
+        cell_x=0.08,
+        cell_y=0.08,
+        cell_z=0.08,
+        material=material,
+        jitter=0.0,
+        radius_mean=0.04,
+    )
+    builder.end_world()
+    model = builder.finalize(device=device)
+    state_0 = model.state()
+    state_1 = model.state()
+    _make_solver(model).step(state_0, state_1, control=None, contacts=None, dt=1.0e-4)
+
+    test.assertEqual(model.shape_world.numpy().tolist(), [0])
+    test.assertGreater(float(state_1.particle_q.numpy()[0, 0]), 0.13)
+    test.assertAlmostEqual(float(state_1.particle_q.numpy()[1, 0]), 0.09, delta=1.0e-6)
+
+
+def test_sph_whole_step_cuda_graph_capture(test, device):
+    if not device.is_cuda:
+        test.skipTest("whole-step graph capture requires a CUDA device")
+
+    model = _build_fluid_block(device, dim=2, gravity=-9.81, height=0.25, ground_plane=True)
+    solver = _make_solver(model)
+    warm_state_0 = model.state()
+    warm_state_1 = model.state()
+    solver.step(warm_state_0, warm_state_1, control=None, contacts=None, dt=1.0e-4)
+
+    state_0 = model.state()
+    state_1 = model.state()
+    initial_height = float(np.mean(state_0.particle_q.numpy()[:, model.up_axis]))
+    with wp.ScopedCapture(device=device, force_module_load=False) as capture:
+        solver.step(state_0, state_1, control=None, contacts=None, dt=1.0e-4)
+        solver.step(state_1, state_0, control=None, contacts=None, dt=1.0e-4)
+
+    for _ in range(5):
+        wp.capture_launch(capture.graph)
+
+    particle_q = state_0.particle_q.numpy()
+    test.assertTrue(np.isfinite(particle_q).all())
+    test.assertLess(float(np.mean(particle_q[:, model.up_axis])), initial_height)
+
+
 devices = get_test_devices(mode="basic")
 
 
@@ -1778,6 +1968,13 @@ add_function_test(
     TestSolverWCSPH,
     test_sph_model_collider_material_overrides.__name__,
     test_sph_model_collider_material_overrides,
+    devices=devices,
+)
+
+add_function_test(
+    TestSolverWCSPH,
+    test_sph_collider_adhesion_preserves_linear_momentum.__name__,
+    test_sph_collider_adhesion_preserves_linear_momentum,
     devices=devices,
 )
 
@@ -1884,6 +2081,20 @@ add_function_test(
     test_sph_tier1_cpu_cuda_parity.__name__,
     test_sph_tier1_cpu_cuda_parity,
     devices=wp.get_device("cpu"),
+)
+
+add_function_test(
+    TestSolverWCSPH,
+    test_sph_multiworld_isolates_neighbors_and_colliders.__name__,
+    test_sph_multiworld_isolates_neighbors_and_colliders,
+    devices=devices,
+)
+
+add_function_test(
+    TestSolverWCSPH,
+    test_sph_whole_step_cuda_graph_capture.__name__,
+    test_sph_whole_step_cuda_graph_capture,
+    devices=devices,
 )
 
 
