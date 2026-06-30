@@ -1048,7 +1048,6 @@ class USDImporter:
         load_drive_dynamics: bool = False,
         prim_path_names: bool = False,
         use_angular_drive_scaling: bool = False,
-        force_implicit_actuator_dynamics: bool = False,
     ) -> JointDescriptor | None:
         # Skip this body if it is not enable and we are only loading enabled rigid bodies
         if not joint_spec.jointEnabled and only_load_enabled_joints:
@@ -1295,11 +1294,6 @@ class USDImporter:
             b_j=b_j,
             k_p_j=k_p_j,
             k_d_j=k_d_j,
-            force_implicit_joint_dynamics=(
-                force_implicit_actuator_dynamics
-                and act_type != JointActuationType.PASSIVE
-                and (dof_type in (JointDoFType.REVOLUTE, JointDoFType.PRISMATIC))
-            ),
         )
 
     def _parse_visual_geom(
@@ -1742,7 +1736,6 @@ class USDImporter:
         use_prim_path_names: bool = False,
         use_articulation_root_name: bool = True,
         use_angular_drive_scaling: bool = True,
-        force_implicit_actuator_dynamics: bool = False,
     ) -> ModelBuilderKamino:
         """
         Parses an OpenUSD file.
@@ -2014,7 +2007,6 @@ class USDImporter:
                             load_drive_dynamics=load_drive_dynamics,
                             prim_path_names=use_prim_path_names,
                             use_angular_drive_scaling=use_angular_drive_scaling,
-                            force_implicit_actuator_dynamics=force_implicit_actuator_dynamics,
                         )
                         if joint_desc is not None:
                             msg.debug(f"Adding joint '{builder.num_joints}':\n{joint_desc}\n")
@@ -2054,7 +2046,6 @@ class USDImporter:
                     load_drive_dynamics=load_drive_dynamics,
                     prim_path_names=use_prim_path_names,
                     use_angular_drive_scaling=use_angular_drive_scaling,
-                    force_implicit_actuator_dynamics=force_implicit_actuator_dynamics,
                 )
                 if joint_desc is not None:
                     msg.debug(f"Adding joint '{builder.num_joints}':\n{joint_desc}\n")

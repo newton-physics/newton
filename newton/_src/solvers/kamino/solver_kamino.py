@@ -569,8 +569,6 @@ class SolverKamino(SolverBase):
         self,
         model: Model,
         config: Config | None = None,
-        *,
-        force_implicit_actuator_dynamics: bool = False,
     ):
         """
         Constructs a Kamino solver for the given model and optional configurations.
@@ -584,9 +582,6 @@ class SolverKamino(SolverBase):
                 custom attributes using :meth:`SolverKamino.Config.from_model`,
                 e.g. to be loaded from USD assets. If that also fails, then
                 default configurations will be used.
-            force_implicit_actuator_dynamics:
-                Flag to indicate whether implicit actuator dynamics should be
-                forced for supported joint types.
         """
         # Initialize the base solver
         super().__init__(model=model)
@@ -606,9 +601,7 @@ class SolverKamino(SolverBase):
         self._config = config
 
         # Create a Kamino model from the Newton model
-        self._model_kamino = self._kamino.ModelKamino.from_newton(
-            model, force_implicit_actuator_dynamics=force_implicit_actuator_dynamics
-        )
+        self._model_kamino = self._kamino.ModelKamino.from_newton(model)
 
         # Create a collision detector if enabled in the config, otherwise
         # set to `None` to disable internal collision detection in Kamino

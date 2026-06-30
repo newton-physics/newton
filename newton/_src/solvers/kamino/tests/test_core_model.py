@@ -288,55 +288,7 @@ class TestModelConversions(unittest.TestCase):
         # test_util_checks.assert_model_equal(self, model_kamino_converted, model_kamino)
         # test_util_checks.assert_data_equal(self, data_kamino_converted, data_kamino)
 
-    def test_02_model_conversion_fourbar_forced_implicit_actuator_dynamics(self):
-        """
-        Test that force_implicit_actuator_dynamics produces matching Kamino models
-        via Newton conversion and direct Kamino USD import.
-        """
-        # Define the path to the USD file for the fourbar model
-        asset_file = get_kamino_basics_asset("boxes_fourbar.usda")
-
-        # Create a fourbar using Newton's ModelBuilder
-        builder_newton: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder_newton)
-        builder_newton.default_shape_cfg.margin = 0.0
-        builder_newton.default_shape_cfg.gap = 0.0
-        builder_newton.begin_world()
-        builder_newton.add_usd(
-            source=asset_file,
-            joint_ordering=None,
-            force_show_colliders=True,
-            force_position_velocity_actuation=True,
-        )
-        builder_newton.end_world()
-        builder_newton.shape_material_mu = [0.7] * len(builder_newton.shape_material_mu)
-
-        # Convert Newton model to Kamino model with forced implicit actuator dynamics
-        model_newton: Model = builder_newton.finalize(skip_validation_joints=True)
-        model_kamino_converted = ModelKamino.from_newton(model_newton, force_implicit_actuator_dynamics=True)
-        # Check that the model has dynamic joints
-        self.assertGreater(model_kamino_converted.size.sum_of_num_dynamic_joints, 0, "Model requires dynamic joints")
-
-        # Import the same fourbar using Kamino's USDImporter and ModelBuilderKamino
-        importer = USDImporter()
-        builder_kamino: ModelBuilderKamino = importer.import_from(
-            source=asset_file,
-            load_drive_dynamics=True,
-            load_static_geometry=True,
-            force_show_colliders=True,
-            use_prim_path_names=True,
-            use_angular_drive_scaling=True,
-            force_implicit_actuator_dynamics=True,
-        )
-        model_kamino: ModelKamino = builder_kamino.finalize()
-        # Check that the model has dynamic joints
-        self.assertGreater(model_kamino.size.sum_of_num_dynamic_joints, 0, "Model requires dynamic joints")
-
-        # Check that models are equivalent
-        excluded = ["base_joint_index"]
-        test_util_checks.assert_model_equal(self, model_kamino_converted, model_kamino, excluded=excluded)
-
-    def test_03_model_conversions_dr_testmech_from_usd(self):
+    def test_02_model_conversions_dr_testmech_from_usd(self):
         """
         Test the conversion operations between newton.Model and kamino.ModelKamino
         on the DR testmechanism model loaded from USD.
@@ -389,7 +341,7 @@ class TestModelConversions(unittest.TestCase):
             self, model_kamino_converted, model_kamino, excluded=["ptr"], rtol=rtol, atol=atol
         )
 
-    def test_04_model_conversions_dr_legs_from_usd(self):
+    def test_03_model_conversions_dr_legs_from_usd(self):
         """
         Test the conversion operations between newton.Model and kamino.ModelKamino
         on the DR legs model loaded from USD.
@@ -449,7 +401,7 @@ class TestModelConversions(unittest.TestCase):
             self, model_kamino_converted, model_kamino, excluded=excluded, rtol=rtol, atol=atol
         )
 
-    def test_05_model_conversions_anymal_d_from_usd(self):
+    def test_04_model_conversions_anymal_d_from_usd(self):
         """
         Test the conversion operations between newton.Model and kamino.ModelKamino
         on the Anymal D model loaded from USD.

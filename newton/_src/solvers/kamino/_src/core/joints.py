@@ -1232,12 +1232,6 @@ class JointDescriptor(Descriptor):
     that the joint has no implicit derivative gain.
     """
 
-    force_implicit_joint_dynamics: bool = False
-    """
-    Flag to indicate whether implicit joint dynamics for this joint should be
-    forced even if no dynamic properties are set.
-    """
-
     ###
     # Metadata - to be set by the WorldDescriptor when added
     ###
@@ -1408,7 +1402,7 @@ class JointDescriptor(Descriptor):
         """
         Returns whether the joint's dynamics is simulated implicitly.
         """
-        return self.force_implicit_joint_dynamics or np.any(self.a_j) or np.any(self.b_j)
+        return np.any(self.a_j) or np.any(self.b_j)
 
     @property
     def is_implicit_pd(self) -> bool:

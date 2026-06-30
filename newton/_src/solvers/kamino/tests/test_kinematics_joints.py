@@ -472,12 +472,10 @@ class TestKinematicsJoints(unittest.TestCase):
         np.testing.assert_almost_equal(dq_b_j_np, dq_b_j_expected)
 
     def test_05_implicit_dynamics_minimum_mass(self):
-        # Construct the model description with forced implicit actuator dynamics,
-        # with zero joint armature, damping, and gains.
+        # Construct the model description with implicit actuator dynamics
         builder = build_unary_revolute_joint_test(
-            dynamic=False,
-            implicit_pd=False,
-            force_implicit_actuator_dynamics=True,
+            dynamic=True,
+            implicit_pd=True,
             ground=False,
         )
 
@@ -486,11 +484,11 @@ class TestKinematicsJoints(unittest.TestCase):
         data = model.data(device=self.default_device)
         model.time.set_uniform_timestep(0.01)
 
-        # Check that dynamic joint properties are all zero
-        np.testing.assert_equal(model.joints.a_j.numpy(), 0)
-        np.testing.assert_equal(model.joints.b_j.numpy(), 0)
-        np.testing.assert_equal(model.joints.k_p_j.numpy(), 0)
-        np.testing.assert_equal(model.joints.k_d_j.numpy(), 0)
+        # Set dynamic joint properties to zero
+        model.joints.a_j.zero_()
+        model.joints.b_j.zero_()
+        model.joints.k_p_j.zero_()
+        model.joints.k_d_j.zero_()
 
         # Set the state of the Follower body to a known state
         set_joint_follower_body_state(model, data)
