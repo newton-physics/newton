@@ -115,9 +115,16 @@ class SchemaResolver:
         spec = self.mapping.get(prim_type, {}).get(key)
         if spec is not None:
             if spec.usd_value_getter is not None:
-                v = spec.usd_value_getter(prim)
-                if v is None:
+                attr_names = spec.attribute_names or (spec.name,)
+                is_authored = False
+                for attr_name in attr_names:
+                    attr = prim.GetAttribute(attr_name)
+                    if attr and attr.HasAuthoredValue():
+                        is_authored = True
+                        break
+                if not is_authored:
                     return False, None
+                v = spec.usd_value_getter(prim)
             else:
                 attr = prim.GetAttribute(spec.name)
                 if not attr or not attr.HasAuthoredValue():

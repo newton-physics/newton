@@ -1410,6 +1410,9 @@ class TestSchemaResolver(unittest.TestCase):
         collider_a.CreateAttribute("physxCollision:contactOffset", Sdf.ValueTypeNames.Float).Set(0.25)
         gap = resolver.get_value(collider_a, PrimType.SHAPE, "gap")
         self.assertAlmostEqual(gap, 0.07)
+        candidate, candidate_resolver = resolver.get_authored_candidate(collider_a, PrimType.SHAPE, "gap")
+        self.assertIsNone(candidate)
+        self.assertIsInstance(candidate_resolver, SchemaResolverPhysx)
 
         # PhysX both set -> getter returns 0.25 - 0.15 = 0.10; PhysX is first, so PhysX wins
         collider_a.CreateAttribute("physxCollision:restOffset", Sdf.ValueTypeNames.Float).Set(0.15)
