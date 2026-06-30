@@ -464,7 +464,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertIsNotNone(attrs["resolved_density"])
 
     def test_cable_density_scales_segment_mass(self):
-        """Material density maps to capsule mass: doubling density doubles segment mass."""
+        """Material density maps to segment mass: doubling density doubles segment mass."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -489,6 +489,50 @@ class TestUSDDeformableCable(unittest.TestCase):
             mass_b = builder.body_mass[bodies_b[0]]
             self.assertGreater(mass_a, 0.0)
             self.assertAlmostEqual(mass_b, 2.0 * mass_a, delta=mass_a * 1e-3)
+
+    def test_cable_density_segment_mass_is_cylinder_not_capsule(self):
+        """A density-derived cable segment gets the cylinder mass rho*pi*r^2*L, not add_rod's capsule
+        mass (cylinder plus two hemispherical caps), which overestimates short / thick segments."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_cyl.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            # Short, thick segments make the spherical-cap bias large (4r/3L = 0.667 -> +67%).
+            r, seg_len, rho = 0.05, 0.1, 1000.0
+            pts = [(i * seg_len, 0.0, 1.0) for i in range(4)]  # 3 segments of length seg_len
+            _add_cable_curve(stage, "/World/Cable", pts, thickness=2.0 * r, density=rho)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            bodies, _ = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
+            cylinder = rho * math.pi * r * r * seg_len
+            capsule = cylinder + rho * (4.0 / 3.0) * math.pi * r**3
+            for b in bodies:
+                self.assertAlmostEqual(builder.body_mass[b], cylinder, delta=cylinder * 1e-3)
+                self.assertNotAlmostEqual(builder.body_mass[b], capsule, delta=cylinder * 1e-2)
+
+    def test_cable_density_segment_mass_scales_with_length(self):
+        """Density-derived segment masses follow segment length (cylinder volume): a 2x-longer segment
+        has ~2x the mass, not the cap-biased ratio add_rod's constant hemispherical ends would give."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_lenweight.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            # First segment length 0.1, second length 0.2 -> cylinder mass ratio exactly 2.
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            _add_cable_curve(stage, "/World/Cable", pts, thickness=0.1, density=1000.0)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            bodies, _ = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
+            self.assertEqual(len(bodies), 2)
+            self.assertAlmostEqual(builder.body_mass[bodies[1]] / builder.body_mass[bodies[0]], 2.0, places=3)
 
     def test_cable_normals_orient_segments(self):
         """Authored normals set each segment's cross-section frame: +Z -> tangent, +Y -> normal."""

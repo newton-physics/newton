@@ -347,8 +347,22 @@ def _apply_cable_masses(
                 for b, m in zip(bodies, seg_masses, strict=True):
                     _set_body_mass(builder, b, m)
             return
+    # Density-derived masses: add_rod gives each segment a CAPSULE mass (cylinder + two hemispherical
+    # caps), but the proposal models a curve element as the cylindrical centerline segment. Rescale
+    # each to the cylinder mass = capsule_mass / (1 + 4r/3L) (purely geometric, from the capsule's own
+    # radius r and length L = 2*half_height), dropping the cap bias -- large for short, thick segments
+    # -- so per-segment masses follow segment length.
+    for b in body_ids:
+        shapes = builder.body_shapes[b]
+        if not shapes:
+            continue
+        r = float(builder.shape_scale[shapes[0]][0])
+        seg_len = 2.0 * float(builder.shape_scale[shapes[0]][1])
+        if r > 0.0 and seg_len > 0.0:
+            _set_body_mass(builder, b, builder.body_mass[b] / (1.0 + 4.0 * r / (3.0 * seg_len)))
     if body_mass is None:
         return
+    # A body-mass total has no per-point profile; rescale the cylinder masses to that total.
     current = float(sum(builder.body_mass[b] for b in body_ids))
     if current <= 0.0:
         return
