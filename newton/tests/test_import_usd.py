@@ -8316,11 +8316,11 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_with_visual & ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(flags_with_visual & ShapeFlags.VISIBLE)
 
-        # Collision shapes on bodies WITHOUT visuals should auto-get VISIBLE
+        # Collision shapes on bodies WITHOUT visuals should remain hidden by default
         collision_no_visual = path_shape_map["/BodyWithoutVisuals/CollisionSphere"]
         flags_no_visual = builder.shape_flags[collision_no_visual]
         self.assertTrue(flags_no_visual & ShapeFlags.COLLIDE_SHAPES)
-        self.assertTrue(flags_no_visual & ShapeFlags.VISIBLE)
+        self.assertFalse(flags_no_visual & ShapeFlags.VISIBLE)
 
         # force_show_colliders=True: collision shapes always get VISIBLE
         builder2 = newton.ModelBuilder()
@@ -8332,8 +8332,7 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_forced & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags_forced & ShapeFlags.VISIBLE)
 
-        # hide_collision_shapes=True: hide colliders on bodies that have visuals
-        # but keep colliders visible on bodies with no visual-only geometry.
+        # hide_collision_shapes=True keeps colliders hidden by default.
         builder3 = newton.ModelBuilder()
         result3 = builder3.add_usd(stage, hide_collision_shapes=True)
         path_shape_map3 = result3["path_shape_map"]
@@ -8344,9 +8343,9 @@ def Xform "BodyWithoutVisuals" (
 
         flags_fallback_no_visual = builder3.shape_flags[path_shape_map3["/BodyWithoutVisuals/CollisionSphere"]]
         self.assertTrue(flags_fallback_no_visual & ShapeFlags.COLLIDE_SHAPES)
-        self.assertTrue(flags_fallback_no_visual & ShapeFlags.VISIBLE)
+        self.assertFalse(flags_fallback_no_visual & ShapeFlags.VISIBLE)
 
-        # load_visual_shapes=False: collision shapes auto-get VISIBLE (no visuals loaded)
+        # load_visual_shapes=False: collision shapes still stay hidden by default.
         builder4 = newton.ModelBuilder()
         result4 = builder4.add_usd(stage, load_visual_shapes=False)
         path_shape_map4 = result4["path_shape_map"]
@@ -8354,7 +8353,7 @@ def Xform "BodyWithoutVisuals" (
         collision_no_load = path_shape_map4["/BodyWithVisuals/CollisionBox"]
         flags_no_load = builder4.shape_flags[collision_no_load]
         self.assertTrue(flags_no_load & ShapeFlags.COLLIDE_SHAPES)
-        self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
+        self.assertFalse(flags_no_load & ShapeFlags.VISIBLE)
 
     @staticmethod
     def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, add_visual_sphere=False):
@@ -8599,8 +8598,8 @@ def Xform "Body" (
         self.assertFalse(builder.shape_flags[visual_shape] & ShapeFlags.VISIBLE)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_invisible_visual_sibling_does_not_suppress_collider_visibility(self):
-        """An invisible visual shape must not prevent fallback-visible colliders."""
+    def test_invisible_visual_sibling_does_not_make_collider_visible(self):
+        """An invisible visual shape must not make colliders visible by default."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -8642,12 +8641,12 @@ def Xform "Body" (
         vis_shape = path_shape_map["/Body/InvisibleVisual"]
         self.assertFalse(builder.shape_flags[vis_shape] & ShapeFlags.VISIBLE)
 
-        # Collider must remain visible because no *visible* visual shapes
+        # Colliders stay hidden by default even when no visible visual shapes
         # exist for this body.
         collision_shape = path_shape_map["/Body/CollisionBox"]
         flags = builder.shape_flags[collision_shape]
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
-        self.assertTrue(flags & ShapeFlags.VISIBLE)
+        self.assertFalse(flags & ShapeFlags.VISIBLE)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_primitive_collider_with_roughness_only_material_stays_hidden(self):
