@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for USD deformable (cable / curve) parsing."""
+"""Tests for USD deformable import: cable/curve, cloth/surface, and volume/tet parsing,
+plus per-point mass resolution, attachments, and element collision filters."""
 
 import math
 import tempfile
