@@ -117,7 +117,7 @@ class ControlKamino:
             raise ValueError("Error copying from/to uninitialized ControlKamino")
         wp.copy(self.tau_j, other.tau_j)
 
-    def finalize(self, model: ModelKamino, device: wp.DeviceLike = None) -> None:
+    def finalize(self, model: ModelKamino, device: wp.DeviceLike | None = None) -> None:
         """Allocate the coord-space side buffer used to interface with a
         :class:`newton.Control`.
 
@@ -157,7 +157,6 @@ class ControlKamino:
             model: The Kamino model holding the system description.
         """
         self.tau_j = control.joint_f
-        self.tau_j_ref = control.joint_act
         self.dq_j_ref = control.joint_target_qd
         if self._needs_coord_conversion:
             self.q_j_ref = self._q_j_ref_coords_space
@@ -179,7 +178,6 @@ class ControlKamino:
             model: The Kamino model holding the system description.
         """
         control.joint_f = self.tau_j
-        control.joint_act = self.tau_j_ref
         control.joint_target_qd = self.dq_j_ref
         if self._needs_coord_conversion:
             convert_target_coords_to_target_dofs(

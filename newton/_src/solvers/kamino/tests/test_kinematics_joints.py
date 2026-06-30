@@ -258,6 +258,12 @@ class TestKinematicsJoints(unittest.TestCase):
         data = model.data(device=self.default_device)
         model.time.set_uniform_timestep(0.01)
 
+        # Set actuation data
+        data.joints.tau_j.fill_(1.5)
+        data.joints.q_j_ref.fill_(0.2)
+        data.joints.dq_j_ref.fill_(1.2)
+        data.joints.tau_j_ref.fill_(2.5)
+
         # Optionally print model parameters for debugging
         msg.info("model.time.dt: %s", model.time.dt)
         msg.info("model.joints.a_j: %s", model.joints.a_j)
@@ -289,6 +295,7 @@ class TestKinematicsJoints(unittest.TestCase):
         m_j_np = data.joints.m_j.numpy().copy()
         inv_m_j_np = data.joints.inv_m_j.numpy().copy()
         dq_b_j_np = data.joints.dq_b_j.numpy().copy()
+        tau_j_np = data.joints.tau_j.numpy().copy()
         q_j_ref_np = data.joints.q_j_ref.numpy().copy()
         dq_j_ref_np = data.joints.dq_j_ref.numpy().copy()
         tau_j_ref_np = data.joints.tau_j_ref.numpy().copy()
@@ -299,6 +306,7 @@ class TestKinematicsJoints(unittest.TestCase):
         msg.info("[measured]: m_j: %s", m_j_np)
         msg.info("[measured]: inv_m_j: %s", inv_m_j_np)
         msg.info("[measured]: dq_b_j: %s\n", dq_b_j_np)
+        msg.info("[measured]: tau_j: %s\n", tau_j_np)
         msg.info("[measured]: q_j_ref: %s", q_j_ref_np)
         msg.info("[measured]: dq_j_ref: %s\n", dq_j_ref_np)
         msg.info("[measured]: tau_j_ref: %s\n", tau_j_ref_np)
@@ -312,7 +320,9 @@ class TestKinematicsJoints(unittest.TestCase):
         k_d_j_np = model.joints.k_d_j.numpy().copy()
         m_j_exp_val = a_j_np[0] + dt * (b_j_np[0] + k_d_j_np[0]) + dt * dt * k_p_j_np[0]
         inv_m_j_exp_val = 1.0 / m_j_exp_val
-        tau_j_exp_val = tau_j_ref_np[0] + k_p_j_np[0] * (q_j_ref_np[0] - q_j_np[0]) + k_d_j_np[0] * dq_j_ref_np[0]
+        tau_j_exp_val = (
+            tau_j_np[0] + tau_j_ref_np[0] + k_p_j_np[0] * (q_j_ref_np[0] - q_j_np[0]) + k_d_j_np[0] * dq_j_ref_np[0]
+        )
         h_j_exp_val = a_j_np[0] * dq_j_np[0] + dt * tau_j_exp_val
         dq_b_j_exp_val = inv_m_j_exp_val * h_j_exp_val
 
@@ -356,6 +366,12 @@ class TestKinematicsJoints(unittest.TestCase):
         data = model.data(device=self.default_device)
         model.time.set_uniform_timestep(0.01)
 
+        # Set actuation data
+        data.joints.tau_j.fill_(1.5)
+        data.joints.q_j_ref.fill_(0.2)
+        data.joints.dq_j_ref.fill_(1.2)
+        data.joints.tau_j_ref.fill_(2.5)
+
         # Optionally print model parameters for debugging
         msg.info("model.time.dt: %s", model.time.dt)
         msg.info("model.joints.a_j: %s", model.joints.a_j)
@@ -387,6 +403,7 @@ class TestKinematicsJoints(unittest.TestCase):
         m_j_np = data.joints.m_j.numpy().copy()
         inv_m_j_np = data.joints.inv_m_j.numpy().copy()
         dq_b_j_np = data.joints.dq_b_j.numpy().copy()
+        tau_j_np = data.joints.tau_j.numpy().copy()
         q_j_ref_np = data.joints.q_j_ref.numpy().copy()
         dq_j_ref_np = data.joints.dq_j_ref.numpy().copy()
         tau_j_ref_np = data.joints.tau_j_ref.numpy().copy()
@@ -397,6 +414,7 @@ class TestKinematicsJoints(unittest.TestCase):
         msg.info("[measured]: m_j: %s", m_j_np)
         msg.info("[measured]: inv_m_j: %s", inv_m_j_np)
         msg.info("[measured]: dq_b_j: %s\n", dq_b_j_np)
+        msg.info("[measured]: tau_j: %s\n", tau_j_np)
         msg.info("[measured]: q_j_ref: %s", q_j_ref_np)
         msg.info("[measured]: dq_j_ref: %s\n", dq_j_ref_np)
         msg.info("[measured]: tau_j_ref: %s\n", tau_j_ref_np)
@@ -410,7 +428,9 @@ class TestKinematicsJoints(unittest.TestCase):
         k_d_j_np = model.joints.k_d_j.numpy().copy()
         m_j_exp_val = a_j_np[0] + dt * (b_j_np[0] + k_d_j_np[0]) + dt * dt * k_p_j_np[0]
         inv_m_j_exp_val = 1.0 / m_j_exp_val
-        tau_j_exp_val = tau_j_ref_np[0] + k_p_j_np[0] * (q_j_ref_np[0] - q_j_np[0]) + k_d_j_np[0] * dq_j_ref_np[0]
+        tau_j_exp_val = (
+            tau_j_np[0] + tau_j_ref_np[0] + k_p_j_np[0] * (q_j_ref_np[0] - q_j_np[0]) + k_d_j_np[0] * dq_j_ref_np[0]
+        )
         h_j_exp_val = a_j_np[0] * dq_j_np[0] + dt * tau_j_exp_val
         dq_b_j_exp_val = inv_m_j_exp_val * h_j_exp_val
 
@@ -450,6 +470,37 @@ class TestKinematicsJoints(unittest.TestCase):
         np.testing.assert_almost_equal(m_j_np, m_j_expected)
         np.testing.assert_almost_equal(inv_m_j_np, inv_m_j_expected)
         np.testing.assert_almost_equal(dq_b_j_np, dq_b_j_expected)
+
+    def test_05_implicit_dynamics_minimum_mass(self):
+        # Construct the model description with implicit actuator dynamics
+        builder = build_unary_revolute_joint_test(
+            dynamic=True,
+            implicit_pd=True,
+            ground=False,
+        )
+
+        # Create the model and data
+        model = builder.finalize(device=self.default_device)
+        data = model.data(device=self.default_device)
+        model.time.set_uniform_timestep(0.01)
+
+        # Set dynamic joint properties to zero
+        model.joints.a_j.zero_()
+        model.joints.b_j.zero_()
+        model.joints.k_p_j.zero_()
+        model.joints.k_d_j.zero_()
+
+        # Set the state of the Follower body to a known state
+        set_joint_follower_body_state(model, data)
+        # Update the state of the joints
+        compute_joints_data(model=model, data=data, q_j_p=wp.zeros_like(data.joints.q_j))
+
+        # Check that effective inertia is clamped to a small positive value, and
+        # the inverse of it is a valid number
+        m_j_np = data.joints.m_j.numpy().copy()
+        inv_m_j_np = data.joints.inv_m_j.numpy().copy()
+        self.assertTrue(m_j_np[0] > 0, "Internal effective inertia should be positive.")
+        self.assertFalse(math.isnan(inv_m_j_np[0]), "Inverse internal effective inertia should be valid number.")
 
 
 ###
