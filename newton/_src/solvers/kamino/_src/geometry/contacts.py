@@ -37,13 +37,7 @@ from .....sim.state import State
 from ..core.math import COS_PI_6, UNIT_X, UNIT_Y
 from ..core.model import ModelKamino
 from ..core.types import (
-    int32,
-    quatf,
     to_warp_int32_array,
-    vec2f,
-    vec2i,
-    vec3f,
-    vec4f,
 )
 from ..utils import logger as msg
 from .keying import build_pair_key2
@@ -170,10 +164,10 @@ class ContactMode(IntEnum):
             Computes the discrete contact mode based on the contact velocity.
 
             Args:
-                v (vec3f): The contact velocity expressed in the local contact frame.
+                v: The contact velocity expressed in the local contact frame.
 
             Returns:
-                int32: The discrete contact mode as an integer value.
+                The discrete contact mode as an integer value.
             """
             # Decompose the velocity into the normal and tangential components
             v_N = v.z
@@ -221,61 +215,61 @@ class ContactsKaminoData:
     model_max_contacts: wp.array[wp.int32] | None = None
     """
     The number of contacts pre-allocated across all worlds in the model.\n
-    Shape of ``(1,)`` and type :class:`int32`.
+    Shape of ``(1,)``.
     """
 
     model_active_contacts: wp.array[wp.int32] | None = None
     """
     The number of active contacts detected across all worlds in the model.\n
-    Shape of ``(1,)`` and type :class:`int32`.
+    Shape of ``(1,)``.
     """
 
     world_max_contacts: wp.array[wp.int32] | None = None
     """
     The maximum number of contacts pre-allocated for each world.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    Shape of ``(num_worlds,)``.
     """
 
     world_active_contacts: wp.array[wp.int32] | None = None
     """
     The number of active contacts detected in each world.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    Shape of ``(num_worlds,)``.
     """
 
     wid: wp.array[wp.int32] | None = None
     """
     The world index of each active contact.\n
-    Shape of ``(model_max_contacts_host,)`` and type :class:`int32`.
+    Shape of ``(model_max_contacts_host,)``.
     """
 
     cid: wp.array[wp.int32] | None = None
     """
     The contact index of each active contact w.r.t its world.\n
-    Shape of ``(model_max_contacts_host,)`` and type :class:`int32`.
+    Shape of ``(model_max_contacts_host,)``.
     """
 
     gid_AB: wp.array[wp.vec2i] | None = None
     """
     The geometry indices of the geometry-pair AB associated with each active contact.\n
-    Shape of ``(model_max_contacts_host,)`` and type :class:`vec2i`.
+    Shape of ``(model_max_contacts_host,)``.
     """
 
     bid_AB: wp.array[wp.vec2i] | None = None
     """
     The body indices of the body-pair AB associated with each active contact.\n
-    Shape of ``(model_max_contacts_host,)`` and type :class:`vec2i`.
+    Shape of ``(model_max_contacts_host,)``.
     """
 
     position_A: wp.array[wp.vec3f] | None = None
     """
     The position of each active contact on the associated body-A in world coordinates.\n
-    Shape of ``(model_max_contacts_host,)`` and type :class:`vec3f`.
+    Shape of ``(model_max_contacts_host,)``.
     """
 
     position_B: wp.array[wp.vec3f] | None = None
     """
     The position of each active contact on the associated body-B in world coordinates.\n
-    Shape of ``(model_max_contacts_host,)`` and type :class:`vec3f`.
+    Shape of ``(model_max_contacts_host,)``.
     """
 
     gapfunc: wp.array[wp.vec4f] | None = None
@@ -284,25 +278,25 @@ class ContactsKaminoData:
     The ``w`` component stores the signed distance between margin-shifted surfaces:
     negative means penetration past the resting separation, positive means separation
     within the detection gap.\n
-    Shape of ``(model_max_contacts_host,)`` and type :class:`vec4f`.
+    Shape of ``(model_max_contacts_host,)``.
     """
 
     frame: wp.array[wp.quatf] | None = None
     """
     The coordinate frame of each active contact as a rotation quaternion w.r.t the world.\n
-    Shape of ``(model_max_contacts_host,)`` and type :class:`quatf`.
+    Shape of ``(model_max_contacts_host,)``.
     """
 
     material: wp.array[wp.vec2f] | None = None
     """
     The material properties of each active contact with format `(0: friction, 1: restitution)`.\n
-    Shape of ``(model_max_contacts_host,)`` and type :class:`vec2f`.
+    Shape of ``(model_max_contacts_host,)``.
     """
 
     margins: wp.array[wp.vec2f] | None = None
     """
     The shape-pair margins of each active contact.\n
-    Shape of ``(model_max_contacts_host,)`` and type :class:`vec2f`.
+    Shape of ``(model_max_contacts_host,)``.
     """
 
     key: wp.array[wp.uint64] | None = None
@@ -313,21 +307,21 @@ class ContactsKaminoData:
     - the triangle index
     - shape-specific topological data
     - contact index w.r.t the geom-pair\n
-    Shape of ``(model_max_contacts_host,)`` and type :class:`uint64`.
+    Shape of ``(model_max_contacts_host,)``.
     """
 
     reaction: wp.array[wp.vec3f] | None = None
     """
     The 3D contact reaction (force/impulse) expressed in the respective local contact frame.\n
     This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.\n
-    Shape of ``(model_max_contacts_host,)`` and type :class:`vec3f`.
+    Shape of ``(model_max_contacts_host,)``.
     """
 
     velocity: wp.array[wp.vec3f] | None = None
     """
     The 3D contact velocity expressed in the respective local contact frame.\n
     This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.\n
-    Shape of ``(model_max_contacts_host,)`` and type :class:`vec3f`.
+    Shape of ``(model_max_contacts_host,)``.
     """
 
     mode: wp.array[wp.int32] | None = None
@@ -335,13 +329,13 @@ class ContactsKaminoData:
     The discrete contact mode expressed as an integer value.\n
     The possible values correspond to those of the :class:`ContactMode`.\n
     This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.\n
-    Shape of ``(model_max_contacts_host,)`` and type :class:`int32`.
+    Shape of ``(model_max_contacts_host,)``.
     """
 
     remap: wp.array[wp.int32] | None = None
     """
     Per-contact mapping back to the source contact index when converted from Newton :class:`Contacts`.\n
-    Shape of ``(model_max_contacts_host,)`` and type :class:`int32`.
+    Shape of ``(model_max_contacts_host,)``.
 
     Populated by :func:`convert_contacts_newton_to_kamino` so that each Kamino
     contact knows which original Newton contact it was generated from; entries
@@ -488,7 +482,7 @@ class ContactsKamino:
         Sets the default maximum number of contacts per world.
 
         Args:
-            max_contacts (int): The maximum number of contacts per world.
+            max_contacts: The maximum number of contacts per world.
         """
         if max_contacts < 0:
             raise ValueError("max_contacts must be a non-negative integer")
@@ -531,7 +525,7 @@ class ContactsKamino:
     def model_max_contacts(self) -> wp.array[wp.int32]:
         """
         Returns the maximum number contacts pre-allocated across all worlds in the model.\n
-        Shape of ``(1,)`` and type :class:`int32`.
+        Shape of ``(1,)``.
         """
         self._assert_has_data()
         return self._data.model_max_contacts
@@ -540,7 +534,7 @@ class ContactsKamino:
     def model_active_contacts(self) -> wp.array[wp.int32]:
         """
         Returns the number of active contacts detected across all worlds in the model.\n
-        Shape of ``(1,)`` and type :class:`int32`.
+        Shape of ``(1,)``.
         """
         self._assert_has_data()
         return self._data.model_active_contacts
@@ -549,7 +543,7 @@ class ContactsKamino:
     def world_max_contacts(self) -> wp.array[wp.int32]:
         """
         Returns the maximum number of contacts pre-allocated for each world.\n
-        Shape of ``(num_worlds,)`` and type :class:`int32`.
+        Shape of ``(num_worlds,)``.
         """
         self._assert_has_data()
         return self._data.world_max_contacts
@@ -558,7 +552,7 @@ class ContactsKamino:
     def world_active_contacts(self) -> wp.array[wp.int32]:
         """
         Returns the number of active contacts detected in each world.\n
-        Shape of ``(num_worlds,)`` and type :class:`int32`.
+        Shape of ``(num_worlds,)``.
         """
         self._assert_has_data()
         return self._data.world_active_contacts
@@ -567,7 +561,7 @@ class ContactsKamino:
     def wid(self) -> wp.array[wp.int32]:
         """
         Returns the world index of each active contact.\n
-        Shape of ``(model_max_contacts_host,)`` and type :class:`int32`.
+        Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
         return self._data.wid
@@ -576,7 +570,7 @@ class ContactsKamino:
     def cid(self) -> wp.array[wp.int32]:
         """
         Returns the contact index of each active contact w.r.t its world.\n
-        Shape of ``(model_max_contacts_host,)`` and type :class:`int32`.
+        Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
         return self._data.cid
@@ -585,7 +579,7 @@ class ContactsKamino:
     def gid_AB(self) -> wp.array[wp.vec2i]:
         """
         Returns the geometry indices of the geometry-pair AB associated with each active contact.\n
-        Shape of ``(model_max_contacts_host,)`` and type :class:`vec2i`.
+        Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
         return self._data.gid_AB
@@ -594,7 +588,7 @@ class ContactsKamino:
     def bid_AB(self) -> wp.array[wp.vec2i]:
         """
         Returns the body indices of the body-pair AB associated with each active contact.\n
-        Shape of ``(model_max_contacts_host,)`` and type :class:`vec2i`.
+        Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
         return self._data.bid_AB
@@ -603,7 +597,7 @@ class ContactsKamino:
     def position_A(self) -> wp.array[wp.vec3f]:
         """
         Returns the position of each active contact on the associated body-A in world coordinates.\n
-        Shape of ``(model_max_contacts_host,)`` and type :class:`vec3f`.
+        Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
         return self._data.position_A
@@ -612,7 +606,7 @@ class ContactsKamino:
     def position_B(self) -> wp.array[wp.vec3f]:
         """
         Returns the position of each active contact on the associated body-B in world coordinates.\n
-        Shape of ``(model_max_contacts_host,)`` and type :class:`vec3f`.
+        Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
         return self._data.position_B
@@ -621,7 +615,7 @@ class ContactsKamino:
     def gapfunc(self) -> wp.array[wp.vec4f]:
         """
         Returns the gap-function of each active contact, packed as``(xyz: normal, w: distance)``.\n
-        Shape of ``(model_max_contacts_host,)`` and type :class:`vec4f`.
+        Shape of ``(model_max_contacts_host,)``.
 
         The ``w`` component stores the signed ``distance`` between margin-shifted surfaces:
         - ``w < 0`` means penetration past the resting separation defined by the margin
@@ -634,7 +628,7 @@ class ContactsKamino:
     def frame(self) -> wp.array[wp.quatf]:
         """
         Returns the coordinate frame of each active contact as a rotation quaternion w.r.t the world.\n
-        Shape of ``(model_max_contacts_host,)`` and type :class:`quatf`.
+        Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
         return self._data.frame
@@ -643,7 +637,7 @@ class ContactsKamino:
     def material(self) -> wp.array[wp.vec2f]:
         """
         Returns the material properties of each active contact with format `(0: friction, 1: restitution)`.\n
-        Shape of ``(model_max_contacts_host,)`` and type :class:`vec2f`.
+        Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
         return self._data.material
@@ -652,7 +646,7 @@ class ContactsKamino:
     def margins(self) -> wp.array[wp.vec2f]:
         """
         Returns the effective shape-pair margins of each active contact.\n
-        Shape of ``(model_max_contacts_host,)`` and type :class:`vec2f`.
+        Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
         return self._data.margins
@@ -666,7 +660,7 @@ class ContactsKamino:
         - the triangle index
         - shape-specific topological data
         - contact index w.r.t the geom-pair\n
-        Shape of ``(model_max_contacts_host,)`` and type :class:`uint64`.
+        Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
         return self._data.key
@@ -676,7 +670,7 @@ class ContactsKamino:
         """
         Returns the 3D contact reaction (force/impulse) expressed in the respective local contact frame.\n
         This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.\n
-        Shape of ``(model_max_contacts_host,)`` and type :class:`vec3f`.
+        Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
         return self._data.reaction
@@ -686,7 +680,7 @@ class ContactsKamino:
         """
         Returns the 3D contact velocity expressed in the respective local contact frame.\n
         This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.\n
-        Shape of ``(model_max_contacts_host,)`` and type :class:`vec3f`.
+        Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
         return self._data.velocity
@@ -697,7 +691,7 @@ class ContactsKamino:
         Returns the discrete contact mode expressed as an integer value.\n
         The possible values correspond to those of the :class:`ContactMode`.\n
         This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.\n
-        Shape of ``(model_max_contacts_host,)`` and type :class:`int32`.
+        Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
         return self._data.mode
@@ -706,7 +700,7 @@ class ContactsKamino:
     def remap(self) -> wp.array[wp.int32] | None:
         """
         Returns the remapped contact index of each active contact.
-        Shape of ``(model_max_contacts_host,)`` and type :class:`int32`.
+        Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
         return self._data.remap
@@ -804,18 +798,18 @@ class ContactsKamino:
                 model_max_contacts_host=model_max_contacts,
                 world_max_contacts_host=world_max_contacts,
                 model_max_contacts=to_warp_int32_array([model_max_contacts]),
-                model_active_contacts=wp.zeros(shape=1, dtype=int32),
+                model_active_contacts=wp.zeros(shape=1, dtype=wp.int32),
                 world_max_contacts=to_warp_int32_array(world_max_contacts),
-                world_active_contacts=wp.zeros(shape=len(world_max_contacts), dtype=int32),
-                wid=wp.full(value=-1, shape=(model_max_contacts,), dtype=int32),
-                cid=wp.full(value=-1, shape=(model_max_contacts,), dtype=int32),
-                gid_AB=wp.full(value=vec2i(-1, -1), shape=(model_max_contacts,), dtype=vec2i),
-                bid_AB=wp.full(value=vec2i(-1, -1), shape=(model_max_contacts,), dtype=vec2i),
-                position_A=wp.zeros(shape=(model_max_contacts,), dtype=vec3f),
-                position_B=wp.zeros(shape=(model_max_contacts,), dtype=vec3f),
-                gapfunc=wp.zeros(shape=(model_max_contacts,), dtype=vec4f),
-                frame=wp.zeros(shape=(model_max_contacts,), dtype=quatf),
-                material=wp.zeros(shape=(model_max_contacts,), dtype=vec2f),
+                world_active_contacts=wp.zeros(shape=len(world_max_contacts), dtype=wp.int32),
+                wid=wp.full(value=-1, shape=(model_max_contacts,), dtype=wp.int32),
+                cid=wp.full(value=-1, shape=(model_max_contacts,), dtype=wp.int32),
+                gid_AB=wp.full(value=wp.vec2i(-1, -1), shape=(model_max_contacts,), dtype=wp.vec2i),
+                bid_AB=wp.full(value=wp.vec2i(-1, -1), shape=(model_max_contacts,), dtype=wp.vec2i),
+                position_A=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec3f),
+                position_B=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec3f),
+                gapfunc=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec4f),
+                frame=wp.zeros(shape=(model_max_contacts,), dtype=wp.quatf),
+                material=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec2f),
                 margins=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec2f),
                 key=wp.zeros(shape=(model_max_contacts,), dtype=wp.uint64),
                 reaction=wp.zeros(shape=(model_max_contacts,), dtype=wp.vec3f),

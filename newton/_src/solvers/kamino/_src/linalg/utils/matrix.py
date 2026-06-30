@@ -32,7 +32,7 @@ DEFAULT_MATRIX_SYMMETRY_EPS = 1e-10
 """A global constant to configure the tolerance on matrix symmetry checks."""
 
 MAXLOG_FP64 = 709.782
-"""Maximum log value for float64 to avoid overflow in exp()."""
+"""Maximum log value for wp.float64 to avoid overflow in exp()."""
 
 ###
 # Types
@@ -157,8 +157,8 @@ class RectangularMatrixProperties:
         Compute the properties of the rectangular matrix.
 
         Args:
-            matrix (np.ndarray): The input matrix to analyze.
-            tol (float, optional): The tolerance for numerical stability.
+            matrix: The input matrix to analyze.
+            tol: The tolerance for numerical stability.
 
         Raises:
             TypeError: If the input matrix is not a numpy array.
@@ -302,8 +302,8 @@ class SquareSymmetricMatrixProperties:
         Compute the properties of the matrix.
 
         Args:
-            matrix (np.ndarray): The input matrix to analyze.
-            tol (float, optional): The tolerance for numerical stability.
+            matrix: The input matrix to analyze.
+            tol: The tolerance for numerical stability.
 
         Raises:
             TypeError: If the input matrix is not a numpy array.

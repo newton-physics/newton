@@ -112,15 +112,15 @@ class PADMMSolver:
         target device, otherwise the user must call `finalize()` before using the solver.
 
         Args:
-            model (ModelKamino | None): The model for which to allocate the solver data.
-            limits (LimitsKamino | None): The limits container associated with the model.
-            contacts (ContactsKamino | None): The contacts container associated with the model.
-            config (list[PADMMSolver.Config] | PADMMSolver.Config | None): The solver config to use.
-            warmstart (PADMMWarmStartMode): The warm-start mode to use for the solver.\n
-            use_acceleration (bool): Set to `True` to enable Nesterov acceleration.
-            use_graph_conditionals (bool): Set to `False` to disable CUDA graph conditional nodes.\n
+            model: The model for which to allocate the solver data.
+            limits: The limits container associated with the model.
+            contacts: The contacts container associated with the model.
+            config: The solver config to use.
+            warmstart: The warm-start mode to use for the solver.\n
+            use_acceleration: Set to `True` to enable Nesterov acceleration.
+            use_graph_conditionals: Set to `False` to disable CUDA graph conditional nodes.\n
                 When disabled, replaces `wp.capture_while` with an unrolled for-loop over max iterations.
-            collect_info (bool): Set to `True` to enable collection of solver convergence info.\n
+            collect_info: Set to `True` to enable collection of solver convergence info.\n
                 This setting is intended only for analysis and debugging purposes, as it
                 will increase memory consumption and reduce wall-clock time.
         """
@@ -205,15 +205,15 @@ class PADMMSolver:
         Allocates the solver data structures on the specified device.
 
         Args:
-            model (ModelKamino | None): The model for which to allocate the solver data.
-            limits (LimitsKamino | None): The limits container associated with the model.
-            contacts (ContactsKamino | None): The contacts container associated with the model.
-            config (list[PADMMSolver.Config] | PADMMSolver.Config | None): The solver config to use.
-            warmstart (PADMMWarmStartMode): The warm-start mode to use for the solver.\n
-            use_acceleration (bool): Set to `True` to enable Nesterov acceleration.
-            use_graph_conditionals (bool): Set to `False` to disable CUDA graph conditional nodes.\n
+            model: The model for which to allocate the solver data.
+            limits: The limits container associated with the model.
+            contacts: The contacts container associated with the model.
+            config: The solver config to use.
+            warmstart: The warm-start mode to use for the solver.\n
+            use_acceleration: Set to `True` to enable Nesterov acceleration.
+            use_graph_conditionals: Set to `False` to disable CUDA graph conditional nodes.\n
                 When disabled, replaces `wp.capture_while` with an unrolled for-loop over max iterations.
-            collect_info (bool): Set to `True` to enable collection of solver convergence info.\n
+            collect_info: Set to `True` to enable collection of solver convergence info.\n
                 This setting is intended only for analysis and debugging purposes, as it
                 will increase memory consumption and reduce wall-clock time.
         """
@@ -280,7 +280,7 @@ class PADMMSolver:
         block_dim = get_block_dim(tile_size, ratio=2, min_size=1)
         self._project_dual_convergence_accel_kernel = _make_project_dual_convergence_accel_kernel(block_dim)
 
-    def reset(self, problem: DualProblem | None = None, world_mask: wp.array | None = None):
+    def reset(self, problem: DualProblem | None = None, world_mask: wp.array[wp.bool] | None = None):
         """
         Resets the all internal solver data to sentinel values.
         """
@@ -334,13 +334,13 @@ class PADMMSolver:
         - `PADMMWarmStartMode.CONTAINERS`: Warm-starts from the provided limits and contacts containers.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.\n
+            problem: The dual forward dynamics problem to be solved.\n
                 This is needed during warm-starts in order to access the problem preconditioning.
-            model (ModelKamino): The model associated with the problem.
-            data (DataKamino): The model data associated with the problem.
-            limits (LimitsKamino | None): The limits container associated with the model.\n
+            model: The model associated with the problem.
+            data: The model data associated with the problem.
+            limits: The limits container associated with the model.\n
                 If `None`, no warm-starting from limits is performed.
-            contacts (ContactsKamino | None): The contacts container associated with the model.\n
+            contacts: The contacts container associated with the model.\n
                 If `None`, no warm-starting from contacts is performed.
         """
         # TODO: IS THIS EVEN NECESSARY AT ALL?
@@ -363,7 +363,7 @@ class PADMMSolver:
         Solves the given dual problem using PADMM.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.
+            problem: The dual forward dynamics problem to be solved.
         """
         # Pass the PADMM-owned tolerance array to the iterative linear solver (if present).
         inner = getattr(problem._delassus._solver, "solver", None)
@@ -487,7 +487,7 @@ class PADMMSolver:
         The kernel is parallelized over the number of worlds and the maximum number of total constraints.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.
+            problem: The dual forward dynamics problem to be solved.
         """
         if problem.sparse:
             self._update_sparse_regularization(problem)
@@ -516,7 +516,7 @@ class PADMMSolver:
         Performs a single PADMM solver iteration.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.
+            problem: The dual forward dynamics problem to be solved.
         """
         # Compute De Saxce correction and velocity bias in one launch.
         self._update_desaxce_and_velocity_bias(problem, self._data.state.y_p, self._data.state.z_p)
@@ -557,7 +557,7 @@ class PADMMSolver:
           residual reduction, convergence, acceleration, and previous-state caching
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.
+            problem: The dual forward dynamics problem to be solved.
         """
         # Compute De Saxce correction and velocity bias in one launch.
         self._update_desaxce_and_velocity_bias(problem, self._data.state.y_hat, self._data.state.z_hat)
@@ -582,14 +582,14 @@ class PADMMSolver:
     # Internals - Warm-starting
     ###
 
-    def _warmstart_desaxce_correction(self, problem: DualProblem, z: wp.array):
+    def _warmstart_desaxce_correction(self, problem: DualProblem, z: wp.array[wp.float32]):
         """
         Applies the De Saxce correction to the provided post-event constraint-space velocity warm-start.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.\n
+            problem: The dual forward dynamics problem to be solved.\n
                 This is needed during warm-starts in order to access the problem preconditioning.
-            z (wp.array): The post-event constraint-space velocity warm-start variable.\n
+            z: The post-event constraint-space velocity warm-start variable.\n
                 This can either be `z_p` or `z_hat` depending on whether acceleration is used.
         """
         wp.launch(
@@ -613,21 +613,21 @@ class PADMMSolver:
         model: ModelKamino,
         data: DataKamino,
         problem: DualProblem,
-        x_0: wp.array,
-        y_0: wp.array,
-        z_0: wp.array,
+        x_0: wp.array[wp.float32],
+        y_0: wp.array[wp.float32],
+        z_0: wp.array[wp.float32],
     ):
         """
         Warm-starts the bilateral joint constraint variables from the model data container.
 
         Args:
-            model (ModelKamino): The model associated with the problem.
-            data (DataKamino): The model data associated with the problem.
-            problem (DualProblem): The dual forward dynamics problem to be solved.\n
+            model: The model associated with the problem.
+            data: The model data associated with the problem.
+            problem: The dual forward dynamics problem to be solved.\n
                 This is needed during warm-starts in order to access the problem preconditioning.
-            x_0 (wp.array): The output primal variables array to be warm-started.
-            y_0 (wp.array): The output slack variables array to be warm-started.
-            z_0 (wp.array): The output dual variables array to be warm-started.
+            x_0: The output primal variables array to be warm-started.
+            y_0: The output slack variables array to be warm-started.
+            z_0: The output dual variables array to be warm-started.
         """
         wp.launch(
             kernel=_warmstart_joint_constraints,
@@ -658,22 +658,22 @@ class PADMMSolver:
         data: DataKamino,
         limits: LimitsKamino,
         problem: DualProblem,
-        x_0: wp.array,
-        y_0: wp.array,
-        z_0: wp.array,
+        x_0: wp.array[wp.float32],
+        y_0: wp.array[wp.float32],
+        z_0: wp.array[wp.float32],
     ):
         """
         Warm-starts the unilateral limit constraint variables from the limits data container.
 
         Args:
-            model (ModelKamino): The model associated with the problem.
-            data (DataKamino): The model data associated with the problem.
-            limits (LimitsKamino): The limits container associated with the model.
-            problem (DualProblem): The dual forward dynamics problem to be solved.\n
+            model: The model associated with the problem.
+            data: The model data associated with the problem.
+            limits: The limits container associated with the model.
+            problem: The dual forward dynamics problem to be solved.\n
                 This is needed during warm-starts in order to access the problem preconditioning.
-            x_0 (wp.array): The output primal variables array to be warm-started.
-            y_0 (wp.array): The output slack variables array to be warm-started.
-            z_0 (wp.array): The output dual variables array to be warm-started.
+            x_0: The output primal variables array to be warm-started.
+            y_0: The output slack variables array to be warm-started.
+            z_0: The output dual variables array to be warm-started.
         """
         wp.launch(
             kernel=_warmstart_limit_constraints,
@@ -703,22 +703,22 @@ class PADMMSolver:
         data: DataKamino,
         contacts: ContactsKamino,
         problem: DualProblem,
-        x_0: wp.array,
-        y_0: wp.array,
-        z_0: wp.array,
+        x_0: wp.array[wp.float32],
+        y_0: wp.array[wp.float32],
+        z_0: wp.array[wp.float32],
     ):
         """
         Warm-starts the unilateral contact constraint variables from the contacts data container.
 
         Args:
-            model (ModelKamino): The model associated with the problem.
-            data (DataKamino): The model data associated with the problem.
-            contacts (ContactsKamino): The contacts container associated with the model.
-            problem (DualProblem): The dual forward dynamics problem to be solved.\n
+            model: The model associated with the problem.
+            data: The model data associated with the problem.
+            contacts: The contacts container associated with the model.
+            problem: The dual forward dynamics problem to be solved.\n
                 This is needed during warm-starts in order to access the problem preconditioning.
-            x_0 (wp.array): The output primal variables array to be warm-started.
-            y_0 (wp.array): The output slack variables array to be warm-started.
-            z_0 (wp.array): The output dual variables array to be warm-started.
+            x_0: The output primal variables array to be warm-started.
+            y_0: The output slack variables array to be warm-started.
+            z_0: The output dual variables array to be warm-started.
         """
         wp.launch(
             kernel=_warmstart_contact_constraints,
@@ -748,7 +748,7 @@ class PADMMSolver:
         Warm-starts the internal solver state from the stored solution variables.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.\n
+            problem: The dual forward dynamics problem to be solved.\n
                 This is needed during warm-starts in order to access the problem preconditioning.
         """
         # Apply the dual-problem preconditioner to the stored solution
@@ -795,13 +795,13 @@ class PADMMSolver:
         Warm-starts the internal solver state from the provided model data and limits and contacts containers.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.\n
+            problem: The dual forward dynamics problem to be solved.\n
                 This is needed during warm-starts in order to access the problem preconditioning.
-            model (ModelKamino): The model associated with the problem.
-            data (DataKamino): The model data associated with the problem.
-            limits (LimitsKamino | None): The limits container associated with the model.\n
+            model: The model associated with the problem.
+            data: The model data associated with the problem.
+            limits: The limits container associated with the model.\n
                 If `None`, no warm-starting from limits is performed.
-            contacts (ContactsKamino | None): The contacts container associated with the model.\n
+            contacts: The contacts container associated with the model.\n
                 If `None`, no warm-starting from contacts is performed.
         """
         # Capture references to the warm-start variables
@@ -826,14 +826,14 @@ class PADMMSolver:
     # Internals - Per-Step Operations
     ###
 
-    def _update_desaxce_correction(self, problem: DualProblem, z: wp.array):
+    def _update_desaxce_correction(self, problem: DualProblem, z: wp.array[wp.float32]):
         """
         Launches a kernel to compute the De Saxce correction velocity using the previous dual variables.\n
         The kernel is parallelized over the number of worlds and the maximum number of contacts.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.
-            z (wp.array): The dual variable array from the previous iteration.\n
+            problem: The dual forward dynamics problem to be solved.
+            z: The dual variable array from the previous iteration.\n
                 This can either be the acceleration variable `z_hat` or the standard dual variable `z_p`.
         """
         wp.launch(
@@ -854,16 +854,16 @@ class PADMMSolver:
             device=self.device,
         )
 
-    def _update_velocity_bias(self, problem: DualProblem, y: wp.array, z: wp.array):
+    def _update_velocity_bias(self, problem: DualProblem, y: wp.array[wp.float32], z: wp.array[wp.float32]):
         """
         Launches a kernel to compute the total bias velocity vector using the previous state variables.\n
         The kernel is parallelized over the number of worlds and the maximum number of total constraints.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.
-            y (wp.array): The primal variable array from the previous iteration.\n
+            problem: The dual forward dynamics problem to be solved.
+            y: The primal variable array from the previous iteration.\n
                 This can either be the acceleration variable `y_hat` or the standard primal variable `y_p`.
-            z (wp.array): The dual variable array from the previous iteration.\n
+            z: The dual variable array from the previous iteration.\n
                 This can either be the acceleration variable `z_hat` or the standard dual variable `z_p`.
         """
         wp.launch(
@@ -887,7 +887,7 @@ class PADMMSolver:
             device=self.device,
         )
 
-    def _update_desaxce_and_velocity_bias(self, problem: DualProblem, y: wp.array, z: wp.array):
+    def _update_desaxce_and_velocity_bias(self, problem: DualProblem, y: wp.array[wp.float32], z: wp.array[wp.float32]):
         """Fused De Saxce correction + velocity bias in a single kernel launch.
 
         Computes the De Saxce correction inline for contact constraints and the velocity
@@ -898,9 +898,9 @@ class PADMMSolver:
         read the original value.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.
-            y (wp.array): The primal variable array from the previous iteration.
-            z (wp.array): The dual variable array from the previous iteration.
+            problem: The dual forward dynamics problem to be solved.
+            y: The primal variable array from the previous iteration.
+            z: The dual variable array from the previous iteration.
         """
         has_contacts = self._size.max_of_max_contacts > 0
         kernel = make_desaxce_correction_and_velocity_bias_kernel(has_contacts, self._collect_info)
@@ -934,14 +934,14 @@ class PADMMSolver:
         The kernel is parallelized over the number of worlds and the maximum number of total constraints.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.
+            problem: The dual forward dynamics problem to be solved.
         """
         # TODO: We should do this in-place
         # wp.copy(self._data.state.x, self._data.state.v)
         # problem._delassus.solve_inplace(x=self._data.state.x)
         problem._delassus.solve(v=self._data.state.v, x=self._data.state.x)
 
-    def _update_projection_argument(self, problem: DualProblem, z: wp.array):
+    def _update_projection_argument(self, problem: DualProblem, z: wp.array[wp.float32]):
         """
         Launches a kernel to compute the argument for the projection operator onto the
         feasible set using the accelerated state variables and the unconstrained solution.
@@ -949,8 +949,8 @@ class PADMMSolver:
         The kernel is parallelized over the number of worlds and the maximum number of total constraints.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.
-            z (wp.array): The dual variable array from the previous iteration.\n
+            problem: The dual forward dynamics problem to be solved.
+            z: The dual variable array from the previous iteration.\n
                 This can either be the acceleration variable `z_hat` or the standard dual variable `z
         """
         # Apply over-relaxation and compute the argument to the projection operator
@@ -980,7 +980,7 @@ class PADMMSolver:
         number of unilateral constraints, i.e. 1D limits and 3D contacts.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.
+            problem: The dual forward dynamics problem to be solved.
         """
         # Project to the feasible set defined by the cone K := R^{njd} x R_+^{nld} x K_{mu}^{nc}
         wp.launch(
@@ -1008,7 +1008,7 @@ class PADMMSolver:
         The kernel is parallelized over the number of worlds and the maximum number of unilateral constraints.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.
+            problem: The dual forward dynamics problem to be solved.
         """
         # Compute complementarity residual from the current state
         wp.launch(
@@ -1039,7 +1039,7 @@ class PADMMSolver:
         The kernel is parallelized over the number of worlds and the maximum number of total constraints.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.
+            problem: The dual forward dynamics problem to be solved.
         """
         # Update the dual variables and compute primal-dual residuals from the current state
         # NOTE: These are combined into a single kernel to reduce kernel launch overhead
@@ -1128,7 +1128,7 @@ class PADMMSolver:
         The kernel is parallelized over the number of worlds.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.
+            problem: The dual forward dynamics problem to be solved.
         """
         # Compute infinity-norm of all residuals and check for convergence
         tile_size = get_tile_size(self._size.max_of_max_total_cts)
@@ -1168,7 +1168,7 @@ class PADMMSolver:
         The kernel is parallelized over the number of worlds.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.
+            problem: The dual forward dynamics problem to be solved.
         """
         # First reset the internal buffer arrays to zero
         # to ensure we do not accumulate values across iterations
@@ -1328,7 +1328,7 @@ class PADMMSolver:
         the final solution from the internal PADMM state data.
 
         Args:
-            problem (DualProblem): The dual forward dynamics problem to be solved.
+            problem: The dual forward dynamics problem to be solved.
         """
         # Apply the dual preconditioner to recover the final PADMM state
         wp.launch(

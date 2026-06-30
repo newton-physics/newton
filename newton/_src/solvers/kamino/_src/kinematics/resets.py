@@ -11,7 +11,6 @@ from ..core.joints import JointDoFType
 from ..core.math import quat_from_x_rot, quat_from_y_rot, quat_from_z_rot, screw, screw_angular, screw_linear
 from ..core.model import ModelKamino
 from ..core.state import StateKamino
-from ..core.types import float32, int32, mat33f, quatf, transformf, vec3f, vec6f
 from ..kinematics.joints import (
     compute_joint_pose_and_relative_motion,
     convert_angular_vel_to_universal_joint_intermediary_frame,
@@ -52,7 +51,7 @@ def make_correct_joint_coords(dof_type: JointDoFType):
 
     def _correct_joint_coords(
         coords,  # CoordsType,
-        coords_ref,  # wp.array[float32],
+        coords_ref,  # wp.array[wp.float32],
     ):  # -> CoordsType
         if wp.static(
             dof_type == JointDoFType.CARTESIAN or dof_type == JointDoFType.FIXED or dof_type == JointDoFType.PRISMATIC
@@ -90,7 +89,7 @@ def make_correct_joint_coords(dof_type: JointDoFType):
     # Set type annotations manually (else CoordsType fails to resolve)
     _correct_joint_coords.__annotations__ = {
         "coords": CoordsType,
-        "coords_ref": wp.array[float32],
+        "coords_ref": wp.array[wp.float32],
         "return": CoordsType,
     }
 
@@ -107,11 +106,11 @@ def make_compute_and_write_joint_coords(dof_type: JointDoFType):
 
     @wp.func
     def _compute_and_write_joint_coords(
-        r_j: vec3f,
-        q_j: quatf,
-        coords_offset: int32,
-        joint_q_ref: wp.array[float32],
-        joint_q: wp.array[float32],
+        r_j: wp.vec3f,
+        q_j: wp.quatf,
+        coords_offset: wp.int32,
+        joint_q_ref: wp.array[wp.float32],
+        joint_q: wp.array[wp.float32],
     ):
         # Compute joint coordinates
         coords = wp.static(get_joint_coords_mapping_function(dof_type))(r_j, q_j)
@@ -138,10 +137,10 @@ def make_compute_and_write_joint_vel(dof_type: JointDoFType):
 
     @wp.func
     def _compute_and_write_joint_vel(
-        q_j: quatf,
-        u_j: vec6f,
-        dofs_offset: int32,
-        joint_u: wp.array[float32],
+        q_j: wp.quatf,
+        u_j: wp.spatial_vectorf,
+        dofs_offset: wp.int32,
+        joint_u: wp.array[wp.float32],
     ):
         # Convert angular velocity to intermediary body frame for universal joint
         if wp.static(dof_type == JointDoFType.UNIVERSAL):
@@ -156,15 +155,15 @@ def make_compute_and_write_joint_vel(dof_type: JointDoFType):
 
 @wp.func
 def _compute_and_write_joint_coords_and_vel(
-    dof_type: int32,
-    r_j: vec3f,
-    q_j: quatf,
-    u_j: vec6f,
-    coords_offset: int32,
-    dofs_offset: int32,
-    joint_q_ref: wp.array[float32],
-    joint_q: wp.array[float32],
-    joint_u: wp.array[float32],
+    dof_type: wp.int32,
+    r_j: wp.vec3f,
+    q_j: wp.quatf,
+    u_j: wp.spatial_vectorf,
+    coords_offset: wp.int32,
+    dofs_offset: wp.int32,
+    joint_q_ref: wp.array[wp.float32],
+    joint_q: wp.array[wp.float32],
+    joint_u: wp.array[wp.float32],
 ):
     if dof_type == JointDoFType.CARTESIAN:
         wp.static(make_compute_and_write_joint_coords(JointDoFType.CARTESIAN))(
@@ -218,10 +217,10 @@ def _compute_and_write_joint_coords_and_vel(
 
 @wp.func
 def _get_joint_rel_transform_from_coords(
-    dof_type: int32,
-    coord_offset: int32,
-    joint_q: wp.array[float32],
-) -> transformf:
+    dof_type: wp.int32,
+    coord_offset: wp.int32,
+    joint_q: wp.array[wp.float32],
+) -> wp.transformf:
     """Compute the joint-frame relative body pose at a joint, from the joint coords."""
     # Initialize transform to identity
     t = wp.vec3f(0.0, 0.0, 0.0)
@@ -260,18 +259,20 @@ def _get_joint_rel_transform_from_coords(
     else:
         assert False, "Unexpected joint dof type"  # noqa: B011
 
-    return transformf(t, q)
+    return wp.transformf(t, q)
 
 
 @wp.func
-def convert_angular_vel_from_universal_joint_intermediary_frame(j_q_j: quatf, j_u_j: vec6f) -> vec6f:
+def convert_angular_vel_from_universal_joint_intermediary_frame(
+    j_q_j: wp.quatf, j_u_j: wp.spatial_vectorf
+) -> wp.spatial_vectorf:
     """
     Convert the angular part of a relative body velocity at a universal joint, from the
     intermediary frame to the joint frame on the base body.
     """
     # Compute intermediary body axes, in the joint frame on the base body
-    e_x = vec3f(1.0, 0.0, 0.0)
-    e_y = vec3f(0.0, 1.0, 0.0)
+    e_x = wp.vec3f(1.0, 0.0, 0.0)
+    e_y = wp.vec3f(0.0, 1.0, 0.0)
     a_x = e_x  # x axis on base
     a_y_raw = wp.quat_rotate(j_q_j, e_y)  #  y axis on follower (constrained to be orthogonal to a_x)
     a_y = a_y_raw - wp.dot(a_y_raw, a_x) * a_x  # orthogonalize (in case of constraint violations)
@@ -294,12 +295,12 @@ def make_typed_get_joint_rel_velocity_from_dofs(dof_type: JointDoFType):
 
     @wp.func
     def _get_joint_rel_velocity_from_dofs(
-        q_j: quatf,
-        dofs_offset: int32,
-        joint_u: wp.array[float32],
-    ) -> vec6f:
+        q_j: wp.quatf,
+        dofs_offset: wp.int32,
+        joint_u: wp.array[wp.float32],
+    ) -> wp.spatial_vectorf:
         # Expand dof-space velocity to 6D screw (with zero along constrained axes)
-        u_j = vec6f(0.0)
+        u_j = wp.spatial_vectorf(0.0)
         for i in range(num_dofs):
             u_j[dof_axes[i]] = joint_u[dofs_offset + i]
 
@@ -314,11 +315,11 @@ def make_typed_get_joint_rel_velocity_from_dofs(dof_type: JointDoFType):
 
 @wp.func
 def _get_joint_rel_velocity_from_dofs(
-    dof_type: int32,
-    q_j: quatf,
-    dofs_offset: int32,
-    joint_u: wp.array[float32],
-) -> vec6f:
+    dof_type: wp.int32,
+    q_j: wp.quatf,
+    dofs_offset: wp.int32,
+    joint_u: wp.array[wp.float32],
+) -> wp.spatial_vectorf:
     """
     Compute the joint-frame relative body velocity at a joint, from the dof-space velocity.
     For universal joints, also requires the joint_frame relative body orientation.
@@ -330,7 +331,7 @@ def _get_joint_rel_velocity_from_dofs(
             q_j, dofs_offset, joint_u
         )
     elif dof_type == JointDoFType.FIXED:
-        return vec6f(0.0)
+        return wp.spatial_vectorf(0.0)
     elif dof_type == JointDoFType.FREE:
         return wp.static(make_typed_get_joint_rel_velocity_from_dofs(JointDoFType.FREE))(q_j, dofs_offset, joint_u)
     elif dof_type == JointDoFType.GIMBAL:
@@ -350,15 +351,15 @@ def _get_joint_rel_velocity_from_dofs(
 @wp.kernel
 def _get_base_q_from_joint_q_and_body_q(
     # Inputs:
-    model_base_joint_index: wp.array[int32],
-    model_base_body_index: wp.array[int32],
-    model_joint_dof_type: wp.array[int32],
-    model_joint_coords_offset: wp.array[int32],
-    state_joint_q: wp.array[float32],
-    state_body_q: wp.array[transformf],
-    world_mask: wp.array[bool],
+    model_base_joint_index: wp.array[wp.int32],
+    model_base_body_index: wp.array[wp.int32],
+    model_joint_dof_type: wp.array[wp.int32],
+    model_joint_coords_offset: wp.array[wp.int32],
+    state_joint_q: wp.array[wp.float32],
+    state_body_q: wp.array[wp.transformf],
+    world_mask: wp.array[wp.bool],
     # Outputs:
-    base_q: wp.array[transformf],
+    base_q: wp.array[wp.transformf],
 ):
     # Get thread id as world id
     wid = wp.tid()
@@ -384,15 +385,15 @@ def _get_base_q_from_joint_q_and_body_q(
 @wp.kernel
 def _get_base_u_from_joint_u_and_body_u(
     # Inputs:
-    model_base_joint_index: wp.array[int32],
-    model_base_body_index: wp.array[int32],
-    model_joint_dof_type: wp.array[int32],
-    model_joint_dofs_offset: wp.array[int32],
-    state_joint_u: wp.array[float32],
-    state_body_u: wp.array[vec6f],
-    world_mask: wp.array[bool],
+    model_base_joint_index: wp.array[wp.int32],
+    model_base_body_index: wp.array[wp.int32],
+    model_joint_dof_type: wp.array[wp.int32],
+    model_joint_dofs_offset: wp.array[wp.int32],
+    state_joint_u: wp.array[wp.float32],
+    state_body_u: wp.array[wp.spatial_vectorf],
+    world_mask: wp.array[wp.bool],
     # Outputs:
-    base_u: wp.array[vec6f],
+    base_u: wp.array[wp.spatial_vectorf],
 ):
     # Get thread id as world id
     wid = wp.tid()
@@ -409,7 +410,7 @@ def _get_base_u_from_joint_u_and_body_u(
         assert dof_type != JointDoFType.UNIVERSAL  # Universal base joints are not supported
         # Relative body orientation would be needed to interpret dof-space velocity,
         # complicating the code significantly for a corner case without clear usecase.
-        base_u[wid] = _get_joint_rel_velocity_from_dofs(dof_type, quatf(), dofs_offset, state_joint_u)
+        base_u[wid] = _get_joint_rel_velocity_from_dofs(dof_type, wp.quatf(), dofs_offset, state_joint_u)
 
     # Otherwise read base_u from body_u if a base body was set for this world
     else:
@@ -421,11 +422,11 @@ def _get_base_u_from_joint_u_and_body_u(
 @wp.kernel
 def _set_body_q(
     # Inputs:
-    body_world_id: wp.array[int32],
-    body_q_in: wp.array[transformf],
-    world_mask: wp.array[bool],
+    body_world_id: wp.array[wp.int32],
+    body_q_in: wp.array[wp.transformf],
+    world_mask: wp.array[wp.bool],
     # Outputs:
-    body_q_out: wp.array[transformf],
+    body_q_out: wp.array[wp.transformf],
 ):
     body_id = wp.tid()
     wid = body_world_id[body_id]
@@ -437,26 +438,26 @@ def _set_body_q(
 @wp.kernel
 def _reset_joints_state_from_bodies_state(
     # Inputs
-    joint_world_id: wp.array[int32],
-    joint_dof_type: wp.array[int32],
-    joint_coords_offset: wp.array[int32],
-    joint_dofs_offset: wp.array[int32],
-    joint_cts_offset: wp.array[int32],
-    joint_bid_B: wp.array[int32],
-    joint_bid_F: wp.array[int32],
-    joint_B_r_Bj: wp.array[vec3f],
-    joint_F_r_Fj: wp.array[vec3f],
-    joint_X_Bj: wp.array[mat33f],
-    joint_X_Fj: wp.array[mat33f],
-    joint_q_0: wp.array[float32],
-    body_q: wp.array[transformf],
-    body_u: wp.array[vec6f],
-    world_mask: wp.array[bool],
+    joint_world_id: wp.array[wp.int32],
+    joint_dof_type: wp.array[wp.int32],
+    joint_coords_offset: wp.array[wp.int32],
+    joint_dofs_offset: wp.array[wp.int32],
+    joint_cts_offset: wp.array[wp.int32],
+    joint_bid_B: wp.array[wp.int32],
+    joint_bid_F: wp.array[wp.int32],
+    joint_B_r_Bj: wp.array[wp.vec3f],
+    joint_F_r_Fj: wp.array[wp.vec3f],
+    joint_X_Bj: wp.array[wp.mat33f],
+    joint_X_Fj: wp.array[wp.mat33f],
+    joint_q_0: wp.array[wp.float32],
+    body_q: wp.array[wp.transformf],
+    body_u: wp.array[wp.spatial_vectorf],
+    world_mask: wp.array[wp.bool],
     # Outputs
-    joint_q: wp.array[float32],
-    joint_q_prev: wp.array[float32],
-    joint_u: wp.array[float32],
-    joint_lambda: wp.array[float32],
+    joint_q: wp.array[wp.float32],
+    joint_q_prev: wp.array[wp.float32],
+    joint_u: wp.array[wp.float32],
+    joint_lambda: wp.array[wp.float32],
 ):
     # Get thread id as joint id
     jid = wp.tid()
@@ -481,8 +482,8 @@ def _reset_joints_state_from_bodies_state(
     X_F = joint_X_Fj[jid]
 
     # Get pose and velocity of base/follower bodies
-    T_B = wp.transform_identity(dtype=float32)
-    u_B = vec6f(0.0)
+    T_B = wp.transform_identity(dtype=wp.float32)
+    u_B = wp.spatial_vectorf(0.0)
     if bid_B > -1:
         T_B = body_q[bid_B]
         u_B = body_u[bid_B]
@@ -507,10 +508,10 @@ def _reset_joints_state_from_bodies_state(
 @wp.kernel
 def _reset_body_velocities(
     # Inputs
-    body_world_id: wp.array[int32],
-    world_mask: wp.array[bool],
+    body_world_id: wp.array[wp.int32],
+    world_mask: wp.array[wp.bool],
     # Outputs
-    body_u: wp.array[vec6f],
+    body_u: wp.array[wp.spatial_vectorf],
 ):
     # Get thread id as body id
     body_id = wp.tid()
@@ -521,17 +522,17 @@ def _reset_body_velocities(
         return
 
     # Reset velocities to zero
-    body_u[body_id] = vec6f(0.0)
+    body_u[body_id] = wp.spatial_vectorf(0.0)
 
 
 @wp.kernel
 def _reset_body_wrenches(
     # Inputs
-    body_world_id: wp.array[int32],
-    world_mask: wp.array[bool],
+    body_world_id: wp.array[wp.int32],
+    world_mask: wp.array[wp.bool],
     # Outputs
-    body_w: wp.array[vec6f],
-    body_w_e: wp.array[vec6f],
+    body_w: wp.array[wp.spatial_vectorf],
+    body_w_e: wp.array[wp.spatial_vectorf],
 ):
     # Get thread id as body id
     body_id = wp.tid()
@@ -542,17 +543,17 @@ def _reset_body_wrenches(
         return
 
     # Reset wrenches to zero
-    body_w[body_id] = vec6f(0.0)
-    body_w_e[body_id] = vec6f(0.0)
+    body_w[body_id] = wp.spatial_vectorf(0.0)
+    body_w_e[body_id] = wp.spatial_vectorf(0.0)
 
 
 @wp.kernel
 def _reset_time_of_select_worlds(
     # Inputs:
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
     # Outputs:
-    data_time: wp.array[float32],
-    data_steps: wp.array[int32],
+    data_time: wp.array[wp.float32],
+    data_steps: wp.array[wp.int32],
 ):
     # Retrieve the world index from the 1D thread index
     wid = wp.tid()
@@ -569,22 +570,22 @@ def _reset_time_of_select_worlds(
 @wp.kernel
 def _eval_floating_base_relative_transform(
     # Inputs:
-    model_base_joint_index: wp.array[int32],
-    model_base_body_index: wp.array[int32],
-    joint_B_r_Bj: wp.array[vec3f],
-    joint_F_r_Fj: wp.array[vec3f],
-    joint_X_Bj: wp.array[mat33f],
-    joint_X_Fj: wp.array[mat33f],
-    base_q: wp.array[transformf],  # None also supported
-    base_u: wp.array[vec6f],  # None also supported
-    body_q: wp.array[transformf],
-    body_u: wp.array[vec6f],
-    world_mask: wp.array[bool],
-    relative_base_u: bool,
+    model_base_joint_index: wp.array[wp.int32],
+    model_base_body_index: wp.array[wp.int32],
+    joint_B_r_Bj: wp.array[wp.vec3f],
+    joint_F_r_Fj: wp.array[wp.vec3f],
+    joint_X_Bj: wp.array[wp.mat33f],
+    joint_X_Fj: wp.array[wp.mat33f],
+    base_q: wp.array[wp.transformf],  # None also supported
+    base_u: wp.array[wp.spatial_vectorf],  # None also supported
+    body_q: wp.array[wp.transformf],
+    body_u: wp.array[wp.spatial_vectorf],
+    world_mask: wp.array[wp.bool],
+    relative_base_u: wp.bool,
     # Outputs:
-    rel_transform: wp.array[transformf],
-    rel_velocity: wp.array[vec6f],
-    new_base_pos: wp.array[vec3f],
+    rel_transform: wp.array[wp.transformf],
+    rel_velocity: wp.array[wp.spatial_vectorf],
+    new_base_pos: wp.array[wp.vec3f],
 ):
     # Get thread id as world id
     wid = wp.tid()
@@ -606,8 +607,8 @@ def _eval_floating_base_relative_transform(
         r_F = joint_F_r_Fj[base_joint_id]
         X_B = joint_X_Bj[base_joint_id]
         X_F = joint_X_Fj[base_joint_id]
-        T_B = transformf(r_B, wp.quat_from_matrix(X_B))
-        T_F = transformf(r_F, wp.quat_from_matrix(X_F))
+        T_B = wp.transformf(r_B, wp.quat_from_matrix(X_B))
+        T_F = wp.transformf(r_F, wp.quat_from_matrix(X_F))
         T_F_inv = wp.transform_inverse(T_F)
         base_body_pose = wp.transform_multiply(wp.transform_multiply(T_B, base_q[wid]), T_F_inv)
     else:  # Directly interpret base_q as the new base body pose if no base joint
@@ -616,7 +617,7 @@ def _eval_floating_base_relative_transform(
 
     # Determine relative transform to apply, from current to target base body pose
     if not base_q:
-        T_rel = wp.transform_identity(float32)
+        T_rel = wp.transform_identity(wp.float32)
         # Ensure we get a bit-accurate identity (although the formula below would yield the identity)
     else:
         T_rel = wp.transform_multiply(base_body_pose, wp.transform_inverse(base_body_curr_pose))
@@ -624,7 +625,7 @@ def _eval_floating_base_relative_transform(
 
     # Determine new velocity of the base body
     if not base_u:  # No prescribed base_u: use zero additional relative velocity to apply to the base
-        rel_velocity[wid] = vec6f(0.0)
+        rel_velocity[wid] = wp.spatial_vectorf(0.0)
         return
     base_u_ = base_u[wid]
     if base_joint_id >= 0:  # If there is a base joint, base_u is the velocity in joint frame
@@ -655,20 +656,20 @@ def _eval_floating_base_relative_transform(
     else:
         v_rel = v_F - wp.transform_vector(T_rel, v_curr)
         omega_rel = omega_F - wp.transform_vector(T_rel, omega_curr)
-    rel_velocity[wid] = vec6f(*v_rel, *omega_rel)
+    rel_velocity[wid] = wp.spatial_vectorf(*v_rel, *omega_rel)
 
 
 @wp.kernel
 def _apply_floating_base_transform(
     # Inputs:
-    body_world_id: wp.array[int32],
-    rel_transform: wp.array[transformf],
-    rel_velocity: wp.array[vec6f],
-    new_base_pos: wp.array[vec3f],
-    world_mask: wp.array[bool],
+    body_world_id: wp.array[wp.int32],
+    rel_transform: wp.array[wp.transformf],
+    rel_velocity: wp.array[wp.spatial_vectorf],
+    new_base_pos: wp.array[wp.vec3f],
+    world_mask: wp.array[wp.bool],
     # Outputs:
-    body_q: wp.array[transformf],
-    body_u: wp.array[vec6f],
+    body_q: wp.array[wp.transformf],
+    body_u: wp.array[wp.spatial_vectorf],
 ):
     # Get thread id as body id
     body_id = wp.tid()
@@ -694,7 +695,7 @@ def _apply_floating_base_transform(
     body_pos_new = wp.transform_get_translation(body_q_new)
     body_v_new += u_rel[:3] + wp.cross(omega_rel, body_pos_new - new_base_pos[wid])
     body_omega_new += omega_rel
-    body_u[body_id] = vec6f(*body_v_new, *body_omega_new)
+    body_u[body_id] = wp.spatial_vectorf(*body_v_new, *body_omega_new)
 
 
 ###
@@ -704,9 +705,9 @@ def _apply_floating_base_transform(
 
 def reset_time(
     model: ModelKamino,
-    time: wp.array,
-    steps: wp.array,
-    world_mask: wp.array,
+    time: wp.array[wp.float32],
+    steps: wp.array[wp.int32],
+    world_mask: wp.array[wp.bool],
 ):
     wp.launch(
         _reset_time_of_select_worlds,
@@ -724,10 +725,10 @@ def reset_time(
 
 def get_base_q_from_joint_q_and_body_q(
     model: ModelKamino,
-    joint_q: wp.array[float32],
-    body_q: wp.array[transformf],
-    base_q: wp.array[transformf],
-    world_mask: wp.array[bool],
+    joint_q: wp.array[wp.float32],
+    body_q: wp.array[wp.transformf],
+    base_q: wp.array[wp.transformf],
+    world_mask: wp.array[wp.bool],
 ):
     """
     Infer the floating base pose from joint coordinates, if a base joint was set, or from body poses,
@@ -759,10 +760,10 @@ def get_base_q_from_joint_q_and_body_q(
 
 def get_base_u_from_joint_u_and_body_u(
     model: ModelKamino,
-    joint_u: wp.array[float32],
-    body_u: wp.array[vec6f],
-    base_u: wp.array[vec6f],
-    world_mask: wp.array[bool],
+    joint_u: wp.array[wp.float32],
+    body_u: wp.array[wp.spatial_vectorf],
+    base_u: wp.array[wp.spatial_vectorf],
+    world_mask: wp.array[wp.bool],
 ):
     """
     Infer the floating base velocity from joint velocities, if a base joint was set, or from body velocities,
@@ -794,9 +795,9 @@ def get_base_u_from_joint_u_and_body_u(
 
 def set_body_q(
     model: ModelKamino,
-    body_q_in: wp.array[transformf],
-    body_q_out: wp.array[transformf],
-    world_mask: wp.array[bool],
+    body_q_in: wp.array[wp.transformf],
+    body_q_out: wp.array[wp.transformf],
+    world_mask: wp.array[wp.bool],
 ):
     """
     Set the body poses of select worlds to prescribed values.
@@ -817,11 +818,11 @@ def set_body_q(
 
 def set_floating_base(
     model: ModelKamino,
-    base_q: wp.array[transformf] | None,
-    base_u: wp.array[vec6f] | None,
-    body_q: wp.array[transformf],
-    body_u: wp.array[vec6f],
-    world_mask: wp.array[bool],
+    base_q: wp.array[wp.transformf] | None,
+    base_u: wp.array[wp.spatial_vectorf] | None,
+    body_q: wp.array[wp.transformf],
+    body_u: wp.array[wp.spatial_vectorf],
+    world_mask: wp.array[wp.bool],
     relative_base_u: bool = False,
 ):
     """
@@ -846,9 +847,9 @@ def set_floating_base(
 
     # Compute relative transformation and velocity change applied to base body
     # Note: we also cache the new base body position to avoid a race condition as the base body is updated
-    rel_transform = wp.empty(shape=model.size.num_worlds, dtype=transformf, device=model.device)
-    rel_velocity = wp.empty(shape=model.size.num_worlds, dtype=vec6f, device=model.device)
-    new_base_pos = wp.empty(shape=model.size.num_worlds, dtype=vec3f, device=model.device)
+    rel_transform = wp.empty(shape=model.size.num_worlds, dtype=wp.transformf, device=model.device)
+    rel_velocity = wp.empty(shape=model.size.num_worlds, dtype=wp.spatial_vectorf, device=model.device)
+    new_base_pos = wp.empty(shape=model.size.num_worlds, dtype=wp.vec3f, device=model.device)
     wp.launch(
         _eval_floating_base_relative_transform,
         dim=model.size.num_worlds,
@@ -892,7 +893,7 @@ def set_floating_base(
 def reset_joints_state_from_bodies_state(
     model: ModelKamino,
     state: StateKamino,
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
 ):
     """
     Reset joint-based components of the state given body poses and velocities, inferring consistent
@@ -934,7 +935,7 @@ def reset_joints_state_from_bodies_state(
 def reset_body_velocities(
     model: ModelKamino,
     state: StateKamino,
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
 ):
     """
     Reset body velocities in the state to zero.
@@ -955,7 +956,7 @@ def reset_body_velocities(
 def reset_body_wrenches(
     model: ModelKamino,
     state: StateKamino,
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
 ):
     """
     Reset body wrenches in the state to zero.

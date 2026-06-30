@@ -8,6 +8,8 @@ This module provides data structures and utilities for managing multiple
 independent linear systems, including rectangular and square systems.
 """
 
+from __future__ import annotations
+
 import functools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, get_args
@@ -16,7 +18,7 @@ import numpy as np
 import warp as wp
 from warp.types import type_size_in_bytes
 
-from ..core.types import FloatType, IntType, float32, int32
+from ..core.types import FloatType, IntType
 from .core import DenseSquareMultiLinearInfo
 
 if TYPE_CHECKING:
@@ -47,21 +49,17 @@ class BlockDType:
         Constructs a new BlockDType descriptor given scalar Warp data-type and the block shape.
 
         Args:
-            dtype (FloatType | IntType):
-                The underlying scalar Warp data-type of each sparse block.
-            shape (int | tuple[int] | tuple[int, int], optional):
-                The shape of each sparse block as an integer (for vectors) or a tuple of integers (for matrices).\n
+            dtype: The underlying scalar Warp data-type of each sparse block.
+            shape: The shape of each sparse block as an integer (for vectors) or a tuple of integers (for matrices).\n
                 If not provided, defaults to scalar blocks.
 
         Raises:
-            TypeError:
-                If the `dtype` field is not a valid FloatType or IntType.
-            ValueError:
-                If the `shape` field is not a positive integer or a tuple of one or two positive integers.
+            TypeError: If the `dtype` field is not a valid FloatType or IntType.
+            ValueError: If the `shape` field is not a positive integer or a tuple of one or two positive integers.
         """
         # Ensure the underlying scalar dtype is valid
         if (dtype not in get_args(FloatType)) and (dtype not in get_args(IntType)):
-            raise TypeError("The `dtype` field must be a valid FloatType or IntType such as float32 or int32.")
+            raise TypeError("The `dtype` field must be a valid FloatType or IntType such as wp.float32 or wp.int32.")
 
         # If no shape is provided, default to scalar blocks
         if shape is None:
@@ -156,7 +154,7 @@ class BlockSparseMatrices:
     nzb_dtype: BlockDType | None = None
     """Host-side cache of the fixed non-zero block data type contained in all sparse matrices."""
 
-    index_dtype: IntType = int32
+    index_dtype: IntType = wp.int32
     """Host-side cache of the integer type used for indexing the underlying data arrays."""
 
     num_matrices: int = 0
@@ -352,22 +350,17 @@ class BlockSparseMatrices:
         Finalizes the block-sparse matrix container by allocating on-device data arrays.
 
         Args:
-            max_dims (list[tuple[int, int]]):
-                A list of pairs of integers, specifying the maximum number of rows and columns for each matrix.
-            capacities (list[int]):
-                A list of integers specifying the maximum number of non-zero blocks for each sparse matrix.
-            block_type (BlockDType, optional):
-                An optional :class:`BlockDType` specifying the fixed type of each non-zero block.\n
+            max_dims: A list of pairs of integers, specifying the maximum number of rows and columns for each matrix.
+            capacities: A list of integers specifying the maximum number of non-zero blocks for each sparse matrix.
+            nzb_dtype: An optional :class:`BlockDType` specifying the fixed type of each non-zero block.\n
                 If not provided, it must be set prior to finalization.
-            device (wp.DeviceLike, optional):
-                An optional device on which to allocate the data arrays.\n
+            index_dtype: Integer type used for indexing the underlying data arrays.
+            device: An optional device on which to allocate the data arrays.\n
                 If not provided, the existing device of the container will be used.
 
         Raises:
-            RuntimeError:
-                If the `nzb_dtype` field has not been specified prior to finalization.
-            ValueError:
-                If the `capacities` field is not a non-empty list of non-negative integers.
+            RuntimeError: If the `nzb_dtype` field has not been specified prior to finalization.
+            ValueError: If the `capacities` field is not a non-empty list of non-negative integers.
         """
         # Override the device if provided
         if device is not None:
@@ -387,7 +380,7 @@ class BlockSparseMatrices:
         if self.index_dtype is None:
             raise RuntimeError("The `index_type` field must be specified before finalizing the data arrays.")
         elif self.index_dtype not in get_args(IntType):
-            raise TypeError("The `index_type` field must be a valid IntType such as int32 or int64.")
+            raise TypeError("The `index_type` field must be a valid IntType such as wp.int32 or wp.int64.")
 
         # Ensure that the max dimensions are valid
         if not isinstance(max_dims, list) or len(max_dims) == 0:
@@ -440,15 +433,15 @@ class BlockSparseMatrices:
         self.num_nzb.zero_()
         self.nzb_coords.zero_()
 
-    def zero(self, matrix_mask: wp.array | None = None):
+    def zero(self, matrix_mask: wp.array[wp.bool] | None = None):
         """
         Sets non-zero block data to zero, for all or a subset of the matrices.
 
         Args:
-            matrix_mask (optional): Per-matrix mask selecting which matrices to zero;
-                                    matrices with a `True` entry are zeroed, `False` entries are left unchanged.
-                                    If not provided, all matrices are set to zero.
-                                    Shape of ``(num_matrices,)``.
+            matrix_mask: Per-matrix mask selecting which matrices to zero;
+                matrices with a `True` entry are zeroed, `False` entries are left unchanged.
+                If not provided, all matrices are set to zero.
+                Shape of ``(num_matrices,)``.
         """
         self._assert_is_finalized()
         if matrix_mask is not None:
@@ -471,8 +464,7 @@ class BlockSparseMatrices:
         - the non-zero blocks are filled in row-major order according to the current values of `nzb_coords`.
 
         Args:
-            data (list[np.ndarray]):
-                A list of dense NumPy arrays to assign to each sparse matrix.
+            matrices: A list of dense NumPy arrays to assign to each sparse matrix.
         """
         # Ensure that the sparse matrices have been finalized
         self._assert_is_finalized()
@@ -602,14 +594,13 @@ class BlockSparseMatrices:
 
 @functools.cache
 def _make_masked_zero_kernel(block_type: BlockDType, index_dtype: IntType):
-    @wp.kernel
     def masked_zero_kernel(
         # Inputs
-        nzb_start: wp.array[index_dtype],
-        max_nzb: wp.array[index_dtype],
-        matrix_mask: wp.array[bool],
+        nzb_start,  # wp.array[index_dtype],
+        max_nzb,  # wp.array[index_dtype],
+        matrix_mask,  # wp.array[wp.bool],
         # Outputs
-        nzb_values: wp.array[block_type.warp_type],
+        nzb_values,  # wp.array[block_type.warp_type],
     ):
         mat_id, nzb_id_loc = wp.tid()
         if not matrix_mask[mat_id] or nzb_id_loc >= max_nzb[mat_id]:
@@ -617,7 +608,15 @@ def _make_masked_zero_kernel(block_type: BlockDType, index_dtype: IntType):
         nzb_id = nzb_start[mat_id] + nzb_id_loc
         nzb_values[nzb_id] = block_type.warp_type(0.0)
 
-    return masked_zero_kernel
+    # Set type annotation manually (else generics fail to resolve)
+    masked_zero_kernel.__annotations__ = {
+        "nzb_start": wp.array[index_dtype],
+        "max_nzb": wp.array[index_dtype],
+        "matrix_mask": wp.array[wp.bool],
+        "nzb_values": wp.array[block_type.warp_type],
+    }
+
+    return wp.kernel(masked_zero_kernel)
 
 
 ###
@@ -627,8 +626,8 @@ def _make_masked_zero_kernel(block_type: BlockDType, index_dtype: IntType):
 
 @wp.kernel
 def _copy_square_dims_kernel(
-    src_dim: wp.array[int32],
-    dst_dims: wp.array2d[int32],
+    src_dim: wp.array[wp.int32],
+    dst_dims: wp.array2d[wp.int32],
 ):
     """Copies square dimensions from 1D array to 2D (n, n) format."""
     wid = wp.tid()
@@ -647,15 +646,15 @@ def _make_dense_to_bsm_detect_kernel(block_size: int):
     @wp.kernel
     def kernel(
         # Dense matrix info
-        dense_dim: wp.array[int32],
-        dense_mio: wp.array[int32],
-        dense_mat: wp.array[float32],
+        dense_dim: wp.array[wp.int32],
+        dense_mio: wp.array[wp.int32],
+        dense_mat: wp.array[wp.float32],
         # BSM info
-        max_nzb: wp.array[int32],
-        nzb_start: wp.array[int32],
+        max_nzb: wp.array[wp.int32],
+        nzb_start: wp.array[wp.int32],
         # Outputs
-        num_nzb: wp.array[int32],
-        nzb_coords: wp.array2d[int32],
+        num_nzb: wp.array[wp.int32],
+        nzb_coords: wp.array2d[wp.int32],
     ):
         wid, bi, bj = wp.tid()
 
@@ -680,7 +679,7 @@ def _make_dense_to_bsm_detect_kernel(block_size: int):
                     col = col_start + j
                     if col < dim:
                         idx = m_offset + row * dim + col
-                        if dense_mat[idx] != float32(0.0):
+                        if dense_mat[idx] != wp.float32(0.0):
                             nonzero_count = nonzero_count + 1
 
         if nonzero_count > 0:
@@ -701,18 +700,18 @@ def _make_dense_to_bsm_copy_kernel(block_size: int):
     Note: Dense matrices use canonical compact storage where stride = active dim (not maxdim).
     """
 
-    mat_type = wp.types.matrix(shape=(block_size, block_size), dtype=float32)
+    mat_type = wp.types.matrix(shape=(block_size, block_size), dtype=wp.float32)
 
     @wp.kernel
     def kernel(
         # Dense matrix info
-        dense_dim: wp.array[int32],
-        dense_mio: wp.array[int32],
-        dense_mat: wp.array[float32],
+        dense_dim: wp.array[wp.int32],
+        dense_mio: wp.array[wp.int32],
+        dense_mat: wp.array[wp.float32],
         # BSM info
-        nzb_start: wp.array[int32],
-        num_nzb: wp.array[int32],
-        nzb_coords: wp.array2d[int32],
+        nzb_start: wp.array[wp.int32],
+        num_nzb: wp.array[wp.int32],
+        nzb_coords: wp.array2d[wp.int32],
         # Output
         nzb_values: wp.array[mat_type],
     ):
@@ -739,7 +738,7 @@ def _make_dense_to_bsm_copy_kernel(block_size: int):
                     idx = m_offset + row * dim + col
                     block[i, j] = dense_mat[idx]
                 else:
-                    block[i, j] = float32(0.0)
+                    block[i, j] = wp.float32(0.0)
 
         nzb_values[global_idx] = block
 
@@ -747,7 +746,7 @@ def _make_dense_to_bsm_copy_kernel(block_size: int):
 
 
 def allocate_block_sparse_from_dense(
-    dense_op: "DenseLinearOperatorData",
+    dense_op: DenseLinearOperatorData,
     block_size: int,
     sparsity_threshold: float = 1.0,
     device: wp.DeviceLike | None = None,
@@ -801,7 +800,7 @@ def allocate_block_sparse_from_dense(
 
 
 def dense_to_block_sparse_copy_values(
-    dense_op: "DenseLinearOperatorData",
+    dense_op: DenseLinearOperatorData,
     bsm: BlockSparseMatrices,
     block_size: int,
 ) -> None:

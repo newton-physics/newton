@@ -9,6 +9,7 @@ simulating constrained multi-body systems for arbitrary mechanical assemblies.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import warp as wp
 
@@ -26,7 +27,6 @@ from .core.joints import JointCorrectionMode
 from .core.model import ModelKamino
 from .core.state import StateKamino
 from .core.time import advance_time
-from .core.types import float32, transformf, vec6f
 from .dynamics.dual import DualProblem
 from .dynamics.wrenches import (
     compute_constraint_body_wrenches,
@@ -117,9 +117,9 @@ class SolverKaminoImpl(SolverBase):
         config is provided, a default config will be used.
 
         Args:
-            model (ModelKamino): The multi-body systems model to simulate.
-            contacts (ContactsKamino): The contact data container for the simulation.
-            config (SolverKaminoImpl.Config | None): Optional solver config.
+            model: The multi-body systems model to simulate.
+            contacts: The contact data container for the simulation.
+            config: Optional solver config.
         """
         # Ensure the input containers are valid
         if not isinstance(model, ModelKamino):
@@ -256,11 +256,11 @@ class SolverKaminoImpl(SolverBase):
         # Allocate additional internal data for reset operations
         with wp.ScopedDevice(self._model.device):
             self._all_worlds_mask = wp.ones(shape=(self._model.size.num_worlds,), dtype=wp.bool)
-            self._base_q = wp.zeros(shape=(self._model.size.num_worlds,), dtype=transformf)
-            self._base_u = wp.zeros(shape=(self._model.size.num_worlds,), dtype=vec6f)
-            self._bodies_u_zeros = wp.zeros(shape=(self._model.size.sum_of_num_bodies,), dtype=vec6f)
-            self._actuators_q = wp.zeros(shape=(self._model.size.sum_of_num_actuated_joint_coords,), dtype=float32)
-            self._actuators_u = wp.zeros(shape=(self._model.size.sum_of_num_actuated_joint_dofs,), dtype=float32)
+            self._base_q = wp.zeros(shape=(self._model.size.num_worlds,), dtype=wp.transformf)
+            self._base_u = wp.zeros(shape=(self._model.size.num_worlds,), dtype=wp.spatial_vectorf)
+            self._bodies_u_zeros = wp.zeros(shape=(self._model.size.sum_of_num_bodies,), dtype=wp.spatial_vectorf)
+            self._actuators_q = wp.zeros(shape=(self._model.size.sum_of_num_actuated_joint_coords,), dtype=wp.float32)
+            self._actuators_u = wp.zeros(shape=(self._model.size.sum_of_num_actuated_joint_dofs,), dtype=wp.float32)
 
         # Allocate the contacts warmstarter if enabled
         self._ws_limits: WarmstarterLimits | None = None
@@ -382,7 +382,7 @@ class SolverKaminoImpl(SolverBase):
     def reset(
         self,
         state: StateKamino,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         config: SolverKamino.ResetConfig | None = None,
     ):
         """
@@ -400,13 +400,13 @@ class SolverKaminoImpl(SolverBase):
             state: The simulation state to reset (modified in place).
             world_mask: Optional array of per-world masks indicating which
                 worlds should be reset.
-                Shape of ``(num_worlds,)`` and type :class:`wp.int8` | :class:`wp.bool`.
+                Shape of ``(num_worlds,)``.
             config: Optional reset configuration, controlling the reset behavior
                 for body poses/velocities as well as floating base pose/velocity.
                 If not provided, all components are reset to default (initial) values.
         """
 
-        def _check_length(data: wp.array, name: str, expected: int):
+        def _check_length(data: wp.array[Any], name: str, expected: int):
             if data is not None and data.shape[0] != expected:
                 raise ValueError(f"Invalid shape for {name}: Expected ({expected},), but got {data.shape}.")
 
@@ -641,19 +641,13 @@ class SolverKaminoImpl(SolverBase):
         `contacts`. The updated state is written to `state_out`.
 
         Args:
-            state_in (StateKamino):
-                The input current state of the simulation.
-            state_out (StateKamino):
-                The output next state after time integration.
-            control (ControlKamino):
-                The input controls applied to the system.
-            contacts (ContactsKamino, optional):
-                The set of active contacts.
-            detector (CollisionDetector, optional):
-                An optional collision detector to use for generating contacts at the current state.\n
+            state_in: The input current state of the simulation.
+            state_out: The output next state after time integration.
+            control: The input controls applied to the system.
+            contacts: The set of active contacts.
+            detector: An optional collision detector to use for generating contacts at the current state.\n
                 If `None`, the `contacts` data will be used as the current set of active contacts.
-            dt (float, optional):
-                A uniform time-step to apply uniformly to all worlds of the simulation.
+            dt: A uniform time-step to apply uniformly to all worlds of the simulation.
         """
         # If specified, configure the internal per-world solver time-step uniformly from the input argument
         if dt is not None:
@@ -839,7 +833,7 @@ class SolverKaminoImpl(SolverBase):
         # Reset the forward dynamics solver
         self._solver_fd.reset()
 
-    def _reset_solver_data(self, world_mask: wp.array | None = None):
+    def _reset_solver_data(self, world_mask: wp.array[wp.bool] | None = None):
         """
         Resets solver internal data and calls reset callbacks.
 
@@ -870,7 +864,7 @@ class SolverKaminoImpl(SolverBase):
     # Internals - Step Operations
     ###
 
-    def _update_joints_data(self, q_j_p: wp.array | None = None):
+    def _update_joints_data(self, q_j_p: wp.array[wp.float32] | None = None):
         """
         Updates the joint states based on the current body states.
         """
@@ -1034,21 +1028,15 @@ class SolverKaminoImpl(SolverBase):
         and total effective body wrenches applied to each body of the system.
 
         Args:
-            state_in (`StateKamino`):
-                State of the system at the current time-step.
-            state_out (`StateKamino`):
-                State of the system at the next time-step.
-            control (`ControlKamino`):
-                Input controls applied to the system.
-            limits (`LimitsKamino`, optional):
-                Optional container for joint limits.
+            state_in: State of the system at the current time-step.
+            state_out: State of the system at the next time-step.
+            control: Input controls applied to the system.
+            limits: Optional container for joint limits.
                 If `None`, joint limit handling is skipped.
-            contacts (`ContactsKamino`, optional):
-                Optional container of active contacts.
+            contacts: Optional container of active contacts.
                 If `None`, the solver will use the internal collision detector
                 if the model admits contacts, or skip contact handling if not.
-            detector (`CollisionDetector`, optional):
-                Optional collision detector.
+            detector: Optional collision detector.
                 If `None`, collision detection is skipped.
         """
         # Update intermediate quantities of the bodies and joints

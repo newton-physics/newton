@@ -31,7 +31,7 @@ from newton._src.solvers.kamino.tests.utils.extract import (
 
 
 def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[np.ndarray]:
-    """Compute the solver metrics with numpy, using float64."""
+    """Compute the solver metrics with numpy, using wp.float64."""
     output = {}
     output["r_v_plus"] = []
     output["s"] = []
@@ -580,7 +580,7 @@ class TestSolverMetrics(unittest.TestCase):
     def test_05_validate_metrics_boxes_hinged(self):
         """
         Compares metrics from `SolutionMetrics` with metrics computed by a
-        reference routine using float64 numpy arrays, on a perturbed PADMM solution.
+        reference routine using wp.float64 numpy arrays, on a perturbed PADMM solution.
         """
         # Create the test problem
         test = TestSetup(
@@ -608,7 +608,7 @@ class TestSolverMetrics(unittest.TestCase):
         # Perturb solution to have non-trivial metrics
         rng = np.random.default_rng(seed=self.seed)
 
-        def perturb_array(arr: wp.array):
+        def perturb_array(arr: wp.array[wp.float32]):
             arr_np = arr.numpy()
             arr_np += 0.1 * rng.standard_normal(arr_np.shape, dtype=np.float32)
             arr.assign(arr_np)
@@ -719,7 +719,7 @@ class TestSolverMetrics(unittest.TestCase):
         # Perturb problem to have non-trivial metrics
         rng = np.random.default_rng(seed=self.seed)
 
-        def perturb_array(arr: wp.array):
+        def perturb_array(arr: wp.array[wp.float32]):
             arr_np = arr.numpy()
             arr_np += rng.standard_normal(arr_np.shape, dtype=np.float32)
             arr.assign(arr_np)
