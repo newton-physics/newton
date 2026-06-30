@@ -17,7 +17,7 @@ from ..core.types import Axis, AxisType
 from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
 from ..utils.color import color_linear_to_srgb
-from ..utils.import_usd_deformable import _validate_mass_array, _warn_geometry_authored_material_attrs
+from ..utils.import_usd_deformable_utils import _validate_mass_array, _warn_geometry_authored_material_attrs
 from ..utils.texture import linear_texture_to_srgb, load_texture
 
 logger = logging.getLogger("newton")

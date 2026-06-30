@@ -45,16 +45,15 @@ from ..solvers.mujoco.utils import (
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
-from .import_usd_deformable import (
+from .import_usd_deformable_attachments import (
     _deformable_import_attachments,
-    _deformable_import_cable,
-    _deformable_import_cable_graphs,
-    _deformable_import_cloth,
     _deformable_import_element_collision_filters,
-    _deformable_import_volume,
     _deformable_remap_collapsed,
-    _DeformableImportContext,
 )
+from .import_usd_deformable_cable import _deformable_import_cable, _deformable_import_cable_graphs
+from .import_usd_deformable_cloth import _deformable_import_cloth
+from .import_usd_deformable_utils import _DeformableImportContext
+from .import_usd_deformable_volume import _deformable_import_volume
 from .import_utils import should_show_collider
 
 logger = logging.getLogger("newton")
