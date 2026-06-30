@@ -1322,8 +1322,8 @@ class TestMenagerieUSD(TestMenagerieBase):
     # Per-actuator and per-joint fields the USD parser doesn't populate to match
     # native MJCF compilation, but which step-response dynamics depends on.
     # Empirically pinned down on ShadowHand: without these, qfrc_actuator
-    # diverges at step 0 (actuator clipping fields), and qfrc_constraint
-    # diverges at step 1+ (joint-limit solref + actfrc).
+    # diverges at step 0 (actuator clipping fields), and joint actuator-force
+    # limits affect constraints at step 1+.
     usd_actuator_backfill_fields: ClassVar[list[str]] = [
         "actuator_ctrlrange",
         "actuator_ctrllimited",
@@ -1331,7 +1331,6 @@ class TestMenagerieUSD(TestMenagerieBase):
         "actuator_forcelimited",
     ]
     usd_joint_backfill_fields: ClassVar[list[str]] = [
-        "jnt_solref",
         "jnt_actfrclimited",
         "jnt_actfrcrange",
     ]

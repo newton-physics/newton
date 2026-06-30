@@ -211,6 +211,50 @@ class SchemaResolverManager:
             return
         self._schema_attrs[resolver.name][prim_path] = resolver.collect_prim_attrs(prim)
 
+    def get_mapping_default(self, resolver_name: str, prim_type: PrimType, key: str) -> Any | None:
+        """Get a transformed mapping default from a configured resolver.
+
+        Args:
+            resolver_name: Name of the resolver providing the default.
+            prim_type: Prim type category.
+            key: Logical Newton attribute key within the prim category.
+
+        Returns:
+            The transformed mapping default, or ``None`` when unavailable.
+        """
+        for resolver in self.resolvers:
+            if resolver.name != resolver_name:
+                continue
+            spec = resolver.mapping.get(prim_type, {}).get(key)
+            if spec is None or spec.default is None:
+                return None
+            if spec.usd_value_transformer is not None:
+                return spec.usd_value_transformer(spec.default)
+            return spec.default
+        return None
+
+    def get_authored_value(
+        self, prim: Usd.Prim, prim_type: PrimType, key: str
+    ) -> tuple[Any | None, SchemaResolver | None]:
+        """Get the highest-priority authored value and its resolver.
+
+        Args:
+            prim: USD prim to query.
+            prim_type: Prim type category.
+            key: Logical Newton attribute key within the prim category.
+
+        Returns:
+            A pair containing the transformed authored value and the resolver
+            that supplied it, or ``(None, None)`` when no value is authored.
+        """
+        for resolver in self.resolvers:
+            value = resolver.get_value(prim, prim_type, key)
+            if value is None:
+                continue
+            self._collect_on_first_use(resolver, prim)
+            return value, resolver
+        return None, None
+
     def get_value(
         self, prim: Usd.Prim, prim_type: PrimType, key: str, default: Any = None, verbose: bool = False
     ) -> Any:
@@ -232,12 +276,9 @@ class SchemaResolverManager:
             Resolved value according to the precedence above.
         """
         # 1) Authored value by schema priority
-        for r in self.resolvers:
-            val = r.get_value(prim, prim_type, key)
-            if val is None:
-                continue
-            self._collect_on_first_use(r, prim)
-            return val
+        value, _ = self.get_authored_value(prim, prim_type, key)
+        if value is not None:
+            return value
 
         # 2) Caller-provided default, if any
         if default is not None:
