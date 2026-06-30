@@ -977,10 +977,15 @@ class ForwardKinematicsSolver:
             device=self.device,
         )
 
-    def _initialize_incremental_solve(self, bodies_q: wp.array[wp.transformf]):
+    def _eval_actuator_coords(
+        self,
+        bodies_q: wp.array[wp.transformf],
+        actuators_q: wp.array[wp.float32],
+        actuators_q_ref: wp.array[wp.float32] | None = None,
+    ):
         """
-        Internal function running all necessary precomputations for the incremental solve.
-        Assumes without check that data related to incremental solve is allocated.
+        Internal evaluator evaluating effective actuator coordinates based on body poses,
+        with 2 Pi / quaternion sign correction w.r.t. reference coordinates if provided.
         """
         # Extract current actuator coordinates
         wp.launch(
@@ -998,22 +1003,31 @@ class ForwardKinematicsSolver:
                 self.joints_F_r_Fj,
                 bodies_q,
                 self.actuated_coord_offsets,
-                self.actuators_q_prev,
+                actuators_q,
             ],
             device=self.device,
         )
-        # Correct target actuator coordinates w.r.t. current
-        wp.launch(
-            _correct_actuator_coords,
-            dim=(self.num_joints_tot,),
-            inputs=[
-                self.actuated_coord_offsets,
-                self.joints_dof_type,
-                self.actuators_q_prev,
-                self.actuators_q_next,
-            ],
-            device=self.device,
-        )
+        # Correct w.r.t. reference coordinates
+        if actuators_q_ref is not None:
+            wp.launch(
+                _correct_actuator_coords,
+                dim=(self.num_joints_tot,),
+                inputs=[
+                    self.actuated_coord_offsets,
+                    self.joints_dof_type,
+                    actuators_q_ref,
+                    actuators_q,
+                ],
+                device=self.device,
+            )
+
+    def _initialize_incremental_solve(self, bodies_q: wp.array[wp.transformf]):
+        """
+        Internal function running all necessary precomputations for the incremental solve.
+        Assumes without check that data related to incremental solve is allocated.
+        """
+        # Extract current actuator coordinates, and correct w.r.t. target coordinates
+        self._eval_actuator_coords(bodies_q, self.actuators_q_prev, self.actuators_q_next)
         # Compute necessary number of Newton steps, before the incremental target matches the true target
         self.min_newton_iterations.zero_()
         wp.launch_tiled(
@@ -1858,11 +1872,11 @@ class ForwardKinematicsSolver:
 
     def solve_for_body_velocities(
         self,
-        target_rel_transforms: wp.array[wp.transformf],
         actuators_u: wp.array[wp.float32],
         bodies_q: wp.array[wp.transformf],
         bodies_u: wp.array[vec6f],
         base_u: wp.array[vec6f] | None = None,
+        target_rel_transforms: wp.array[wp.transformf] | None = None,
         world_mask: wp.array[wp.bool] | None = None,
     ):
         """
@@ -1872,9 +1886,6 @@ class ForwardKinematicsSolver:
 
         Parameters
         ----------
-        target_rel_transforms : wp.array
-            Array of position-control transforms, encoding actuated coordinates and base pose.
-            Expects shape of ``(num_fk_joints,)`` and type :class:`transform`
         actuators_u : wp.array
             Array of actuated joint velocities.
             Expects shape of ``(sum_of_num_actuated_joint_dofs,)`` and type :class:`float`.
@@ -1890,27 +1901,40 @@ class ForwardKinematicsSolver:
             If not provided, will default to zero. Ignored if no base body or joint was set for this model.
             If this function is captured in a graph, must be either always or never provided.
             Expects shape of ``(num_worlds,)`` and type :class:`vec6`.
+        target_rel_transforms : wp.array, optional
+            Array of position-control transforms, encoding actuated coordinates and base pose.
+            Expects shape of ``(num_fk_joints,)`` and type :class:`transform`
+            If not provided, will be inferred from bodies_q, reading actuated coordinates and base pose
+            from body poses (assuming they are consistent).
+            If this function is captured in a graph, must be either always or never provided.
         world_mask : wp.array, optional
             Per-world boolean flags selecting which worlds to process (``False`` leaves a world unchanged).
             If not provided, all worlds are processed.
             If this function is captured in a graph, must be either always or never provided.
             Expects shape of ``(num_worlds,)`` and type :class:`bool`.
         """
-        assert target_rel_transforms.device == self.device
         assert actuators_u.device == self.device
         assert bodies_q.device == self.device
         assert bodies_u.device == self.device
         assert base_u is None or base_u.device == self.device
+        assert target_rel_transforms is None or target_rel_transforms.device == self.device
         assert world_mask is None or world_mask.device == self.device
 
         # Use default base velocity if not provided
         if base_u is None:
             base_u = self.base_u_default
 
-        internal_mask = self.all_worlds_mask if world_mask is None else world_mask
+        # Use default mask with all worlds if not provided
+        world_mask = self.all_worlds_mask if world_mask is None else world_mask
+
+        # Extract target relative transformations from state if not provided
+        if target_rel_transforms is None:
+            self._eval_actuator_coords(bodies_q, self.actuators_q_next)
+            self._eval_target_relative_transformations(self.actuators_q_next, self.target_rel_transforms)
+            target_rel_transforms = self.target_rel_transforms
 
         # Compute velocities
-        self._solve_for_body_velocities(target_rel_transforms, base_u, actuators_u, bodies_q, bodies_u, internal_mask)
+        self._solve_for_body_velocities(target_rel_transforms, base_u, actuators_u, bodies_q, bodies_u, world_mask)
 
     def run_fk_solve(
         self,
