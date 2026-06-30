@@ -381,6 +381,13 @@ class TestSchemaResolver(unittest.TestCase):
         time_steps_per_second = resolver.get_value(physics_scene_prim, PrimType.SCENE, "time_steps_per_second")
         self.assertEqual(time_steps_per_second, 100)
 
+        # An unusable higher-priority value must not hide a usable lower-priority value.
+        physics_scene_prim.GetAttribute("mjc:option:timestep").Set(0.0)
+        time_steps_per_second = resolver.get_value(
+            physics_scene_prim, PrimType.SCENE, "time_steps_per_second", default=1000
+        )
+        self.assertEqual(time_steps_per_second, 120)
+
     def test_gravity_enabled(self):
         """
         Test gravity_enabled priority.

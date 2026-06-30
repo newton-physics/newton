@@ -105,17 +105,28 @@ class SchemaResolver:
         Returns:
             Resolved authored value, or ``None`` when not found.
         """
+        _, value = self._get_authored_value(prim, prim_type, key)
+        return value
+
+    def _get_authored_value(self, prim: Usd.Prim, prim_type: PrimType, key: str) -> tuple[bool, Any | None]:
+        """Get an authored value while retaining its provenance."""
         if prim is None:
-            return None
+            return False, None
         spec = self.mapping.get(prim_type, {}).get(key)
         if spec is not None:
             if spec.usd_value_getter is not None:
                 v = spec.usd_value_getter(prim)
+                if v is None:
+                    return False, None
             else:
-                v = usd.get_attribute(prim, spec.name)
-            if v is not None:
-                return spec.usd_value_transformer(v) if spec.usd_value_transformer is not None else v
-        return None
+                attr = prim.GetAttribute(spec.name)
+                if not attr or not attr.HasAuthoredValue():
+                    return False, None
+                v = attr.Get()
+            if spec.usd_value_transformer is not None:
+                v = spec.usd_value_transformer(v)
+            return True, v
+        return False, None
 
     def collect_prim_attrs(self, prim: Usd.Prim) -> dict[str, Any]:
         """Collect all resolver-relevant attributes for a prim.
@@ -245,11 +256,28 @@ class SchemaResolverManager:
 
         Returns:
             A pair containing the transformed authored value and the resolver
-            that supplied it, or ``(None, None)`` when no value is authored.
+            that supplied it, or ``(None, None)`` when no usable value is
+            authored.
         """
         for resolver in self.resolvers:
             value = resolver.get_value(prim, prim_type, key)
             if value is None:
+                continue
+            self._collect_on_first_use(resolver, prim)
+            return value, resolver
+        return None, None
+
+    def get_authored_candidate(
+        self, prim: Usd.Prim, prim_type: PrimType, key: str
+    ) -> tuple[Any | None, SchemaResolver | None]:
+        """Get the highest-priority authored candidate and its resolver.
+
+        Unlike :meth:`get_authored_value`, this method retains the resolver
+        when transforming an authored value returns ``None``.
+        """
+        for resolver in self.resolvers:
+            is_authored, value = resolver._get_authored_value(prim, prim_type, key)
+            if not is_authored:
                 continue
             self._collect_on_first_use(resolver, prim)
             return value, resolver

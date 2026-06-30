@@ -379,7 +379,6 @@ def parse_usd(
         resolver.validate_custom_attributes(builder)
     has_mjc_resolver = any(resolver.name == "mjc" for resolver in schema_resolvers)
     solreflimit_mode_key = "mujoco:solreflimit_mode"
-    has_solreflimit_mode = solreflimit_mode_key in builder.custom_attributes
 
     # mapping from prim path to body index in ModelBuilder
     path_body_map: dict[str, int] = {}
@@ -448,14 +447,23 @@ def parse_usd(
     def _has_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
         return bool(prim and prim.IsValid() and usd.has_applied_api_schema(prim, schema_name))
 
+    def _should_write_solreflimit_mode() -> bool:
+        return has_mjc_resolver and solreflimit_mode_key in builder.custom_attributes
+
     def _resolve_joint_limit_gain(
         prim: Usd.Prim, key: str, builder_default: float
     ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
         """Resolve a limit gain and report the semantics of its source."""
-        authored_value, authored_resolver = R.get_authored_value(prim, PrimType.JOINT, key)
-        if authored_value is not None:
-            source = "mjc_authored" if authored_resolver is not None and authored_resolver.name == "mjc" else "force"
-            return authored_value, source
+        authored_value, authored_resolver = R.get_authored_candidate(prim, PrimType.JOINT, key)
+        if authored_resolver is not None:
+            source = "mjc_authored" if authored_resolver.name == "mjc" else "force"
+            if authored_value is not None:
+                return authored_value, source
+            if source == "mjc_authored":
+                mjc_default = R.get_mapping_default("mjc", PrimType.JOINT, key)
+                if mjc_default is not None:
+                    return mjc_default, source
+            return builder_default, source
         if has_mjc_resolver and _has_api_schema(prim, "MjcJointAPI"):
             mjc_default = R.get_mapping_default("mjc", PrimType.JOINT, key)
             if mjc_default is not None:
@@ -1198,7 +1206,7 @@ def parse_usd(
                 f"{limit_key}_kd",
                 default_joint_limit_kd * limit_gains_scaling,
             )
-            if has_mjc_resolver and has_solreflimit_mode:
+            if _should_write_solreflimit_mode():
                 joint_custom_attrs[solreflimit_mode_key] = _joint_limit_solref_mode(limit_ke_source, limit_kd_source)
             joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
             joint_params["limit_lower"] = joint_desc.limit.lower
@@ -1449,7 +1457,7 @@ def parse_usd(
                     d6_dof_axes.append(rot_name)
                     num_dofs += 1
 
-            if has_mjc_resolver and has_solreflimit_mode:
+            if _should_write_solreflimit_mode():
                 joint_custom_attrs[solreflimit_mode_key] = linear_solref_modes + angular_solref_modes
 
             joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
@@ -1760,7 +1768,7 @@ def parse_usd(
 
             # Collect per-DOF custom attributes from this sibling prim
             sibling_dof_attrs = usd.get_custom_attribute_values(jp_prim, dof_freq_attrs, context={"builder": builder})
-            if has_mjc_resolver and has_solreflimit_mode:
+            if _should_write_solreflimit_mode():
                 sibling_dof_attrs[solreflimit_mode_key] = _joint_limit_solref_mode(limit_ke_source, limit_kd_source)
 
             if is_revolute:
