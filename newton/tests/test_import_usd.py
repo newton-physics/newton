@@ -306,6 +306,54 @@ def Xform "Root" (
         self.assertEqual(model.body_count, 4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_stray_joint_does_not_strip_unrelated_floating_bodies(self):
+        """A stray authored joint under no articulation root must not suppress base-joint
+        creation for unrelated floating bodies. Regression test for issue #3002.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        def define_body(path, pos):
+            body = UsdGeom.Cube.Define(stage, path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            # CollisionAPI gives the body positive mass so it is eligible for a base joint.
+            UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+            body.AddTranslateOp().Set(Gf.Vec3d(*pos))
+            return body
+
+        define_body("/World/FreeBody", (0, 0, 0))
+
+        prop_a = define_body("/World/PropA", (5, 0, 0))
+        prop_b = define_body("/World/PropB", (6, 0, 0))
+        stray = UsdPhysics.FixedJoint.Define(stage, "/World/StrayFixedJoint")
+        stray.CreateBody0Rel().SetTargets([prop_a.GetPath()])
+        stray.CreateBody1Rel().SetTargets([prop_b.GetPath()])
+        stray.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 0))
+        stray.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, 0))
+        stray.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        stray.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+
+        builder = newton.ModelBuilder()
+        with self.assertWarns(UserWarning):  # the orphan stray joint warns
+            builder.add_usd(stage)
+
+        self.assertEqual(builder.body_count, 3)
+
+        free_idx = builder.body_label.index("/World/FreeBody")
+        self.assertIn(free_idx, builder.joint_child)
+        free_joint = builder.joint_child.index(free_idx)
+        self.assertEqual(builder.joint_type[free_joint], JointType.FREE)
+        self.assertNotEqual(builder.joint_articulation[free_joint], -1)
+
+        # The authored joint must remain orphaned (no articulation), unchanged by the fix.
+        stray_joint = builder.joint_label.index("/World/StrayFixedJoint")
+        self.assertEqual(builder.joint_type[stray_joint], JointType.FIXED)
+        self.assertEqual(builder.joint_articulation[stray_joint], -1)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_body_to_world_fixed_joint(self):
         """A body connected to the world via a PhysicsFixedJoint must be imported
         with a FIXED joint (not FREE) and placed in its own articulation."""

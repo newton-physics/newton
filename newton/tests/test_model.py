@@ -322,6 +322,57 @@ class TestParallelJointWarning(unittest.TestCase):
             main.add_joint_revolute(parent=-1, child=merged_body)
 
 
+class TestModelBuilderBvhConstructor(unittest.TestCase):
+    def test_model_builder_forwards_bvh_constructors(self):
+        builder = ModelBuilder()
+        builder.default_bvh_cfg.mesh_constructor = "cubql"
+        builder.default_bvh_cfg.gaussian_constructor = "sah"
+        builder.default_bvh_cfg.shape_constructor = "lbvh"
+
+        mesh = newton.Mesh(
+            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+            indices=np.array([0, 1, 2], dtype=np.int32),
+            compute_inertia=False,
+        )
+        gaussian = newton.Gaussian(positions=np.zeros((1, 3), dtype=np.float32))
+        builder.add_shape_mesh(body=-1, mesh=mesh)
+        builder.add_shape_gaussian(body=-1, gaussian=gaussian)
+
+        with (
+            mock.patch("newton._src.geometry.types.wp.Mesh") as wp_mesh,
+            mock.patch.object(
+                newton.Gaussian, "finalize", autospec=True, return_value=newton.Gaussian.Data()
+            ) as finalize,
+            mock.patch.object(newton.Model, "bvh_build_shapes", autospec=True) as build_shapes,
+            mock.patch.object(newton.Model, "bvh_build_particles", autospec=True),
+        ):
+            wp_mesh.return_value.id = 123
+            model = builder.finalize(device="cpu")
+
+        wp_mesh.assert_called_once()
+        self.assertEqual(wp_mesh.call_args.kwargs["bvh_constructor"], "cubql")
+        finalize.assert_called_once_with(gaussian, device="cpu", bvh_constructor="sah")
+        build_shapes.assert_called_once_with(model, model, bvh_constructor="lbvh")
+
+    def test_gaussian_finalize_forwards_bvh_constructor_to_warp_bvh(self):
+        gaussian = newton.Gaussian(
+            positions=np.zeros((1, 3), dtype=np.float32),
+            rotations=np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32),
+            scales=np.ones((1, 3), dtype=np.float32),
+            opacities=np.ones(1, dtype=np.float32),
+            sh_coeffs=np.ones((1, 3), dtype=np.float32),
+        )
+
+        with (
+            mock.patch("newton._src.geometry.types.wp.launch"),
+            mock.patch("newton._src.geometry.types.wp.Bvh") as wp_bvh,
+        ):
+            wp_bvh.return_value.id = 456
+            gaussian.finalize(device="cpu", bvh_constructor="sah")
+
+        self.assertEqual(wp_bvh.call_args.kwargs["constructor"], "sah")
+
+
 class TestModelMesh(unittest.TestCase):
     def test_add_triangles(self):
         rng = np.random.default_rng(123)
@@ -360,13 +411,22 @@ class TestModelMesh(unittest.TestCase):
                 t[0],
                 t[1],
                 t[2],
-                tri_ke[i],
-                tri_ka[i],
-                tri_kd[i],
-                tri_drag[i],
-                tri_lift[i],
+                tri_ke=tri_ke[i],
+                tri_ka=tri_ka[i],
+                tri_kd=tri_kd[i],
+                tri_drag=tri_drag[i],
+                tri_lift=tri_lift[i],
             )
-        builder2.add_triangles(tris[:, 0], tris[:, 1], tris[:, 2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+        builder2.add_triangles(
+            tris[:, 0],
+            tris[:, 1],
+            tris[:, 2],
+            tri_ke=tri_ke,
+            tri_ka=tri_ka,
+            tri_kd=tri_kd,
+            tri_drag=tri_drag,
+            tri_lift=tri_lift,
+        )
 
         assert_np_equal(np.array(builder1.tri_indices), np.array(builder2.tri_indices))
         assert_np_equal(np.array(builder1.tri_poses), np.array(builder2.tri_poses), tol=1.0e-6)
@@ -403,8 +463,24 @@ class TestModelMesh(unittest.TestCase):
         edge_ke = rng.standard_normal(size=2)
         edge_kd = rng.standard_normal(size=2)
         for i in range(2):
-            builder1.add_edge(edges[i, 0], edges[i, 1], edges[i, 2], edges[i, 3], rest[i], edge_ke[i], edge_kd[i])
-        builder2.add_edges(edges[:, 0], edges[:, 1], edges[:, 2], edges[:, 3], rest, edge_ke, edge_kd)
+            builder1.add_edge(
+                edges[i, 0],
+                edges[i, 1],
+                edges[i, 2],
+                edges[i, 3],
+                rest=rest[i],
+                edge_ke=edge_ke[i],
+                edge_kd=edge_kd[i],
+            )
+        builder2.add_edges(
+            edges[:, 0],
+            edges[:, 1],
+            edges[:, 2],
+            edges[:, 3],
+            rest=rest,
+            edge_ke=edge_ke,
+            edge_kd=edge_kd,
+        )
 
         assert_np_equal(np.array(builder1.edge_indices), np.array(builder2.edge_indices))
         assert_np_equal(np.array(builder1.edge_rest_angle), np.array(builder2.edge_rest_angle), tol=1.0e-4)

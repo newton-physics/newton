@@ -679,6 +679,7 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
             wp.array([mesh.id], dtype=wp.uint64, device=device),
             wp.array([-1], dtype=wp.int32, device=device),
             0.0,
+            wp.array([0.0], dtype=wp.float32, device=device),
             1,
             1,
             wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),
@@ -1128,6 +1129,29 @@ class TestParticleShapeContacts(unittest.TestCase):
 
 
 class TestContactEstimator(unittest.TestCase):
+    def test_visual_only_meshes_do_not_inflate_estimate(self):
+        """Visual meshes should not affect rigid contact capacity estimates."""
+        model = newton.Model()
+        model.world_count = 1
+        model.shape_contact_pair_count = 0
+
+        shape_type = np.array(
+            [int(GeoType.BOX)] * 4 + [int(GeoType.MESH)] * 100,
+            dtype=np.int32,
+        )
+        shape_world = np.zeros(len(shape_type), dtype=np.int32)
+        shape_flags = np.array(
+            [int(ShapeFlags.COLLIDE_SHAPES)] * 4 + [int(ShapeFlags.VISIBLE)] * 100,
+            dtype=np.int32,
+        )
+
+        model.shape_type = wp.array(shape_type, dtype=wp.int32)
+        model.shape_world = wp.array(shape_world, dtype=wp.int32)
+        model.shape_flags = wp.array(shape_flags, dtype=wp.int32)
+
+        estimate = _estimate_rigid_contact_max(model)
+        self.assertEqual(estimate, 1000)
+
     def test_heuristic_caps_large_pair_count(self):
         """When pair count is huge, the heuristic provides a tighter bound."""
         model = newton.Model()
@@ -1309,6 +1333,36 @@ class TestShapePairsMaxScaling(unittest.TestCase):
                 f"broad_phase={bp_mode}: shape_pairs_max must not be quadratic",
             )
 
+    def test_visual_only_mesh_does_not_enable_mesh_narrow_phase(self):
+        """Visual meshes should not opt the pipeline into mesh contact kernels."""
+        builder = newton.ModelBuilder()
+        body_a = builder.add_body(xform=wp.transform(wp.vec3(-1.0, 0.0, 0.0), wp.quat_identity()))
+        body_b = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
+        builder.add_shape_box(body=body_a, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=body_b, hx=0.1, hy=0.1, hz=0.1)
+
+        visual_cfg = newton.ModelBuilder.ShapeConfig(
+            density=0.0,
+            has_shape_collision=False,
+            has_particle_collision=False,
+            is_visible=True,
+        )
+        visual_mesh = newton.Mesh.create_box(
+            0.2,
+            0.2,
+            0.2,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        builder.add_shape_mesh(body=body_a, mesh=visual_mesh, cfg=visual_cfg)
+
+        model = builder.finalize()
+        pipeline = newton.CollisionPipeline(model, broad_phase="sap")
+
+        self.assertFalse(pipeline.narrow_phase.has_meshes)
+
 
 def test_particle_shape_contacts(test, device, shape_type: GeoType):
     """
@@ -1451,6 +1505,46 @@ class TestHeightfieldConvexMidphase(unittest.TestCase):
     pass
 
 
+class TestPlanarSDFRouting(unittest.TestCase):
+    """Test normal SDF contact routing for planar-faced non-mesh shapes."""
+
+    pass
+
+
+class TestCurvedPrimitiveSDFExclusion(unittest.TestCase):
+    def test_non_hydro_sphere_sdf_config_does_not_build_general_sdf(self):
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        cfg = newton.ModelBuilder.ShapeConfig(sdf_max_resolution=32)
+        sphere = builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg)
+
+        model = builder.finalize()
+
+        self.assertEqual(int(model._shape_sdf_index.numpy()[sphere]), -1)
+
+
+class TestPlanarSDFOptIn(unittest.TestCase):
+    def test_default_box_does_not_build_general_sdf(self):
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        box = builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.5)
+
+        model = builder.finalize()
+
+        self.assertEqual(int(model._shape_sdf_index.numpy()[box]), -1)
+        self.assertEqual(int(model.shape_edge_range.numpy()[box][1]), 0)
+
+    def test_default_convex_hull_does_not_build_general_sdf(self):
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+        convex = builder.add_shape_convex_hull(body=body, mesh=mesh)
+
+        model = builder.finalize()
+
+        self.assertEqual(int(model._shape_sdf_index.numpy()[convex]), -1)
+
+
 def test_mesh_convex_midphase_queries_margin_shell(test, device):
     margin = 0.02
     gap = 0.005
@@ -1485,6 +1579,135 @@ def test_mesh_convex_midphase_queries_margin_shell(test, device):
     pipeline.collide(state, contacts)
 
     contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(contact_count, 0)
+
+
+def test_mesh_convex_with_sdf_routes_to_sdf_contact(test, device):
+    """A convex mesh with SDF should use the SDF pair route against a triangle mesh."""
+    mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    convex = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    mesh.build_sdf(max_resolution=32, device=device)
+    convex.build_sdf(max_resolution=32, device=device)
+
+    builder = newton.ModelBuilder()
+    body_mesh = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_convex = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+    builder.add_shape_mesh(body=body_mesh, mesh=mesh)
+    builder.add_shape_convex_hull(body=body_convex, mesh=convex)
+
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="sap", rigid_contact_max=256)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_mesh_count.numpy()[0])
+    mesh_convex_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_count.numpy()[0])
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(sdf_pair_count, 0)
+    test.assertEqual(mesh_convex_pair_count, 0)
+    test.assertGreater(contact_count, 0)
+
+
+def test_mesh_convex_one_sdf_keeps_existing_route(test, device):
+    """Avoid SDF routing when it would require expensive BVH fallback on one side."""
+    mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    convex = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    convex.build_sdf(max_resolution=32, device=device)
+
+    builder = newton.ModelBuilder()
+    body_mesh = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_convex = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+    builder.add_shape_mesh(body=body_mesh, mesh=mesh)
+    builder.add_shape_convex_hull(body=body_convex, mesh=convex)
+
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="sap", rigid_contact_max=256)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_mesh_count.numpy()[0])
+    mesh_convex_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_count.numpy()[0])
+    test.assertEqual(sdf_pair_count, 0)
+    test.assertGreater(mesh_convex_pair_count, 0)
+
+
+def test_mesh_box_with_sdf_routes_to_sdf_contact(test, device):
+    """An explicitly SDF-configured box should use the SDF pair route against a mesh."""
+    mesh = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    mesh.build_sdf(max_resolution=32, device=device)
+
+    builder = newton.ModelBuilder()
+    body_mesh = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_box = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+    builder.add_shape_mesh(body=body_mesh, mesh=mesh)
+    box_cfg = newton.ModelBuilder.ShapeConfig(sdf_max_resolution=32)
+    box = builder.add_shape_box(body=body_box, hx=0.5, hy=0.5, hz=0.5, cfg=box_cfg)
+
+    model = builder.finalize(device=device)
+    test.assertGreaterEqual(int(model._shape_sdf_index.numpy()[box]), 0)
+    test.assertEqual(int(model.shape_edge_range.numpy()[box][1]), 12)
+
+    pipeline = newton.CollisionPipeline(model, broad_phase="sap", rigid_contact_max=256)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_mesh_count.numpy()[0])
+    mesh_convex_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_count.numpy()[0])
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(sdf_pair_count, 0)
+    test.assertEqual(mesh_convex_pair_count, 0)
+    test.assertGreater(contact_count, 0)
+
+
+def test_box_box_with_sdf_keeps_primitive_route(test, device):
+    """Box-box contacts should keep the primitive path even when both boxes have SDFs."""
+    cfg = newton.ModelBuilder.ShapeConfig(sdf_max_resolution=32)
+    builder = newton.ModelBuilder()
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+    box_a = builder.add_shape_box(body=body_a, hx=0.5, hy=0.5, hz=0.5, cfg=cfg)
+    box_b = builder.add_shape_box(body=body_b, hx=0.5, hy=0.5, hz=0.5, cfg=cfg)
+
+    model = builder.finalize(device=device)
+    shape_sdf_index = model._shape_sdf_index.numpy()
+    test.assertGreaterEqual(int(shape_sdf_index[box_a]), 0)
+    test.assertGreaterEqual(int(shape_sdf_index[box_b]), 0)
+
+    pipeline = newton.CollisionPipeline(model, broad_phase="sap", rigid_contact_max=256)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_mesh_count.numpy()[0])
+    gjk_pair_count = int(pipeline.narrow_phase.gjk_candidate_pairs_count.numpy()[0])
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertEqual(sdf_pair_count, 0)
+    test.assertGreater(gjk_pair_count, 0)
+    test.assertGreater(contact_count, 0)
+
+
+def test_convex_convex_with_sdf_routes_to_sdf_contact(test, device):
+    """Two SDF-backed convex meshes should use the SDF path and produce contacts."""
+    mesh_a = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    mesh_b = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
+    mesh_a.build_sdf(max_resolution=32, device=device)
+    mesh_b.build_sdf(max_resolution=32, device=device)
+
+    builder = newton.ModelBuilder()
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+    builder.add_shape_convex_hull(body=body_a, mesh=mesh_a)
+    builder.add_shape_convex_hull(body=body_b, mesh=mesh_b)
+
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="sap", rigid_contact_max=256)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    sdf_pair_count = int(pipeline.narrow_phase.shape_pairs_mesh_mesh_count.numpy()[0])
+    gjk_pair_count = int(pipeline.narrow_phase.gjk_candidate_pairs_count.numpy()[0])
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(sdf_pair_count, 0)
+    test.assertEqual(gjk_pair_count, 0)
     test.assertGreater(contact_count, 0)
 
 
@@ -1928,6 +2151,46 @@ add_function_test(
     TestMeshConvexMidphase,
     "test_mesh_convex_midphase_queries_margin_shell",
     test_mesh_convex_midphase_queries_margin_shell,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestPlanarSDFRouting,
+    "test_mesh_convex_with_sdf_routes_to_sdf_contact",
+    test_mesh_convex_with_sdf_routes_to_sdf_contact,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestPlanarSDFRouting,
+    "test_mesh_convex_one_sdf_keeps_existing_route",
+    test_mesh_convex_one_sdf_keeps_existing_route,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestPlanarSDFRouting,
+    "test_mesh_box_with_sdf_routes_to_sdf_contact",
+    test_mesh_box_with_sdf_routes_to_sdf_contact,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestPlanarSDFRouting,
+    "test_box_box_with_sdf_keeps_primitive_route",
+    test_box_box_with_sdf_keeps_primitive_route,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+
+add_function_test(
+    TestPlanarSDFRouting,
+    "test_convex_convex_with_sdf_routes_to_sdf_contact",
+    test_convex_convex_with_sdf_routes_to_sdf_contact,
     devices=get_cuda_test_devices(),
     check_output=False,
 )

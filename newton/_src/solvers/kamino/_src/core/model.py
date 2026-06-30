@@ -387,13 +387,15 @@ class ModelKaminoInfo:
 
     base_body_index: wp.array | None = None
     """
-    The index of the base body assigned in each world w.r.t the model.\n
+    The index of the base body assigned in each world w.r.t the model.
+    If a base joint is also assigned, must be the follower body of that joint.\n
     Shape of ``(num_worlds,)`` and type :class:`int`.
     """
 
     base_joint_index: wp.array | None = None
     """
-    The index of the base joint assigned in each world w.r.t the model.\n
+    The index of the base joint assigned in each world w.r.t the model (-1 if not assigned).
+    If assigned, must be a unary, non-universal, joint.\n
     Shape of ``(num_worlds,)`` and type :class:`int`.
     """
 
@@ -689,8 +691,10 @@ class ModelKamino:
         Finalizes the :class:`ModelKamino` from an existing instance of :class:`newton.Model`.
 
         Args:
-            model:
-                The source :class:`newton.Model` instance to be converted.
+            model: The source :class:`newton.Model` instance to be converted.
+
+        Returns:
+            Kamino model converted from the input Newton model.
         """
 
         # Ensure the base model is valid
@@ -747,7 +751,11 @@ class ModelKamino:
             model_bodies = convert_rigid_bodies(model, model_size, model_info)
 
             # Joints
-            model_joints = convert_joints(model, model_size, model_info)
+            model_joints = convert_joints(
+                model,
+                model_size,
+                model_info,
+            )
 
             # Geometries
             model_geoms = convert_geometries(

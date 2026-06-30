@@ -483,6 +483,7 @@ def _convert_body_com_to_origin(
 @wp.kernel
 def _convert_base_origin_to_com(
     # Inputs
+    base_joint_index: wp.array[int32],
     base_body_index: wp.array[int32],
     body_com: wp.array[vec3f],
     base_q: wp.array[transformf],
@@ -490,14 +491,18 @@ def _convert_base_origin_to_com(
     base_q_com: wp.array[transformf],
 ):
     wid = wp.tid()
+    base_jid = base_joint_index[wid]
     base_bid = base_body_index[wid]
     if base_bid < 0:
         return
-    com = body_com[base_bid]
     q = base_q[wid]
-    rot = wp.transform_get_rotation(q)
-    r_com = wp.quat_rotate(rot, com)
-    base_q_com[wid] = transformf(wp.transform_get_translation(q) + r_com, rot)
+    if base_jid >= 0:  # Base joint case: base_q is in joint frame, just copy it
+        base_q_com[wid] = q
+    else:  # Base body case: base_q is the base body pose, convert it to a CoM-based pose
+        com = body_com[base_bid]
+        rot = wp.transform_get_rotation(q)
+        r_com = wp.quat_rotate(rot, com)
+        base_q_com[wid] = transformf(wp.transform_get_translation(q) + r_com, rot)
 
 
 @wp.kernel
@@ -609,6 +614,7 @@ def convert_body_com_to_origin(
 
 
 def convert_base_origin_to_com(
+    base_joint_index: wp.array,
     base_body_index: wp.array,
     body_com: wp.array,
     base_q: wp.array,
@@ -617,7 +623,7 @@ def convert_base_origin_to_com(
     wp.launch(
         _convert_base_origin_to_com,
         dim=base_body_index.shape[0],
-        inputs=[base_body_index, body_com, base_q],
+        inputs=[base_joint_index, base_body_index, body_com, base_q],
         outputs=[base_q_com],
         device=base_q_com.device,
     )
