@@ -868,6 +868,25 @@ add_sph_example_test(
     ),
 )
 
+add_sph_example_test(
+    name="sph.example_sph_hydraulic_turbine",
+    test_options=sph_example_options(
+        {
+            "num-frames": 60,
+            "substeps": 8,
+            "spacing": 0.1,
+            "resolution-scale": 2.0,
+            "dim-x": 4,
+            "dim-y": 5,
+            "dim-z": 3,
+            "jitter": 0.0,
+            "fluid-x": -0.58,
+            "fluid-velocity": 0.8,
+            "wheel-x": 0.05,
+        }
+    ),
+)
+
 add_example_test(
     TestBasicExamples,
     name="basic.example_basic_plotting",
