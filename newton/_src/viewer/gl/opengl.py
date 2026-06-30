@@ -1298,7 +1298,6 @@ class RendererGL:
         self._oit_fbo = None
         self._oit_accum_texture = None
         self._oit_reveal_texture = None
-        self._oit_opaque_texture = None
         self._oit_resolve_shader = None
 
         self._sun_direction = None  # set on first render based on camera up_axis
@@ -1906,9 +1905,6 @@ class RendererGL:
         if self._oit_reveal_texture is None:
             self._oit_reveal_texture = gl.GLuint()
             gl.glGenTextures(1, self._oit_reveal_texture)
-        if self._oit_opaque_texture is None:
-            self._oit_opaque_texture = gl.GLuint()
-            gl.glGenTextures(1, self._oit_opaque_texture)
 
         gl.glBindTexture(gl.GL_TEXTURE_2D, self._oit_accum_texture)
         gl.glTexImage2D(
@@ -1944,22 +1940,6 @@ class RendererGL:
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
 
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self._oit_opaque_texture)
-        gl.glTexImage2D(
-            gl.GL_TEXTURE_2D,
-            0,
-            gl.GL_RGB,
-            self._screen_width,
-            self._screen_height,
-            0,
-            gl.GL_RGB,
-            gl.GL_UNSIGNED_BYTE,
-            None,
-        )
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
         if self._oit_fbo is None:
@@ -2221,15 +2201,7 @@ class RendererGL:
     def _render_weighted_transparent_objects(self, transparent_objects, shader):
         gl = RendererGL.gl
 
-        gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, self._frame_fbo)
-        gl.glReadBuffer(gl.GL_COLOR_ATTACHMENT0)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self._oit_opaque_texture)
-        gl.glCopyTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, 0, 0, self._screen_width, self._screen_height)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
-
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._oit_fbo)
-        draw_buffers = (gl.GLenum * 2)(gl.GL_COLOR_ATTACHMENT0, gl.GL_COLOR_ATTACHMENT1)
-        gl.glDrawBuffers(2, draw_buffers)
         gl.glClearBufferfv(gl.GL_COLOR, 0, (gl.GLfloat * 4)(0.0, 0.0, 0.0, 0.0))
         gl.glClearBufferfv(gl.GL_COLOR, 1, (gl.GLfloat * 4)(1.0, 1.0, 1.0, 1.0))
 
@@ -2251,26 +2223,25 @@ class RendererGL:
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._frame_fbo)
         gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
         gl.glDisable(gl.GL_DEPTH_TEST)
-        gl.glDisable(gl.GL_BLEND)
+        # Composite over the existing opaque target to avoid copying it into another full-size texture.
+        gl.glEnable(gl.GL_BLEND)
+        gl.glBlendEquation(gl.GL_FUNC_ADD)
+        gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
         with self._oit_resolve_shader:
             gl.glActiveTexture(gl.GL_TEXTURE0)
-            gl.glBindTexture(gl.GL_TEXTURE_2D, self._oit_opaque_texture)
-            gl.glActiveTexture(gl.GL_TEXTURE1)
             gl.glBindTexture(gl.GL_TEXTURE_2D, self._oit_accum_texture)
-            gl.glActiveTexture(gl.GL_TEXTURE2)
+            gl.glActiveTexture(gl.GL_TEXTURE1)
             gl.glBindTexture(gl.GL_TEXTURE_2D, self._oit_reveal_texture)
-            self._oit_resolve_shader.update(0, 1, 2)
 
             gl.glBindVertexArray(self._frame_vao)
             gl.glDrawElements(gl.GL_TRIANGLES, len(self._frame_indices), gl.GL_UNSIGNED_INT, None)
             gl.glBindVertexArray(0)
 
-        gl.glActiveTexture(gl.GL_TEXTURE2)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
         gl.glActiveTexture(gl.GL_TEXTURE1)
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        gl.glDisable(gl.GL_BLEND)
         gl.glEnable(gl.GL_DEPTH_TEST)
 
     def _render_lines(self, lines):

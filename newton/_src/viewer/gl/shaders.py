@@ -132,6 +132,7 @@ uniform int up_axis;
 uniform mat4 light_space_matrix;
 
 uniform float shadow_radius;
+uniform bool enable_shadows;
 uniform float diffuse_scale;
 uniform float specular_scale;
 uniform bool spotlight_enabled;
@@ -374,7 +375,7 @@ void main()
     ambient = kD_ambient * ambient + ambient_spec * metallic;
 
     // shadows
-    float shadow = ShadowCalculation();
+    float shadow = enable_shadows ? ShadowCalculation() : 0.0;
 
     float spotAttenuation = SpotlightAttenuation();
     vec3 color = ambient + (1.0 - shadow) * spotAttenuation * Lo;
@@ -510,18 +511,19 @@ in vec2 TexCoord;
 
 out vec4 FragColor;
 
-uniform sampler2D opaque_texture;
 uniform sampler2D accum_texture;
 uniform sampler2D reveal_texture;
 
 void main() {
-    vec3 opaque_color = texture(opaque_texture, TexCoord).rgb;
-    vec4 accum = texture(accum_texture, TexCoord);
     float revealage = clamp(texture(reveal_texture, TexCoord).r, 0.0, 1.0);
+    if (revealage >= 1.0)
+        discard;
+
+    vec4 accum = texture(accum_texture, TexCoord);
     float alpha = 1.0 - revealage;
     vec3 transparent_color = accum.a > 1e-5 ? accum.rgb / accum.a : vec3(0.0);
 
-    FragColor = vec4(opaque_color * revealage + transparent_color * alpha, 1.0);
+    FragColor = vec4(transparent_color * alpha, alpha);
 }
 """
 
@@ -602,6 +604,7 @@ class ShaderShape(ShaderGL):
             self.loc_ground_color = self._get_uniform_location("ground_color")
             self.loc_sky_color = self._get_uniform_location("sky_color")
             self.loc_shadow_radius = self._get_uniform_location("shadow_radius")
+            self.loc_enable_shadows = self._get_uniform_location("enable_shadows")
             self.loc_diffuse_scale = self._get_uniform_location("diffuse_scale")
             self.loc_specular_scale = self._get_uniform_location("specular_scale")
             self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
@@ -647,6 +650,7 @@ class ShaderShape(ShaderGL):
             self._gl.glUniform3f(self.loc_ground_color, *ground_color)
             self._gl.glUniform3f(self.loc_sky_color, *sky_color)
             self._gl.glUniform1f(self.loc_shadow_radius, shadow_radius)
+            self._gl.glUniform1i(self.loc_enable_shadows, int(enable_shadows))
             self._gl.glUniform1f(self.loc_diffuse_scale, diffuse_scale)
             self._gl.glUniform1f(self.loc_specular_scale, specular_scale)
             self._gl.glUniform1i(self.loc_spotlight_enabled, int(spotlight_enabled))
@@ -794,16 +798,10 @@ class OITResolveShader(ShaderGL):
         )
 
         with self:
-            self.loc_opaque_texture = self._get_uniform_location("opaque_texture")
             self.loc_accum_texture = self._get_uniform_location("accum_texture")
             self.loc_reveal_texture = self._get_uniform_location("reveal_texture")
-
-    def update(self, opaque_unit: int = 0, accum_unit: int = 1, reveal_unit: int = 2):
-        """Update texture uniforms."""
-        with self:
-            self._gl.glUniform1i(self.loc_opaque_texture, opaque_unit)
-            self._gl.glUniform1i(self.loc_accum_texture, accum_unit)
-            self._gl.glUniform1i(self.loc_reveal_texture, reveal_unit)
+            self._gl.glUniform1i(self.loc_accum_texture, 0)
+            self._gl.glUniform1i(self.loc_reveal_texture, 1)
 
 
 wireframe_vertex_shader = """
