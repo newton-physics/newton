@@ -18,10 +18,27 @@ class _LogShapesProbe(ViewerNull):
         super().__init__(num_frames=1)
         self.last_colors = None
         self.last_materials = None
+        self.mesh_culling = []
 
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         self.last_colors = colors
         self.last_materials = materials
+
+    def log_mesh(
+        self,
+        name,
+        points,
+        indices,
+        normals=None,
+        uvs=None,
+        texture=None,
+        hidden=False,
+        backface_culling=True,
+        color=None,
+        roughness=None,
+        metallic=None,
+    ):
+        self.mesh_culling.append(backface_culling)
 
 
 class TestLogShapesBroadcast(unittest.TestCase):
@@ -117,6 +134,21 @@ class TestLogShapesBroadcast(unittest.TestCase):
             viewer.last_colors.numpy(),
             np.tile([0.3, 0.8, 0.9], (num_instances, 1)).astype(np.float32),
         )
+
+    def test_backface_culling_is_forwarded_and_cached_separately(self):
+        viewer = _LogShapesProbe()
+        xforms = wp.array([wp.transform_identity()], dtype=wp.transform)
+
+        viewer.log_shapes("/culled", newton.GeoType.BOX, (0.5, 0.5, 0.5), xforms)
+        viewer.log_shapes(
+            "/double_sided",
+            newton.GeoType.BOX,
+            (0.5, 0.5, 0.5),
+            xforms,
+            backface_culling=False,
+        )
+
+        self.assertEqual(viewer.mesh_culling, [True, False])
 
 
 if __name__ == "__main__":

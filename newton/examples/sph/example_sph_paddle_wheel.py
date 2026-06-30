@@ -25,7 +25,6 @@ from ._config import (
     add_sph_tank_arguments,
     add_sph_timestep_arguments,
     assert_sph_state_finite,
-    create_sph_visual_box_mesh,
     log_sph_fluid_points,
     sph_options_from_args,
     sph_particle_spacing_from_args,
@@ -131,8 +130,8 @@ class Example(SPHExampleBase):
         self.initial_fluid_q = self.state_0.particle_q.numpy()[self.fluid_indices].copy()
         self.max_wheel_impulse_norm = 0.0
         self.fluid_render_radius_scale = 0.42
+        self._sph_render_points = None
         self.blade_visual_scale = (0.5 * args.blade_length, 0.5 * args.blade_thickness, 0.5 * args.blade_width)
-        self.blade_visual_mesh = create_sph_visual_box_mesh(self.blade_visual_scale)
         self.blade_visual_color = wp.array([wp.vec3(1.0, 0.46, 0.05)], dtype=wp.vec3)
         self.blade_visual_material = wp.array([wp.vec4(0.65, 0.05, 0.0, 0.0)], dtype=wp.vec4)
         self.hub_visual_color = wp.array([wp.vec3(0.65, 0.65, 0.68)], dtype=wp.vec3)
@@ -244,22 +243,23 @@ class Example(SPHExampleBase):
         show_particles = self.viewer.show_particles
         self.viewer.begin_frame(self.sim_time)
 
-        log_sph_fluid_points(
+        self._sph_render_points = log_sph_fluid_points(
             self.viewer,
             self.state_0,
             self.model,
             self.fluid_indices,
             radius_scale=self.fluid_render_radius_scale,
             hidden=not show_particles,
+            render_points=self._sph_render_points,
         )
         self.viewer.log_shapes(
             "/sph_paddle_wheel_blades",
-            newton.GeoType.MESH,
-            (1.0, 1.0, 1.0),
+            newton.GeoType.BOX,
+            self.blade_visual_scale,
             self._blade_visual_xforms(),
             self.blade_visual_color,
             self.blade_visual_material,
-            geo_src=self.blade_visual_mesh,
+            backface_culling=False,
         )
         if self.args.hub_radius > 0.0:
             self.viewer.log_shapes(

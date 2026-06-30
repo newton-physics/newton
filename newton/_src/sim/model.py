@@ -1427,6 +1427,9 @@ class Model:
         )
 
         if self.shape_count == 0:
+            self.bvh_shapes = None
+            self.bvh_shapes_group_roots = None
+            self.bvh_shape_count_enabled = 0
             return
 
         device = self.device
@@ -1464,6 +1467,8 @@ class Model:
         compute_shape_world_transforms_launch(self, state)
 
         if self.bvh_shape_count_enabled == 0:
+            self.bvh_shapes = None
+            self.bvh_shapes_group_roots = None
             return
 
         lowers = wp.zeros(self.bvh_shape_count_enabled, dtype=wp.vec3f, device=device)

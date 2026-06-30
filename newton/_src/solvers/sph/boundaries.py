@@ -10,6 +10,8 @@ import numpy as np
 import warp as wp
 
 from ...geometry import GeoType, ShapeFlags
+from ...geometry.bvh import compute_shape_bounds, compute_shape_bvh_bounds, compute_shape_local_bounds
+from ...geometry.bvh import compute_shape_world_transforms as _compute_shape_world_transforms
 from ...sim import Model, State
 from .shape_boundary_kernels import (
     SPH_COLLIDER_VELOCITY_BACKWARD,
@@ -33,6 +35,36 @@ _SUPPORTED_MODEL_COLLIDER_TYPES = frozenset(
         GeoType.CONVEX_MESH,
     )
 )
+
+
+@wp.kernel(enable_backward=False)
+def _compute_explicit_mesh_world_bounds(
+    local_lowers: wp.array[wp.vec3],
+    local_uppers: wp.array[wp.vec3],
+    body_ids: wp.array[wp.int32],
+    body_world: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    world_lowers: wp.array[wp.vec3],
+    world_uppers: wp.array[wp.vec3],
+    mesh_world: wp.array[wp.int32],
+):
+    mesh = wp.tid()
+    body = body_ids[mesh]
+    transform = wp.transform_identity()
+    world = int(-1)
+    if body >= 0:
+        transform = body_q[body]
+        world = body_world[body]
+
+    lower, upper = compute_shape_bounds(
+        transform,
+        wp.vec3(1.0),
+        local_lowers[mesh],
+        local_uppers[mesh],
+    )
+    world_lowers[mesh] = lower
+    world_uppers[mesh] = upper
+    mesh_world[mesh] = world
 
 
 def _finite_collider_value(value: object, name: str, *, nonnegative: bool) -> float:
@@ -63,13 +95,11 @@ def _validated_optional_collider_values(
     )
 
 
-def _validate_supported_model_colliders(model: Model) -> None:
-    if not model.shape_count:
+def _validate_supported_model_colliders(model: Model, shape_ids: np.ndarray) -> None:
+    if shape_ids.size == 0:
         return
-    shape_flags = np.asarray(model.shape_flags.numpy(), dtype=np.int32)
     shape_types = np.asarray(model.shape_type.numpy(), dtype=np.int32)
-    particle_colliders = (shape_flags & int(ShapeFlags.COLLIDE_PARTICLES)) != 0
-    unsupported = sorted({int(value) for value in shape_types[particle_colliders]} - _SUPPORTED_MODEL_COLLIDER_TYPES)
+    unsupported = sorted({int(value) for value in shape_types[shape_ids]} - _SUPPORTED_MODEL_COLLIDER_TYPES)
     if not unsupported:
         return
 
@@ -99,9 +129,26 @@ class SPHBoundaryHandler:
     explicit_collider_friction_wp: wp.array[float] | None = None
     explicit_collider_projection_threshold_wp: wp.array[float] | None = None
     explicit_collider_body_ids_wp: wp.array[wp.int32] | None = None
+    explicit_collider_mesh_world_wp: wp.array[wp.int32] | None = None
+    explicit_collider_local_lowers_wp: wp.array[wp.vec3] | None = None
+    explicit_collider_local_uppers_wp: wp.array[wp.vec3] | None = None
+    explicit_collider_world_lowers_wp: wp.array[wp.vec3] | None = None
+    explicit_collider_world_uppers_wp: wp.array[wp.vec3] | None = None
+    explicit_collider_bvh: wp.Bvh | None = None
+    explicit_collider_max_margin: float = 0.0
+    explicit_collider_has_dynamic_meshes: bool = False
     model_collider_shape_margin_wp: wp.array[float] | None = None
     model_collider_shape_friction_wp: wp.array[float] | None = None
     model_collider_shape_projection_threshold_wp: wp.array[float] | None = None
+    model_collider_shape_indices_wp: wp.array[wp.uint32] | None = None
+    model_collider_shape_local_bounds_wp: wp.array2d[wp.vec3] | None = None
+    model_collider_shape_world_transforms_wp: wp.array[wp.transform] | None = None
+    model_collider_world_lowers_wp: wp.array[wp.vec3] | None = None
+    model_collider_world_uppers_wp: wp.array[wp.vec3] | None = None
+    model_collider_world_groups_wp: wp.array[wp.int32] | None = None
+    model_collider_bvh: wp.Bvh | None = None
+    model_collider_max_margin: float = 0.0
+    model_collider_has_dynamic_shapes: bool = False
     previous_collider_body_q_wp: wp.array[wp.transform] | None = None
     analytic_body_impulse_wp: wp.array[wp.vec3] | None = None
     analytic_body_angular_impulse_wp: wp.array[wp.vec3] | None = None
@@ -122,7 +169,6 @@ class SPHBoundaryHandler:
 
     def refresh_model(self) -> None:
         """Refresh caches sized from mutable Newton model topology/properties."""
-        _validate_supported_model_colliders(self._collider_model())
         self.set_model_collider_material_overrides(
             self._model_collider_body_ids,
             margins=self._model_collider_margins,
@@ -135,13 +181,6 @@ class SPHBoundaryHandler:
     def set_collider_model(self, model: Model | None) -> None:
         """Use ``model`` as the source of analytic collider shapes."""
         self.collider_model = self.model if model is None else model
-        _validate_supported_model_colliders(self.collider_model)
-        self.set_model_collider_material_overrides(
-            None,
-            margins=None,
-            friction=None,
-            projection_threshold=None,
-        )
         self.save_collider_current_position(self._collider_model().body_q)
         self._reset_analytic_body_impulses()
 
@@ -204,6 +243,8 @@ class SPHBoundaryHandler:
                 dtype=wp.float32,
                 device=self.model.device,
             )
+            self.model_collider_max_margin = 0.0
+            self._rebuild_model_shape_broadphase(np.zeros(0, dtype=np.uint32))
             return
 
         shape_margin = np.asarray(collider_model.shape_margin.numpy(), dtype=np.float32).copy()
@@ -211,6 +252,10 @@ class SPHBoundaryHandler:
         shape_projection_threshold = np.zeros(shape_count, dtype=np.float32)
         shape_body = np.asarray(collider_model.shape_body.numpy(), dtype=np.int32)
         shape_flags = np.asarray(collider_model.shape_flags.numpy(), dtype=np.int32)
+        particle_colliders = (shape_flags & int(ShapeFlags.COLLIDE_PARTICLES)) != 0
+        selected = particle_colliders if body_ids_tuple is None else particle_colliders & np.isin(shape_body, body_ids)
+        selected_shape_ids = np.flatnonzero(selected).astype(np.uint32)
+        _validate_supported_model_colliders(collider_model, selected_shape_ids)
 
         if margins_tuple is not None:
             for body, margin in zip(body_ids, margins_tuple, strict=True):
@@ -240,6 +285,94 @@ class SPHBoundaryHandler:
             dtype=wp.float32,
             device=self.model.device,
         )
+        self.model_collider_max_margin = float(np.max(shape_margin[selected_shape_ids], initial=0.0))
+        self._rebuild_model_shape_broadphase(selected_shape_ids)
+
+    def _rebuild_model_shape_broadphase(self, shape_ids: np.ndarray) -> None:
+        """Build a BVH containing only the selected Newton collider shapes."""
+        collider_model = self._collider_model()
+        shape_ids = np.asarray(shape_ids, dtype=np.uint32)
+        shape_count = int(shape_ids.size)
+        self.model_collider_shape_indices_wp = wp.array(shape_ids, dtype=wp.uint32, device=self.model.device)
+        shape_body = np.asarray(collider_model.shape_body.numpy(), dtype=np.int32)
+        self.model_collider_has_dynamic_shapes = bool(shape_count and np.any(shape_body[shape_ids] >= 0))
+        self.model_collider_bvh = None
+
+        if shape_count == 0:
+            self.model_collider_shape_local_bounds_wp = None
+            self.model_collider_shape_world_transforms_wp = None
+            self.model_collider_world_lowers_wp = None
+            self.model_collider_world_uppers_wp = None
+            self.model_collider_world_groups_wp = None
+            return
+
+        self.model_collider_shape_local_bounds_wp = wp.empty(
+            (collider_model.shape_count, 2),
+            dtype=wp.vec3,
+            ndim=2,
+            device=self.model.device,
+        )
+        self.model_collider_shape_world_transforms_wp = wp.empty(
+            collider_model.shape_count,
+            dtype=wp.transform,
+            device=self.model.device,
+        )
+        self.model_collider_world_lowers_wp = wp.empty(shape_count, dtype=wp.vec3, device=self.model.device)
+        self.model_collider_world_uppers_wp = wp.empty(shape_count, dtype=wp.vec3, device=self.model.device)
+        self.model_collider_world_groups_wp = wp.empty(shape_count, dtype=wp.int32, device=self.model.device)
+
+        wp.launch(
+            compute_shape_local_bounds,
+            dim=collider_model.shape_count,
+            inputs=[
+                collider_model.shape_type,
+                collider_model.shape_source_ptr,
+                collider_model.gaussians_data,
+            ],
+            outputs=[self.model_collider_shape_local_bounds_wp],
+            device=self.model.device,
+        )
+        self._update_model_shape_broadphase(collider_model.body_q, force=True)
+        self.model_collider_bvh = wp.Bvh(
+            self.model_collider_world_lowers_wp,
+            self.model_collider_world_uppers_wp,
+        )
+
+    def _update_model_shape_broadphase(self, body_q: wp.array[wp.transform], *, force: bool = False) -> None:
+        shape_count = int(self.model_collider_shape_indices_wp.shape[0])
+        if shape_count == 0 or (not force and not self.model_collider_has_dynamic_shapes):
+            return
+
+        collider_model = self._collider_model()
+        wp.launch(
+            _compute_shape_world_transforms,
+            dim=collider_model.shape_count,
+            inputs=[body_q, collider_model.shape_body, collider_model.shape_transform],
+            outputs=[self.model_collider_shape_world_transforms_wp],
+            device=self.model.device,
+        )
+        wp.launch(
+            compute_shape_bvh_bounds,
+            dim=shape_count,
+            inputs=[
+                shape_count,
+                collider_model.world_count + 1,
+                collider_model.shape_world,
+                self.model_collider_shape_indices_wp,
+                collider_model.shape_type,
+                collider_model.shape_scale,
+                self.model_collider_shape_world_transforms_wp,
+                self.model_collider_shape_local_bounds_wp,
+            ],
+            outputs=[
+                self.model_collider_world_lowers_wp,
+                self.model_collider_world_uppers_wp,
+                self.model_collider_world_groups_wp,
+            ],
+            device=self.model.device,
+        )
+        if self.model_collider_bvh is not None:
+            self.model_collider_bvh.refit()
 
     def set_explicit_collider_meshes(
         self,
@@ -289,6 +422,8 @@ class SPHBoundaryHandler:
 
     def _refresh_explicit_collider_mesh_arrays(self) -> None:
         mesh_ids: list[int] = []
+        local_lowers: list[np.ndarray] = []
+        local_uppers: list[np.ndarray] = []
         for mesh in self.explicit_collider_meshes:
             mesh_id = getattr(mesh, "id", None)
             if mesh_id is None and getattr(mesh, "mesh", None) is not None:
@@ -298,6 +433,19 @@ class SPHBoundaryHandler:
             if mesh_id is None:
                 raise TypeError("SPH explicit collider meshes must be Newton Mesh or Warp Mesh objects")
             mesh_ids.append(int(mesh_id))
+
+            points = getattr(mesh, "vertices", None)
+            if points is None and getattr(mesh, "mesh", None) is not None:
+                points = getattr(mesh.mesh, "points", None)
+            if points is None:
+                points = getattr(mesh, "points", None)
+            if hasattr(points, "numpy"):
+                points = points.numpy()
+            points = np.asarray(points, dtype=np.float32)
+            if points.ndim != 2 or points.shape[0] == 0 or points.shape[1] < 3 or not np.isfinite(points[:, :3]).all():
+                raise ValueError("SPH explicit collider meshes must contain finite vertices")
+            local_lowers.append(np.min(points[:, :3], axis=0))
+            local_uppers.append(np.max(points[:, :3], axis=0))
 
         self.explicit_collider_mesh_ids_wp = wp.array(
             np.asarray(mesh_ids, dtype=np.uint64),
@@ -324,6 +472,71 @@ class SPHBoundaryHandler:
             dtype=wp.int32,
             device=self.model.device,
         )
+        self.explicit_collider_max_margin = float(np.max(self.explicit_collider_margins, initial=0.0))
+        self._rebuild_explicit_mesh_broadphase(local_lowers, local_uppers)
+
+    def _rebuild_explicit_mesh_broadphase(
+        self,
+        local_lowers: Sequence[np.ndarray],
+        local_uppers: Sequence[np.ndarray],
+    ) -> None:
+        mesh_count = len(local_lowers)
+        self.explicit_collider_has_dynamic_meshes = bool(
+            mesh_count and np.any(np.asarray(self.explicit_collider_body_ids, dtype=np.int32) >= 0)
+        )
+        self.explicit_collider_bvh = None
+        if mesh_count == 0:
+            self.explicit_collider_mesh_world_wp = wp.empty(0, dtype=wp.int32, device=self.model.device)
+            self.explicit_collider_local_lowers_wp = wp.empty(0, dtype=wp.vec3, device=self.model.device)
+            self.explicit_collider_local_uppers_wp = wp.empty(0, dtype=wp.vec3, device=self.model.device)
+            self.explicit_collider_world_lowers_wp = wp.empty(0, dtype=wp.vec3, device=self.model.device)
+            self.explicit_collider_world_uppers_wp = wp.empty(0, dtype=wp.vec3, device=self.model.device)
+            return
+
+        self.explicit_collider_mesh_world_wp = wp.empty(mesh_count, dtype=wp.int32, device=self.model.device)
+        self.explicit_collider_local_lowers_wp = wp.array(
+            np.asarray(local_lowers, dtype=np.float32),
+            dtype=wp.vec3,
+            device=self.model.device,
+        )
+        self.explicit_collider_local_uppers_wp = wp.array(
+            np.asarray(local_uppers, dtype=np.float32),
+            dtype=wp.vec3,
+            device=self.model.device,
+        )
+        self.explicit_collider_world_lowers_wp = wp.empty(mesh_count, dtype=wp.vec3, device=self.model.device)
+        self.explicit_collider_world_uppers_wp = wp.empty(mesh_count, dtype=wp.vec3, device=self.model.device)
+        self._update_explicit_mesh_broadphase(self._collider_model().body_q, force=True)
+        self.explicit_collider_bvh = wp.Bvh(
+            self.explicit_collider_world_lowers_wp,
+            self.explicit_collider_world_uppers_wp,
+        )
+
+    def _update_explicit_mesh_broadphase(self, body_q: wp.array[wp.transform], *, force: bool = False) -> None:
+        mesh_count = int(self.explicit_collider_body_ids_wp.shape[0])
+        if mesh_count == 0 or (not force and not self.explicit_collider_has_dynamic_meshes):
+            return
+
+        collider_model = self._collider_model()
+        wp.launch(
+            _compute_explicit_mesh_world_bounds,
+            dim=mesh_count,
+            inputs=[
+                self.explicit_collider_local_lowers_wp,
+                self.explicit_collider_local_uppers_wp,
+                self.explicit_collider_body_ids_wp,
+                collider_model.body_world,
+                body_q,
+            ],
+            outputs=[
+                self.explicit_collider_world_lowers_wp,
+                self.explicit_collider_world_uppers_wp,
+                self.explicit_collider_mesh_world_wp,
+            ],
+            device=self.model.device,
+        )
+        if self.explicit_collider_bvh is not None:
+            self.explicit_collider_bvh.refit()
 
     def _collider_model(self) -> Model:
         return self.model if self.collider_model is None else self.collider_model
@@ -352,6 +565,7 @@ class SPHBoundaryHandler:
         body_com: wp.array[wp.vec3],
         body_mass: wp.array[float],
         body_inv_inertia: wp.array[wp.mat33],
+        max_depenetration_velocity: float,
         collider_velocity_mode: int = SPH_COLLIDER_VELOCITY_FORWARD,
         dt: float = 0.0,
     ) -> None:
@@ -364,7 +578,7 @@ class SPHBoundaryHandler:
         if (
             not self.enable_shape_boundaries
             or not model.particle_count
-            or (not collider_model.shape_count and not self.explicit_collider_mesh_count())
+            or (self.model_collider_shape_indices_wp.shape[0] == 0 and not self.explicit_collider_mesh_count())
         ):
             self.save_collider_current_position(state.body_q)
             return
@@ -384,12 +598,20 @@ class SPHBoundaryHandler:
             if collider_velocity_mode == SPH_COLLIDER_VELOCITY_BACKWARD
             else state.body_q
         )
+        self._update_model_shape_broadphase(state.body_q)
+        self._update_explicit_mesh_broadphase(state.body_q)
+        model_shape_count = int(self.model_collider_shape_indices_wp.shape[0])
+        model_shape_bvh_id = wp.uint64(0) if self.model_collider_bvh is None else self.model_collider_bvh.id
+        explicit_mesh_bvh_id = wp.uint64(0) if self.explicit_collider_bvh is None else self.explicit_collider_bvh.id
 
         wp.launch(
             _collide_particle_shapes,
             dim=model.particle_count,
             inputs=[
-                collider_model.shape_count,
+                model_shape_count,
+                model_shape_bvh_id,
+                self.model_collider_shape_indices_wp,
+                self.model_collider_max_margin,
                 collider_model.body_count,
                 state.particle_q,
                 state.particle_qd,
@@ -413,6 +635,9 @@ class SPHBoundaryHandler:
                 self.explicit_collider_friction_wp,
                 self.explicit_collider_projection_threshold_wp,
                 self.explicit_collider_body_ids_wp,
+                self.explicit_collider_mesh_world_wp,
+                explicit_mesh_bvh_id,
+                self.explicit_collider_max_margin,
                 state.body_q,
                 state.body_qd,
                 body_q_prev,
@@ -425,6 +650,7 @@ class SPHBoundaryHandler:
                 boundary_margin,
                 boundary_friction,
                 mesh_query_max_distance,
+                max_depenetration_velocity,
                 collider_velocity_mode,
                 dt,
                 state.sph.boundary_impulse,

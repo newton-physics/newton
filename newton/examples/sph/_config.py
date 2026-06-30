@@ -213,6 +213,22 @@ def validate_sph_example_timestep_args(args: object) -> None:
     if args.substeps <= 0:
         raise ValueError("substeps must be positive")
 
+    spacing = getattr(args, "spacing", None)
+    sound_speed = getattr(args, "sound_speed", None)
+    if spacing is None or sound_speed is None or sound_speed <= 0.0:
+        return
+    smoothing_length = getattr(args, "smoothing_length", 0.0)
+    if smoothing_length <= 0.0:
+        smoothing_length = 2.0 * spacing
+    timestep = 1.0 / (args.fps * args.substeps)
+    acoustic_limit = 0.25 * smoothing_length / sound_speed
+    if timestep > acoustic_limit:
+        minimum_substeps = math.ceil(1.0 / (args.fps * acoustic_limit))
+        raise ValueError(
+            f"SPH timestep {timestep:.3g} exceeds the acoustic stability limit {acoustic_limit:.3g}; "
+            f"use at least {minimum_substeps} substeps"
+        )
+
 
 def add_sph_solver_config_arguments(
     parser,
@@ -329,26 +345,20 @@ def log_sph_fluid_points(
     radius_scale: float = 0.55,
     speed_scale: float = 1.0,
     hidden: bool = False,
-) -> None:
+    render_points: _SPHRenderPoints | None = None,
+) -> _SPHRenderPoints | None:
     """Log SPH fluid particles as a clean Newton point cloud."""
 
     indices = np.asarray(fluid_indices, dtype=np.int64)
     if indices.size == 0:
-        return
+        return None
     if radius_scale <= 0.0:
         raise ValueError("SPH render radius_scale must be positive")
     if speed_scale <= 0.0:
         raise ValueError("SPH render speed_scale must be positive")
 
-    cache = getattr(viewer, "_sph_render_points", None)
-    if cache is None:
-        cache = {}
-        viewer._sph_render_points = cache
-    key = (id(model), name, indices.astype(np.int32, copy=False).tobytes())
-    render_points = cache.get(key)
     if render_points is None:
         render_points = _SPHRenderPoints(model, indices.astype(np.int32, copy=False))
-        cache[key] = render_points
     render_points.update(state, model, float(radius_scale), float(speed_scale))
 
     viewer.log_points(
@@ -358,22 +368,7 @@ def log_sph_fluid_points(
         colors=render_points.colors,
         hidden=hidden,
     )
-
-
-def create_sph_visual_box_mesh(half_extents: tuple[float, float, float]) -> newton.Mesh:
-    """Create an opaque box visual with consistent lighting from either winding."""
-
-    mesh = newton.Mesh.create_box(*half_extents, compute_inertia=False)
-    triangles = np.asarray(mesh.indices, dtype=np.int32).reshape(-1, 3)
-    # Preserve the outward normals so either front-face convention shades the box consistently.
-    indices = np.concatenate((triangles, triangles[:, [0, 2, 1]]), axis=0).reshape(-1)
-    return newton.Mesh(
-        vertices=mesh.vertices,
-        indices=indices,
-        normals=mesh.normals,
-        uvs=mesh.uvs,
-        compute_inertia=False,
-    )
+    return render_points
 
 
 def add_sph_analytic_tank_shapes(
@@ -441,6 +436,7 @@ class SPHExampleBase:
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
         self.viewer = viewer
+        self._sph_render_points = None
 
     def before_substep(self):
         return None
@@ -470,12 +466,13 @@ class SPHExampleBase:
         self.viewer.log_state(self.state_0)
         self.viewer.show_particles = show_particles
         if hasattr(self, "fluid_indices"):
-            log_sph_fluid_points(
+            self._sph_render_points = log_sph_fluid_points(
                 self.viewer,
                 self.state_0,
                 self.model,
                 self.fluid_indices,
                 radius_scale=self.fluid_render_radius_scale,
                 hidden=not show_particles,
+                render_points=self._sph_render_points,
             )
         self.viewer.end_frame()

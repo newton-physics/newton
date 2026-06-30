@@ -104,7 +104,9 @@ class SolverWCSPH(SolverBase):
 
     The time step is supplied by the caller and is not adapted automatically.
     It must satisfy the acoustic and force-based stability limits of the chosen
-    particle spacing, support radius, and sound speed.
+    particle spacing, support radius, and sound speed. A conservative acoustic
+    starting point is ``dt <= 0.25 * h / c``, where ``h`` is the smoothing
+    length and ``c`` is the artificial sound speed.
 
     Solid boundaries are enforced by post-integration shape projection. Reaction
     impulses for explicit partitioned coupling to a rigid-body solver are exposed
@@ -242,14 +244,19 @@ class SolverWCSPH(SolverBase):
         sources and materials, or to read colliders from a different model. When
         using a different model, the states passed to :meth:`step` must expose
         that model's ``body_q`` and ``body_qd`` arrays, as shown by the SPH
-        two-way coupling example.
+        two-way coupling example. Without ``collider_meshes``,
+        ``collider_body_ids`` selects model bodies and all of their
+        particle-colliding shapes. With ``collider_meshes``, model shapes are
+        disabled and each body id instead supplies the transform for the mesh at
+        the same index; use ``-1`` for a static world-space mesh.
 
         Args:
             collider_meshes: Warp triangular meshes used as colliders.
-            collider_body_ids: For dynamic colliders, per-mesh body ids.
-            collider_margins: Per-collider signed distance offsets (m).
-            collider_friction: Per-mesh Coulomb friction coefficients.
-            collider_projection_threshold: Per-mesh projection threshold (m).
+            collider_body_ids: Selected model body ids, or per-mesh body ids
+                when ``collider_meshes`` is provided.
+            collider_margins: Per-collider signed distance offsets [m].
+            collider_friction: Per-collider Coulomb friction coefficients.
+            collider_projection_threshold: Per-collider projection thresholds [m].
             model: The model to read collider properties from. Defaults to the solver model.
             body_com: For dynamic colliders, per-body center of mass on the solver device.
             body_mass: For dynamic colliders, per-body mass on the solver device. Pass zeros for kinematic bodies.

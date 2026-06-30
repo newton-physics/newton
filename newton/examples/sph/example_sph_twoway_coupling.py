@@ -61,6 +61,11 @@ class Example:
         )
         self.wall_height = args.wall_height
         self.float_radius = args.float_radius
+        self.float_mass = args.float_mass
+        self.rest_density = args.rest_density
+        self.particle_radius = radius
+        self.tank_half_length = 0.5 * args.tank_length
+        self.tank_half_width = 0.5 * args.tank_width
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=args.gravity)
         self._emit_rigid_body(builder, args)
@@ -108,6 +113,7 @@ class Example:
         self.viewer.set_camera(pos=wp.vec3(0.9, 0.50, 0.82), pitch=-24.0, yaw=-135.0)
         self.show_impulses = False
         self.fluid_render_radius_scale = 0.55
+        self._sph_render_points = None
 
     @staticmethod
     def create_parser():
@@ -183,6 +189,39 @@ class Example:
         assert np.linalg.norm(body_q[self.float_body, 0:3] - self.initial_float_position) < 2.0
         assert np.max(q[self.fluid_indices, 1]) < self.wall_height + self.float_radius
 
+        if self.sim_time >= 2.0:
+            fluid_q = q[self.fluid_indices]
+            body_position = body_q[self.float_body, 0:3]
+            horizontal_distance = np.linalg.norm(fluid_q[:, (0, 2)] - body_position[[0, 2]], axis=1)
+            surface_particles = fluid_q[horizontal_distance > 2.0 * self.float_radius]
+            assert surface_particles.shape[0] > 0
+            surface_height = float(np.percentile(surface_particles[:, 1], 95.0) + self.particle_radius)
+
+            full_volume = (4.0 / 3.0) * np.pi * self.float_radius**3
+            displaced_volume = self.float_mass / self.rest_density
+            displaced_fraction = displaced_volume / full_volume
+            if 0.0 < displaced_fraction < 1.0:
+                lower, upper = 0.0, 2.0 * self.float_radius
+                for _ in range(32):
+                    cap_height = 0.5 * (lower + upper)
+                    cap_volume = np.pi * cap_height**2 * (self.float_radius - cap_height / 3.0)
+                    if cap_volume < displaced_volume:
+                        lower = cap_height
+                    else:
+                        upper = cap_height
+                expected_center_offset = self.float_radius - 0.5 * (lower + upper)
+                observed_center_offset = float(body_position[1] - surface_height)
+                assert abs(observed_center_offset - expected_center_offset) < 0.35 * self.float_radius
+
+            body_speed = np.linalg.norm(self.state_0.body_qd.numpy()[self.float_body, 0:3])
+            assert body_speed < 0.1
+            inside_tank = (
+                (np.abs(fluid_q[:, 0]) <= self.tank_half_length + self.particle_radius)
+                & (fluid_q[:, 1] >= -self.particle_radius)
+                & (np.abs(fluid_q[:, 2]) <= self.tank_half_width + self.particle_radius)
+            )
+            assert np.mean(inside_tank) > 0.995
+
     def render(self):
         show_particles = self.viewer.show_particles
         self.viewer.begin_frame(self.sim_time)
@@ -191,13 +230,14 @@ class Example:
         self.viewer.show_particles = show_particles
         self.viewer.log_contacts(self.contacts, self.state_0)
 
-        log_sph_fluid_points(
+        self._sph_render_points = log_sph_fluid_points(
             self.viewer,
             self.fluid_state_0,
             self.fluid_model,
             self.fluid_indices,
             radius_scale=self.fluid_render_radius_scale,
             hidden=not self.viewer.show_particles,
+            render_points=self._sph_render_points,
         )
 
         if self.show_impulses:

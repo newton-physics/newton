@@ -240,6 +240,22 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
             atol=0.0,
         )
 
+    def test_shape_bvh_rebuild_clears_disabled_shapes(self):
+        builder = ModelBuilder()
+        builder.add_shape_box(body=-1)
+        model = builder.finalize(device="cpu")
+        self.assertIsNotNone(model.bvh_shapes)
+        self.assertIsNotNone(model.bvh_shapes_group_roots)
+
+        shape_flags = model.shape_flags.numpy()
+        shape_flags &= ~int(newton.ShapeFlags.VISIBLE)
+        model.shape_flags.assign(shape_flags)
+        model.bvh_build_shapes(model.state())
+
+        self.assertEqual(model.bvh_shape_count_enabled, 0)
+        self.assertIsNone(model.bvh_shapes)
+        self.assertIsNone(model.bvh_shapes_group_roots)
+
     def test_model_builder_forwards_bvh_constructors(self):
         builder = ModelBuilder()
         builder.default_bvh_cfg.mesh_constructor = "cubql"

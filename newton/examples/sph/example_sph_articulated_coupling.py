@@ -20,7 +20,6 @@ from ._config import (
     add_sph_tank_arguments,
     add_sph_timestep_arguments,
     assert_sph_state_finite,
-    create_sph_visual_box_mesh,
     log_sph_fluid_points,
     sph_options_from_args,
     sph_particle_spacing_from_args,
@@ -145,9 +144,8 @@ class Example:
         )
         self.initial_joint_q = self.state_0.joint_q.numpy().copy()
         self.fluid_render_radius_scale = 0.55
-        self.flap_visual_mesh = create_sph_visual_box_mesh(
-            (args.flap_half_length, args.flap_half_height, args.flap_half_width)
-        )
+        self._sph_render_points = None
+        self.flap_visual_scale = (args.flap_half_length, args.flap_half_height, args.flap_half_width)
         self.flap_visual_color = wp.array([wp.vec3(0.85, 0.18, 0.08)], dtype=wp.vec3)
         self.flap_visual_material = wp.array([wp.vec4(0.65, 0.05, 0.0, 0.0)], dtype=wp.vec4)
 
@@ -222,22 +220,23 @@ class Example:
         self.viewer.show_particles = False
         self.viewer.log_state(self.state_0)
         self.viewer.show_particles = show_particles
-        log_sph_fluid_points(
+        self._sph_render_points = log_sph_fluid_points(
             self.viewer,
             self.fluid_state_0,
             self.fluid_model,
             self.fluid_indices,
             radius_scale=self.fluid_render_radius_scale,
             hidden=not self.viewer.show_particles,
+            render_points=self._sph_render_points,
         )
         self.viewer.log_shapes(
             "/sph_hinged_flap_visual",
-            newton.GeoType.MESH,
-            (1.0, 1.0, 1.0),
+            newton.GeoType.BOX,
+            self.flap_visual_scale,
             self.state_0.body_q[self.flap_body : self.flap_body + 1],
             self.flap_visual_color,
             self.flap_visual_material,
-            geo_src=self.flap_visual_mesh,
+            backface_culling=False,
         )
         self.viewer.end_frame()
 

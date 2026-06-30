@@ -30,6 +30,14 @@ wp.set_module_options({"enable_backward": False})
 
 SPH_COLLIDER_VELOCITY_FORWARD = 0
 SPH_COLLIDER_VELOCITY_BACKWARD = 1
+SPH_BOUNDARY_STABILIZATION = wp.constant(0.05)
+
+
+@wp.func
+def _depenetration_velocity(correction_distance: float, dt: float, max_velocity: float) -> float:
+    if correction_distance <= 0.0 or dt <= 0.0:
+        return 0.0
+    return wp.min(SPH_BOUNDARY_STABILIZATION * correction_distance / dt, max_velocity)
 
 
 @wp.func
@@ -76,17 +84,18 @@ def _solve_coulomb_velocity(
     body_com: wp.array[wp.vec3],
     body_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
+    target_normal_velocity: float,
 ) -> wp.vec3:
     relative_velocity = velocity - boundary_velocity
     normal_velocity = wp.dot(relative_velocity, normal)
-    if normal_velocity >= 0.0:
+    if normal_velocity >= target_normal_velocity:
         return velocity
 
     particle_inverse_mass = 1.0 / wp.max(particle_mass, 1.0e-12)
     normal_inverse_mass = _contact_inverse_mass(
         normal, particle_mass, body, position, body_q, body_flags, body_com, body_mass, body_inv_inertia
     )
-    normal_impulse = -normal_velocity / wp.max(normal_inverse_mass, 1.0e-12)
+    normal_impulse = (target_normal_velocity - normal_velocity) / wp.max(normal_inverse_mass, 1.0e-12)
     particle_impulse = normal * normal_impulse
 
     tangential_velocity = relative_velocity - normal * normal_velocity
@@ -166,9 +175,314 @@ def _body_velocity_at_point(
     return velocity_at_point(body_qd[body], x - com_world)
 
 
+@wp.func
+def _accumulate_body_impulse(
+    body: int,
+    body_count: int,
+    position: wp.vec3,
+    body_impulse: wp.vec3,
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    analytic_body_impulse: wp.array[wp.vec3],
+    analytic_body_angular_impulse: wp.array[wp.vec3],
+):
+    if 0 <= body and body < body_count:
+        com_world = wp.transform_point(body_q[body], body_com[body])
+        wp.atomic_add(analytic_body_impulse, body, body_impulse)
+        wp.atomic_add(analytic_body_angular_impulse, body, wp.cross(position - com_world, body_impulse))
+
+
+@wp.func
+def _collide_model_shape(
+    shape: int,
+    body_count: int,
+    particle_world: int,
+    particle_mass: float,
+    radius: float,
+    x: wp.vec3,
+    v: wp.vec3,
+    shape_type: wp.array[wp.int32],
+    shape_flags: wp.array[wp.int32],
+    shape_world: wp.array[wp.int32],
+    shape_body: wp.array[wp.int32],
+    shape_transform: wp.array[wp.transform],
+    shape_scale: wp.array[wp.vec3],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_margin: wp.array[float],
+    shape_material_mu: wp.array[float],
+    shape_projection_threshold: wp.array[float],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_q_prev: wp.array[wp.transform],
+    body_flags: wp.array[wp.int32],
+    body_com: wp.array[wp.vec3],
+    body_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
+    analytic_body_impulse: wp.array[wp.vec3],
+    analytic_body_angular_impulse: wp.array[wp.vec3],
+    boundary_margin: float,
+    boundary_friction: float,
+    mesh_query_max_distance: float,
+    max_depenetration_velocity: float,
+    collider_velocity_mode: int,
+    dt: float,
+) -> tuple[wp.vec3, wp.vec3, bool]:
+    if (shape_flags[shape] & ShapeFlags.COLLIDE_PARTICLES) == 0 or not _same_world(particle_world, shape_world[shape]):
+        return x, v, False
+
+    x_before = x
+    v_before = v
+    shape_xform = shape_transform[shape]
+    body = shape_body[shape]
+    boundary_velocity = wp.vec3(0.0)
+    if 0 <= body and body < body_count:
+        shape_xform = wp.transform_multiply(body_q[body], shape_xform)
+        boundary_velocity = _body_velocity_at_point(
+            body, x, body_q, body_qd, body_q_prev, body_com, collider_velocity_mode, dt
+        )
+
+    point = wp.transform_get_translation(shape_xform)
+    quat = wp.transform_get_rotation(shape_xform)
+    local = wp.quat_rotate_inv(quat, x - point)
+    separation = radius + shape_margin[shape] + boundary_margin
+    projection_threshold = shape_projection_threshold[shape]
+    hit_shape = bool(False)
+    projected_local = local
+    normal_local = wp.vec3(0.0)
+
+    if shape_type[shape] == GeoType.PLANE:
+        hit_shape, projected_local, normal_local = _project_local_plane(
+            local,
+            0.5 * wp.abs(shape_scale[shape][0]),
+            0.5 * wp.abs(shape_scale[shape][1]),
+            separation,
+            projection_threshold,
+        )
+    elif shape_type[shape] == GeoType.SPHERE:
+        distance = sdf_sphere(local, wp.abs(shape_scale[shape][0]))
+        normal_local = sdf_sphere_grad(local, wp.abs(shape_scale[shape][0]))
+        hit_shape, projected_local, normal_local = _project_signed_distance(
+            local, distance, normal_local, separation, projection_threshold
+        )
+    elif shape_type[shape] == GeoType.BOX:
+        half_extents = wp.vec3(
+            wp.abs(shape_scale[shape][0]),
+            wp.abs(shape_scale[shape][1]),
+            wp.abs(shape_scale[shape][2]),
+        )
+        distance = sdf_box(local, half_extents[0], half_extents[1], half_extents[2])
+        normal_local = sdf_box_grad(local, half_extents[0], half_extents[1], half_extents[2])
+        hit_shape, projected_local, normal_local = _project_signed_distance(
+            local, distance, normal_local, separation, projection_threshold
+        )
+    elif shape_type[shape] == GeoType.CAPSULE:
+        shape_radius = wp.abs(shape_scale[shape][0])
+        half_height = wp.abs(shape_scale[shape][1])
+        distance = sdf_capsule(local, shape_radius, half_height, int(Axis.Z))
+        normal_local = sdf_capsule_grad(local, shape_radius, half_height, int(Axis.Z))
+        hit_shape, projected_local, normal_local = _project_signed_distance(
+            local, distance, normal_local, separation, projection_threshold
+        )
+    elif shape_type[shape] == GeoType.CYLINDER:
+        shape_radius = wp.abs(shape_scale[shape][0])
+        half_height = wp.abs(shape_scale[shape][1])
+        distance = sdf_cylinder(local, shape_radius, half_height, int(Axis.Z))
+        normal_local = sdf_cylinder_grad(local, shape_radius, half_height, int(Axis.Z))
+        hit_shape, projected_local, normal_local = _project_signed_distance(
+            local, distance, normal_local, separation, projection_threshold
+        )
+    elif shape_type[shape] == GeoType.ELLIPSOID:
+        radii = wp.vec3(
+            wp.abs(shape_scale[shape][0]),
+            wp.abs(shape_scale[shape][1]),
+            wp.abs(shape_scale[shape][2]),
+        )
+        distance = sdf_ellipsoid(local, radii)
+        normal_local = sdf_ellipsoid_grad(local, radii)
+        hit_shape, projected_local, normal_local = _project_signed_distance(
+            local, distance, normal_local, separation, projection_threshold
+        )
+    elif shape_type[shape] == GeoType.CONE:
+        shape_radius = wp.abs(shape_scale[shape][0])
+        half_height = wp.abs(shape_scale[shape][1])
+        distance = sdf_cone(local, shape_radius, half_height, int(Axis.Z))
+        normal_local = sdf_cone_grad(local, shape_radius, half_height, int(Axis.Z))
+        hit_shape, projected_local, normal_local = _project_signed_distance(
+            local, distance, normal_local, separation, projection_threshold
+        )
+    elif shape_type[shape] == GeoType.MESH or shape_type[shape] == GeoType.CONVEX_MESH:
+        mesh = shape_source_ptr[shape]
+        mesh_scale = shape_scale[shape]
+        min_scale = wp.min(wp.min(wp.abs(mesh_scale[0]), wp.abs(mesh_scale[1])), wp.abs(mesh_scale[2]))
+        if mesh != wp.uint64(0) and min_scale > 1.0e-7:
+            query_distance = wp.max(mesh_query_max_distance, separation + projection_threshold)
+            query = wp.mesh_query_point_sign_parity(mesh, wp.cw_div(local, mesh_scale), query_distance / min_scale)
+            if query.result:
+                closest = wp.cw_mul(wp.mesh_eval_position(mesh, query.face, query.u, query.v), mesh_scale)
+                offset = local - closest
+                distance = wp.length(offset) * query.sign
+                normal_local = wp.cw_div(wp.mesh_eval_face_normal(mesh, query.face), mesh_scale)
+                if wp.length(offset) > 1.0e-7:
+                    normal_local = wp.normalize(offset) * query.sign
+                hit_shape, projected_local, normal_local = _project_signed_distance(
+                    local, distance, normal_local, separation, projection_threshold
+                )
+
+    if not hit_shape:
+        return x, v, False
+
+    normal = wp.normalize(wp.quat_rotate(quat, normal_local))
+    x = point + wp.quat_rotate(quat, projected_local)
+    target_velocity = 0.0
+    if 0 <= body and body < body_count and body_mass[body] > 0.0 and (body_flags[body] & BodyFlags.KINEMATIC) == 0:
+        target_velocity = _depenetration_velocity(wp.dot(x - x_before, normal), dt, max_depenetration_velocity)
+    v = _solve_coulomb_velocity(
+        v,
+        normal,
+        boundary_friction,
+        shape_material_mu[shape],
+        boundary_velocity,
+        particle_mass,
+        body,
+        x,
+        body_q,
+        body_flags,
+        body_com,
+        body_mass,
+        body_inv_inertia,
+        target_velocity,
+    )
+    _accumulate_body_impulse(
+        body,
+        body_count,
+        x,
+        -particle_mass * (v - v_before),
+        body_q,
+        body_com,
+        analytic_body_impulse,
+        analytic_body_angular_impulse,
+    )
+    return x, v, True
+
+
+@wp.func
+def _collide_explicit_mesh(
+    mesh_index: int,
+    body_count: int,
+    particle_world: int,
+    particle_mass: float,
+    radius: float,
+    x: wp.vec3,
+    v: wp.vec3,
+    explicit_mesh_ids: wp.array[wp.uint64],
+    explicit_mesh_margin: wp.array[float],
+    explicit_mesh_friction: wp.array[float],
+    explicit_mesh_projection_threshold: wp.array[float],
+    explicit_mesh_body_ids: wp.array[wp.int32],
+    explicit_mesh_world: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_q_prev: wp.array[wp.transform],
+    body_flags: wp.array[wp.int32],
+    body_com: wp.array[wp.vec3],
+    body_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
+    analytic_body_impulse: wp.array[wp.vec3],
+    analytic_body_angular_impulse: wp.array[wp.vec3],
+    boundary_margin: float,
+    boundary_friction: float,
+    mesh_query_max_distance: float,
+    max_depenetration_velocity: float,
+    collider_velocity_mode: int,
+    dt: float,
+) -> tuple[wp.vec3, wp.vec3, bool]:
+    if not _same_world(particle_world, explicit_mesh_world[mesh_index]):
+        return x, v, False
+
+    mesh = explicit_mesh_ids[mesh_index]
+    if mesh == wp.uint64(0):
+        return x, v, False
+
+    x_before = x
+    v_before = v
+    body = explicit_mesh_body_ids[mesh_index]
+    local_x = x
+    boundary_velocity = wp.vec3(0.0)
+    point = wp.vec3(0.0)
+    quat = wp.quat_identity()
+    if 0 <= body and body < body_count:
+        point = wp.transform_get_translation(body_q[body])
+        quat = wp.transform_get_rotation(body_q[body])
+        local_x = wp.quat_rotate_inv(quat, x - point)
+        boundary_velocity = _body_velocity_at_point(
+            body, x, body_q, body_qd, body_q_prev, body_com, collider_velocity_mode, dt
+        )
+
+    separation = radius + explicit_mesh_margin[mesh_index] + boundary_margin
+    projection_threshold = explicit_mesh_projection_threshold[mesh_index]
+    query_distance = wp.max(mesh_query_max_distance, separation + projection_threshold)
+    query = wp.mesh_query_point_sign_parity(mesh, local_x, query_distance)
+    if not query.result:
+        return x, v, False
+
+    closest = wp.mesh_eval_position(mesh, query.face, query.u, query.v)
+    offset = local_x - closest
+    distance = wp.length(offset) * query.sign
+    normal = wp.mesh_eval_face_normal(mesh, query.face)
+    if wp.length(offset) > 1.0e-7:
+        normal = wp.normalize(offset) * query.sign
+    hit_mesh, projected, normal = _project_signed_distance(local_x, distance, normal, separation, projection_threshold)
+    if not hit_mesh:
+        return x, v, False
+
+    if 0 <= body and body < body_count:
+        normal = wp.quat_rotate(quat, normal)
+        normal_length = wp.length(normal)
+        if normal_length <= 1.0e-7:
+            return x, v, False
+        normal /= normal_length
+        x = point + wp.quat_rotate(quat, projected)
+    else:
+        x = projected
+
+    target_velocity = 0.0
+    if 0 <= body and body < body_count and body_mass[body] > 0.0 and (body_flags[body] & BodyFlags.KINEMATIC) == 0:
+        target_velocity = _depenetration_velocity(wp.dot(x - x_before, normal), dt, max_depenetration_velocity)
+    v = _solve_coulomb_velocity(
+        v,
+        normal,
+        boundary_friction,
+        explicit_mesh_friction[mesh_index],
+        boundary_velocity,
+        particle_mass,
+        body,
+        x,
+        body_q,
+        body_flags,
+        body_com,
+        body_mass,
+        body_inv_inertia,
+        target_velocity,
+    )
+    _accumulate_body_impulse(
+        body,
+        body_count,
+        x,
+        -particle_mass * (v - v_before),
+        body_q,
+        body_com,
+        analytic_body_impulse,
+        analytic_body_angular_impulse,
+    )
+    return x, v, True
+
+
 @wp.kernel
 def collide_particle_shapes(
     shape_count: int,
+    shape_bvh_id: wp.uint64,
+    shape_indices: wp.array[wp.uint32],
+    shape_max_margin: float,
     body_count: int,
     particle_q: wp.array[wp.vec3],
     particle_qd: wp.array[wp.vec3],
@@ -192,6 +506,9 @@ def collide_particle_shapes(
     explicit_mesh_friction: wp.array[float],
     explicit_mesh_projection_threshold: wp.array[float],
     explicit_mesh_body_ids: wp.array[wp.int32],
+    explicit_mesh_world: wp.array[wp.int32],
+    explicit_mesh_bvh_id: wp.uint64,
+    explicit_mesh_max_margin: float,
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_q_prev: wp.array[wp.transform],
@@ -204,14 +521,15 @@ def collide_particle_shapes(
     boundary_margin: float,
     boundary_friction: float,
     mesh_query_max_distance: float,
+    max_depenetration_velocity: float,
     collider_velocity_mode: int,
     dt: float,
     boundary_impulse: wp.array[wp.vec3],
 ):
     particle = wp.tid()
-
-    if (particle_flags[particle] & ParticleFlags.ACTIVE) == 0 or particle_mass[particle] <= 0.0:
-        boundary_impulse[particle] = wp.vec3(0.0)
+    boundary_impulse[particle] = wp.vec3(0.0)
+    mass = particle_mass[particle]
+    if (particle_flags[particle] & ParticleFlags.ACTIVE) == 0 or mass <= 0.0:
         return
 
     x = particle_q[particle]
@@ -219,234 +537,88 @@ def collide_particle_shapes(
     v_initial = v
     radius = particle_radius[particle]
     world = particle_world[particle]
-
     hit = bool(False)
 
-    for shape in range(shape_count):
-        if (shape_flags[shape] & ShapeFlags.COLLIDE_PARTICLES) == 0 or not _same_world(world, shape_world[shape]):
-            continue
-
-        shape_xform = shape_transform[shape]
-        body = shape_body[shape]
-        boundary_velocity = wp.vec3(0.0)
-        if 0 <= body and body < body_count:
-            X_wb = body_q[body]
-            shape_xform = wp.transform_multiply(X_wb, shape_xform)
-            boundary_velocity = _body_velocity_at_point(
-                body,
+    if shape_count > 0:
+        query_radius = wp.max(radius + boundary_margin + wp.max(shape_max_margin, 0.0), 1.0e-6)
+        shape_query = wp.bvh_query_aabb(shape_bvh_id, x - wp.vec3(query_radius), x + wp.vec3(query_radius))
+        shape_leaf = int(0)
+        while wp.bvh_query_next(shape_query, shape_leaf):
+            shape = int(shape_indices[shape_leaf])
+            x, v, shape_hit = _collide_model_shape(
+                shape,
+                body_count,
+                world,
+                mass,
+                radius,
                 x,
+                v,
+                shape_type,
+                shape_flags,
+                shape_world,
+                shape_body,
+                shape_transform,
+                shape_scale,
+                shape_source_ptr,
+                shape_margin,
+                shape_material_mu,
+                shape_projection_threshold,
                 body_q,
                 body_qd,
                 body_q_prev,
-                body_com,
-                collider_velocity_mode,
-                dt,
-            )
-
-        point = wp.transform_get_translation(shape_xform)
-        quat = wp.transform_get_rotation(shape_xform)
-        local = wp.quat_rotate_inv(quat, x - point)
-        separation = radius + shape_margin[shape] + boundary_margin
-        projection_threshold = shape_projection_threshold[shape]
-        v_before_shape = v
-        hit_shape = bool(False)
-        projected_local = local
-        normal_local = wp.vec3(0.0)
-        normal = wp.vec3(0.0)
-
-        if shape_type[shape] == GeoType.PLANE:
-            hit_shape, projected_local, normal_local = _project_local_plane(
-                local,
-                0.5 * wp.abs(shape_scale[shape][0]),
-                0.5 * wp.abs(shape_scale[shape][1]),
-                separation,
-                projection_threshold,
-            )
-
-        elif shape_type[shape] == GeoType.SPHERE:
-            distance = sdf_sphere(local, wp.abs(shape_scale[shape][0]))
-            normal_local = sdf_sphere_grad(local, wp.abs(shape_scale[shape][0]))
-            hit_shape, projected_local, normal_local = _project_signed_distance(
-                local, distance, normal_local, separation, projection_threshold
-            )
-
-        elif shape_type[shape] == GeoType.BOX:
-            hx = wp.abs(shape_scale[shape][0])
-            hy = wp.abs(shape_scale[shape][1])
-            hz = wp.abs(shape_scale[shape][2])
-            distance = sdf_box(local, hx, hy, hz)
-            normal_local = sdf_box_grad(local, hx, hy, hz)
-            hit_shape, projected_local, normal_local = _project_signed_distance(
-                local, distance, normal_local, separation, projection_threshold
-            )
-
-        elif shape_type[shape] == GeoType.CAPSULE:
-            shape_radius = wp.abs(shape_scale[shape][0])
-            half_height = wp.abs(shape_scale[shape][1])
-            distance = sdf_capsule(local, shape_radius, half_height, int(Axis.Z))
-            normal_local = sdf_capsule_grad(local, shape_radius, half_height, int(Axis.Z))
-            hit_shape, projected_local, normal_local = _project_signed_distance(
-                local, distance, normal_local, separation, projection_threshold
-            )
-
-        elif shape_type[shape] == GeoType.CYLINDER:
-            shape_radius = wp.abs(shape_scale[shape][0])
-            half_height = wp.abs(shape_scale[shape][1])
-            distance = sdf_cylinder(local, shape_radius, half_height, int(Axis.Z))
-            normal_local = sdf_cylinder_grad(local, shape_radius, half_height, int(Axis.Z))
-            hit_shape, projected_local, normal_local = _project_signed_distance(
-                local, distance, normal_local, separation, projection_threshold
-            )
-
-        elif shape_type[shape] == GeoType.ELLIPSOID:
-            radii = wp.vec3(
-                wp.abs(shape_scale[shape][0]),
-                wp.abs(shape_scale[shape][1]),
-                wp.abs(shape_scale[shape][2]),
-            )
-            distance = sdf_ellipsoid(local, radii)
-            normal_local = sdf_ellipsoid_grad(local, radii)
-            hit_shape, projected_local, normal_local = _project_signed_distance(
-                local, distance, normal_local, separation, projection_threshold
-            )
-
-        elif shape_type[shape] == GeoType.CONE:
-            shape_radius = wp.abs(shape_scale[shape][0])
-            half_height = wp.abs(shape_scale[shape][1])
-            distance = sdf_cone(local, shape_radius, half_height, int(Axis.Z))
-            normal_local = sdf_cone_grad(local, shape_radius, half_height, int(Axis.Z))
-            hit_shape, projected_local, normal_local = _project_signed_distance(
-                local, distance, normal_local, separation, projection_threshold
-            )
-
-        elif shape_type[shape] == GeoType.MESH or shape_type[shape] == GeoType.CONVEX_MESH:
-            mesh = shape_source_ptr[shape]
-            if mesh == wp.uint64(0):
-                continue
-            mesh_scale = shape_scale[shape]
-            min_scale = wp.min(
-                wp.min(wp.abs(mesh_scale[0]), wp.abs(mesh_scale[1])),
-                wp.abs(mesh_scale[2]),
-            )
-            if min_scale <= 1.0e-7:
-                continue
-            query_distance = wp.max(mesh_query_max_distance, separation + projection_threshold)
-            query = wp.mesh_query_point_sign_parity(mesh, wp.cw_div(local, mesh_scale), query_distance / min_scale)
-            if query.result:
-                closest = wp.cw_mul(wp.mesh_eval_position(mesh, query.face, query.u, query.v), mesh_scale)
-                offset = local - closest
-                distance = wp.length(offset) * query.sign
-                normal_local = wp.cw_div(wp.mesh_eval_face_normal(mesh, query.face), mesh_scale)
-                if wp.length(offset) > 1.0e-7:
-                    normal_local = wp.normalize(offset) * query.sign
-                hit_shape, projected_local, normal_local = _project_signed_distance(
-                    local, distance, normal_local, separation, projection_threshold
-                )
-
-        if hit_shape:
-            normal = wp.normalize(wp.quat_rotate(quat, normal_local))
-            x = point + wp.quat_rotate(quat, projected_local)
-            v = _solve_coulomb_velocity(
-                v,
-                normal,
-                boundary_friction,
-                shape_material_mu[shape],
-                boundary_velocity,
-                particle_mass[particle],
-                body,
-                x,
-                body_q,
                 body_flags,
                 body_com,
                 body_mass,
                 body_inv_inertia,
-            )
-            if 0 <= body and body < body_count:
-                particle_impulse = particle_mass[particle] * (v - v_before_shape)
-                body_impulse = -particle_impulse
-                X_wb = body_q[body]
-                com_world = wp.transform_point(X_wb, body_com[body])
-                wp.atomic_add(analytic_body_impulse, body, body_impulse)
-                wp.atomic_add(analytic_body_angular_impulse, body, wp.cross(x - com_world, body_impulse))
-            hit = True
-
-    for mesh_index in range(explicit_mesh_count):
-        mesh = explicit_mesh_ids[mesh_index]
-        if mesh == wp.uint64(0):
-            continue
-        body = explicit_mesh_body_ids[mesh_index]
-        local_x = x
-        boundary_velocity = wp.vec3(0.0)
-        if 0 <= body and body < body_count:
-            X_wb = body_q[body]
-            point = wp.transform_get_translation(X_wb)
-            quat = wp.transform_get_rotation(X_wb)
-            local_x = wp.quat_rotate_inv(quat, x - point)
-            boundary_velocity = _body_velocity_at_point(
-                body,
-                x,
-                body_q,
-                body_qd,
-                body_q_prev,
-                body_com,
+                analytic_body_impulse,
+                analytic_body_angular_impulse,
+                boundary_margin,
+                boundary_friction,
+                mesh_query_max_distance,
+                max_depenetration_velocity,
                 collider_velocity_mode,
                 dt,
             )
+            hit = hit or shape_hit
 
-        separation = radius + explicit_mesh_margin[mesh_index] + boundary_margin
-        projection_threshold = explicit_mesh_projection_threshold[mesh_index]
-        query_distance = wp.max(mesh_query_max_distance, separation + projection_threshold)
-        query = wp.mesh_query_point_sign_parity(mesh, local_x, query_distance)
-        if query.result:
-            closest = wp.mesh_eval_position(mesh, query.face, query.u, query.v)
-            offset = local_x - closest
-            distance = wp.length(offset) * query.sign
-            normal = wp.mesh_eval_face_normal(mesh, query.face)
-            if wp.length(offset) > 1.0e-7:
-                normal = wp.normalize(offset) * query.sign
-            hit_mesh, projected, normal = _project_signed_distance(
-                local_x, distance, normal, separation, projection_threshold
-            )
-            if not hit_mesh:
-                continue
-            if 0 <= body and body < body_count:
-                X_wb = body_q[body]
-                point = wp.transform_get_translation(X_wb)
-                quat = wp.transform_get_rotation(X_wb)
-                normal = wp.quat_rotate(quat, normal)
-                normal_length = wp.length(normal)
-                if normal_length <= 1.0e-7:
-                    continue
-                normal = normal / normal_length
-                x = point + wp.quat_rotate(quat, projected)
-            else:
-                x = projected
-            v_before_mesh = v
-            v = _solve_coulomb_velocity(
-                v,
-                normal,
-                boundary_friction,
-                explicit_mesh_friction[mesh_index],
-                boundary_velocity,
-                particle_mass[particle],
-                body,
+    if explicit_mesh_count > 0:
+        query_radius = wp.max(radius + boundary_margin + wp.max(explicit_mesh_max_margin, 0.0), 1.0e-6)
+        mesh_query = wp.bvh_query_aabb(explicit_mesh_bvh_id, x - wp.vec3(query_radius), x + wp.vec3(query_radius))
+        mesh_index = int(0)
+        while wp.bvh_query_next(mesh_query, mesh_index):
+            x, v, mesh_hit = _collide_explicit_mesh(
+                mesh_index,
+                body_count,
+                world,
+                mass,
+                radius,
                 x,
+                v,
+                explicit_mesh_ids,
+                explicit_mesh_margin,
+                explicit_mesh_friction,
+                explicit_mesh_projection_threshold,
+                explicit_mesh_body_ids,
+                explicit_mesh_world,
                 body_q,
+                body_qd,
+                body_q_prev,
                 body_flags,
                 body_com,
                 body_mass,
                 body_inv_inertia,
+                analytic_body_impulse,
+                analytic_body_angular_impulse,
+                boundary_margin,
+                boundary_friction,
+                mesh_query_max_distance,
+                max_depenetration_velocity,
+                collider_velocity_mode,
+                dt,
             )
-            if 0 <= body and body < body_count:
-                particle_impulse = particle_mass[particle] * (v - v_before_mesh)
-                body_impulse = -particle_impulse
-                X_wb = body_q[body]
-                com_world = wp.transform_point(X_wb, body_com[body])
-                wp.atomic_add(analytic_body_impulse, body, body_impulse)
-                wp.atomic_add(analytic_body_angular_impulse, body, wp.cross(x - com_world, body_impulse))
-            hit = True
+            hit = hit or mesh_hit
 
     if hit:
         particle_q[particle] = x
         particle_qd[particle] = v
-        boundary_impulse[particle] = boundary_impulse[particle] + particle_mass[particle] * (v - v_initial)
+        boundary_impulse[particle] = mass * (v - v_initial)

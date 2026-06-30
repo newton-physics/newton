@@ -214,7 +214,7 @@ class SPHModel:
                 projection_threshold=collider_projection_threshold,
             )
             self.boundary_handler.set_model_collider_material_overrides(
-                None,
+                (),
                 margins=None,
                 friction=None,
                 projection_threshold=None,
@@ -239,6 +239,7 @@ class SPHModel:
         """Refresh caches derived from mutable model or config arrays."""
         self.default_support_radius = self.compute_default_support_radius()
         self.max_support_radius = self.compute_max_support_radius()
+        self.max_depenetration_velocity = self.compute_max_depenetration_velocity()
         self.scratch.resize()
         if hasattr(self, "boundary_handler"):
             self.boundary_handler.refresh_model()
@@ -267,6 +268,17 @@ class SPHModel:
             max_h = max(max_h, default_h)
         return max_h
 
+    def compute_max_depenetration_velocity(self) -> float:
+        """Bound contact stabilization below the WCSPH acoustic velocity scale."""
+        sound_speed = self.config.sound_speed
+        if sound_speed is None:
+            sound_speed = (
+                float(np.max(self.model.sph.sound_speed.numpy(), initial=0.0))
+                if self.model.particle_count and hasattr(self.model, "sph")
+                else 0.0
+            )
+        return min(float(self.model.particle_max_velocity), max(0.05, 0.01 * float(sound_speed)))
+
     def build_neighbor_grid(self, state: State) -> None:
         self.neighbor_search.build(state, self.max_support_radius)
 
@@ -289,6 +301,7 @@ class SPHModel:
             body_com=self.collider_body_com,
             body_mass=self.collider_body_mass,
             body_inv_inertia=self.collider_body_inv_inertia,
+            max_depenetration_velocity=self.max_depenetration_velocity,
             collider_velocity_mode=collider_velocity_mode,
             dt=dt,
         )

@@ -368,7 +368,7 @@ def test_sph_coulomb_friction_requires_normal_impulse(test, device):
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
     sph.add_sph_particle_grid(
         builder,
-        pos=wp.vec3(0.13, 0.0, 0.0),
+        pos=wp.vec3(0.14, 0.0, 0.0),
         vel=wp.vec3(0.0, 1.0, 0.0),
         dim_x=1,
         dim_y=1,
@@ -478,6 +478,71 @@ def test_sph_fluid_block_on_plane_stays_bounded(test, device):
     test.assertLess(bb_max[model.up_axis], 1.0)
 
 
+def test_sph_hydrostatic_pressure_increases_with_depth(test, device):
+    spacing = 0.04
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=-9.81)
+    sph.add_sph_particle_grid(
+        builder,
+        pos=wp.vec3(-0.06, 0.04, -0.06),
+        dim_x=4,
+        dim_y=8,
+        dim_z=4,
+        cell_x=spacing,
+        cell_y=spacing,
+        cell_z=spacing,
+        material=sph.SPHMaterial(
+            sound_speed=20.0,
+            viscosity=0.01,
+            smoothing_length=2.0 * spacing,
+        ),
+        radius_mean=0.5 * spacing,
+    )
+    shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=0.05, is_visible=False)
+    builder.add_shape_box(
+        body=-1,
+        xform=wp.transform(wp.vec3(0.0), wp.quat_identity()),
+        hx=0.12,
+        hy=0.02,
+        hz=0.12,
+        cfg=shape_cfg,
+    )
+    for x in (-0.1, 0.1):
+        builder.add_shape_box(
+            body=-1,
+            xform=wp.transform(wp.vec3(x, 0.18, 0.0), wp.quat_identity()),
+            hx=0.02,
+            hy=0.18,
+            hz=0.12,
+            cfg=shape_cfg,
+        )
+    for z in (-0.1, 0.1):
+        builder.add_shape_box(
+            body=-1,
+            xform=wp.transform(wp.vec3(0.0, 0.18, z), wp.quat_identity()),
+            hx=0.12,
+            hy=0.18,
+            hz=0.02,
+            cfg=shape_cfg,
+        )
+
+    model = builder.finalize(device=device)
+    state_0 = model.state()
+    state_1 = model.state()
+    solver = _make_solver(model, kernel="wendland", xsph=0.03)
+    state_0, _state_1 = _step_solver(solver, state_0, state_1, steps=800, dt=5.0e-4)
+
+    position = state_0.particle_q.numpy()
+    pressure = state_0.sph.pressure.numpy()
+    lower_height = np.percentile(position[:, 1], 30.0)
+    upper_height = np.percentile(position[:, 1], 70.0)
+    lower_pressure = float(np.mean(pressure[position[:, 1] <= lower_height]))
+    upper_pressure = float(np.mean(pressure[position[:, 1] >= upper_height]))
+
+    test.assertGreater(lower_pressure, 2.0 * upper_pressure)
+    test.assertLess(_max_particle_speed(state_0, _fluid_indices(model)), 0.2)
+    test.assertGreaterEqual(float(np.min(position[:, 1])), -1.0e-4)
+
+
 def test_sph_fluid_block_under_gravity_moves_downward(test, device):
     model = _build_fluid_block(device, dim=2, gravity=-9.81)
     state_0 = model.state()
@@ -493,6 +558,8 @@ def test_sph_fluid_block_under_gravity_moves_downward(test, device):
     final_mean_height = float(np.mean(final_q[fluid, model.up_axis]))
     test.assertLess(final_mean_height, initial_mean_height)
     test.assertGreater(float(np.max(np.linalg.norm(final_qd[fluid], axis=1))), 0.0)
+    expected_mean_velocity = -9.81 * 8 * 2.0e-4
+    test.assertAlmostEqual(float(np.mean(final_qd[fluid, model.up_axis])), expected_mean_velocity, delta=2.0e-5)
 
 
 def test_sph_fluid_particles_project_outside_ground_plane(test, device):
@@ -967,10 +1034,105 @@ def test_sph_model_collider_material_overrides(test, device):
 
     test.assertGreaterEqual(float(particle_q[0, 0]), 0.17 - 1.0e-6)
     test.assertGreater(float(particle_qd[0, 0]), -1.0)
-    test.assertLessEqual(float(particle_qd[0, 0]), 0.0)
+    test.assertLessEqual(float(particle_qd[0, 0]), solver._sph_model.max_depenetration_velocity)
     test.assertGreaterEqual(float(particle_qd[0, 1]), 0.0)
     test.assertLess(float(particle_qd[0, 1]), 1.0)
     test.assertTrue(np.any(shape_projection_threshold == 0.02))
+
+
+def test_sph_model_collider_selection_excludes_unselected_bodies(test, device):
+    fluid_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    sph.add_sph_particle_grid(
+        fluid_builder,
+        pos=wp.vec3(1.09, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        dim_z=1,
+        cell_x=0.08,
+        cell_y=0.08,
+        cell_z=0.08,
+        material=sph.SPHMaterial(sound_speed=0.0, stiffness=0.0, smoothing_length=0.16),
+        radius_mean=0.04,
+    )
+    fluid_model = fluid_builder.finalize(device=device)
+
+    collider_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    selected_body = collider_builder.add_body(
+        xform=wp.transform(wp.vec3(0.0), wp.quat_identity()),
+        mass=1.0,
+        inertia=wp.diag(wp.vec3(0.01)),
+    )
+    unselected_body = collider_builder.add_body(
+        xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+        mass=1.0,
+        inertia=wp.diag(wp.vec3(0.01)),
+    )
+    collider_builder.add_shape_box(body=selected_body, hx=0.1, hy=0.1, hz=0.1)
+    collider_builder.add_shape_box(body=unselected_body, hx=0.1, hy=0.1, hz=0.1)
+    collider_model = collider_builder.finalize(device=device)
+
+    collider_state = collider_model.state()
+    state_0 = fluid_model.state()
+    state_1 = fluid_model.state()
+    for state in (state_0, state_1):
+        state.body_q = wp.clone(collider_state.body_q)
+        state.body_qd = wp.clone(collider_state.body_qd)
+        state.body_f = wp.zeros_like(collider_state.body_f)
+
+    solver = _make_solver(fluid_model)
+    solver.setup_collider(model=collider_model, collider_body_ids=[selected_body])
+    position_before = state_0.particle_q.numpy()
+    solver.step(state_0, state_1, control=None, contacts=None, dt=1.0e-4)
+
+    np.testing.assert_allclose(state_1.particle_q.numpy(), position_before, rtol=0.0, atol=1.0e-7)
+    test.assertEqual(solver.collider_body_index.numpy().tolist(), [selected_body])
+    test.assertEqual(solver._sph_model.boundary_handler.model_collider_shape_indices_wp.shape[0], 1)
+
+
+def test_sph_depenetration_impulse_preserves_linear_momentum(test, device):
+    fluid_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    sph.add_sph_particle_grid(
+        fluid_builder,
+        pos=wp.vec3(0.09, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        dim_z=1,
+        cell_x=0.08,
+        cell_y=0.08,
+        cell_z=0.08,
+        material=sph.SPHMaterial(sound_speed=10.0, viscosity=0.0, smoothing_length=0.16),
+        radius_mean=0.04,
+    )
+    fluid_model = fluid_builder.finalize(device=device)
+
+    collider_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    body = collider_builder.add_body(
+        xform=wp.transform_identity(),
+        mass=1.0,
+        inertia=wp.diag(wp.vec3(0.01)),
+    )
+    collider_builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+    collider_model = collider_builder.finalize(device=device)
+    collider_state = collider_model.state()
+
+    state_0 = fluid_model.state()
+    state_1 = fluid_model.state()
+    for state in (state_0, state_1):
+        state.body_q = wp.clone(collider_state.body_q)
+        state.body_qd = wp.clone(collider_state.body_qd)
+        state.body_f = wp.zeros_like(collider_state.body_f)
+
+    solver = _make_solver(fluid_model)
+    solver.setup_collider(model=collider_model, collider_body_ids=[body])
+    position_before = state_0.particle_q.numpy().copy()
+    solver.step(state_0, state_1, control=None, contacts=None, dt=1.0e-4)
+    impulses, _positions, _ids = solver.collect_collider_impulses(state_1)
+
+    particle_impulse = fluid_model.particle_mass.numpy()[:, None] * state_1.particle_qd.numpy()
+    body_impulse = np.sum(impulses.numpy(), axis=0)
+    test.assertGreater(float(state_1.particle_q.numpy()[0, 0]), float(position_before[0, 0]))
+    test.assertGreater(float(np.linalg.norm(body_impulse)), 0.0)
+    np.testing.assert_allclose(np.sum(particle_impulse, axis=0) + body_impulse, np.zeros(3), atol=2.0e-6)
 
 
 def test_sph_explicit_mesh_collider_material_options(test, device):
@@ -1018,6 +1180,51 @@ def test_sph_explicit_mesh_collider_material_options(test, device):
     particle_q = state_1.particle_q.numpy()
     test.assertGreaterEqual(float(particle_q[0, 1]), 0.05 - 1.0e-6)
     test.assertEqual(solver._sph_model.boundary_handler.explicit_collider_projection_threshold, (0.02,))
+
+
+def test_sph_explicit_meshes_replace_model_shape_colliders(test, device):
+    fluid_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    sph.add_sph_particle_grid(
+        fluid_builder,
+        pos=wp.vec3(0.09, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        dim_z=1,
+        cell_x=0.08,
+        cell_y=0.08,
+        cell_z=0.08,
+        material=sph.SPHMaterial(sound_speed=0.0, stiffness=0.0, smoothing_length=0.16),
+        radius_mean=0.04,
+    )
+    fluid_model = fluid_builder.finalize(device=device)
+
+    collider_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    body = collider_builder.add_body(
+        xform=wp.transform_identity(),
+        mass=1.0,
+        inertia=wp.diag(wp.vec3(0.01)),
+    )
+    collider_builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+    collider_model = collider_builder.finalize(device=device)
+    collider_state = collider_model.state()
+
+    state_0 = fluid_model.state()
+    state_1 = fluid_model.state()
+    for state in (state_0, state_1):
+        state.body_q = wp.clone(collider_state.body_q)
+        state.body_qd = wp.clone(collider_state.body_qd)
+        state.body_f = wp.zeros_like(collider_state.body_f)
+
+    mesh = newton.Mesh.create_plane(1.0, 1.0, compute_inertia=False)
+    mesh.vertices[:, 1] -= 1.0
+    solver = _make_solver(fluid_model)
+    solver.setup_collider(model=collider_model, collider_meshes=[mesh])
+    position_before = state_0.particle_q.numpy()
+    solver.step(state_0, state_1, control=None, contacts=None, dt=1.0e-4)
+
+    np.testing.assert_allclose(state_1.particle_q.numpy(), position_before, rtol=0.0, atol=1.0e-7)
+    test.assertEqual(solver._sph_model.boundary_handler.model_collider_shape_indices_wp.shape[0], 0)
+    test.assertEqual(solver._sph_model.boundary_handler.explicit_collider_mesh_count(), 1)
 
 
 def test_sph_primitive_body_collider_impulse_collection(test, device):
@@ -1095,7 +1302,7 @@ def test_sph_moving_external_collider_velocity_moves_fluid(test, device):
         fluid_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
         sph.add_sph_particle_grid(
             fluid_builder,
-            pos=wp.vec3(0.13, 0.0, 0.0),
+            pos=wp.vec3(0.1399, 0.0, 0.0),
             rot=wp.quat_identity(),
             vel=wp.vec3(0.0),
             dim_x=1,
@@ -1141,7 +1348,7 @@ def test_sph_moving_external_collider_velocity_moves_fluid(test, device):
     stationary_velocity = run(0.0)
     moving_velocity = run(1.0)
     kinematic_velocity = run(1.0, kinematic=True)
-    test.assertAlmostEqual(float(stationary_velocity[0]), 0.0, delta=1.0e-6)
+    test.assertGreaterEqual(float(stationary_velocity[0]), 0.0)
     test.assertGreater(float(moving_velocity[0] - stationary_velocity[0]), 0.0)
     test.assertLess(float(moving_velocity[0]), float(kinematic_velocity[0]))
     test.assertGreater(float(kinematic_velocity[0]), 0.9)
@@ -1159,7 +1366,7 @@ def test_sph_backward_collider_velocity_uses_body_pose_delta(test, device):
         )
         sph.add_sph_particle_grid(
             fluid_builder,
-            pos=wp.vec3(0.05, 0.0, 0.0),
+            pos=wp.vec3(0.1399, 0.0, 0.0),
             rot=wp.quat_identity(),
             vel=wp.vec3(0.0, 0.0, 0.0),
             dim_x=1,
@@ -1217,8 +1424,8 @@ def test_sph_backward_collider_velocity_uses_body_pose_delta(test, device):
     forward_velocity = run_simulation("forward")
     backward_velocity = run_simulation("backward")
 
-    test.assertAlmostEqual(forward_velocity, 0.0, delta=1.0e-6)
-    test.assertGreater(backward_velocity, 0.9)
+    test.assertGreaterEqual(forward_velocity, 0.0)
+    test.assertGreater(backward_velocity, forward_velocity + 0.9)
 
 
 def test_sph_setup_collider_accepts_kinematic_body_arrays(test, device):
@@ -1529,6 +1736,7 @@ for test_func in (
     test_sph_finite_plane_does_not_project_outside_extent,
     test_sph_closed_mesh_projects_toward_exterior,
     test_sph_fluid_block_on_plane_stays_bounded,
+    test_sph_hydrostatic_pressure_increases_with_depth,
     test_sph_fluid_block_under_gravity_moves_downward,
     test_sph_fluid_particles_project_outside_ground_plane,
     test_sph_project_outside_matches_mpm_style_projection,
@@ -1570,6 +1778,20 @@ add_function_test(
     TestSolverWCSPH,
     test_sph_model_collider_material_overrides.__name__,
     test_sph_model_collider_material_overrides,
+    devices=devices,
+)
+
+add_function_test(
+    TestSolverWCSPH,
+    test_sph_model_collider_selection_excludes_unselected_bodies.__name__,
+    test_sph_model_collider_selection_excludes_unselected_bodies,
+    devices=devices,
+)
+
+add_function_test(
+    TestSolverWCSPH,
+    test_sph_depenetration_impulse_preserves_linear_momentum.__name__,
+    test_sph_depenetration_impulse_preserves_linear_momentum,
     devices=devices,
 )
 
@@ -1626,6 +1848,13 @@ add_function_test(
     TestSolverWCSPH,
     test_sph_explicit_mesh_collider_material_options.__name__,
     test_sph_explicit_mesh_collider_material_options,
+    devices=devices,
+)
+
+add_function_test(
+    TestSolverWCSPH,
+    test_sph_explicit_meshes_replace_model_shape_colliders.__name__,
+    test_sph_explicit_meshes_replace_model_shape_colliders,
     devices=devices,
 )
 

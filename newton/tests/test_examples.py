@@ -797,7 +797,7 @@ def add_sph_example_test(
 
 
 def sph_example_options(overrides: dict[str, Any]) -> dict[str, Any]:
-    options: dict[str, Any] = {"num-frames": 2, "substeps": 1, "spacing": 0.06}
+    options: dict[str, Any] = {"num-frames": 2, "substeps": 8, "spacing": 0.06}
     options.update(overrides)
     return options
 
@@ -827,16 +827,13 @@ add_sph_example_test(
     devices=cuda_test_devices,
     test_options=sph_example_options(
         {
-            "num-frames": 40,
-            "substeps": 4,
+            "num-frames": 150,
+            "substeps": 24,
             "spacing": 0.04,
-            "dim-x": 6,
-            "dim-y": 4,
-            "dim-z": 6,
-            "fluid-velocity": 0.5,
-            "float-mass": 0.35,
-            "viscosity": 0.008,
-            "xsph": 0.05,
+            "dim-x": 12,
+            "dim-y": 12,
+            "dim-z": 10,
+            "jitter": 0.0,
         }
     ),
 )
@@ -861,7 +858,7 @@ add_sph_example_test(
     test_options=sph_example_options(
         {
             "num-frames": 4,
-            "substeps": 4,
+            "substeps": 12,
             "spacing": 0.045,
             "dim-x": 6,
             "dim-y": 3,

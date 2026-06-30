@@ -319,14 +319,29 @@ class ViewerGL(ViewerBase):
         return self.gui.ui if self.gui else None
 
     def _hash_geometry(
-        self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None, mirror: bool = False
+        self,
+        geo_type: int,
+        geo_scale,
+        thickness: float,
+        is_solid: bool,
+        geo_src=None,
+        mirror: bool = False,
+        backface_culling: bool = True,
     ) -> int:
         # For capsules, ignore (radius, half_height) in the geometry hash so varying-length capsules batch together.
         # Capsule dimensions are stored per-shape in model.shape_scale as (radius, half_height, _unused) and
         # are remapped in set_model() to per-instance render scales (radius, radius, half_height).
         if geo_type == nt.GeoType.CAPSULE:
             geo_scale = (1.0, 1.0)
-        return super()._hash_geometry(geo_type, geo_scale, thickness, is_solid, geo_src, mirror)
+        return super()._hash_geometry(
+            geo_type,
+            geo_scale,
+            thickness,
+            is_solid,
+            geo_src,
+            mirror,
+            backface_culling,
+        )
 
     def _invalidate_pbo(self):
         """Invalidate PBO resources, forcing reallocation on next get_frame() call."""
