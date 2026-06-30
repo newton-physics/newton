@@ -2634,7 +2634,7 @@ def apply_rigid_restitution(
     bx_b = contact_surface_point(X_wb_b_prev, contact_point1[tid], contact_offset1[tid])
 
     n = contact_normal[tid]
-    d = contact_surface_separation(bx_a, bx_b, n, contact_thickness0[tid], contact_thickness1[tid])
+    d = contact_surface_separation(bx_a, bx_b, n, 0.0, 0.0)
     if d >= 0.0:
         return
 
