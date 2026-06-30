@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import math
 from collections.abc import Mapping
-from dataclasses import fields
 from typing import Any
 
 import numpy as np
@@ -74,12 +73,6 @@ def assert_sph_state_finite(state: newton.State, *sph_fields: str) -> None:
         assert np.isfinite(getattr(state.sph, field_name).numpy()).all()
 
 
-def assert_sph_role_count(model: newton.Model, role: sph.SPHRole, indices: np.ndarray) -> None:
-    """Assert that the model contains exactly ``indices`` particles with an SPH role."""
-
-    assert np.count_nonzero(model.sph.role.numpy() == int(role)) == len(indices)
-
-
 def sph_particle_spacing_from_args(args: object) -> tuple[float, float, float]:
     spacing = args.spacing
     radius = args.radius if args.radius > 0.0 else 0.5 * spacing
@@ -107,10 +100,7 @@ def add_sph_particle_grid_excluding_spheres(
     """Add a fluid particle grid while skipping particles inside spherical exclusions."""
 
     SolverWCSPH.register_custom_attributes(builder)
-    attrs = {
-        "sph:role": int(sph.SPHRole.FLUID),
-        **material.custom_attributes(),
-    }
+    attrs = material.custom_attributes()
     origin = np.asarray(pos, dtype=np.float64)
     velocity = wp.vec3(*np.asarray(vel, dtype=np.float64))
     exclusions = tuple((np.asarray(center, dtype=np.float64), float(radius)) for center, radius in exclude_spheres)
@@ -248,7 +238,7 @@ def add_sph_solver_config_arguments(
         )
     if viscosity is not None:
         parser.add_argument(
-            "--viscosity", type=_non_negative_float, default=viscosity, help="SPH viscosity coefficient."
+            "--viscosity", type=_non_negative_float, default=viscosity, help="Dynamic viscosity [Pa s]."
         )
     if xsph is not None:
         parser.add_argument(
@@ -260,66 +250,74 @@ def add_sph_solver_config_arguments(
         )
 
 
-def _apply_base_options(options: SolverWCSPH.Config, base_options: SolverWCSPH.Config | Mapping[str, Any]) -> None:
-    if isinstance(base_options, SolverWCSPH.Config):
-        for field in fields(SolverWCSPH.Config):
-            setattr(options, field.name, getattr(base_options, field.name))
-        return
-
-    config = base_options.get("config")
-    if isinstance(config, SolverWCSPH.Config):
-        _apply_base_options(options, config)
-
-    for key, value in base_options.items():
-        if key == "config":
-            continue
-        if hasattr(options, key):
-            setattr(options, key, value)
-
-
-def sph_options_from_args(
-    args: object,
-    *,
-    base_options: SolverWCSPH.Config | Mapping[str, Any] | None = None,
-    **overrides: Any,
-) -> SolverWCSPH.Config:
+def sph_options_from_args(args: object) -> SolverWCSPH.Config:
     """Build ``SolverWCSPH.Config`` from matching example CLI arguments."""
 
     options = SolverWCSPH.Config()
-    if base_options is not None:
-        _apply_base_options(options, base_options)
     for key, value in vars(args).items():
         if key in _NON_POSITIVE_AUTOMATIC_OPTIONS and (value is None or value <= 0.0):
             continue
         if hasattr(options, key):
             setattr(options, key, value)
-    for key, value in overrides.items():
-        setattr(options, key, value)
     return options
 
 
-def sph_velocity_colors(velocities: np.ndarray, speed_scale: float | None = None) -> np.ndarray:
-    """Return fluid point colors from velocity magnitude."""
+@wp.kernel
+def _update_sph_render_points(
+    indices: wp.array[wp.int32],
+    particle_q: wp.array[wp.vec3],
+    particle_qd: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    radius_scale: float,
+    inverse_speed_scale: float,
+    points: wp.array[wp.vec3],
+    radii: wp.array[float],
+    colors: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    particle = indices[i]
+    points[i] = particle_q[particle]
+    radii[i] = radius_scale * particle_radius[particle]
 
-    speeds = np.linalg.norm(velocities, axis=1)
-    if speed_scale is None:
-        speed_scale = float(np.percentile(speeds, 95)) if speeds.size else 0.0
-    if speed_scale <= 1.0e-8:
-        speed_scale = 1.0
+    t = wp.clamp(wp.length(particle_qd[particle]) * inverse_speed_scale, 0.0, 1.0)
+    slow = wp.vec3(0.10, 0.32, 0.95)
+    middle = wp.vec3(0.05, 0.75, 1.00)
+    fast = wp.vec3(1.00, 0.78, 0.18)
+    if t < 0.55:
+        colors[i] = wp.lerp(slow, middle, t / 0.55)
+    else:
+        colors[i] = wp.lerp(middle, fast, (t - 0.55) / 0.45)
 
-    t = np.clip(speeds / speed_scale, 0.0, 1.0).astype(np.float32)
-    slow = np.array((0.10, 0.32, 0.95), dtype=np.float32)
-    mid = np.array((0.05, 0.75, 1.00), dtype=np.float32)
-    fast = np.array((1.00, 0.78, 0.18), dtype=np.float32)
 
-    colors = np.empty((velocities.shape[0], 3), dtype=np.float32)
-    lower = t < 0.55
-    upper = ~lower
-    lower_t = np.clip(t[lower] / 0.55, 0.0, 1.0)[:, None]
-    upper_t = np.clip((t[upper] - 0.55) / 0.45, 0.0, 1.0)[:, None]
-    colors[lower] = (1.0 - lower_t) * slow + lower_t * mid
-    colors[upper] = (1.0 - upper_t) * mid + upper_t * fast
-    return colors
+class _SPHRenderPoints:
+    def __init__(self, model: newton.Model, indices: np.ndarray):
+        count = int(indices.size)
+        self.indices = wp.array(indices, dtype=wp.int32, device=model.device)
+        self.points = wp.empty(count, dtype=wp.vec3, device=model.device)
+        self.radii = wp.empty(count, dtype=float, device=model.device)
+        self.colors = wp.empty(count, dtype=wp.vec3, device=model.device)
+
+    def update(
+        self,
+        state: newton.State,
+        model: newton.Model,
+        radius_scale: float,
+        speed_scale: float,
+    ) -> None:
+        wp.launch(
+            _update_sph_render_points,
+            dim=self.indices.shape[0],
+            inputs=[
+                self.indices,
+                state.particle_q,
+                state.particle_qd,
+                model.particle_radius,
+                radius_scale,
+                1.0 / speed_scale,
+            ],
+            outputs=[self.points, self.radii, self.colors],
+            device=model.device,
+        )
 
 
 def log_sph_fluid_points(
@@ -330,6 +328,7 @@ def log_sph_fluid_points(
     *,
     name: str = "/sph_fluid",
     radius_scale: float = 0.55,
+    speed_scale: float = 1.0,
     hidden: bool = False,
 ) -> None:
     """Log SPH fluid particles as a clean Newton point cloud."""
@@ -337,17 +336,27 @@ def log_sph_fluid_points(
     indices = np.asarray(fluid_indices, dtype=np.int64)
     if indices.size == 0:
         return
+    if radius_scale <= 0.0:
+        raise ValueError("SPH render radius_scale must be positive")
+    if speed_scale <= 0.0:
+        raise ValueError("SPH render speed_scale must be positive")
 
-    q = state.particle_q.numpy()[indices].astype(np.float32)
-    qd = state.particle_qd.numpy()[indices].astype(np.float32)
-    radii = (float(radius_scale) * model.particle_radius.numpy()[indices]).astype(np.float32)
-    colors = sph_velocity_colors(qd)
+    cache = getattr(viewer, "_sph_render_points", None)
+    if cache is None:
+        cache = {}
+        viewer._sph_render_points = cache
+    key = (id(model), name, indices.astype(np.int32, copy=False).tobytes())
+    render_points = cache.get(key)
+    if render_points is None:
+        render_points = _SPHRenderPoints(model, indices.astype(np.int32, copy=False))
+        cache[key] = render_points
+    render_points.update(state, model, float(radius_scale), float(speed_scale))
 
     viewer.log_points(
         name,
-        points=wp.array(q, dtype=wp.vec3, device=model.device),
-        radii=wp.array(radii, dtype=wp.float32, device=model.device),
-        colors=wp.array(colors, dtype=wp.vec3, device=model.device),
+        points=render_points.points,
+        radii=render_points.radii,
+        colors=render_points.colors,
         hidden=hidden,
     )
 

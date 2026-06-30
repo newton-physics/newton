@@ -23,7 +23,6 @@ from ._config import (
     add_sph_solver_config_arguments,
     add_sph_tank_arguments,
     add_sph_timestep_arguments,
-    assert_sph_role_count,
     assert_sph_state_finite,
     create_sph_visual_box_mesh,
     log_sph_fluid_points,
@@ -64,7 +63,6 @@ class Example(SPHExampleBase):
                     cell_y=spacing,
                     cell_z=spacing,
                     material=material,
-                    role=sph.SPHRole.FLUID,
                     jitter=args.jitter,
                     radius_mean=radius,
                 )
@@ -256,7 +254,7 @@ class Example(SPHExampleBase):
         assert_sph_state_finite(self.state_0, "density", "pressure")
         q = self.state_0.particle_q.numpy()
 
-        assert_sph_role_count(self.model, sph.SPHRole.FLUID, self.fluid_indices)
+        assert len(self.fluid_indices) == self.model.particle_count
         assert self.solver.collider_body_index.numpy().tolist() == [-1, self.wheel_body]
         assert self.max_wheel_impulse_norm > 1.0e-5
         assert np.max(np.linalg.norm(q[self.fluid_indices] - self.initial_fluid_q, axis=1)) > 0.03

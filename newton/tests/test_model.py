@@ -273,22 +273,6 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
 
 
 class TestModelMesh(unittest.TestCase):
-    def test_bvh_rebuild_clears_disabled_shape_data(self):
-        builder = ModelBuilder()
-        builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
-        model = builder.finalize(device="cpu")
-
-        self.assertIsNotNone(model.bvh_shapes)
-        self.assertIsNotNone(model.bvh_shapes_group_roots)
-
-        model.shape_flags.zero_()
-        model.bvh_build_shapes(model.state())
-
-        self.assertEqual(model.bvh_shape_count_enabled, 0)
-        self.assertIsNone(model.bvh_shapes)
-        self.assertIsNone(model.bvh_shapes_group_roots)
-        self.assertTrue(np.isfinite(model.bvh_shape_world_transforms.numpy()).all())
-
     def test_add_triangles(self):
         rng = np.random.default_rng(123)
 

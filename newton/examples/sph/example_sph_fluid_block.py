@@ -51,7 +51,6 @@ class Example(SPHExampleBase):
                     cell_y=spacing,
                     cell_z=spacing,
                     material=material,
-                    role=sph.SPHRole.FLUID,
                     jitter=args.jitter,
                     radius_mean=radius,
                 )

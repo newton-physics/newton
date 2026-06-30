@@ -5,15 +5,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, fields, replace
-from typing import Any
+from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...geometry import ParticleFlags
 from ...sim import Contacts, Control, Model, ModelBuilder, ModelFlags, State
 from ..solver import SolverBase
 from .basic_kernels import (
@@ -27,45 +25,32 @@ from .boundaries import (
     SPH_COLLIDER_VELOCITY_BACKWARD,
     SPH_COLLIDER_VELOCITY_FORWARD,
 )
-from .cpu import (
-    _compute_acceleration_cpu,
-    _compute_density_pressure_cpu,
-    _compute_surface_fields_cpu,
-    _compute_xsph_velocity_delta_cpu,
-    _integrate_particles_cpu,
-)
-from .force_kernels import (
-    compute_acceleration,
-    compute_xsph_velocity_delta,
-)
-from .force_kernels import (
-    compute_surface_fields as _compute_surface_fields,
-)
+from .kernels import sph_kernel_names
 from .sph_model import (
-    SPHConfig,
     SPHModel,
-    SPHRole,
     register_sph_custom_attributes,
     validate_sph_custom_attributes,
 )
 
 __all__ = ["SolverWCSPH"]
 
-_SPH_CONFIG_FIELDS = fields(SPHConfig)
-_SPH_CONFIG_FIELD_NAMES = frozenset(field.name for field in _SPH_CONFIG_FIELDS)
 _SPH_INTEGRATION_CARRY_FIELDS = (
     "density",
     "pressure",
     "volume",
-    "acceleration",
-    "surface_acceleration",
-    "adhesion_acceleration",
-    "wetting_acceleration",
-    "normal",
-    "boundary_normal",
-    "color_field",
-    "velocity_delta",
 )
+
+
+def _config_scalar(value: object, name: str) -> float:
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} must be finite")
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be finite") from exc
+    if not np.isfinite(result):
+        raise ValueError(f"{name} must be finite")
+    return result
 
 
 @wp.kernel
@@ -82,77 +67,147 @@ def _gather_collider_impulses(
 ):
     collider = wp.tid()
     body = collider_body_index[collider]
-    impulse = body_impulses[body]
-    position = wp.transform_point(body_q[body], body_com[body])
-    impulse_norm_sq = wp.dot(impulse, impulse)
-    if impulse_norm_sq > 1.0e-16:
-        position += wp.cross(impulse, body_angular_impulses[body]) / impulse_norm_sq
+    linear_impulse = body_impulses[body]
+    angular_impulse = body_angular_impulses[body]
+    center = wp.transform_point(body_q[body], body_com[body])
 
-    impulses[collider] = impulse
-    impulse_positions[collider] = position
-    impulse_ids[collider] = collider_ids[collider]
+    moment_arm = wp.vec3(0.0)
+    couple_impulse = wp.vec3(0.0)
+    angular_norm = wp.length(angular_impulse)
+    if angular_norm > 1.0e-12:
+        reference = wp.vec3(1.0, 0.0, 0.0)
+        if wp.abs(angular_impulse[0]) > wp.abs(angular_impulse[1]):
+            reference = wp.vec3(0.0, 1.0, 0.0)
+        moment_arm = wp.normalize(wp.cross(angular_impulse, reference))
+        linear_norm = wp.length(linear_impulse)
+        lever_length = wp.clamp(angular_norm / wp.max(linear_norm, 1.0e-12), 1.0e-3, 1.0)
+        moment_arm *= lever_length
+        couple_impulse = wp.cross(angular_impulse, moment_arm) / (2.0 * lever_length * lever_length)
 
-
-def _resolve_sph_solver_config(
-    config_type: type[SPHConfig],
-    config: SPHConfig | None,
-    overrides: Mapping[str, Any],
-) -> SPHConfig:
-    unknown = sorted(name for name in overrides if name not in _SPH_CONFIG_FIELD_NAMES)
-    if unknown:
-        joined = ", ".join(unknown)
-        raise TypeError(f"Unknown SolverWCSPH config option(s): {joined}")
-
-    resolved = config_type() if config is None else replace(config)
-    for field in _SPH_CONFIG_FIELDS:
-        if field.name in overrides:
-            setattr(resolved, field.name, overrides[field.name])
-
-    resolved.validate()
-    return resolved
+    output = 2 * collider
+    impulses[output] = 0.5 * linear_impulse + couple_impulse
+    impulses[output + 1] = 0.5 * linear_impulse - couple_impulse
+    impulse_positions[output] = center + moment_arm
+    impulse_positions[output + 1] = center - moment_arm
+    impulse_ids[output] = collider_ids[collider]
+    impulse_ids[output + 1] = collider_ids[collider]
 
 
 class SolverWCSPH(SolverBase):
     """Weakly compressible Smoothed Particle Hydrodynamics solver.
 
-    Implements an explicit WCSPH particle solver with density summation, an
-    equation-of-state pressure solve, viscosity, XSPH smoothing, and sampled or
-    analytic boundary handling.
+    Implements explicit WCSPH [1] with density summation, a Tait-style
+    equation of state, symmetric pressure forces, viscosity, optional XSPH
+    velocity smoothing, and Newton shape collision. The solver advances every
+    active dynamic particle in its model; use a separate model when coupling
+    SPH fluid to another particle solver.
+
+    The time step is supplied by the caller and is not adapted automatically.
+    It must satisfy the acoustic and force-based stability limits of the chosen
+    particle spacing, support radius, and sound speed.
 
     Call :meth:`register_custom_attributes` on your :class:`~newton.ModelBuilder`
     before building the model to enable SPH-specific per-particle material and
-    state fields (for example ``sph:role``, ``sph:rest_density``, and
-    ``sph:smoothing_length``).
+    state fields (for example ``sph:rest_density`` and ``sph:smoothing_length``).
+
+    [1] https://doi.org/10.2312/SCA/SCA07/209-218
 
     Args:
         model: The Newton model to simulate.
-        config: Optional solver configuration. Keyword overrides may also set
-            any :class:`SolverWCSPH.Config` field.
+        config: Optional solver configuration. Defaults to :class:`SolverWCSPH.Config`.
     """
 
     @dataclass
-    class Config(SPHConfig):
+    class Config:
         """Configuration for :class:`SolverWCSPH`.
 
         Per-particle properties can be configured using custom attributes on the model.
         See :meth:`SolverWCSPH.register_custom_attributes` for details.
         """
 
+        # kernel / equation of state
+        kernel: Literal["poly6", "cubic", "wendland", "spiky"] = "poly6"
+        """Smoothing kernel family."""
+        smoothing_length: float | None = None
+        """Default support radius [m] when the per-particle value is zero."""
+        rest_density: float | None = None
+        """Global rest-density override [kg/m^3]. ``None`` uses per-particle values."""
+        sound_speed: float | None = None
+        """Global artificial sound-speed override [m/s]. ``None`` uses per-particle values."""
+        stiffness: float | None = None
+        """Global pressure-stiffness override. ``None`` uses per-particle values."""
+        pressure_exponent: float | None = None
+        """Global Tait exponent override. ``None`` uses per-particle values."""
+
+        # viscosity
+        viscosity: float | None = None
+        """Global dynamic-viscosity override [Pa s]. ``None`` uses per-particle values."""
+        xsph: float = 0.0
+        """XSPH velocity smoothing coefficient."""
+
+        # boundaries / coupling
+        enable_shape_boundaries: bool = True
+        """Project fluid particles out of Newton collision shapes."""
+        boundary_margin: float = 0.0
+        """Additional particle-boundary separation distance [m]."""
+        boundary_friction: float = 0.0
+        """Boundary Coulomb friction coefficient."""
+        collider_velocity_mode: Literal["forward", "backward"] = "forward"
+        """Collider velocity mode. ``'forward'`` uses ``State.body_qd``;
+        ``'backward'`` uses the previous body transform.
+        """
+
+        def validate(self) -> None:
+            """Validate configuration values."""
+            if self.kernel not in sph_kernel_names():
+                available = ", ".join(sph_kernel_names())
+                raise ValueError(f"Unsupported SPH kernel '{self.kernel}'. Available kernels: {available}")
+            if not isinstance(self.enable_shape_boundaries, bool):
+                raise ValueError("enable_shape_boundaries must be a boolean")
+
+            for name in ("smoothing_length", "rest_density", "pressure_exponent"):
+                value = getattr(self, name)
+                if value is not None and _config_scalar(value, name) <= 0.0:
+                    raise ValueError(f"{name} must be positive")
+            for name in ("sound_speed", "stiffness", "viscosity", "xsph", "boundary_margin", "boundary_friction"):
+                value = getattr(self, name)
+                if value is not None and _config_scalar(value, name) < 0.0:
+                    raise ValueError(f"{name} must be non-negative")
+            if self.collider_velocity_mode not in ("forward", "backward"):
+                raise ValueError(f"Invalid collider velocity mode: {self.collider_velocity_mode}")
+
     @classmethod
     @override
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
-        """Register SPH-specific custom attributes in the ``sph`` namespace."""
+        """Register WCSPH-specific custom attributes in the ``sph`` namespace.
+
+        Attributes registered on Model (per-particle):
+            - ``sph:rest_density``: Reference density [kg/m^3]
+            - ``sph:sound_speed``: Artificial sound speed [m/s]
+            - ``sph:stiffness``: Alternative pressure stiffness [Pa]
+            - ``sph:pressure_exponent``: Tait equation exponent
+            - ``sph:pressure_min``: Minimum pressure clamp [Pa]
+            - ``sph:pressure_max``: Maximum pressure clamp [Pa]
+            - ``sph:viscosity``: Dynamic viscosity coefficient
+            - ``sph:smoothing_length``: Kernel support radius [m]
+
+        Attributes registered on State (per-particle):
+            - ``sph:density``: Current density [kg/m^3]
+            - ``sph:pressure``: Current pressure [Pa]
+            - ``sph:volume``: Current particle volume [m^3]
+            - ``sph:boundary_impulse``: Collider impulse applied to the particle [N s]
+        """
         register_sph_custom_attributes(builder)
 
     def __init__(
         self,
         model: Model,
-        config: SPHConfig | None = None,
-        **config_overrides: object,
+        config: Config | None = None,
     ):
         super().__init__(model)
 
-        config = _resolve_sph_solver_config(type(self).Config, config, config_overrides)
+        config = type(self).Config() if config is None else config
+        config.validate()
         self.config = config
         self.collider_velocity_mode = config.collider_velocity_mode
         self.collider_velocity_mode_id = (
@@ -162,7 +217,6 @@ class SolverWCSPH(SolverBase):
         )
         validate_sph_custom_attributes(model)
         self._sph_model = SPHModel(model, config)
-        self._last_acceleration_fused_xsph = False
 
     def setup_collider(
         self,
@@ -170,7 +224,6 @@ class SolverWCSPH(SolverBase):
         collider_body_ids: list[int] | None = None,
         collider_margins: list[float] | None = None,
         collider_friction: list[float] | None = None,
-        collider_adhesion: list[float] | None = None,
         collider_projection_threshold: list[float] | None = None,
         model: Model | None = None,
         body_com: wp.array[wp.vec3] | None = None,
@@ -178,20 +231,20 @@ class SolverWCSPH(SolverBase):
         body_inv_inertia: wp.array[wp.mat33] | None = None,
         body_q: wp.array[wp.transform] | None = None,
     ) -> None:
-        """Configure Newton shapes used as SPH analytic colliders.
+        """Configure collider geometry and material properties.
 
-        This mirrors the implicit MPM collider entry point for Newton-body
-        coupling. The current WCSPH backend supports Newton collision shapes
-        with ``ShapeFlags.COLLIDE_PARTICLES`` and standalone ``collider_meshes``.
-        CPU and GPU shape projection include primitive, model-owned triangle
-        mesh, static standalone mesh, and body-driven standalone mesh colliders.
+        By default, collisions are set up against all shapes in the model with
+        ``ShapeFlags.COLLIDE_PARTICLES``. Use this method to customize collider
+        sources and materials, or to read colliders from a different model. When
+        using a different model, the states passed to :meth:`step` must expose
+        that model's ``body_q`` and ``body_qd`` arrays, as shown by the SPH
+        two-way coupling example.
 
         Args:
             collider_meshes: Warp triangular meshes used as colliders.
             collider_body_ids: For dynamic colliders, per-mesh body ids.
-            collider_margins: Per-mesh signed distance offsets (m).
+            collider_margins: Per-collider signed distance offsets (m).
             collider_friction: Per-mesh Coulomb friction coefficients.
-            collider_adhesion: Per-mesh adhesion scale.
             collider_projection_threshold: Per-mesh projection threshold (m).
             model: The model to read collider properties from. Defaults to the solver model.
             body_com: For dynamic colliders, per-body center of mass on the solver device.
@@ -204,7 +257,6 @@ class SolverWCSPH(SolverBase):
             collider_body_ids=collider_body_ids,
             collider_margins=collider_margins,
             collider_friction=collider_friction,
-            collider_adhesion=collider_adhesion,
             collider_projection_threshold=collider_projection_threshold,
             model=model,
             body_com=body_com,
@@ -224,9 +276,8 @@ class SolverWCSPH(SolverBase):
     ) -> None:
         """Advance the SPH simulation by one time step.
 
-        Computes density, pressure, explicit forces, optional viscosity and
-        boundary coupling terms, then integrates particle positions and
-        velocities.
+        Computes density, pressure, and explicit forces, integrates particle
+        positions and velocities, then projects particles out of colliders.
 
         Args:
             state_in: Input state at the start of the step.
@@ -272,7 +323,7 @@ class SolverWCSPH(SolverBase):
         sph_model = self._sph_model
         handler = sph_model.boundary_handler
         body_q = state.body_q if state.body_q is not None else sph_model.collider_body_q
-        if sph_model.collider_impulse.shape[0] > 0:
+        if sph_model.collider_impulse_body_index.shape[0] > 0:
             if (
                 body_q is None
                 or sph_model.collider_body_com is None
@@ -282,7 +333,7 @@ class SolverWCSPH(SolverBase):
                 raise RuntimeError("SPH collider impulse buffers are not initialized")
             wp.launch(
                 _gather_collider_impulses,
-                dim=sph_model.collider_impulse.shape[0],
+                dim=sph_model.collider_impulse_body_index.shape[0],
                 inputs=[
                     sph_model.collider_impulse_body_index,
                     sph_model._dynamic_collider_ids,
@@ -313,20 +364,20 @@ class SolverWCSPH(SolverBase):
         """Project particles outside of SPH colliders and adjust velocities.
 
         This mirrors :meth:`SolverImplicitMPM.project_outside` for callers that
-        need an explicit collider projection pass. ``gap`` is accepted for API
-        alignment; WCSPH projection distances are configured through
-        ``setup_collider`` margins and projection thresholds.
+        need an explicit collider projection pass.
 
         Args:
             state_in: The input state.
             state_out: The output state. Only particle_q, particle_qd, body_q,
                 body_qd, and SPH boundary impulse buffers are written.
             dt: The time step, for estimating collider motion.
-            gap: Accepted for implicit MPM API compatibility.
+            gap: Maximum distance [m] for triangle-mesh closest-point queries.
+                ``None`` uses the maximum SPH support radius.
         """
-        del gap
         if dt <= 0.0 or not np.isfinite(dt):
             raise ValueError("dt must be finite and positive")
+        if gap is not None and (gap <= 0.0 or not np.isfinite(gap)):
+            raise ValueError("gap must be finite and positive")
         if state_in.particle_q.device != self.model.device or state_out.particle_q.device != self.model.device:
             raise ValueError("SPH projection states must be allocated on the solver device.")
 
@@ -339,27 +390,12 @@ class SolverWCSPH(SolverBase):
         if hasattr(state_out, "sph"):
             state_out.sph.boundary_impulse.zero_()
 
-        self._collide_shape_boundaries(state_out, dt)
-
-    def _active_role_mask(self, role: SPHRole | int, *, dynamic: bool = False) -> np.ndarray:
-        flags = self.model.particle_flags.numpy()
-        roles = self.model.sph.role.numpy()
-        mask = ((flags & int(ParticleFlags.ACTIVE)) != 0) & (roles == int(role))
-        if dynamic:
-            mask &= self.model.particle_inv_mass.numpy() > 0.0
-        return mask
+        self._collide_shape_boundaries(state_out, dt, gap)
 
     def _compute_density_pressure(self, state: State) -> None:
         """Compute SPH density and pressure fields for ``state``."""
         model = self.model
         if not model.particle_count:
-            return
-
-        if getattr(model.device, "is_cpu", False):
-            density, pressure, volume = _compute_density_pressure_cpu(self, state)
-            state.sph.density.assign(density)
-            state.sph.pressure.assign(pressure)
-            state.sph.volume.assign(volume)
             return
 
         self._build_neighbor_grid(state)
@@ -373,7 +409,6 @@ class SolverWCSPH(SolverBase):
                 model.particle_mass,
                 model.particle_flags,
                 model.particle_world,
-                model.sph.role,
                 model.sph.rest_density,
                 model.sph.sound_speed,
                 model.sph.stiffness,
@@ -381,10 +416,11 @@ class SolverWCSPH(SolverBase):
                 model.sph.pressure_min,
                 model.sph.pressure_max,
                 model.sph.smoothing_length,
-                self.config.rest_density,
-                self.config.sound_speed,
-                self.config.stiffness,
-                self.config.pressure_exponent,
+                -1.0 if self.config.rest_density is None else self.config.rest_density,
+                -1.0 if self.config.sound_speed is None else self.config.sound_speed,
+                -1.0 if self.config.stiffness is None else self.config.stiffness,
+                -1.0 if self.config.pressure_exponent is None else self.config.pressure_exponent,
+                self._sph_model.default_support_radius,
                 self._sph_model.max_support_radius,
                 self._sph_model.kernel_id,
             ],
@@ -398,32 +434,27 @@ class SolverWCSPH(SolverBase):
 
     def _stage_integrate(self, state_in: State, state_out: State, dt: float) -> None:
         model = self.model
+        scratch = self._sph_model.scratch
 
         max_velocity = model.particle_max_velocity
 
-        if getattr(model.device, "is_cpu", False):
-            q_out, qd_out = _integrate_particles_cpu(self, state_in, dt, float(max_velocity))
-            state_out.particle_q.assign(q_out)
-            state_out.particle_qd.assign(qd_out)
-        else:
-            wp.launch(
-                integrate_sph_particles,
-                dim=model.particle_count,
-                inputs=[
-                    state_in.particle_q,
-                    state_in.particle_qd,
-                    model.particle_inv_mass,
-                    model.particle_flags,
-                    model.sph.role,
-                    state_in.sph.acceleration,
-                    state_in.sph.velocity_delta,
-                    self.config.xsph,
-                    dt,
-                    max_velocity,
-                ],
-                outputs=[state_out.particle_q, state_out.particle_qd],
-                device=model.device,
-            )
+        wp.launch(
+            integrate_sph_particles,
+            dim=model.particle_count,
+            inputs=[
+                state_in.particle_q,
+                state_in.particle_qd,
+                model.particle_inv_mass,
+                model.particle_flags,
+                scratch.acceleration,
+                scratch.velocity_delta,
+                self.config.xsph,
+                dt,
+                max_velocity,
+            ],
+            outputs=[state_out.particle_q, state_out.particle_qd],
+            device=model.device,
+        )
 
         state_out.sph.boundary_impulse.zero_()
         self._collide_shape_boundaries(state_out, dt)
@@ -431,93 +462,11 @@ class SolverWCSPH(SolverBase):
         for name in _SPH_INTEGRATION_CARRY_FIELDS:
             getattr(state_out.sph, name).assign(getattr(state_in.sph, name))
 
-    def _stage_xsph_filter(self, state: State) -> None:
-        model = self.model
-        if self._last_acceleration_fused_xsph:
-            return
-        if self.config.xsph > 0.0:
-            if getattr(model.device, "is_cpu", False):
-                state.sph.velocity_delta.assign(_compute_xsph_velocity_delta_cpu(self, state))
-            else:
-                wp.launch(
-                    compute_xsph_velocity_delta,
-                    dim=model.particle_count,
-                    inputs=[
-                        self._sph_model.neighbor_search.grid_id,
-                        state.particle_q,
-                        state.particle_qd,
-                        model.particle_mass,
-                        model.particle_flags,
-                        model.particle_world,
-                        model.particle_inv_mass,
-                        model.sph.role,
-                        model.sph.smoothing_length,
-                        state.sph.density,
-                        self._sph_model.max_support_radius,
-                        self._sph_model.kernel_id,
-                    ],
-                    outputs=[state.sph.velocity_delta],
-                    device=model.device,
-                )
-        else:
-            state.sph.velocity_delta.zero_()
-
     def _compute_explicit_acceleration_fields(self, state: State) -> None:
         model = self.model
-        self._last_acceleration_fused_xsph = False
-        enable_surface_tension = self.config.enable_surface_tension
-        enable_boundary_adhesion = self.config.enable_boundary_adhesion
-        enable_boundary_wetting = self.config.enable_boundary_wetting
-        use_basic_gpu_acceleration = not (enable_surface_tension or enable_boundary_adhesion or enable_boundary_wetting)
-
-        if getattr(model.device, "is_cpu", False):
-            acceleration, surface_acceleration, adhesion_acceleration, wetting_acceleration = _compute_acceleration_cpu(
-                self, state
-            )
-            state.sph.acceleration.assign(acceleration)
-            state.sph.surface_acceleration.assign(surface_acceleration)
-            state.sph.adhesion_acceleration.assign(adhesion_acceleration)
-            state.sph.wetting_acceleration.assign(wetting_acceleration)
-            return
-
-        if use_basic_gpu_acceleration:
-            wp.launch(
-                compute_acceleration_basic,
-                dim=model.particle_count,
-                inputs=[
-                    self._sph_model.neighbor_search.grid_id,
-                    state.particle_q,
-                    state.particle_qd,
-                    state.particle_f,
-                    model.particle_mass,
-                    model.particle_inv_mass,
-                    model.particle_flags,
-                    model.particle_world,
-                    model.gravity,
-                    model.sph.role,
-                    model.sph.viscosity,
-                    model.sph.smoothing_length,
-                    state.sph.density,
-                    state.sph.pressure,
-                    self.config.viscosity,
-                    self._sph_model.max_support_radius,
-                    self._sph_model.kernel_id,
-                    self.config.xsph > 0.0,
-                ],
-                outputs=[
-                    state.sph.acceleration,
-                    state.sph.surface_acceleration,
-                    state.sph.adhesion_acceleration,
-                    state.sph.wetting_acceleration,
-                    state.sph.velocity_delta,
-                ],
-                device=model.device,
-            )
-            self._last_acceleration_fused_xsph = self.config.xsph > 0.0
-            return
-
+        scratch = self._sph_model.scratch
         wp.launch(
-            compute_acceleration,
+            compute_acceleration_basic,
             dim=model.particle_count,
             inputs=[
                 self._sph_model.neighbor_search.grid_id,
@@ -529,79 +478,22 @@ class SolverWCSPH(SolverBase):
                 model.particle_flags,
                 model.particle_world,
                 model.gravity,
-                model.sph.role,
                 model.sph.viscosity,
-                model.sph.surface_tension,
-                model.sph.adhesion,
-                model.sph.wetting,
-                model.sph.contact_angle,
                 model.sph.smoothing_length,
                 state.sph.density,
                 state.sph.pressure,
-                state.sph.volume,
-                state.sph.normal,
-                state.sph.boundary_normal,
-                self.config.viscosity,
+                -1.0 if self.config.viscosity is None else self.config.viscosity,
+                self._sph_model.default_support_radius,
                 self._sph_model.max_support_radius,
                 self._sph_model.kernel_id,
-                enable_surface_tension,
-                self.config.surface_tension_normal_threshold,
-                enable_boundary_adhesion,
-                enable_boundary_wetting,
+                self.config.xsph > 0.0,
             ],
-            outputs=[
-                state.sph.acceleration,
-                state.sph.surface_acceleration,
-                state.sph.adhesion_acceleration,
-                state.sph.wetting_acceleration,
-            ],
+            outputs=[scratch.acceleration, scratch.velocity_delta],
             device=model.device,
         )
 
     def _stage_explicit_forces(self, state: State) -> None:
-        needs_surface_fields = (
-            self.config.enable_surface_tension
-            or self.config.enable_boundary_adhesion
-            or self.config.enable_boundary_wetting
-        )
-        if needs_surface_fields:
-            self._compute_surface_fields(state)
-
         self._compute_explicit_acceleration_fields(state)
-        self._stage_xsph_filter(state)
-
-    def _compute_surface_fields(self, state: State) -> None:
-        """Compute color-field and normals for free-surface workflows."""
-        model = self.model
-        if not model.particle_count:
-            return
-
-        if getattr(model.device, "is_cpu", False):
-            color_field, normal = _compute_surface_fields_cpu(self, state)
-            state.sph.color_field.assign(color_field)
-            state.sph.normal.assign(normal)
-            return
-
-        self._build_neighbor_grid(state)
-
-        wp.launch(
-            _compute_surface_fields,
-            dim=model.particle_count,
-            inputs=[
-                self._sph_model.neighbor_search.grid_id,
-                state.particle_q,
-                model.particle_flags,
-                model.particle_world,
-                model.particle_inv_mass,
-                model.sph.role,
-                model.sph.smoothing_length,
-                state.sph.volume,
-                self._sph_model.max_support_radius,
-                self._sph_model.kernel_id,
-            ],
-            outputs=[state.sph.color_field, state.sph.normal],
-            device=model.device,
-        )
 
     def _propagate_body_coupling_state(self, state_in: State, state_out: State) -> None:
         if state_in.body_q is not None and state_out.body_q is not None:
@@ -624,8 +516,10 @@ class SolverWCSPH(SolverBase):
         self._stage_explicit_forces(state_in)
         self._stage_integrate(state_in, state_out, dt)
 
-    def _support_radius_np(self, support: np.ndarray | None = None) -> np.ndarray:
-        return self._sph_model.support_radius_np(support)
-
-    def _collide_shape_boundaries(self, state: State, dt: float) -> None:
-        self._sph_model.collide_shape_boundaries(state, collider_velocity_mode=self.collider_velocity_mode_id, dt=dt)
+    def _collide_shape_boundaries(self, state: State, dt: float, gap: float | None = None) -> None:
+        self._sph_model.collide_shape_boundaries(
+            state,
+            collider_velocity_mode=self.collider_velocity_mode_id,
+            dt=dt,
+            mesh_query_max_distance=gap,
+        )

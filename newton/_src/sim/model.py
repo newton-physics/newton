@@ -1463,9 +1463,6 @@ class Model:
         self.bvh_shape_world_transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
 
         if self.bvh_shape_count_enabled == 0:
-            self.bvh_shape_world_transforms.zero_()
-            self.bvh_shapes = None
-            self.bvh_shapes_group_roots = None
             return
 
         compute_shape_world_transforms_launch(self, state)

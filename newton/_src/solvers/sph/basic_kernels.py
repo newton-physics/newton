@@ -8,10 +8,6 @@ import warp as wp
 from ...geometry import ParticleFlags
 from .kernels import (
     SPH_EPSILON,
-    SPH_ROLE_BOUNDARY,
-    SPH_ROLE_FLUID,
-    _is_sph_integrated_role,
-    _is_sph_neighbor_role,
     _kernel_gradient,
     _kernel_weight,
     _pressure_from_density,
@@ -34,19 +30,16 @@ def compute_acceleration_basic(
     particle_flags: wp.array[wp.int32],
     particle_world: wp.array[wp.int32],
     gravity: wp.array[wp.vec3],
-    sph_role: wp.array[wp.int32],
     sph_viscosity: wp.array[float],
     sph_smoothing_length: wp.array[float],
     density: wp.array[float],
     pressure: wp.array[float],
-    default_viscosity: float,
+    viscosity_override: float,
     default_smoothing_length: float,
+    max_smoothing_length: float,
     kernel_id: int,
     enable_xsph: bool,
     acceleration: wp.array[wp.vec3],
-    surface_acceleration: wp.array[wp.vec3],
-    adhesion_acceleration: wp.array[wp.vec3],
-    wetting_acceleration: wp.array[wp.vec3],
     velocity_delta: wp.array[wp.vec3],
 ):
     tid = wp.tid()
@@ -55,12 +48,8 @@ def compute_acceleration_basic(
     if i == -1:
         i = tid
 
-    surface_acceleration[i] = wp.vec3(0.0)
-    adhesion_acceleration[i] = wp.vec3(0.0)
-    wetting_acceleration[i] = wp.vec3(0.0)
-
     inv_mass_i = particle_inv_mass[i]
-    if (particle_flags[i] & ParticleFlags.ACTIVE) == 0 or inv_mass_i <= 0.0 or sph_role[i] != SPH_ROLE_FLUID:
+    if (particle_flags[i] & ParticleFlags.ACTIVE) == 0 or inv_mass_i <= 0.0:
         acceleration[i] = wp.vec3(0.0)
         velocity_delta[i] = wp.vec3(0.0)
         return
@@ -72,22 +61,17 @@ def compute_acceleration_basic(
     p_i = pressure[i]
     h_i = _support_radius(sph_smoothing_length[i], default_smoothing_length)
 
-    viscosity_i = sph_viscosity[i]
-    if viscosity_i < 0.0:
-        viscosity_i = default_viscosity
+    viscosity_i = wp.max(sph_viscosity[i], 0.0)
+    if viscosity_override >= 0.0:
+        viscosity_i = viscosity_override
 
     accel = particle_f[i] * inv_mass_i + gravity[wp.max(world_i, 0)]
     xsph_delta = wp.vec3(0.0)
-    query = wp.hash_grid_query(grid, x_i, default_smoothing_length)
+    query = wp.hash_grid_query(grid, x_i, max_smoothing_length)
     j = int(0)
 
     while wp.hash_grid_query_next(query, j):
-        if (
-            j != i
-            and (particle_flags[j] & ParticleFlags.ACTIVE) != 0
-            and _is_sph_neighbor_role(sph_role[j])
-            and _same_world(world_i, particle_world[j])
-        ):
+        if j != i and (particle_flags[j] & ParticleFlags.ACTIVE) != 0 and _same_world(world_i, particle_world[j]):
             h_j = _support_radius(sph_smoothing_length[j], default_smoothing_length)
             h = wp.max(h_i, h_j)
             r_vec = x_i - particle_q[j]
@@ -95,23 +79,21 @@ def compute_acceleration_basic(
 
             if r < h:
                 rho_j = wp.max(density[j], SPH_EPSILON)
-                if enable_xsph and sph_role[j] == SPH_ROLE_FLUID:
+                if enable_xsph:
                     mass_j = particle_mass[j]
                     xsph_delta += mass_j * (particle_qd[j] - v_i) * _kernel_weight(kernel_id, r, h) / rho_j
                 if r > SPH_EPSILON:
                     mass_j = particle_mass[j]
                     grad_w = _kernel_gradient(kernel_id, r_vec, r, h)
-                    pressure_term = p_i / (rho_i * rho_i)
-                    if sph_role[j] != SPH_ROLE_BOUNDARY:
-                        pressure_term += pressure[j] / (rho_j * rho_j)
+                    pressure_term = p_i / (rho_i * rho_i) + pressure[j] / (rho_j * rho_j)
                     accel -= mass_j * pressure_term * grad_w
 
-                    viscosity_j = sph_viscosity[j]
-                    if viscosity_j < 0.0:
-                        viscosity_j = default_viscosity
+                    viscosity_j = wp.max(sph_viscosity[j], 0.0)
+                    if viscosity_override >= 0.0:
+                        viscosity_j = viscosity_override
                     pair_viscosity = 0.5 * (viscosity_i + viscosity_j)
                     lap_w = _viscosity_laplacian(r, h)
-                    accel += pair_viscosity * mass_j * (particle_qd[j] - v_i) * lap_w / rho_j
+                    accel += pair_viscosity * mass_j * (particle_qd[j] - v_i) * lap_w / (rho_i * rho_j)
 
     acceleration[i] = accel
     velocity_delta[i] = xsph_delta
@@ -124,7 +106,6 @@ def compute_density_pressure(
     particle_mass: wp.array[float],
     particle_flags: wp.array[wp.int32],
     particle_world: wp.array[wp.int32],
-    sph_role: wp.array[wp.int32],
     sph_rest_density: wp.array[float],
     sph_sound_speed: wp.array[float],
     sph_stiffness: wp.array[float],
@@ -132,11 +113,12 @@ def compute_density_pressure(
     sph_pressure_min: wp.array[float],
     sph_pressure_max: wp.array[float],
     sph_smoothing_length: wp.array[float],
-    default_rest_density: float,
-    default_sound_speed: float,
-    default_stiffness: float,
-    default_pressure_exponent: float,
+    rest_density_override: float,
+    sound_speed_override: float,
+    stiffness_override: float,
+    pressure_exponent_override: float,
     default_smoothing_length: float,
+    max_smoothing_length: float,
     kernel_id: int,
     density: wp.array[float],
     pressure: wp.array[float],
@@ -148,7 +130,7 @@ def compute_density_pressure(
     if i == -1:
         i = tid
 
-    if (particle_flags[i] & ParticleFlags.ACTIVE) == 0 or not _is_sph_neighbor_role(sph_role[i]):
+    if (particle_flags[i] & ParticleFlags.ACTIVE) == 0:
         density[i] = 0.0
         pressure[i] = 0.0
         volume[i] = 0.0
@@ -159,15 +141,11 @@ def compute_density_pressure(
     h_i = _support_radius(sph_smoothing_length[i], default_smoothing_length)
 
     rho = float(0.0)
-    query = wp.hash_grid_query(grid, x_i, default_smoothing_length)
+    query = wp.hash_grid_query(grid, x_i, max_smoothing_length)
     j = int(0)
 
     while wp.hash_grid_query_next(query, j):
-        if (
-            (particle_flags[j] & ParticleFlags.ACTIVE) != 0
-            and _is_sph_neighbor_role(sph_role[j])
-            and _same_world(world_i, particle_world[j])
-        ):
+        if (particle_flags[j] & ParticleFlags.ACTIVE) != 0 and _same_world(world_i, particle_world[j]):
             h_j = _support_radius(sph_smoothing_length[j], default_smoothing_length)
             h = wp.max(h_i, h_j)
             r = wp.length(x_i - particle_q[j])
@@ -175,20 +153,20 @@ def compute_density_pressure(
                 rho += particle_mass[j] * _kernel_weight(kernel_id, r, h)
 
     rest_density = sph_rest_density[i]
-    if rest_density <= 0.0:
-        rest_density = default_rest_density
+    if rest_density_override > 0.0:
+        rest_density = rest_density_override
 
     sound_speed = sph_sound_speed[i]
-    if sound_speed <= 0.0:
-        sound_speed = default_sound_speed
+    if sound_speed_override >= 0.0:
+        sound_speed = sound_speed_override
 
     stiffness = sph_stiffness[i]
-    if stiffness <= 0.0:
-        stiffness = default_stiffness
+    if stiffness_override >= 0.0:
+        stiffness = stiffness_override
 
     pressure_exponent = sph_pressure_exponent[i]
-    if pressure_exponent <= 0.0:
-        pressure_exponent = default_pressure_exponent
+    if pressure_exponent_override > 0.0:
+        pressure_exponent = pressure_exponent_override
 
     density[i] = rho
     pressure[i] = _pressure_from_density(
@@ -203,7 +181,6 @@ def integrate_sph_particles(
     particle_qd: wp.array[wp.vec3],
     particle_inv_mass: wp.array[float],
     particle_flags: wp.array[wp.int32],
-    sph_role: wp.array[wp.int32],
     acceleration: wp.array[wp.vec3],
     velocity_delta: wp.array[wp.vec3],
     xsph: float,
@@ -217,11 +194,7 @@ def integrate_sph_particles(
     x = particle_q[i]
     v = particle_qd[i]
 
-    if (
-        (particle_flags[i] & ParticleFlags.ACTIVE) == 0
-        or particle_inv_mass[i] <= 0.0
-        or not _is_sph_integrated_role(sph_role[i])
-    ):
+    if (particle_flags[i] & ParticleFlags.ACTIVE) == 0 or particle_inv_mass[i] <= 0.0:
         particle_q_out[i] = x
         particle_qd_out[i] = v
         return

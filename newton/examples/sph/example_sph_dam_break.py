@@ -18,7 +18,6 @@ from ._config import (
     add_sph_solver_config_arguments,
     add_sph_tank_arguments,
     add_sph_timestep_arguments,
-    assert_sph_role_count,
     assert_sph_state_finite,
     sph_options_from_args,
     sph_particle_spacing_from_args,
@@ -58,7 +57,6 @@ class Example(SPHExampleBase):
                     cell_y=spacing,
                     cell_z=spacing,
                     material=material,
-                    role=sph.SPHRole.FLUID,
                     jitter=args.jitter,
                     radius_mean=radius,
                 )
@@ -117,7 +115,7 @@ class Example(SPHExampleBase):
         density = self.state_0.sph.density.numpy()
         fluid_q = q[self.fluid_indices]
 
-        assert_sph_role_count(self.model, sph.SPHRole.FLUID, self.fluid_indices)
+        assert len(self.fluid_indices) == self.model.particle_count
         assert self.solver.collider_body_index.numpy().tolist() == [-1]
         assert np.all(density[self.fluid_indices] > 0.0)
         assert np.min(fluid_q[:, self.model.up_axis]) >= -1.0e-4

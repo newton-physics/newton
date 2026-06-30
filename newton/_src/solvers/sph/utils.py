@@ -67,8 +67,3 @@ def sph_vec3_array(
     if not np.all(np.isfinite(coords)):
         raise ValueError(finite_message)
     return coords
-
-
-def sph_wp_vec3_array(values: Any) -> np.ndarray:
-    """Return a Warp vec3-like array as an ``(n, 3)`` float32 NumPy array."""
-    return np.asarray(values.numpy(), dtype=np.float32)

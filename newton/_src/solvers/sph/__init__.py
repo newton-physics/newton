@@ -5,16 +5,10 @@
 
 from .sph_model import (
     SPHMaterial,
-    SPHRole,
-    add_sph_boundary_from_shape,
-    add_sph_boundary_points,
     add_sph_particle_grid,
 )
 
 __all__ = [
     "SPHMaterial",
-    "SPHRole",
-    "add_sph_boundary_from_shape",
-    "add_sph_boundary_points",
     "add_sph_particle_grid",
 ]
