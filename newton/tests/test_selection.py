@@ -140,6 +140,46 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(view.get_link_transforms(model).shape, (1, 1, 2))
         self.assertEqual(view.get_link_velocities(model).shape, (1, 1, 2))
 
+    def test_articulation_view_regex_pattern(self):
+        builder = newton.ModelBuilder()
+        for label in ("env_0/Robot/LF_FOOT", "env_0/Robot/RF_FOOT", "env_0/Robot/base"):
+            body = builder.add_link()
+            joint = builder.add_joint_free(child=body)
+            builder.add_articulation([joint], label=label)
+        model = builder.finalize()
+
+        view = ArticulationView(
+            model,
+            pattern=r"env_[0-9]+/Robot/(LF|RF)_FOOT",
+            pattern_syntax="regex",
+        )
+
+        self.assertEqual(view.count, 2)
+
+    def test_articulation_view_regex_list_include_links(self):
+        builder = newton.ModelBuilder()
+        root = builder.add_link(label="Robot/base")
+        left = builder.add_link(label="Robot/LF_FOOT")
+        right = builder.add_link(label="Robot/RF_FOOT")
+        arm = builder.add_link(label="Robot/ARM")
+        joints = [
+            builder.add_joint_free(child=root),
+            builder.add_joint_fixed(parent=root, child=left),
+            builder.add_joint_fixed(parent=root, child=right),
+            builder.add_joint_fixed(parent=root, child=arm),
+        ]
+        builder.add_articulation(joints, label="env_0/Robot")
+        model = builder.finalize()
+
+        view = ArticulationView(
+            model,
+            pattern=r"env_[0-9]+/Robot",
+            include_links=[r".*/LF_FOOT", r".*/RF_FOOT"],
+            pattern_syntax="regex",
+        )
+
+        self.assertEqual(view.link_labels, ["Robot/LF_FOOT", "Robot/RF_FOOT"])
+
     def _test_selection_shapes(self, floating: bool):
         # load articulation
         ant = newton.ModelBuilder()

@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import functools
+import re
 from fnmatch import fnmatch
 from types import NoneType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import warp as wp
 from warp.types import is_array
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
 
 AttributeFrequency = Model.AttributeFrequency
+PatternSyntax = Literal["glob", "regex"]
 
 
 @wp.kernel
@@ -382,11 +384,21 @@ def get_name_from_label(label: str):
     return label.rsplit("/", maxsplit=1)[-1]
 
 
-def find_matching_ids(pattern: str, labels: list[str], world_ids, world_count: int):
+def _match_label(label: str, pattern: str, pattern_syntax: PatternSyntax) -> bool:
+    if pattern_syntax == "glob":
+        return fnmatch(label, pattern)
+    if pattern_syntax == "regex":
+        return re.fullmatch(pattern, label) is not None
+    raise ValueError(f"Unsupported pattern_syntax '{pattern_syntax}'. Expected 'glob' or 'regex'.")
+
+
+def find_matching_ids(
+    pattern: str, labels: list[str], world_ids, world_count: int, pattern_syntax: PatternSyntax = "glob"
+):
     grouped_ids = [[] for _ in range(world_count)]  # ids grouped by world (exclude world -1)
     global_ids = []  # ids in world -1
     for id, label in enumerate(labels):
-        if fnmatch(label, pattern):
+        if _match_label(label, pattern, pattern_syntax):
             world = world_ids[id]
             if world == -1:
                 global_ids.append(id)
@@ -397,26 +409,33 @@ def find_matching_ids(pattern: str, labels: list[str], world_ids, world_count: i
     return grouped_ids, global_ids
 
 
-def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> list[int]:
+def match_labels(
+    labels: list[str],
+    pattern: str | list[str] | list[int],
+    pattern_syntax: PatternSyntax = "glob",
+) -> list[int]:
     """Find indices of elements in ``labels`` that match ``pattern``.
 
     See :ref:`label-matching` for the pattern syntax accepted across Newton APIs.
 
     Args:
         labels: List of label strings to match against.
-        pattern: A ``str`` is matched via :func:`fnmatch.fnmatch` against each label.
+        pattern: A ``str`` is matched against each label.
             A ``list[str]`` matches any pattern.
             A ``list[int]`` is returned as-is (indices used directly).
             Mixing ``str`` and ``int`` in the same list is not allowed.
+        pattern_syntax: ``"glob"`` uses :func:`fnmatch.fnmatch`; ``"regex"``
+            uses :func:`re.fullmatch`.
 
     Returns:
         Unique list of matching indices, or ``pattern`` itself for ``list[int]``.
 
     Raises:
         TypeError: If list elements are not all ``str`` or all ``int``.
+        ValueError: If ``pattern_syntax`` is not ``"glob"`` or ``"regex"``.
     """
     if isinstance(pattern, str):
-        return [idx for idx, label in enumerate(labels) if fnmatch(label, pattern)]
+        return [idx for idx, label in enumerate(labels) if _match_label(label, pattern, pattern_syntax)]
 
     if not isinstance(pattern, list):
         raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {type(pattern)}")
@@ -435,10 +454,22 @@ def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> lis
         if not validation_failure:
             return pattern
     elif all(isinstance(item, str) for item in pattern):
-        return [idx for idx, label in enumerate(labels) if any(fnmatch(label, p) for p in pattern)]
+        return [idx for idx, label in enumerate(labels) if any(_match_label(label, p, pattern_syntax) for p in pattern)]
 
     types = {type(item).__name__ for item in pattern}
     raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {', '.join(sorted(types))}")
+
+
+def match_names_or_labels(
+    names: list[str],
+    labels: list[str],
+    pattern: str | list[str] | list[int],
+    pattern_syntax: PatternSyntax = "glob",
+) -> list[int]:
+    return sorted(
+        set(match_labels(names, pattern, pattern_syntax=pattern_syntax))
+        | set(match_labels(labels, pattern, pattern_syntax=pattern_syntax))
+    )
 
 
 def all_equal(values):
@@ -500,6 +531,8 @@ class ArticulationView:
         include_joint_types: List of joint types to include.
         exclude_joint_types: List of joint types to exclude.
         include_loop_closing_joints: If True, include converted loop-closing joints.
+        pattern_syntax: ``"glob"`` uses :func:`fnmatch.fnmatch`; ``"regex"``
+            uses :func:`re.fullmatch`.
         verbose: If True, prints selection summary.
     """
 
@@ -509,13 +542,14 @@ class ArticulationView:
         model: Model,
         pattern: str,
         *,
-        include_joints: list[str] | list[int] | None = None,
-        exclude_joints: list[str] | list[int] | None = None,
-        include_links: list[str] | list[int] | None = None,
-        exclude_links: list[str] | list[int] | None = None,
+        include_joints: str | list[str] | list[int] | None = None,
+        exclude_joints: str | list[str] | list[int] | None = None,
+        include_links: str | list[str] | list[int] | None = None,
+        exclude_links: str | list[str] | list[int] | None = None,
         include_joint_types: list[int] | None = None,
         exclude_joint_types: list[int] | None = None,
         include_loop_closing_joints: bool = False,
+        pattern_syntax: PatternSyntax = "glob",
         verbose: bool | None = None,
     ):
         self.model = model
@@ -535,7 +569,11 @@ class ArticulationView:
 
         # get articulation ids grouped by world
         articulation_ids, global_articulation_ids = find_matching_ids(
-            pattern, model.articulation_label, model_articulation_world, model.world_count
+            pattern,
+            model.articulation_label,
+            model_articulation_world,
+            model.world_count,
+            pattern_syntax=pattern_syntax,
         )
 
         # determine articulation counts per world
@@ -783,7 +821,14 @@ class ArticulationView:
             joint_include_indices = set()
             if include_joints is not None:
                 joint_include_indices.update(
-                    idx for idx in match_labels(arti_joint_names, include_joints) if 0 <= idx < arti_joint_count
+                    idx
+                    for idx in match_names_or_labels(
+                        arti_joint_names,
+                        arti_joint_labels,
+                        include_joints,
+                        pattern_syntax=pattern_syntax,
+                    )
+                    if 0 <= idx < arti_joint_count
                 )
             if include_joint_types is not None:
                 for idx in range(arti_joint_count):
@@ -794,7 +839,14 @@ class ArticulationView:
         joint_exclude_indices = set()
         if exclude_joints is not None:
             joint_exclude_indices.update(
-                idx for idx in match_labels(arti_joint_names, exclude_joints) if 0 <= idx < arti_joint_count
+                idx
+                for idx in match_names_or_labels(
+                    arti_joint_names,
+                    arti_joint_labels,
+                    exclude_joints,
+                    pattern_syntax=pattern_syntax,
+                )
+                if 0 <= idx < arti_joint_count
             )
         if exclude_joint_types is not None:
             for idx in range(arti_joint_count):
@@ -806,14 +858,28 @@ class ArticulationView:
             link_include_indices = set(range(arti_link_count))
         else:
             link_include_indices = {
-                idx for idx in match_labels(arti_link_names, include_links) if 0 <= idx < arti_link_count
+                idx
+                for idx in match_names_or_labels(
+                    arti_link_names,
+                    arti_link_labels,
+                    include_links,
+                    pattern_syntax=pattern_syntax,
+                )
+                if 0 <= idx < arti_link_count
             }
 
         # create link exclusion set
         link_exclude_indices = set()
         if exclude_links is not None:
             link_exclude_indices.update(
-                idx for idx in match_labels(arti_link_names, exclude_links) if 0 <= idx < arti_link_count
+                idx
+                for idx in match_names_or_labels(
+                    arti_link_names,
+                    arti_link_labels,
+                    exclude_links,
+                    pattern_syntax=pattern_syntax,
+                )
+                if 0 <= idx < arti_link_count
             )
 
         # compute selected indices
