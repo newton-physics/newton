@@ -348,14 +348,14 @@ class Utils:
     def create_camera_indices(
         self,
         world_indices: int | Sequence[int] | np.ndarray,
-        ray_bundle_indices: int | Sequence[int] | np.ndarray | None = None,
+        rays_indices: int | Sequence[int] | np.ndarray | None = None,
     ) -> wp.array2d[wp.int32]:
         """Create a view mapping for :meth:`~newton.sensors.SensorBatchedCamera.update`.
 
         Args:
             world_indices: World index for each rendered view. A scalar creates
-                one view or broadcasts to the length of *ray_bundle_indices*.
-            ray_bundle_indices: Ray-bundle index for each rendered view. If
+                one view or broadcasts to the length of *rays_indices*.
+            rays_indices: Ray-bundle index for each rendered view. If
                 ``None``, uses ``0..view_count-1``. A scalar broadcasts to the
                 length of *world_indices*.
 
@@ -365,21 +365,19 @@ class Utils:
         """
 
         world_indices_np = np.asarray(world_indices, dtype=np.int32).reshape(-1)
-        if ray_bundle_indices is None:
-            ray_bundle_indices_np = np.arange(world_indices_np.size, dtype=np.int32)
+        if rays_indices is None:
+            rays_indices_np = np.arange(world_indices_np.size, dtype=np.int32)
         else:
-            ray_bundle_indices_np = np.asarray(ray_bundle_indices, dtype=np.int32).reshape(-1)
+            rays_indices_np = np.asarray(rays_indices, dtype=np.int32).reshape(-1)
 
-        if world_indices_np.size == 1 and ray_bundle_indices_np.size > 1:
-            world_indices_np = np.full(ray_bundle_indices_np.shape, world_indices_np[0], dtype=np.int32)
-        elif ray_bundle_indices_np.size == 1 and world_indices_np.size > 1:
-            ray_bundle_indices_np = np.full(world_indices_np.shape, ray_bundle_indices_np[0], dtype=np.int32)
-        elif world_indices_np.size != ray_bundle_indices_np.size:
-            raise ValueError(
-                "world_indices and ray_bundle_indices must have the same length unless one of them is a scalar"
-            )
+        if world_indices_np.size == 1 and rays_indices_np.size > 1:
+            world_indices_np = np.full(rays_indices_np.shape, world_indices_np[0], dtype=np.int32)
+        elif rays_indices_np.size == 1 and world_indices_np.size > 1:
+            rays_indices_np = np.full(world_indices_np.shape, rays_indices_np[0], dtype=np.int32)
+        elif world_indices_np.size != rays_indices_np.size:
+            raise ValueError("world_indices and rays_indices must have the same length unless one of them is a scalar")
 
-        camera_indices = np.column_stack((world_indices_np, ray_bundle_indices_np)).astype(np.int32, copy=False)
+        camera_indices = np.column_stack((world_indices_np, rays_indices_np)).astype(np.int32, copy=False)
         return wp.array(camera_indices, dtype=wp.int32, device=self.__render_context.device)
 
     def compute_pinhole_camera_rays(

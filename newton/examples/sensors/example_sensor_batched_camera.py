@@ -207,7 +207,7 @@ class Example:
             fov = self.viewer.camera.fov
 
         self.camera_indices = self.batched_camera_sensor.utils.create_camera_indices(
-            np.arange(self.camera_count), ray_bundle_indices=0
+            np.arange(self.camera_count), rays_indices=0
         )
 
         self.camera_rays = self.batched_camera_sensor.utils.compute_pinhole_camera_rays(

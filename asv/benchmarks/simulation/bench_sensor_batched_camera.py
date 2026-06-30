@@ -93,7 +93,7 @@ class FastSensorBatchedCamera:
         self.batched_camera_sensor.utils.assign_checkerboard_material(shape_indices=[ground_shape_index])
 
         self.camera_indices = self.batched_camera_sensor.utils.create_camera_indices(
-            np.arange(world_count), ray_bundle_indices=0
+            np.arange(world_count), rays_indices=0
         )
         self.camera_rays = self.batched_camera_sensor.utils.compute_pinhole_camera_rays(
             resolution, resolution, math.radians(45.0)
