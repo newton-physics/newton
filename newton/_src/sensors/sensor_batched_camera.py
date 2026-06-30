@@ -157,8 +157,9 @@ class SensorBatchedCamera:
             state: Simulation state with body and particle transforms.
             camera_transforms: Camera-to-world transforms, shape
                 ``(view_count,)``.
-            camera_rays: Camera-space rays from :meth:`compute_pinhole_camera_rays`, shape
-                ``(ray_bundle_count, height, width, 2)``.
+            camera_rays: Camera-space rays from
+                :meth:`SensorBatchedCamera.Utils.compute_pinhole_camera_rays`,
+                shape ``(ray_bundle_count, height, width, 2)``.
             camera_indices: View mapping, shape ``(view_count, 2)``. Column 0
                 selects the world index, and column 1 selects the ray bundle
                 index from ``camera_rays``.

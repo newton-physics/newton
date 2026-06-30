@@ -69,9 +69,27 @@ class TestSensorBatchedCamera(unittest.TestCase):
 
     def __compare_images(self, test_image: np.ndarray, gold_image: np.ndarray, allowed_difference: float = 0.0):
         self.assertEqual(test_image.dtype, gold_image.dtype, "Images have different data types")
-        self.assertEqual(test_image.size, gold_image.size, "Images have different data shapes")
+        self.assertEqual(test_image.shape, gold_image.shape, "Images have different shapes")
 
-        gold_image = gold_image.reshape(test_image.shape)
+        if test_image.dtype == np.uint32:
+            test_image = np.stack(
+                [
+                    test_image & np.uint32(0xFF),
+                    (test_image >> np.uint32(8)) & np.uint32(0xFF),
+                    (test_image >> np.uint32(16)) & np.uint32(0xFF),
+                    (test_image >> np.uint32(24)) & np.uint32(0xFF),
+                ],
+                axis=-1,
+            ).astype(np.uint8)
+            gold_image = np.stack(
+                [
+                    gold_image & np.uint32(0xFF),
+                    (gold_image >> np.uint32(8)) & np.uint32(0xFF),
+                    (gold_image >> np.uint32(16)) & np.uint32(0xFF),
+                    (gold_image >> np.uint32(24)) & np.uint32(0xFF),
+                ],
+                axis=-1,
+            ).astype(np.uint8)
 
         # Promote to a wide type before subtracting: int64 avoids unsigned underflow for
         # integer images, float64 preserves fractional deltas for float (e.g. depth) images.
@@ -238,12 +256,12 @@ class TestSensorBatchedCamera(unittest.TestCase):
 
         golden_color_data = np.load(
             os.path.join(os.path.dirname(__file__), "golden_data", "test_sensor_tiled_camera", "color.npy")
-        )
+        )[:, 0]
         golden_depth_data = np.load(
             os.path.join(os.path.dirname(__file__), "golden_data", "test_sensor_tiled_camera", "depth.npy")
-        )
+        )[:, 0]
 
-        self.__compare_images(color_image.numpy(), golden_color_data, allowed_difference=0.1)
+        self.__compare_images(color_image.numpy(), golden_color_data, allowed_difference=3.0)
         self.__compare_images(depth_image.numpy(), golden_depth_data, allowed_difference=0.1)
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")

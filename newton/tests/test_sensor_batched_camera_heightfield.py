@@ -38,8 +38,7 @@ class TestSensorBatchedCameraHeightfield(unittest.TestCase):
         sensor.sync_transforms(state)
 
         # Camera 5m above origin, identity orientation => looks straight down (-z).
-        # At depth 4 the 45-deg footprint half-extent is 4*tan(22.5)=1.66 < 2,
-        # so every ray hits the terrain.
+        # The 30-deg FOV above keeps the depth-4 footprint inside the terrain bounds.
         cam = wp.array(
             [wp.transformf(wp.vec3f(0.0, 0.0, 5.0), wp.quatf(0.0, 0.0, 0.0, 1.0))],
             dtype=wp.transformf,

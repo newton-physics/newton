@@ -137,6 +137,8 @@ class FastSensorBatchedCamera:
                     depth_image=self.depth_image if out_depth else None,
                 )
 
+        wp.synchronize()
+
     @nice_name("Rendering (Pixel)")
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_rendering_pixel_priority_color_depth(self, resolution: int, world_count: int, iterations: int):
