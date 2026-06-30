@@ -776,6 +776,101 @@ add_example_test(
 )
 
 
+class TestSPHExamples(unittest.TestCase):
+    """SPH example smoke tests registered below."""
+
+
+def add_sph_example_test(
+    name: str,
+    test_options: dict[str, Any],
+    devices: list | None = None,
+    test_suffix: str | None = None,
+):
+    add_example_test(
+        TestSPHExamples,
+        name=name,
+        devices=["cpu"] if devices is None else devices,
+        test_options=test_options,
+        use_viewer=True,
+        test_suffix=test_suffix,
+    )
+
+
+def sph_example_options(overrides: dict[str, Any]) -> dict[str, Any]:
+    options: dict[str, Any] = {"num-frames": 2, "substeps": 1, "spacing": 0.06}
+    options.update(overrides)
+    return options
+
+
+add_sph_example_test(
+    name="sph.example_sph_fluid_block",
+    test_options=sph_example_options({"dim-x": 2, "dim-y": 2, "dim-z": 2, "height": 0.08}),
+)
+
+add_sph_example_test(
+    name="sph.example_sph_dam_break",
+    test_options=sph_example_options({"fluid-dim-x": 2, "fluid-dim-y": 2, "fluid-dim-z": 2}),
+)
+
+add_sph_example_test(
+    name="sph.example_sph_moving_boundary",
+    test_options=sph_example_options({"dim-x": 2, "dim-y": 2, "dim-z": 2}),
+)
+
+add_sph_example_test(
+    name="sph.example_sph_mesh_collider",
+    test_options=sph_example_options({"dim-x": 1, "dim-y": 1, "dim-z": 1, "height": 0.04}),
+)
+
+add_sph_example_test(
+    name="sph.example_sph_twoway_coupling",
+    devices=cuda_test_devices,
+    test_options=sph_example_options(
+        {
+            "num-frames": 40,
+            "substeps": 4,
+            "spacing": 0.04,
+            "dim-x": 6,
+            "dim-y": 4,
+            "dim-z": 6,
+            "fluid-velocity": 0.5,
+            "float-mass": 0.35,
+            "viscosity": 0.008,
+            "xsph": 0.05,
+        }
+    ),
+)
+
+add_sph_example_test(
+    name="sph.example_sph_articulated_coupling",
+    devices=cuda_test_devices,
+    test_options=sph_example_options(
+        {
+            "num-frames": 40,
+            "substeps": 24,
+            "spacing": 0.035,
+            "dim-x": 8,
+            "dim-y": 6,
+            "dim-z": 10,
+        }
+    ),
+)
+
+add_sph_example_test(
+    name="sph.example_sph_paddle_wheel",
+    test_options=sph_example_options(
+        {
+            "num-frames": 4,
+            "substeps": 4,
+            "spacing": 0.045,
+            "dim-x": 6,
+            "dim-y": 3,
+            "dim-z": 5,
+            "angular-speed": 3.0,
+        }
+    ),
+)
+
 add_example_test(
     TestBasicExamples,
     name="basic.example_basic_plotting",

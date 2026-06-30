@@ -90,6 +90,14 @@ Supported Features
      - 🟨 no self-collision
      - ✅
      - 🟨 basic :sup:`2`
+   * - :class:`~newton.solvers.SolverWCSPH`
+     - Explicit WCSPH
+     - ❌
+     - ❌
+     - ✅ fluid particles
+     - ❌
+     - ❌
+     - ❌
    * - :class:`~newton.solvers.SolverStyle3D`
      - Implicit
      - ❌
@@ -141,8 +149,8 @@ formulation.
   :class:`~newton.solvers.SolverSemiImplicit`,
   :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverMuJoCo`,
   :class:`~newton.solvers.SolverVBD`, :class:`~newton.solvers.SolverKamino`,
-  :class:`~newton.solvers.SolverStyle3D`, and
-  :class:`~newton.solvers.SolverImplicitMPM`.
+  :class:`~newton.solvers.SolverStyle3D`, :class:`~newton.solvers.SolverImplicitMPM`, and
+  :class:`~newton.solvers.SolverWCSPH`.
 - ``ke`` / ``kd``: :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`,
   :class:`~newton.solvers.SolverMuJoCo`, and
@@ -173,7 +181,8 @@ The maximal-coordinate solvers (:class:`~newton.solvers.SolverSemiImplicit`,
 :class:`~newton.solvers.SolverXPBD`, and :class:`~newton.solvers.SolverKamino`)
 enforce joints as pairwise body constraints but do not use the articulation kinematic-tree structure.
 :class:`~newton.solvers.SolverVBD` supports a subset of joint types via soft constraints (AVBD).
-:class:`~newton.solvers.SolverStyle3D` and :class:`~newton.solvers.SolverImplicitMPM` do not support joints.
+:class:`~newton.solvers.SolverStyle3D`, :class:`~newton.solvers.SolverImplicitMPM`, and :class:`~newton.solvers.SolverWCSPH`
+do not support joints.
 
 **Joint types**
 
@@ -445,10 +454,12 @@ See the `DiffSim examples on GitHub`_ for the current reference workflows.
 .. toctree::
    :hidden:
 
+   newton_solvers_sph
    newton_solvers_style3d
 
 .. rubric:: Submodules
 
+- :doc:`newton.solvers.sph <newton_solvers_sph>`
 - :doc:`newton.solvers.style3d <newton_solvers_style3d>`
 
 .. rubric:: Classes
@@ -466,4 +477,5 @@ See the `DiffSim examples on GitHub`_ for the current reference workflows.
    SolverSemiImplicit
    SolverStyle3D
    SolverVBD
+   SolverWCSPH
    SolverXPBD
