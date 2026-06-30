@@ -407,8 +407,9 @@ void main()
     if (transparent_pass)
     {
         float alpha = clamp(Opacity, 0.0, 1.0);
-        float depth_weight = clamp(pow(1.0 - gl_FragCoord.z, 2.0) * 8.0 + 0.01, 0.01, 10.0);
-        FragColor = vec4(color * alpha * depth_weight, alpha * depth_weight);
+        // Avoid depth-derived weights here: clip-space depth varies with camera range and scene scale.
+        float accum_weight = max(alpha, 0.01);
+        FragColor = vec4(color * alpha * accum_weight, alpha * accum_weight);
         Revealage = vec4(alpha);
     }
     else
