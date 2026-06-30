@@ -691,8 +691,10 @@ class ModelKamino:
         Finalizes the :class:`ModelKamino` from an existing instance of :class:`newton.Model`.
 
         Args:
-            model:
-                The source :class:`newton.Model` instance to be converted.
+            model: The source :class:`newton.Model` instance to be converted.
+
+        Returns:
+            Kamino model converted from the input Newton model.
         """
 
         # Ensure the base model is valid
@@ -749,7 +751,11 @@ class ModelKamino:
             model_bodies = convert_rigid_bodies(model, model_size, model_info)
 
             # Joints
-            model_joints = convert_joints(model, model_size, model_info)
+            model_joints = convert_joints(
+                model,
+                model_size,
+                model_info,
+            )
 
             # Geometries
             model_geoms = convert_geometries(
