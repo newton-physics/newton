@@ -317,6 +317,7 @@ def _eval_body_particle_contact_damping_kernel(
     contact_body_pos: wp.array[wp.vec3],
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
     forces: wp.array[wp.vec3],
 ):
     i = wp.tid()
@@ -342,6 +343,7 @@ def _eval_body_particle_contact_damping_kernel(
         contact_body_pos,
         contact_body_vel,
         contact_normal,
+        shape_margin,
         0.1,
     )
     forces[i] = force
@@ -537,6 +539,7 @@ def _eval_body_particle_contact_rigid_motion_kernel(
     contact_body_pos: wp.array[wp.vec3],
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
     damping_delta_norms: wp.array[float],
 ):
     sample = wp.tid()
@@ -562,6 +565,7 @@ def _eval_body_particle_contact_rigid_motion_kernel(
         contact_body_pos,
         contact_body_vel,
         contact_normal,
+        shape_margin,
         dt,
     )
     body_particle_force_undamped, _body_particle_hessian_undamped = evaluate_body_particle_contact(
@@ -584,6 +588,7 @@ def _eval_body_particle_contact_rigid_motion_kernel(
         contact_body_pos,
         contact_body_vel,
         contact_normal,
+        shape_margin,
         dt,
     )
     damping_delta_norms[sample] = wp.length(body_particle_force_damped - body_particle_force_undamped)
@@ -1115,6 +1120,7 @@ def _body_particle_contact_damping_is_absolute(test, device):
                 contact_body_pos,
                 contact_body_vel,
                 contact_normal,
+                wp.zeros(0, dtype=float, device=device),
             ],
             outputs=[forces],
             device=device,
@@ -1184,6 +1190,7 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
                 contact_body_pos,
                 contact_body_vel,
                 contact_normal,
+                wp.zeros(0, dtype=float, device=device),
             ],
             outputs=[forces, hessians],
             device=device,
@@ -1453,6 +1460,7 @@ def _contact_damping_ignores_rigid_motion(test, device):
                 contact_body_pos,
                 contact_body_vel,
                 contact_normal,
+                wp.zeros(0, dtype=float, device=device),
             ],
             outputs=[body_particle_delta_norms],
             device=device,

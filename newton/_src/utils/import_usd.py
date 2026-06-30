@@ -3651,12 +3651,19 @@ def parse_usd(
                     )
 
     # add joints to floating bodies (bodies not connected as children to any joint)
-    if not (no_articulations and has_joints):
-        new_bodies = list(path_body_map.values())
+    new_bodies = list(path_body_map.values())
+    if no_articulations and has_joints:
+        # Preserve authored orphan-joint graphs while still articulating unrelated bodies (#3002).
+        connected_bodies = set(builder.joint_parent) | set(builder.joint_child)
+        bodies_to_articulate = [body_id for body_id in new_bodies if body_id not in connected_bodies]
+    else:
+        bodies_to_articulate = new_bodies
+
+    if bodies_to_articulate:
         if parent_body != -1:
             # When parent_body is specified, manually add joints to floating bodies with correct parent
             joint_children = set(builder.joint_child)
-            for body_id in new_bodies:
+            for body_id in bodies_to_articulate:
                 if body_id in joint_children:
                     continue  # Already has a joint
                 if builder.body_mass[body_id] <= 0:
@@ -3678,7 +3685,7 @@ def parse_usd(
                     articulation_label=None,
                 )
         else:
-            builder._add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
+            builder._add_base_joints_to_floating_bodies(bodies_to_articulate, floating=floating, base_joint=base_joint)
 
     # Parse MjcEquality constraints *before* collapsing fixed joints so that the
     # builder's collapse logic can remap body/joint indices and adjust anchors/relposes

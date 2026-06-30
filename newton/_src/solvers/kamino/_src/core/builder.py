@@ -935,12 +935,17 @@ class ModelBuilderKamino:
                 else:  # Set base body to be the follower of the base joint
                     world.set_base_body(follower_idx)
             elif not world.has_base_body and base_auto:
-                world.set_base_body(0)  # Set the base body as the first body
+                # Look for a non-universal unary joint connecting the world to a follower body
                 for jt_idx, joint in enumerate(self._joints[w]):
-                    if joint.wid == w and joint.is_unary and joint.is_connected_to_body(world.base_body_idx):
-                        # If we find a unary joint connecting the base body to the world, we set this as the base joint
+                    if joint.bid_B == -1 and joint.dof_type != JointDoFType.UNIVERSAL:
                         world.set_base_joint(jt_idx)
+                        world.set_base_body(joint.bid_F)
                         break
+                # As a last fallback, set body 0 in that world as base body (no base joint)
+                if not world.has_base_body:
+                    if world.num_bodies == 0:
+                        raise RuntimeError(f"Zero bodies in world {w}, cannot set base body.")
+                    world.set_base_body(0)
 
         ###
         # ModelKamino data collection

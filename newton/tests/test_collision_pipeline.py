@@ -679,6 +679,7 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
             wp.array([mesh.id], dtype=wp.uint64, device=device),
             wp.array([-1], dtype=wp.int32, device=device),
             0.0,
+            wp.array([0.0], dtype=wp.float32, device=device),
             1,
             1,
             wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),
