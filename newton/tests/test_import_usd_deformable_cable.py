@@ -564,6 +564,65 @@ class TestUSDDeformableCable(unittest.TestCase):
                 np.testing.assert_allclose(z_world, [1.0, 0.0, 0.0], atol=1e-5)  # +Z -> tangent +X
                 np.testing.assert_allclose(y_world, [0.0, 1.0, 0.0], atol=1e-5)  # +Y -> normal
 
+    def test_cable_normals_under_reflection_use_inverse_transpose(self):
+        """Authored normals transform by the inverse-transpose of the world map, so a reflective scale
+        flips the material frame correctly. A rot/scale decomposition drops the reflection parity and
+        would leave the normal unflipped."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_reflect_normals.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]  # tangent +X
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            curves.CreateNormalsAttr([(0.0, 1.0, 0.0)] * len(pts))  # local cross-section normal +Y
+            curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+            UsdGeom.Xformable(curves).AddScaleOp().Set(Gf.Vec3d(1.0, -1.0, 1.0))  # reflect across Y
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            bodies, _ = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
+            for body in bodies:
+                t = builder.body_q[body]
+                q = wp.quat(float(t[3]), float(t[4]), float(t[5]), float(t[6]))
+                y_world = np.array(wp.quat_rotate(q, wp.vec3(0.0, 1.0, 0.0)), dtype=np.float32)
+                # inverse-transpose of diag(1, -1, 1) maps +Y -> -Y; a decomposition would keep +Y.
+                np.testing.assert_allclose(y_world, [0.0, -1.0, 0.0], atol=1e-5)
+
+    def test_cable_rest_length_uses_full_linear_under_shear(self):
+        """Rest segment lengths (for stiffness) transform by the full linear block, so a shear that
+        lengthens a segment lowers stretch stiffness E*A/L accordingly. A decomposed scale cannot
+        represent the shear and would measure the rest length incorrectly."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_shear_rest.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            seg_len, thickness, E, k = 0.1, 0.02, 2.0e6, 0.75  # shear maps a +X segment to length L*sqrt(1+k^2)
+            pts = [(i * seg_len, 0.0, 1.0) for i in range(4)]  # along +X
+            curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
+            _bind_deformable_material(stage, curves.GetPrim(), "/World/Mat", thickness=thickness, stretchStiffness=E)
+            # Rest centerline == authored points, so rest length equals the (sheared) segment length.
+            curves.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+                [tuple(p) for p in pts]
+            )
+            # Shear (row-major Gf matrix): world z += k * x, not expressible as a per-axis scale.
+            m = Gf.Matrix4d(1.0, 0.0, k, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+            UsdGeom.Xformable(curves).AddTransformOp().Set(m)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            _bodies, joints = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
+            r = 0.5 * thickness
+            rest_len = seg_len * math.sqrt(1.0 + k * k)
+            expected_ke = E * math.pi * r * r / rest_len
+            dof0 = builder.joint_qd_start[joints[0]]
+            self.assertAlmostEqual(builder.joint_target_ke[dof0], expected_ke, delta=expected_ke * 1e-3)
+
     def test_cable_non_per_point_normals_ignored(self):
         """Cable normals with non-per-point interpolation are warned and ignored, not misapplied."""
         from pxr import Usd, UsdGeom, UsdPhysics

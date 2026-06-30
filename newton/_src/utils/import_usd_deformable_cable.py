@@ -415,9 +415,20 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         _warn_geometry_authored_material_attrs(prim, path, "PhysicsCurvesDeformableMaterialAPI", deformable_read)
 
         world_mat = get_prim_world_mat(prim, None, incoming_world_xform)
-        # Centerline points use the full affine (below) so reflections are exact; the decomposed
-        # rot/scale still frame the authored normals and scale the rest lengths.
-        _w_pos, w_rot, w_scale = wp.transform_decompose(world_mat)
+        # Centerline and rest points use the full affine (below) so reflections / shears are exact.
+        # Normals transform by the inverse-transpose of the world map's 3x3 linear block (the correct
+        # rule under non-uniform scale, shear, and reflection); a rot/scale decomposition would drop
+        # the reflection parity and cannot represent shear. Recover the linear block from basis images
+        # (its columns) and invert-transpose it with warp.
+        _o = wp.transform_point(world_mat, wp.vec3(0.0, 0.0, 0.0))
+        _cx = wp.transform_point(world_mat, wp.vec3(1.0, 0.0, 0.0)) - _o
+        _cy = wp.transform_point(world_mat, wp.vec3(0.0, 1.0, 0.0)) - _o
+        _cz = wp.transform_point(world_mat, wp.vec3(0.0, 0.0, 1.0)) - _o
+        _linear = wp.mat33(_cx[0], _cy[0], _cz[0], _cx[1], _cy[1], _cz[1], _cx[2], _cy[2], _cz[2])
+        # Degenerate (singular) linear block -> use authored normals unchanged.
+        normal_linear_inv_t = (
+            wp.transpose(wp.inverse(_linear)) if abs(float(wp.determinant(_linear))) > 1.0e-12 else None
+        )
 
         # Per-point normals give each segment's cross-section frame (twist).
         # ``primvars:normals`` takes precedence over the schema ``normals`` attribute and
@@ -517,31 +528,30 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 flat_segment_index += curve_segment_count
                 continue
             imported_point_count += n
-            # Authored normals set each segment's cross-section twist. Transform them by the
-            # inverse-transpose of the world map (correct under non-uniform scale): for
-            # rotation R and per-axis scale S that is R*S^-1 -- divide by the scale, then rotate.
+            # Authored normals set each segment's cross-section twist; map them to world via the
+            # inverse-transpose computed above (``_cable_segment_quaternions`` normalizes each).
             quaternions = None
             if normals is not None:
-                inv_scale = wp.vec3(
-                    *(1.0 / s if abs(s) > 1.0e-8 else 1.0 for s in (w_scale[0], w_scale[1], w_scale[2]))
-                )
-                seg_normals = [
-                    wp.quat_rotate(
-                        w_rot,
-                        wp.vec3(float(nv[0]) * inv_scale[0], float(nv[1]) * inv_scale[1], float(nv[2]) * inv_scale[2]),
-                    )
-                    for nv in normals[start : start + n]
-                ]
+                if normal_linear_inv_t is not None:
+                    seg_normals = [
+                        wp.mul(normal_linear_inv_t, wp.vec3(float(nv[0]), float(nv[1]), float(nv[2])))
+                        for nv in normals[start : start + n]
+                    ]
+                else:
+                    seg_normals = [
+                        wp.vec3(float(nv[0]), float(nv[1]), float(nv[2])) for nv in normals[start : start + n]
+                    ]
                 quaternions = _cable_segment_quaternions(positions, seg_normals)
             # Per-joint stiffness needs a per-segment rest length: the mean of the
             # actual segment lengths (the straight-line endpoint distance would
             # underestimate it for curved cables and inflate the stiffness).
             seg_len = sum(seg_lengths) / max(1, num_seg)
-            # Use the rest centerline for the rest length when authored (else the imported
-            # points), so the cable is not pre-stressed. Only lengths matter -> apply w_scale.
+            # Use the rest centerline for the rest length when authored (else the imported points), so
+            # the cable is not pre-stressed. Apply the full affine so the rest lengths are exact under
+            # reflection / shear (translation cancels in the segment differences).
             if rest_shape_points is not None:
                 rest_pts = [
-                    wp.vec3(float(rp[0]) * w_scale[0], float(rp[1]) * w_scale[1], float(rp[2]) * w_scale[2])
+                    wp.transform_point(world_mat, wp.vec3(float(rp[0]), float(rp[1]), float(rp[2])))
                     for rp in rest_shape_points[start : start + n]
                 ]
                 if closed:
