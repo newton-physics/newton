@@ -222,6 +222,24 @@ class TestModelBuilderDeprecations(unittest.TestCase):
 
 
 class TestModelBuilderBvhConstructor(unittest.TestCase):
+    def test_invisible_shape_world_transforms_are_initialized(self):
+        builder = ModelBuilder()
+        builder.add_shape_box(
+            body=-1,
+            xform=wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_identity()),
+            cfg=ModelBuilder.ShapeConfig(is_visible=False),
+        )
+
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(model.bvh_shape_count_enabled, 0)
+        np.testing.assert_allclose(
+            model.bvh_shape_world_transforms.numpy(),
+            model.shape_transform.numpy(),
+            rtol=0.0,
+            atol=0.0,
+        )
+
     def test_model_builder_forwards_bvh_constructors(self):
         builder = ModelBuilder()
         builder.default_bvh_cfg.mesh_constructor = "cubql"
