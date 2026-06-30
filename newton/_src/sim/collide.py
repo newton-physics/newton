@@ -475,6 +475,79 @@ def _infer_broad_phase_mode_from_instance(broad_phase: BroadPhaseAllPairs | Broa
     )
 
 
+def _build_soft_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
+    """Build the soft-rigid (particle-shape) candidate pairs for ``model``.
+
+    Emits every particle-shape pair whose worlds are compatible (same world, or
+    either is global ``-1``). :attr:`~newton.ParticleFlags.ACTIVE` and
+    :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES` are deliberately *not* applied
+    here: they are mutable at runtime and filtered per-thread in
+    :func:`~newton._src.geometry.kernels.create_soft_contacts`, so this candidate
+    set stays valid when those flags change after the pipeline is constructed.
+    Worlds are immutable after :meth:`~newton.ModelBuilder.finalize`, so world
+    filtering is safe to precompute. Reads model arrays on the host, so it is not
+    graph-capture-safe; construct the pipeline before any capture.
+    """
+    device = model.device
+    particle_count = int(getattr(model, "particle_count", 0) or 0)
+    shape_count = int(getattr(model, "shape_count", 0) or 0)
+
+    def _pairs(p_idx: np.ndarray, s_idx: np.ndarray) -> wp.array[wp.vec2i]:
+        stacked = np.column_stack((p_idx, s_idx)).astype(np.int32) if len(p_idx) else np.empty((0, 2), np.int32)
+        return wp.array(stacked, dtype=wp.vec2i, device=device)
+
+    if particle_count == 0 or shape_count == 0:
+        return _pairs(np.empty(0), np.empty(0))
+
+    world_count = int(getattr(model, "world_count", 0) or 0)
+    # World-compatible superset over every particle and shape; ACTIVE / COLLIDE_PARTICLES are
+    # applied dynamically in create_soft_contacts so runtime flag changes are honored.
+    particles = np.arange(particle_count)
+    shapes = np.arange(shape_count)
+    particle_world = model.particle_world.numpy()  # world of each particle; -1 == global
+    shape_world = model.shape_world.numpy()  # world of each shape; -1 == global
+    p_local = (particle_world >= 0) & (particle_world < world_count)
+    s_local = (shape_world >= 0) & (shape_world < world_count)
+
+    # A pair (p, s) is emitted iff their worlds are compatible:
+    #     particle_world == shape_world  or  particle_world == -1  or  shape_world == -1
+    #     (same world, or either is global).
+    # That predicate splits into three disjoint groups, each a vectorized cross product
+    # (disjoint => no de-duplication; neither particles nor shapes are looped in Python).
+    p_cols: list[np.ndarray] = []
+    s_cols: list[np.ndarray] = []
+
+    # 1. Global particles pair with every shape (any world).
+    global_particles = particles[particle_world < 0]
+    if len(global_particles):
+        p_cols.append(np.repeat(global_particles, len(shapes)))
+        s_cols.append(np.tile(shapes, len(global_particles)))
+
+    # 2. Local-world particles additionally pair with every global shape.
+    local_particles = particles[p_local]
+    global_shapes = shapes[shape_world < 0]
+    if len(local_particles) and len(global_shapes):
+        p_cols.append(np.repeat(local_particles, len(global_shapes)))
+        s_cols.append(np.tile(global_shapes, len(local_particles)))
+
+    # 3. Local-world particles pair with the shapes that share their world. Group
+    #    the local shapes by world so each world's shapes are contiguous, then for
+    #    every particle slice out its world's block.
+    local_particle_world = particle_world[p_local]
+    shapes_per_world = np.bincount(shape_world[s_local], minlength=world_count)
+    reps = shapes_per_world[local_particle_world] if len(local_particle_world) else np.zeros(0, np.intp)
+    if reps.sum():
+        shapes_by_world = shapes[s_local][np.argsort(shape_world[s_local], kind="stable")]
+        world_start = np.cumsum(shapes_per_world) - shapes_per_world
+        within = np.arange(reps.sum()) - np.repeat(np.cumsum(reps) - reps, reps)
+        p_cols.append(np.repeat(local_particles, reps))
+        s_cols.append(shapes_by_world[np.repeat(world_start[local_particle_world], reps) + within])
+
+    if not p_cols:
+        return _pairs(np.empty(0), np.empty(0))
+    return _pairs(np.concatenate(p_cols), np.concatenate(s_cols))
+
+
 class CollisionPipeline:
     """
     Full-featured collision pipeline with GJK/MPR narrow phase and pluggable broad phase.
@@ -545,7 +618,9 @@ class CollisionPipeline:
                 reduction hashtable. Increase this if hashtable fill/failure
                 warnings appear. Defaults to ``0.25`` for memory compatibility.
             soft_contact_max: Maximum number of soft contacts to allocate.
-                If None, computed as shape_count * particle_count.
+                If None, defaults to ``soft_rigid_contact_pair_count``, the number
+                of precomputed soft-rigid (particle-shape) pairs launched for soft
+                contact generation.
             soft_contact_margin: Margin for soft contact generation. Defaults to 0.01.
             requires_grad: Whether to enable gradient computation. If None, uses model.requires_grad.
             broad_phase:
@@ -647,7 +722,6 @@ class CollisionPipeline:
                 broad_phase_instance = broad_phase
 
         shape_count = model.shape_count
-        particle_count = model.particle_count
         device = model.device
         using_expert_components = broad_phase_instance is not None or narrow_phase is not None
 
@@ -861,8 +935,12 @@ class CollisionPipeline:
                 f"(expected {shape_count}, got {self.narrow_phase.shape_aabb_upper.shape[0]})"
             )
 
+        # Built here (not in finalize) so models/tasks that never collide don't pay for it.
+        # Host-side, so not graph-capture-safe -- construct the pipeline before any capture.
+        self.soft_rigid_contact_pairs = _build_soft_rigid_contact_pairs(model)
+        self._soft_rigid_contact_pair_count = len(self.soft_rigid_contact_pairs)
         if soft_contact_max is None:
-            soft_contact_max = shape_count * particle_count
+            soft_contact_max = self.soft_rigid_contact_pair_count
         self.soft_contact_margin = soft_contact_margin
         self._soft_contact_max = soft_contact_max
         self.requires_grad = requires_grad
@@ -904,6 +982,14 @@ class CollisionPipeline:
     def soft_contact_max(self) -> int:
         """Maximum soft contact buffer capacity used by this pipeline."""
         return self._soft_contact_max
+
+    @property
+    def soft_rigid_contact_pair_count(self) -> int:
+        """Number of precomputed soft-rigid (particle-shape) pairs launched for soft contacts.
+
+        This is the default capacity used for ``soft_contact_max``.
+        """
+        return self._soft_rigid_contact_pair_count
 
     def contacts(self) -> Contacts:
         """
@@ -1259,12 +1345,12 @@ class CollisionPipeline:
             )
 
         # Generate soft contacts for particles and shapes
-        particle_count = len(state.particle_q) if state.particle_q else 0
-        if state.particle_q and model.shape_count > 0:
+        if state.particle_q and self.soft_rigid_contact_pair_count > 0:
             wp.launch(
                 kernel=create_soft_contacts,
-                dim=particle_count * model.shape_count,
+                dim=self.soft_rigid_contact_pair_count,
                 inputs=[
+                    self.soft_rigid_contact_pairs,
                     state.particle_q,
                     model.particle_radius,
                     model.particle_flags,
@@ -1279,7 +1365,6 @@ class CollisionPipeline:
                     soft_contact_margin,
                     model.shape_margin,
                     self.soft_contact_max,
-                    model.shape_count,
                     model.shape_flags,
                     model.shape_heightfield_index,
                     model.heightfield_data,
