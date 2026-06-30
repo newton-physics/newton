@@ -2398,6 +2398,7 @@ def accumulate_particle_body_contact_force_and_hessian(
             contact_body_pos,
             contact_body_vel,
             contact_normal,
+            shape_margin,
             dt,
         )
 

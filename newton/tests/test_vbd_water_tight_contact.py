@@ -157,14 +157,11 @@ def _set_slot(arr, idx, value):
     arr.assign(a)
 
 
-def test_barycentric_force_distribution(test, device):
-    """Section 2 distributes a contact at x = sum_i bary_i*v_i as bary_i*F and bary_i^2*H.
-
-    A single FACE record with an asymmetric barycentric weight is written directly into the
-    contact buffer and the particle-side kernel is launched once (all vertices in one color),
-    isolating the distribution math: the per-vertex force must scale with bary_i and the
-    per-vertex Hessian block with bary_i^2.
-    """
+def _run_face_section2(device, shape_margin):
+    """Build a single soft-FACE contact and launch the particle-side kernel once with the given
+    ``shape_margin`` array. The geometry gives a 0.05 penetration along +z; returns
+    ``(forces, hessians, ke, bary, (p0, p1, p2))``. All vertices share color 0 so one launch
+    processes the whole triangle."""
     builder = newton.ModelBuilder()
     builder.add_shape_box(body=-1, xform=wp.transform(wp.vec3(0.0), wp.quat_identity()), hx=1.0, hy=1.0, hz=1.0)
     p0 = builder.add_particle(wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0), 0.1, radius=0.0)
@@ -188,8 +185,6 @@ def test_barycentric_force_distribution(test, device):
     _set_slot(contacts.soft_contact_body_pos, 0, [0.3, 0.1, 0.05])
     _set_slot(contacts.soft_contact_body_vel, 0, [0.0, 0.0, 0.0])
     _set_slot(contacts.soft_contact_normal, 0, [0.0, 0.0, 1.0])
-
-    # All vertices in color 0 so a single launch processes the whole triangle.
     model.particle_colors.assign([0, 0, 0])
 
     # Dummy single-entry body arrays (the record's shape is on the world, body = -1, so these
@@ -197,7 +192,6 @@ def test_barycentric_force_distribution(test, device):
     body_q = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
     body_qd = wp.zeros(1, dtype=wp.spatial_vector, device=device)
     body_com = wp.zeros(1, dtype=wp.vec3, device=device)
-
     forces = wp.zeros(model.particle_count, dtype=wp.vec3, device=device)
     hessians = wp.zeros(model.particle_count, dtype=wp.mat33, device=device)
     unused = wp.zeros(smax, dtype=float, device=device)  # AVBD params (section 1 never runs, c0 == 0)
@@ -230,6 +224,7 @@ def test_barycentric_force_distribution(test, device):
             contacts.soft_contact_body_pos,
             contacts.soft_contact_body_vel,
             contacts.soft_contact_normal,
+            shape_margin,
             model.tri_indices,
             contacts.soft_contact_barycentric,
             model.soft_contact_ke,
@@ -239,10 +234,16 @@ def test_barycentric_force_distribution(test, device):
         outputs=[forces, hessians],
         device=device,
     )
+    return forces.numpy(), hessians.numpy(), float(model.soft_contact_ke), bary, (p0, p1, p2)
 
-    f = forces.numpy()
-    h = hessians.numpy()
-    ke = float(model.soft_contact_ke)
+
+def test_barycentric_force_distribution(test, device):
+    """Section 2 distributes a contact at x = sum_i bary_i*v_i as bary_i*F and bary_i^2*H.
+
+    A single FACE record with an asymmetric barycentric weight isolates the distribution math:
+    the per-vertex force must scale with bary_i and the per-vertex Hessian block with bary_i^2.
+    """
+    f, h, ke, bary, (p0, p1, p2) = _run_face_section2(device, wp.zeros(0, dtype=float, device=device))
     single_force = np.array([0.0, 0.0, 0.05 * ke])  # F = n * penetration * ke
 
     for i, vi in enumerate([p0, p1, p2]):
@@ -251,6 +252,20 @@ def test_barycentric_force_distribution(test, device):
         np.testing.assert_allclose(h[vi][2, 2], bary[i] ** 2 * ke, rtol=2e-4, atol=1e-4)
     # The distributed force sums back to the single-point force (sum of bary == 1).
     np.testing.assert_allclose(f[p0] + f[p1] + f[p2], single_force, rtol=2e-4, atol=1e-4)
+
+
+def test_edge_face_uses_shape_margin(test, device):
+    """A per-shape contact margin (#2994) widens the edge/face penetration by ``margin``.
+
+    Same single-FACE scene; the geometric penetration is 0.05. With ``shape_margin = 0`` the
+    total force is ke*0.05; with ``shape_margin = m`` for the contacted shape it is ke*(0.05+m).
+    """
+    m = 0.02
+    f0, _, ke, _, verts = _run_face_section2(device, wp.zeros(0, dtype=float, device=device))
+    fm, _, _, _, _ = _run_face_section2(device, wp.array([m], dtype=float, device=device))  # shape 0 margin
+    verts = list(verts)
+    np.testing.assert_allclose(f0[verts].sum(axis=0), [0.0, 0.0, 0.05 * ke], rtol=2e-4, atol=1e-4)
+    np.testing.assert_allclose(fm[verts].sum(axis=0), [0.0, 0.0, (0.05 + m) * ke], rtol=2e-4, atol=1e-4)
 
 
 def test_flag_off_is_inert(test, device):
@@ -304,6 +319,12 @@ add_function_test(
     TestVBDWaterTightContact,
     "test_barycentric_force_distribution",
     test_barycentric_force_distribution,
+    devices=devices,
+)
+add_function_test(
+    TestVBDWaterTightContact,
+    "test_edge_face_uses_shape_margin",
+    test_edge_face_uses_shape_margin,
     devices=devices,
 )
 add_function_test(

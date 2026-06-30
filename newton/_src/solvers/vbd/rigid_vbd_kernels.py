@@ -928,6 +928,7 @@ def _eval_soft_ef_contact(
     contact_body_pos: wp.array[wp.vec3],
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
     dt: float,
 ):
     """Edge/face soft-contact force/Hessian at a barycentric contact point on a soft triangle.
@@ -960,10 +961,13 @@ def _eval_soft_ef_contact(
     bx = wp.transform_point(X_wb, contact_body_pos[contact_index])
     n = contact_normal[contact_index]
 
+    # per-shape contact margin (#2994), applied the same way as the particle-vs-surface path
+    margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
+
     force = wp.vec3(0.0)
     hessian = wp.mat33(0.0)
 
-    penetration_depth = -(wp.dot(n, x - bx) - radius)
+    penetration_depth = -(wp.dot(n, x - bx) - radius - margin)
     if penetration_depth > 0.0:
         dx = x - x_prev
 
@@ -3286,6 +3290,7 @@ def accumulate_body_soft_ef_contacts(
     soft_contact_body_pos: wp.array[wp.vec3],
     soft_contact_body_vel: wp.array[wp.vec3],
     soft_contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
     # Outputs
     body_forces: wp.array[wp.vec3],
     body_torques: wp.array[wp.vec3],
@@ -3345,6 +3350,7 @@ def accumulate_body_soft_ef_contacts(
         soft_contact_body_pos,
         soft_contact_body_vel,
         soft_contact_normal,
+        shape_margin,
         dt,
     )
 

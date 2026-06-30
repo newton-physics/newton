@@ -2749,6 +2749,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_body_vel,
                         contacts.soft_contact_normal,
+                        model.shape_margin,
                     ],
                     outputs=[
                         self.body_forces,
