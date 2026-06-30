@@ -331,9 +331,9 @@ def parse_mjcf(
     root, base_dir = _load_and_expand_mjcf(source, path_resolver)
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
 
-    contact = root.find("contact")
+    contact_sections = root.findall("contact")
     explicit_pair_geom_names: set[str] = set()
-    if contact is not None:
+    for contact in contact_sections:
         for pair in contact.findall("pair"):
             for geom_key in ("geom1", "geom2"):
                 geom_name = pair.attrib.get(geom_key)
@@ -2465,9 +2465,10 @@ def parse_mjcf(
                 return idx
         return None
 
-    if contact is not None and has_pair_attrs:
+    if has_pair_attrs:
         # Parse <pair> elements - explicit contact pairs with custom properties
-        for pair in contact.findall("pair"):
+        pairs = (pair for contact in contact_sections for pair in contact.findall("pair"))
+        for pair in pairs:
             geom1_name = pair.attrib.get("geom1")
             geom2_name = pair.attrib.get("geom2")
 
@@ -2507,7 +2508,7 @@ def parse_mjcf(
                 print(f"Parsed contact pair: {geom1_name} ({geom1_idx}) <-> {geom2_name} ({geom2_idx})")
 
     # Parse <exclude> elements - body pairs to exclude from collision detection
-    if contact is not None:
+    for contact in contact_sections:
         for exclude in contact.findall("exclude"):
             body1_name = exclude.attrib.get("body1")
             body2_name = exclude.attrib.get("body2")

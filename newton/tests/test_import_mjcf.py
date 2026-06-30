@@ -8043,6 +8043,50 @@ class TestContypeConaffinityZero(unittest.TestCase):
         solver._mujoco.mj_forward(solver.mj_model, solver.mj_data)
         self.assertGreater(solver.mj_data.ncon, 0)
 
+    def test_explicit_pairs_across_contact_sections_without_visuals(self):
+        """Pairs and excludes are parsed from every top-level contact section."""
+        mjcf = """<mujoco>
+            <default><geom contype="0" conaffinity="0"/></default>
+            <worldbody>
+                <body name="body1" pos="0 0 0">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="geom1" type="sphere" size="0.1"/>
+                </body>
+                <body name="body2" pos="1 0 0">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="geom2" type="sphere" size="0.1"/>
+                </body>
+                <body name="body3" pos="2 0 0">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="geom3" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="geom1" geom2="geom2"/>
+            </contact>
+            <contact>
+                <pair geom1="geom2" geom2="geom3"/>
+                <exclude body1="body1" body2="body3"/>
+            </contact>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+
+        self.assertEqual(builder.shape_count, 3)
+        self.assertEqual(builder.shape_collision_group, [0, 0, 0])
+
+        model = builder.finalize(device="cpu")
+        geom1_idx = builder.shape_label.index("worldbody/body1/geom1")
+        geom3_idx = builder.shape_label.index("worldbody/body3/geom3")
+        filter_pairs = set(model.shape_collision_filter_pairs)
+        self.assertTrue((geom1_idx, geom3_idx) in filter_pairs or (geom3_idx, geom1_idx) in filter_pairs)
+
+        solver = SolverMuJoCo(model)
+        self.assertEqual(solver.mj_model.npair, 2)
+
 
 class TestMjcfPlaneInfinite(unittest.TestCase):
     """Verify MJCF plane geoms are imported as infinite planes."""
