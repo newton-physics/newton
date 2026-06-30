@@ -3767,6 +3767,32 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         joint_type3 = model3.joint_type.numpy()[0]
         self.assertEqual(joint_type3, newton.JointType.FREE)
 
+    def test_geom_group_parsing(self):
+        """Test parsing of geom visualization groups from MJCF."""
+        mjcf_content = """<mujoco>
+    <default>
+        <default class="group3">
+            <geom group="3"/>
+        </default>
+    </default>
+    <worldbody>
+        <body name="body">
+            <freejoint/>
+            <geom type="sphere" size="0.1" class="group3"/>
+            <geom type="box" size="0.1 0.1 0.1" group="1"/>
+            <geom type="capsule" size="0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model.mujoco, "geom_group"))
+        np.testing.assert_array_equal(model.mujoco.geom_group.numpy(), [3, 1, 0])
+
     def test_geom_priority_parsing(self):
         """Test parsing of geom priority from MJCF"""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>

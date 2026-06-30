@@ -2740,6 +2740,22 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     msg=f"Updated rolling friction mismatch for shape {shape_idx} in world {world_idx}",
                 )
 
+    def test_geom_group_conversion(self):
+        """Test that geom_group custom attributes are converted to MuJoCo."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        body = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(body=body, radius=0.1, custom_attributes={"mujoco:geom_group": 3})
+        builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mujoco:geom_group": 1})
+        joint = builder.add_joint_free(body)
+        builder.add_articulation([joint])
+
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        np.testing.assert_array_equal(solver.mjw_model.geom_group.numpy(), [3, 1])
+
     def test_geom_priority_conversion(self):
         """Test that geom_priority custom attribute is properly converted to MuJoCo."""
         builder = newton.ModelBuilder()

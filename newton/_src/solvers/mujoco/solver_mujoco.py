@@ -723,6 +723,18 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="geom_group",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:group",
+                mjcf_attribute_name="group",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="geom_priority",
                 frequency=AttributeFrequency.SHAPE,
                 assignment=AttributeAssignment.MODEL,
@@ -4733,6 +4745,7 @@ class SolverMuJoCo(SolverBase):
             return attr.numpy()
 
         shape_condim = get_custom_attribute("condim")
+        shape_geom_group = get_custom_attribute("geom_group")
         shape_priority = get_custom_attribute("geom_priority")
         shape_geom_solimp = get_custom_attribute("geom_solimp")
         shape_geom_solmix = get_custom_attribute("geom_solmix")
@@ -5208,6 +5221,8 @@ class SolverMuJoCo(SolverBase):
 
                 if shape_condim is not None:
                     geom_params["condim"] = shape_condim[shape]
+                if shape_geom_group is not None:
+                    geom_params["group"] = shape_geom_group[shape]
                 if shape_priority is not None:
                     geom_params["priority"] = shape_priority[shape]
                 if shape_geom_solimp is not None:
