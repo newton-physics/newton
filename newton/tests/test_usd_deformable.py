@@ -50,11 +50,11 @@ def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, den
         mat_attrs = {"thickness": thickness}
         if density is not None:
             mat_attrs["density"] = density
-        _bind_cable_material(stage, curves.GetPrim(), f"{path}Mat", **mat_attrs)
+        _bind_deformable_material(stage, curves.GetPrim(), f"{path}Mat", **mat_attrs)
     return curves
 
 
-def _bind_cable_material(stage, prim, mat_path, *, namespace="physics", **attrs):
+def _bind_deformable_material(stage, prim, mat_path, *, namespace="physics", **attrs):
     """Author a deformable material and bind it to a prim.
 
     Authors under the canonical ``physics:`` namespace by default; pass
@@ -198,7 +198,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
             curves = _add_cable_curve(stage, "/World/Cable", pts)
             thickness, stretch_mod, bend_mod = 0.02, 2.0e6, 3.0e5
-            _bind_cable_material(
+            _bind_deformable_material(
                 stage,
                 curves.GetPrim(),
                 "/World/CableMat",
@@ -245,7 +245,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             rest = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
             curves.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(rest)
             thickness, stretch_mod = 0.02, 2.0e6
-            _bind_cable_material(
+            _bind_deformable_material(
                 stage, curves.GetPrim(), "/World/CableMat", thickness=thickness, stretchStiffness=stretch_mod
             )
             stage.Save()
@@ -268,7 +268,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
             curves = _add_cable_curve(stage, "/World/Cable", pts)
-            _bind_cable_material(
+            _bind_deformable_material(
                 stage,
                 curves.GetPrim(),
                 "/World/CableMat",
@@ -362,7 +362,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
             curves = _add_cable_curve(stage, "/World/Cable", pts)
-            _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)  # no density
+            _bind_deformable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)  # no density
             stage.Save()
 
             builder = newton.ModelBuilder()
@@ -446,7 +446,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
             curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
-            _bind_cable_material(
+            _bind_deformable_material(
                 stage, curves.GetPrim(), "/World/CableMat", namespace="omniphysics", thickness=0.02, density=1234.0
             )
             stage.Save()
@@ -478,7 +478,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                 UsdPhysics.Scene.Define(stage, "/PhysicsScene")
                 pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
                 curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
-                _bind_cable_material(stage, curves.GetPrim(), "/World/Mat", namespace=namespace, thickness=0.02)
+                _bind_deformable_material(stage, curves.GetPrim(), "/World/Mat", namespace=namespace, thickness=0.02)
                 stage.Save()
                 builder = newton.ModelBuilder()
                 builder.add_usd(str(usd_path), schema_resolvers=[SchemaResolverPhysx()])
@@ -555,7 +555,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
             curve = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
-            _bind_cable_material(
+            _bind_deformable_material(
                 stage,
                 curve.GetPrim(),
                 "/World/Mat",
@@ -594,8 +594,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             pts_b = [(0.0, 1.0, 1.0), (0.1, 1.0, 1.0), (0.2, 1.0, 1.0), (0.3, 1.0, 1.0)]
             ca = _add_cable_curve(stage, "/World/CableA", pts_a)
             cb = _add_cable_curve(stage, "/World/CableB", pts_b)
-            _bind_cable_material(stage, ca.GetPrim(), "/World/MatA", thickness=0.02, density=1000.0)
-            _bind_cable_material(stage, cb.GetPrim(), "/World/MatB", thickness=0.02, density=2000.0)
+            _bind_deformable_material(stage, ca.GetPrim(), "/World/MatA", thickness=0.02, density=1000.0)
+            _bind_deformable_material(stage, cb.GetPrim(), "/World/MatB", thickness=0.02, density=2000.0)
             stage.Save()
 
             builder = newton.ModelBuilder()
@@ -836,7 +836,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
             curves = _add_cable_curve(stage, "/World/Cable", pts)
-            _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
+            _bind_deformable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
             _add_physics_attachment(
                 stage,
                 "/World/AttachMid",
@@ -876,7 +876,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
             curves = _add_cable_curve(stage, "/World/Cable", pts)
-            _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
+            _bind_deformable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
             _add_physics_attachment(
                 stage,
                 "/World/AttachMid",
@@ -911,7 +911,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             UsdPhysics.RigidBodyAPI.Apply(rigid.GetPrim())
             pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
             curves = _add_cable_curve(stage, "/World/Cable", pts)
-            _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
+            _bind_deformable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
             _add_physics_attachment(
                 stage,
                 "/World/AttachPoint",
@@ -963,7 +963,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             UsdPhysics.CollisionAPI.Apply(anchor.GetPrim())
             pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
             curves = _add_cable_curve(stage, "/World/Cable", pts)
-            _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
+            _bind_deformable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
             _add_physics_attachment(
                 stage,
                 "/World/AttachKinematic",
@@ -1001,7 +1001,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             UsdPhysics.CollisionAPI.Apply(box.GetPrim())
             pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]  # 3 segments
             curves = _add_cable_curve(stage, "/World/Cable", pts)
-            _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
+            _bind_deformable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
             # Filter the cable's first two segments (0, 1) against all of the box; empty indices1 = all.
             _add_element_collision_filter(
                 stage, "/World/Filter", src0="/World/Cable", src1="/World/Box", indices0=[0, 1], indices1=[]
@@ -1465,8 +1465,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             branch_pts = [(0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.1, 0.2, 1.0)]
             trunk = _add_cable_curve(stage, "/World/Trunk", trunk_pts)
             branch = _add_cable_curve(stage, "/World/Branch", branch_pts)
-            _bind_cable_material(stage, trunk.GetPrim(), "/World/TrunkMat", thickness=0.02)
-            _bind_cable_material(stage, branch.GetPrim(), "/World/BranchMat", thickness=0.06)
+            _bind_deformable_material(stage, trunk.GetPrim(), "/World/TrunkMat", thickness=0.02)
+            _bind_deformable_material(stage, branch.GetPrim(), "/World/BranchMat", thickness=0.06)
             _add_physics_attachment(
                 stage,
                 "/World/Junction",
@@ -1500,7 +1500,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
             curves = _add_cable_curve(stage, "/World/Cable", pts)
-            _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
+            _bind_deformable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
             _add_physics_attachment(
                 stage,
                 "/World/AttachDisabled",
@@ -1758,7 +1758,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             mesh = _add_cloth_mesh(stage, "/World/Cloth")
             stretch, shear, bend = 1.0e3, 5.0e2, 2.0e1  # distinct stretch != shear
-            _bind_cable_material(
+            _bind_deformable_material(
                 stage,
                 mesh.GetPrim(),
                 "/World/ClothMat",
@@ -1789,7 +1789,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
             stage = Usd.Stage.CreateNew(str(usd_path))
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             mesh = _add_cloth_mesh(stage, "/World/Cloth")
-            _bind_cable_material(
+            _bind_deformable_material(
                 stage,
                 mesh.GetPrim(),
                 "/World/ClothMat",
@@ -1835,7 +1835,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
             stage = Usd.Stage.CreateNew(str(usd_path))
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             mesh = _add_cloth_mesh(stage, "/World/Cloth")
-            _bind_cable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0)
+            _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0)
             mesh.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([1.0, 2.0, 3.0, 4.0])
             stage.Save()
 
@@ -1861,7 +1861,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
                 stage = Usd.Stage.CreateNew(str(usd_path))
                 UsdPhysics.Scene.Define(stage, "/PhysicsScene")
                 mesh = _add_cloth_mesh(stage, "/World/Cloth")
-                _bind_cable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0)
+                _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0)
                 mesh.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(bad)
                 stage.Save()
 
@@ -1888,7 +1888,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
                 attrs = {"density": 1000.0}
                 if thickness is not None:
                     attrs["thickness"] = thickness
-                _bind_cable_material(stage, mesh.GetPrim(), "/World/ClothMat", **attrs)
+                _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", **attrs)
                 stage.Save()
                 builder = newton.ModelBuilder()
                 builder.add_usd(str(usd_path))
@@ -1911,7 +1911,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
                 UsdPhysics.Scene.Define(stage, "/PhysicsScene")
                 mesh = _add_cloth_mesh(stage, "/World/Cloth")
                 # Material density only -- thickness is left to the shell mass model below.
-                _bind_cable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0)
+                _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0)
                 if apply_shell:
                     mesh.GetPrim().AddAppliedSchema("NewtonMassAPI")
                     mesh.GetPrim().CreateAttribute("newton:massModel", Sdf.ValueTypeNames.Token).Set("shell")
@@ -1936,7 +1936,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
             stage = Usd.Stage.CreateNew(str(usd_path))
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             mesh = _add_cloth_mesh(stage, "/World/Cloth")
-            _bind_cable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0, thickness=0.01)
+            _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0, thickness=0.01)
             stage.Save()
 
             builder = newton.ModelBuilder()
@@ -2020,7 +2020,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
             stage = Usd.Stage.CreateNew(str(usd_path))
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             mesh = _add_cloth_mesh(stage, "/World/Cloth")
-            _bind_cable_material(
+            _bind_deformable_material(
                 stage,
                 mesh.GetPrim(),
                 "/World/ClothMat",
@@ -2168,7 +2168,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
             UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             tet = _author_tet_cube(stage, "/World/Soft", z0=1.0)
-            _bind_cable_material(
+            _bind_deformable_material(
                 stage, tet.GetPrim(), "/World/SoftMat", youngsModulus=1.0e5, poissonsRatio=0.3, density=1000.0
             )
             stage.Save()
@@ -2324,11 +2324,11 @@ class TestUSDDeformableMass(unittest.TestCase):
 
         def author_material_only(stage):
             tet = _author_unit_tet(stage, "/World/Soft")
-            _bind_cable_material(stage, tet.GetPrim(), "/World/Mat", density=100.0)
+            _bind_deformable_material(stage, tet.GetPrim(), "/World/Mat", density=100.0)
 
         def author_with_override(stage):
             tet = _author_unit_tet(stage, "/World/Soft")
-            _bind_cable_material(stage, tet.GetPrim(), "/World/Mat", density=100.0)
+            _bind_deformable_material(stage, tet.GetPrim(), "/World/Mat", density=100.0)
             _apply_deformable_body_api(tet.GetPrim(), density=500.0)
 
         builder_mat, _ = self._build_soft(author_material_only)
@@ -2469,7 +2469,7 @@ class TestUSDDeformableMass(unittest.TestCase):
                 pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]  # 4 points
                 curves = _add_cable_curve(stage, "/World/Cable", pts)
                 # Bind a thickness so the only warning under test is the mass-length mismatch.
-                _bind_cable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
+                _bind_deformable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)
                 if masses is not None:
                     curves.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(masses)
                 stage.Save()
