@@ -11190,7 +11190,12 @@ class ModelBuilder:
                 if self.edge_indices
                 else np.empty((0, 4), dtype=np.int32)
             )
-            m.soft_mesh_adjacency = MeshAdjacency(tri_indices=self.tri_indices, edge_indices=edge_indices)
+            m.soft_mesh_adjacency = MeshAdjacency(
+                tri_indices=self.tri_indices,
+                edge_indices=edge_indices,
+                spring_indices=self.spring_indices,
+                tet_indices=self.tet_indices,
+            )
 
             # ---------------------
             # tetrahedra

@@ -20,7 +20,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import _eval_body_particle_contac
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point
 from ...utils.mesh import (
-    MeshAdjacencyDeviceData,
+    MeshAdjacencyData,
     get_vertex_adjacent_edge_id_order,
     get_vertex_adjacent_face_id_order,
     get_vertex_adjacent_tet_id_order,
@@ -458,7 +458,7 @@ def compute_cofactor_derivative(F: wp.mat33, scale: float) -> mat99:
 
 @wp.kernel
 def _test_compute_force_element_adjacency(
-    adjacency: MeshAdjacencyDeviceData,
+    adjacency: MeshAdjacencyData,
     edge_indices: wp.array2d[wp.int32],
     face_indices: wp.array2d[wp.int32],
 ):
@@ -1376,7 +1376,7 @@ def compute_particle_conservative_bound(
     # inputs
     conservative_bound_relaxation: float,
     collision_query_radius: float,
-    adjacency: MeshAdjacencyDeviceData,
+    adjacency: MeshAdjacencyData,
     collision_info: TriMeshCollisionInfo,
     # outputs
     particle_conservative_bounds: wp.array[float],
@@ -2371,7 +2371,7 @@ def solve_elasticity_tile(
     tet_indices: wp.array2d[wp.int32],
     tet_poses: wp.array[wp.mat33],
     tet_materials: wp.array2d[float],
-    particle_adjacency: MeshAdjacencyDeviceData,
+    particle_adjacency: MeshAdjacencyData,
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
     # output
@@ -2536,7 +2536,7 @@ def solve_elasticity(
     tet_indices: wp.array2d[wp.int32],
     tet_poses: wp.array[wp.mat33],
     tet_materials: wp.array2d[float],
-    particle_adjacency: MeshAdjacencyDeviceData,
+    particle_adjacency: MeshAdjacencyData,
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
     # output

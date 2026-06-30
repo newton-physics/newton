@@ -276,13 +276,7 @@ class TriMeshCollisionDetector:
         # The soft-mesh adjacency comes from the model; ensure its vertex-adjacency CSR is built.
         # init_vertex_adjacency is idempotent (vertex_adjacency_initialized flag), so this is a no-op
         # once the solver has built it.
-        self.mesh_adjacency = model.soft_mesh_adjacency.init_vertex_adjacency(
-            model.particle_count,
-            edge_indices=model.edge_indices,
-            tri_indices=model.tri_indices,
-            spring_indices=model.spring_indices,
-            tet_indices=model.tet_indices,
-        )
+        self.mesh_adjacency = model.soft_mesh_adjacency.init_vertex_adjacency(model.particle_count)
 
         self.collision_detection_block_size = collision_detection_block_size
 

@@ -466,6 +466,31 @@ class TestModelMesh(unittest.TestCase):
         shared = edges[(0, 2)]
         self.assertEqual({shared.f0, shared.f1}, {0, 1})
 
+    def test_mesh_adjacency_indices_deprecated_alias(self):
+        tris = [[0, 1, 2], [0, 2, 3]]
+        # `indices` is a deprecated alias for `tri_indices` and builds the same tables.
+        with self.assertWarns(DeprecationWarning):
+            adj = newton.utils.MeshAdjacency(indices=tris)
+        np.testing.assert_array_equal(adj.edge_indices, newton.utils.MeshAdjacency(tri_indices=tris).edge_indices)
+        # Passing both names with conflicting values is rejected.
+        with self.assertRaises(ValueError):
+            newton.utils.MeshAdjacency(tri_indices=tris, indices=[[0, 1, 2]])
+
+    def test_mesh_adjacency_add_edge_deprecated(self):
+        adj = newton.utils.MeshAdjacency()
+        # add_edge is a deprecated incremental shim; it updates edge_indices / edge_tri_indices.
+        with self.assertWarns(DeprecationWarning):
+            adj.add_edge(0, 1, 2, 0)
+        self.assertEqual(adj.edge_indices.shape, (1, 4))
+        self.assertEqual(adj.edge_tri_indices.shape, (1, 2))
+        with self.assertWarns(DeprecationWarning):
+            adj.add_edge(1, 0, 3, 1)  # second adjacent triangle (endpoints reversed)
+        np.testing.assert_array_equal(adj.edge_indices[0], [2, 3, 0, 1])
+        np.testing.assert_array_equal(adj.edge_tri_indices[0], [0, 1])
+        with self.assertWarns(DeprecationWarning):
+            edges = adj.edges
+        self.assertEqual({edges[(0, 1)].f0, edges[(0, 1)].f1}, {0, 1})
+
     def test_expand_edge_parameter(self):
         expand = newton.ModelBuilder._expand_edge_parameter
         # Scalars broadcast to one value per generated edge.
