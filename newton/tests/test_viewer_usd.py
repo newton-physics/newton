@@ -13,7 +13,7 @@ from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.viewer import ViewerUSD
 
 if USD_AVAILABLE:
-    from pxr import UsdGeom
+    from pxr import UsdGeom, UsdShade
 
 
 def _build_box_model() -> newton.Model:
@@ -44,6 +44,12 @@ class TestViewerUSD(unittest.TestCase):
         self.addCleanup(viewer.close)
         self.addCleanup(lambda: setattr(viewer, "output_path", ""))
         return viewer
+
+    def _logged_texture_path(self, viewer, mesh_name: str) -> str:
+        safe = mesh_name.replace("/", "_").lstrip("_")
+        shader = UsdShade.Shader.Get(viewer.stage, f"/root/Materials/mat_{safe}/DiffuseTexture")
+        asset_path = shader.GetInput("file").Get()
+        return asset_path.path if hasattr(asset_path, "path") else str(asset_path)
 
     def test_log_points_keeps_per_point_wp_vec3_colors_for_three_points(self):
         viewer = self._make_viewer()
@@ -100,6 +106,36 @@ class TestViewerUSD(unittest.TestCase):
         prim_after = UsdGeom.Points.Get(viewer2.stage, path).GetPrim()
         self.assertFalse(prim_after.IsValid())
         self.assertTrue(os.path.exists(temp_file.name))
+
+    def test_generated_texture_path_stays_stable_after_clear_model(self):
+        viewer = self._make_viewer()
+        mesh_name = "/textured_mesh"
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        uvs = wp.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=wp.vec2)
+        texture = np.array(
+            [
+                [[255, 0, 0, 255], [0, 255, 0, 255]],
+                [[0, 0, 255, 255], [255, 255, 255, 255]],
+            ],
+            dtype=np.uint8,
+        )
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=texture)
+        first_texture_path = self._logged_texture_path(viewer, mesh_name)
+
+        viewer.clear_model()
+        viewer.begin_frame(0.0)
+        viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=texture)
+        second_texture_path = self._logged_texture_path(viewer, mesh_name)
+
+        self.assertEqual(first_texture_path, second_texture_path)
+        self.assertTrue(os.path.exists(first_texture_path))
+        self.assertFalse([name for name in os.listdir(os.path.dirname(second_texture_path)) if name.endswith(".tmp")])
 
     def test_log_points_treats_wp_float_triplet_as_single_constant_color(self):
         viewer = self._make_viewer()
