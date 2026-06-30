@@ -9900,6 +9900,27 @@ def Xform "World" ()
         self.assertIsNone(tm.density)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_get_tetmesh_warns_on_geometry_authored_moduli(self):
+        """A material modulus authored on the TetMesh geometry instead of the bound material warns,
+        pointing to the deformable material API, instead of being dropped silently."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def TetMesh "Soft" ()
+{
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+    int4[] tetVertexIndices = [(0, 1, 2, 3)]
+    custom float physics:youngsModulus = 300000
+}
+"""
+        )
+        prim = stage.GetPrimAtPath("/Soft")
+        with self.assertWarnsRegex(UserWarning, "authored on the geometry"):
+            usd.get_tetmesh(prim, compat_namespaces=())
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_add_usd_imports_tetmesh(self):
         """Test that add_usd imports TetMesh prims as soft meshes."""
         asset_path = os.path.join(os.path.dirname(__file__), "assets", "tetmesh_with_material.usda")

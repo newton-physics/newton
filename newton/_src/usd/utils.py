@@ -17,7 +17,7 @@ from ..core.types import Axis, AxisType
 from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
 from ..utils.color import color_linear_to_srgb
-from ..utils.import_usd_deformable import _validate_mass_array
+from ..utils.import_usd_deformable import _validate_mass_array, _warn_geometry_authored_material_attrs
 from ..utils.texture import linear_texture_to_srgb, load_texture
 
 logger = logging.getLogger("newton")
@@ -1296,6 +1296,13 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
     k_mu = None
     k_lambda = None
     density = None
+
+    # Volume material moduli (youngsModulus/poissonsRatio/...) belong on the bound material, not the
+    # geometry; warn if authored on the TetMesh prim itself so the misplacement is visible to direct
+    # get_tetmesh() callers too (add_usd's deformable pass warns separately).
+    _warn_geometry_authored_material_attrs(
+        prim, str(prim.GetPath()), "PhysicsVolumeDeformableMaterialAPI", _read_physics_attr
+    )
 
     material_prim = _find_physics_material_prim(prim)
     if compat_namespaces is None:
