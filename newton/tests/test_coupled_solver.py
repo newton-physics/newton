@@ -97,7 +97,6 @@ class _ControlRecordingSolver(SolverBase, CouplingInterface):
         self.joint_f = []
         self.joint_target_q = []
         self.joint_target_qd = []
-        self.joint_target_pos = []
         self.instances.append(self)
 
     def step(self, state_in, state_out, control, contacts, dt):
@@ -108,9 +107,6 @@ class _ControlRecordingSolver(SolverBase, CouplingInterface):
         )
         self.joint_target_qd.append(
             None if control is None or control.joint_target_qd is None else control.joint_target_qd.numpy().copy()
-        )
-        self.joint_target_pos.append(
-            None if control is None or control.joint_target_pos is None else control.joint_target_pos.numpy().copy()
         )
         if state_in.body_q is not None and state_out.body_q is not None:
             wp.copy(state_out.body_q, state_in.body_q)
@@ -685,15 +681,15 @@ class TestSolverCoupledBasic(unittest.TestCase):
         )
         control = model.control()
         control.joint_f.assign(np.array([3.0, 7.0], dtype=np.float32))
-        control.joint_target_pos.assign(np.array([11.0, 13.0], dtype=np.float32))
+        control.joint_target_q.assign(np.array([11.0, 13.0], dtype=np.float32))
 
         coupled.step(model.state(), model.state(), control, contacts=None, dt=1.0 / 60.0)
 
         solver_a, solver_b = _ControlRecordingSolver.instances
         np.testing.assert_array_equal(solver_a.joint_f[0], np.array([3.0], dtype=np.float32))
         np.testing.assert_array_equal(solver_b.joint_f[0], np.array([7.0], dtype=np.float32))
-        np.testing.assert_array_equal(solver_a.joint_target_pos[0], np.array([11.0], dtype=np.float32))
-        np.testing.assert_array_equal(solver_b.joint_target_pos[0], np.array([13.0], dtype=np.float32))
+        np.testing.assert_array_equal(solver_a.joint_target_q[0], np.array([11.0], dtype=np.float32))
+        np.testing.assert_array_equal(solver_b.joint_target_q[0], np.array([13.0], dtype=np.float32))
 
     def test_notify_model_changed_refreshes_view_inertial_masks(self):
         """Runtime parent inertial edits should refresh derived view masks."""
@@ -802,6 +798,42 @@ class TestSolverCoupledBasic(unittest.TestCase):
         particle_collider_shapes = body_shape_ids[(flags[body_shape_ids] & collide_particles) > 0]
         np.testing.assert_array_equal(particle_collider_shapes, np.array([ground_shape], dtype=int))
 
+    def test_particles_keep_global_connectivity_while_rigid_domains_compact(self):
+        """Particle identity mappings must not prevent independent rigid compaction."""
+        builder = newton.ModelBuilder()
+        for mass in (1.0, 2.0, 3.0):
+            body = builder.add_body(mass=mass, inertia=wp.mat33(np.eye(3)))
+            builder.add_shape_sphere(body=body, radius=0.1)
+        for x in (0.0, 1.0):
+            builder.add_particle(pos=(x, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+        builder.add_spring(0, 1, ke=1.0, kd=0.1, control=0.0)
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="mixed",
+                    solver=SolverSemiImplicit,
+                    bodies=[2],
+                    particles=[0],
+                    shapes=[2],
+                    preserve_shape_ids=False,
+                )
+            ],
+        )
+        view = coupled.view("mixed")
+
+        self.assertEqual(view.body_count, 1)
+        self.assertEqual(view.shape_count, 1)
+        np.testing.assert_allclose(view.body_mass.numpy(), model.body_mass.numpy()[2:3])
+        np.testing.assert_array_equal(view.shape_body.numpy(), [0])
+        self.assertEqual(view.body_shapes, {-1: [], 0: [0]})
+
+        self.assertEqual(view.particle_count, model.particle_count)
+        self.assertEqual(view.spring_count, model.spring_count)
+        np.testing.assert_array_equal(view.spring_indices.numpy(), [0, 1])
+
     def test_entry_can_compact_shape_ids_when_requested(self):
         """Entry views should still support compact local shape ids by opt-out."""
         coupled = SolverCoupled(
@@ -834,7 +866,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertEqual(view_b.shape_flags.shape[0], 1)
         np.testing.assert_array_equal(view_b.shape_body.numpy(), np.array([0], dtype=np.int32))
 
-    def test_preserved_global_shape_ids_remap_hidden_shapes_in_prefix_views(self):
+    def test_preserved_global_shape_ids_remap_hidden_shapes_in_mixed_views(self):
         """Preserved shape ids should not leave hidden shapes attached to omitted bodies."""
         builder = newton.ModelBuilder()
         builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -2126,6 +2158,235 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         self.assertEqual(int(view.mujoco.equality_constraint_world_start.numpy()[-1]), 1)
         self.assertNotIn("equality_constraint_count", view.overrides)
         self.assertNotIn("equality_constraint_body1", view.overrides)
+
+    def test_metadata_projects_nonprefix_custom_references(self):
+        builder = newton.ModelBuilder()
+        for frequency in ("linkage", "entity", "link"):
+            builder.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name=frequency, namespace="test"))
+
+        def add_attribute(name, frequency, dtype, *, references=None, assignment=None):
+            builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name=name,
+                    frequency=frequency,
+                    dtype=dtype,
+                    namespace="test",
+                    references=references,
+                    assignment=assignment or newton.Model.AttributeAssignment.MODEL,
+                )
+            )
+
+        add_attribute("linkage_body0", "test:linkage", wp.int32, references="body")
+        add_attribute("linkage_body1", "test:linkage", wp.int32, references="body")
+        add_attribute("linkage_bodies", "test:linkage", wp.vec2i, references="body")
+        add_attribute("linkage_weight", "test:linkage", wp.float32)
+        add_attribute("entity_body", "test:entity", wp.int32, references="body")
+        add_attribute("link_entity", "test:link", wp.int32, references="test:entity")
+        add_attribute(
+            "state_seed",
+            newton.Model.AttributeFrequency.BODY,
+            wp.float32,
+            assignment=newton.Model.AttributeAssignment.STATE,
+        )
+
+        for body in range(4):
+            builder.add_body(
+                mass=1.0,
+                inertia=wp.mat33(np.eye(3)),
+                custom_attributes={"test:state_seed": float(10 + body)},
+            )
+            builder.add_custom_values(**{"test:entity_body": body})
+            builder.add_custom_values(**{"test:link_entity": body})
+        builder.add_custom_values(
+            **{
+                "test:linkage_body0": 0,
+                "test:linkage_body1": 2,
+                "test:linkage_bodies": wp.vec2i(0, 2),
+                "test:linkage_weight": 2.0,
+            }
+        )
+        builder.add_custom_values(
+            **{
+                "test:linkage_body0": 1,
+                "test:linkage_body1": 3,
+                "test:linkage_bodies": wp.vec2i(1, 3),
+                "test:linkage_weight": 4.0,
+            }
+        )
+        builder.add_custom_values(
+            **{
+                "test:linkage_body0": -1,
+                "test:linkage_body1": 1,
+                "test:linkage_bodies": wp.vec2i(-1, 1),
+                "test:linkage_weight": 6.0,
+            }
+        )
+        model = builder.finalize(device="cpu")
+        model.test.namespace_marker = "parent"
+
+        self.assertEqual(
+            model._attribute_reference_frequency("test:linkage_body0"),
+            newton.Model.AttributeFrequency.BODY,
+        )
+        self.assertEqual(model._attribute_reference_frequency("test:link_entity"), "test:entity")
+        self.assertEqual(
+            model.attribute_assignment.get("test:linkage_body0", newton.Model.AttributeAssignment.MODEL),
+            newton.Model.AttributeAssignment.MODEL,
+        )
+        self.assertFalse(hasattr(model, "_attribute_descriptors"))
+        for name, frequency in (
+            ("body_label", newton.Model.AttributeFrequency.BODY),
+            ("shape_color", newton.Model.AttributeFrequency.SHAPE),
+            ("_shape_sdf_index", newton.Model.AttributeFrequency.SHAPE),
+            ("tri_materials", newton.Model.AttributeFrequency.TRIANGLE),
+        ):
+            with self.subTest(inferred_attribute=name):
+                self.assertEqual(model._resolve_attribute_frequency(name), frequency)
+        self.assertEqual(
+            model._resolve_attribute_frequency("joint_q"),
+            newton.Model.AttributeFrequency.JOINT_COORD,
+        )
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=SolverSemiImplicit, bodies=[0, 2]),
+                SolverCoupled.Entry(name="dst", solver=SolverSemiImplicit, bodies=[1, 3]),
+            ],
+        )
+        view = coupled.view("dst")
+
+        self.assertEqual(view.test.linkage_count, 2)
+        self.assertEqual(view.test.entity_count, 2)
+        self.assertEqual(view.test.link_count, 2)
+        np.testing.assert_array_equal(view.test.linkage_body0.numpy(), [0, -1])
+        np.testing.assert_array_equal(view.test.linkage_body1.numpy(), [1, 0])
+        np.testing.assert_array_equal(view.test.linkage_bodies.numpy(), [[0, 1], [-1, 0]])
+        np.testing.assert_array_equal(view.test.entity_body.numpy(), [0, 1])
+        np.testing.assert_array_equal(view.test.link_entity.numpy(), [0, 1])
+        np.testing.assert_allclose(view.test.linkage_weight.numpy(), [4.0, 6.0])
+
+        state = view.state()
+        np.testing.assert_allclose(state.test.state_seed.numpy(), [11.0, 13.0])
+
+        view.test.namespace_marker = "view"
+        view.test.linkage_weight.fill_(7.0)
+        self.assertEqual(model.test.namespace_marker, "parent")
+        np.testing.assert_allclose(model.test.linkage_weight.numpy(), [2.0, 4.0, 6.0])
+
+    def test_compaction_projects_late_registered_attribute(self):
+        builder = newton.ModelBuilder()
+        for _ in range(2):
+            builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        model = builder.finalize(device="cpu")
+        model.extra_values = wp.array([1.0, 2.0], dtype=wp.float32, device="cpu")
+        model.attribute_frequency["extra_values"] = newton.Model.AttributeFrequency.BODY
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=SolverSemiImplicit, bodies=[0]),
+                SolverCoupled.Entry(name="dst", solver=SolverSemiImplicit, bodies=[1]),
+            ],
+        )
+
+        np.testing.assert_allclose(coupled.view("dst").extra_values.numpy(), [2.0])
+
+    def test_compaction_rejects_misaligned_inferred_attribute(self):
+        builder = newton.ModelBuilder()
+        for _ in range(2):
+            builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        model = builder.finalize(device="cpu")
+        model.body_misaligned = wp.array([1.0, 2.0, 3.0], dtype=wp.float32, device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "body_misaligned.*expected 2 values"):
+            SolverCoupled(
+                model=model,
+                entries=[
+                    SolverCoupled.Entry(name="src", solver=SolverSemiImplicit, bodies=[0]),
+                    SolverCoupled.Entry(name="dst", solver=SolverSemiImplicit, bodies=[1]),
+                ],
+            )
+
+    def test_compaction_validates_custom_reference_storage(self):
+        def build_model():
+            builder = newton.ModelBuilder()
+            builder.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name="row", namespace="test"))
+            builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name="row_body",
+                    frequency="test:row",
+                    dtype=wp.int32,
+                    namespace="test",
+                    references="body",
+                )
+            )
+            for body in range(2):
+                builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                builder.add_custom_values(**{"test:row_body": body})
+            return builder.finalize(device="cpu")
+
+        for value, message in (
+            (None, "registered value is missing"),
+            (wp.array([0], dtype=wp.int32, device="cpu"), "expected 2 rows"),
+        ):
+            with self.subTest(message=message):
+                model = build_model()
+                model.test.row_body = value
+                with self.assertRaisesRegex(ValueError, message):
+                    SolverCoupled(
+                        model=model,
+                        entries=[
+                            SolverCoupled.Entry(name="src", solver=SolverSemiImplicit, bodies=[0]),
+                            SolverCoupled.Entry(name="dst", solver=SolverSemiImplicit, bodies=[1]),
+                        ],
+                    )
+
+    def test_metadata_projects_custom_rows_across_worlds(self):
+        sub_builder = newton.ModelBuilder()
+        sub_builder.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name="node", namespace="test"))
+        for name, references in (("node_body", "body"), ("environment", "world")):
+            sub_builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name=name,
+                    frequency="test:node",
+                    dtype=wp.int32,
+                    namespace="test",
+                    references=references,
+                )
+            )
+        sub_builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="node_value",
+                frequency="test:node",
+                dtype=wp.float32,
+                namespace="test",
+            )
+        )
+        for body in range(2):
+            sub_builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            sub_builder.add_custom_values(
+                **{"test:node_body": body, "test:environment": -1, "test:node_value": float(body)}
+            )
+
+        builder = newton.ModelBuilder()
+        builder.add_world(sub_builder)
+        builder.add_world(sub_builder)
+        model = builder.finalize(device="cpu")
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=SolverSemiImplicit, bodies=[0, 2]),
+                SolverCoupled.Entry(name="dst", solver=SolverSemiImplicit, bodies=[1, 3]),
+            ],
+        )
+        view = coupled.view("dst")
+
+        self.assertEqual(view.test.node_count, 2)
+        np.testing.assert_array_equal(view.test.node_body.numpy(), [0, 1])
+        np.testing.assert_array_equal(view.test.environment.numpy(), [0, 1])
+        np.testing.assert_allclose(view.test.node_value.numpy(), [1.0, 1.0])
+        np.testing.assert_array_equal(view.test.environment_start.numpy(), [0, 1, 2, 2])
 
 
 if __name__ == "__main__":

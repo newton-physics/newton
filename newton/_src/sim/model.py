@@ -9,7 +9,7 @@ import logging
 import warnings
 from collections.abc import Callable
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 import warp as wp
@@ -121,6 +121,52 @@ class Model:
         """Attribute frequency follows the number of mimic constraints (see :attr:`~newton.Model.constraint_mimic_count`)."""
         WORLD = 15
         """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.world_count`)."""
+
+    _CORE_ATTRIBUTE_REFERENCES: ClassVar[dict[str, AttributeFrequency]] = {
+        "particle_world": AttributeFrequency.WORLD,
+        "body_world": AttributeFrequency.WORLD,
+        "joint_parent": AttributeFrequency.BODY,
+        "joint_child": AttributeFrequency.BODY,
+        "joint_ancestor": AttributeFrequency.JOINT,
+        "joint_articulation": AttributeFrequency.ARTICULATION,
+        "joint_world": AttributeFrequency.WORLD,
+        "shape_body": AttributeFrequency.BODY,
+        "shape_world": AttributeFrequency.WORLD,
+        "articulation_world": AttributeFrequency.WORLD,
+        "constraint_mimic_joint0": AttributeFrequency.JOINT,
+        "constraint_mimic_joint1": AttributeFrequency.JOINT,
+        "constraint_mimic_world": AttributeFrequency.WORLD,
+        "spring_indices": AttributeFrequency.PARTICLE,
+        "tri_indices": AttributeFrequency.PARTICLE,
+        "edge_indices": AttributeFrequency.PARTICLE,
+        "tet_indices": AttributeFrequency.PARTICLE,
+    }
+
+    _ATTRIBUTE_ROW_WIDTHS: ClassVar[dict[str, int]] = {
+        "spring_indices": 2,
+    }
+
+    _ATTRIBUTES_REQUIRING_EMPTY_SENTINEL: ClassVar[frozenset[str]] = frozenset(
+        {"shape_heightfield_index", "shape_edge_range"}
+    )
+
+    _ATTRIBUTE_FREQUENCY_COUNT_ATTRS: ClassVar[dict[AttributeFrequency, str]] = {
+        AttributeFrequency.JOINT: "joint_count",
+        AttributeFrequency.JOINT_DOF: "joint_dof_count",
+        AttributeFrequency.JOINT_COORD: "joint_coord_count",
+        AttributeFrequency.JOINT_CONSTRAINT: "joint_constraint_count",
+        AttributeFrequency.BODY: "body_count",
+        AttributeFrequency.SHAPE: "shape_count",
+        AttributeFrequency.ARTICULATION: "articulation_count",
+        AttributeFrequency.EQUALITY_CONSTRAINT: "equality_constraint_count",
+        AttributeFrequency.PARTICLE: "particle_count",
+        AttributeFrequency.EDGE: "edge_count",
+        AttributeFrequency.TRIANGLE: "tri_count",
+        AttributeFrequency.TETRAHEDRON: "tet_count",
+        AttributeFrequency.SPRING: "spring_count",
+        AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
+        AttributeFrequency.WORLD: "world_count",
+    }
 
     class AttributeNamespace:
         """
@@ -792,6 +838,8 @@ class Model:
         """Assignment for custom attributes using Model.AttributeAssignment enum values.
         If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment=Model.AttributeAssignment.MODEL)."""
 
+        self._custom_attribute_references: dict[str, Model.AttributeFrequency | str] = {}
+
         self._requested_state_attributes: set[str] = set()
         self._collision_pipeline: CollisionPipeline | None = None
         # cached collision pipeline
@@ -885,6 +933,76 @@ class Model:
 
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
+
+    @staticmethod
+    def _infer_attribute_frequency(name: str) -> Model.AttributeFrequency | None:
+        """Infer an unambiguous core frequency from an attribute name prefix."""
+        prefix_frequencies = (
+            ("_shape_", Model.AttributeFrequency.SHAPE),
+            ("constraint_mimic_", Model.AttributeFrequency.CONSTRAINT_MIMIC),
+            ("articulation_", Model.AttributeFrequency.ARTICULATION),
+            ("particle_", Model.AttributeFrequency.PARTICLE),
+            ("body_", Model.AttributeFrequency.BODY),
+            ("shape_", Model.AttributeFrequency.SHAPE),
+            ("joint_", Model.AttributeFrequency.JOINT),
+            ("spring_", Model.AttributeFrequency.SPRING),
+            ("edge_", Model.AttributeFrequency.EDGE),
+            ("tri_", Model.AttributeFrequency.TRIANGLE),
+            ("tet_", Model.AttributeFrequency.TETRAHEDRON),
+        )
+        for prefix, frequency in prefix_frequencies:
+            if name.startswith(prefix):
+                return frequency
+        return None
+
+    def _resolve_attribute_frequency(self, name: str) -> Model.AttributeFrequency | str | None:
+        """Return explicit or conventionally inferred frequency metadata."""
+        frequency = self.attribute_frequency.get(name)
+        if frequency is not None:
+            return frequency
+        return self._infer_attribute_frequency(name)
+
+    def _attribute_reference_frequency(self, name: str) -> Model.AttributeFrequency | str | None:
+        """Return the entity domain indexed by an attribute's values."""
+        reference = self._custom_attribute_references.get(name)
+        if reference is not None:
+            return reference
+        return self._CORE_ATTRIBUTE_REFERENCES.get(name)
+
+    def _attribute_row_width(self, name: str) -> int:
+        """Return the number of flattened values stored per frequency row."""
+        return self._ATTRIBUTE_ROW_WIDTHS.get(name, 1)
+
+    def _attribute_requires_empty_sentinel(self, name: str) -> bool:
+        """Return whether an empty attribute retains one sentinel value."""
+        return name in self._ATTRIBUTES_REQUIRING_EMPTY_SENTINEL
+
+    def _normalize_attribute_reference(self, references: str | None) -> Model.AttributeFrequency | str | None:
+        """Return the frequency domain addressed by a builder reference declaration."""
+        if references is None:
+            return None
+        built_in = {
+            "body": Model.AttributeFrequency.BODY,
+            "shape": Model.AttributeFrequency.SHAPE,
+            "joint": Model.AttributeFrequency.JOINT,
+            "joint_dof": Model.AttributeFrequency.JOINT_DOF,
+            "joint_coord": Model.AttributeFrequency.JOINT_COORD,
+            "joint_constraint": Model.AttributeFrequency.JOINT_CONSTRAINT,
+            "articulation": Model.AttributeFrequency.ARTICULATION,
+            "constraint_mimic": Model.AttributeFrequency.CONSTRAINT_MIMIC,
+            "particle": Model.AttributeFrequency.PARTICLE,
+            "edge": Model.AttributeFrequency.EDGE,
+            "triangle": Model.AttributeFrequency.TRIANGLE,
+            "tetrahedron": Model.AttributeFrequency.TETRAHEDRON,
+            "spring": Model.AttributeFrequency.SPRING,
+            "world": Model.AttributeFrequency.WORLD,
+        }
+        frequency = built_in.get(references)
+        if frequency is not None:
+            return frequency
+        if references in self.custom_frequency_counts:
+            return references
+        raise ValueError(f"Unknown custom attribute reference frequency {references!r}")
 
     # Deprecated equality-constraint arrays (removal in a future release).
     # The legacy top-level ``Model.equality_constraint_*`` arrays are now read-only forwards to
@@ -1653,23 +1771,7 @@ class Model:
 
         if frequency == Model.AttributeFrequency.ONCE:
             return 1
-        count_attr = {
-            Model.AttributeFrequency.JOINT: "joint_count",
-            Model.AttributeFrequency.JOINT_DOF: "joint_dof_count",
-            Model.AttributeFrequency.JOINT_COORD: "joint_coord_count",
-            Model.AttributeFrequency.JOINT_CONSTRAINT: "joint_constraint_count",
-            Model.AttributeFrequency.BODY: "body_count",
-            Model.AttributeFrequency.SHAPE: "shape_count",
-            Model.AttributeFrequency.ARTICULATION: "articulation_count",
-            Model.AttributeFrequency.EQUALITY_CONSTRAINT: "equality_constraint_count",
-            Model.AttributeFrequency.PARTICLE: "particle_count",
-            Model.AttributeFrequency.EDGE: "edge_count",
-            Model.AttributeFrequency.TRIANGLE: "tri_count",
-            Model.AttributeFrequency.TETRAHEDRON: "tet_count",
-            Model.AttributeFrequency.SPRING: "spring_count",
-            Model.AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
-            Model.AttributeFrequency.WORLD: "world_count",
-        }.get(frequency)
+        count_attr = Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.get(frequency)
         if count_attr is None:
             raise ValueError(f"Unsupported attribute frequency: {frequency!r}")
         return int(getattr(self, count_attr))
@@ -1914,6 +2016,7 @@ class Model:
         frequency: Model.AttributeFrequency | str,
         assignment: Model.AttributeAssignment | None = None,
         namespace: str | None = None,
+        references: str | None = None,
     ):
         """
         Add a custom attribute to the model.
@@ -1929,6 +2032,8 @@ class Model:
             namespace: Namespace for the attribute.
                 If None, attribute is added directly to the assignment object (e.g., model.attr_name).
                 If specified, attribute is added to a namespace object (e.g., model.namespace_name.attr_name).
+            references: Entity or custom-frequency domain indexed by the
+                attribute values, or ``None`` when values are not references.
 
         Raises:
             AttributeError: If the attribute already exists or is on the wrong device.
@@ -1958,6 +2063,17 @@ class Model:
         self.attribute_frequency[full_name] = frequency
         if assignment is not None:
             self.attribute_assignment[full_name] = assignment
+        reference_frequency = self._normalize_attribute_reference(references)
+        if reference_frequency is not None and isinstance(attrib, wp.array):
+            integral_dtypes = (wp.int8, wp.int16, wp.int32, wp.int64, wp.uint8, wp.uint16, wp.uint32, wp.uint64)
+            scalar_dtype = getattr(attrib.dtype, "_wp_scalar_type_", attrib.dtype)
+            if scalar_dtype not in integral_dtypes or attrib.ndim != 1:
+                raise ValueError(
+                    f"Reference attribute '{full_name}' must be a 1-D array with integral components, "
+                    f"got dtype={attrib.dtype}, ndim={attrib.ndim}"
+                )
+        if reference_frequency is not None:
+            self._custom_attribute_references[full_name] = reference_frequency
 
     def get_attribute_frequency(self, name: str) -> Model.AttributeFrequency | str:
         """

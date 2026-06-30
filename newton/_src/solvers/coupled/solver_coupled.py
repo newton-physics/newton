@@ -19,7 +19,7 @@ from .interface import (
     CouplingEndpointKind,
     CouplingInterface,
 )
-from .model_view import ModelView
+from .model_view import ModelView, _AttributeNamespaceView
 
 if TYPE_CHECKING:
     from ...sim import Contacts, Control, Model, State
@@ -53,15 +53,61 @@ class _EntryIndexMaps:
 
 
 @dataclass(frozen=True)
-class _CompactIndexLists:
-    body_local_to_global: list[int]
-    joint_local_to_global: list[int]
-    joint_coord_local_to_global: list[int]
-    joint_dof_local_to_global: list[int]
-    shape_local_to_global: list[int]
-    articulation_local_to_global: list[int]
-    equality_constraint_local_to_global: list[int]
-    constraint_mimic_local_to_global: list[int]
+class _CompactIndexProjection:
+    local_to_global: list[int]
+    global_to_local: list[int]
+
+
+@dataclass(frozen=True)
+class _CompactIndexMaps:
+    projections: dict[Model.AttributeFrequency | str, _CompactIndexProjection]
+
+    def order(self, frequency: Model.AttributeFrequency | str) -> list[int]:
+        return self.projections[frequency].local_to_global
+
+
+@dataclass(frozen=True)
+class _AttributeProjection:
+    """Coupled-view projection rule for one model attribute."""
+
+    name: str
+    frequency: Model.AttributeFrequency | str
+    references: Model.AttributeFrequency | str | None
+    row_width: int
+    requires_empty_sentinel: bool
+
+
+_DERIVED_PROJECTION_ATTRIBUTES = frozenset(
+    {
+        "joint_ancestor",
+        "shape_body",
+        "joint_q_start",
+        "joint_qd_start",
+        "articulation_start",
+        "articulation_end",
+        "particle_world_start",
+        "body_world_start",
+        "shape_world_start",
+        "joint_world_start",
+        "joint_dof_world_start",
+        "joint_coord_world_start",
+        "joint_constraint_world_start",
+        "articulation_world_start",
+        "particle_color_groups",
+        "body_color_groups",
+        "body_shapes",
+        "shape_collision_filter_pairs",
+        "shape_contact_pairs",
+    }
+)
+
+
+def _compact_index_projection(local_to_global: Sequence[int], source_count: int) -> _CompactIndexProjection:
+    order = [int(index) for index in local_to_global]
+    inverse = [-1] * int(source_count)
+    for local_id, global_id in enumerate(order):
+        inverse[global_id] = local_id
+    return _CompactIndexProjection(order, inverse)
 
 
 def _coupling_endpoint_arrays(
@@ -191,6 +237,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
     ) -> None:
         super().__init__(model)
 
+        self._attribute_projections = self._build_attribute_projections()
         self._entry_configs = list(entries)
         self._coupling = coupling
         self._entries: dict[str, SolverEntry] = {}
@@ -216,6 +263,37 @@ class SolverCoupled(SolverBase, CouplingInterface):
     # ------------------------------------------------------------------
     # Construction helpers
     # ------------------------------------------------------------------
+
+    def _build_attribute_projections(self) -> tuple[_AttributeProjection, ...]:
+        """Build coupled-only projection rules from semantic model metadata."""
+        model = self.model
+        projections = [
+            _AttributeProjection(
+                name,
+                frequency,
+                model._attribute_reference_frequency(name),
+                model._attribute_row_width(name),
+                model._attribute_requires_empty_sentinel(name),
+            )
+            for name, frequency in model.attribute_frequency.items()
+        ]
+        explicit_names = set(model.attribute_frequency)
+        for name in model.__dict__:
+            if name in explicit_names:
+                continue
+            frequency = model._infer_attribute_frequency(name)
+            if frequency is None:
+                continue
+            projections.append(
+                _AttributeProjection(
+                    name,
+                    frequency,
+                    model._attribute_reference_frequency(name),
+                    model._attribute_row_width(name),
+                    model._attribute_requires_empty_sentinel(name),
+                )
+            )
+        return tuple(projections)
 
     def _validate_entry_names(self) -> None:
         names: set[str] = set()
@@ -311,14 +389,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 view, cfg, proxy_body_keep, proxy_particle_keep, proxy_joint_keep
             )
             if index_lists is None:
-                self._apply_entry_prefix_limits(
-                    view,
-                    cfg,
-                    proxy_body_keep,
-                    proxy_particle_keep,
-                    proxy_joint_keep,
-                    preserve_shape_ids=bool(cfg.preserve_shape_ids),
-                )
+                visible_bodies = {int(i) for i in cfg.bodies} | {int(i) for i in proxy_body_keep}
+                self._apply_global_shape_metadata(view, cfg, visible_bodies)
             self._filter_shape_contact_pairs(view)
 
             index_maps = self._build_entry_index_maps(view, index_lists)
@@ -465,101 +537,29 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.shape_contact_pairs = wp.array(filtered, dtype=wp.vec2i, device=self.model.device)
         view.shape_contact_pair_count = len(keep)
 
-    @staticmethod
-    def _prefix_length(indices: set[int]) -> int | None:
-        """Return the dense prefix length represented by *indices*, or None."""
-        if not indices:
-            return 0
-        prefix_len = max(indices) + 1
-        return prefix_len if indices == set(range(prefix_len)) else None
-
-    def _apply_entry_prefix_limits(
-        self,
-        view: ModelView,
-        cfg: SolverCoupled.Entry,
-        proxy_body_keep: set[int],
-        proxy_particle_keep: set[int],
-        proxy_joint_keep: set[int],
-        *,
-        preserve_shape_ids: bool = False,
-    ) -> None:
-        """Expose compact body/joint view counts when visible entities form a prefix."""
-        visible_bodies = {int(i) for i in cfg.bodies} | {int(i) for i in proxy_body_keep}
-        visible_particles = {int(i) for i in cfg.particles} | {int(i) for i in proxy_particle_keep}
-        visible_joints = {int(i) for i in cfg.joints} | {int(i) for i in proxy_joint_keep}
-
-        self._apply_body_prefix_limit(view, visible_bodies)
-        self._apply_particle_prefix_limit(view, visible_particles)
-        self._apply_joint_prefix_limit(view, visible_joints)
-        if preserve_shape_ids:
-            view.shape_count = self.model.shape_count
-            self._apply_preserved_shape_metadata_without_compaction(view, cfg, visible_bodies)
-        else:
-            self._apply_shape_prefix_limit(view, cfg, visible_bodies)
-
-    def _apply_body_prefix_limit(self, view: ModelView, visible_bodies: set[int]) -> None:
-        body_prefix = self._prefix_length(visible_bodies)
-        if body_prefix is not None and body_prefix < self.model.body_count:
-            view.body_count = body_prefix
-
-    def _apply_particle_prefix_limit(self, view: ModelView, visible_particles: set[int]) -> None:
-        # Keep particle arrays globally indexed for now. Particle contacts and
-        # deformable element connectivity still commonly carry global particle
-        # ids. The pure-rigid case is the exception: expose zero particles and
-        # zero deformable element counts so rigid-only solvers never see stale
-        # particle metadata.
-        if visible_particles or not self.model.particle_count:
-            return
-        view.particle_count = 0
-        view.spring_count = 0
-        view.tri_count = 0
-        view.edge_count = 0
-        view.tet_count = 0
-        view.muscle_count = 0
-
-    def _apply_joint_prefix_limit(self, view: ModelView, visible_joints: set[int]) -> None:
-        joint_prefix = self._prefix_length(visible_joints)
-        if joint_prefix is None or joint_prefix >= self.model.joint_count:
-            return
-        articulation_prefix = self._articulation_prefix_count(joint_prefix)
-        if articulation_prefix is None:
-            return
-        view.joint_count = joint_prefix
-        view.joint_coord_count = int(self.model.joint_q_start.numpy()[joint_prefix])
-        view.joint_dof_count = int(self.model.joint_qd_start.numpy()[joint_prefix])
-        view.articulation_count = articulation_prefix
-
-    def _apply_shape_prefix_limit(self, view: ModelView, cfg: SolverCoupled.Entry, visible_bodies: set[int]) -> None:
-        visible_shapes = self._entry_visible_shapes(cfg, visible_bodies)
-        if not visible_shapes:
-            return
-        shape_prefix = self._prefix_length(visible_shapes)
-        if shape_prefix is not None and shape_prefix < self.model.shape_count:
-            view.shape_count = shape_prefix
-
-    def _apply_preserved_shape_metadata_without_compaction(
+    def _apply_global_shape_metadata(
         self,
         view: ModelView,
         cfg: SolverCoupled.Entry,
         visible_bodies: set[int],
     ) -> None:
+        """Keep global shape ids while detaching shapes hidden from an entry."""
         model = self.model
         visible_shapes = self._entry_visible_shapes(cfg, visible_bodies)
-        body_count = int(getattr(view, "body_count", model.body_count))
 
         shape_body = getattr(view, "shape_body", None)
         if shape_body is not None:
             shape_body_np = shape_body.numpy().copy()
-            for shape_id, body_id in enumerate(shape_body_np):
-                if shape_id not in visible_shapes or int(body_id) >= body_count:
+            for shape_id in range(len(shape_body_np)):
+                if shape_id not in visible_shapes:
                     shape_body_np[shape_id] = -1
             view.shape_body = wp.array(shape_body_np, dtype=wp.int32, device=model.device)
 
-        body_global_to_local = {body_id: body_id for body_id in range(body_count)}
+        body_global_to_local = {body_id: body_id for body_id in range(model.body_count)}
         view.body_shapes = self._global_shape_body_shapes(model.body_shapes, body_global_to_local, visible_shapes)
         view.shape_collision_filter_pairs = set(model.shape_collision_filter_pairs)
 
-    def _build_entry_index_maps(self, view: ModelView, index_lists: _CompactIndexLists | None) -> _EntryIndexMaps:
+    def _build_entry_index_maps(self, view: ModelView, index_lists: _CompactIndexMaps | None) -> _EntryIndexMaps:
         """Build local/global id maps for a completed entry view."""
         model = self.model
         device = model.device
@@ -568,23 +568,36 @@ class SolverCoupled(SolverBase, CouplingInterface):
             particle_local_to_global = _identity_index_map(int(view.particle_count), device)
             joint_coord_local_to_global = _identity_index_map(int(view.joint_coord_count), device)
             joint_dof_local_to_global = _identity_index_map(int(view.joint_dof_count), device)
+            body_global_to_local = _inverse_index_map(body_local_to_global, model.body_count, device)
+            particle_global_to_local = _inverse_index_map(particle_local_to_global, model.particle_count, device)
+            joint_coord_global_to_local = _inverse_index_map(
+                joint_coord_local_to_global, model.joint_coord_count, device
+            )
+            joint_dof_global_to_local = _inverse_index_map(joint_dof_local_to_global, model.joint_dof_count, device)
         else:
-            body_local_to_global = wp.array(index_lists.body_local_to_global, dtype=int, device=device)
-            particle_local_to_global = _identity_index_map(int(view.particle_count), device)
-            joint_coord_local_to_global = wp.array(index_lists.joint_coord_local_to_global, dtype=int, device=device)
-            joint_dof_local_to_global = wp.array(index_lists.joint_dof_local_to_global, dtype=int, device=device)
+            frequency = model.AttributeFrequency
+            body = index_lists.projections[frequency.BODY]
+            particle = index_lists.projections[frequency.PARTICLE]
+            joint_coord = index_lists.projections[frequency.JOINT_COORD]
+            joint_dof = index_lists.projections[frequency.JOINT_DOF]
+            body_local_to_global = wp.array(body.local_to_global, dtype=int, device=device)
+            body_global_to_local = wp.array(body.global_to_local, dtype=int, device=device)
+            particle_local_to_global = wp.array(particle.local_to_global, dtype=int, device=device)
+            particle_global_to_local = wp.array(particle.global_to_local, dtype=int, device=device)
+            joint_coord_local_to_global = wp.array(joint_coord.local_to_global, dtype=int, device=device)
+            joint_coord_global_to_local = wp.array(joint_coord.global_to_local, dtype=int, device=device)
+            joint_dof_local_to_global = wp.array(joint_dof.local_to_global, dtype=int, device=device)
+            joint_dof_global_to_local = wp.array(joint_dof.global_to_local, dtype=int, device=device)
 
         return _EntryIndexMaps(
             body_local_to_global=body_local_to_global,
-            body_global_to_local=_inverse_index_map(body_local_to_global, model.body_count, device),
+            body_global_to_local=body_global_to_local,
             particle_local_to_global=particle_local_to_global,
-            particle_global_to_local=_inverse_index_map(particle_local_to_global, model.particle_count, device),
+            particle_global_to_local=particle_global_to_local,
             joint_coord_local_to_global=joint_coord_local_to_global,
-            joint_coord_global_to_local=_inverse_index_map(
-                joint_coord_local_to_global, model.joint_coord_count, device
-            ),
+            joint_coord_global_to_local=joint_coord_global_to_local,
             joint_dof_local_to_global=joint_dof_local_to_global,
-            joint_dof_global_to_local=_inverse_index_map(joint_dof_local_to_global, model.joint_dof_count, device),
+            joint_dof_global_to_local=joint_dof_global_to_local,
         )
 
     def _compact_entry_view_if_needed(
@@ -594,18 +607,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
         proxy_body_keep: set[int],
         proxy_particle_keep: set[int],
         proxy_joint_keep: set[int],
-    ) -> _CompactIndexLists | None:
-        """Compact rigid entry views while preserving global mappings."""
+    ) -> _CompactIndexMaps | None:
+        """Build a compact entry view while preserving required global domains."""
         model = self.model
         visible_bodies = {int(i) for i in cfg.bodies} | {int(i) for i in proxy_body_keep}
         visible_particles = {int(i) for i in cfg.particles} | {int(i) for i in proxy_particle_keep}
         visible_joints = {int(i) for i in cfg.joints} | {int(i) for i in proxy_joint_keep}
         visible_shapes = self._entry_visible_shapes(cfg, visible_bodies)
-
-        if visible_particles:
-            return None
-        if not visible_bodies and not visible_joints and not visible_shapes:
-            return None
 
         body_order = self._ordered_world_subset(
             visible_bodies,
@@ -632,7 +640,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if body_order is None or joint_order is None or shape_order is None:
             return None
 
-        compact = self._compact_index_lists(view, body_order, joint_order, shape_order)
+        # Particle connectivity remains globally indexed for now. Keeping its
+        # projection as identity does not prevent independent rigid compaction.
+        particle_order = list(range(model.particle_count)) if visible_particles else []
+        compact = self._compact_index_lists(view, body_order, joint_order, shape_order, particle_order)
         if compact is None:
             return None
 
@@ -723,11 +734,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
         body_order: list[int],
         joint_order: list[int],
         shape_order: list[int],
-    ) -> _CompactIndexLists | None:
+        particle_order: list[int],
+    ) -> _CompactIndexMaps | None:
         model = self.model
         body_set = set(body_order)
         joint_set = set(joint_order)
-        body_global_to_local = {global_id: local_id for local_id, global_id in enumerate(body_order)}
         joint_global_to_local = {global_id: local_id for local_id, global_id in enumerate(joint_order)}
 
         joint_parent = model.joint_parent.numpy() if model.joint_count else np.empty(0, dtype=np.int32)
@@ -748,12 +759,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if articulation_order is None:
             return None
 
-        equality_order = self._compact_equality_constraint_order(
-            body_global_to_local,
-            joint_global_to_local,
-        )
-        if equality_order is None:
-            return None
         mimic_order = self._compact_mimic_constraint_order(joint_global_to_local)
         if mimic_order is None:
             return None
@@ -766,15 +771,41 @@ class SolverCoupled(SolverBase, CouplingInterface):
             joint_coord_order.extend(range(int(joint_q_start[joint]), int(joint_q_start[joint + 1])))
             joint_dof_order.extend(range(int(joint_qd_start[joint]), int(joint_qd_start[joint + 1])))
 
-        return _CompactIndexLists(
-            body_local_to_global=body_order,
-            joint_local_to_global=joint_order,
-            joint_coord_local_to_global=joint_coord_order,
-            joint_dof_local_to_global=joint_dof_order,
-            shape_local_to_global=shape_order,
-            articulation_local_to_global=articulation_order,
-            equality_constraint_local_to_global=equality_order,
-            constraint_mimic_local_to_global=mimic_order,
+        keep_deformables = bool(particle_order)
+        built_in_frequency_orders = {
+            model.AttributeFrequency.ONCE: [0],
+            model.AttributeFrequency.BODY: body_order,
+            model.AttributeFrequency.JOINT: joint_order,
+            model.AttributeFrequency.JOINT_COORD: joint_coord_order,
+            model.AttributeFrequency.JOINT_DOF: joint_dof_order,
+            model.AttributeFrequency.JOINT_CONSTRAINT: [],
+            model.AttributeFrequency.SHAPE: shape_order,
+            model.AttributeFrequency.ARTICULATION: articulation_order,
+            model.AttributeFrequency.CONSTRAINT_MIMIC: mimic_order,
+            model.AttributeFrequency.PARTICLE: particle_order,
+            model.AttributeFrequency.EDGE: list(range(model.edge_count)) if keep_deformables else [],
+            model.AttributeFrequency.TRIANGLE: list(range(model.tri_count)) if keep_deformables else [],
+            model.AttributeFrequency.TETRAHEDRON: list(range(model.tet_count)) if keep_deformables else [],
+            model.AttributeFrequency.SPRING: list(range(model.spring_count)) if keep_deformables else [],
+            model.AttributeFrequency.WORLD: list(range(model.world_count)),
+        }
+        custom_frequency_orders = self._compact_custom_frequency_orders(built_in_frequency_orders)
+        if custom_frequency_orders is None:
+            return None
+
+        frequency_orders = {
+            frequency: (order, model._attribute_frequency_count(frequency))
+            for frequency, order in built_in_frequency_orders.items()
+        }
+        frequency_orders.update(
+            (frequency, (order, int(model.custom_frequency_counts[frequency])))
+            for frequency, order in custom_frequency_orders.items()
+        )
+        return _CompactIndexMaps(
+            {
+                frequency: _compact_index_projection(order, source_count)
+                for frequency, (order, source_count) in frequency_orders.items()
+            }
         )
 
     def _compact_articulation_order(
@@ -809,68 +840,116 @@ class SolverCoupled(SolverBase, CouplingInterface):
             "articulations",
         )
 
-    def _compact_equality_constraint_order(
+    def _compact_custom_frequency_orders(
         self,
-        body_global_to_local: dict[int, int],
-        joint_global_to_local: dict[int, int],
-    ) -> list[int] | None:
-        count = 0
-        body1 = body2 = joint1 = joint2 = None
-        world = world_start = None
+        built_in_orders: dict[Model.AttributeFrequency, Sequence[int]],
+    ) -> dict[str, list[int]] | None:
+        """Select custom-frequency rows from declared reference metadata."""
+        model = self.model
+        selected: dict[Model.AttributeFrequency | str, set[int]] = {
+            frequency: {int(index) for index in order} for frequency, order in built_in_orders.items()
+        }
+        for frequency, count in model.custom_frequency_counts.items():
+            selected[frequency] = set(range(int(count)))
 
-        for full_name, frequency in self.model.attribute_frequency.items():
-            if ":" not in full_name or not isinstance(frequency, str):
-                continue
-            if frequency.rsplit(":", 1)[-1] != "equality_constraint":
-                continue
+        projections_by_frequency: dict[str, list[_AttributeProjection]] = {}
+        for attribute in self._attribute_projections:
+            if isinstance(attribute.frequency, str):
+                projections_by_frequency.setdefault(attribute.frequency, []).append(attribute)
 
-            count = int(self.model.custom_frequency_counts[frequency])
-            namespace_name, attr_name = full_name.split(":", 1)
-            namespace = getattr(self.model, namespace_name, None)
-            if namespace is None:
-                continue
-            try:
-                value = object.__getattribute__(namespace, attr_name)
-            except AttributeError:
-                continue
-            if not isinstance(value, wp.array):
-                continue
+        reference_values: dict[str, list[tuple[object, np.ndarray]]] = {}
+        for frequency, attributes in projections_by_frequency.items():
+            source_count = int(model.custom_frequency_counts[frequency])
+            for attribute in attributes:
+                if attribute.references is None:
+                    continue
+                value = self._model_attribute_value(attribute.name)
+                if value is None:
+                    if source_count:
+                        raise ValueError(
+                            f"Cannot compact reference attribute {attribute.name!r}: registered value is missing"
+                        )
+                    continue
+                if isinstance(value, wp.array):
+                    host = value.numpy()
+                elif isinstance(value, np.ndarray):
+                    host = value
+                elif isinstance(value, list):
+                    host = np.asarray(value)
+                else:
+                    raise ValueError(
+                        f"Cannot compact reference attribute {attribute.name!r}: expected an indexed container, "
+                        f"got {type(value).__name__}"
+                    )
+                if host.shape[0] != source_count:
+                    raise ValueError(
+                        f"Cannot compact reference attribute {attribute.name!r}: expected {source_count} rows for "
+                        f"frequency {frequency!r}, got {host.shape[0]}"
+                    )
+                if attribute.references not in selected:
+                    raise ValueError(
+                        f"Cannot compact reference attribute {attribute.name!r}: unknown reference frequency "
+                        f"{attribute.references!r}"
+                    )
+                if attribute.references == model.AttributeFrequency.WORLD:
+                    continue
+                reference_values.setdefault(frequency, []).append((attribute.references, host))
 
-            if attr_name == "equality_constraint_body1":
-                body1 = value.numpy()
-            elif attr_name == "equality_constraint_body2":
-                body2 = value.numpy()
-            elif attr_name == "equality_constraint_joint1":
-                joint1 = value.numpy()
-            elif attr_name == "equality_constraint_joint2":
-                joint2 = value.numpy()
-            elif attr_name == "equality_constraint_world":
-                world = value
-                world_start = self._world_start_array(value, count)
+        changed = True
+        while changed:
+            changed = False
+            for frequency, references in reference_values.items():
+                rows = selected[frequency]
+                retained = set(rows)
+                for row in rows:
+                    for target_frequency, values in references:
+                        for raw_reference in np.asarray(values[row]).reshape(-1):
+                            reference = int(raw_reference)
+                            if reference >= 0 and reference not in selected.get(target_frequency, set()):
+                                retained.discard(row)
+                                break
+                        if row not in retained:
+                            break
+                if retained != rows:
+                    selected[frequency] = retained
+                    changed = True
 
-        if count == 0:
-            return []
-        if body1 is None or body2 is None or joint1 is None or joint2 is None:
-            return []
+        orders: dict[str, list[int]] = {}
+        for frequency, count in model.custom_frequency_counts.items():
+            rows = selected[frequency]
+            world = None
+            for attribute in projections_by_frequency.get(frequency, ()):
+                if attribute.references != model.AttributeFrequency.WORLD:
+                    continue
+                value = self._model_attribute_value(attribute.name)
+                if isinstance(value, wp.array):
+                    world = value
+                    break
+            if world is None or len(rows) == int(count):
+                orders[frequency] = sorted(rows)
+                continue
+            ordered = self._ordered_world_subset(
+                rows,
+                world,
+                self._world_start_array(world, int(count)),
+                int(count),
+                frequency,
+                allow_global=True,
+            )
+            if ordered is None:
+                return None
+            orders[frequency] = ordered
+        return orders
 
-        selected: set[int] = set()
-        for constraint in range(count):
-            if not self._constraint_ref_visible(int(body1[constraint]), body_global_to_local):
-                continue
-            if not self._constraint_ref_visible(int(body2[constraint]), body_global_to_local):
-                continue
-            if not self._constraint_ref_visible(int(joint1[constraint]), joint_global_to_local):
-                continue
-            if not self._constraint_ref_visible(int(joint2[constraint]), joint_global_to_local):
-                continue
-            selected.add(constraint)
-        return self._ordered_world_subset(
-            selected,
-            world,
-            world_start,
-            count,
-            "equality constraints",
-        )
+    def _model_attribute_value(self, full_name: str):
+        """Return a finalized model attribute from its full descriptor name."""
+        if ":" not in full_name:
+            return getattr(self.model, full_name, None)
+        namespace_name, attr_name = full_name.split(":", 1)
+        namespace = getattr(self.model, namespace_name, None)
+        if namespace is None:
+            return None
+        return getattr(namespace, attr_name, None)
 
     def _compact_mimic_constraint_order(self, joint_global_to_local: dict[int, int]) -> list[int] | None:
         model = self.model
@@ -891,113 +970,60 @@ class SolverCoupled(SolverBase, CouplingInterface):
             "mimic constraints",
         )
 
-    @staticmethod
-    def _constraint_ref_visible(index: int, global_to_local: dict[int, int]) -> bool:
-        return index < 0 or index in global_to_local
-
     def _apply_compact_entry_view(
         self,
         view: ModelView,
-        compact: _CompactIndexLists,
+        compact: _CompactIndexMaps,
         *,
         preserve_shape_ids: bool = False,
     ) -> None:
         """Install compact topology arrays on an entry view."""
         model = self.model
         device = model.device
-        body_order = compact.body_local_to_global
-        joint_order = compact.joint_local_to_global
-        coord_order = compact.joint_coord_local_to_global
-        dof_order = compact.joint_dof_local_to_global
-        visible_shape_order = compact.shape_local_to_global
+        frequency = model.AttributeFrequency
+        body_order = compact.order(frequency.BODY)
+        particle_order = compact.order(frequency.PARTICLE)
+        joint_order = compact.order(frequency.JOINT)
+        coord_order = compact.order(frequency.JOINT_COORD)
+        dof_order = compact.order(frequency.JOINT_DOF)
+        joint_constraint_order = compact.order(frequency.JOINT_CONSTRAINT)
+        visible_shape_order = compact.order(frequency.SHAPE)
         shape_order = list(range(model.shape_count)) if preserve_shape_ids else visible_shape_order
-        articulation_order = compact.articulation_local_to_global
-        equality_order = compact.equality_constraint_local_to_global
-        mimic_order = compact.constraint_mimic_local_to_global
+        articulation_order = compact.order(frequency.ARTICULATION)
+        mimic_order = compact.order(frequency.CONSTRAINT_MIMIC)
+        edge_order = compact.order(frequency.EDGE)
+        tri_order = compact.order(frequency.TRIANGLE)
+        tet_order = compact.order(frequency.TETRAHEDRON)
+        spring_order = compact.order(frequency.SPRING)
 
         body_global_to_local = {global_id: local_id for local_id, global_id in enumerate(body_order)}
-        joint_global_to_local = {global_id: local_id for local_id, global_id in enumerate(joint_order)}
         shape_global_to_local = {global_id: local_id for local_id, global_id in enumerate(shape_order)}
-        articulation_global_to_local = {global_id: local_id for local_id, global_id in enumerate(articulation_order)}
 
         view.body_count = len(body_order)
+        view.particle_count = len(particle_order)
         view.joint_count = len(joint_order)
         view.joint_coord_count = len(coord_order)
         view.joint_dof_count = len(dof_order)
+        view.joint_constraint_count = len(joint_constraint_order)
         view.shape_count = model.shape_count if preserve_shape_ids else len(shape_order)
         view.articulation_count = len(articulation_order)
         view.constraint_mimic_count = len(mimic_order)
-        view.particle_count = 0
-        view.spring_count = 0
-        view.tri_count = 0
-        view.edge_count = 0
-        view.tet_count = 0
+        view.spring_count = len(spring_order)
+        view.tri_count = len(tri_order)
+        view.edge_count = len(edge_order)
+        view.tet_count = len(tet_order)
         view.muscle_count = 0
 
-        index_orders_by_frequency = self._compact_index_orders_by_frequency(
-            body_order,
-            joint_order,
-            coord_order,
-            dof_order,
-            shape_order,
-            articulation_order,
-            equality_order,
-            mimic_order,
-        )
-        self._set_compact_custom_frequency_counts(view, index_orders_by_frequency)
-        remapped_or_derived_attrs = {
-            "joint_parent",
-            "joint_child",
-            "joint_ancestor",
-            "joint_articulation",
-            "shape_body",
-            "constraint_mimic_joint0",
-            "constraint_mimic_joint1",
-        }
+        projections_by_frequency = self._compact_projections_by_frequency(compact, shape_order=shape_order)
+        self._set_compact_custom_frequency_counts(view, projections_by_frequency)
         renamed_attrs = {"joint_target_pos", "joint_target_vel"}
-        handled_attrs = self._select_compact_attributes_by_frequency(
+        self._project_compact_attributes(
             view,
-            index_orders_by_frequency,
-            exclude=remapped_or_derived_attrs | renamed_attrs,
+            projections_by_frequency,
+            exclude=_DERIVED_PROJECTION_ATTRIBUTES | renamed_attrs,
         )
-        self._select_compact_prefix_attributes(
-            view,
-            {
-                "body_": (body_order, model.body_count),
-                "joint_": (joint_order, model.joint_count),
-                "shape_": (shape_order, model.shape_count),
-                "_shape_": (shape_order, model.shape_count),
-                "articulation_": (articulation_order, model.articulation_count),
-                "constraint_mimic_": (mimic_order, model.constraint_mimic_count),
-            },
-            exclude=handled_attrs | remapped_or_derived_attrs | renamed_attrs,
-        )
+        self._sync_custom_frequency_namespace_metadata(view)
 
-        joint_parent = self._select_numpy_array(view, "joint_parent", joint_order)
-        joint_child = self._select_numpy_array(view, "joint_child", joint_order)
-        if joint_parent is not None:
-            view.joint_parent = wp.array(
-                [self._remap_optional_index(int(parent), body_global_to_local) for parent in joint_parent],
-                dtype=wp.int32,
-                device=device,
-            )
-        if joint_child is not None:
-            view.joint_child = wp.array(
-                [body_global_to_local[int(child)] for child in joint_child],
-                dtype=wp.int32,
-                device=device,
-            )
-
-        joint_articulation = self._select_numpy_array(view, "joint_articulation", joint_order)
-        if joint_articulation is not None:
-            view.joint_articulation = wp.array(
-                [
-                    self._remap_optional_index(int(articulation), articulation_global_to_local)
-                    for articulation in joint_articulation
-                ],
-                dtype=wp.int32,
-                device=device,
-            )
         joint_parent_local = view.joint_parent.numpy() if len(joint_order) else np.empty(0, dtype=np.int32)
         joint_child_local = view.joint_child.numpy() if len(joint_order) else np.empty(0, dtype=np.int32)
         child_to_joint = {int(child): joint for joint, child in enumerate(joint_child_local)}
@@ -1055,23 +1081,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.articulation_end = wp.array(articulation_starts[1:], dtype=wp.int32, device=device)
         self._set_compact_articulation_extents(view, articulation_order)
 
-        self._compact_mimic_constraints(view, mimic_order, joint_global_to_local)
-
         # For VBD solver we require color groups to be compacted too.
         self._compact_color_groups(view, body_global_to_local)
 
         self._set_world_start_arrays(view)
-        self._compact_custom_attribute_namespaces(
-            view,
-            body_order,
-            joint_order,
-            coord_order,
-            dof_order,
-            shape_order,
-            articulation_order,
-            equality_order,
-            mimic_order,
-        )
 
     def _select_numpy_array(self, view: ModelView, name: str, indices: Sequence[int]) -> np.ndarray | None:
         value = self._raw_view_value(view, name)
@@ -1081,132 +1094,97 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return np.asarray([], dtype=value.numpy().dtype)
         return value.numpy()[np.asarray(indices, dtype=np.int64)]
 
-    def _select_model_value(self, view: ModelView, name: str, indices: Sequence[int]) -> bool:
-        value = self._raw_view_value(view, name)
-        selected = self._select_attribute_value(value, indices)
-        if selected is None:
-            return False
-        setattr(view, name, selected)
-        return True
-
-    def _compact_index_orders_by_frequency(
+    def _compact_projections_by_frequency(
         self,
-        body_order: Sequence[int],
-        joint_order: Sequence[int],
-        coord_order: Sequence[int],
-        dof_order: Sequence[int],
+        compact: _CompactIndexMaps,
+        *,
         shape_order: Sequence[int],
-        articulation_order: Sequence[int],
-        equality_order: Sequence[int],
-        mimic_order: Sequence[int],
-    ) -> dict[Model.AttributeFrequency | str, tuple[Sequence[int], int]]:
-        freq = self.model.AttributeFrequency
-        model = self.model
-        index_orders_by_frequency = {
-            freq.BODY: (body_order, model.body_count),
-            freq.JOINT: (joint_order, model.joint_count),
-            freq.JOINT_COORD: (coord_order, model.joint_coord_count),
-            freq.JOINT_DOF: (dof_order, model.joint_dof_count),
-            freq.SHAPE: (shape_order, model.shape_count),
-            freq.ARTICULATION: (articulation_order, model.articulation_count),
-            freq.CONSTRAINT_MIMIC: (mimic_order, model.constraint_mimic_count),
-        }
-        index_orders_by_name = {
-            "body": (body_order, model.body_count),
-            "joint": (joint_order, model.joint_count),
-            "joint_coord": (coord_order, model.joint_coord_count),
-            "joint_dof": (dof_order, model.joint_dof_count),
-            "shape": (shape_order, model.shape_count),
-            "articulation": (articulation_order, model.articulation_count),
-            "equality_constraint": (equality_order, 0),
-            "constraint_mimic": (mimic_order, model.constraint_mimic_count),
-        }
-        for frequency in model.custom_frequency_counts:
-            frequency_name = frequency.rsplit(":", 1)[-1]
-            index_order = index_orders_by_name.get(frequency_name)
-            if index_order is not None:
-                indices, _source_count = index_order
-                index_orders_by_frequency[frequency] = (indices, int(model.custom_frequency_counts[frequency]))
-        return index_orders_by_frequency
+    ) -> dict[Model.AttributeFrequency | str, _CompactIndexProjection]:
+        projections_by_frequency = dict(compact.projections)
+        shape_frequency = self.model.AttributeFrequency.SHAPE
+        projections_by_frequency[shape_frequency] = _compact_index_projection(shape_order, self.model.shape_count)
+        return projections_by_frequency
 
     def _set_compact_custom_frequency_counts(
         self,
         view: ModelView,
-        index_orders_by_frequency: dict[Model.AttributeFrequency | str, tuple[Sequence[int], int]],
+        projections_by_frequency: dict[Model.AttributeFrequency | str, _CompactIndexProjection],
     ) -> None:
         custom_frequency_counts = dict(self.model.custom_frequency_counts)
-        for frequency, (indices, _source_count) in index_orders_by_frequency.items():
+        for frequency, projection in projections_by_frequency.items():
             if isinstance(frequency, str):
-                custom_frequency_counts[frequency] = len(indices)
+                custom_frequency_counts[frequency] = len(projection.local_to_global)
         if custom_frequency_counts != self.model.custom_frequency_counts:
             view.custom_frequency_counts = custom_frequency_counts
 
-    def _select_compact_attributes_by_frequency(
+    def _project_compact_attributes(
         self,
         view: ModelView,
-        indices_by_frequency: dict[Model.AttributeFrequency | str, tuple[Sequence[int], int]],
+        projections_by_frequency: dict[Model.AttributeFrequency | str, _CompactIndexProjection],
         *,
         exclude: set[str],
-    ) -> set[str]:
-        handled: set[str] = set()
-        model_assignment = self.model.AttributeAssignment.MODEL
-        for full_name, frequency in self.model.attribute_frequency.items():
-            if ":" in full_name or full_name in exclude:
+    ) -> None:
+        for attribute in self._attribute_projections:
+            full_name = attribute.name
+            if full_name in exclude:
                 continue
-            if self.model.attribute_assignment.get(full_name, model_assignment) != model_assignment:
+            projection = projections_by_frequency.get(attribute.frequency)
+            if projection is None:
                 continue
-            indexed_projection = indices_by_frequency.get(frequency)
-            if indexed_projection is None:
+            source_count = len(projection.global_to_local)
+            source_value_count = source_count * attribute.row_width
+            value = self._view_attribute_value(view, full_name)
+            if value is None:
                 continue
-            indices, source_count = indexed_projection
-            value = self._raw_view_value(view, full_name)
-            if not self._is_indexed_compact_value(value, source_count):
+            has_empty_sentinel = (
+                source_value_count == 0
+                and attribute.requires_empty_sentinel
+                and self._is_indexed_compact_value(value, 1)
+            )
+            if not self._is_indexed_compact_value(value, source_value_count) and not has_empty_sentinel:
+                if isinstance(value, (wp.array, np.ndarray, list)):
+                    raise ValueError(
+                        f"Cannot compact model attribute {full_name!r}: expected {source_value_count} values for "
+                        f"frequency {attribute.frequency!r}, got {len(value)}"
+                    )
                 continue
+            indices = self._expanded_row_indices(projection.local_to_global, attribute.row_width)
             selected = self._select_attribute_value(value, indices)
             if selected is None:
-                continue
-            setattr(view, full_name, selected)
-            handled.add(full_name)
-        return handled
+                raise ValueError(f"Cannot compact model attribute {full_name!r} with indices {indices!r}")
+            if attribute.references is not None:
+                reference_projection = projections_by_frequency.get(attribute.references)
+                if reference_projection is None:
+                    raise ValueError(
+                        f"Cannot compact model attribute {full_name!r}: no projection for reference frequency "
+                        f"{attribute.references!r}"
+                    )
+                selected = self._remap_compact_reference_value(
+                    selected,
+                    reference_projection.global_to_local,
+                    full_name,
+                )
+            self._set_view_attribute_value(view, full_name, selected)
 
-    def _select_compact_prefix_attributes(
-        self,
-        view: ModelView,
-        prefix_indices: dict[str, tuple[Sequence[int], int]],
-        *,
-        exclude: set[str],
-    ) -> set[str]:
-        handled: set[str] = set()
-        parent = object.__getattribute__(view, "_parent")
+    def _view_attribute_value(self, view: ModelView, full_name: str):
+        if ":" not in full_name:
+            return self._raw_view_value(view, full_name)
+        namespace_name, attr_name = full_name.split(":", 1)
+        namespace = getattr(view, namespace_name, None)
+        return None if namespace is None else getattr(namespace, attr_name, None)
+
+    def _set_view_attribute_value(self, view: ModelView, full_name: str, value) -> None:
+        if ":" not in full_name:
+            setattr(view, full_name, value)
+            return
+        namespace_name, attr_name = full_name.split(":", 1)
         overrides = object.__getattribute__(view, "_overrides")
-        names = set(overrides)
-        for name in dir(parent):
-            if name.startswith("_") or hasattr(type(parent), name):
-                continue
-            names.add(name)
-        names = sorted(names)
-        for name in names:
-            if name in exclude or self._is_compact_projection_private_name(name):
-                continue
-            for prefix, (indices, source_count) in prefix_indices.items():
-                if not name.startswith(prefix):
-                    continue
-                value = self._raw_view_value(view, name)
-                if not self._is_indexed_compact_value(value, source_count):
-                    break
-                if self._select_model_value(view, name, indices):
-                    handled.add(name)
-                break
-        return handled
-
-    @staticmethod
-    def _is_compact_projection_private_name(name: str) -> bool:
-        return (
-            name.endswith("_start")
-            or name.endswith("_count")
-            or name.endswith("_color_groups")
-            or name.endswith("_pairs")
-        )
+        namespace = overrides.get(namespace_name)
+        if namespace is None:
+            parent_namespace = getattr(self.model, namespace_name)
+            namespace = _AttributeNamespaceView(parent_namespace)
+            setattr(view, namespace_name, namespace)
+        setattr(namespace, attr_name, value)
 
     @staticmethod
     def _is_indexed_compact_value(value, source_count: int) -> bool:
@@ -1219,16 +1197,18 @@ class SolverCoupled(SolverBase, CouplingInterface):
         return False
 
     @staticmethod
+    def _expanded_row_indices(rows: Sequence[int], row_width: int) -> list[int]:
+        if row_width == 1:
+            return list(rows)
+        return [int(row) * row_width + component for row in rows for component in range(row_width)]
+
+    @staticmethod
     def _raw_view_value(view: ModelView, name: str):
         overrides = object.__getattribute__(view, "_overrides")
         if name in overrides:
             return overrides[name]
         parent = object.__getattribute__(view, "_parent")
         return getattr(parent, name, None)
-
-    @staticmethod
-    def _remap_optional_index(index: int, global_to_local: dict[int, int]) -> int:
-        return -1 if index < 0 else global_to_local[index]
 
     @staticmethod
     def _remap_shape_body(
@@ -1358,27 +1338,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.max_joints_per_articulation = max_joints
         view.max_dofs_per_articulation = max_dofs
 
-    def _compact_mimic_constraints(
-        self,
-        view: ModelView,
-        mimic_order: Sequence[int],
-        joint_global_to_local: dict[int, int],
-    ) -> None:
-        joint0 = self._select_numpy_array(view, "constraint_mimic_joint0", mimic_order)
-        joint1 = self._select_numpy_array(view, "constraint_mimic_joint1", mimic_order)
-        if joint0 is not None:
-            view.constraint_mimic_joint0 = wp.array(
-                [joint_global_to_local[int(index)] for index in joint0],
-                dtype=wp.int32,
-                device=self.model.device,
-            )
-        if joint1 is not None:
-            view.constraint_mimic_joint1 = wp.array(
-                [joint_global_to_local[int(index)] for index in joint1],
-                dtype=wp.int32,
-                device=self.model.device,
-            )
-
     def _compact_color_groups(
         self,
         view: ModelView,
@@ -1398,6 +1357,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.body_color_groups = remapped
 
     def _set_world_start_arrays(self, view: ModelView) -> None:
+        view.particle_world_start = self._world_start_array(view.particle_world, int(view.particle_count))
         view.body_world_start = self._world_start_array(view.body_world, int(view.body_count))
         view.shape_world_start = self._world_start_array(view.shape_world, int(view.shape_count))
         view.joint_world_start = self._world_start_array(view.joint_world, int(view.joint_count))
@@ -1420,127 +1380,63 @@ class SolverCoupled(SolverBase, CouplingInterface):
         )
 
     def _world_start_array(self, world_array: wp.array, count: int) -> wp.array:
-        world_count = int(self.model.world_count)
-        starts = [0] * (world_count + 2)
         worlds = world_array.numpy() if count else np.empty(0, dtype=np.int32)
-        front_global = 0
-        for world in worlds:
-            if int(world) == -1:
-                front_global += 1
-            else:
-                break
-        starts[0] = front_global
-        counts = np.bincount(worlds[worlds >= 0].astype(np.int64), minlength=world_count) if count else []
-        for world in range(world_count):
-            starts[world + 1] = starts[world] + (int(counts[world]) if len(counts) else 0)
-        starts[-1] = count
-        return wp.array(starts, dtype=wp.int32, device=self.model.device)
+        widths = np.ones(len(worlds), dtype=np.int32)
+        return self._weighted_world_start_array(worlds, widths, count)
 
     def _joint_space_world_start_array(self, joint_world: wp.array, joint_starts: wp.array, count: int) -> wp.array:
-        world_count = int(self.model.world_count)
-        starts = [0] * (world_count + 2)
         worlds = joint_world.numpy()
         joint_starts_np = joint_starts.numpy()
+        widths = np.diff(joint_starts_np)
+        return self._weighted_world_start_array(worlds, widths, count)
+
+    def _weighted_world_start_array(self, worlds: np.ndarray, widths: np.ndarray, count: int) -> wp.array:
+        """Build per-world starts for rows with arbitrary widths."""
+        world_count = int(self.model.world_count)
+        starts = [0] * (world_count + 2)
         front_global = 0
-        for joint, world in enumerate(worlds):
-            width = int(joint_starts_np[joint + 1]) - int(joint_starts_np[joint])
+        for world, width in zip(worlds, widths, strict=True):
             if int(world) == -1:
-                front_global += width
+                front_global += int(width)
             else:
                 break
         starts[0] = front_global
         counts = [0] * world_count
-        for joint, world_id in enumerate(worlds):
+        for world_id, width in zip(worlds, widths, strict=True):
             world = int(world_id)
             if world < 0:
                 continue
-            counts[world] += int(joint_starts_np[joint + 1]) - int(joint_starts_np[joint])
+            counts[world] += int(width)
         for world in range(world_count):
             starts[world + 1] = starts[world] + counts[world]
         starts[-1] = count
         return wp.array(starts, dtype=wp.int32, device=self.model.device)
 
-    def _compact_custom_attribute_namespaces(
-        self,
-        view: ModelView,
-        body_order: Sequence[int],
-        joint_order: Sequence[int],
-        coord_order: Sequence[int],
-        dof_order: Sequence[int],
-        shape_order: Sequence[int],
-        articulation_order: Sequence[int],
-        equality_order: Sequence[int],
-        mimic_order: Sequence[int],
-    ) -> None:
-        freq = self.model.AttributeFrequency
-        index_orders_by_frequency = self._compact_index_orders_by_frequency(
-            body_order,
-            joint_order,
-            coord_order,
-            dof_order,
-            shape_order,
-            articulation_order,
-            equality_order,
-            mimic_order,
-        )
-        indices_by_frequency = {
-            frequency: indices for frequency, (indices, _source_count) in index_orders_by_frequency.items()
-        }
-        body_global_to_local = {global_id: local_id for local_id, global_id in enumerate(body_order)}
-        joint_global_to_local = {global_id: local_id for local_id, global_id in enumerate(joint_order)}
+    def _remap_compact_reference_value(self, value, global_to_local: Sequence[int], attribute_name: str):
+        def remap(index: int, row: int) -> int:
+            if index < 0:
+                return index
+            local = global_to_local[index] if index < len(global_to_local) else -1
+            if local < 0:
+                raise ValueError(
+                    f"Cannot compact model attribute {attribute_name!r}: row {row} references hidden id {index}"
+                )
+            return local
 
-        for full_name, frequency in self.model.attribute_frequency.items():
-            if ":" not in full_name:
-                continue
-            namespace_name, attr_name = full_name.split(":", 1)
-            parent_ns = getattr(self.model, namespace_name, None)
-            if parent_ns is None:
-                continue
-            try:
-                value = object.__getattribute__(parent_ns, attr_name)
-            except AttributeError:
-                continue
-            if value is None:
-                continue
-            overrides = object.__getattribute__(view, "_overrides")
-            namespace = overrides.get(namespace_name)
-            if namespace is None:
-                namespace = type(parent_ns)(namespace_name)
-                for name in dir(parent_ns):
-                    if name.startswith("_") or hasattr(type(parent_ns), name):
-                        continue
-                    try:
-                        setattr(namespace, name, object.__getattribute__(parent_ns, name))
-                    except AttributeError:
-                        continue
-                setattr(view, namespace_name, namespace)
-            if frequency in (freq.ONCE, freq.WORLD):
-                setattr(namespace, attr_name, value)
-                continue
-            indices = indices_by_frequency.get(frequency)
-            if indices is None:
-                continue
-            selected = self._select_attribute_value(value, indices)
-            if selected is not None:
-                reference_map = None
-                if isinstance(frequency, str) and frequency.rsplit(":", 1)[-1] == "equality_constraint":
-                    if attr_name in ("equality_constraint_body1", "equality_constraint_body2"):
-                        reference_map = body_global_to_local
-                    elif attr_name in ("equality_constraint_joint1", "equality_constraint_joint2"):
-                        reference_map = joint_global_to_local
-                if reference_map is not None:
-                    selected = self._remap_compact_reference_value(selected, reference_map)
-                setattr(namespace, attr_name, selected)
-        self._sync_custom_frequency_namespace_metadata(view)
+        def remap_array(array: np.ndarray) -> np.ndarray:
+            result = np.array(array, copy=True)
+            for row in range(result.shape[0]):
+                row_values = result[row : row + 1].reshape(-1)
+                for component, index in enumerate(row_values):
+                    row_values[component] = remap(int(index), row)
+            return result
 
-    def _remap_compact_reference_value(self, value, global_to_local: dict[int, int]):
         if isinstance(value, wp.array):
-            remapped = [self._remap_optional_index(int(index), global_to_local) for index in value.numpy()]
-            return wp.array(remapped, dtype=value.dtype, device=self.model.device)
+            return wp.array(remap_array(value.numpy()), dtype=value.dtype, device=self.model.device)
         if isinstance(value, np.ndarray):
-            return np.asarray([self._remap_optional_index(int(index), global_to_local) for index in value])
+            return remap_array(value)
         if isinstance(value, list):
-            return [self._remap_optional_index(int(index), global_to_local) for index in value]
+            return remap_array(np.asarray(value)).tolist()
         return value
 
     def _sync_custom_frequency_namespace_metadata(self, view: ModelView) -> None:
@@ -1553,9 +1449,21 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if namespace is None:
                 continue
             setattr(namespace, f"{frequency_name}_count", int(count))
-            world = getattr(namespace, f"{frequency_name}_world", None)
-            if isinstance(world, wp.array):
-                setattr(namespace, f"{frequency_name}_world_start", self._world_start_array(world, int(count)))
+
+        for attribute in self._attribute_projections:
+            if not isinstance(attribute.frequency, str) or attribute.references != self.model.AttributeFrequency.WORLD:
+                continue
+            world = self._view_attribute_value(view, attribute.name)
+            if not isinstance(world, wp.array):
+                continue
+            count = int(view.custom_frequency_counts[attribute.frequency])
+            if ":" in attribute.name:
+                namespace_name, attr_name = attribute.name.split(":", 1)
+                namespace = overrides.get(namespace_name)
+                if namespace is not None:
+                    setattr(namespace, f"{attr_name}_start", self._world_start_array(world, count))
+            elif hasattr(self.model, f"{attribute.name}_start"):
+                setattr(view, f"{attribute.name}_start", self._world_start_array(world, count))
 
     def _select_attribute_value(self, value, indices: Sequence[int]):
         if isinstance(value, wp.array):
@@ -1579,18 +1487,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if value.shape[0] <= max(indices):
                 return None
             return value[np.asarray(indices, dtype=np.int64)]
-        return None
-
-    def _articulation_prefix_count(self, joint_prefix: int) -> int | None:
-        """Return articulation count for a joint prefix, if it ends on a boundary."""
-        if joint_prefix == 0:
-            return 0
-        starts = self.model.articulation_start.numpy() if self.model.articulation_start is not None else []
-        for index, start in enumerate(starts):
-            if int(start) == joint_prefix:
-                return index
-            if int(start) > joint_prefix:
-                return None
         return None
 
     def _after_entries_constructed(self) -> None:
@@ -1834,7 +1730,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return None
         return self._contacts_for_entry(entry, contacts)
 
-    def _sync_entry_states(self, state_in: State, dt: float = 0.0) -> None:
+    def entry_output_state_valid(self) -> bool:
+        """Return whether entry output states reflect the last coupled step."""
+        return self._entry_output_state_valid
+
+    def sync_entry_states(self, state_in: State, dt: float = 0.0) -> None:
         """Synchronize entry input states from a parent-model state.
 
         This is primarily useful for visualization before the first coupled

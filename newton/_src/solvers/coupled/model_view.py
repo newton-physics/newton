@@ -37,47 +37,14 @@ _CORE_WORLD_START_TOTAL_ATTR_BY_NAME = {
 }
 
 
-_UNREGISTERED_CORE_COUNT_ATTR_BY_NAME = {
-    "particle_q": "particle_count",
-    "particle_qd": "particle_count",
-    "particle_mass": "particle_count",
-    "particle_inv_mass": "particle_count",
-    "particle_radius": "particle_count",
-    "particle_flags": "particle_count",
-    "particle_colors": "particle_count",
-    "particle_world": "particle_count",
-    "body_colors": "body_count",
-    "shape_world": "shape_count",
-    "body_world": "body_count",
-    "joint_world": "joint_count",
-    "articulation_world": "articulation_count",
-    "equality_constraint_world": "equality_constraint_count",
-    "constraint_mimic_world": "constraint_mimic_count",
-}
-
-
 _COLOR_GROUP_COUNT_ATTR_BY_NAME = {
     "particle_color_groups": "particle_count",
     "body_color_groups": "body_count",
 }
 
 
-_COUNT_ATTR_BY_FREQUENCY = {
-    Model.AttributeFrequency.JOINT: "joint_count",
-    Model.AttributeFrequency.JOINT_DOF: "joint_dof_count",
-    Model.AttributeFrequency.JOINT_COORD: "joint_coord_count",
-    Model.AttributeFrequency.JOINT_CONSTRAINT: "joint_constraint_count",
-    Model.AttributeFrequency.BODY: "body_count",
-    Model.AttributeFrequency.SHAPE: "shape_count",
-    Model.AttributeFrequency.ARTICULATION: "articulation_count",
-    Model.AttributeFrequency.EQUALITY_CONSTRAINT: "equality_constraint_count",
-    Model.AttributeFrequency.PARTICLE: "particle_count",
-    Model.AttributeFrequency.EDGE: "edge_count",
-    Model.AttributeFrequency.TRIANGLE: "tri_count",
-    Model.AttributeFrequency.TETRAHEDRON: "tet_count",
-    Model.AttributeFrequency.SPRING: "spring_count",
-    Model.AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
-    Model.AttributeFrequency.WORLD: "world_count",
+_COUNT_LIMIT_EXEMPT_ATTRIBUTES = {
+    "shape_contact_pairs",
 }
 
 
@@ -103,6 +70,20 @@ def _type_summary(value) -> str:
     if isinstance(value, np.ndarray):
         return f"numpy.ndarray[dtype={value.dtype}, ndim={value.ndim}]"
     return type(value).__name__
+
+
+class _AttributeNamespaceView(Model.AttributeNamespace):
+    """Copy-on-write namespace overlay used by compact model views."""
+
+    def __init__(self, parent: Model.AttributeNamespace) -> None:
+        super().__init__(object.__getattribute__(parent, "_name"))
+        object.__setattr__(self, "_parent_namespace", parent)
+
+    def __getattr__(self, name: str):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(object.__getattribute__(self, "_parent_namespace"), name)
 
 
 class ModelView:
@@ -189,6 +170,9 @@ class ModelView:
 
     def _count_limited_attribute(self, name: str, value):
         """Return *value* sliced to the view-local frequency count when needed."""
+        if name in _COUNT_LIMIT_EXEMPT_ATTRIBUTES:
+            return value
+
         color_group_count_attr = _COLOR_GROUP_COUNT_ATTR_BY_NAME.get(name)
         if color_group_count_attr is not None:
             return self._count_limited_color_groups(
@@ -223,15 +207,17 @@ class ModelView:
     def _frequency_count_for_attribute(self, name: str) -> int | None:
         """Return the view-local count associated with a model attribute."""
         parent = object.__getattribute__(self, "_parent")
-        frequency = parent.attribute_frequency.get(name)
+        frequency = parent._resolve_attribute_frequency(name)
         if frequency is None:
-            count_attr = _UNREGISTERED_CORE_COUNT_ATTR_BY_NAME.get(name)
-            return None if count_attr is None else int(getattr(self, count_attr))
+            return None
         if isinstance(frequency, str):
-            return self.custom_frequency_counts.get(frequency)
+            count = self.custom_frequency_counts.get(frequency)
+            return None if count is None else int(count) * parent._attribute_row_width(name)
 
-        count_attr = _COUNT_ATTR_BY_FREQUENCY.get(frequency)
-        return None if count_attr is None else int(getattr(self, count_attr))
+        count_attr = Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.get(frequency)
+        if count_attr is None:
+            return None
+        return int(getattr(self, count_attr)) * parent._attribute_row_width(name)
 
     def _count_limited_world_start(self, name: str, value, count: int):
         """Return a world-start array whose offsets do not exceed *count*."""
