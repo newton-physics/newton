@@ -294,6 +294,7 @@ files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf
 
 [tool.typos.default.extend-words]
 arange = "arange"
+precess = "precess"
 ba = "ba"
 ix = "ix"
 iy = "iy"
