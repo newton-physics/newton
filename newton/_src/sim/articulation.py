@@ -1467,9 +1467,7 @@ def eval_inverse_dynamics_force(
 
     expected_shape = (model.joint_dof_count,)
     if tau.shape != expected_shape:
-        raise ValueError(
-            f"tau has shape {tau.shape}, expected {expected_shape}."
-        )
+        raise ValueError(f"tau has shape {tau.shape}, expected {expected_shape}.")
 
     tau.zero_()
     wp.launch(

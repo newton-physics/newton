@@ -479,8 +479,8 @@ def eval_inverse_dynamics(
         ``q += qd * dt``. :class:`~newton.solvers.SolverFeatherstone`
         integrates ``joint_q`` using the same convention as this function,
         so its forward dynamics is consistent with the ``tau`` produced here.
-        On the other hand, solvers that map multi-angular D6 joints to a different 
-        velocity subspace (e.g. :class:`~newton.solvers.SolverMuJoCo`, which 
+        On the other hand, solvers that map multi-angular D6 joints to a different
+        velocity subspace (e.g. :class:`~newton.solvers.SolverMuJoCo`, which
         converts them to stacked hinges with a different Coriolis convention) may not.
 
     Args:

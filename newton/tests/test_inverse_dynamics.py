@@ -498,10 +498,24 @@ class TestGravCompForce(TestInverseDynamicsBase):
         root_quat_pos = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2.0)
         root_quat_neg = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -np.pi / 2.0)
         floating_q_rot_z_90 = [
-            0.0, 0.0, 0.0, root_quat_pos.x, root_quat_pos.y, root_quat_pos.z, root_quat_pos.w, 0.0,
+            0.0,
+            0.0,
+            0.0,
+            root_quat_pos.x,
+            root_quat_pos.y,
+            root_quat_pos.z,
+            root_quat_pos.w,
+            0.0,
         ]
         floating_q_rot_z_neg90 = [
-            0.0, 0.0, 0.0, root_quat_neg.x, root_quat_neg.y, root_quat_neg.z, root_quat_neg.w, 0.0,
+            0.0,
+            0.0,
+            0.0,
+            root_quat_neg.x,
+            root_quat_neg.y,
+            root_quat_neg.z,
+            root_quat_neg.w,
+            0.0,
         ]
 
         joint_frame_quat_pos = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2.0)
@@ -527,10 +541,34 @@ class TestGravCompForce(TestInverseDynamicsBase):
                 # 6 base DOFs + 1 internal = 7 DOFs per articulation.
                 # lin_y = M_total * 10; prismatic = +-m_2 * 10.
                 [
-                    0.0, 30.0, 0.0, 0.0, 0.0, 0.0, 20.0,   # W0 a0 [1,2]: M=3,  m_2=2  (+90 deg)
-                    0.0, 70.0, 0.0, 0.0, 0.0, 0.0, -40.0,  # W0 a1 [3,4]: M=7,  m_2=4  (-90 deg)
-                    0.0, 110.0, 0.0, 0.0, 0.0, 0.0, -60.0, # W1 a0 [5,6]: M=11, m_2=6  (-90 deg)
-                    0.0, 150.0, 0.0, 0.0, 0.0, 0.0, 80.0,  # W1 a1 [7,8]: M=15, m_2=8  (+90 deg)
+                    0.0,
+                    30.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    20.0,  # W0 a0 [1,2]: M=3,  m_2=2  (+90 deg)
+                    0.0,
+                    70.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    -40.0,  # W0 a1 [3,4]: M=7,  m_2=4  (-90 deg)
+                    0.0,
+                    110.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    -60.0,  # W1 a0 [5,6]: M=11, m_2=6  (-90 deg)
+                    0.0,
+                    150.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    80.0,  # W1 a1 [7,8]: M=15, m_2=8  (+90 deg)
                 ],
             ),
             (
@@ -540,22 +578,34 @@ class TestGravCompForce(TestInverseDynamicsBase):
                 # Rotation injected through the internal joint parent_xform.
                 [
                     [
-                        [parent_xform_rot_z_90, identity_xform],    # W0 a0 (+90 deg)
+                        [parent_xform_rot_z_90, identity_xform],  # W0 a0 (+90 deg)
                         [parent_xform_rot_z_neg90, identity_xform],  # W0 a1 (-90 deg)
                     ],
                     [
                         [parent_xform_rot_z_neg90, identity_xform],  # W1 a0 (-90 deg)
-                        [parent_xform_rot_z_90, identity_xform],     # W1 a1 (+90 deg)
+                        [parent_xform_rot_z_90, identity_xform],  # W1 a1 (+90 deg)
                     ],
                 ],
                 None,  # use _default_joint_q
                 # Fixed root: 1 DOF (internal only). Floating: 7 DOFs.
                 # prismatic = +-m_2 * 10; lin_y = M_total * 10 for floating.
                 [
-                    20.0,                                         # W0 a0 [1,2]: fixed,    +90 deg, m_2=2
-                    0.0, 70.0, 0.0, 0.0, 0.0, 0.0, -40.0,       # W0 a1 [3,4]: floating, -90 deg, M=7,  m_2=4
-                    -60.0,                                        # W1 a0 [5,6]: fixed,    -90 deg, m_2=6
-                    0.0, 150.0, 0.0, 0.0, 0.0, 0.0, 80.0,        # W1 a1 [7,8]: floating, +90 deg, M=15, m_2=8
+                    20.0,  # W0 a0 [1,2]: fixed,    +90 deg, m_2=2
+                    0.0,
+                    70.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    -40.0,  # W0 a1 [3,4]: floating, -90 deg, M=7,  m_2=4
+                    -60.0,  # W1 a0 [5,6]: fixed,    -90 deg, m_2=6
+                    0.0,
+                    150.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    80.0,  # W1 a1 [7,8]: floating, +90 deg, M=15, m_2=8
                 ],
             ),
         ]
@@ -946,14 +996,12 @@ class TestGravCompForce(TestInverseDynamicsBase):
         world +Z, so the buggy parent-frame output would be (0, -m*g, 0)
         while the correct world-frame output is (0, 0, -m*g).
         """
-        import math
-
         m = 2.0
         g_mag = 10.0
         I_body = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
         # 90-degree rotation about world X: parent Y → world +Z.
-        q_rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2.0)
+        q_rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 2.0)
         rotated_parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), q_rot)
         identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
@@ -1853,15 +1901,19 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
             (
                 "distance",
                 lambda b, link: b.add_joint_distance(
-                    parent=-1, child=link,
-                    parent_xform=identity_xform, child_xform=identity_xform,
+                    parent=-1,
+                    child=link,
+                    parent_xform=identity_xform,
+                    child_xform=identity_xform,
                 ),
             ),
             (
                 "cable",
                 lambda b, link: b.add_joint_cable(
-                    parent=-1, child=link,
-                    parent_xform=identity_xform, child_xform=identity_xform,
+                    parent=-1,
+                    child=link,
+                    parent_xform=identity_xform,
+                    child_xform=identity_xform,
                 ),
             ),
         ]
@@ -1878,8 +1930,11 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
 
                 inverse_dynamics, scratch = model.inverse_dynamics()
                 newton.eval_inverse_dynamics(
-                    model, state, newton.InverseDynamics.EvalType.ALL,
-                    inverse_dynamics, scratch,
+                    model,
+                    state,
+                    newton.InverseDynamics.EvalType.ALL,
+                    inverse_dynamics,
+                    scratch,
                 )
 
                 self.assertTrue(np.all(np.isfinite(inverse_dynamics.mass_matrix.numpy())))
@@ -1902,33 +1957,43 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         builder = newton.ModelBuilder()
         # Articulation 0: single revolute → 1 DOF.
         b0 = builder.add_link(xform=identity_xform, mass=1.0, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
-        j0 = builder.add_joint_revolute(parent=-1, child=b0, axis=y_axis,
-                                        parent_xform=identity_xform, child_xform=identity_xform)
+        j0 = builder.add_joint_revolute(
+            parent=-1, child=b0, axis=y_axis, parent_xform=identity_xform, child_xform=identity_xform
+        )
         builder.add_articulation([j0])
 
         # Articulation 1: two revolutes in a chain → 2 DOFs.
         b1 = builder.add_link(xform=identity_xform, mass=1.0, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
-        j1 = builder.add_joint_revolute(parent=-1, child=b1, axis=y_axis,
-                                        parent_xform=identity_xform, child_xform=identity_xform)
+        j1 = builder.add_joint_revolute(
+            parent=-1, child=b1, axis=y_axis, parent_xform=identity_xform, child_xform=identity_xform
+        )
         b2 = builder.add_link(xform=identity_xform, mass=1.0, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
-        j2 = builder.add_joint_revolute(parent=b1, child=b2, axis=y_axis,
-                                        parent_xform=identity_xform, child_xform=identity_xform)
+        j2 = builder.add_joint_revolute(
+            parent=b1, child=b2, axis=y_axis, parent_xform=identity_xform, child_xform=identity_xform
+        )
         builder.add_articulation([j1, j2])
 
         model = builder.finalize(device=self.device)
         self.assertEqual(model.articulation_count, 2)
-        self.assertEqual(model.joint_dof_count, 3)       # art0: 1, art1: 2
+        self.assertEqual(model.joint_dof_count, 3)  # art0: 1, art1: 2
         self.assertEqual(model.max_dofs_per_articulation, 2)
 
         # Hand-crafted H (2, 2, 2): art0 uses only the [0,0] entry; art1 uses
         # all four.  Values are chosen so any cross-articulation or index mix-up
         # produces a visibly wrong result.
-        H_np = np.array([
-            [[7.0, 0.0],   # art0 — only [0,0] active; off-diagonal is padding
-             [0.0, 0.0]],
-            [[3.0, 1.0],   # art1 — full 2×2 block
-             [0.5, 4.0]],
-        ], dtype=np.float32)
+        H_np = np.array(
+            [
+                [
+                    [7.0, 0.0],  # art0 — only [0,0] active; off-diagonal is padding
+                    [0.0, 0.0],
+                ],
+                [
+                    [3.0, 1.0],  # art1 — full 2X2 block
+                    [0.5, 4.0],
+                ],
+            ],
+            dtype=np.float32,
+        )
 
         qddot_np = np.array([2.0, 5.0, -1.0], dtype=np.float32)  # [art0_dof0, art1_dof0, art1_dof1]
         coriolis_np = np.array([0.1, 0.2, 0.3], dtype=np.float32)
@@ -2214,14 +2279,27 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         # Every world uses the same pattern, exercising all eight root joint
         # types per world.
         root_joint_types_per_world = [
-            "fixed", "free", "ball", "d6_revolute", "d6_2lin", "d6_1lin_1ang", "d6_2ang", "d6_ball",
+            "fixed",
+            "free",
+            "ball",
+            "d6_revolute",
+            "d6_2lin",
+            "d6_1lin_1ang",
+            "d6_2ang",
+            "d6_ball",
         ]
         assert len(root_joint_types_per_world) == num_arts_per_world
         root_joint_types = root_joint_types_per_world * num_worlds
         # Per-type root qd-DOF counts (used to size the expected_dofs check).
         root_qd_len = {
-            "fixed": 0, "ball": 3, "d6_revolute": 1, "d6_2lin": 2,
-            "d6_1lin_1ang": 2, "d6_2ang": 2, "d6_ball": 3, "free": 6,
+            "fixed": 0,
+            "ball": 3,
+            "d6_revolute": 1,
+            "d6_2lin": 2,
+            "d6_1lin_1ang": 2,
+            "d6_2ang": 2,
+            "d6_ball": 3,
+            "free": 6,
         }
 
         # Per-articulation link mass. The first value (16) corresponds to a
@@ -2229,8 +2307,22 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         # multiples and submultiples to vary M(q) across articulations. Inertia
         # tracks mass for the same shape.
         per_articulation_masses = [
-            16.0, 32.0, 8.0, 24.0, 18.0, 12.0, 30.0, 6.0,   # world 0
-            20.0, 28.0, 14.0, 22.0, 10.0, 26.0, 34.0, 4.0,   # world 1
+            16.0,
+            32.0,
+            8.0,
+            24.0,
+            18.0,
+            12.0,
+            30.0,
+            6.0,  # world 0
+            20.0,
+            28.0,
+            14.0,
+            22.0,
+            10.0,
+            26.0,
+            34.0,
+            4.0,  # world 1
         ]
         assert len(per_articulation_masses) == num_arts
 
@@ -2437,14 +2529,24 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
             body2 = b.add_link(xform=identity_xform, mass=mass, inertia=I, com=wp.vec3(0.0, 0.0, 0.0))
             j_fixed = b.add_joint_fixed(parent=-1, child=body0, parent_xform=identity_xform, child_xform=identity_xform)
             j_rev0 = b.add_joint_revolute(
-                parent=body0, child=body1, axis=z_axis,
-                parent_xform=pos_one, child_xform=neg_one,
-                target_ke=0.0, target_kd=0.0, friction=0.0,
+                parent=body0,
+                child=body1,
+                axis=z_axis,
+                parent_xform=pos_one,
+                child_xform=neg_one,
+                target_ke=0.0,
+                target_kd=0.0,
+                friction=0.0,
             )
             j_rev1 = b.add_joint_revolute(
-                parent=body1, child=body2, axis=z_axis,
-                parent_xform=pos_one, child_xform=neg_one,
-                target_ke=0.0, target_kd=0.0, friction=0.0,
+                parent=body1,
+                child=body2,
+                axis=z_axis,
+                parent_xform=pos_one,
+                child_xform=neg_one,
+                target_ke=0.0,
+                target_kd=0.0,
+                friction=0.0,
             )
             b.add_articulation([j_fixed, j_rev0, j_rev1])
             if with_loop_closing:
@@ -2452,9 +2554,14 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                 # loop-closing joint (joint_articulation == -1). Its single DOF
                 # must not enter the articulation's DOF range.
                 b.add_joint_revolute(
-                    parent=body0, child=body2, axis=z_axis,
-                    parent_xform=pos_one, child_xform=neg_one,
-                    target_ke=0.0, target_kd=0.0, friction=0.0,
+                    parent=body0,
+                    child=body2,
+                    axis=z_axis,
+                    parent_xform=pos_one,
+                    child_xform=neg_one,
+                    target_ke=0.0,
+                    target_kd=0.0,
+                    friction=0.0,
                 )
             return b
 
@@ -2472,14 +2579,14 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         # all three manipulator-equation terms are non-trivial.
         joint_q = state.joint_q.numpy()
         joint_qd = state.joint_qd.numpy()
-        joint_q[0] = np.pi / 4.0   # art0 j_rev0
-        joint_q[1] = np.pi / 6.0   # art0 j_rev1
-        joint_q[2] = np.pi / 4.0   # art1 j_rev0 (identical)
-        joint_q[3] = np.pi / 6.0   # art1 j_rev1 (identical)
-        joint_qd[0] = 0.3           # art0 j_rev0 velocity
-        joint_qd[1] = -0.2          # art0 j_rev1 velocity
-        joint_qd[2] = 0.3           # art1 j_rev0 velocity (identical)
-        joint_qd[3] = -0.2          # art1 j_rev1 velocity (identical)
+        joint_q[0] = np.pi / 4.0  # art0 j_rev0
+        joint_q[1] = np.pi / 6.0  # art0 j_rev1
+        joint_q[2] = np.pi / 4.0  # art1 j_rev0 (identical)
+        joint_q[3] = np.pi / 6.0  # art1 j_rev1 (identical)
+        joint_qd[0] = 0.3  # art0 j_rev0 velocity
+        joint_qd[1] = -0.2  # art0 j_rev1 velocity
+        joint_qd[2] = 0.3  # art1 j_rev0 velocity (identical)
+        joint_qd[3] = -0.2  # art1 j_rev1 velocity (identical)
         state.joint_q.assign(joint_q)
         state.joint_qd.assign(joint_qd)
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
@@ -2493,12 +2600,9 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
 
         # Both articulations are physically identical: M(q), g(q), C(q,qd)*qd
         # must be equal.
-        np.testing.assert_allclose(H[0], H[1], atol=1e-5,
-                                   err_msg="mass_matrix differs between articulations")
-        np.testing.assert_allclose(g[0:2], g[2:4], atol=1e-5,
-                                   err_msg="gravity_force differs between articulations")
-        np.testing.assert_allclose(c[0:2], c[2:4], atol=1e-5,
-                                   err_msg="coriolis_force differs between articulations")
+        np.testing.assert_allclose(H[0], H[1], atol=1e-5, err_msg="mass_matrix differs between articulations")
+        np.testing.assert_allclose(g[0:2], g[2:4], atol=1e-5, err_msg="gravity_force differs between articulations")
+        np.testing.assert_allclose(c[0:2], c[2:4], atol=1e-5, err_msg="coriolis_force differs between articulations")
 
         # qddot: same for both tree DOF ranges; large sentinel at the
         # loop-closing slot. With the bug (wrong DOF boundary), the kernel
@@ -2506,10 +2610,10 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         # non-zero for a coupled chain) — multiplied by 99, producing a
         # large detectable contamination in tau[2].
         qddot_np = np.zeros(model.joint_dof_count, dtype=np.float32)
-        qddot_np[0] = 0.5   # art0 first DOF acceleration
-        qddot_np[1] = 0.3   # art0 second DOF acceleration
-        qddot_np[2] = 0.5   # art1 first DOF acceleration (identical)
-        qddot_np[3] = 0.3   # art1 second DOF acceleration (identical)
+        qddot_np[0] = 0.5  # art0 first DOF acceleration
+        qddot_np[1] = 0.3  # art0 second DOF acceleration
+        qddot_np[2] = 0.5  # art1 first DOF acceleration (identical)
+        qddot_np[3] = 0.3  # art1 second DOF acceleration (identical)
         qddot_np[4] = 99.0  # loop-closing DOF: must NOT enter tau[2:4]
         qddot = wp.array(qddot_np, dtype=wp.float32, device=self.device)
         newton.eval_inverse_dynamics_force(
@@ -2522,8 +2626,12 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         )
 
         tau = inverse_dynamics.tau.numpy()
-        np.testing.assert_allclose(tau[0:2], tau[2:4], atol=1e-5,
-                                   err_msg="tau differs between articulations — loop-closing DOF contaminated result")
+        np.testing.assert_allclose(
+            tau[0:2],
+            tau[2:4],
+            atol=1e-5,
+            err_msg="tau differs between articulations — loop-closing DOF contaminated result",
+        )
 
 
 class TestInverseDynamicsAPI(TestInverseDynamicsBase):
