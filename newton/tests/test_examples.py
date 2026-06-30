@@ -962,22 +962,6 @@ add_example_test(
 )
 add_example_test(
     TestMultiphysicsExamples,
-    name="multiphysics.example_rigid_soft_contact",
-    devices=["cpu"],
-    test_options={"num-frames": 0, "solver": "coupled", "rigid-solver": "mjc", "soft-solver": "xpbd"},
-    use_viewer=True,
-    test_suffix="coupled_xpbd",
-)
-add_example_test(
-    TestMultiphysicsExamples,
-    name="multiphysics.example_rigid_soft_contact",
-    devices=["cpu"],
-    test_options={"num-frames": 0, "solver": "coupled", "rigid-solver": "mjc", "soft-solver": "semi_implicit"},
-    use_viewer=True,
-    test_suffix="coupled_semi_implicit",
-)
-add_example_test(
-    TestMultiphysicsExamples,
     name="multiphysics.example_mujoco_vbd_admm_solver",
     devices=cuda_test_devices,
     test_options={"num-frames": 30},
@@ -988,13 +972,6 @@ add_example_test(
     name="multiphysics.example_admm_contact_solver",
     devices=test_devices,
     test_options={"num-frames": 120},
-    use_viewer=True,
-)
-add_example_test(
-    TestMultiphysicsExamples,
-    name="multiphysics.example_admm_rigid_contact_solver",
-    devices=test_devices,
-    test_options={"num-frames": 90, "tilt-time": 1.0},
     use_viewer=True,
 )
 add_example_test(

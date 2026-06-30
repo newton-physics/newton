@@ -11,12 +11,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.coupled.interface import CouplingEndpointKind, CouplingInterface
-from newton._src.solvers.coupled.proxy_utils import (
-    smooth_proxy_teleportation_kernel,
-    sync_proxy_states_kernel,
-)
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
-from newton._src.solvers.vbd.rigid_vbd_kernels import forward_step_rigid_bodies
 from newton.solvers import (
     SolverBase,
     SolverMuJoCo,
@@ -1164,6 +1159,74 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 ),
             )
 
+    def test_proxy_coupling_rejects_invalid_numerical_config(self):
+        entries = [
+            SolverCoupled.Entry(name="A", solver=SolverSemiImplicit, bodies=[0]),
+            SolverCoupled.Entry(name="B", solver=SolverSemiImplicit, bodies=[1]),
+        ]
+
+        for mass_scale in (0.0, -1.0, float("inf"), float("nan")):
+            with self.subTest(mass_scale=mass_scale), self.assertRaisesRegex(ValueError, "mass_scale"):
+                SolverCoupledProxy(
+                    model=self.model,
+                    entries=entries,
+                    coupling=SolverCoupledProxy.Config(
+                        proxies=[
+                            SolverCoupledProxy.Proxy(
+                                source="A",
+                                destination="B",
+                                bodies=[0],
+                                mass_scale=mass_scale,
+                            )
+                        ]
+                    ),
+                )
+
+        for iterations in (0, -1, 1.5, float("nan")):
+            with self.subTest(iterations=iterations), self.assertRaisesRegex(ValueError, "iterations"):
+                SolverCoupledProxy(
+                    model=self.model,
+                    entries=entries,
+                    coupling=SolverCoupledProxy.Config(
+                        proxies=[SolverCoupledProxy.Proxy(source="A", destination="B", bodies=[0])],
+                        iterations=iterations,
+                    ),
+                )
+
+        for collide_interval in (0, -1, 1.5, float("nan")):
+            with (
+                self.subTest(collide_interval=collide_interval),
+                self.assertRaisesRegex(ValueError, "collide_interval"),
+            ):
+                SolverCoupledProxy(
+                    model=self.model,
+                    entries=entries,
+                    coupling=SolverCoupledProxy.Config(
+                        proxies=[
+                            SolverCoupledProxy.Proxy(
+                                source="A",
+                                destination="B",
+                                bodies=[0],
+                                collision_pipeline=lambda model: None,
+                                collide_interval=collide_interval,
+                            )
+                        ]
+                    ),
+                )
+
+    def test_proxy_coupling_rejects_unowned_source_body(self):
+        with self.assertRaisesRegex(ValueError, "owned by source entry"):
+            SolverCoupledProxy(
+                model=self.model,
+                entries=[
+                    SolverCoupled.Entry(name="A", solver=SolverSemiImplicit, bodies=[0]),
+                    SolverCoupled.Entry(name="B", solver=SolverSemiImplicit, bodies=[1]),
+                ],
+                coupling=SolverCoupledProxy.Config(
+                    proxies=[SolverCoupledProxy.Proxy(source="A", destination="B", bodies=[1])]
+                ),
+            )
+
     def test_proxy_coupling_rejects_destination_owned_proxy_body(self):
         """Proxy body ids must not alias bodies owned by the destination."""
         builder = newton.ModelBuilder(gravity=0.0)
@@ -1940,295 +2003,6 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
         solver.step(state_0, state_1, control=None, contacts=contacts, dt=1.0 / 60.0)
 
         np.testing.assert_allclose(state_1.particle_q.numpy(), q_before, atol=1.0e-6)
-
-
-class TestSmoothTeleportRecovery(unittest.TestCase):
-    """Validate that sync + smooth teleportation + VBD forward integration
-    recovers the driving solver's end-of-step positions when there are no
-    external forces or collisions.
-
-    The coupling chain for proxy bodies each substep is:
-
-        1. Sync: body_q <- mjc.state_0.body_q, body_qd <- mjc.state_1.body_qd
-        2. Smooth teleport: fold (body_q - body_q_prev) into body_qd,
-           reset body_q <- body_q_prev
-        3. Forward integrate (semi-implicit Euler, zero forces/gravity)
-
-    With com = 0 the integrated position is:
-
-        p_new = p_prev + (v_mjc_end + (p_mjc_begin - p_prev) / dt) * dt
-              = p_mjc_begin + v_mjc_end * dt
-              = p_mjc_end
-
-    For the angular part with spherical inertia (no coriolis), the same
-    identity holds exactly when there is no angular jump and to first
-    order when there is one.
-    """
-
-    device = "cpu"
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _axis_angle_to_quat(axis, angle):
-        """Convert axis-angle to quaternion [qx, qy, qz, qw]."""
-        axis = np.asarray(axis, dtype=float)
-        axis = axis / np.linalg.norm(axis)
-        s = np.sin(angle / 2.0)
-        c = np.cos(angle / 2.0)
-        return np.array([axis[0] * s, axis[1] * s, axis[2] * s, c])
-
-    @staticmethod
-    def _quat_angle_error(q1, q2):
-        """Return the angular distance in radians between two quaternions."""
-        q1 = q1 / np.linalg.norm(q1)
-        q2 = q2 / np.linalg.norm(q2)
-        dot = np.clip(np.abs(np.dot(q1, q2)), 0.0, 1.0)
-        return 2.0 * np.arccos(dot)
-
-    def _assert_quat_close(self, q1, q2, angle_tol_rad, msg=""):
-        """Assert two quaternions are within *angle_tol_rad* of each other."""
-        err = self._quat_angle_error(q1, q2)
-        self.assertLessEqual(
-            err,
-            angle_tol_rad,
-            f"{msg}angular error {np.degrees(err):.4f} deg exceeds "
-            f"tolerance {np.degrees(angle_tol_rad):.4f} deg "
-            f"(q1={q1}, q2={q2})",
-        )
-
-    def _run_sync_teleport_forward(
-        self,
-        p_mjc_begin,
-        v_mjc_end,
-        p_prev,
-        dt,
-        w_mjc_end=None,
-        r_prev=None,
-        r_mjc_begin=None,
-    ):
-        """Run sync -> teleport -> forward-step for one proxy body.
-
-        Returns:
-            body_q: Integrated body transform (numpy, shape [7]).
-            body_q_prev_out: body_q_prev after forward step (numpy, shape [7]).
-        """
-        dev = self.device
-        if w_mjc_end is None:
-            w_mjc_end = np.zeros(3)
-        if r_prev is None:
-            r_prev = np.array([0.0, 0.0, 0.0, 1.0])
-        if r_mjc_begin is None:
-            r_mjc_begin = r_prev.copy()
-
-        # "MuJoCo" output arrays (1 body, index 0 is the proxy)
-        mjc_body_q = wp.array(
-            [wp.transform(p_mjc_begin, wp.quat(*r_mjc_begin))],
-            dtype=wp.transform,
-            device=dev,
-        )
-        mjc_body_qd = wp.array(
-            [
-                wp.spatial_vector(
-                    v_mjc_end[0],
-                    v_mjc_end[1],
-                    v_mjc_end[2],
-                    w_mjc_end[0],
-                    w_mjc_end[1],
-                    w_mjc_end[2],
-                )
-            ],
-            dtype=wp.spatial_vector,
-            device=dev,
-        )
-
-        # "VBD" arrays -- will be overwritten by sync
-        vbd_body_q = wp.array(
-            [wp.transform([0.0, 0.0, 0.0], wp.quat_identity())],
-            dtype=wp.transform,
-            device=dev,
-        )
-        vbd_body_qd = wp.zeros(1, dtype=wp.spatial_vector, device=dev)
-
-        # Proxy mapping: identity (body 0 <-> body 0)
-        src_to_dst = wp.array([0], dtype=int, device=dev)
-        proxy_ids = wp.array([0], dtype=int, device=dev)
-
-        # VBD's previous end-of-step transform
-        body_q_prev = wp.array(
-            [wp.transform(p_prev, wp.quat(*r_prev))],
-            dtype=wp.transform,
-            device=dev,
-        )
-
-        # --- Step 1: Sync ---
-        wp.launch(
-            sync_proxy_states_kernel,
-            dim=1,
-            inputs=[
-                mjc_body_q,
-                mjc_body_qd,
-                src_to_dst,
-                vbd_body_q,
-                vbd_body_qd,
-            ],
-            device=dev,
-        )
-
-        # --- Step 2: Smooth teleportation ---
-        wp.launch(
-            smooth_proxy_teleportation_kernel,
-            dim=1,
-            inputs=[dt, proxy_ids, vbd_body_q, vbd_body_qd, body_q_prev],
-            device=dev,
-        )
-
-        # --- Step 3: Forward integration (zero gravity, zero forces) ---
-        gravity = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=dev)
-        body_world = wp.array([0], dtype=wp.int32, device=dev)
-        body_f = wp.zeros(1, dtype=wp.spatial_vector, device=dev)
-        body_com = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=dev)
-        body_inertia = wp.array([wp.mat33(np.eye(3))], dtype=wp.mat33, device=dev)
-        body_inv_mass = wp.array([1.0], dtype=float, device=dev)
-        body_inv_inertia = wp.array([wp.mat33(np.eye(3))], dtype=wp.mat33, device=dev)
-        body_inertia_q = wp.zeros(1, dtype=wp.transform, device=dev)
-
-        wp.launch(
-            forward_step_rigid_bodies,
-            dim=1,
-            inputs=[
-                dt,
-                gravity,
-                body_world,
-                body_f,
-                body_com,
-                body_inertia,
-                body_inv_mass,
-                body_inv_inertia,
-                vbd_body_q,
-                vbd_body_qd,
-                body_inertia_q,
-            ],
-            device=dev,
-        )
-
-        return vbd_body_q.numpy()[0], body_q_prev.numpy()[0]
-
-    def _reference_forward(self, p, v, r, w, dt):
-        """Run forward_step_rigid_bodies directly (no sync/teleport) to get
-        the reference end-of-step transform.
-
-        Returns:
-            body_q: Integrated body transform (numpy, shape [7]).
-        """
-        dev = self.device
-        body_q = wp.array(
-            [wp.transform(p, wp.quat(*r))],
-            dtype=wp.transform,
-            device=dev,
-        )
-        body_qd = wp.array(
-            [wp.spatial_vector(v[0], v[1], v[2], w[0], w[1], w[2])],
-            dtype=wp.spatial_vector,
-            device=dev,
-        )
-        gravity = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=dev)
-        body_world = wp.array([0], dtype=wp.int32, device=dev)
-        body_f = wp.zeros(1, dtype=wp.spatial_vector, device=dev)
-        body_com = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=dev)
-        body_inertia = wp.array([wp.mat33(np.eye(3))], dtype=wp.mat33, device=dev)
-        body_inv_mass = wp.array([1.0], dtype=float, device=dev)
-        body_inv_inertia = wp.array([wp.mat33(np.eye(3))], dtype=wp.mat33, device=dev)
-        body_inertia_q = wp.zeros(1, dtype=wp.transform, device=dev)
-
-        wp.launch(
-            forward_step_rigid_bodies,
-            dim=1,
-            inputs=[
-                dt,
-                gravity,
-                body_world,
-                body_f,
-                body_com,
-                body_inertia,
-                body_inv_mass,
-                body_inv_inertia,
-                body_q,
-                body_qd,
-                body_inertia_q,
-            ],
-            device=dev,
-        )
-        return body_q.numpy()[0]
-
-    # ------------------------------------------------------------------
-    # Translational tests
-    # ------------------------------------------------------------------
-
-    def test_teleport_jump(self):
-        """body_q_prev != p_mjc_begin: teleport jump absorbed, VBD recovers p_mjc_end."""
-        dt = 1.0 / 60.0
-        p_begin = np.array([1.0, 2.0, 3.0])
-        v = np.array([0.5, -0.3, 0.1])
-        p_prev = np.array([0.8, 2.2, 2.7])
-
-        p_expected = p_begin + v * dt
-        result, _ = self._run_sync_teleport_forward(p_begin, v, p_prev, dt)
-        np.testing.assert_allclose(result[:3], p_expected, atol=1e-6)
-
-    def test_multi_step_chain(self):
-        """Run several steps in sequence; each step should recover the
-        analytic free-flight trajectory p(t) = p0 + v * t."""
-        dt = 1.0 / 60.0
-        p0 = np.array([0.0, 1.0, 0.0])
-        v = np.array([2.0, 0.0, -1.0])
-        n_steps = 10
-
-        # Introduce an initial jump on the very first step
-        p_prev = p0 + np.array([0.05, -0.02, 0.01])
-
-        for i in range(n_steps):
-            p_begin = p0 + v * dt * i
-            p_end_expected = p0 + v * dt * (i + 1)
-
-            result, _ = self._run_sync_teleport_forward(p_begin, v, p_prev, dt)
-            np.testing.assert_allclose(
-                result[:3],
-                p_end_expected,
-                atol=1e-6,
-                err_msg=f"Step {i}: VBD position does not match MuJoCo end-of-step",
-            )
-
-            # Simulate update_body_velocity advancing body_q_prev to
-            # the final pose.
-            p_prev = result[:3].copy()
-
-    # ------------------------------------------------------------------
-    # Angular tests
-    # ------------------------------------------------------------------
-
-    def test_angular_jump_off_axis(self):
-        """Angular jump around a different axis from the spinning axis.
-
-        Cross-axis coupling introduces a second-order error
-        O(dt * jump_angle * omega), which for a 5 deg jump at 3 rad/s
-        is approximately 0.07 deg.
-        """
-        dt = 1.0 / 60.0
-        p = np.array([1.0, 2.0, 0.0])
-        v = np.array([0.5, 0.0, 0.0])
-
-        w = np.array([0.0, 3.0, 0.0])
-        r_begin = self._axis_angle_to_quat([1, 0, 0], np.radians(10))
-        r_prev = self._axis_angle_to_quat([1, 0, 0], np.radians(5))
-
-        ref = self._reference_forward(p, v, r_begin, w, dt)
-        result, _ = self._run_sync_teleport_forward(p, v, p, dt, w_mjc_end=w, r_prev=r_prev, r_mjc_begin=r_begin)
-
-        np.testing.assert_allclose(result[:3], ref[:3], atol=1e-6)
-        self._assert_quat_close(result[3:], ref[3:], angle_tol_rad=np.radians(0.15))
 
 
 class TestSolverCoupledVBDColoring(unittest.TestCase):

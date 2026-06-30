@@ -273,7 +273,8 @@ class SolverCoupledProxy(SolverCoupled):
             mass_scale: Scale factor applied to source effective body
                 mass/inertia and particle mass when assigning destination
                 proxy properties. This does not modify the source modeled
-                free-body mass/inertia or particle mass.
+                free-body mass/inertia or particle mass. Must be finite and
+                positive.
             mode: Proxy transfer mode, ``"lagged"`` or ``"staggered"``.
                 ``"lagged"`` syncs source begin poses and end velocities, then
                 prepares proxies to avoid double-counting lagged feedback.
@@ -300,7 +301,8 @@ class SolverCoupledProxy(SolverCoupled):
                 the outer-level contacts passed to :meth:`step`.
             collide_interval: Collision-detection refresh interval for
                 ``collision_pipeline``. ``None`` means every proxy pass when a
-                custom pipeline is supplied.
+                custom pipeline is supplied. Explicit values must be positive
+                integers.
         """
 
         source: str
@@ -322,7 +324,12 @@ class SolverCoupledProxy(SolverCoupled):
 
     @dataclass(frozen=True)
     class Config:
-        """Lagged-impulse proxy coupling configuration."""
+        """Lagged-impulse proxy coupling configuration.
+
+        Args:
+            proxies: Directed proxy mappings between solver entries.
+            iterations: Positive number of proxy relaxation passes per step.
+        """
 
         proxies: Sequence[SolverCoupledProxy.Proxy]
         iterations: int = 1
@@ -335,6 +342,8 @@ class SolverCoupledProxy(SolverCoupled):
     ) -> None:
         if len(entries) > 2:
             raise ValueError("Proxy coupling currently supports at most two solver entries")
+
+        self._validate_config(entries, coupling)
 
         entry_body_sets = {entry.name: {int(i) for i in entry.bodies} for entry in entries}
         entry_particle_sets = {entry.name: {int(i) for i in entry.particles} for entry in entries}
@@ -361,6 +370,46 @@ class SolverCoupledProxy(SolverCoupled):
             entries=entries,
             coupling=coupling,
         )
+
+    @classmethod
+    def _validate_config(
+        cls,
+        entries: Sequence[SolverCoupled.Entry],
+        coupling: SolverCoupledProxy.Config,
+    ) -> None:
+        cls._positive_integer(coupling.iterations, "Proxy coupling iterations")
+        entry_names = {entry.name for entry in entries}
+        for proxy in coupling.proxies:
+            if proxy.source not in entry_names:
+                raise ValueError(f"Unknown proxy source entry {proxy.source!r}")
+            if proxy.destination not in entry_names:
+                raise ValueError(f"Unknown proxy destination entry {proxy.destination!r}")
+            if proxy.source == proxy.destination:
+                raise ValueError("Proxy source and destination entries must differ")
+            if not proxy.bodies and not proxy.particles and not proxy.joints:
+                raise ValueError("Proxy mapping must contain at least one body, particle, or joint")
+
+            mass_scale = float(proxy.mass_scale)
+            if not np.isfinite(mass_scale) or mass_scale <= 0.0:
+                raise ValueError(f"Proxy mass_scale must be finite and > 0, got {proxy.mass_scale!r}")
+
+            cls._proxy_mode_value(proxy.mode)
+            relaxation = cls._proxy_relaxation_value(proxy.proxy_relaxation)
+            relaxation_mode = cls._proxy_relaxation_mode_value(proxy.proxy_relaxation_mode)
+            cls._proxy_relaxation_bounds(proxy, relaxation, relaxation_mode)
+
+            if proxy.collide_interval is not None:
+                cls._positive_integer(proxy.collide_interval, "Proxy collide_interval")
+
+    @staticmethod
+    def _positive_integer(value: int, label: str) -> int:
+        try:
+            converted = int(value)
+        except (TypeError, ValueError, OverflowError) as err:
+            raise ValueError(f"{label} must be an integer >= 1, got {value!r}") from err
+        if isinstance(value, bool) or converted != value or converted < 1:
+            raise ValueError(f"{label} must be an integer >= 1, got {value!r}")
+        return converted
 
     @staticmethod
     def _proxy_mode_value(mode: str) -> int:
@@ -609,6 +658,12 @@ class SolverCoupledProxy(SolverCoupled):
             self._validate_unique_proxy_ids("source body", src_ids)
             self._validate_unique_proxy_ids("proxy body", proxy_local_ids)
             self._validate_proxy_body_worlds(model, src_ids, proxy_local_ids)
+            self._validate_proxy_source_ids_owned(
+                "body",
+                src_ids,
+                proxy.source,
+                entry_body_sets.get(proxy.source),
+            )
             self._validate_proxy_destination_ids_not_owned(
                 "body",
                 proxy_local_ids,
@@ -661,7 +716,7 @@ class SolverCoupledProxy(SolverCoupled):
                 raise TypeError("Proxy collision_pipeline must be callable")
 
             key = (proxy.source, proxy.destination)
-            collide_interval = 1 if proxy.collide_interval is None else max(1, int(proxy.collide_interval))
+            collide_interval = 1 if proxy.collide_interval is None else int(proxy.collide_interval)
             existing = configs.get(key)
             if existing is not None:
                 if existing.factory is not proxy.collision_pipeline or existing.collide_interval != collide_interval:
@@ -707,6 +762,12 @@ class SolverCoupledProxy(SolverCoupled):
             self._validate_proxy_ids("Proxy destination particle", proxy_local_ids, model.particle_count)
             self._validate_unique_proxy_ids("source particle", src_ids)
             self._validate_unique_proxy_ids("proxy particle", proxy_local_ids)
+            self._validate_proxy_source_ids_owned(
+                "particle",
+                src_ids,
+                proxy.source,
+                entry_particle_sets.get(proxy.source),
+            )
             self._validate_proxy_destination_ids_not_owned(
                 "particle",
                 proxy_local_ids,
@@ -1415,7 +1476,7 @@ class SolverCoupledProxy(SolverCoupled):
         """Run lagged-impulse proxy iterations for one coupled step."""
         del state_out
         self._reset_aitken_iteration_state()
-        iterations = max(1, int(self._coupling.iterations))
+        iterations = int(self._coupling.iterations)
         for k in range(iterations):
             # Some solvers use state_in arrays as temporary buffers during a
             # step. Proxy iterations are repeated solves over the same top-level

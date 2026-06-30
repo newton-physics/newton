@@ -15,7 +15,7 @@
 #
 # Standalone: depends only on newton + warp (no IsaacLab).
 #
-# Command: python -m newton.examples franka_cable_ik_pick_place_proxy
+# Command: python -m newton.examples franka_cable_ik_pick_place
 ###########################################################################
 
 from __future__ import annotations
@@ -248,6 +248,7 @@ class Example:
             positions=points,
             quaternions=quats,
             radius=self.payload_radius,
+            body_frame_origin="start",
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=1.0e-1,

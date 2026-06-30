@@ -1791,10 +1791,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         """Return coupled sub-solver entry names in stepping order."""
         return tuple(self._solver_order)
 
-    def entry_view(self, name: str) -> ModelView:
-        """Return the :class:`ModelView` for coupled sub-solver *name*."""
-        return self.view(name)
-
     def entry_state(self, name: str, phase: Literal["current", "input", "output"] = "current") -> State:
         """Return an entry-local state suitable for visualization.
 
@@ -1807,7 +1803,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 before the first step.
 
         Returns:
-            Entry-local state whose arrays match :meth:`entry_view`.
+            Entry-local state whose arrays match :meth:`view`.
         """
         entry = self._entries[name]
         if phase == "input":
@@ -1838,11 +1834,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return None
         return self._contacts_for_entry(entry, contacts)
 
-    def entry_output_state_valid(self) -> bool:
-        """Return whether entry output states reflect the last coupled step."""
-        return self._entry_output_state_valid
-
-    def sync_entry_states(self, state_in: State, dt: float = 0.0) -> None:
+    def _sync_entry_states(self, state_in: State, dt: float = 0.0) -> None:
         """Synchronize entry input states from a parent-model state.
 
         This is primarily useful for visualization before the first coupled

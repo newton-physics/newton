@@ -122,16 +122,17 @@ The protocol currently covers these concepts:
   Proxy and ADMM couplers pass these acceleration arrays explicitly to rewind
   and harvest hooks so solvers that scale or compensate gravity can avoid
   double-applying it.
-- ``coupling_rewind_proxy_body_velocity()`` and
-  ``coupling_rewind_proxy_particle_velocity()`` let a
+- ``coupling_rewind_proxy_body()`` and
+  ``coupling_rewind_proxy_particle()`` let a
   destination solver prepare proxy velocities before a lagged proxy pass.
 - ``coupling_harvest_proxy_wrenches()`` and
   ``coupling_harvest_proxy_particle_forces()`` let a destination solver
   report feedback forces from solver-native contact or transfer data.
 - ``coupling_prepare_proxy_contacts()`` lets a destination solver filter or prepare
   proxy-local contacts before its step.
-- ``EFFECTIVE_MASS_DIAGONAL`` and ``EFFECTIVE_MASS_BLOCK`` let a solver provide
-  endpoint effective mass instead of using raw model mass and inertia.
+- ``coupling_eval_effective_mass()`` and
+  ``coupling_eval_effective_mass_block()`` let a solver provide endpoint
+  effective mass instead of using raw model mass and inertia.
 
 Force injection itself is not a hook. Couplers write into public
 ``state.body_f``, ``state.particle_f``, and ``control.joint_f`` buffers, then

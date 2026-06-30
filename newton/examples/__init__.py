@@ -317,9 +317,6 @@ def _coupled_view_model(example, name: str):
         choices = ", ".join((_COUPLED_VIEW_COMBINED, *entry_names))
         raise ValueError(f"Unknown coupled solver view {name!r}; choose one of: {choices}")
 
-    entry_view = getattr(solver, "entry_view", None)
-    if callable(entry_view):
-        return entry_view(name)
     return solver.view(name)
 
 
@@ -328,9 +325,8 @@ def _coupled_view_state(example, name: str):
         return example.state_0
 
     solver = example.solver
-    output_valid = getattr(solver, "entry_output_state_valid", None)
-    sync_entry_states = getattr(solver, "sync_entry_states", None)
-    if callable(output_valid) and callable(sync_entry_states) and not output_valid():
+    sync_entry_states = getattr(solver, "_sync_entry_states", None)
+    if callable(sync_entry_states) and not solver._entry_output_state_valid:
         sync_entry_states(example.state_0)
     return solver.entry_state(name)
 

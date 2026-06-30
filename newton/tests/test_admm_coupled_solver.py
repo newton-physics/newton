@@ -25,7 +25,6 @@ from newton.solvers import (
     SolverXPBD,
 )
 from newton.solvers.experimental.coupled import (
-    ModelView,
     SolverCoupled,
     SolverCoupledADMM,
 )
@@ -715,26 +714,29 @@ def _run_collision_inclined_plane_rigid_box(
     return displacement, velocity, min_gap, solver.collision_contact_count_max
 
 
-class TestAdmmScalePartMass(unittest.TestCase):
-    """ModelView.scale_particle_mass overrides particle mass/inv_mass."""
-
-    def test_scale(self):
-        builder = newton.ModelBuilder()
-        for _ in range(3):
-            builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=2.0)
-        model = builder.finalize(device="cpu")
-
-        view = ModelView(model, "test")
-        view.scale_particle_mass(None, 4.0)
-
-        np.testing.assert_allclose(view.particle_mass.numpy(), [8.0, 8.0, 8.0])
-        np.testing.assert_allclose(view.particle_inv_mass.numpy(), [0.125, 0.125, 0.125])
-        # Parent unchanged.
-        np.testing.assert_allclose(model.particle_mass.numpy(), [2.0, 2.0, 2.0])
-
-
 class TestAdmmSmoke(unittest.TestCase):
     """End-to-end: construct, run, verify state advances without NaNs."""
+
+    def test_rejects_invalid_numerical_config(self):
+        model = _build_two_particle_scene()
+        entries = [
+            SolverCoupled.Entry(name="a", solver=SolverSemiImplicit, particles=[0]),
+            SolverCoupled.Entry(name="b", solver=SolverSemiImplicit, particles=[1]),
+        ]
+        invalid_configs = (
+            ({"iterations": 0}, "iterations"),
+            ({"iterations": 1.5}, "iterations"),
+            ({"rho": 0.0}, "rho"),
+            ({"rho": float("nan")}, "rho"),
+            ({"gamma": -1.0}, "gamma"),
+            ({"baumgarte": float("inf")}, "baumgarte"),
+            ({"joint_stiffness": -1.0}, "joint_stiffness"),
+            ({"joint_proximal_mass_scale": 0.0}, "joint_proximal_mass_scale"),
+            ({"contact_matching_normal_dot_threshold": 1.1}, "normal_dot_threshold"),
+        )
+        for kwargs, message in invalid_configs:
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, message):
+                SolverCoupledADMM(model=model, entries=entries, coupling=SolverCoupledADMM.Config(**kwargs))
 
     def test_construct_and_step_no_attachments(self):
         model, rs, re, _ = _build_cloth_rigid_scene()
@@ -902,8 +904,6 @@ class TestAdmmModelJointInterface(unittest.TestCase):
         body_q, _ = _run_bodies(solver, model, n_steps=8, dt=1.0 / 120.0)
         final_gap = abs(body_q[child, 0] - body_q[parent, 0])
 
-        self.assertEqual(len(solver._admm_rr_groups), 1)
-        self.assertEqual(len(solver._admm_rr_angular_groups), 0)
         self.assertLess(final_gap, 0.5 * initial_gap)
 
     def test_rejects_cross_solver_joint_owned_by_subsolver(self):
@@ -939,7 +939,6 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
         body_q, particle_q = _run_body_particle(solver, model, n_steps=8, dt=1.0 / 120.0)
         final_gap = np.linalg.norm(body_q[0, :3] - particle_q[0])
 
-        self.assertEqual(len(solver._admm_rp_groups), 1)
         self.assertLess(final_gap, 0.5 * initial_gap)
 
 

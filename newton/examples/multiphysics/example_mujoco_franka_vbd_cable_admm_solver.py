@@ -319,6 +319,7 @@ class Example:
             positions=points,
             quaternions=quats,
             radius=self.payload_radius,
+            body_frame_origin="start",
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=2.0e-2,

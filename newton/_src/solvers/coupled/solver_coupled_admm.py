@@ -388,6 +388,12 @@ class _AdmmJointProxyMapping:
     proxy_inertia: wp.array | None = None
 
 
+_AdmmQuadraticGroup = (
+    _AdmmRigidRigidAttachmentGroup | _AdmmRigidRigidAngularAttachmentGroup | _AdmmRigidParticleAttachmentGroup
+)
+_AdmmContactGroup = _AdmmRigidRigidContactGroup | _AdmmRigidParticleContactGroup | _AdmmParticleParticleContactGroup
+
+
 class SolverCoupledADMM(SolverCoupled):
     """Couple multiple solvers with linearized ADMM over model-derived constraints."""
 
@@ -548,10 +554,10 @@ class SolverCoupledADMM(SolverCoupled):
         """Linearized ADMM coupling configuration.
 
         Args:
-            iterations: Number of ADMM iterations per solver step.
-            rho: ADMM penalty parameter.
-            gamma: Proximal mass scaling parameter.
-            baumgarte: Position error correction fraction.
+            iterations: Positive number of ADMM iterations per solver step.
+            rho: Positive ADMM penalty parameter.
+            gamma: Nonnegative proximal mass scaling parameter.
+            baumgarte: Nonnegative position error correction fraction.
             joint_stiffness: Quadratic stiffness for translational ADMM
                 attachments derived from cross-solver model joints [N/m].
             joint_damping: Quadratic damping for translational ADMM
@@ -641,10 +647,7 @@ class SolverCoupledADMM(SolverCoupled):
         self._admm_joint_proxy_joint_keep: dict[str, set[int]] = {}
         self._admm_joint_proxy_mappings: list[_AdmmJointProxyMapping] = []
 
-        if coupling.joint_proximal_mass_scale <= 0.0:
-            raise ValueError("ADMM joint_proximal_mass_scale must be positive")
-        if coupling.contact_matching_force_scale < 0.0:
-            raise ValueError("ADMM contact_matching_force_scale must be non-negative")
+        self._validate_config(coupling)
         if coupling.joint_proximal_bodies:
             self._init_admm_joint_proxy_visibility(model, entries, coupling.joint_proximal_destination_entries)
 
@@ -656,6 +659,78 @@ class SolverCoupledADMM(SolverCoupled):
 
         self._setup_admm(coupling)
         self._apply_cached_admm_joint_proxy_effective_masses()
+
+    @classmethod
+    def _validate_config(cls, coupling: SolverCoupledADMM.Config) -> None:
+        cls._positive_integer(coupling.iterations, "ADMM iterations")
+        cls._finite_scalar(coupling.rho, "ADMM rho", lower_bound=0.0, lower_inclusive=False)
+        cls._finite_scalar(coupling.gamma, "ADMM gamma", lower_bound=0.0)
+        cls._finite_scalar(coupling.baumgarte, "ADMM baumgarte", lower_bound=0.0)
+        cls._finite_scalar(coupling.joint_stiffness, "ADMM joint_stiffness", lower_bound=0.0)
+        cls._finite_scalar(coupling.joint_damping, "ADMM joint_damping", lower_bound=0.0)
+        cls._finite_scalar(coupling.joint_angular_stiffness, "ADMM joint_angular_stiffness", lower_bound=0.0)
+        cls._finite_scalar(coupling.joint_angular_damping, "ADMM joint_angular_damping", lower_bound=0.0)
+        cls._finite_scalar(
+            coupling.joint_proximal_mass_scale,
+            "ADMM joint_proximal_mass_scale",
+            lower_bound=0.0,
+            lower_inclusive=False,
+        )
+        cls._finite_scalar(
+            coupling.contact_matching_force_scale,
+            "ADMM contact_matching_force_scale",
+            lower_bound=0.0,
+        )
+
+        if coupling.rigid_contact_matching not in ("disabled", "latest", "sticky"):
+            raise ValueError(
+                "ADMM rigid_contact_matching must be 'disabled', 'latest', or 'sticky', "
+                f"got {coupling.rigid_contact_matching!r}"
+            )
+        if coupling.contact_matching_pos_threshold is not None:
+            cls._finite_scalar(
+                coupling.contact_matching_pos_threshold,
+                "ADMM contact_matching_pos_threshold",
+                lower_bound=0.0,
+            )
+        if coupling.contact_matching_normal_dot_threshold is not None:
+            cls._finite_scalar(
+                coupling.contact_matching_normal_dot_threshold,
+                "ADMM contact_matching_normal_dot_threshold",
+                lower_bound=-1.0,
+                upper_bound=1.0,
+            )
+
+    @staticmethod
+    def _positive_integer(value: int, label: str) -> int:
+        try:
+            converted = int(value)
+        except (TypeError, ValueError, OverflowError) as err:
+            raise ValueError(f"{label} must be an integer >= 1, got {value!r}") from err
+        if isinstance(value, bool) or converted != value or converted < 1:
+            raise ValueError(f"{label} must be an integer >= 1, got {value!r}")
+        return converted
+
+    @staticmethod
+    def _finite_scalar(
+        value: float,
+        label: str,
+        *,
+        lower_bound: float | None = None,
+        upper_bound: float | None = None,
+        lower_inclusive: bool = True,
+    ) -> float:
+        converted = float(value)
+        if not np.isfinite(converted):
+            raise ValueError(f"{label} must be finite, got {value!r}")
+        if lower_bound is not None:
+            below = converted < lower_bound if lower_inclusive else converted <= lower_bound
+            if below:
+                relation = ">=" if lower_inclusive else ">"
+                raise ValueError(f"{label} must be {relation} {lower_bound}, got {value!r}")
+        if upper_bound is not None and converted > upper_bound:
+            raise ValueError(f"{label} must be <= {upper_bound}, got {value!r}")
+        return converted
 
     def _init_admm_joint_proxy_visibility(
         self,
@@ -2713,7 +2788,7 @@ class SolverCoupledADMM(SolverCoupled):
         """Run ADMM iterations over all sub-solvers."""
         del state_out
         coupling = self._coupling
-        iters = max(1, int(coupling.iterations))
+        iters = int(coupling.iterations)
         self._refresh_collision_contact_groups(state_in)
         if float(coupling.gamma) > 0.0:
             self._refresh_admm_proximal_masks()
@@ -3623,6 +3698,58 @@ class SolverCoupledADMM(SolverCoupled):
         if entry.particle_indices.shape[0] > 0:
             self._set_local_particle_force_input(entry, buf.particle_f, dt=dt)
 
+    def _update_admm_contact_u(self, group: _AdmmContactGroup) -> None:
+        wp.launch(
+            contact_u_update_kernel,
+            dim=group.count,
+            inputs=[
+                group.active_count,
+                group.u_min,
+                group.W,
+                float(self._coupling.rho),
+                group.friction,
+                group.normal,
+                group.lambda_,
+                group.Jv,
+            ],
+            outputs=[group.u],
+            device=self.model.device,
+        )
+
+    def _update_admm_quadratic_dual(self, group: _AdmmQuadraticGroup) -> None:
+        wp.launch(
+            u_update_quadratic_kernel,
+            dim=group.count,
+            inputs=[
+                group.kappa,
+                group.damping,
+                group.W,
+                float(self._coupling.rho),
+                group.lambda_,
+                group.Jv,
+                group.u_target,
+            ],
+            outputs=[group.u],
+            device=self.model.device,
+        )
+        wp.launch(
+            lambda_update_kernel,
+            dim=group.count,
+            inputs=[float(self._coupling.rho), group.W, group.u, group.Jv],
+            outputs=[group.lambda_],
+            device=self.model.device,
+        )
+
+    def _update_admm_contact_dual(self, group: _AdmmContactGroup) -> None:
+        self._update_admm_contact_u(group)
+        wp.launch(
+            contact_lambda_update_kernel,
+            dim=group.count,
+            inputs=[group.active_count, float(self._coupling.rho), group.W, group.u, group.Jv],
+            outputs=[group.lambda_],
+            device=self.model.device,
+        )
+
     def _accumulate_admm_forces(
         self,
         iteration_k: int,
@@ -3859,22 +3986,7 @@ class SolverCoupledADMM(SolverCoupled):
                     device=self.model.device,
                 )
             if initialize_contact_u:
-                wp.launch(
-                    contact_u_update_kernel,
-                    dim=group.count,
-                    inputs=[
-                        group.active_count,
-                        group.u_min,
-                        group.W,
-                        float(coupling.rho),
-                        group.friction,
-                        group.normal,
-                        group.lambda_,
-                        group.Jv,
-                    ],
-                    outputs=[group.u],
-                    device=self.model.device,
-                )
+                self._update_admm_contact_u(group)
             wp.launch(
                 contact_rr_accumulate_forces_kernel,
                 dim=group.count,
@@ -3924,22 +4036,7 @@ class SolverCoupledADMM(SolverCoupled):
                     device=self.model.device,
                 )
             if initialize_contact_u:
-                wp.launch(
-                    contact_u_update_kernel,
-                    dim=group.count,
-                    inputs=[
-                        group.active_count,
-                        group.u_min,
-                        group.W,
-                        float(coupling.rho),
-                        group.friction,
-                        group.normal,
-                        group.lambda_,
-                        group.Jv,
-                    ],
-                    outputs=[group.u],
-                    device=self.model.device,
-                )
+                self._update_admm_contact_u(group)
             wp.launch(
                 contact_rp_accumulate_forces_kernel,
                 dim=group.count,
@@ -3980,22 +4077,7 @@ class SolverCoupledADMM(SolverCoupled):
                     device=self.model.device,
                 )
             if initialize_contact_u:
-                wp.launch(
-                    contact_u_update_kernel,
-                    dim=group.count,
-                    inputs=[
-                        group.active_count,
-                        group.u_min,
-                        group.W,
-                        float(coupling.rho),
-                        group.friction,
-                        group.normal,
-                        group.lambda_,
-                        group.Jv,
-                    ],
-                    outputs=[group.u],
-                    device=self.model.device,
-                )
+                self._update_admm_contact_u(group)
             wp.launch(
                 contact_pp_accumulate_forces_kernel,
                 dim=group.count,
@@ -4056,28 +4138,7 @@ class SolverCoupledADMM(SolverCoupled):
                 outputs=[group.Jv],
                 device=self.model.device,
             )
-            wp.launch(
-                u_update_quadratic_kernel,
-                dim=group.count,
-                inputs=[
-                    group.kappa,
-                    group.damping,
-                    group.W,
-                    float(coupling.rho),
-                    group.lambda_,
-                    group.Jv,
-                    group.u_target,
-                ],
-                outputs=[group.u],
-                device=self.model.device,
-            )
-            wp.launch(
-                lambda_update_kernel,
-                dim=group.count,
-                inputs=[float(coupling.rho), group.W, group.u, group.Jv],
-                outputs=[group.lambda_],
-                device=self.model.device,
-            )
+            self._update_admm_quadratic_dual(group)
         for group in self._admm_rr_angular_groups:
             if group.count == 0:
                 continue
@@ -4095,28 +4156,7 @@ class SolverCoupledADMM(SolverCoupled):
                 outputs=[group.Jv],
                 device=self.model.device,
             )
-            wp.launch(
-                u_update_quadratic_kernel,
-                dim=group.count,
-                inputs=[
-                    group.kappa,
-                    group.damping,
-                    group.W,
-                    float(coupling.rho),
-                    group.lambda_,
-                    group.Jv,
-                    group.u_target,
-                ],
-                outputs=[group.u],
-                device=self.model.device,
-            )
-            wp.launch(
-                lambda_update_kernel,
-                dim=group.count,
-                inputs=[float(coupling.rho), group.W, group.u, group.Jv],
-                outputs=[group.lambda_],
-                device=self.model.device,
-            )
+            self._update_admm_quadratic_dual(group)
         for group in self._admm_rr_revolute_angular_groups:
             if group.count == 0:
                 continue
@@ -4136,28 +4176,7 @@ class SolverCoupledADMM(SolverCoupled):
                 outputs=[group.Jv],
                 device=self.model.device,
             )
-            wp.launch(
-                u_update_quadratic_kernel,
-                dim=group.count,
-                inputs=[
-                    group.kappa,
-                    group.damping,
-                    group.W,
-                    float(coupling.rho),
-                    group.lambda_,
-                    group.Jv,
-                    group.u_target,
-                ],
-                outputs=[group.u],
-                device=self.model.device,
-            )
-            wp.launch(
-                lambda_update_kernel,
-                dim=group.count,
-                inputs=[float(coupling.rho), group.W, group.u, group.Jv],
-                outputs=[group.lambda_],
-                device=self.model.device,
-            )
+            self._update_admm_quadratic_dual(group)
         for group in self._admm_rr_angular_friction_groups:
             if group.count == 0:
                 continue
@@ -4211,28 +4230,7 @@ class SolverCoupledADMM(SolverCoupled):
                 outputs=[group.Jv],
                 device=self.model.device,
             )
-            wp.launch(
-                u_update_quadratic_kernel,
-                dim=group.count,
-                inputs=[
-                    group.kappa,
-                    group.damping,
-                    group.W,
-                    float(coupling.rho),
-                    group.lambda_,
-                    group.Jv,
-                    group.u_target,
-                ],
-                outputs=[group.u],
-                device=self.model.device,
-            )
-            wp.launch(
-                lambda_update_kernel,
-                dim=group.count,
-                inputs=[float(coupling.rho), group.W, group.u, group.Jv],
-                outputs=[group.lambda_],
-                device=self.model.device,
-            )
+            self._update_admm_quadratic_dual(group)
         for group in self._admm_dynamic_rr_contact_groups:
             if group.count == 0:
                 continue
@@ -4259,29 +4257,7 @@ class SolverCoupledADMM(SolverCoupled):
                 outputs=[group.Jv],
                 device=self.model.device,
             )
-            wp.launch(
-                contact_u_update_kernel,
-                dim=group.count,
-                inputs=[
-                    group.active_count,
-                    group.u_min,
-                    group.W,
-                    float(coupling.rho),
-                    group.friction,
-                    group.normal,
-                    group.lambda_,
-                    group.Jv,
-                ],
-                outputs=[group.u],
-                device=self.model.device,
-            )
-            wp.launch(
-                contact_lambda_update_kernel,
-                dim=group.count,
-                inputs=[group.active_count, float(coupling.rho), group.W, group.u, group.Jv],
-                outputs=[group.lambda_],
-                device=self.model.device,
-            )
+            self._update_admm_contact_dual(group)
         for group in self._admm_dynamic_rp_contact_groups:
             if group.count == 0:
                 continue
@@ -4304,29 +4280,7 @@ class SolverCoupledADMM(SolverCoupled):
                 outputs=[group.Jv],
                 device=self.model.device,
             )
-            wp.launch(
-                contact_u_update_kernel,
-                dim=group.count,
-                inputs=[
-                    group.active_count,
-                    group.u_min,
-                    group.W,
-                    float(coupling.rho),
-                    group.friction,
-                    group.normal,
-                    group.lambda_,
-                    group.Jv,
-                ],
-                outputs=[group.u],
-                device=self.model.device,
-            )
-            wp.launch(
-                contact_lambda_update_kernel,
-                dim=group.count,
-                inputs=[group.active_count, float(coupling.rho), group.W, group.u, group.Jv],
-                outputs=[group.lambda_],
-                device=self.model.device,
-            )
+            self._update_admm_contact_dual(group)
         for group in self._admm_dynamic_pp_contact_groups:
             if group.count == 0:
                 continue
@@ -4345,26 +4299,4 @@ class SolverCoupledADMM(SolverCoupled):
                 outputs=[group.Jv],
                 device=self.model.device,
             )
-            wp.launch(
-                contact_u_update_kernel,
-                dim=group.count,
-                inputs=[
-                    group.active_count,
-                    group.u_min,
-                    group.W,
-                    float(coupling.rho),
-                    group.friction,
-                    group.normal,
-                    group.lambda_,
-                    group.Jv,
-                ],
-                outputs=[group.u],
-                device=self.model.device,
-            )
-            wp.launch(
-                contact_lambda_update_kernel,
-                dim=group.count,
-                inputs=[group.active_count, float(coupling.rho), group.W, group.u, group.Jv],
-                outputs=[group.lambda_],
-                device=self.model.device,
-            )
+            self._update_admm_contact_dual(group)
