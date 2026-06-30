@@ -17,3 +17,4 @@ newton.sensors
    SensorContact
    SensorFrameTransform
    SensorIMU
+   SensorTiledCamera
