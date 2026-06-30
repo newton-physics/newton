@@ -1824,13 +1824,16 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
     """Manipulator-equation tests covering combined inverse-dynamics outputs."""
 
     def test_eval_inverse_dynamics_finite_on_degenerate_joint_types(self):
-        """Finite-only guard for DISTANCE, CABLE, and multi-angular-DOF D6.
+        """Finite-only guard for DISTANCE and CABLE joint types.
 
         These paths are either unsupported by the inverse-dynamics pipeline
         (CABLE is not reconstructed by ``eval_fk``; DISTANCE is treated as
-        FREE) or have a known round-trip omission (D6 with more than one
-        angular DOF, deferred to #2749). Correctness is not asserted, but
-        a NaN regression on their outputs would currently go uncaught.
+        FREE). Correctness is not asserted, but a NaN regression on their
+        outputs would currently go uncaught.
+
+        Multi-angular-DOF D6 joints are fully supported and are covered by
+        analytical assertions in :meth:`test_inverse_dynamics_force_baseline`
+        and related tests.
         """
         identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
@@ -1859,17 +1862,6 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                 lambda b, link: b.add_joint_cable(
                     parent=-1, child=link,
                     parent_xform=identity_xform, child_xform=identity_xform,
-                ),
-            ),
-            (
-                "d6_two_angular",
-                lambda b, link: b.add_joint_d6(
-                    parent=-1, child=link,
-                    parent_xform=identity_xform, child_xform=identity_xform,
-                    angular_axes=[
-                        newton.ModelBuilder.JointDofConfig(axis=wp.vec3(1.0, 0.0, 0.0)),
-                        newton.ModelBuilder.JointDofConfig(axis=wp.vec3(0.0, 0.0, 1.0)),
-                    ],
                 ),
             ),
         ]
@@ -2131,6 +2123,34 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                         newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z),
                     ],
                 )
+            elif root_joint_type == "d6_2ang":
+                # D6 with 2 angular axes (X, Z) -> exercises transform_2d_rotational_axes.
+                j0 = b.add_joint_d6(
+                    parent=-1,
+                    child=link0,
+                    parent_xform=root_parent_xform,
+                    child_xform=identity_xform,
+                    linear_axes=[],
+                    angular_axes=[
+                        newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X),
+                        newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z),
+                    ],
+                )
+            elif root_joint_type == "d6_ball":
+                # D6 with 3 angular axes (X, Y, Z) -> ball-equivalent, exercises
+                # transform_3d_rotational_axes.
+                j0 = b.add_joint_d6(
+                    parent=-1,
+                    child=link0,
+                    parent_xform=root_parent_xform,
+                    child_xform=identity_xform,
+                    linear_axes=[],
+                    angular_axes=[
+                        newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X),
+                        newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y),
+                        newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z),
+                    ],
+                )
             elif root_joint_type == "fixed":
                 j0 = b.add_joint_fixed(
                     parent=-1,
@@ -2176,7 +2196,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
             return b
 
         num_worlds = 2
-        num_arts_per_world = 6
+        num_arts_per_world = 8
         num_arts = num_worlds * num_arts_per_world
 
         # Per-articulation root joint type:
@@ -2186,29 +2206,32 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         #   ``"d6_2lin"``: 2 qd / 2 q -- D6 with 2 linear axes (X, Y).
         #   ``"d6_1lin_1ang"``: 2 qd / 2 q -- D6 with 1 linear axis (X) + 1
         #       angular axis (Z). Linear DOF precedes angular in the D6 layout.
+        #   ``"d6_2ang"``: 2 qd / 2 q -- D6 with 2 angular axes (X, Z).
+        #       Exercises the transform_2d_rotational_axes velocity-subspace path.
+        #   ``"d6_ball"``: 3 qd / 3 q -- D6 with 3 angular axes (X, Y, Z).
+        #       Ball-joint equivalent; exercises transform_3d_rotational_axes.
         #   ``"fixed"``: 0 qd / 0 q.
-        # SolverMuJoCo requires homogeneous worlds, so every world uses the
-        # same pattern -- exercising all six root joint types per world.
-        # ``"d6_ball"`` (D6 with three angular axes, ball-equivalent) should
-        # also appear here but is blocked on
-        # https://github.com/newton-physics/newton/issues/2749 -- SolverMuJoCo's
-        # stacked-hinge integration of multi-angular-axis D6 joints disagrees
-        # with the manipulator equation under non-zero ``joint_qd``. Once the
-        # issue is fixed, add a ``"d6_ball"`` branch to :func:`build_articulation`
-        # and corresponding entries to ``root_qd_len`` / ``root_q_per_type`` /
-        # ``root_qd_per_type`` / ``root_qdd_per_type``, then append
-        # ``"d6_ball"`` to ``root_joint_types_per_world``.
-        root_joint_types_per_world = ["fixed", "free", "ball", "d6_revolute", "d6_2lin", "d6_1lin_1ang"]
+        # Every world uses the same pattern, exercising all eight root joint
+        # types per world.
+        root_joint_types_per_world = [
+            "fixed", "free", "ball", "d6_revolute", "d6_2lin", "d6_1lin_1ang", "d6_2ang", "d6_ball",
+        ]
         assert len(root_joint_types_per_world) == num_arts_per_world
         root_joint_types = root_joint_types_per_world * num_worlds
         # Per-type root qd-DOF counts (used to size the expected_dofs check).
-        root_qd_len = {"fixed": 0, "ball": 3, "d6_revolute": 1, "d6_2lin": 2, "d6_1lin_1ang": 2, "free": 6}
+        root_qd_len = {
+            "fixed": 0, "ball": 3, "d6_revolute": 1, "d6_2lin": 2,
+            "d6_1lin_1ang": 2, "d6_2ang": 2, "d6_ball": 3, "free": 6,
+        }
 
         # Per-articulation link mass. The first value (16) corresponds to a
         # density-1 4x2x2 box (mass = density * volume); the others are arbitrary
         # multiples and submultiples to vary M(q) across articulations. Inertia
         # tracks mass for the same shape.
-        per_articulation_masses = [16.0, 32.0, 8.0, 24.0, 18.0, 12.0, 20.0, 28.0, 14.0, 22.0, 10.0, 26.0]
+        per_articulation_masses = [
+            16.0, 32.0, 8.0, 24.0, 18.0, 12.0, 30.0, 6.0,   # world 0
+            20.0, 28.0, 14.0, 22.0, 10.0, 26.0, 34.0, 4.0,   # world 1
+        ]
         assert len(per_articulation_masses) == num_arts
 
         builder = newton.ModelBuilder(gravity=gravity_value, up_axis=newton.Axis.Z)
@@ -2227,7 +2250,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         control = model.control()
         contacts = model.contacts()
         inverse_dynamics, scratch = model.inverse_dynamics()
-        solver = newton.solvers.SolverMuJoCo(model)
+        solver = newton.solvers.SolverFeatherstone(model)
         dt = 1e-4
 
         # Each articulation contributes 2 internal DOFs (one revolute j1, one
@@ -2276,13 +2299,17 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         # ``d6_1lin_1ang`` combines a linear X DOF (zero qd, X component of
         # ``root_lin_dot`` for qdd) with an angular Z DOF (z-component of
         # ``root_omega`` / ``root_alpha``); D6 lays linear DOFs out before
-        # angular ones.
+        # angular ones. ``d6_2ang`` uses X and Z angular axes (x- and
+        # z-components of ``root_omega`` / ``root_alpha``). ``d6_ball`` uses
+        # all three angular axes mapped directly from ``root_omega`` / ``root_alpha``.
         root_q_per_type = {
             "fixed": (),
             "ball": (0.0, 0.0, 0.0, 1.0),
             "d6_revolute": (0.0,),
             "d6_2lin": (0.0, 0.0),
             "d6_1lin_1ang": (0.0, 0.0),
+            "d6_2ang": (0.0, 0.0),
+            "d6_ball": (0.0, 0.0, 0.0),
             "free": (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
         }
         root_qd_per_type = {
@@ -2291,6 +2318,8 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
             "d6_revolute": (root_omega[2],),
             "d6_2lin": (0.0, 0.0),
             "d6_1lin_1ang": (0.0, root_omega[2]),
+            "d6_2ang": (root_omega[0], root_omega[2]),
+            "d6_ball": root_omega,
             "free": (0.0, 0.0, 0.0, *root_omega),
         }
         root_qdd_per_type = {
@@ -2299,6 +2328,8 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
             "d6_revolute": (root_alpha[2],),
             "d6_2lin": (root_lin_dot[0], root_lin_dot[1]),
             "d6_1lin_1ang": (root_lin_dot[0], root_alpha[2]),
+            "d6_2ang": (root_alpha[0], root_alpha[2]),
+            "d6_ball": root_alpha,
             "free": (*root_lin_dot, *root_alpha),
         }
 

@@ -466,17 +466,22 @@ def eval_inverse_dynamics(
         play no role in the inverse dynamics evaluation.
 
     Note:
-        A D6 joint with more than one angular DOF uses a stacked
-        axis-angle composition for its position kinematics
-        (rotation by ``q_1`` is taken about the axis already rotated
-        by ``q_0``, and so on) but an independent-axis sum for its
-        angular velocity (``ω = sum_i axis_i * qd_i`` using the raw
-        body-frame axes). These two models are not time-derivatives
-        of each other if any angular ``joint_q`` is non-zero.
-        The ``tau`` produced for such a joint cannot be round-tripped
-        through any forward-dynamics integrator that advances
-        ``joint_q`` from ``joint_qd``. D6 joints with at most one
-        angular axis are unaffected.
+        The ``tau`` in the manipulator equation above is consistent with a
+        forward-dynamics solver only if that solver shares Newton's velocity
+        model. For all joint types, the Newton convention is that
+        ``joint_qd`` is the generalized velocity and ``qddot`` passed to
+        :func:`~newton.eval_inverse_dynamics_force` is ``d(joint_qd)/dt``.
+        The distinction is in how ``joint_q`` is advanced: for
+        scalar-coordinate joints (REVOLUTE, PRISMATIC, D6),
+        ``joint_qd = d(joint_q)/dt`` so ``q += qd * dt`` is correct; for
+        quaternion joints (BALL, FREE), ``joint_q`` is a quaternion that
+        must be integrated via ``r_dot = 0.5 * quat(omega) * r``, not
+        ``q += qd * dt``. :class:`~newton.solvers.SolverFeatherstone`
+        integrates ``joint_q`` using the same convention as this function,
+        so its forward dynamics is consistent with the ``tau`` produced here.
+        On the other hand, solvers that map multi-angular D6 joints to a different 
+        velocity subspace (e.g. :class:`~newton.solvers.SolverMuJoCo`, which 
+        converts them to stacked hinges with a different Coriolis convention) may not.
 
     Args:
         model: Model providing articulation topology and inertial parameters.
