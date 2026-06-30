@@ -12,7 +12,6 @@ import math
 import warnings
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, MutableSequence, Sequence
-from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -86,82 +85,6 @@ class _ShapeCollisionFilterBlock:
     local_pairs: tuple[tuple[int, int], ...]
     world: int | None = None
     shape_count: int = 0
-
-
-class _CompactShapeCollisionFilterPairs(AbstractSet[tuple[int, int]]):
-    """Read-only set view over compact replicated collision filters."""
-
-    def __init__(
-        self,
-        explicit_pairs: Iterable[tuple[int, int]],
-        blocks: Iterable[_ShapeCollisionFilterBlock],
-    ):
-        self._explicit_pairs = frozenset(self._canonical_pair(shape_a, shape_b) for shape_a, shape_b in explicit_pairs)
-        block_specs = []
-        local_pair_sets = {}
-        for block in blocks:
-            key = id(block.local_pairs)
-            local_pair_set = local_pair_sets.get(key)
-            if local_pair_set is None:
-                local_pair_set = frozenset(
-                    self._canonical_pair(shape_a, shape_b) for shape_a, shape_b in block.local_pairs
-                )
-                local_pair_sets[key] = local_pair_set
-            block_specs.append((block.shape_start, block.shape_count, block.local_pairs, local_pair_set))
-        self._block_specs = tuple(block_specs)
-        self._materialized: frozenset[tuple[int, int]] | None = None
-
-    @staticmethod
-    def _canonical_pair(shape_a: int, shape_b: int) -> tuple[int, int]:
-        return (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
-
-    def _as_frozenset(self) -> frozenset[tuple[int, int]]:
-        if self._materialized is None:
-            pairs = set(self._explicit_pairs)
-            for shape_start, _shape_count, local_pairs, _local_pair_set in self._block_specs:
-                pairs.update(
-                    self._canonical_pair(shape_start + shape_a, shape_start + shape_b)
-                    for shape_a, shape_b in local_pairs
-                )
-            self._materialized = frozenset(pairs)
-        return self._materialized
-
-    def __bool__(self) -> bool:
-        return bool(self._explicit_pairs) or bool(self._block_specs)
-
-    def __contains__(self, pair: object) -> bool:
-        if not isinstance(pair, tuple) or len(pair) != 2:
-            return False
-
-        try:
-            shape_a, shape_b = pair
-            canonical_pair = self._canonical_pair(shape_a, shape_b)
-
-            if self._materialized is not None:
-                return canonical_pair in self._materialized
-
-            if canonical_pair in self._explicit_pairs:
-                return True
-
-            for shape_start, shape_count, _local_pairs, local_pair_set in self._block_specs:
-                if (
-                    shape_start <= shape_a < shape_start + shape_count
-                    and shape_start <= shape_b < shape_start + shape_count
-                ):
-                    local_shape_a = shape_a - shape_start
-                    local_shape_b = shape_b - shape_start
-                    if self._canonical_pair(local_shape_a, local_shape_b) in local_pair_set:
-                        return True
-        except (TypeError, ValueError):
-            return False
-
-        return False
-
-    def __iter__(self):
-        return iter(self._as_frozenset())
-
-    def __len__(self) -> int:
-        return len(self._as_frozenset())
 
 
 class _BuilderShapeCollisionFilterPairs(MutableSequence):
@@ -10689,15 +10612,12 @@ class ModelBuilder:
         particle_inv_mass = np.divide(1.0, ms, out=np.zeros_like(ms), where=ms != 0.0)
 
         compact_filter_blocks = self.shape_collision_filter_pairs.compact_contact_blocks
+        explicit_filter_pairs: tuple[tuple[int, int], ...] = ()
+        shape_collision_filter_pairs: frozenset[tuple[int, int]] = frozenset()
         if compact_filter_blocks:
             self._validate_compact_shape_collision_filter_blocks(compact_filter_blocks)
             explicit_filter_pairs = tuple(
                 self._iter_validated_shape_collision_filter_pairs(self.shape_collision_filter_pairs.explicit_pairs)
-            )
-            # Residual filters are arbitrary caller-provided pairs; validate them
-            # while leaving replicated block filters compact on the model.
-            shape_collision_filter_pairs = _CompactShapeCollisionFilterPairs(
-                explicit_filter_pairs, compact_filter_blocks
             )
         else:
             shape_collision_filter_pairs = frozenset(
@@ -10709,9 +10629,14 @@ class ModelBuilder:
             # construct Model (non-time varying) data
 
             m = Model(device)
-            # The public property is intentionally read-only; finalization owns
-            # installing the immutable snapshot on the new model.
-            object.__setattr__(m, "_shape_collision_filter_pairs", shape_collision_filter_pairs)
+            if compact_filter_blocks:
+                # Residual filters are arbitrary caller-provided pairs; validate them
+                # while leaving replicated block filters compact for internal consumers.
+                m._set_shape_collision_filter_source(  # pyright: ignore[reportPrivateUsage]
+                    explicit_filter_pairs, compact_filter_blocks
+                )
+            else:
+                m._set_shape_collision_filter_pairs(shape_collision_filter_pairs)  # pyright: ignore[reportPrivateUsage]
             m.request_contact_attributes(*self._requested_contact_attributes)
             m.request_state_attributes(*self._requested_state_attributes)
             m.requires_grad = requires_grad
@@ -12053,7 +11978,6 @@ class ModelBuilder:
                 model.shape_contact_pair_count = len(contact_pairs)
                 return
 
-        filters = model.shape_collision_filter_pairs
         contact_pairs = []
 
         # Keep only colliding shapes (those with COLLIDE_SHAPES flag) and sort by world for optimization
@@ -12087,7 +12011,7 @@ class ModelBuilder:
                     shape_a, shape_b = s1, s2
 
                 # Skip if explicitly filtered
-                if (shape_a, shape_b) not in filters:
+                if not model.shape_collision_filter_contains(shape_a, shape_b):
                     contact_pairs.append((shape_a, shape_b))
 
         pair_array = np.asarray(contact_pairs, dtype=np.int32).reshape((-1, 2))

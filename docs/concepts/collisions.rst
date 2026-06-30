@@ -509,8 +509,11 @@ Filter pairs are automatically populated in several cases:
 - **USD filtered pairs**: Pairs defined by ``physics:filteredPairs`` relationships in USD files
 - **USD collision disabled**: Shapes with ``physics:collisionEnabled=false`` (filtered against all other shapes)
 
-The resulting filter pairs are stored in :attr:`~Model.shape_collision_filter_pairs` as a read-only
-set of ``(shape_index_a, shape_index_b)`` tuples (canonical order: ``a < b``).
+The resulting filter pairs are stored in :attr:`~Model.shape_collision_filter_pairs` as a set of
+``(shape_index_a, shape_index_b)`` tuples (canonical order: ``a < b``). Mutating this finalized-model
+set is deprecated; update :attr:`~ModelBuilder.shape_collision_filter_pairs` before calling
+``finalize()`` and rebuild the model instead, because the precomputed
+:attr:`~Model.shape_contact_pairs` array is not rebuilt by post-finalize filter edits.
 
 **USD Import Example**
 

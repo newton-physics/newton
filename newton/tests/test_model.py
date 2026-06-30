@@ -6,8 +6,9 @@ import math
 import sys
 import unittest
 import warnings
-from collections.abc import Set as AbstractSet
+from collections.abc import Mapping
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 import numpy as np
@@ -17,6 +18,7 @@ import newton
 from newton import ModelBuilder
 from newton._src.geometry.utils import transform_points
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
+from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
 from newton.tests.unittest_utils import assert_np_equal
 
 
@@ -739,8 +741,8 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
         self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
 
-    def test_large_replicated_collision_filter_pairs_are_read_only_and_preserve_contacts(self):
-        """Large replicated filters should stay compact/read-only while preserving contacts."""
+    def test_large_replicated_collision_filter_pairs_deprecate_mutation_and_preserve_contacts(self):
+        """Large replicated filters should stay compact while finalized-model mutation warns."""
 
         robot = ModelBuilder()
         body0 = robot.add_body()
@@ -761,18 +763,30 @@ class TestModelMesh(unittest.TestCase):
 
         model = builder.finalize()
 
+        internal_filters = object.__getattribute__(model, "__dict__")["shape_collision_filter_pairs"]
+        self.assertFalse(internal_filters.is_materialized)
+        self.assertTrue(internal_filters.contains_compact(1, 2))
+        self.assertFalse(internal_filters.is_materialized)
+
         filters = model.shape_collision_filter_pairs
-        self.assertIsInstance(filters, AbstractSet)
-        self.assertNotIsInstance(filters, frozenset)
+        self.assertIsInstance(filters, set)
+        self.assertTrue(internal_filters.is_materialized)
         self.assertIn((1, 2), filters)
         self.assertIn((3, 4), filters)
         self.assertIn((5, 6), filters)
-        with self.assertRaises(AttributeError):
+        expected_filters = {(1, 2), (3, 4), (5, 6)}
+        self.assertEqual(filters, expected_filters)
+        self.assertEqual(filters | {(ground, 1)}, expected_filters | {(ground, 1)})
+        with self.assertWarns(DeprecationWarning):
             filters.add((ground, 1))
-        with self.assertRaises(AttributeError):
-            object.__setattr__(model, "shape_collision_filter_pairs", frozenset())
+        self.assertIn((ground, 1), model.shape_collision_filter_pairs)
+        with self.assertWarns(DeprecationWarning):
+            model.shape_collision_filter_pairs = set()
+        self.assertEqual(model.shape_collision_filter_pairs, set())
 
-        contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+        shape_contact_pairs = model.shape_contact_pairs
+        assert shape_contact_pairs is not None
+        contact_pairs = {tuple(pair) for pair in shape_contact_pairs.numpy()}
         self.assertEqual(contact_pairs, {(ground, 1), (ground, 2), (ground, 3), (ground, 4), (ground, 5), (ground, 6)})
 
     def test_add_builder_collision_filter_template_cache_tracks_mutations(self):
@@ -820,16 +834,44 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize()
 
         filters = model.shape_collision_filter_pairs
-        self.assertIsInstance(filters, AbstractSet)
-        self.assertNotIsInstance(filters, frozenset)
+        self.assertIsInstance(filters, set)
         self.assertIn((1, 2), filters)
         self.assertIn((ground, 1), filters)
 
-        contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+        shape_contact_pairs = model.shape_contact_pairs
+        assert shape_contact_pairs is not None
+        contact_pairs = {tuple(pair) for pair in shape_contact_pairs.numpy()}
         self.assertEqual(contact_pairs, {(ground, 2), (ground, 4), (ground, 6)})
 
         builder.shape_collision_filter_pairs.append((ground, 2))
         self.assertNotIn((ground, 2), filters)
+
+    def test_compact_replicated_collision_filters_roundtrip_viewer_file(self):
+        """ViewerFile should restore compact filters through a native public set."""
+
+        robot = ModelBuilder()
+        body0 = robot.add_body()
+        shape0 = robot.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = robot.add_body()
+        shape1 = robot.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        robot.shape_collision_filter_pairs.append((shape0, shape1))
+
+        builder = ModelBuilder()
+        ground = builder.add_ground_plane()
+        builder.replicate(robot, 2)
+        builder.shape_collision_filter_pairs.append((ground, 1))
+
+        model = builder.finalize(device="cpu")
+        expected_filters = set(model.shape_collision_filter_pairs)
+
+        serialized = cast(Mapping[str, Any], pointer_as_key({"model": model}, format_type="json"))
+        deserialized = depointer_as_key(serialized, format_type="json")
+        deserialized_model = cast(Mapping[str, Any], cast(Mapping[str, Any], deserialized)["model"])
+        restored_model = newton.Model(device="cpu")
+        transfer_to_model(deserialized_model, restored_model)
+
+        self.assertIsInstance(restored_model.shape_collision_filter_pairs, set)
+        self.assertEqual(restored_model.shape_collision_filter_pairs, expected_filters)
 
     def test_collision_filter_pairs_reject_invalid_shape_indices(self):
         """Invalid filters should fail consistently before contact generation."""
@@ -877,7 +919,7 @@ class TestModelMesh(unittest.TestCase):
 
         model = builder.finalize()
 
-        self.assertIsInstance(model.shape_collision_filter_pairs, frozenset)
+        self.assertIsInstance(model.shape_collision_filter_pairs, set)
 
         contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
         self.assertIn((1, 2), contact_pairs)

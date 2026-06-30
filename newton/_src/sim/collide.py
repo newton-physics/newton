@@ -905,12 +905,9 @@ class CollisionPipeline:
 
     @staticmethod
     def _build_excluded_pairs(model: Model) -> wp.array[wp.vec2i] | None:
-        if not hasattr(model, "shape_collision_filter_pairs"):
+        sorted_pairs = model.shape_collision_filter_pairs_for_broad_phase()
+        if not sorted_pairs:
             return None
-        filters = model.shape_collision_filter_pairs
-        if not filters:
-            return None
-        sorted_pairs = sorted(filters)  # lexicographic (already canonical min,max)
         return wp.array(
             np.array(sorted_pairs),
             dtype=wp.vec2i,
