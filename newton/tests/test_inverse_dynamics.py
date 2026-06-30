@@ -2342,7 +2342,10 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         control = model.control()
         contacts = model.contacts()
         inverse_dynamics, scratch = model.inverse_dynamics()
-        solver = newton.solvers.SolverFeatherstone(model)
+        solvers = {
+            "featherstone": newton.solvers.SolverFeatherstone(model),
+            "mujoco": newton.solvers.SolverMuJoCo(model),
+        }
         dt = 1e-4
 
         # Each articulation contributes 2 internal DOFs (one revolute j1, one
@@ -2475,11 +2478,16 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
 
                 control.joint_f.assign(inverse_dynamics.tau)
 
-                solver.step(state, state_next, control, contacts, dt)
+                # The same tau must round-trip through both solvers. Each steps
+                # from the same input ``state`` (neither mutates it) into
+                # ``state_next``.
+                for solver_name, solver in solvers.items():
+                    with self.subTest(solver=solver_name):
+                        solver.step(state, state_next, control, contacts, dt)
 
-                # Recover qddot from the velocity change.
-                qddot_observed = (state_next.joint_qd.numpy() - joint_qd_full) / dt
-                np.testing.assert_allclose(qddot_observed, qddot_target, atol=1e-3, rtol=1e-3)
+                        # Recover qddot from the velocity change.
+                        qddot_observed = (state_next.joint_qd.numpy() - joint_qd_full) / dt
+                        np.testing.assert_allclose(qddot_observed, qddot_target, atol=1e-3, rtol=1e-3)
 
     def test_inverse_dynamics_force_baseline(self):
         """Manipulator equation with zero gravity and zero initial DOF velocities."""
