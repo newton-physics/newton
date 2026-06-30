@@ -222,6 +222,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
 
         def author(stage):
             tet = _author_unit_tet(stage, "/World/Soft")
+            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")  # mark as the simulation mesh
             # Body mass + material density are present but per-point masses win.
             _apply_deformable_body_api(tet.GetPrim(), mass=99.0)
             tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([1.0, 2.0, 3.0, 4.0])
@@ -260,6 +261,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
 
         def author(stage):
             tet = _author_unit_tet(stage, "/World/Soft")
+            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
             _apply_deformable_body_api(tet.GetPrim(), mass=10.0)
 
         builder, _ = self._build_soft(author)
@@ -270,10 +272,12 @@ class TestUSDDeformableVolume(unittest.TestCase):
 
         def author_material_only(stage):
             tet = _author_unit_tet(stage, "/World/Soft")
+            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
             _bind_deformable_material(stage, tet.GetPrim(), "/World/Mat", density=100.0)
 
         def author_with_override(stage):
             tet = _author_unit_tet(stage, "/World/Soft")
+            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
             _bind_deformable_material(stage, tet.GetPrim(), "/World/Mat", density=100.0)
             _apply_deformable_body_api(tet.GetPrim(), density=500.0)
 
@@ -290,11 +294,59 @@ class TestUSDDeformableVolume(unittest.TestCase):
 
         def author(stage):
             UsdGeom.Xform.Define(stage, "/World/Body")
-            _author_unit_tet(stage, "/World/Body/Soft")
+            tet = _author_unit_tet(stage, "/World/Body/Soft")
+            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")  # the body's simulation mesh
             _apply_deformable_body_api(stage.GetPrimAtPath("/World/Body"), mass=7.0)
 
         builder, _ = self._build_soft(author)
         self.assertAlmostEqual(sum(builder.particle_mass[:4]), 7.0, places=4)
+
+    def test_non_sim_tetmesh_under_body_excluded_from_mass_precedence(self):
+        """A body's total mass goes only to its sim-API mesh; a sibling non-sim (graphics/collision)
+        TetMesh under the same body root stays density-derived rather than also being charged the
+        full body mass (which would double a 12 kg body to 24 kg)."""
+        from pxr import UsdGeom
+
+        def author(stage):
+            UsdGeom.Xform.Define(stage, "/World/Body")
+            _apply_deformable_body_api(stage.GetPrimAtPath("/World/Body"), mass=12.0)
+            _author_tet_cube(stage, "/World/Body/Sim")  # carries PhysicsVolumeDeformableSimAPI
+            _author_unit_tet(stage, "/World/Body/Graphics")  # no sim API -> graphics/collision
+
+        builder, result = self._build_soft(author)
+        soft = result["path_soft_map"]
+        self.assertIn("/World/Body/Sim", soft)
+        self.assertIn("/World/Body/Graphics", soft)  # still imported (legacy: all TetMeshes import)
+        sp0, sp1 = soft["/World/Body/Sim"]["particle"]
+        gp0, gp1 = soft["/World/Body/Graphics"]["particle"]
+        sim_mass = sum(builder.particle_mass[sp0:sp1])
+        gfx_mass = sum(builder.particle_mass[gp0:gp1])
+        # The 12 kg body total lands on the sim mesh only ...
+        self.assertAlmostEqual(sim_mass, 12.0, places=4)
+        # ... and the graphics mesh is not also charged it (no double-count to 24 kg).
+        self.assertGreater(gfx_mass, 0.0)
+        self.assertNotAlmostEqual(gfx_mass, 12.0, places=4)
+        self.assertNotAlmostEqual(sim_mass + gfx_mass, 24.0, places=3)
+
+    def test_multiple_sim_meshes_under_one_body_apply_mass_once(self):
+        """Two sim meshes sharing one body root with an authored body mass: the body total is applied
+        once (to the first sim mesh) and a warning flags the ambiguous multi-mesh body, instead of
+        charging each mesh the full mass."""
+        from pxr import UsdGeom
+
+        def author(stage):
+            UsdGeom.Xform.Define(stage, "/World/Body")
+            _apply_deformable_body_api(stage.GetPrimAtPath("/World/Body"), mass=12.0)
+            _author_tet_cube(stage, "/World/Body/SimA")
+            _author_tet_cube(stage, "/World/Body/SimB")
+
+        with self.assertWarnsRegex(UserWarning, "multiple simulation meshes"):
+            builder, result = self._build_soft(author)
+        soft = result["path_soft_map"]
+        a0, a1 = soft["/World/Body/SimA"]["particle"]
+        b0, b1 = soft["/World/Body/SimB"]["particle"]
+        self.assertAlmostEqual(sum(builder.particle_mass[a0:a1]), 12.0, places=4)
+        self.assertNotAlmostEqual(sum(builder.particle_mass[b0:b1]), 12.0, places=4)
 
     def test_volume_sim_api_enables_per_point_masses(self):
         """A TetMesh marked PhysicsVolumeDeformableSimAPI honors physics:masses."""
