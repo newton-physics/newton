@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import numpy as np
@@ -80,7 +80,7 @@ def sph_particle_spacing_from_args(args: object) -> tuple[float, float, float]:
     return spacing, radius, smoothing_length
 
 
-def add_sph_particle_grid_excluding_spheres(
+def add_sph_particle_grid_filtered(
     builder: newton.ModelBuilder,
     *,
     pos: Any,
@@ -92,18 +92,17 @@ def add_sph_particle_grid_excluding_spheres(
     cell_y: float,
     cell_z: float,
     material: sph.SPHMaterial,
-    exclude_spheres: tuple[tuple[tuple[float, float, float], float], ...],
+    is_excluded: Callable[[np.ndarray], bool],
     jitter: float,
     radius_mean: float,
     seed: int = 17,
 ) -> np.ndarray:
-    """Add a fluid particle grid while skipping particles inside spherical exclusions."""
+    """Add a fluid particle grid while skipping points selected by ``is_excluded``."""
 
     SolverWCSPH.register_custom_attributes(builder)
     attrs = material.custom_attributes()
     origin = np.asarray(pos, dtype=np.float64)
     velocity = wp.vec3(*np.asarray(vel, dtype=np.float64))
-    exclusions = tuple((np.asarray(center, dtype=np.float64), float(radius)) for center, radius in exclude_spheres)
     mass = material.rest_density * cell_x * cell_y * cell_z
     rng = np.random.default_rng(seed)
     indices = []
@@ -114,7 +113,7 @@ def add_sph_particle_grid_excluding_spheres(
                 point = origin + np.array((i * cell_x, j * cell_y, k * cell_z), dtype=np.float64)
                 if jitter > 0.0:
                     point += rng.uniform(-jitter, jitter, size=3)
-                if any(np.linalg.norm(point - center) < radius for center, radius in exclusions):
+                if is_excluded(point):
                     continue
                 indices.append(
                     builder.add_particle(

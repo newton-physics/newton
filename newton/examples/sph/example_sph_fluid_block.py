@@ -73,9 +73,9 @@ class Example(SPHExampleBase):
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
-        add_sph_timestep_arguments(parser)
-        add_sph_block_dimension_arguments(parser, dim_x=8, dim_y=8, dim_z=8)
-        add_sph_particle_arguments(parser, spacing=0.06, jitter=0.002)
+        add_sph_timestep_arguments(parser, substeps=16)
+        add_sph_block_dimension_arguments(parser, dim_x=16, dim_y=16, dim_z=16)
+        add_sph_particle_arguments(parser, spacing=0.03, jitter=0.001)
         parser.add_argument("--height", type=_positive_float, default=0.75, help="Initial block height [m].")
         add_sph_solver_config_arguments(
             parser,

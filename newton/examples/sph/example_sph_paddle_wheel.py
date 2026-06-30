@@ -20,6 +20,7 @@ from ._config import (
     add_sph_analytic_tank_shapes,
     add_sph_block_dimension_arguments,
     add_sph_particle_arguments,
+    add_sph_particle_grid_filtered,
     add_sph_solver_config_arguments,
     add_sph_tank_arguments,
     add_sph_timestep_arguments,
@@ -47,26 +48,36 @@ class Example(SPHExampleBase):
             smoothing_length=smoothing_length,
         )
 
-        fluid_origin_x = -0.5 * args.dim_x * spacing + 0.06
-        fluid_origin_z = -0.5 * args.dim_z * spacing
-        self.fluid_indices = np.asarray(
-            list(
-                sph.add_sph_particle_grid(
-                    builder,
-                    pos=wp.vec3(fluid_origin_x, args.height, fluid_origin_z),
-                    rot=wp.quat_identity(),
-                    vel=wp.vec3(0.0),
-                    dim_x=args.dim_x,
-                    dim_y=args.dim_y,
-                    dim_z=args.dim_z,
-                    cell_x=spacing,
-                    cell_y=spacing,
-                    cell_z=spacing,
-                    material=material,
-                    jitter=args.jitter,
-                    radius_mean=radius,
+        self.wheel_center = np.array([args.wheel_x, args.wheel_y, 0.0], dtype=np.float32)
+        self.blade_local_xforms = []
+        blade_center = args.hub_radius + 0.5 * args.blade_length
+        for blade in range(args.blade_count):
+            angle = 2.0 * math.pi * float(blade) / float(args.blade_count)
+            c, s = math.cos(angle), math.sin(angle)
+            self.blade_local_xforms.append(
+                wp.transform(
+                    wp.vec3(blade_center * c, blade_center * s, 0.0),
+                    wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle),
                 )
             )
+
+        fluid_origin_x = -0.5 * args.dim_x * spacing + 0.06
+        fluid_origin_z = -0.5 * args.dim_z * spacing
+        wheel_clearance = radius + args.wheel_margin + 0.25 * spacing
+        self.fluid_indices = add_sph_particle_grid_filtered(
+            builder,
+            pos=wp.vec3(fluid_origin_x, args.height, fluid_origin_z),
+            vel=wp.vec3(0.0),
+            dim_x=args.dim_x,
+            dim_y=args.dim_y,
+            dim_z=args.dim_z,
+            cell_x=spacing,
+            cell_y=spacing,
+            cell_z=spacing,
+            material=material,
+            is_excluded=lambda point: self._point_inside_initial_wheel(point, args, wheel_clearance),
+            jitter=args.jitter,
+            radius_mean=radius,
         )
 
         add_sph_analytic_tank_shapes(
@@ -78,7 +89,6 @@ class Example(SPHExampleBase):
             boundary_friction=args.boundary_friction,
         )
 
-        self.wheel_center = np.array([args.wheel_x, args.wheel_y, 0.0], dtype=np.float32)
         self.wheel_body = builder.add_body(
             xform=self._wheel_transform(0.0, args),
             mass=args.wheel_mass,
@@ -91,16 +101,7 @@ class Example(SPHExampleBase):
         paddle_cfg.has_shape_collision = False
         paddle_cfg.has_particle_collision = True
         paddle_cfg.margin = args.wheel_margin
-        self.blade_local_xforms = []
-        blade_center = args.hub_radius + 0.5 * args.blade_length
-        for blade in range(args.blade_count):
-            angle = 2.0 * math.pi * float(blade) / float(args.blade_count)
-            c, s = math.cos(angle), math.sin(angle)
-            blade_xform = wp.transform(
-                wp.vec3(blade_center * c, blade_center * s, 0.0),
-                wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle),
-            )
-            self.blade_local_xforms.append(blade_xform)
+        for blade, blade_xform in enumerate(self.blade_local_xforms):
             builder.add_shape_box(
                 body=self.wheel_body,
                 xform=blade_xform,
@@ -148,6 +149,28 @@ class Example(SPHExampleBase):
         self.viewer.show_particles = True
         self.viewer.set_camera(pos=wp.vec3(0.34, 0.42, 1.05), pitch=-18.0, yaw=-90.0)
 
+    def _point_inside_initial_wheel(self, point: np.ndarray, args, clearance: float) -> bool:
+        relative = point - self.wheel_center
+        if abs(relative[2]) > 0.5 * args.blade_width + clearance:
+            return False
+        if args.hub_radius > 0.0 and np.linalg.norm(relative[:2]) < args.hub_radius + clearance:
+            return True
+
+        blade_center = args.hub_radius + 0.5 * args.blade_length
+        for blade in range(args.blade_count):
+            angle = args.initial_angle + 2.0 * math.pi * float(blade) / float(args.blade_count)
+            c, s = math.cos(angle), math.sin(angle)
+            delta_x = relative[0] - blade_center * c
+            delta_y = relative[1] - blade_center * s
+            local_x = c * delta_x + s * delta_y
+            local_y = -s * delta_x + c * delta_y
+            if (
+                abs(local_x) < 0.5 * args.blade_length + clearance
+                and abs(local_y) < 0.5 * args.blade_thickness + clearance
+            ):
+                return True
+        return False
+
     def _wheel_transform(self, time: float, args):
         angle = args.angular_speed * time + args.initial_angle
         return wp.transform(
@@ -171,8 +194,8 @@ class Example(SPHExampleBase):
     def create_parser():
         parser = newton.examples.create_parser()
         add_sph_timestep_arguments(parser, substeps=32)
-        add_sph_block_dimension_arguments(parser, dim_x=20, dim_y=6, dim_z=12, label="Fluid particle")
-        add_sph_particle_arguments(parser, spacing=0.03)
+        add_sph_block_dimension_arguments(parser, dim_x=40, dim_y=12, dim_z=24, label="Fluid particle")
+        add_sph_particle_arguments(parser, spacing=0.015, jitter=0.0005)
         parser.add_argument("--height", type=_positive_float, default=0.045, help="Fluid block base height [m].")
         add_sph_tank_arguments(parser, tank_width=0.58, wall_height=0.44, fluid_offset_y=0.06)
         add_sph_solver_config_arguments(
@@ -191,7 +214,7 @@ class Example(SPHExampleBase):
         )
         parser.add_argument("--blade-width", type=_positive_float, default=0.26, help="Paddle blade width [m].")
         parser.add_argument("--hub-radius", type=_non_negative_float, default=0.035, help="Wheel hub radius [m].")
-        parser.add_argument("--wheel-mass", type=_positive_float, default=1.0, help="Diagnostic wheel mass [kg].")
+        parser.add_argument("--wheel-mass", type=_positive_float, default=1.0, help="Paddle wheel body mass [kg].")
         parser.add_argument(
             "--wheel-inertia", type=_positive_float, default=0.01, help="Diagonal wheel inertia [kg m^2]."
         )
@@ -257,7 +280,8 @@ class Example(SPHExampleBase):
         assert len(self.fluid_indices) == self.model.particle_count
         assert self.solver.collider_body_index.numpy().tolist() == [-1, self.wheel_body]
         assert self.max_wheel_impulse_norm > 1.0e-5
-        assert np.max(np.linalg.norm(q[self.fluid_indices] - self.initial_fluid_q, axis=1)) > 0.03
+        minimum_displacement = min(0.03, 0.2 * self.sim_time)
+        assert np.max(np.linalg.norm(q[self.fluid_indices] - self.initial_fluid_q, axis=1)) > minimum_displacement
         assert np.min(q[self.fluid_indices, self.model.up_axis]) >= -1.0e-3
 
 

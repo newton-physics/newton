@@ -88,15 +88,15 @@ class Example(SPHExampleBase):
         parser = newton.examples.create_parser()
         add_sph_timestep_arguments(parser, substeps=24)
         parser.add_argument(
-            "--fluid-dim-x", type=_positive_int, default=5, help="Initial water column particle count along X."
+            "--fluid-dim-x", type=_positive_int, default=10, help="Initial water column particle count along X."
         )
         parser.add_argument(
-            "--fluid-dim-y", type=_positive_int, default=7, help="Initial water column particle count along Y."
+            "--fluid-dim-y", type=_positive_int, default=14, help="Initial water column particle count along Y."
         )
         parser.add_argument(
-            "--fluid-dim-z", type=_positive_int, default=5, help="Initial water column particle count along Z."
+            "--fluid-dim-z", type=_positive_int, default=10, help="Initial water column particle count along Z."
         )
-        add_sph_particle_arguments(parser, spacing=0.055)
+        add_sph_particle_arguments(parser, spacing=0.0275, jitter=0.0005)
         add_sph_tank_arguments(parser, tank_width=0.45, wall_height=0.45, fluid_offset_y=0.08)
         parser.add_argument(
             "--fluid-offset-x", type=float, default=0.06, help="Initial water offset from the left wall [m]."

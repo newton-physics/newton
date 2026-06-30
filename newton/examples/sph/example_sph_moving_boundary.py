@@ -144,8 +144,8 @@ class Example(SPHExampleBase):
     def create_parser():
         parser = newton.examples.create_parser()
         add_sph_timestep_arguments(parser, substeps=24)
-        add_sph_block_dimension_arguments(parser, dim_x=14, dim_y=4, dim_z=10, label="Fluid particle")
-        add_sph_particle_arguments(parser, spacing=0.035)
+        add_sph_block_dimension_arguments(parser, dim_x=28, dim_y=8, dim_z=20, label="Fluid particle")
+        add_sph_particle_arguments(parser, spacing=0.0175, jitter=0.0005)
         parser.add_argument("--height", type=_positive_float, default=0.08, help="Fluid block base height [m].")
         add_sph_tank_arguments(parser, tank_width=0.52, wall_height=0.34, fluid_offset_y=0.08)
         add_sph_solver_config_arguments(
@@ -161,7 +161,7 @@ class Example(SPHExampleBase):
         )
         parser.add_argument("--paddle-height", type=_positive_float, default=0.075, help="Paddle half-height [m].")
         parser.add_argument("--paddle-width", type=_positive_float, default=0.24, help="Paddle half-width [m].")
-        parser.add_argument("--paddle-mass", type=_positive_float, default=1.0, help="Diagnostic paddle mass [kg].")
+        parser.add_argument("--paddle-mass", type=_positive_float, default=1.0, help="Paddle body mass [kg].")
         parser.add_argument(
             "--paddle-inertia", type=_positive_float, default=0.01, help="Diagonal paddle inertia [kg m^2]."
         )

@@ -91,7 +91,7 @@ Supported Features
      - ✅
      - 🟨 basic :sup:`2`
    * - :class:`~newton.solvers.SolverWCSPH`
-     - Explicit WCSPH
+     - Explicit
      - ❌
      - ❌
      - ✅ fluid particles

@@ -106,6 +106,10 @@ class SolverWCSPH(SolverBase):
     It must satisfy the acoustic and force-based stability limits of the chosen
     particle spacing, support radius, and sound speed.
 
+    Solid boundaries are enforced by post-integration shape projection. Reaction
+    impulses for explicit partitioned coupling to a rigid-body solver are exposed
+    through :meth:`collect_collider_impulses`.
+
     Call :meth:`register_custom_attributes` on your :class:`~newton.ModelBuilder`
     before building the model to enable SPH-specific per-particle material and
     state fields (for example ``sph:rest_density`` and ``sph:smoothing_length``).
@@ -312,7 +316,7 @@ class SolverWCSPH(SolverBase):
     def collect_collider_impulses(
         self, state: State
     ) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.int32]]:
-        """Collect analytic-boundary impulses applied by SPH fluid to colliders.
+        """Collect boundary impulses applied by SPH fluid to colliders.
 
         Returns a tuple of 3 arrays:
             - Impulse values in world units.

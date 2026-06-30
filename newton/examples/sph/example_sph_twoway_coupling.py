@@ -28,7 +28,7 @@ from ._config import (
     _positive_float,
     _positive_int,
     add_sph_particle_arguments,
-    add_sph_particle_grid_excluding_spheres,
+    add_sph_particle_grid_filtered,
     add_sph_solver_config_arguments,
     add_sph_tank_arguments,
     add_sph_timestep_arguments,
@@ -272,7 +272,9 @@ class Example:
     ):
         fluid_origin_x = -0.5 * args.dim_x * spacing
         fluid_origin_z = -0.5 * args.dim_z * spacing
-        self.fluid_indices = add_sph_particle_grid_excluding_spheres(
+        float_center = np.array((args.float_x, args.float_y, 0.0), dtype=np.float64)
+        exclusion_radius = args.float_radius + spacing
+        self.fluid_indices = add_sph_particle_grid_filtered(
             fluid_builder,
             pos=(fluid_origin_x, args.fluid_height, fluid_origin_z),
             vel=(args.fluid_velocity, 0.0, 0.0),
@@ -283,7 +285,7 @@ class Example:
             cell_y=spacing,
             cell_z=spacing,
             material=material,
-            exclude_spheres=(((args.float_x, args.float_y, 0.0), args.float_radius + spacing),),
+            is_excluded=lambda point: np.linalg.norm(point - float_center) < exclusion_radius,
             jitter=args.jitter,
             radius_mean=radius,
         )
