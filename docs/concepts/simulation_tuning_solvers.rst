@@ -347,8 +347,15 @@ Use this sequence for contact-heavy scenes:
 
 1. Verify geometry and contact normals with visualization.
 2. Check that contact margins and gaps are appropriate for the scene scale.
-3. Choose the cheapest contact representation that reproduces the needed
-   behavior.
+3. Choose the simplest contact representation that reproduces the needed
+   behavior. Prefer primitives first, then a convex hull or convex decomposition.
+   When task-relevant non-convex geometry remains, attach a precomputed SDF to
+   the triangle mesh and choose a resolution that preserves the necessary
+   features. Treat live BVH triangle-mesh collision without an SDF as a fallback,
+   not the default production path: its cost scales with mesh complexity,
+   triangle winding matters, and it does not support hydroelastic contact.
+   Benchmark task behavior and cost, and remove collision geometry from parts
+   that never make relevant contact. See :ref:`Mesh Collisions`.
 4. Set friction coefficients to realistic values before raising stiffness.
 5. Increase contact stiffness only while ``dt`` and solver convergence can
    support it.

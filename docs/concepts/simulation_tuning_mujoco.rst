@@ -233,6 +233,43 @@ MuJoCo's `solver-setting guidance
 `friction-cone formulation
 <https://mujoco.readthedocs.io/en/stable/computation/index.html#friction-cones>`__.
 
+Solver Options and Capacity
+---------------------------
+
+A few :class:`~newton.solvers.SolverMuJoCo` options dominate behavior in
+practice:
+
+- **Integrator.** ``SolverMuJoCo`` defaults to ``integrator="implicitfast"``,
+  which is more stable for stiff joint drives than explicit ``"euler"``. Keep
+  the default; switch to ``"euler"`` only for a specific reason, and expect to
+  reduce ``dt`` if you do.
+- **Contact path** (``use_mujoco_contacts``, default ``True``). ``True`` uses
+  MuJoCo's own collision detection; ``False`` routes through Newton's collision
+  pipeline, which honors the authored contact ``margin``/``gap``. Choose one and
+  tune within it rather than mixing assumptions from both.
+- **Contact margin.** A small positive contact ``margin`` generates contacts
+  slightly before geometric touch, which stabilizes mesh and terrain contact;
+  the default is ``0``. Raise it when a robot fails to settle on a triangle-mesh
+  surface (with ``use_mujoco_contacts=False`` so the margin is applied).
+- **Armature as a stabilizer.** A small :attr:`~Model.joint_armature` on light,
+  high-gain joints raises effective joint inertia and tames stiff drives on the
+  MuJoCo path; justify the magnitude with actuator or gearbox data where
+  possible.
+
+``nconmax`` and ``njmax`` size the **per-world** contact and constraint buffers.
+Set them for the busiest world, not the average: a buffer that fits a quiet
+world silently drops contacts in a heavier one, while an oversized buffer wastes
+GPU memory multiplied across every world. If left unset, they are estimated from
+the initial state; watch for contact or constraint overflow warnings and raise
+the relevant buffer when they appear.
+
+In batched, many-world runs everything per step is multiplied by the world
+count: total buffer memory scales with ``nconmax``/``njmax`` times the number of
+worlds, and a parameter that is only marginally stable will diverge in *some*
+worlds even if most are fine. Tune to the worst-case world and keep per-step
+work (solver iterations, substeps, contact count) modest, since each multiplies
+by the world count.
+
 Task Templates
 --------------
 
