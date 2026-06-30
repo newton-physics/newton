@@ -29,6 +29,52 @@ def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
 
 
 class TestSelection(unittest.TestCase):
+    @staticmethod
+    def _make_articulation_selector_model(world_count: int | None = None):
+        template = newton.ModelBuilder()
+        for label in ["robot_a", "robot_b", "prop"]:
+            body = template.add_link(label=f"{label}/body")
+            joint = template.add_joint_free(child=body, label=f"{label}/joint")
+            template.add_articulation([joint], label=label)
+
+        if world_count is None:
+            return template.finalize()
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template, world_count=world_count)
+        return builder.finalize()
+
+    def test_articulation_selector_patterns(self):
+        model = self._make_articulation_selector_model()
+
+        view = ArticulationView(model, pattern=["robot_*", "prop"])
+
+        self.assertEqual(view.count, 3)
+        assert_np_equal(view.articulation_ids.numpy(), [[0, 1, 2]])
+
+    def test_articulation_selector_indices(self):
+        model = self._make_articulation_selector_model(world_count=2)
+        indices = [5, 3, 2, 0]
+
+        view = ArticulationView(model, pattern=indices)
+
+        self.assertEqual(view.count, 4)
+        self.assertEqual(view.count_per_world, 2)
+        assert_np_equal(view.articulation_ids.numpy(), [[0, 2], [3, 5]])
+        self.assertEqual(indices, [5, 3, 2, 0])
+
+    def test_articulation_selector_rejects_duplicate_indices(self):
+        model = self._make_articulation_selector_model()
+
+        with self.assertRaisesRegex(ValueError, "must not contain duplicates"):
+            ArticulationView(model, pattern=[0, 0])
+
+    def test_articulation_selector_rejects_out_of_range_indices(self):
+        model = self._make_articulation_selector_model()
+
+        with self.assertRaisesRegex(ValueError, r"must be in range \[0, 3\)"):
+            ArticulationView(model, pattern=[3])
+
     def test_no_match(self):
         builder = newton.ModelBuilder()
         builder.add_body()

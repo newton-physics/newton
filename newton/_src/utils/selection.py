@@ -382,18 +382,31 @@ def get_name_from_label(label: str):
     return label.rsplit("/", maxsplit=1)[-1]
 
 
-def find_matching_ids(pattern: str, labels: list[str], world_ids, world_count: int):
+def find_matching_ids(
+    pattern: str | list[str] | list[int], labels: list[str], world_ids, world_count: int
+) -> tuple[list[list[int]], list[int]]:
+    matching_ids = match_labels(labels, pattern)
+
+    if isinstance(pattern, list) and pattern and isinstance(pattern[0], int):
+        # ArticulationView derives its layouts from model order. String patterns
+        # already produce this order, so normalize explicit indices to match.
+        matching_ids = sorted(matching_ids)
+        for idx in range(1, len(matching_ids)):
+            if matching_ids[idx] == matching_ids[idx - 1]:
+                raise ValueError("Articulation indices must not contain duplicates")
+        if matching_ids[0] < 0 or matching_ids[-1] >= len(labels):
+            raise ValueError(f"Articulation indices must be in range [0, {len(labels)})")
+
     grouped_ids = [[] for _ in range(world_count)]  # ids grouped by world (exclude world -1)
     global_ids = []  # ids in world -1
-    for id, label in enumerate(labels):
-        if fnmatch(label, pattern):
-            world = world_ids[id]
-            if world == -1:
-                global_ids.append(id)
-            elif world >= 0 and world < world_count:
-                grouped_ids[world].append(id)
-            else:
-                raise ValueError(f"World index out of range: {world}")
+    for idx in matching_ids:
+        world = world_ids[idx]
+        if world == -1:
+            global_ids.append(idx)
+        elif world >= 0 and world < world_count:
+            grouped_ids[world].append(idx)
+        else:
+            raise ValueError(f"World index out of range: {world}")
     return grouped_ids, global_ids
 
 
@@ -488,11 +501,13 @@ class ArticulationView:
         view.set_dof_positions(state, q_np)
 
     The ``pattern``, ``include_joints``, ``exclude_joints``, ``include_links``,
-    and ``exclude_links`` parameters accept label patterns — see :ref:`label-matching`.
+    and ``exclude_links`` parameters accept label patterns or integer indices — see
+    :ref:`label-matching`.
 
     Args:
         model: The model containing the articulations.
-        pattern: Pattern to match articulation labels.
+        pattern: Pattern or list of patterns to match articulation labels, or a list
+            of absolute articulation indices.
         include_joints: List of joint names, patterns, or indices to include.
         exclude_joints: List of joint names, patterns, or indices to exclude.
         include_links: List of link names, patterns, or indices to include.
@@ -507,7 +522,7 @@ class ArticulationView:
     def __init__(
         self,
         model: Model,
-        pattern: str,
+        pattern: str | list[str] | list[int],
         *,
         include_joints: list[str] | list[int] | None = None,
         exclude_joints: list[str] | list[int] | None = None,
