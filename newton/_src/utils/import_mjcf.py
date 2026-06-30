@@ -331,6 +331,15 @@ def parse_mjcf(
     root, base_dir = _load_and_expand_mjcf(source, path_resolver)
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
 
+    contact = root.find("contact")
+    explicit_pair_geom_names: set[str] = set()
+    if contact is not None:
+        for pair in contact.findall("pair"):
+            for geom_key in ("geom1", "geom2"):
+                geom_name = pair.attrib.get(geom_key)
+                if geom_name:
+                    explicit_pair_geom_names.add(geom_name)
+
     use_degrees = True  # angles are in degrees by default
     eulerseq = "xyz"  # default sequence (lowercase = intrinsic axes, per MuJoCo)
 
@@ -1303,6 +1312,7 @@ def parse_mjcf(
         """
         visuals = []
         colliders = []
+        required_colliders = []
 
         for geo_count, geom in enumerate(geoms):
             geom_defaults = defaults
@@ -1329,7 +1339,10 @@ def parse_mjcf(
             conaffinity = geom_attrib.get("conaffinity", 1)
             collides_with_anything = not (int(contype) == 0 and int(conaffinity) == 0)
 
-            if geom_class is not None:
+            # Explicit pairs override contact masks, so their geoms must survive visual filtering.
+            if geom_name in explicit_pair_geom_names:
+                required_colliders.append(geom)
+            elif geom_class is not None:
                 neither_visual_nor_collider = True
                 for pattern in visual_classes:
                     if re.match(pattern, geom_class):
@@ -1372,6 +1385,8 @@ def parse_mjcf(
                 label_prefix=label_prefix,
             )
             visual_shape_indices.extend(s)
+
+        colliders.extend(required_colliders)
 
         show_colliders = should_show_collider(
             force_show_colliders,
@@ -2441,7 +2456,6 @@ def parse_mjcf(
 
     # Only parse contact pairs if custom attributes are registered
     has_pair_attrs = "mujoco:pair_geom1" in builder.custom_attributes
-    contact = root.find("contact")
 
     def _find_shape_idx(name: str) -> int | None:
         """Look up shape index by name, supporting hierarchical labels (e.g. "prefix/geom_name")."""
