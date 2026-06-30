@@ -401,7 +401,7 @@ class TestPADMMSolver(unittest.TestCase):
             config=config,
             warmstart=PADMMWarmStartMode.NONE,
             use_acceleration=False,
-            collect_info=True,
+            collect_info=self.savefig,
         )
 
         # Solve the test problem
@@ -446,7 +446,7 @@ class TestPADMMSolver(unittest.TestCase):
             config=config,
             warmstart=PADMMWarmStartMode.NONE,
             use_acceleration=True,
-            collect_info=True,
+            collect_info=self.savefig,
         )
 
         # Solve the test problem
@@ -490,7 +490,7 @@ class TestPADMMSolver(unittest.TestCase):
             config=config,
             warmstart=PADMMWarmStartMode.INTERNAL,
             use_acceleration=False,
-            collect_info=True,
+            collect_info=self.savefig,
         )
 
         # Initial cold-started solve
@@ -537,7 +537,7 @@ class TestPADMMSolver(unittest.TestCase):
             config=config,
             warmstart=PADMMWarmStartMode.CONTAINERS,
             use_acceleration=False,
-            collect_info=True,
+            collect_info=self.savefig,
         )
 
         # Initial cold-started solve
@@ -586,7 +586,7 @@ class TestPADMMSolver(unittest.TestCase):
             config=config,
             warmstart=PADMMWarmStartMode.INTERNAL,
             use_acceleration=True,
-            collect_info=True,
+            collect_info=self.savefig,
         )
 
         # Initial cold-started solve
@@ -634,7 +634,7 @@ class TestPADMMSolver(unittest.TestCase):
             config=config,
             warmstart=PADMMWarmStartMode.CONTAINERS,
             use_acceleration=True,
-            collect_info=True,
+            collect_info=self.savefig,
         )
 
         # Initial cold-started solve
@@ -666,7 +666,7 @@ class TestPADMMSolver(unittest.TestCase):
         test = TestSetup(builder_fn=basics.build_box_on_plane, max_world_contacts=1, device=self.default_device)
 
         # Create the PADMM solver
-        solver = PADMMSolver(model=test.model, collect_info=True)
+        solver = PADMMSolver(model=test.model, collect_info=self.savefig)
 
         # Solve the test problem
         test.build()
