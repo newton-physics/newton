@@ -8,35 +8,12 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...geometry import Gaussian, GeoType
-from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
-from . import lighting, raytrace, textures, tiling
+from ...utils.color import ColorSpace, linear_to_srgb_wp, srgb_to_linear_wp
+from . import lighting, raytrace, render_utils, textures
 from .types import ClearData, MeshData, RenderOrder, TextureData
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
-
-
-def _srgb_packed_rgba_to_linear(packed: int) -> int:
-    r = packed & 0xFF
-    g = (packed >> 8) & 0xFF
-    b = (packed >> 16) & 0xFF
-    a = (packed >> 24) & 0xFF
-    linear = color_srgb_to_linear((r / 255.0, g / 255.0, b / 255.0))
-    lr = min(max(int(linear[0] * 255.0), 0), 255)
-    lg = min(max(int(linear[1] * 255.0), 0), 255)
-    lb = min(max(int(linear[2] * 255.0), 0), 255)
-    return (a << 24) | (lb << 16) | (lg << 8) | lr
-
-
-@wp.func
-def _pack_rgba_to_uint32(rgb: wp.vec3f, alpha: wp.float32) -> wp.uint32:
-    """Pack RGBA values into a single uint32 for efficient memory access."""
-    return (
-        (wp.clamp(wp.uint32(alpha * 255.0), wp.uint32(0), wp.uint32(255)) << wp.uint32(24))
-        | (wp.clamp(wp.uint32(rgb[2] * 255.0), wp.uint32(0), wp.uint32(255)) << wp.uint32(16))
-        | (wp.clamp(wp.uint32(rgb[1] * 255.0), wp.uint32(0), wp.uint32(255)) << wp.uint32(8))
-        | wp.clamp(wp.uint32(rgb[0] * 255.0), wp.uint32(0), wp.uint32(255))
-    )
 
 
 def create_kernel(
@@ -56,11 +33,11 @@ def create_kernel(
 
     if config.output_color_space == ColorSpace.LINEAR:
         clear_data = ClearData(
-            clear_color=_srgb_packed_rgba_to_linear(clear_data.clear_color),
+            clear_color=render_utils.srgb_packed_rgba_to_linear(clear_data.clear_color),
             clear_depth=clear_data.clear_depth,
             clear_shape_index=clear_data.clear_shape_index,
             clear_normal=clear_data.clear_normal,
-            clear_albedo=_srgb_packed_rgba_to_linear(clear_data.clear_albedo),
+            clear_albedo=render_utils.srgb_packed_rgba_to_linear(clear_data.clear_albedo),
         )
 
     @wp.kernel(enable_backward=False)
@@ -120,11 +97,11 @@ def create_kernel(
         tid = wp.tid()
 
         if wp.static(config.render_order == RenderOrder.PIXEL_PRIORITY):
-            camera_index, py, px = tiling.tid_to_coord_pixel_priority(tid, camera_count, img_width)
+            camera_index, py, px = render_utils.tid_to_coord_pixel_priority(tid, camera_count, img_width)
         elif wp.static(config.render_order == RenderOrder.VIEW_PRIORITY):
-            camera_index, py, px = tiling.tid_to_coord_view_priority(tid, camera_count, img_width, img_height)
+            camera_index, py, px = render_utils.tid_to_coord_view_priority(tid, camera_count, img_width, img_height)
         elif wp.static(config.render_order == RenderOrder.TILED):
-            camera_index, py, px = tiling.tid_to_coord_tiled(
+            camera_index, py, px = render_utils.tid_to_coord_tiled(
                 tid, camera_count, img_width, img_height, wp.static(config.tile_width), wp.static(config.tile_height)
             )
         else:
@@ -244,7 +221,7 @@ def create_kernel(
             packed_albedo = albedo_color
             if wp.static(config.output_color_space == ColorSpace.SRGB):
                 packed_albedo = linear_to_srgb_wp(packed_albedo)
-            out_albedo[out_index] = _pack_rgba_to_uint32(packed_albedo, 1.0)
+            out_albedo[out_index] = render_utils.pack_rgba_to_uint32(packed_albedo, 1.0)
 
         if not wp.static(state.render_color) and not wp.static(state.render_hdr_color):
             return
@@ -300,6 +277,6 @@ def create_kernel(
             shaded_color = linear_to_srgb_wp(shaded_color)
 
         if wp.static(state.render_color):
-            out_color[out_index] = _pack_rgba_to_uint32(shaded_color, 1.0)
+            out_color[out_index] = render_utils.pack_rgba_to_uint32(shaded_color, 1.0)
 
     return render_megakernel
