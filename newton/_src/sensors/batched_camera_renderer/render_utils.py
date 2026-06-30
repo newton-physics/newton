@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warp as wp
+
 from ...utils.color import color_srgb_to_linear
 
 
@@ -65,7 +66,6 @@ def tid_to_coord_view_priority(tid: wp.int32, camera_count: wp.int32, width: wp.
     return camera_index, py, px
 
 
-
 def srgb_packed_rgba_to_linear(packed: int) -> int:
     r = packed & 0xFF
     g = (packed >> 8) & 0xFF
@@ -87,4 +87,3 @@ def pack_rgba_to_uint32(rgb: wp.vec3f, alpha: wp.float32) -> wp.uint32:
         | (wp.clamp(wp.uint32(rgb[1] * 255.0), wp.uint32(0), wp.uint32(255)) << wp.uint32(8))
         | wp.clamp(wp.uint32(rgb[0] * 255.0), wp.uint32(0), wp.uint32(255))
     )
-
