@@ -332,10 +332,12 @@ class MeshAdjacency:
             )
             tri_indices = indices
 
-        # Element topology kept as members; init_vertex_adjacency builds the CSR from these.
-        self.indices = tri_indices
-        self.spring_indices = spring_indices
-        self.tet_indices = tet_indices
+        # Element topology kept as members (owned int32 copies, detached from any mutable input
+        # list so a finalized model's adjacency can't drift if the builder is modified after
+        # finalize()); init_vertex_adjacency builds the CSR from these.
+        self.indices = None if tri_indices is None else np.array(tri_indices, dtype=np.int32)
+        self.spring_indices = None if spring_indices is None else np.array(spring_indices, dtype=np.int32)
+        self.tet_indices = None if tet_indices is None else np.array(tet_indices, dtype=np.int32)
 
         if edge_indices is not None:
             # Keep the caller's edge numbering; derive only the maps from the triangles.
@@ -432,14 +434,23 @@ class MeshAdjacency:
     def to(self, device) -> MeshAdjacencyData:
         """Upload the device-facing adjacency arrays onto ``device`` as a pure data struct.
 
-        Uploads the edge/triangle topology maps and the vertex-adjacency CSR; this is the
-        only place the host NumPy tables become Warp arrays. :meth:`init_vertex_adjacency`
-        must have populated the CSR tables first.
+        Always uploads the edge/triangle topology maps. The vertex-adjacency CSR is uploaded
+        only when :meth:`init_vertex_adjacency` has populated it; otherwise the eight
+        ``v_adj_*`` fields are left ``None`` and a warning is emitted (the struct is still
+        usable for callers that only need the topology maps). This is the only place the host
+        NumPy tables become Warp arrays.
         """
         device = wp.get_device(device)
         data = MeshAdjacencyData()
         data.edge_tri_indices = wp.array(self.edge_tri_indices, dtype=wp.int32, device=device)
         data.tri_edge_indices = wp.array(self.tri_edge_indices, dtype=wp.int32, device=device)
+        if not self.vertex_adjacency_initialized:
+            warnings.warn(
+                "MeshAdjacency.to(): vertex adjacency not initialized; v_adj_* are None -- call "
+                "init_vertex_adjacency(particle_count) first if your kernels need them.",
+                stacklevel=2,
+            )
+            return data
         data.v_adj_tris = wp.array(self.v_adj_tris, dtype=wp.int32, device=device)
         data.v_adj_tris_offsets = wp.array(self.v_adj_tris_offsets, dtype=wp.int32, device=device)
         data.v_adj_edges = wp.array(self.v_adj_edges, dtype=wp.int32, device=device)

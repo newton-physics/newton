@@ -276,24 +276,34 @@ class TriMeshCollisionDetector:
         # The soft-mesh adjacency comes from the model; ensure its vertex-adjacency CSR is built.
         # init_vertex_adjacency is idempotent (vertex_adjacency_initialized flag), so this is a no-op
         # once the solver has built it.
+        if model.soft_mesh_adjacency is None:
+            raise ValueError("model.soft_mesh_adjacency is missing; finalize the model with ModelBuilder.")
         self.mesh_adjacency = model.soft_mesh_adjacency.init_vertex_adjacency(model.particle_count)
 
         self.collision_detection_block_size = collision_detection_block_size
 
-        if (
-            vertex_triangle_filtering_list is None
-            and edge_filtering_list is None
-            and (
-                topological_contact_filter_threshold >= 2
-                or external_vertex_triangle_filtering_map is not None
-                or external_edge_edge_filtering_map is not None
-            )
-        ):
-            self._build_collision_filter_lists(
-                topological_contact_filter_threshold,
-                external_vertex_triangle_filtering_map,
-                external_edge_edge_filtering_map,
-            )
+        # Build each filter family independently: generate a side only when the caller did not
+        # provide it explicitly and a threshold/external source requests it (so providing one
+        # list plus an external map for the other side still generates the missing side).
+        need_vertex_triangle = vertex_triangle_filtering_list is None and (
+            topological_contact_filter_threshold >= 2 or external_vertex_triangle_filtering_map is not None
+        )
+        need_edge_edge = edge_filtering_list is None and (
+            topological_contact_filter_threshold >= 2 or external_edge_edge_filtering_map is not None
+        )
+        if (need_vertex_triangle or need_edge_edge) and self.model.tri_count > 0:
+            # Extract the shared vertex adjacency once, then build each family with its own builder.
+            adjacency = None
+            if topological_contact_filter_threshold >= 2 and self.model.edge_indices is not None:
+                adjacency = self._extract_filter_adjacency()
+            if need_vertex_triangle:
+                self._build_vertex_triangle_filter(
+                    topological_contact_filter_threshold, external_vertex_triangle_filtering_map, adjacency
+                )
+            if need_edge_edge:
+                self._build_edge_edge_filter(
+                    topological_contact_filter_threshold, external_edge_edge_filtering_map, adjacency
+                )
 
         self.lower_bounds_tris = wp.array(shape=(model.tri_count,), dtype=wp.vec3, device=model.device)
         self.upper_bounds_tris = wp.array(shape=(model.tri_count,), dtype=wp.vec3, device=model.device)
@@ -411,45 +421,51 @@ class TriMeshCollisionDetector:
         self.edge_filtering_list = edge_filtering_list
         self.edge_filtering_list_offsets = edge_filtering_list_offsets
 
-    def _build_collision_filter_lists(
+    def _extract_filter_adjacency(self):
+        """Return ``(edge_indices, v_adj_edges, v_adj_edges_offsets, v_adj_tris, v_adj_tris_offsets)`` as
+        NumPy for the topological filter builders.
+
+        Reuses the model's vertex-adjacency CSR when it is already populated, otherwise computes it on
+        demand. Shared by the vertex-triangle and edge-edge builders so the adjacency is extracted once.
+        """
+        edge_indices = self.model.edge_indices.numpy()
+        adjacency = self.mesh_adjacency
+        if (
+            adjacency is not None
+            and adjacency.v_adj_edges is not None
+            and adjacency.v_adj_edges.size > 0
+            and adjacency.v_adj_edges_offsets.size > 0
+            and adjacency.v_adj_tris_offsets.size > 0
+        ):
+            source = adjacency
+        else:
+            source = MeshAdjacency.compute_vertex_adjacency(
+                self.model.particle_count,
+                edge_indices=self.model.edge_indices,
+                tri_indices=self.model.tri_indices,
+            )
+        return (
+            edge_indices,
+            _as_numpy(source.v_adj_edges),
+            _as_numpy(source.v_adj_edges_offsets),
+            _as_numpy(source.v_adj_tris),
+            _as_numpy(source.v_adj_tris_offsets),
+        )
+
+    def _build_vertex_triangle_filter(
         self,
         topological_contact_filter_threshold: int,
         external_vertex_triangle_filtering_map: dict | None,
-        external_edge_edge_filtering_map: dict | None,
+        adjacency: tuple | None,
     ) -> None:
-        """Build detector-owned topological filter lists from mesh adjacency."""
-        if self.model.tri_count == 0:
-            return
-
-        vertex_triangle_filter_sets = None
-        edge_edge_filter_sets = None
-        adjacency = self.mesh_adjacency
-
-        if topological_contact_filter_threshold >= 2 and self.model.edge_indices is not None:
-            edge_indices = self.model.edge_indices.numpy()
-            if (
-                adjacency is not None
-                and adjacency.v_adj_edges is not None
-                and adjacency.v_adj_edges.size > 0
-                and adjacency.v_adj_edges_offsets.size > 0
-                and adjacency.v_adj_tris_offsets.size > 0
-            ):
-                v_adj_edges = _as_numpy(adjacency.v_adj_edges)
-                v_adj_edges_offsets = _as_numpy(adjacency.v_adj_edges_offsets)
-                v_adj_tris = _as_numpy(adjacency.v_adj_tris)
-                v_adj_tris_offsets = _as_numpy(adjacency.v_adj_tris_offsets)
-            else:
-                filter_adjacency = MeshAdjacency.compute_vertex_adjacency(
-                    self.model.particle_count,
-                    edge_indices=self.model.edge_indices,
-                    tri_indices=self.model.tri_indices,
-                )
-                v_adj_edges = _as_numpy(filter_adjacency.v_adj_edges)
-                v_adj_edges_offsets = _as_numpy(filter_adjacency.v_adj_edges_offsets)
-                v_adj_tris = _as_numpy(filter_adjacency.v_adj_tris)
-                v_adj_tris_offsets = _as_numpy(filter_adjacency.v_adj_tris_offsets)
-
-            vertex_triangle_filter_sets = build_vertex_n_ring_tris_collision_filter(
+        """Build the detector-owned vertex-triangle filter list from the n-ring topology and the optional
+        external map. The caller decides whether this side is needed (an explicitly-provided list is left
+        untouched); ``adjacency`` is the shared :meth:`_extract_filter_adjacency` result or ``None``.
+        """
+        filter_sets = None
+        if topological_contact_filter_threshold >= 2 and adjacency is not None:
+            edge_indices, v_adj_edges, v_adj_edges_offsets, v_adj_tris, v_adj_tris_offsets = adjacency
+            filter_sets = build_vertex_n_ring_tris_collision_filter(
                 topological_contact_filter_threshold,
                 self.model.particle_count,
                 edge_indices,
@@ -458,40 +474,48 @@ class TriMeshCollisionDetector:
                 v_adj_tris,
                 v_adj_tris_offsets,
             )
-            edge_edge_filter_sets = build_edge_n_ring_edge_collision_filter(
+        if external_vertex_triangle_filtering_map is not None:
+            if filter_sets is None:
+                filter_sets = [set() for _ in range(self.model.particle_count)]
+            for vertex_id, filter_set in external_vertex_triangle_filtering_map.items():
+                filter_sets[vertex_id].update(filter_set)
+
+        if filter_sets is not None:
+            filtering_list, filtering_list_offsets = set_to_csr(filter_sets)
+            self.vertex_triangle_filtering_list = wp.array(filtering_list, dtype=wp.int32, device=self.device)
+            self.vertex_triangle_filtering_list_offsets = wp.array(
+                filtering_list_offsets, dtype=wp.int32, device=self.device
+            )
+
+    def _build_edge_edge_filter(
+        self,
+        topological_contact_filter_threshold: int,
+        external_edge_edge_filtering_map: dict | None,
+        adjacency: tuple | None,
+    ) -> None:
+        """Build the detector-owned edge-edge filter list from the n-ring topology and the optional
+        external map. The caller decides whether this side is needed (an explicitly-provided list is left
+        untouched); ``adjacency`` is the shared :meth:`_extract_filter_adjacency` result or ``None``.
+        """
+        filter_sets = None
+        if topological_contact_filter_threshold >= 2 and adjacency is not None:
+            edge_indices, v_adj_edges, v_adj_edges_offsets, _, _ = adjacency
+            filter_sets = build_edge_n_ring_edge_collision_filter(
                 topological_contact_filter_threshold,
                 edge_indices,
                 v_adj_edges,
                 v_adj_edges_offsets,
             )
-
-        if external_vertex_triangle_filtering_map is not None:
-            if vertex_triangle_filter_sets is None:
-                vertex_triangle_filter_sets = [set() for _ in range(self.model.particle_count)]
-            for vertex_id, filter_set in external_vertex_triangle_filtering_map.items():
-                vertex_triangle_filter_sets[vertex_id].update(filter_set)
-
         if external_edge_edge_filtering_map is not None:
-            if edge_edge_filter_sets is None:
-                edge_edge_filter_sets = [set() for _ in range(self.model.edge_count)]
+            if filter_sets is None:
+                filter_sets = [set() for _ in range(self.model.edge_count)]
             for edge_id, filter_set in external_edge_edge_filtering_map.items():
-                edge_edge_filter_sets[edge_id].update(filter_set)
+                filter_sets[edge_id].update(filter_set)
 
-        if vertex_triangle_filter_sets is not None:
-            vertex_triangle_filtering_list, vertex_triangle_filtering_list_offsets = set_to_csr(
-                vertex_triangle_filter_sets
-            )
-            self.vertex_triangle_filtering_list = wp.array(
-                vertex_triangle_filtering_list, dtype=wp.int32, device=self.device
-            )
-            self.vertex_triangle_filtering_list_offsets = wp.array(
-                vertex_triangle_filtering_list_offsets, dtype=wp.int32, device=self.device
-            )
-
-        if edge_edge_filter_sets is not None:
-            edge_filtering_list, edge_filtering_list_offsets = set_to_csr(edge_edge_filter_sets)
-            self.edge_filtering_list = wp.array(edge_filtering_list, dtype=wp.int32, device=self.device)
-            self.edge_filtering_list_offsets = wp.array(edge_filtering_list_offsets, dtype=wp.int32, device=self.device)
+        if filter_sets is not None:
+            filtering_list, filtering_list_offsets = set_to_csr(filter_sets)
+            self.edge_filtering_list = wp.array(filtering_list, dtype=wp.int32, device=self.device)
+            self.edge_filtering_list_offsets = wp.array(filtering_list_offsets, dtype=wp.int32, device=self.device)
 
     def get_collision_data(self):
         collision_info = TriMeshCollisionInfo()

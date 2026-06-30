@@ -16,7 +16,7 @@ from newton._src.geometry.kernels import (
     triangle_closest_point_barycentric,
     vertex_adjacent_to_triangle,
 )
-from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector, leq_n_ring_vertices
+from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector, leq_n_ring_vertices, set_to_csr
 from newton.solvers import SolverVBD
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, assert_np_equal, get_test_devices
 
@@ -1061,6 +1061,53 @@ def test_collision_filtering(test, device):
     wp.synchronize_device(device)
 
 
+def test_collision_detector_requires_adjacency(test, device):
+    # TriMeshCollisionDetector needs the model's soft-mesh adjacency; a missing one is a clear error.
+    vertices, faces = get_data()
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+    builder.add_cloth_mesh(
+        pos=wp.vec3(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        scale=1.0,
+        vertices=[wp.vec3(v) for v in vertices],
+        indices=faces,
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        density=0.02,
+    )
+    model = builder.finalize(device=device)
+    model.soft_mesh_adjacency = None
+    with test.assertRaises(ValueError):
+        TriMeshCollisionDetector(model=model)
+
+
+def test_collision_filter_decouple(test, device):
+    # Providing an explicit vertex-triangle filter must not suppress edge-edge generation:
+    # the edge-edge side is still built from its external map (the two families decouple).
+    vertices, faces = get_data()
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+    builder.add_cloth_mesh(
+        pos=wp.vec3(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        scale=1.0,
+        vertices=[wp.vec3(v) for v in vertices],
+        indices=faces,
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        density=0.02,
+    )
+    model = builder.finalize(device=device)
+    vt_values, vt_offsets = set_to_csr([set() for _ in range(model.particle_count)])
+    detector = TriMeshCollisionDetector(
+        model=model,
+        vertex_triangle_filtering_list=wp.array(vt_values, dtype=wp.int32, device=device),
+        vertex_triangle_filtering_list_offsets=wp.array(vt_offsets, dtype=wp.int32, device=device),
+        external_edge_edge_filtering_map={0: {1}},
+        topological_contact_filter_threshold=0,
+    )
+    # The edge-edge side was generated solely from the external map (threshold 0 disables the n-ring pass).
+    test.assertIsNotNone(detector.edge_filtering_list)
+    test.assertIn(1, detector.edge_filtering_list.numpy().tolist())
+
+
 devices = get_test_devices()
 
 
@@ -1073,6 +1120,13 @@ add_function_test(TestCollision, "test_edge_edge_collision", test_edge_edge_coll
 add_function_test(TestCollision, "test_particle_collision", test_particle_collision, devices=devices)
 add_function_test(TestCollision, "test_mesh_ground_collision_index", test_mesh_ground_collision_index, devices=devices)
 add_function_test(TestCollision, "test_collision_filtering", test_collision_filtering, devices=devices)
+add_function_test(
+    TestCollision,
+    "test_collision_detector_requires_adjacency",
+    test_collision_detector_requires_adjacency,
+    devices=devices,
+)
+add_function_test(TestCollision, "test_collision_filter_decouple", test_collision_filter_decouple, devices=devices)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)

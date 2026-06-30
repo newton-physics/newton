@@ -542,6 +542,23 @@ class TestModelMesh(unittest.TestCase):
             edges = adj.edges
         self.assertEqual({edges[(0, 1)].f0, edges[(0, 1)].f1}, {0, 1})
 
+    def test_mesh_adjacency_to_without_vertex_adjacency_warns(self):
+        # to() before init_vertex_adjacency: uploads the topology maps, leaves v_adj_* None + warns.
+        adj = newton.utils.MeshAdjacency([[0, 1, 2], [0, 2, 3]])
+        with self.assertWarns(UserWarning):
+            data = adj.to("cpu")
+        self.assertIsNotNone(data.edge_tri_indices)
+        self.assertIsNotNone(data.tri_edge_indices)
+        self.assertIsNone(data.v_adj_tris)
+        self.assertIsNone(data.v_adj_edges_offsets)
+
+    def test_mesh_adjacency_owns_index_copies(self):
+        # The constructor stores owned int32 copies, detached from the input arrays/lists.
+        tris = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+        adj = newton.utils.MeshAdjacency(tris)
+        tris[0, 0] = 99
+        self.assertEqual(int(adj.indices[0, 0]), 0)
+
     def test_expand_edge_parameter(self):
         expand = newton.ModelBuilder._expand_edge_parameter
         # Scalars broadcast to one value per generated edge.
