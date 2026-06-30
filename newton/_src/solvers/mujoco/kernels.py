@@ -2496,6 +2496,31 @@ def update_geom_properties_kernel(
 
 
 @wp.kernel
+def sync_static_geom_xposes_kernel(
+    body_rootid: wp.array[int],
+    body_weldid: wp.array[int],
+    body_mocapid: wp.array[int],
+    geom_bodyid: wp.array[int],
+    geom_pos: wp.array2d[wp.vec3],
+    geom_quat: wp.array2d[wp.quat],
+    xpos: wp.array2d[wp.vec3],
+    xquat: wp.array2d[wp.quat],
+    geom_xpos: wp.array2d[wp.vec3],
+    geom_xmat: wp.array2d[wp.mat33],
+):
+    """Refresh per-world poses for geoms welded to the world body."""
+    world, geom = wp.tid()
+    body = geom_bodyid[geom]
+    if body_weldid[body] != 0 or body_mocapid[body_rootid[body]] != -1:
+        return
+
+    body_q = quat_wxyz_to_xyzw(xquat[world, body])
+    geom_q = quat_wxyz_to_xyzw(geom_quat[world, geom])
+    geom_xpos[world, geom] = xpos[world, body] + wp.quat_rotate(body_q, geom_pos[world, geom])
+    geom_xmat[world, geom] = wp.quat_to_matrix(body_q * geom_q)
+
+
+@wp.kernel
 def update_jnt_solref_from_invweight0_kernel(
     mjc_jnt_to_newton_dof: wp.array2d[wp.int32],
     joint_limit_ke: wp.array[float],
