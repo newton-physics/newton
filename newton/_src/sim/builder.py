@@ -10755,43 +10755,50 @@ class ModelBuilder:
 
             # build list of ids for geometry sources (meshes, sdfs, heightfields)
             geo_sources = []
-            finalized_geos = {}  # do not duplicate geometry
+            finalized_geos = {}  # content hash -> finalized geometry
+            finalized_geos_by_identity = {}  # object id -> finalized geometry
             gaussians = []
             heightfield_meshes = []
             for geo in self.shape_source:
-                if isinstance(geo, Heightfield):
-                    # Replicated builders reuse the same geometry objects across
-                    # worlds. Identity dedup avoids expensive content hashing
-                    # while still sharing the finalized geometry for instances.
-                    geo_key = id(geo)
-                    if geo_key not in finalized_geos:
-                        # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
-                        # while Heightfield stores row-major data (row=Y, col=X).
-                        actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
-                        hf_geo = Mesh.create_heightfield(
-                            heightfield=actual_heights.T,
-                            extent_x=geo.hx * 2.0,
-                            extent_y=geo.hy * 2.0,
-                            ground_z=geo.min_z,
-                            compute_inertia=False,
-                        )
-                        finalized_geos[geo_key] = hf_geo.finalize(device=device)
-                        # keep mesh alive for the model's lifetime
-                        heightfield_meshes.append(hf_geo.mesh)
-                    geo_sources.append(finalized_geos[geo_key])
-                elif geo:
-                    geo_key = id(geo)
-                    if geo_key not in finalized_geos:
-                        if isinstance(geo, Mesh):
-                            finalized_geos[geo_key] = geo.finalize(device=device)
-                        elif isinstance(geo, Gaussian):
-                            finalized_geos[geo_key] = len(gaussians)
-                            gaussians.append(geo.finalize(device=device))
-                        else:
-                            finalized_geos[geo_key] = geo.finalize()
-                    geo_sources.append(finalized_geos[geo_key])
-                else:
+                if not geo:
                     geo_sources.append(0)
+                    continue
+
+                # Replicated builders reuse geometry objects across worlds. Use
+                # identity for that fast path, but retain content hashes so distinct
+                # equivalent geometry objects share one finalized representation.
+                geo_identity = id(geo)
+                if geo_identity in finalized_geos_by_identity:
+                    geo_sources.append(finalized_geos_by_identity[geo_identity])
+                    continue
+
+                geo_hash = hash(geo)
+                if geo_hash not in finalized_geos and isinstance(geo, Heightfield):
+                    # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
+                    # while Heightfield stores row-major data (row=Y, col=X).
+                    actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
+                    hf_geo = Mesh.create_heightfield(
+                        heightfield=actual_heights.T,
+                        extent_x=geo.hx * 2.0,
+                        extent_y=geo.hy * 2.0,
+                        ground_z=geo.min_z,
+                        compute_inertia=False,
+                    )
+                    finalized_geos[geo_hash] = hf_geo.finalize(device=device)
+                    # keep mesh alive for the model's lifetime
+                    heightfield_meshes.append(hf_geo.mesh)
+                elif geo_hash not in finalized_geos:
+                    if isinstance(geo, Mesh):
+                        finalized_geos[geo_hash] = geo.finalize(device=device)
+                    elif isinstance(geo, Gaussian):
+                        finalized_geos[geo_hash] = len(gaussians)
+                        gaussians.append(geo.finalize(device=device))
+                    else:
+                        finalized_geos[geo_hash] = geo.finalize()
+
+                finalized_geo = finalized_geos[geo_hash]
+                finalized_geos_by_identity[geo_identity] = finalized_geo
+                geo_sources.append(finalized_geo)
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)

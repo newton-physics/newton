@@ -300,8 +300,8 @@ class TestModelMesh(unittest.TestCase):
             self.assertEqual(hash(mesh), first_hash)
             self.assertEqual(sha256_mock.call_count, 2)
 
-    def test_finalize_deduplicates_reused_mesh_by_identity_without_hashing(self):
-        mesh = newton.Mesh.create_box(
+    def test_finalize_deduplicates_equal_mesh_content(self):
+        mesh_a = newton.Mesh.create_box(
             1.0,
             0.5,
             0.25,
@@ -310,13 +310,30 @@ class TestModelMesh(unittest.TestCase):
             compute_uvs=False,
             compute_inertia=False,
         )
-        builder = ModelBuilder()
-        builder.add_shape_mesh(body=-1, mesh=mesh)
-        builder.add_shape_mesh(body=-1, mesh=mesh)
+        mesh_b = newton.Mesh.create_box(
+            1.0,
+            0.5,
+            0.25,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        self.assertIsNot(mesh_a, mesh_b)
+        self.assertEqual(hash(mesh_a), hash(mesh_b))
 
-        with mock.patch.object(newton.Mesh, "__hash__", side_effect=AssertionError("finalize should not hash meshes")):
+        builder = ModelBuilder()
+        builder.add_shape_mesh(body=-1, mesh=mesh_a)
+        builder.add_shape_mesh(body=-1, mesh=mesh_b)
+
+        with (
+            mock.patch.object(mesh_a, "finalize", wraps=mesh_a.finalize) as finalize_a,
+            mock.patch.object(mesh_b, "finalize", wraps=mesh_b.finalize) as finalize_b,
+        ):
             model = builder.finalize(device="cpu")
 
+        finalize_a.assert_called_once()
+        finalize_b.assert_not_called()
         shape_source_ptr = model.shape_source_ptr.numpy()
         self.assertEqual(shape_source_ptr[0], shape_source_ptr[1])
 
