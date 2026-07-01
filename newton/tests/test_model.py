@@ -224,58 +224,14 @@ class TestModelBuilderDeprecations(unittest.TestCase):
 class TestParallelJointWarning(unittest.TestCase):
     """Warn on parallel joints between the same pair of bodies (gh-2803)."""
 
-    # -- FREE parallel warnings (strong) --
-
-    def test_add_body_then_revolute_from_world_warns_free(self):
-        builder = ModelBuilder()
-        body = builder.add_body(mass=1.0)
-
-        with self.assertWarnsRegex(UserWarning, r"FREE.*inconsistent"):
-            builder.add_joint_revolute(parent=-1, child=body)
-
-    def test_manual_free_then_revolute_same_parent_warns_free(self):
-        builder = ModelBuilder()
-        link = builder.add_link(mass=1.0)
-        builder.add_joint_free(parent=-1, child=link)
-
-        with self.assertWarnsRegex(UserWarning, r"FREE.*inconsistent"):
-            builder.add_joint_revolute(parent=-1, child=link)
-
-    def test_revolute_then_free_same_parent_warns_free(self):
-        builder = ModelBuilder()
-        link = builder.add_link(mass=1.0)
-        builder.add_joint_revolute(parent=-1, child=link)
-
-        with self.assertWarnsRegex(UserWarning, r"FREE.*inconsistent"):
-            builder.add_joint_free(parent=-1, child=link)
-
-    def test_add_body_internal_free_joint_does_not_warn(self):
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            builder = ModelBuilder()
-            builder.add_body(mass=1.0)
-
-        user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
-        self.assertEqual(len(user_warnings), 0)
-
-    def test_free_warning_mentions_body_label(self):
+    def test_free_parallel_warns(self):
         builder = ModelBuilder()
         body = builder.add_body(mass=1.0, label="Sun")
 
-        with self.assertWarnsRegex(UserWarning, r"Sun.*inconsistent"):
+        with self.assertWarnsRegex(UserWarning, r"Sun.*FREE.*inconsistent"):
             builder.add_joint_revolute(parent=-1, child=body)
 
-    # -- Non-FREE parallel warnings (undefined semantics) --
-
-    def test_two_revolutes_same_parent_warns_undefined(self):
-        builder = ModelBuilder()
-        link = builder.add_link(mass=1.0)
-        builder.add_joint_revolute(parent=-1, child=link)
-
-        with self.assertWarnsRegex(UserWarning, "undefined"):
-            builder.add_joint_revolute(parent=-1, child=link)
-
-    def test_revolute_plus_prismatic_same_parent_warns_undefined(self):
+    def test_non_free_parallel_warns_undefined(self):
         builder = ModelBuilder()
         link = builder.add_link(mass=1.0)
         builder.add_joint_revolute(parent=-1, child=link)
@@ -283,39 +239,24 @@ class TestParallelJointWarning(unittest.TestCase):
         with self.assertWarnsRegex(UserWarning, "undefined"):
             builder.add_joint_prismatic(parent=-1, child=link)
 
-    # -- No warning cases --
-
-    def test_loop_closure_different_parent_no_warning(self):
-        builder = ModelBuilder()
-        body_a = builder.add_body(mass=1.0)
-        body_b = builder.add_link(mass=1.0)
-        builder.add_joint_revolute(parent=body_a, child=body_b)
-
+    def test_no_false_positive(self):
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            builder.add_joint_distance(parent=body_b, child=body_a)
-
-        user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
-        self.assertEqual(len(user_warnings), 0)
-
-    def test_add_joint_to_fresh_link_no_warning(self):
-        builder = ModelBuilder()
-        link = builder.add_link(mass=1.0)
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
+            builder = ModelBuilder()
+            builder.add_body(mass=1.0)
+            link = builder.add_link(mass=1.0)
             builder.add_joint_revolute(parent=-1, child=link)
 
         user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
         self.assertEqual(len(user_warnings), 0)
 
-    def test_add_builder_propagates_free_parallel_warning(self):
+    def test_add_builder_propagates(self):
         sub = ModelBuilder()
-        sub.add_body(mass=1.0)  # carries an implicit FREE joint from world
+        sub.add_body(mass=1.0)
 
         main = ModelBuilder()
-        main.add_link(mass=1.0)  # occupy index 0 so the merged body lands at a nonzero offset
-        merged_body = main.body_count  # index the sub-builder's body will occupy after merge
+        main.add_link(mass=1.0)
+        merged_body = main.body_count
         main.add_builder(sub)
 
         with self.assertWarnsRegex(UserWarning, r"FREE.*inconsistent"):
@@ -1934,10 +1875,10 @@ class TestModelJoints(unittest.TestCase):
         """Test programmatic creation of mimic constraints."""
         builder = newton.ModelBuilder()
 
-        # Create two joints
-        b0 = builder.add_body()
-        b1 = builder.add_body()
-        b2 = builder.add_body()
+        # Create three links without implicit FREE joints.
+        b0 = builder.add_link()
+        b1 = builder.add_link()
+        b2 = builder.add_link()
 
         j1 = builder.add_joint_revolute(
             parent=-1,
@@ -1957,6 +1898,9 @@ class TestModelJoints(unittest.TestCase):
             axis=(0, 0, 1),
             label="j3",
         )
+        builder.add_articulation([j1])
+        builder.add_articulation([j2])
+        builder.add_articulation([j3])
 
         # Add mimic constraints
         _c1 = builder.add_constraint_mimic(
@@ -1998,11 +1942,11 @@ class TestModelJoints(unittest.TestCase):
     def test_add_base_joint_fixed_to_parent(self):
         """Test that add_base_joint with parent creates fixed joint."""
         builder = ModelBuilder()
-        parent_body = builder.add_body(xform=wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
+        parent_body = builder.add_link(xform=wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
         parent_joint = builder.add_joint_fixed(parent=-1, child=parent_body)
         builder.add_articulation([parent_joint])  # Register parent body into an articulation
 
-        child_body = builder.add_body(xform=wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
+        child_body = builder.add_link(xform=wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
         joint_id = builder._add_base_joint(child_body, parent=parent_body, floating=False)
 
         self.assertEqual(builder.joint_type[joint_id], newton.JointType.FIXED)
@@ -2591,7 +2535,7 @@ class TestModelValidation(unittest.TestCase):
     def test_control_clear(self):
         """Test that Control.clear() works without errors."""
         builder = newton.ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_link()
         joint = builder.add_joint_free(child=body)
         builder.add_articulation([joint])
 

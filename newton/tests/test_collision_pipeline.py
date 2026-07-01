@@ -1713,8 +1713,9 @@ def test_mesh_convex_midphase_queries_margin_shell(test, device):
     indices = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
     builder.add_shape_mesh(body=-1, mesh=newton.Mesh(vertices, indices), cfg=cfg)
 
-    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, radius + surface_separation), wp.quat_identity()))
-    builder.add_joint_free(child=body)
+    body = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, radius + surface_separation), wp.quat_identity()))
+    joint = builder.add_joint_free(child=body)
+    builder.add_articulation([joint])
     builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
 
     model = builder.finalize(device=device)
@@ -1878,10 +1879,11 @@ def test_heightfield_convex_midphase_queries_margin_shell_at_lateral_edge(test, 
     )
     builder.add_shape_heightfield(heightfield=heightfield, cfg=cfg)
 
-    body = builder.add_body(
+    body = builder.add_link(
         xform=wp.transform(wp.vec3(1.0 + radius + surface_separation, 0.0, 0.0), wp.quat_identity())
     )
-    builder.add_joint_free(child=body)
+    joint = builder.add_joint_free(child=body)
+    builder.add_articulation([joint])
     builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
 
     model = builder.finalize(device=device)
@@ -2010,7 +2012,7 @@ def _build_deterministic_scene(device):
                 )
                 shape_type = shape_types[shape_index % len(shape_types)]
                 shape_index += 1
-                body = builder.add_body(xform=wp.transform(p=pos, q=wp.quat_identity()))
+                body = builder.add_link(xform=wp.transform(p=pos, q=wp.quat_identity()))
                 if shape_type == "sphere":
                     builder.add_shape_sphere(body, radius=0.3)
                 elif shape_type == "box":
