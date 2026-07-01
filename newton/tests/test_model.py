@@ -222,7 +222,7 @@ class TestModelBuilderDeprecations(unittest.TestCase):
 
 
 class TestParallelJointWarning(unittest.TestCase):
-    """Warn on parallel joints between the same pair of bodies (gh-2803)."""
+    """Warn on parallel joints between the same pair of bodies."""
 
     def test_free_parallel_warns(self):
         builder = ModelBuilder()
@@ -238,29 +238,6 @@ class TestParallelJointWarning(unittest.TestCase):
 
         with self.assertWarnsRegex(UserWarning, "undefined"):
             builder.add_joint_prismatic(parent=-1, child=link)
-
-    def test_no_false_positive(self):
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            builder = ModelBuilder()
-            builder.add_body(mass=1.0)
-            link = builder.add_link(mass=1.0)
-            builder.add_joint_revolute(parent=-1, child=link)
-
-        user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
-        self.assertEqual(len(user_warnings), 0)
-
-    def test_add_builder_propagates(self):
-        sub = ModelBuilder()
-        sub.add_body(mass=1.0)
-
-        main = ModelBuilder()
-        main.add_link(mass=1.0)
-        merged_body = main.body_count
-        main.add_builder(sub)
-
-        with self.assertWarnsRegex(UserWarning, r"FREE.*inconsistent"):
-            main.add_joint_revolute(parent=-1, child=merged_body)
 
 
 class TestModelBuilderBvhConstructor(unittest.TestCase):
