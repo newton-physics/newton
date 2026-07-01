@@ -43,25 +43,25 @@ class ControlKamino:
 
     tau_j: wp.array[wp.float32] | None = None
     """
-    Array of generalized joint actuation forces.\n
+    Array of generalized joint actuation forces.
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     q_j_ref: wp.array[wp.float32] | None = None
     """
-    Array of reference generalized joint coordinates for implicit PD control.\n
+    Array of reference generalized joint coordinates for implicit PD control.
     Shape of ``(sum_of_num_joint_coords,)``.
     """
 
     dq_j_ref: wp.array[wp.float32] | None = None
     """
-    Array of reference generalized joint velocities for implicit PD control.\n
+    Array of reference generalized joint velocities for implicit PD control.
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     tau_j_ref: wp.array[wp.float32] | None = None
     """
-    Array of reference feed-forward generalized joint forces for implicit PD control.\n
+    Array of reference feed-forward generalized joint forces for implicit PD control.
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 

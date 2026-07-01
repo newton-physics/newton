@@ -430,9 +430,9 @@ class IterativeSolver(LinearSolver):
 
 class LLTSequentialSolver(DirectSolver):
     """
-    A LLT (i.e. Cholesky) factorization class computing each matrix block sequentially.\n
-    This parallelizes the factorization and solve operations over each block\n
-    and supports heterogeneous matrix block sizes.\n
+    A LLT (i.e. Cholesky) factorization class computing each matrix block sequentially.
+    This parallelizes the factorization and solve operations over each block
+    and supports heterogeneous matrix block sizes.
     """
 
     def __init__(
@@ -547,7 +547,7 @@ class LLTSequentialSolver(DirectSolver):
 
 class LLTBlockedSolver(DirectSolver):
     """
-    A Blocked LLT (i.e. Cholesky) factorization class computing each matrix block with Tile-based parallelism.\n
+    A Blocked LLT (i.e. Cholesky) factorization class computing each matrix block with Tile-based parallelism.
     """
 
     def __init__(

@@ -67,53 +67,53 @@ class StateKamino:
 
     q_i: wp.array[wp.transformf] | None = None
     """
-    Array of absolute body CoM poses expressed in world coordinates.\n
-    Each element is a 7D transform consisting of a 3D position + 4D unit quaternion.\n
+    Array of absolute body CoM poses expressed in world coordinates.
+    Each element is a 7D transform consisting of a 3D position + 4D unit quaternion.
     Shape of ``(num_bodies,)``.
     """
 
     u_i: wp.array[wp.spatial_vectorf] | None = None
     """
-    Array of absolute body CoM twists expressed in world coordinates.\n
-    Each element is a 6D vector comprising a 3D linear + 3D angular components.\n
+    Array of absolute body CoM twists expressed in world coordinates.
+    Each element is a 6D vector comprising a 3D linear + 3D angular components.
     Shape of ``(num_bodies,)``.
     """
 
     w_i: wp.array[wp.spatial_vectorf] | None = None
     """
-    Array of total body CoM wrenches expressed in world coordinates.\n
-    Each element is a 6D vector comprising a 3D linear + 3D angular components.\n
+    Array of total body CoM wrenches expressed in world coordinates.
+    Each element is a 6D vector comprising a 3D linear + 3D angular components.
     Shape of ``(num_bodies,)``.
     """
 
     w_i_e: wp.array[wp.spatial_vectorf] | None = None
     """
-    Array of external body CoM wrenches expressed in world coordinates.\n
-    Each element is a 6D vector comprising a 3D linear + 3D angular components.\n
+    Array of external body CoM wrenches expressed in world coordinates.
+    Each element is a 6D vector comprising a 3D linear + 3D angular components.
     Shape of ``(num_bodies,)``.
     """
 
     q_j: wp.array[wp.float32] | None = None
     """
-    Array of generalized joint coordinates.\n
+    Array of generalized joint coordinates.
     Shape of ``(sum_of_num_joint_coords,)``.
     """
 
     q_j_p: wp.array[wp.float32] | None = None
     """
-    Array of previous generalized joint coordinates.\n
+    Array of previous generalized joint coordinates.
     Shape of ``(sum_of_num_joint_coords,)``.
     """
 
     dq_j: wp.array[wp.float32] | None = None
     """
-    Array of generalized joint velocities.\n
+    Array of generalized joint velocities.
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     lambda_j: wp.array[wp.float32] | None = None
     """
-    Array of generalized joint constraint forces.\n
+    Array of generalized joint constraint forces.
     Shape of ``(sum_of_num_joint_cts,)``.
     """
 

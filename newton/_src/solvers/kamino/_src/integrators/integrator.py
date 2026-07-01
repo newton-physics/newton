@@ -86,7 +86,7 @@ class IntegratorBase:
                 If `None`, no joint limits are considered for the current time-step.
             contacts: The set of active contacts of the system at the current time-step.
                 If `None`, no contacts are considered for the current time-step.
-            detector: The collision detector to use for generating the set of active contacts at the current time-step.\n
+            detector: The collision detector to use for generating the set of active contacts at the current time-step.
                 If `None`, no collision detection is performed for the current time-step,
                 and active contacts must be provided via the `contacts` argument.
         """

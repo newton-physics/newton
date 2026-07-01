@@ -111,7 +111,7 @@ class Simulator:
 
         dt: float | FloatArrayLike = 0.001
         """
-        The time-step to be used for the simulation.\n
+        The time-step to be used for the simulation.
         Defaults to `0.001` seconds.
         """
 
@@ -123,7 +123,7 @@ class Simulator:
 
         solver: SolverKaminoImpl.Config = field(default_factory=SolverKaminoImpl.Config)
         """
-        The config for the dynamics solver.\n
+        The config for the dynamics solver.
         See :class:`SolverKaminoImpl.Config` for more details.
         """
 

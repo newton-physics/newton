@@ -83,13 +83,13 @@ class RigidBodyDescriptor(Descriptor):
 
     wid: int = -1
     """
-    Index of the world to which the body belongs.\n
+    Index of the world to which the body belongs.
     Defaults to `-1`, indicating that the body has not yet been added to a world.
     """
 
     bid: int = -1
     """
-    Index of the body w.r.t. its world.\n
+    Index of the body w.r.t. its world.
     Defaults to `-1`, indicating that the body has not yet been added to a world.
     """
 
@@ -117,21 +117,21 @@ class RigidBodiesModel:
 
     Attributes:
         num_bodies: The total number of body elements in the model (host-side).
-        wid: World index of each body.\n
+        wid: World index of each body.
             Shape of ``(num_bodies,)``.
-        bid: Body index of each body w.r.t. its world.\n
+        bid: Body index of each body w.r.t. its world.
             Shape of ``(num_bodies,)``.
-        m_i: Mass of each body.\n
+        m_i: Mass of each body.
             Shape of ``(num_bodies,)``.
-        inv_m_i: Inverse mass (1/m_i) of each body.\n
+        inv_m_i: Inverse mass (1/m_i) of each body.
             Shape of ``(num_bodies,)``.
-        i_I_i: Local moment of inertia of each body.\n
+        i_I_i: Local moment of inertia of each body.
             Shape of ``(num_bodies,)``.
-        inv_i_I_i: Inverse of the local moment of inertia of each body.\n
+        inv_i_I_i: Inverse of the local moment of inertia of each body.
             Shape of ``(num_bodies,)``.
-        q_i_0: Initial pose of each body.\n
+        q_i_0: Initial pose of each body.
             Shape of ``(num_bodies,)``.
-        u_i_0: Initial twist of each body.\n
+        u_i_0: Initial twist of each body.
             Shape of ``(num_bodies,)``.
     """
 
@@ -144,7 +144,7 @@ class RigidBodiesModel:
 
     label: list[str] | None = None
     """
-    A list containing the label of each body.\n
+    A list containing the label of each body.
     Length of ``num_bodies``.
     """
 
@@ -154,13 +154,13 @@ class RigidBodiesModel:
 
     wid: wp.array[wp.int32] | None = None
     """
-    World index each body.\n
+    World index each body.
     Shape of ``(num_bodies,)``.
     """
 
     bid: wp.array[wp.int32] | None = None
     """
-    Body index of each body w.r.t it's world.\n
+    Body index of each body w.r.t it's world.
     Shape of ``(num_bodies,)``.
     """
 
@@ -170,31 +170,31 @@ class RigidBodiesModel:
 
     i_r_com_i: wp.array[wp.vec3f] | None = None
     """
-    Translational offset of the center of mass w.r.t the body's reference frame.\n
+    Translational offset of the center of mass w.r.t the body's reference frame.
     Shape of ``(num_bodies,)``.
     """
 
     m_i: wp.array[wp.float32] | None = None
     """
-    Mass of each body.\n
+    Mass of each body.
     Shape of ``(num_bodies,)``.
     """
 
     inv_m_i: wp.array[wp.float32] | None = None
     """
-    Inverse mass (1/m_i) of each body.\n
+    Inverse mass (1/m_i) of each body.
     Shape of ``(num_bodies,)``.
     """
 
     i_I_i: wp.array[wp.mat33f] | None = None
     """
-    Local moment of inertia of each body.\n
+    Local moment of inertia of each body.
     Shape of ``(num_bodies,)``.
     """
 
     inv_i_I_i: wp.array[wp.mat33f] | None = None
     """
-    Inverse of the local moment of inertia of each body.\n
+    Inverse of the local moment of inertia of each body.
     Shape of ``(num_bodies,)``.
     """
 
@@ -204,13 +204,13 @@ class RigidBodiesModel:
 
     q_i_0: wp.array[wp.transformf] | None = None
     """
-    Initial pose of each body.\n
+    Initial pose of each body.
     Shape of ``(num_bodies,)``.
     """
 
     u_i_0: wp.array[wp.spatial_vectorf] | None = None
     """
-    Initial twist of each body.\n
+    Initial twist of each body.
     Shape of ``(num_bodies,)``.
     """
 
@@ -226,61 +226,61 @@ class RigidBodiesData:
 
     q_i: wp.array[wp.transformf] | None = None
     """
-    Absolute poses of each body (in world coordinates).\n
+    Absolute poses of each body (in world coordinates).
     Shape of ``(num_bodies,)``.
     """
 
     u_i: wp.array[wp.spatial_vectorf] | None = None
     """
-    Absolute twists of each body (in world coordinates).\n
+    Absolute twists of each body (in world coordinates).
     Shape of ``(num_bodies,)``.
     """
 
     I_i: wp.array[wp.mat33f] | None = None
     """
-    Moment of inertia (in world coordinates) of each body.\n
+    Moment of inertia (in world coordinates) of each body.
     Shape of ``(num_bodies,)``.
     """
 
     inv_I_i: wp.array[wp.mat33f] | None = None
     """
-    Inverse moment of inertia (in world coordinates) of each body.\n
+    Inverse moment of inertia (in world coordinates) of each body.
     Shape of ``(num_bodies,)``.
     """
 
     w_i: wp.array[wp.spatial_vectorf] | None = None
     """
-    Total wrench applied to each body (in world coordinates).\n
+    Total wrench applied to each body (in world coordinates).
     Shape of ``(num_bodies,)``.
     """
 
     w_a_i: wp.array[wp.spatial_vectorf] | None = None
     """
-    Joint actuation wrench applied to each body (in world coordinates).\n
+    Joint actuation wrench applied to each body (in world coordinates).
     Shape of ``(num_bodies,)``.
     """
 
     w_j_i: wp.array[wp.spatial_vectorf] | None = None
     """
-    Joint constraint wrench applied to each body (in world coordinates).\n
+    Joint constraint wrench applied to each body (in world coordinates).
     Shape of ``(num_bodies,)``.
     """
 
     w_l_i: wp.array[wp.spatial_vectorf] | None = None
     """
-    Joint limit wrench applied to each body (in world coordinates).\n
+    Joint limit wrench applied to each body (in world coordinates).
     Shape of ``(num_bodies,)``.
     """
 
     w_c_i: wp.array[wp.spatial_vectorf] | None = None
     """
-    Contact wrench applied to each body (in world coordinates).\n
+    Contact wrench applied to each body (in world coordinates).
     Shape of ``(num_bodies,)``.
     """
 
     w_e_i: wp.array[wp.spatial_vectorf] | None = None
     """
-    External wrench applied to each body (in world coordinates).\n
+    External wrench applied to each body (in world coordinates).
     Shape of ``(num_bodies,)``.
     """
 

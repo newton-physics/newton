@@ -153,7 +153,7 @@ def compute_dot_product(
     y: wp.array[wp.float32],
 ) -> wp.float32:
     """
-    Computes the dot (i.e. inner) product between two vectors `x` and `y` stored in flat arrays.\n
+    Computes the dot (i.e. inner) product between two vectors `x` and `y` stored in flat arrays.
     Both vectors are of dimension `dim`, starting from the vector index offset `vio`.
 
     Args:
@@ -181,7 +181,7 @@ def compute_double_dot_product(
     z: wp.array[wp.float32],
 ) -> wp.float32:
     """
-    Computes the the inner product `x.T @ (y + z)` between a vector `x` and the sum of two vectors `y` and `z`.\n
+    Computes the the inner product `x.T @ (y + z)` between a vector `x` and the sum of two vectors `y` and `z`.
     All vectors are stored in flat arrays, with dimension `dim` and starting from the vector index offset `vio`.
 
     Args:
@@ -206,7 +206,7 @@ def compute_vector_sum(
     dim: wp.int32, vio: wp.int32, x: wp.array[wp.float32], y: wp.array[wp.float32], z: wp.array[wp.float32]
 ):
     """
-    Computes the sum of two vectors `x` and `y` and stores the result in vector `z`.\n
+    Computes the sum of two vectors `x` and `y` and stores the result in vector `z`.
     All vectors are stored in flat arrays, with dimension `dim` and starting from the vector index offset `vio`.
 
     Args:
@@ -233,7 +233,7 @@ def compute_cwise_vec_mul(
     y: wp.array[wp.float32],
 ):
     """
-    Computes the coefficient-wise vector-vector product `y =  a * x`.\n
+    Computes the coefficient-wise vector-vector product `y =  a * x`.
 
     Args:
         dim: The dimension (i.e. size) of the vectors.
@@ -256,7 +256,7 @@ def compute_cwise_vec_div(
     y: wp.array[wp.float32],
 ):
     """
-    Computes the coefficient-wise vector-vector division `y =  a / x`.\n
+    Computes the coefficient-wise vector-vector division `y =  a / x`.
 
     Args:
         dim: The dimension (i.e. size) of the vectors.
@@ -283,7 +283,7 @@ def compute_gemv(
     c: wp.array[wp.float32],
 ):
     """
-    Computes the generalized matrix-vector product `c =  b + (A - sigma * I_n)@ x`.\n
+    Computes the generalized matrix-vector product `c =  b + (A - sigma * I_n)@ x`.
 
     The matrix `A` is stored using row-major order in flat array with allocation size `maxdim x maxdim`,
     starting from the matrix index offset `mio`. The active dimensions of the matrix are `dim x dim`,
@@ -336,7 +336,7 @@ def compute_desaxce_corrections(
         mu: The array of friction coefficients for each contact constraint.
         v_plus: The post-event constraint-space velocities array, which contains the tangential velocities `vtx`
             and `vty` for each contact constraint.
-        s: The output array where the De Saxce corrections are stored.\n
+        s: The output array where the De Saxce corrections are stored.
             The size of this array should be at least `vio + ccgo + 3 * nc`, where `vio` is the vector index offset,
             `ccgo` is the contact constraint group offset, and `nc` is the number of active contact constraints.
 

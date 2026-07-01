@@ -331,7 +331,7 @@ class ContactAggregationData:
 
     body_net_contact_force: wp.array3d[wp.float32] | None = None
     """
-    Net contact force per body (world frame).\n
+    Net contact force per body (world frame).
     Shape `(num_worlds, max_bodies_per_world, 3)`.
     """
 
@@ -343,7 +343,7 @@ class ContactAggregationData:
 
     body_static_contact_flag: wp.array2d[wp.int32] | None = None
     """
-    Static contact flag per body (contact with static geoms, 0 or 1).\n
+    Static contact flag per body (contact with static geoms, 0 or 1).
     Shape `(num_worlds, max_bodies_per_world)`.
     """
 
@@ -351,7 +351,7 @@ class ContactAggregationData:
 
     geom_net_contact_force: wp.array3d[wp.float32] | None = None
     """
-    Net contact force per geometry (world frame).\n
+    Net contact force per geometry (world frame).
     Shape `(num_worlds, max_geoms_per_world, 3)`.
     """
 
@@ -365,19 +365,19 @@ class ContactAggregationData:
 
     body_contact_position: wp.array3d[wp.float32] | None = None
     """
-    Average contact position per body (world frame).\n
+    Average contact position per body (world frame).
     Shape `(num_worlds, max_bodies_per_world, 3)`.
     """
 
     body_contact_normal: wp.array3d[wp.float32] | None = None
     """
-    Average contact normal per body (world frame).\n
+    Average contact normal per body (world frame).
     Shape `(num_worlds, max_bodies_per_world, 3)`.
     """
 
     body_num_contacts: wp.array2d[wp.int32] | None = None
     """
-    Number of contacts per body.\n
+    Number of contacts per body.
     Shape `(num_worlds, max_bodies_per_world)`.
     """
 
@@ -385,7 +385,7 @@ class ContactAggregationData:
 
     body_pair_contact_flag: wp.array[wp.int32] | None = None
     """
-    Per-world flag indicating contact between a specific body pair (0 or 1).\n
+    Per-world flag indicating contact between a specific body pair (0 or 1).
     Shape `(num_worlds,)`.
     """
 
@@ -535,7 +535,7 @@ class ContactAggregation:
 
         Args:
             skip_if_no_contacts:
-                If True, check for zero contacts and return early.\n
+                If True, check for zero contacts and return early.
                 Set to False when using CUDA graphs to avoid GPU-to-CPU copies.
         """
 

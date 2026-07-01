@@ -50,7 +50,7 @@ class BlockDType:
 
         Args:
             dtype: The underlying scalar Warp data-type of each sparse block.
-            shape: The shape of each sparse block as an integer (for vectors) or a tuple of integers (for matrices).\n
+            shape: The shape of each sparse block as an integer (for vectors) or a tuple of integers (for matrices).
                 If not provided, defaults to scalar blocks.
 
         Raises:
@@ -159,21 +159,21 @@ class BlockSparseMatrices:
 
     num_matrices: int = 0
     """
-    Host-side cache of the number of sparse matrices represented by this container.\n
-    When constructing the BSM via `finalize()`, this is inferred from the length of the provided capacities list.\n
+    Host-side cache of the number of sparse matrices represented by this container.
+    When constructing the BSM via `finalize()`, this is inferred from the length of the provided capacities list.
     Alternatively, it can be set directly if the BSM is constructed explicitly.
     """
 
     sum_of_num_nzb: int = 0
     """
-    Host-side cache of the sum of the number of non-zero blocks over all sparse matrices.\n
+    Host-side cache of the sum of the number of non-zero blocks over all sparse matrices.
     When constructing the BSM via `finalize()`, this is computed from the provided capacities list.
     Alternatively, it can be set directly if the BSM is constructed explicitly.
     """
 
     max_of_num_nzb: int = 0
     """
-    Host-side cache of the maximum number of non-zero blocks over all sparse matrices.\n
+    Host-side cache of the maximum number of non-zero blocks over all sparse matrices.
     When constructing the BSM via `finalize()`, this is computed from the provided capacities list.
     Alternatively, it can be set directly if the BSM is constructed explicitly.
     """
@@ -196,31 +196,31 @@ class BlockSparseMatrices:
 
     max_dims: wp.array | None = None
     """
-    The maximum dimensions of each sparse matrices.\n
+    The maximum dimensions of each sparse matrices.
     Shape of ``(num_matrices,)`` and type :class:`vec2i`.
     """
 
     max_nzb: wp.array | None = None
     """
-    The maximum number of non-zero blocks per sparse matrices.\n
+    The maximum number of non-zero blocks per sparse matrices.
     Shape of ``(num_matrices,)`` and type :class:`int`.
     """
 
     nzb_start: wp.array | None = None
     """
-    The index of the first non-zero block of each sparse matrices.\n
+    The index of the first non-zero block of each sparse matrices.
     Shape of ``(num_matrices,)`` and type :class:`int`.
     """
 
     row_start: wp.array | None = None
     """
-    The start index of each row vector block in a flattened data array of size sum_of_max_rows.\n
+    The start index of each row vector block in a flattened data array of size sum_of_max_rows.
     Shape of ``(num_matrices,)`` and type :class:`int`.
     """
 
     col_start: wp.array | None = None
     """
-    The start index of each column vector block in a flattened data array of size sum_of_max_cols.\n
+    The start index of each column vector block in a flattened data array of size sum_of_max_cols.
     Shape of ``(num_matrices,)`` and type :class:`int`.
     """
 
@@ -232,25 +232,25 @@ class BlockSparseMatrices:
 
     dims: wp.array | None = None
     """
-    The active dimensions of each sparse matrices.\n
+    The active dimensions of each sparse matrices.
     Shape of ``(num_matrices,)`` and type :class:`vec2i`.
     """
 
     num_nzb: wp.array | None = None
     """
-    The active number of non-zero blocks per sparse matrices.\n
+    The active number of non-zero blocks per sparse matrices.
     Shape of ``(num_matrices,)`` and type :class:`int`.
     """
 
     nzb_coords: wp.array | None = None
     """
-    The row-column coordinates of each non-zero block within its corresponding sparse matrix.\n
+    The row-column coordinates of each non-zero block within its corresponding sparse matrix.
     Shape of ``(sum_of_num_nzb,)`` and type :class:`vec2i`.
     """
 
     nzb_values: wp.array | None = None
     """
-    The flattened array containing all non-zero blocks over all sparse matrices.\n
+    The flattened array containing all non-zero blocks over all sparse matrices.
     Shape of ``(sum_of_num_nzb,)`` and type :class:`float | vector | matrix`.
     """
 
@@ -352,10 +352,10 @@ class BlockSparseMatrices:
         Args:
             max_dims: A list of pairs of integers, specifying the maximum number of rows and columns for each matrix.
             capacities: A list of integers specifying the maximum number of non-zero blocks for each sparse matrix.
-            nzb_dtype: An optional :class:`BlockDType` specifying the fixed type of each non-zero block.\n
+            nzb_dtype: An optional :class:`BlockDType` specifying the fixed type of each non-zero block.
                 If not provided, it must be set prior to finalization.
             index_dtype: Integer type used for indexing the underlying data arrays.
-            device: An optional device on which to allocate the data arrays.\n
+            device: An optional device on which to allocate the data arrays.
                 If not provided, the existing device of the container will be used.
 
         Raises:

@@ -129,7 +129,7 @@ class DualProblemData:
 
     config: wp.array[DualProblemConfigStruct] | None = None
     """
-    Problem configuration parameters for each world.\n
+    Problem configuration parameters for each world.
     Shape of `(num_worlds,)`.
     """
 
@@ -139,50 +139,50 @@ class DualProblemData:
 
     njc: wp.array[wp.int32] | None = None
     """
-    The number of active joint constraints in each world.\n
+    The number of active joint constraints in each world.
     Shape of `(num_worlds,)`.
     """
 
     nl: wp.array[wp.int32] | None = None
     """
-    The number of active limit constraints in each world.\n
+    The number of active limit constraints in each world.
     Shape of `(num_worlds,)`.
     """
 
     nc: wp.array[wp.int32] | None = None
     """
-    The number of active contact constraints in each world.\n
+    The number of active contact constraints in each world.
     Shape of `(num_worlds,)`.
     """
 
     lio: wp.array[wp.int32] | None = None
     """
-    The limit index offset of each world.\n
-    Shape of `(num_worlds,)`.\n
+    The limit index offset of each world.
+    Shape of `(num_worlds,)`.
     """
 
     cio: wp.array[wp.int32] | None = None
     """
-    The contact index offset of each world.\n
-    Shape of `(num_worlds,)`.\n
+    The contact index offset of each world.
+    Shape of `(num_worlds,)`.
     """
 
     uio: wp.array[wp.int32] | None = None
     """
-    The unilateral index offset of each world.\n
-    Shape of `(num_worlds,)`.\n
+    The unilateral index offset of each world.
+    Shape of `(num_worlds,)`.
     """
 
     lcgo: wp.array[wp.int32] | None = None
     """
-    The limit constraint group offset of each world.\n
-    Shape of `(num_worlds,)`.\n
+    The limit constraint group offset of each world.
+    Shape of `(num_worlds,)`.
     """
 
     ccgo: wp.array[wp.int32] | None = None
     """
-    The contact constraint group offset of each world.\n
-    Shape of `(num_worlds,)`.\n
+    The contact constraint group offset of each world.
+    Shape of `(num_worlds,)`.
     """
 
     ###
@@ -191,39 +191,39 @@ class DualProblemData:
 
     maxdim: wp.array[wp.int32] | None = None
     """
-    The maximum number of dual problem dimensions of each world.\n
+    The maximum number of dual problem dimensions of each world.
     Shape of `(num_worlds,)`.
     """
 
     dim: wp.array[wp.int32] | None = None
     """
-    The active number of dual problem dimensions of each world.\n
+    The active number of dual problem dimensions of each world.
     Shape of `(num_worlds,)`.
     """
 
     mio: wp.array[wp.int32] | None = None
     """
-    The matrix index offset of each Delassus matrix block.\n
-    This is applicable to `D` as well as to its (optional) factorizations.\n
+    The matrix index offset of each Delassus matrix block.
+    This is applicable to `D` as well as to its (optional) factorizations.
     Shape of `(num_worlds,)`.
     """
 
     vio: wp.array[wp.int32] | None = None
     """
-    The vector index offset of each constraint dimension vector block.\n
-    This is applicable to `v_b`, `v_i` and `v_f`.\n
+    The vector index offset of each constraint dimension vector block.
+    This is applicable to `v_b`, `v_i` and `v_f`.
     Shape of `(num_worlds,)`.
     """
 
     D: wp.array[wp.float32] | None = None
     """
-    The flat array of Delassus matrix blocks (constraint-space apparent inertia).\n
+    The flat array of Delassus matrix blocks (constraint-space apparent inertia).
     Shape of `(sum_of_max_total_delassus_size,)`.
     """
 
     P: wp.array[wp.float32] | None = None
     """
-    The flat array of Delassus diagonal preconditioner blocks.\n
+    The flat array of Delassus diagonal preconditioner blocks.
     Shape of `(sum_of_max_total_cts,)`.
     """
 
@@ -233,7 +233,7 @@ class DualProblemData:
 
     h: wp.array[wp.spatial_vectorf] | None = None
     """
-    Stack of non-linear generalized forces vectors of each world.\n
+    Stack of non-linear generalized forces vectors of each world.
 
     Computed as:
     `h = dt * (w_e + w_gc + w_a)`
@@ -253,7 +253,7 @@ class DualProblemData:
 
     u_f: wp.array[wp.spatial_vectorf] | None = None
     """
-    Stack of unconstrained generalized velocity vectors.\n
+    Stack of unconstrained generalized velocity vectors.
 
     Computed as:
     `u_f = u_minus + dt * M^{-1} @ h`
@@ -268,7 +268,7 @@ class DualProblemData:
 
     v_b: wp.array[wp.float32] | None = None
     """
-    Stack of free-velocity constraint bias vectors (in constraint-space).\n
+    Stack of free-velocity constraint bias vectors (in constraint-space).
 
     Computed as:
     `v_b = [ v_b_dynamics;
@@ -290,7 +290,7 @@ class DualProblemData:
 
     v_i: wp.array[wp.float32] | None = None
     """
-    The stack of free-velocity impact biases vector (in constraint-space).\n
+    The stack of free-velocity impact biases vector (in constraint-space).
 
     Computed as:
     `v_i = epsilon @ (J_cts @ u_minus)`
@@ -305,7 +305,7 @@ class DualProblemData:
 
     v_f: wp.array[wp.float32] | None = None
     """
-    Stack of free-velocity vectors (constraint-space unconstrained velocity).\n
+    Stack of free-velocity vectors (constraint-space unconstrained velocity).
 
     Computed as:
     `v_f = J_cts @ u_f + v_b + v_i`
@@ -321,7 +321,7 @@ class DualProblemData:
 
     mu: wp.array[wp.float32] | None = None
     """
-    Stack of per-contact constraint friction coefficient vectors.\n
+    Stack of per-contact constraint friction coefficient vectors.
     Shape of `(sum_of_max_contacts,)`.
     """
 
@@ -1076,11 +1076,11 @@ class DualProblem:
             contacts: The contacts container to use for the dual problem.
             jacobians: The constraints Jacobians for this model. Must be provided if model is provided.
             solver: The linear solver to use for the Delassus operator. Defaults to None.
-            config: The config for the dual problem.\n
+            config: The config for the dual problem.
                 If a single `DualProblem.Config` object is provided, it will be replicated for all worlds.
                 Defaults to `None`, indicating that default config will be used for all worlds.
             compute_h: Set to `True` to enable the computation of the nonlinear
-                generalized forces vectors in construction of the dual problem.\n
+                generalized forces vectors in construction of the dual problem.
                 Defaults to `False`.
         """
         # Ensure Jacobians are given if model is provided.
@@ -1202,13 +1202,13 @@ class DualProblem:
             model: The model to build the dual problem for.
             jacobians: The constraints Jacobians for this model.
             contacts: The contacts container to use for the dual problem.
-            solver: The linear solver to use for the Delassus operator.\n
+            solver: The linear solver to use for the Delassus operator.
                 Defaults to `None`.
-            config: The config for the dual problem.\n
+            config: The config for the dual problem.
                 If a single `DualProblem.Config` object is provided, it will be replicated for all worlds.
                 Defaults to `None`, indicating that default config will be used for all worlds.
             compute_h: Set to `True` to enable the computation of the nonlinear
-                generalized forces vectors in construction of the dual problem.\n
+                generalized forces vectors in construction of the dual problem.
                 Defaults to `False`.
         """
         # Ensure the model is valid

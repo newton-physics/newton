@@ -1061,7 +1061,7 @@ class BenchmarkMetrics:
         optionally saves the plots to a file at the specified path.
 
         Args:
-            path: Target file path of the generated plot image.\n
+            path: Target file path of the generated plot image.
 
         Raises:
             ValueError: If the PADMM solver metrics are not available.
@@ -1154,7 +1154,7 @@ class BenchmarkMetrics:
         saves the plots to a file at the specified path.
 
         Args:
-            path: Target file path of the generated plot image.\n
+            path: Target file path of the generated plot image.
 
         Raises:
             ValueError: If the physics metrics are not available.

@@ -54,7 +54,7 @@ __all__ = [
 
 DEFAULT_DENSITY = 1000.0
 """
-The global default density for materials, in kg/m^3.\n
+The global default density for materials, in kg/m^3.
 Equals ``1000.0`` kg/m^3.
 """
 
@@ -108,17 +108,17 @@ class MaterialDescriptor(Descriptor):
     Attributes:
         name: The name of the material.
         uid: The unique identifier (UUID) of the material.
-        density: The density of the material [kg/m³].\n
+        density: The density of the material [kg/m³].
             Defaults to the global default of ``1000.0`` kg/m³.
-        restitution: The coefficient of restitution, according to the Newtonian impact model.\n
+        restitution: The coefficient of restitution, according to the Newtonian impact model.
             Defaults to the global default of ``0.0``.
-        static_friction: The coefficient of static friction, according to the Coulomb friction model.\n
+        static_friction: The coefficient of static friction, according to the Coulomb friction model.
             Defaults to the global default of ``0.7``.
-        dynamic_friction: The coefficient of dynamic friction, according to the Coulomb friction model.\n
+        dynamic_friction: The coefficient of dynamic friction, according to the Coulomb friction model.
             Defaults to the global default of ``0.7``.
-        wid: Index of the world to which the material belongs.\n
+        wid: Index of the world to which the material belongs.
             Defaults to `-1`, indicating that the material has not yet been added to a world.
-        mid: Index of the material w.r.t. the world.\n
+        mid: Index of the material w.r.t. the world.
             Defaults to `-1`, indicating that the material has not yet been added to a world.
     """
 
@@ -128,25 +128,25 @@ class MaterialDescriptor(Descriptor):
 
     density: float = DEFAULT_DENSITY
     """
-    The density of the material, in kg/m^3.\n
+    The density of the material, in kg/m^3.
     Defaults to the global default of ``1000.0`` kg/m^3.
     """
 
     restitution: float = DEFAULT_RESTITUTION
     """
-    The coefficient of restitution, according to the Newtonian impact model.\n
+    The coefficient of restitution, according to the Newtonian impact model.
     Defaults to the global default of ``0.0``.
     """
 
     static_friction: float = DEFAULT_FRICTION
     """
-    The coefficient of static friction, according to the isotropic Coulomb friction model.\n
+    The coefficient of static friction, according to the isotropic Coulomb friction model.
     Defaults to the global default of ``0.7``.
     """
 
     dynamic_friction: float = DEFAULT_FRICTION
     """
-    The coefficient of dynamic friction, according to the isotropicCoulomb friction model.\n
+    The coefficient of dynamic friction, according to the isotropicCoulomb friction model.
     Defaults to the global default of ``0.7``.
     """
 
@@ -156,13 +156,13 @@ class MaterialDescriptor(Descriptor):
 
     wid: int = -1
     """
-    Index of the world to which the material belongs.\n
+    Index of the world to which the material belongs.
     Defaults to `-1`, indicating that the material has not yet been added to a world.
     """
 
     mid: int = -1
     """
-    Index of the material w.r.t. the world.\n
+    Index of the material w.r.t. the world.
     Defaults to `-1`, indicating that the material has not yet been added to a world.
     """
 
@@ -189,29 +189,29 @@ class MaterialPairProperties:
     A container to represent the properties of a pair of materials, including friction and restitution coefficients.
 
     Attributes:
-        restitution: The coefficient of restitution, according to the Newtonian impact model.\n
+        restitution: The coefficient of restitution, according to the Newtonian impact model.
             Defaults to the global default of ``0.0``.
-        static_friction: The coefficient of static surface friction, according to the Coulomb friction model.\n
+        static_friction: The coefficient of static surface friction, according to the Coulomb friction model.
             Defaults to the global default of ``0.7``.
-        dynamic_friction: The coefficient of dynamic surface friction, according to the Coulomb friction model.\n
+        dynamic_friction: The coefficient of dynamic surface friction, according to the Coulomb friction model.
             Defaults to the global default of ``0.7``.
     """
 
     restitution: float = DEFAULT_RESTITUTION
     """
-    The coefficient of restitution, according to the Newtonian impact model.\n
+    The coefficient of restitution, according to the Newtonian impact model.
     Defaults to the global default of ``0.0``.
     """
 
     static_friction: float = DEFAULT_FRICTION
     """
-    The coefficient of static surface friction, according to the Coulomb friction model.\n
+    The coefficient of static surface friction, according to the Coulomb friction model.
     Defaults to the global default of ``0.7``.
     """
 
     dynamic_friction: float = DEFAULT_FRICTION
     """
-    The coefficient of dynamic surface friction, according to the Coulomb friction model.\n
+    The coefficient of dynamic surface friction, according to the Coulomb friction model.
     Defaults to the global default of ``0.7``.
     """
 
@@ -231,13 +231,13 @@ class MaterialsModel:
 
     Attributes:
         num_materials: Total number of materials represented in the model.
-        density: Array of material density values of each registered material.\n
+        density: Array of material density values of each registered material.
             Shape of ``(num_materials,)``.
-        restitution: Array of restitution coefficients for each registered material.\n
+        restitution: Array of restitution coefficients for each registered material.
             Shape of ``(num_materials,)``.
-        static_friction: Array of static friction coefficients for each registered material.\n
+        static_friction: Array of static friction coefficients for each registered material.
             Shape of ``(num_materials,)``.
-        dynamic_friction: Array of dynamic friction coefficients for each registered material.\n
+        dynamic_friction: Array of dynamic friction coefficients for each registered material.
             Shape of ``(num_materials,)``.
     """
 
@@ -246,27 +246,27 @@ class MaterialsModel:
 
     density: wp.array[wp.float32] | None = None
     """
-    Array of material density values of each registered material.\n
+    Array of material density values of each registered material.
     Shape of ``(num_materials,)``.
     """
 
     restitution: wp.array[wp.float32] | None = None
     """
-    Array of restitution coefficients for each registered material.\n
+    Array of restitution coefficients for each registered material.
     Shape of ``(num_materials,)``.
     """
 
     # TODO: Switch to wp.vec3f for anisotropic+torsional friction?
     static_friction: wp.array[wp.float32] | None = None
     """
-    Array of static friction coefficients for each registered material.\n
+    Array of static friction coefficients for each registered material.
     Shape of ``(num_materials,)``.
     """
 
     # TODO: Switch to wp.vec3f for anisotropic+torsional friction?
     dynamic_friction: wp.array[wp.float32] | None = None
     """
-    Array of dynamic friction coefficients for each registered material.\n
+    Array of dynamic friction coefficients for each registered material.
     Shape of ``(num_materials,)``.
     """
 
@@ -283,11 +283,11 @@ class MaterialPairsModel:
 
     Attributes:
         num_material_pairs: Total number of material pairs represented in the model.
-        restitution: Lower-triangular matrix of material-pair restitution coefficients.\n
+        restitution: Lower-triangular matrix of material-pair restitution coefficients.
             Shape of ``(num_material_pairs,)``.
-        static_friction: Lower-triangular matrix of material-pair static friction coefficients.\n
+        static_friction: Lower-triangular matrix of material-pair static friction coefficients.
             Shape of ``(num_material_pairs,)``.
-        dynamic_friction: Lower-triangular matrix of material-pair dynamic friction coefficients.\n
+        dynamic_friction: Lower-triangular matrix of material-pair dynamic friction coefficients.
             Shape of ``(num_material_pairs,)``.
     """
 
@@ -296,21 +296,21 @@ class MaterialPairsModel:
 
     restitution: wp.array[wp.float32] | None = None
     """
-    Lower-triangular matrix of material-pair restitution coefficients.\n
+    Lower-triangular matrix of material-pair restitution coefficients.
     Shape of ``(num_material_pairs,)``.
     """
 
     # TODO: Switch to wp.vec3f for anisotropic+torsional friction?
     static_friction: wp.array[wp.float32] | None = None
     """
-    Lower-triangular matrix of material-pair static friction coefficients.\n
+    Lower-triangular matrix of material-pair static friction coefficients.
     Shape of ``(num_material_pairs,)``.
     """
 
     # TODO: Switch to wp.vec3f for anisotropic+torsional friction?
     dynamic_friction: wp.array[wp.float32] | None = None
     """
-    Lower-triangular matrix of material-pair dynamic friction coefficients.\n
+    Lower-triangular matrix of material-pair dynamic friction coefficients.
     Shape of ``(num_material_pairs,)``.
     """
 
@@ -478,13 +478,13 @@ class MaterialManager:
         Initializes the MaterialManager with an optional default material and its properties.
 
         Args:
-            default_material: The default material to register.\n
+            default_material: The default material to register.
                 If None, a default material with the name 'default' will be created.
-            default_restitution: The default restitution coefficient for material pairs.\n
+            default_restitution: The default restitution coefficient for material pairs.
                 Defaults to ``DEFAULT_RESTITUTION``.
-            default_static_friction: The default static friction coefficient for material pairs.\n
+            default_static_friction: The default static friction coefficient for material pairs.
                 Defaults to ``DEFAULT_FRICTION``.
-            default_dynamic_friction: The default dynamic friction coefficient for material pairs.\n
+            default_dynamic_friction: The default dynamic friction coefficient for material pairs.
                 Defaults to ``DEFAULT_FRICTION``.
         """
         # Declare the materials and material-pairs lists

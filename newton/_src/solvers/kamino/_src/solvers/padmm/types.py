@@ -8,7 +8,7 @@ High-level Settings:
 - :class:`PADMMPenaltyUpdate`:
     Defines the ALM penalty update methods supported by the PADMM solver.
 - :class:`PADMMWarmStartMode`:
-    Defines the warmstart modes supported by the PADMM solver.\n
+    Defines the warmstart modes supported by the PADMM solver.
 
 Warp Structs:
 - :class:`PADMMConfigStruct`:
@@ -190,135 +190,135 @@ class PADMMConfigStruct:
     Intended to be used as ``dtype`` for warp arrays.
 
     Attributes:
-        primal_tolerance: The target tolerance on the total primal residual `r_primal`.\n
+        primal_tolerance: The target tolerance on the total primal residual `r_primal`.
             Must be greater than zero. Defaults to `1e-6`.
-        dual_tolerance: The target tolerance on the total dual residual `r_dual`.\n
+        dual_tolerance: The target tolerance on the total dual residual `r_dual`.
             Must be greater than zero. Defaults to `1e-6`.
-        compl_tolerance: The target tolerance on the total complementarity residual `r_compl`.\n
+        compl_tolerance: The target tolerance on the total complementarity residual `r_compl`.
             Must be greater than zero. Defaults to `1e-6`.
         restart_tolerance: The tolerance on the total combined primal-dual
-            residual `r_comb`, for determining when gradient acceleration should be restarted.\n
+            residual `r_comb`, for determining when gradient acceleration should be restarted.
             Must be greater than zero. Defaults to `0.999`.
-        eta: The proximal regularization parameter.\n
+        eta: The proximal regularization parameter.
             Must be greater than zero. Defaults to `1e-5`.
-        rho_0: The initial value of the penalty parameter.\n
+        rho_0: The initial value of the penalty parameter.
             Must be greater than zero. Defaults to `1.0`.
-        a_0: The initial value of the acceleration parameter.\n
+        a_0: The initial value of the acceleration parameter.
             Must be greater than zero. Defaults to `1.0`.
         alpha: The threshold on primal-dual residual ratios,
-            used to determine when penalty updates should occur.\n
+            used to determine when penalty updates should occur.
             Must be greater than `1.0`. Defaults to `10.0`.
         tau: The factor by which the penalty is increased/decreased
-            when the primal-dual residual ratios exceed the threshold `alpha`.\n
+            when the primal-dual residual ratios exceed the threshold `alpha`.
             Must be greater than `1.0`. Defaults to `1.5`.
-        max_iterations: The maximum number of solver iterations.\n
+        max_iterations: The maximum number of solver iterations.
             Must be greater than zero. Defaults to `200`.
-        penalty_update_freq: The permitted frequency of penalty updates.\n
+        penalty_update_freq: The permitted frequency of penalty updates.
             If zero, no updates are performed. Otherwise, updates are performed every
             `penalty_update_freq` iterations. Defaults to `10`.
-        penalty_update_method: The penalty update method used to adapt the penalty parameter.\n
-            Defaults to `PADMMPenaltyUpdate.FIXED`.\n
+        penalty_update_method: The penalty update method used to adapt the penalty parameter.
+            Defaults to `PADMMPenaltyUpdate.FIXED`.
             See :class:`PADMMPenaltyUpdate` for details.
     """
 
     primal_tolerance: wp.float32
     """
-    The target tolerance on the total primal residual `r_primal`.\n
+    The target tolerance on the total primal residual `r_primal`.
     Must be greater than zero. Defaults to `1e-6`.
     """
 
     dual_tolerance: wp.float32
     """
-    The target tolerance on the total dual residual `r_dual`.\n
+    The target tolerance on the total dual residual `r_dual`.
     Must be greater than zero. Defaults to `1e-6`.
     """
 
     compl_tolerance: wp.float32
     """
-    The target tolerance on the total complementarity residual `r_compl`.\n
+    The target tolerance on the total complementarity residual `r_compl`.
     Must be greater than zero. Defaults to `1e-6`.
     """
 
     restart_tolerance: wp.float32
     """
     The tolerance applied on the total combined primal-dual residual `r_comb`,
-    for determining when gradient acceleration should be restarted.\n
+    for determining when gradient acceleration should be restarted.
     Must be greater than zero. Defaults to `0.999`.
     """
 
     eta: wp.float32
     """
-    The proximal regularization parameter.\n
+    The proximal regularization parameter.
     Must be greater than zero. Defaults to `1e-5`.
     """
 
     rho_0: wp.float32
     """
-    The initial value of the ALM penalty parameter.\n
+    The initial value of the ALM penalty parameter.
     Must be greater than zero. Defaults to `1.0`.
     """
 
     rho_min: wp.float32
     """
-    The lower-bound applied to the ALM penalty parameter.\n
+    The lower-bound applied to the ALM penalty parameter.
     Must be greater than zero. Defaults to `1e-5`.
     """
 
     a_0: wp.float32
     """
-    The initial value of the acceleration parameter.\n
+    The initial value of the acceleration parameter.
     Must be greater than zero. Defaults to `1.0`.
     """
 
     alpha: wp.float32
     """
     The threshold on primal-dual residual ratios,
-    used to determine when penalty updates should occur.\n
+    used to determine when penalty updates should occur.
     Must be greater than `1.0`. Defaults to `10.0`.
     """
 
     tau: wp.float32
     """
     The factor by which the penalty is increased/decreased
-    when the primal-dual residual ratios exceed the threshold `alpha`.\n
+    when the primal-dual residual ratios exceed the threshold `alpha`.
     Must be greater than `1.0`. Defaults to `1.5`.
     """
 
     max_iterations: wp.int32
     """
-    The maximum number of solver iterations.\n
+    The maximum number of solver iterations.
     Must be greater than zero. Defaults to `200`.
     """
 
     penalty_update_freq: wp.int32
     """
-    The permitted frequency of penalty updates.\n
+    The permitted frequency of penalty updates.
     If zero, no updates are performed. Otherwise, updates are performed every
     `penalty_update_freq` iterations. Defaults to `10`.
     """
 
     penalty_update_method: wp.int32
     """
-    The penalty update method used to adapt the penalty parameter.\n
-    Defaults to `PADMMPenaltyUpdate.FIXED`.\n
+    The penalty update method used to adapt the penalty parameter.
+    Defaults to `PADMMPenaltyUpdate.FIXED`.
     See :class:`PADMMPenaltyUpdate` for details.
     """
 
     linear_solver_tolerance: wp.float32
     """
-    The default absolute tolerance for the iterative linear solver.\n
+    The default absolute tolerance for the iterative linear solver.
     When positive, the iterative solver's atol is initialized to this value
-    at the start of each ADMM solve.\n
-    When zero, the iterative solver's own tolerance is left unchanged.\n
+    at the start of each ADMM solve.
+    When zero, the iterative solver's own tolerance is left unchanged.
     Must be non-negative. Defaults to `0.0`.
     """
 
     linear_solver_tolerance_ratio: wp.float32
     """
-    The ratio used to adapt the iterative linear solver tolerance from the ADMM primal residual.\n
+    The ratio used to adapt the iterative linear solver tolerance from the ADMM primal residual.
     When positive, the linear solver absolute tolerance is set to
-    `ratio * ||r_primal||_2` at each ADMM iteration.\n
-    When zero, the linear solver tolerance is not adapted (fixed tolerance).\n
+    `ratio * ||r_primal||_2` at each ADMM iteration.
+    When zero, the linear solver tolerance is not adapted (fixed tolerance).
     Must be non-negative. Defaults to `0.0`.
     """
 
@@ -331,38 +331,38 @@ class PADMMStatus:
     Intended to be used as ``dtype`` for warp arrays.
 
     Attributes:
-        converged: A flag indicating whether the solver has converged (`1`) or not (`0`).\n
+        converged: A flag indicating whether the solver has converged (`1`) or not (`0`).
             Used internally to keep track of per-world convergence status,
             with `1` being set only when all total residuals have satisfied their
             respective tolerances. If by the end of the solve the flag is still `0`,
             it indicates that the solve reached the maximum number of iterations.
-        iterations: The number of iterations performed by the solver.\n
+        iterations: The number of iterations performed by the solver.
             Used internally to keep track of per-world iteration counts.
-        r_p: The total primal residual.\n
-            Computed using the L-inf norm as `r_primal := || x - y ||_inf`.\n
-        r_d: The total dual residual.\n
-            Computed using the L-inf norm as `r_dual := || eta * (x - x_p) + rho * (y - y_p) ||_inf`.\n
+        r_p: The total primal residual.
+            Computed using the L-inf norm as `r_primal := || x - y ||_inf`.
+        r_d: The total dual residual.
+            Computed using the L-inf norm as `r_dual := || eta * (x - x_p) + rho * (y - y_p) ||_inf`.
         r_c: The total complementarity residual.
             Computed using the L-inf norm as `r_compl := || [x_k.T @ z_k] ||_inf`,
             with `k` indexing each unilateral constraint set, i.e. 1D limits and 3D contacts.
-        r_dx: The total primal iterate residual.\n
+        r_dx: The total primal iterate residual.
             Computed as the L2-norm `r_dx := || x - x_p ||_2`.
-        r_dy: The total slack iterate residual.\n
+        r_dy: The total slack iterate residual.
             Computed as the L2-norm `r_dy := || y - y_p ||_2`.
-        r_dz: The total dual iterate residual.\n
+        r_dz: The total dual iterate residual.
             Computed as the L2-norm `r_dz := || z - z_p ||_2`.
         r_a: The total combined primal-dual residual used for acceleration restart checks.
             Computed as `r_a := rho * r_dy + (1.0 / rho) * r_dz`.
         r_a_p: The previous total combined primal-dual residual.
         r_a_pp: An auxiliary cache of the previous total combined primal-dual residual.
-        restart: A flag indicating whether gradient acceleration requires a restart (`1`) or not (`0`).\n
+        restart: A flag indicating whether gradient acceleration requires a restart (`1`) or not (`0`).
             Used internally to keep track of per-world acceleration restarts.
         num_restarts: The number of acceleration restarts performed during the solve.
     """
 
     converged: wp.int32
     """
-    A flag indicating whether the solver has converged (`1`) or not (`0`).\n
+    A flag indicating whether the solver has converged (`1`) or not (`0`).
     Used internally to keep track of per-world convergence status,
     with `1` being set only when all total residuals have satisfied their
     respective tolerances. If by the end of the solve the flag is still `0`,
@@ -371,20 +371,20 @@ class PADMMStatus:
 
     iterations: wp.int32
     """
-    The number of iterations performed by the solver.\n
+    The number of iterations performed by the solver.
     Used internally to keep track of per-world iteration counts.
     """
 
     r_p: wp.float32
     """
-    The total primal residual.\n
-    Computed using the L-inf norm as `r_primal := || x - y ||_inf`.\n
+    The total primal residual.
+    Computed using the L-inf norm as `r_primal := || x - y ||_inf`.
     """
 
     r_d: wp.float32
     """
-    The total dual residual.\n
-    Computed using the L-inf norm as `r_dual := || eta * (x - x_p) + rho * (y - y_p) ||_inf`.\n
+    The total dual residual.
+    Computed using the L-inf norm as `r_dual := || eta * (x - x_p) + rho * (y - y_p) ||_inf`.
     """
 
     r_c: wp.float32
@@ -396,25 +396,25 @@ class PADMMStatus:
 
     r_dx: wp.float32
     """
-    The total primal iterate residual.\n
+    The total primal iterate residual.
     Computed as the L2-norm `r_dx := || x - x_p ||_2`.
     """
 
     r_dy: wp.float32
     """
-    The total slack iterate residual.\n
+    The total slack iterate residual.
     Computed as the L2-norm `r_dy := || y - y_p ||_2`.
     """
 
     r_dz: wp.float32
     """
-    The total dual iterate residual.\n
+    The total dual iterate residual.
     Computed as the L2-norm `r_dz := || z - z_p ||_2`.
     """
 
     r_a: wp.float32
     """
-    The total combined primal-dual residual used for acceleration restart checks.\n
+    The total combined primal-dual residual used for acceleration restart checks.
     Computed as `r_a := rho * r_dy + (1.0 / rho) * r_dz`.
     """
 
@@ -426,7 +426,7 @@ class PADMMStatus:
 
     restart: wp.int32
     """
-    A flag indicating whether gradient acceleration requires a restart (`1`) or not (`0`).\n
+    A flag indicating whether gradient acceleration requires a restart (`1`) or not (`0`).
     Used internally to keep track of per-world acceleration restarts.
     """
 
@@ -442,14 +442,14 @@ class PADMMPenalty:
     Intended to be used as ``dtype`` for warp arrays.
 
     Attributes:
-        num_updates: The number of penalty updates performed during a solve.\n
+        num_updates: The number of penalty updates performed during a solve.
             If a direct linear-system solver is used, this also
             equals the number of matrix factorizations performed.
-        rho: The current value of the ALM penalty parameter.\n
+        rho: The current value of the ALM penalty parameter.
             If adaptive penalty scheme is used, this value may change during
             solve operations, while being lower-bounded by `config.rho_min`
             to ensure numerical stability.
-        rho_p: The previous value of the ALM penalty parameter.\n
+        rho_p: The previous value of the ALM penalty parameter.
             As diagonal regularization of the lhs matrix (e.g. Delassus
             operator) is performed in-place, we must keep track of the
             previous penalty value  to remove the previous regularization
@@ -458,14 +458,14 @@ class PADMMPenalty:
 
     num_updates: wp.int32
     """
-    The number of penalty updates performed during a solve.\n
+    The number of penalty updates performed during a solve.
     If a direct linear-system solver is used, this also
     equals the number of matrix factorizations performed.
     """
 
     rho: wp.float32
     """
-    The current value of the ALM penalty parameter.\n
+    The current value of the ALM penalty parameter.
     If adaptive penalty scheme is used, this value may change during
     solve operations, while being lower-bounded by `config.rho_min`
     to ensure numerical stability.
@@ -473,7 +473,7 @@ class PADMMPenalty:
 
     rho_p: wp.float32
     """
-    The previous value of the ALM penalty parameter.\n
+    The previous value of the ALM penalty parameter.
     As diagonal regularization of the lhs matrix (e.g. Delassus
     operator) is performed in-place, we must keep track of the
     previous penalty value  to remove the previous regularization
@@ -492,33 +492,33 @@ class PADMMState:
 
     Attributes:
         done: A single-element array containing the global
-            flag that indicates whether the solver should terminate.\n
+            flag that indicates whether the solver should terminate.
             Its value is initialized to ``num_worlds`` at the beginning of each
-            solve, and decremented by one for each world that has converged.\n
+            solve, and decremented by one for each world that has converged.
             Shape of ``(1,)``.
-        s: The De Saxce correction velocities `s = Gamma(v_plus)`.\n
+        s: The De Saxce correction velocities `s = Gamma(v_plus)`.
             Shape of ``(sum_of_max_total_cts,)``.
-        v: The total bias velocity vector serving as the right-hand-side of the PADMM linear system.\n
+        v: The total bias velocity vector serving as the right-hand-side of the PADMM linear system.
             Shape of ``(sum_of_max_total_cts,)``.
-        x: The current PADMM primal variables.\n
+        x: The current PADMM primal variables.
             Shape of ``(sum_of_max_total_cts,)``.
-        x_p: The previous PADMM primal variables.\n
+        x_p: The previous PADMM primal variables.
             Shape of ``(sum_of_max_total_cts,)``.
-        y: The current PADMM slack variables.\n
+        y: The current PADMM slack variables.
             Shape of ``(sum_of_max_total_cts,)``.
-        y_p: The previous PADMM slack variables.\n
+        y_p: The previous PADMM slack variables.
             Shape of ``(sum_of_max_total_cts,)``.
-        z: The current PADMM dual variables.\n
+        z: The current PADMM dual variables.
             Shape of ``(sum_of_max_total_cts,)``.
-        z_p: The previous PADMM dual variables.\n
+        z_p: The previous PADMM dual variables.
             Shape of ``(sum_of_max_total_cts,)``.
-        y_hat: The auxiliary PADMM slack variables used with gradient acceleration.\n
+        y_hat: The auxiliary PADMM slack variables used with gradient acceleration.
             Shape of ``(sum_of_max_total_cts,)``.
-        z_hat: The auxiliary PADMM dual variables used with gradient acceleration.\n
+        z_hat: The auxiliary PADMM dual variables used with gradient acceleration.
             Shape of ``(sum_of_max_total_cts,)``.
-        a: The per-world current Nesterov acceleration variables.\n
+        a: The per-world current Nesterov acceleration variables.
             Shape of ``(sum_of_max_total_cts,)``.
-        a_p: The per-world previous Nesterov acceleration variables.\n
+        a_p: The per-world previous Nesterov acceleration variables.
             Shape of ``(sum_of_max_total_cts,)``.
         a_factor: The per-world Nesterov factor computed from the previous and current acceleration
             variables. Shape of ``(num_worlds,)``.
@@ -536,9 +536,9 @@ class PADMMState:
 
         self.done: wp.array[wp.int32] | None = None
         """
-        A single-element array containing the global flag that indicates whether the solver should terminate.\n
+        A single-element array containing the global flag that indicates whether the solver should terminate.
         Its value is initialized to ``num_worlds`` at the beginning of each
-        solve, and decremented by one for each world that has converged.\n
+        solve, and decremented by one for each world that has converged.
         Shape of ``(1,)``.
         """
 
@@ -558,14 +558,14 @@ class PADMMState:
 
         self.s: wp.array[wp.float32] | None = None
         """
-        The De Saxce correction velocities `s = Gamma(v_plus)`.\n
+        The De Saxce correction velocities `s = Gamma(v_plus)`.
         Shape of ``(sum_of_max_total_cts,)``.
         """
 
         self.v: wp.array[wp.float32] | None = None
         """
-        The total bias velocity vector serving as the right-hand-side of the PADMM linear system.\n
-        It is computed from the PADMM state and proximal parameters `eta` and `rho`.\n
+        The total bias velocity vector serving as the right-hand-side of the PADMM linear system.
+        It is computed from the PADMM state and proximal parameters `eta` and `rho`.
         Shape of ``(sum_of_max_total_cts,)``.
         """
 
@@ -607,36 +607,36 @@ class PADMMState:
 
         self.y_hat: wp.array[wp.float32] | None = None
         """
-        The auxiliary PADMM slack variables used with gradient acceleration.\n
-        Only allocated if acceleration is enabled.\n
+        The auxiliary PADMM slack variables used with gradient acceleration.
+        Only allocated if acceleration is enabled.
         Shape of ``(sum_of_max_total_cts,)``.
         """
 
         self.z_hat: wp.array[wp.float32] | None = None
         """
-        The auxiliary PADMM dual variables used with gradient acceleration.\n
-        Only allocated if acceleration is enabled.\n
+        The auxiliary PADMM dual variables used with gradient acceleration.
+        Only allocated if acceleration is enabled.
         Shape of ``(sum_of_max_total_cts,)``.
         """
 
         self.a: wp.array[wp.float32] | None = None
         """
-        The per-world current Nesterov acceleration variables.\n
-        Only allocated if acceleration is enabled.\n
+        The per-world current Nesterov acceleration variables.
+        Only allocated if acceleration is enabled.
         Shape of ``(num_worlds,)``.
         """
 
         self.a_p: wp.array[wp.float32] | None = None
         """
-        The per-world previous Nesterov acceleration variables.\n
-        Only allocated if acceleration is enabled.\n
+        The per-world previous Nesterov acceleration variables.
+        Only allocated if acceleration is enabled.
         Shape of ``(num_worlds,)``.
         """
 
         self.a_factor: wp.array[wp.float32] | None = None
         """
-        The per-world current Nesterov acceleration factor.\n
-        Only allocated if acceleration is enabled.\n
+        The per-world current Nesterov acceleration factor.
+        Only allocated if acceleration is enabled.
         Shape of ``(num_worlds,)``.
         """
 
@@ -682,8 +682,8 @@ class PADMMState:
         - If acceleration is enabled, the momentum arrays `a_p` and `a` are set to ones.
 
         Args:
-            use_acceleration: Whether to reset the acceleration state variables.\n
-                If `True`, auxiliary state variables and acceleration scales are reset as well.\n
+            use_acceleration: Whether to reset the acceleration state variables.
+                If `True`, auxiliary state variables and acceleration scales are reset as well.
                 Defaults to `False`.
         """
         # Reset primary state variables
@@ -714,18 +714,18 @@ class PADMMResiduals:
     A data container to bundle the internal PADMM residual arrays.
 
     Attributes:
-        r_primal: The PADMM primal residual vector, computed as `r_primal := x - y`.\n
+        r_primal: The PADMM primal residual vector, computed as `r_primal := x - y`.
             Shape of ``(sum_of_max_total_cts,)``.
-        r_dual: The PADMM dual residual vector, computed as `r_dual := eta * (x - x_p) + rho * (y - y_p)`.\n
+        r_dual: The PADMM dual residual vector, computed as `r_dual := eta * (x - x_p) + rho * (y - y_p)`.
             Shape of ``(sum_of_max_total_cts,)``.
-        r_compl: The PADMM complementarity residual vector, computed as `r_compl := [x_j.dot(z_j)]`,\n
-            where `j` indexes each unilateral constraint set (i.e. 1D limits and 3D contacts).\n
+        r_compl: The PADMM complementarity residual vector, computed as `r_compl := [x_j.dot(z_j)]`,
+            where `j` indexes each unilateral constraint set (i.e. 1D limits and 3D contacts).
             Shape of ``(sum_of_num_unilateral_cts,)``.
-        r_dx: The PADMM primal iterate residual vector, computed as `r_dx := x - x_p`.\n
+        r_dx: The PADMM primal iterate residual vector, computed as `r_dx := x - x_p`.
             Shape of ``(sum_of_max_total_cts,)``.
-        r_dy: The PADMM slack iterate residual vector, computed as `r_dy := y - y_p`.\n
+        r_dy: The PADMM slack iterate residual vector, computed as `r_dy := y - y_p`.
             Shape of ``(sum_of_max_total_cts,)``.
-        r_dz: The PADMM dual iterate residual vector, computed as `r_dz := z - z_p`.\n
+        r_dz: The PADMM dual iterate residual vector, computed as `r_dz := z - z_p`.
             Shape of ``(sum_of_max_total_cts,)``.
     """
 
@@ -741,41 +741,41 @@ class PADMMResiduals:
 
         self.r_primal: wp.array[wp.float32] | None = None
         """
-        The PADMM primal residual vector, computed as `r_primal := x - y`.\n
+        The PADMM primal residual vector, computed as `r_primal := x - y`.
         Shape of ``(sum_of_max_total_cts,)``.
         """
 
         self.r_dual: wp.array[wp.float32] | None = None
         """
-        The PADMM dual residual vector, computed as `r_dual := eta * (x - x_p) + rho * (y - y_p)`.\n
+        The PADMM dual residual vector, computed as `r_dual := eta * (x - x_p) + rho * (y - y_p)`.
         Shape of ``(sum_of_max_total_cts,)``.
         """
 
         self.r_compl: wp.array[wp.float32] | None = None
         """
-        The PADMM complementarity residual vector, computed as `r_compl := [x_j.dot(z_j)]`,\n
-        where `j` indexes each unilateral constraint set (i.e. 1D limits and 3D contacts).\n
+        The PADMM complementarity residual vector, computed as `r_compl := [x_j.dot(z_j)]`,
+        where `j` indexes each unilateral constraint set (i.e. 1D limits and 3D contacts).
         Shape of ``(sum_of_num_unilateral_cts,)``.
         """
 
         self.r_dx: wp.array[wp.float32] | None = None
         """
-        The PADMM primal iterate residual vector, computed as `r_dx := x - x_p`.\n
-        Only allocated if acceleration is enabled.\n
+        The PADMM primal iterate residual vector, computed as `r_dx := x - x_p`.
+        Only allocated if acceleration is enabled.
         Shape of ``(sum_of_max_total_cts,)``.
         """
 
         self.r_dy: wp.array[wp.float32] | None = None
         """
-        The PADMM slack iterate residual vector, computed as `r_dy := y - y_p`.\n
-        Only allocated if acceleration is enabled.\n
+        The PADMM slack iterate residual vector, computed as `r_dy := y - y_p`.
+        Only allocated if acceleration is enabled.
         Shape of ``(sum_of_max_total_cts,)``.
         """
 
         self.r_dz: wp.array[wp.float32] | None = None
         """
-        The PADMM dual iterate residual vector, computed as `r_dz := z - z_p`.\n
-        Only allocated if acceleration is enabled.\n
+        The PADMM dual iterate residual vector, computed as `r_dz := z - z_p`.
+        Only allocated if acceleration is enabled.
         Shape of ``(sum_of_max_total_cts,)``.
         """
 
@@ -820,7 +820,7 @@ class PADMMSolution:
     An interface container to the PADMM solver solution arrays.
 
     Attributes:
-        lambdas: The constraint reactions (i.e. impulses) solution array.\n
+        lambdas: The constraint reactions (i.e. impulses) solution array.
             Shape of ``(sum_of_max_total_cts,)``.
         v_plus: The post-event constraint-space velocities solution array.
             Shape of ``(sum_of_max_total_cts,)``.
@@ -838,7 +838,7 @@ class PADMMSolution:
 
         self.lambdas: wp.array[wp.float32] | None = None
         """
-        The constraint reactions (i.e. impulses) solution array.\n
+        The constraint reactions (i.e. impulses) solution array.
         Shape of ``(sum_of_max_total_cts,)``.
         """
 
@@ -875,60 +875,60 @@ class PADMMInfo:
     An interface container to hold the PADMM solver convergence info arrays.
 
     Attributes:
-        lambdas: The constraint reactions (i.e. impulses) of each world.\n
+        lambdas: The constraint reactions (i.e. impulses) of each world.
             Shape of ``(sum_of_max_total_cts,)``.
-        v_plus: The post-event constraint-space velocities of each world.\n
-            This is computed using the current solution as: `v_plus := v_f + D @ lambdas`.\n
+        v_plus: The post-event constraint-space velocities of each world.
+            This is computed using the current solution as: `v_plus := v_f + D @ lambdas`.
             Shape of ``(sum_of_max_total_cts,)``.
-        v_aug: The post-event augmented constraint-space velocities of each world.\n
-            This is computed using the current solution as: `v_aug := v_plus + s`.\n
+        v_aug: The post-event augmented constraint-space velocities of each world.
+            This is computed using the current solution as: `v_aug := v_plus + s`.
             Shape of ``(sum_of_max_total_cts,)``.
-        s: The De Saxce correction velocities of each world.\n
-            This is computed using the current solution as: `s := Gamma(v_plus)`.\n
+        s: The De Saxce correction velocities of each world.
+            This is computed using the current solution as: `s := Gamma(v_plus)`.
             Shape of ``(sum_of_max_total_cts,)``.
-        offsets: The residuals index offset of each world.\n
+        offsets: The residuals index offset of each world.
             Shape of ``(num_worlds,)``.
-        num_restarts: History of the number of acceleration restarts performed for each world.\n
+        num_restarts: History of the number of acceleration restarts performed for each world.
             Shape of ``(num_worlds * max_iters,)``.
-        num_rho_updates: History of the number of penalty updates performed for each world.\n
+        num_rho_updates: History of the number of penalty updates performed for each world.
             Shape of ``(num_worlds * max_iters,)``.
-        a: History of PADMM acceleration variables.\n
+        a: History of PADMM acceleration variables.
             Shape of ``(num_worlds * max_iters,)``.
-        norm_s: History of the L2 norm of De Saxce correction velocities.\n
+        norm_s: History of the L2 norm of De Saxce correction velocities.
             Shape of ``(num_worlds * max_iters,)``.
-        norm_x: History of the L2 norm of primal variables.\n
+        norm_x: History of the L2 norm of primal variables.
             Shape of ``(num_worlds * max_iters,)``.
-        norm_y: History of the L2 norm of slack variables.\n
+        norm_y: History of the L2 norm of slack variables.
             Shape of ``(num_worlds * max_iters,)``.
-        norm_z: History of the L2 norm of dual variables.\n
+        norm_z: History of the L2 norm of dual variables.
             Shape of ``(num_worlds * max_iters,)``.
-        f_ccp: History of CCP optimization objectives.\n
+        f_ccp: History of CCP optimization objectives.
             Shape of ``(num_worlds * max_iters,)``.
-        f_ncp: History of the NCP optimization objectives.\n
+        f_ncp: History of the NCP optimization objectives.
             Shape of ``(num_worlds * max_iters,)``.
-        r_dx: History of the total primal iterate residual.\n
+        r_dx: History of the total primal iterate residual.
             Shape of ``(num_worlds * max_iters,)``.
-        r_dy: History of the total slack iterate residual.\n
+        r_dy: History of the total slack iterate residual.
             Shape of ``(num_worlds * max_iters,)``.
-        r_dz: History of the total dual iterate residual.\n
+        r_dz: History of the total dual iterate residual.
             Shape of ``(num_worlds * max_iters,)``.
-        r_primal: History of the total primal residual.\n
+        r_primal: History of the total primal residual.
             Shape of ``(num_worlds * max_iters,)``.
-        r_dual: History of the total dual residual.\n
+        r_dual: History of the total dual residual.
             Shape of ``(num_worlds * max_iters,)``.
-        r_compl: History of the total complementarity residual.\n
+        r_compl: History of the total complementarity residual.
             Shape of ``(num_worlds * max_iters,)``.
-        r_comb: History of the total combined primal-dual residual.\n
+        r_comb: History of the total combined primal-dual residual.
             Shape of ``(num_worlds * max_iters,)``.
-        r_comb_ratio: History of the combined primal-dual residual ratio.\n
+        r_comb_ratio: History of the combined primal-dual residual ratio.
             Shape of ``(num_worlds * max_iters,)``.
-        r_ncp_primal: History of NCP primal residuals.\n
+        r_ncp_primal: History of NCP primal residuals.
             Shape of ``(num_worlds * max_iters,)``.
-        r_ncp_dual: History of NCP dual residuals.\n
+        r_ncp_dual: History of NCP dual residuals.
             Shape of ``(num_worlds * max_iters,)``.
-        r_ncp_compl: History of NCP complementarity residuals.\n
+        r_ncp_compl: History of NCP complementarity residuals.
             Shape of ``(num_worlds * max_iters,)``.
-        r_ncp_natmap: History of NCP natural-map residuals.\n
+        r_ncp_natmap: History of NCP natural-map residuals.
             Shape of ``(num_worlds * max_iters,)``.
 
     Notes:
@@ -957,172 +957,172 @@ class PADMMInfo:
 
         self.lambdas: wp.array[wp.float32] | None = None
         """
-        The constraint reactions (i.e. impulses) of each world.\n
+        The constraint reactions (i.e. impulses) of each world.
         Shape of ``(sum_of_max_total_cts,)``.
         """
 
         self.v_plus: wp.array[wp.float32] | None = None
         """
-        The post-event constraint-space velocities of each world.\n
-        This is computed using the current solution as: `v_plus := v_f + D @ lambdas`.\n
+        The post-event constraint-space velocities of each world.
+        This is computed using the current solution as: `v_plus := v_f + D @ lambdas`.
         Shape of ``(sum_of_max_total_cts,)``.
         """
 
         self.v_aug: wp.array[wp.float32] | None = None
         """
-        The post-event augmented constraint-space velocities of each world.\n
-        This is computed using the current solution as: `v_aug := v_plus + s`.\n
+        The post-event augmented constraint-space velocities of each world.
+        This is computed using the current solution as: `v_aug := v_plus + s`.
         Shape of ``(sum_of_max_total_cts,)``.
         """
 
         self.s: wp.array[wp.float32] | None = None
         """
-        The De Saxce correction velocities of each world.\n
-        This is computed using the current solution as: `s := Gamma(v_plus)`.\n
+        The De Saxce correction velocities of each world.
+        This is computed using the current solution as: `s := Gamma(v_plus)`.
         Shape of ``(sum_of_max_total_cts,)``.
         """
 
         self.offsets: wp.array[wp.int32] | None = None
         """
-        The residuals index offset of each world.\n
+        The residuals index offset of each world.
         Shape of ``(num_worlds,)``.
         """
 
         self.num_restarts: wp.array[wp.int32] | None = None
         """
-        History of the number of acceleration restarts performed for each world.\n
+        History of the number of acceleration restarts performed for each world.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.num_rho_updates: wp.array[wp.int32] | None = None
         """
-        History of the number of penalty updates performed for each world.\n
+        History of the number of penalty updates performed for each world.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.a: wp.array[wp.float32] | None = None
         """
-        History of PADMM acceleration variables.\n
+        History of PADMM acceleration variables.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.norm_s: wp.array[wp.float32] | None = None
         """
-        History of the L2 norm of De Saxce correction velocities.\n
+        History of the L2 norm of De Saxce correction velocities.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.norm_x: wp.array[wp.float32] | None = None
         """
-        History of the L2 norm of primal variables.\n
+        History of the L2 norm of primal variables.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.norm_y: wp.array[wp.float32] | None = None
         """
-        History of the L2 norm of slack variables.\n
+        History of the L2 norm of slack variables.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.norm_z: wp.array[wp.float32] | None = None
         """
-        History of the L2 norm of dual variables.\n
+        History of the L2 norm of dual variables.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.f_ccp: wp.array[wp.float32] | None = None
         """
-        History of CCP optimization objectives.\n
+        History of CCP optimization objectives.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.f_ncp: wp.array[wp.float32] | None = None
         """
-        History of the NCP optimization objectives.\n
+        History of the NCP optimization objectives.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.r_dx: wp.array[wp.float32] | None = None
         """
-        History of the total primal iterate residual.\n
+        History of the total primal iterate residual.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.r_dy: wp.array[wp.float32] | None = None
         """
-        History of the total slack iterate residual.\n
+        History of the total slack iterate residual.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.r_dz: wp.array[wp.float32] | None = None
         """
-        History of the total dual iterate residual.\n
+        History of the total dual iterate residual.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.r_primal: wp.array[wp.float32] | None = None
         """
-        History of PADMM primal residuals.\n
+        History of PADMM primal residuals.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.r_dual: wp.array[wp.float32] | None = None
         """
-        History of PADMM dual residuals.\n
+        History of PADMM dual residuals.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.r_compl: wp.array[wp.float32] | None = None
         """
-        History of PADMM complementarity residuals.\n
+        History of PADMM complementarity residuals.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.r_pd: wp.array[wp.float32] | None = None
         """
-        History of PADMM primal-dual residual ratio.\n
+        History of PADMM primal-dual residual ratio.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.r_dp: wp.array[wp.float32] | None = None
         """
-        History of PADMM dual-primal residual ratio.\n
+        History of PADMM dual-primal residual ratio.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.r_comb: wp.array[wp.float32] | None = None
         """
-        History of PADMM combined residuals.\n
+        History of PADMM combined residuals.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.r_comb_ratio: wp.array[wp.float32] | None = None
         """
-        History of PADMM combined residuals ratio.\n
+        History of PADMM combined residuals ratio.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.r_ncp_primal: wp.array[wp.float32] | None = None
         """
-        History of NCP primal residuals.\n
+        History of NCP primal residuals.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.r_ncp_dual: wp.array[wp.float32] | None = None
         """
-        History of NCP dual residuals.\n
+        History of NCP dual residuals.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.r_ncp_compl: wp.array[wp.float32] | None = None
         """
-        History of NCP complementarity residuals.\n
+        History of NCP complementarity residuals.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
         self.r_ncp_natmap: wp.array[wp.float32] | None = None
         """
-        History of NCP natural-map residuals.\n
+        History of NCP natural-map residuals.
         Shape of ``(num_worlds * max_iters,)``.
         """
 
@@ -1227,14 +1227,14 @@ class PADMMData:
 
     Attributes:
         config: Array of per-world solver configurations,
-            of type :class:`PADMMConfigStruct` and shape ``(num_worlds,)``.\n
+            of type :class:`PADMMConfigStruct` and shape ``(num_worlds,)``.
             Each element is the on-device version of :class:`PADMMConfig`.
         status: Array of per-world solver status,
-            of type :class:`PADMMStatus` and shape ``(num_worlds,)``.\n
+            of type :class:`PADMMStatus` and shape ``(num_worlds,)``.
             Each element holds the status of the solver on
             solving the dynamics of the corresponding world.
         penalty: Array of per-world ALM penalty states,
-            of type :class:`PADMMPenalty` and shape ``(num_worlds,)``.\n
+            of type :class:`PADMMPenalty` and shape ``(num_worlds,)``.
             Each element holds the current and previous ALM penalty `rho`,
             as well as additional meta-data regarding it's adaptation.
         state: A container holding the PADMM state variable arrays.
@@ -1266,19 +1266,19 @@ class PADMMData:
 
         self.config: wp.array[PADMMConfigStruct] | None = None
         """
-        Array of on-device PADMM solver configs.\n
+        Array of on-device PADMM solver configs.
         Shape is (num_worlds,).
         """
 
         self.status: wp.array[PADMMStatus] | None = None
         """
-        Array of PADMM solver status.\n
+        Array of PADMM solver status.
         Shape is (num_worlds,).
         """
 
         self.penalty: wp.array[PADMMPenalty] | None = None
         """
-        Array of PADMM solver penalty parameters.\n
+        Array of PADMM solver penalty parameters.
         Shape is (num_worlds,).
         """
 
@@ -1296,7 +1296,7 @@ class PADMMData:
 
         self.linear_solver_atol: wp.array[wp.float32] | None = None
         """
-        Per-world absolute tolerance array for the iterative linear solver.\n
+        Per-world absolute tolerance array for the iterative linear solver.
         Shape is (num_worlds,).
         """
 

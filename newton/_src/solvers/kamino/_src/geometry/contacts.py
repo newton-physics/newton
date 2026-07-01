@@ -74,39 +74,39 @@ wp.set_module_options({"enable_backward": False})
 
 DEFAULT_MODEL_MAX_CONTACTS: int = 1000
 """
-The global default for maximum number of contacts per model.\n
-Used when allocating contact data without a specified capacity.\n
+The global default for maximum number of contacts per model.
+Used when allocating contact data without a specified capacity.
 Set to `1000`.
 """
 
 DEFAULT_WORLD_MAX_CONTACTS: int = 128
 """
-The global default for maximum number of contacts per world.\n
-Used when allocating contact data without a specified capacity.\n
+The global default for maximum number of contacts per world.
+Used when allocating contact data without a specified capacity.
 Set to `128`.
 """
 
 DEFAULT_GEOM_PAIR_MAX_CONTACTS: int = 12
 """
-The global default for maximum number of contacts per geom-pair.\n
-Used when allocating contact data without a specified capacity.\n
-Ignored for mesh-based collisions.\n
+The global default for maximum number of contacts per geom-pair.
+Used when allocating contact data without a specified capacity.
+Ignored for mesh-based collisions.
 Set to `12` (with box-box collisions being a prototypical case).
 """
 
 DEFAULT_TRIANGLE_MAX_PAIRS: int = 1_000_000
 """
-The global default for maximum number of triangle pairs to consider in the narrow-phase.\n
-Used only when the model contains triangle meshes or heightfields.\n
+The global default for maximum number of triangle pairs to consider in the narrow-phase.
+Used only when the model contains triangle meshes or heightfields.
 Defaults to `1_000_000`.
 """
 
 DEFAULT_GEOM_PAIR_CONTACT_GAP: float = 1e-5
 """
-The global default for the per-geometry detection gap [m].\n
+The global default for the per-geometry detection gap [m].
 Applied as a floor to each per-geometry gap value during pipeline
 initialization so that every geometry has at least this detection
-threshold.\n
+threshold.
 Set to `1e-5`.
 """
 
@@ -202,139 +202,139 @@ class ContactsKaminoData:
 
     model_max_contacts_host: int = 0
     """
-    Host-side cache of the maximum number of contacts allocated across all worlds.\n
+    Host-side cache of the maximum number of contacts allocated across all worlds.
     Intended for managing data allocations and setting thread sizes in kernels.
     """
 
     world_max_contacts_host: list[int] = field(default_factory=_default_num_world_max_contacts)
     """
-    Host-side cache of the maximum number of contacts allocated per world.\n
+    Host-side cache of the maximum number of contacts allocated per world.
     Intended for managing data allocations and setting thread sizes in kernels.
     """
 
     model_max_contacts: wp.array[wp.int32] | None = None
     """
-    The number of contacts pre-allocated across all worlds in the model.\n
+    The number of contacts pre-allocated across all worlds in the model.
     Shape of ``(1,)``.
     """
 
     model_active_contacts: wp.array[wp.int32] | None = None
     """
-    The number of active contacts detected across all worlds in the model.\n
+    The number of active contacts detected across all worlds in the model.
     Shape of ``(1,)``.
     """
 
     world_max_contacts: wp.array[wp.int32] | None = None
     """
-    The maximum number of contacts pre-allocated for each world.\n
+    The maximum number of contacts pre-allocated for each world.
     Shape of ``(num_worlds,)``.
     """
 
     world_active_contacts: wp.array[wp.int32] | None = None
     """
-    The number of active contacts detected in each world.\n
+    The number of active contacts detected in each world.
     Shape of ``(num_worlds,)``.
     """
 
     wid: wp.array[wp.int32] | None = None
     """
-    The world index of each active contact.\n
+    The world index of each active contact.
     Shape of ``(model_max_contacts_host,)``.
     """
 
     cid: wp.array[wp.int32] | None = None
     """
-    The contact index of each active contact w.r.t its world.\n
+    The contact index of each active contact w.r.t its world.
     Shape of ``(model_max_contacts_host,)``.
     """
 
     gid_AB: wp.array[wp.vec2i] | None = None
     """
-    The geometry indices of the geometry-pair AB associated with each active contact.\n
+    The geometry indices of the geometry-pair AB associated with each active contact.
     Shape of ``(model_max_contacts_host,)``.
     """
 
     bid_AB: wp.array[wp.vec2i] | None = None
     """
-    The body indices of the body-pair AB associated with each active contact.\n
+    The body indices of the body-pair AB associated with each active contact.
     Shape of ``(model_max_contacts_host,)``.
     """
 
     position_A: wp.array[wp.vec3f] | None = None
     """
-    The position of each active contact on the associated body-A in world coordinates.\n
+    The position of each active contact on the associated body-A in world coordinates.
     Shape of ``(model_max_contacts_host,)``.
     """
 
     position_B: wp.array[wp.vec3f] | None = None
     """
-    The position of each active contact on the associated body-B in world coordinates.\n
+    The position of each active contact on the associated body-B in world coordinates.
     Shape of ``(model_max_contacts_host,)``.
     """
 
     gapfunc: wp.array[wp.vec4f] | None = None
     """
-    Gap-function of each active contact, format ``(xyz: normal, w: signed_distance)``.\n
+    Gap-function of each active contact, format ``(xyz: normal, w: signed_distance)``.
     The ``w`` component stores the signed distance between margin-shifted surfaces:
     negative means penetration past the resting separation, positive means separation
-    within the detection gap.\n
+    within the detection gap.
     Shape of ``(model_max_contacts_host,)``.
     """
 
     frame: wp.array[wp.quatf] | None = None
     """
-    The coordinate frame of each active contact as a rotation quaternion w.r.t the world.\n
+    The coordinate frame of each active contact as a rotation quaternion w.r.t the world.
     Shape of ``(model_max_contacts_host,)``.
     """
 
     material: wp.array[wp.vec2f] | None = None
     """
-    The material properties of each active contact with format `(0: friction, 1: restitution)`.\n
+    The material properties of each active contact with format `(0: friction, 1: restitution)`.
     Shape of ``(model_max_contacts_host,)``.
     """
 
     margins: wp.array[wp.vec2f] | None = None
     """
-    The shape-pair margins of each active contact.\n
+    The shape-pair margins of each active contact.
     Shape of ``(model_max_contacts_host,)``.
     """
 
     key: wp.array[wp.uint64] | None = None
     """
-    Integer key uniquely identifying each active contact.\n
+    Integer key uniquely identifying each active contact.
     The per-contact key assignment is implementation-dependent, but is typically
     computed from the A/B geom-pair index as well as additional information such as:
     - the triangle index
     - shape-specific topological data
-    - contact index w.r.t the geom-pair\n
+    - contact index w.r.t the geom-pair
     Shape of ``(model_max_contacts_host,)``.
     """
 
     reaction: wp.array[wp.vec3f] | None = None
     """
-    The 3D contact reaction (force/impulse) expressed in the respective local contact frame.\n
-    This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.\n
+    The 3D contact reaction (force/impulse) expressed in the respective local contact frame.
+    This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.
     Shape of ``(model_max_contacts_host,)``.
     """
 
     velocity: wp.array[wp.vec3f] | None = None
     """
-    The 3D contact velocity expressed in the respective local contact frame.\n
-    This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.\n
+    The 3D contact velocity expressed in the respective local contact frame.
+    This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.
     Shape of ``(model_max_contacts_host,)``.
     """
 
     mode: wp.array[wp.int32] | None = None
     """
-    The discrete contact mode expressed as an integer value.\n
-    The possible values correspond to those of the :class:`ContactMode`.\n
-    This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.\n
+    The discrete contact mode expressed as an integer value.
+    The possible values correspond to those of the :class:`ContactMode`.
+    This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.
     Shape of ``(model_max_contacts_host,)``.
     """
 
     remap: wp.array[wp.int32] | None = None
     """
-    Per-contact mapping back to the source contact index when converted from Newton :class:`Contacts`.\n
+    Per-contact mapping back to the source contact index when converted from Newton :class:`Contacts`.
     Shape of ``(model_max_contacts_host,)``.
 
     Populated by :func:`convert_contacts_newton_to_kamino` so that each Kamino
@@ -427,19 +427,19 @@ class ContactsKamino:
 
         Args:
             model:
-                The model container holding the time-invariant data of the system being simulated.\n
+                The model container holding the time-invariant data of the system being simulated.
                 If provided, the contacts will be finalized using the contact allocation meta-data of the model.
-                Cannot be specified together with `capacity`.\n
+                Cannot be specified together with `capacity`.
                 If `None``, and `capacity` is also `None`, the contacts will be created empty without
                 allocating data, and can be finalized later by providing model/capacity to `finalize`.
             capacity:
-                The maximum number of contacts to allocate if no model is provided.\n
+                The maximum number of contacts to allocate if no model is provided.
                 If an integer is provided, it specifies the capacity for a single world.
                 If a list of integers is provided, it specifies the capacity for each world.
                 Cannot be specified together with `model`.
             default_max_contacts:
                 The default maximum number of contacts per world, if no model and no positive capacity
-                are provided.\n
+                are provided.
                 If `None`, uses the default value of 128.
             device:
                 The device on which to allocate the contacts data.
@@ -471,7 +471,7 @@ class ContactsKamino:
     @property
     def default_max_world_contacts(self) -> int:
         """
-        Returns the default maximum number of contacts per world.\n
+        Returns the default maximum number of contacts per world.
         This value is used when the capacity at allocation-time is unspecified or equals 0.
         """
         return self._default_max_world_contacts
@@ -506,7 +506,7 @@ class ContactsKamino:
     @property
     def model_max_contacts_host(self) -> int:
         """
-        Returns the host-side cache of the maximum number of contacts allocated across all worlds.\n
+        Returns the host-side cache of the maximum number of contacts allocated across all worlds.
         Intended for managing data allocations and setting thread sizes in kernels.
         """
         self._assert_has_data()
@@ -515,7 +515,7 @@ class ContactsKamino:
     @property
     def world_max_contacts_host(self) -> list[int]:
         """
-        Returns the host-side cache of the maximum number of contacts allocated per world.\n
+        Returns the host-side cache of the maximum number of contacts allocated per world.
         Intended for managing data allocations and setting thread sizes in kernels.
         """
         self._assert_has_data()
@@ -524,7 +524,7 @@ class ContactsKamino:
     @property
     def model_max_contacts(self) -> wp.array[wp.int32]:
         """
-        Returns the maximum number contacts pre-allocated across all worlds in the model.\n
+        Returns the maximum number contacts pre-allocated across all worlds in the model.
         Shape of ``(1,)``.
         """
         self._assert_has_data()
@@ -533,7 +533,7 @@ class ContactsKamino:
     @property
     def model_active_contacts(self) -> wp.array[wp.int32]:
         """
-        Returns the number of active contacts detected across all worlds in the model.\n
+        Returns the number of active contacts detected across all worlds in the model.
         Shape of ``(1,)``.
         """
         self._assert_has_data()
@@ -542,7 +542,7 @@ class ContactsKamino:
     @property
     def world_max_contacts(self) -> wp.array[wp.int32]:
         """
-        Returns the maximum number of contacts pre-allocated for each world.\n
+        Returns the maximum number of contacts pre-allocated for each world.
         Shape of ``(num_worlds,)``.
         """
         self._assert_has_data()
@@ -551,7 +551,7 @@ class ContactsKamino:
     @property
     def world_active_contacts(self) -> wp.array[wp.int32]:
         """
-        Returns the number of active contacts detected in each world.\n
+        Returns the number of active contacts detected in each world.
         Shape of ``(num_worlds,)``.
         """
         self._assert_has_data()
@@ -560,7 +560,7 @@ class ContactsKamino:
     @property
     def wid(self) -> wp.array[wp.int32]:
         """
-        Returns the world index of each active contact.\n
+        Returns the world index of each active contact.
         Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
@@ -569,7 +569,7 @@ class ContactsKamino:
     @property
     def cid(self) -> wp.array[wp.int32]:
         """
-        Returns the contact index of each active contact w.r.t its world.\n
+        Returns the contact index of each active contact w.r.t its world.
         Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
@@ -578,7 +578,7 @@ class ContactsKamino:
     @property
     def gid_AB(self) -> wp.array[wp.vec2i]:
         """
-        Returns the geometry indices of the geometry-pair AB associated with each active contact.\n
+        Returns the geometry indices of the geometry-pair AB associated with each active contact.
         Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
@@ -587,7 +587,7 @@ class ContactsKamino:
     @property
     def bid_AB(self) -> wp.array[wp.vec2i]:
         """
-        Returns the body indices of the body-pair AB associated with each active contact.\n
+        Returns the body indices of the body-pair AB associated with each active contact.
         Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
@@ -596,7 +596,7 @@ class ContactsKamino:
     @property
     def position_A(self) -> wp.array[wp.vec3f]:
         """
-        Returns the position of each active contact on the associated body-A in world coordinates.\n
+        Returns the position of each active contact on the associated body-A in world coordinates.
         Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
@@ -605,7 +605,7 @@ class ContactsKamino:
     @property
     def position_B(self) -> wp.array[wp.vec3f]:
         """
-        Returns the position of each active contact on the associated body-B in world coordinates.\n
+        Returns the position of each active contact on the associated body-B in world coordinates.
         Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
@@ -614,7 +614,7 @@ class ContactsKamino:
     @property
     def gapfunc(self) -> wp.array[wp.vec4f]:
         """
-        Returns the gap-function of each active contact, packed as``(xyz: normal, w: distance)``.\n
+        Returns the gap-function of each active contact, packed as``(xyz: normal, w: distance)``.
         Shape of ``(model_max_contacts_host,)``.
 
         The ``w`` component stores the signed ``distance`` between margin-shifted surfaces:
@@ -627,7 +627,7 @@ class ContactsKamino:
     @property
     def frame(self) -> wp.array[wp.quatf]:
         """
-        Returns the coordinate frame of each active contact as a rotation quaternion w.r.t the world.\n
+        Returns the coordinate frame of each active contact as a rotation quaternion w.r.t the world.
         Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
@@ -636,7 +636,7 @@ class ContactsKamino:
     @property
     def material(self) -> wp.array[wp.vec2f]:
         """
-        Returns the material properties of each active contact with format `(0: friction, 1: restitution)`.\n
+        Returns the material properties of each active contact with format `(0: friction, 1: restitution)`.
         Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
@@ -645,7 +645,7 @@ class ContactsKamino:
     @property
     def margins(self) -> wp.array[wp.vec2f]:
         """
-        Returns the effective shape-pair margins of each active contact.\n
+        Returns the effective shape-pair margins of each active contact.
         Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
@@ -654,12 +654,12 @@ class ContactsKamino:
     @property
     def key(self) -> wp.array[wp.uint64]:
         """
-        Returns the integer key uniquely identifying each active contact.\n
+        Returns the integer key uniquely identifying each active contact.
         The per-contact key assignment is implementation-dependent, but is typically
         computed from the A/B geom-pair index as well as additional information such as:
         - the triangle index
         - shape-specific topological data
-        - contact index w.r.t the geom-pair\n
+        - contact index w.r.t the geom-pair
         Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
@@ -668,8 +668,8 @@ class ContactsKamino:
     @property
     def reaction(self) -> wp.array[wp.vec3f]:
         """
-        Returns the 3D contact reaction (force/impulse) expressed in the respective local contact frame.\n
-        This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.\n
+        Returns the 3D contact reaction (force/impulse) expressed in the respective local contact frame.
+        This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.
         Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
@@ -678,8 +678,8 @@ class ContactsKamino:
     @property
     def velocity(self) -> wp.array[wp.vec3f]:
         """
-        Returns the 3D contact velocity expressed in the respective local contact frame.\n
-        This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.\n
+        Returns the 3D contact velocity expressed in the respective local contact frame.
+        This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.
         Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
@@ -688,9 +688,9 @@ class ContactsKamino:
     @property
     def mode(self) -> wp.array[wp.int32]:
         """
-        Returns the discrete contact mode expressed as an integer value.\n
-        The possible values correspond to those of the :class:`ContactMode`.\n
-        This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.\n
+        Returns the discrete contact mode expressed as an integer value.
+        The possible values correspond to those of the :class:`ContactMode`.
+        This is to be set by solvers at each step, and also facilitates contact visualization and warm-starting.
         Shape of ``(model_max_contacts_host,)``.
         """
         self._assert_has_data()
@@ -721,11 +721,11 @@ class ContactsKamino:
 
         Args:
             model:
-                The model container holding the time-invariant data of the system being simulated.\n
+                The model container holding the time-invariant data of the system being simulated.
                 If provided, the contacts will be finalized using the contact allocation meta-data of the model.
                 Cannot be specified together with `capacity`.
             capacity:
-                The maximum number of contacts to allocate if no model is provided.\n
+                The maximum number of contacts to allocate if no model is provided.
                 If an integer is provided, it specifies the capacity for a single world.
                 If a list of integers is provided, it specifies the capacity for each world.
                 Cannot be specified together with `model`.
@@ -1293,7 +1293,7 @@ def convert_contacts_newton_to_kamino(
         contacts_out:
             The output :class:`ContactsKamino` object to populate with the converted contact data.
         convert_forces:
-            If ``True``, also convert ``contacts_in.force`` into``contacts_out.reaction``.\n
+            If ``True``, also convert ``contacts_in.force`` into``contacts_out.reaction``.
             If ``False`` or ``contacts_in.force`` is missing, ``contacts_out.reaction`` is left untouched.
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.

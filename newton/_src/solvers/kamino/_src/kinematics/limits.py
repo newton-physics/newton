@@ -54,117 +54,117 @@ class LimitsKaminoData:
 
     model_max_limits_host: int = 0
     """
-    Host-side cache of the maximum number of limits allocated across all worlds.\n
+    Host-side cache of the maximum number of limits allocated across all worlds.
     The number of allocated limits in the model is determined by the ModelBuilder when finalizing
-    a ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint.\n
-    The single entry is then less than or equal to the total ``num_joint_dofs`` of the entire model.\n
+    a ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint.
+    The single entry is then less than or equal to the total ``num_joint_dofs`` of the entire model.
     This is cached on the host-side for managing data allocations and setting thread sizes in kernels.
     """
 
     world_max_limits_host: list[int] = field(default_factory=list)
     """
-    Host-side cache of the maximum number of limits allocated per world.\n
+    Host-side cache of the maximum number of limits allocated per world.
     The number of allocated limits per world is determined by the ModelBuilder when finalizing a
-    ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint of each world.\n
-    Each entry is then less than or equal to the total ``num_joint_dofs`` of the corresponding world.\n
+    ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint of each world.
+    Each entry is then less than or equal to the total ``num_joint_dofs`` of the corresponding world.
     This is cached on the host-side for managing data allocations and setting thread sizes in kernels.
     """
 
     model_max_limits: wp.array[wp.int32] | None = None
     """
-    The maximum number of limits allocated for the model across all worlds.\n
+    The maximum number of limits allocated for the model across all worlds.
     The number of allocated limits in the model is determined by the ModelBuilder when finalizing
-    a ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint.\n
-    The single entry is then less than or equal to the total ``num_joint_dofs`` of the entire model.\n
+    a ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint.
+    The single entry is then less than or equal to the total ``num_joint_dofs`` of the entire model.
     Shape of ``(1,)``.
     """
 
     model_active_limits: wp.array[wp.int32] | None = None
     """
-    The total number of active limits currently active in the model across all worlds.\n
+    The total number of active limits currently active in the model across all worlds.
     Shape of ``(1,)``.
     """
 
     world_max_limits: wp.array[wp.int32] | None = None
     """
-    The maximum number of limits allocated per world.\n
+    The maximum number of limits allocated per world.
     The number of allocated limits per world is determined by the ModelBuilder when finalizing a
-    ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint of each world.\n
-    Each entry is then less than or equal to the total ``num_joint_dofs`` of the corresponding world.\n
+    ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint of each world.
+    Each entry is then less than or equal to the total ``num_joint_dofs`` of the corresponding world.
     Shape of ``(num_worlds,)``.
     """
 
     world_active_limits: wp.array[wp.int32] | None = None
     """
-    The total number of active limits currently active per world.\n
+    The total number of active limits currently active per world.
     Shape of ``(num_worlds,)``.
     """
 
     wid: wp.array[wp.int32] | None = None
     """
-    The world index of each limit.\n
+    The world index of each limit.
     Shape of ``(model_max_limits_host,)``.
     """
 
     lid: wp.array[wp.int32] | None = None
     """
-    The element index of each limit w.r.t its world.\n
+    The element index of each limit w.r.t its world.
     Shape of ``(model_max_limits_host,)``.
     """
 
     jid: wp.array[wp.int32] | None = None
     """
-    The element index of the corresponding joint w.r.t the model.\n
+    The element index of the corresponding joint w.r.t the model.
     Shape of ``(model_max_limits_host,)``.
     """
 
     bids: wp.array[wp.vec2i] | None = None
     """
-    The element indices of the interacting bodies w.r.t the model.\n
+    The element indices of the interacting bodies w.r.t the model.
     Shape of ``(model_max_limits_host,)``.
     """
 
     dof: wp.array[wp.int32] | None = None
     """
-    The DoF indices along which limits are active w.r.t the model.\n
+    The DoF indices along which limits are active w.r.t the model.
     Shape of ``(model_max_limits_host,)``.
     """
 
     side: wp.array[wp.float32] | None = None
     """
-    The direction (i.e. side) of the active limit.\n
-    `1.0` for active min limits, `-1.0` for active max limits.\n
+    The direction (i.e. side) of the active limit.
+    `1.0` for active min limits, `-1.0` for active max limits.
     Shape of ``(model_max_limits_host,)``.
     """
 
     r_q: wp.array[wp.float32] | None = None
     """
-    The amount of generalized coordinate violation per joint-limit.\n
+    The amount of generalized coordinate violation per joint-limit.
     Shape of ``(model_max_limits_host,)``.
     """
 
     key: wp.array[wp.uint64] | None = None
     """
-    Integer key uniquely identifying each limit.\n
+    Integer key uniquely identifying each limit.
     The per-limit key assignment is implementation-dependent, but is typically
     computed from the associated joint index as well as additional information such as:
-    - limit index w.r.t the associated B/F body-pair\n
+    - limit index w.r.t the associated B/F body-pair
     Shape of ``(model_max_limits_host,)``.
     """
 
     reaction: wp.array[wp.float32] | None = None
     """
-    The constraint reaction per joint-limit.\n
+    The constraint reaction per joint-limit.
     This is to be set by solvers at each step, and also
-    facilitates limit visualization and warm-starting.\n
+    facilitates limit visualization and warm-starting.
     Shape of ``(model_max_limits_host,)``.
     """
 
     velocity: wp.array[wp.float32] | None = None
     """
-    The constraint velocity per joint-limit.\n
+    The constraint velocity per joint-limit.
     This is to be set by solvers at each step, and also
-    facilitates limit visualization and warm-starting.\n
+    facilitates limit visualization and warm-starting.
     Shape of ``(model_max_limits_host,)``.
     """
 
@@ -623,7 +623,7 @@ class LimitsKamino:
     @property
     def model_max_limits(self) -> wp.array[wp.int32]:
         """
-        Returns the total number of maximum limits for the model.\n
+        Returns the total number of maximum limits for the model.
         Shape of ``(1,)``.
         """
         self._assert_has_data()
@@ -632,7 +632,7 @@ class LimitsKamino:
     @property
     def model_active_limits(self) -> wp.array[wp.int32]:
         """
-        Returns the total number of active limits for the model.\n
+        Returns the total number of active limits for the model.
         Shape of ``(1,)``.
         """
         self._assert_has_data()
@@ -641,7 +641,7 @@ class LimitsKamino:
     @property
     def world_max_limits(self) -> wp.array[wp.int32]:
         """
-        Returns the total number of maximum limits per world.\n
+        Returns the total number of maximum limits per world.
         Shape of ``(num_worlds,)``.
         """
         self._assert_has_data()
@@ -650,7 +650,7 @@ class LimitsKamino:
     @property
     def world_active_limits(self) -> wp.array[wp.int32]:
         """
-        Returns the total number of active limits per world.\n
+        Returns the total number of active limits per world.
         Shape of ``(num_worlds,)``.
         """
         self._assert_has_data()
@@ -659,7 +659,7 @@ class LimitsKamino:
     @property
     def wid(self) -> wp.array[wp.int32]:
         """
-        Returns the world index of each limit.\n
+        Returns the world index of each limit.
         Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
@@ -668,7 +668,7 @@ class LimitsKamino:
     @property
     def lid(self) -> wp.array[wp.int32]:
         """
-        Returns the element index of each limit w.r.t its world.\n
+        Returns the element index of each limit w.r.t its world.
         Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
@@ -677,7 +677,7 @@ class LimitsKamino:
     @property
     def jid(self) -> wp.array[wp.int32]:
         """
-        Returns the element index of the corresponding joint w.r.t the model.\n
+        Returns the element index of the corresponding joint w.r.t the model.
         Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
@@ -686,7 +686,7 @@ class LimitsKamino:
     @property
     def bids(self) -> wp.array[wp.vec2i]:
         """
-        Returns the element indices of the interacting bodies w.r.t the model.\n
+        Returns the element indices of the interacting bodies w.r.t the model.
         Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
@@ -695,7 +695,7 @@ class LimitsKamino:
     @property
     def dof(self) -> wp.array[wp.int32]:
         """
-        Returns the DoF indices along which limits are active w.r.t the model.\n
+        Returns the DoF indices along which limits are active w.r.t the model.
         Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
@@ -704,8 +704,8 @@ class LimitsKamino:
     @property
     def side(self) -> wp.array[wp.float32]:
         """
-        Returns the direction (i.e. side) of the active limit.\n
-        `1.0` for active min limits, `-1.0` for active max limits.\n
+        Returns the direction (i.e. side) of the active limit.
+        `1.0` for active min limits, `-1.0` for active max limits.
         Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
@@ -714,7 +714,7 @@ class LimitsKamino:
     @property
     def r_q(self) -> wp.array[wp.float32]:
         """
-        Returns the amount of generalized coordinate violation per joint-limit.\n
+        Returns the amount of generalized coordinate violation per joint-limit.
         Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
@@ -723,7 +723,7 @@ class LimitsKamino:
     @property
     def key(self) -> wp.array[wp.uint64]:
         """
-        Returns the integer key uniquely identifying each limit.\n
+        Returns the integer key uniquely identifying each limit.
         Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
@@ -732,7 +732,7 @@ class LimitsKamino:
     @property
     def reaction(self) -> wp.array[wp.float32]:
         """
-        Returns constraint velocity per joint-limit.\n
+        Returns constraint velocity per joint-limit.
         Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
@@ -741,7 +741,7 @@ class LimitsKamino:
     @property
     def velocity(self) -> wp.array[wp.float32]:
         """
-        Returns constraint velocity per joint-limit.\n
+        Returns constraint velocity per joint-limit.
         Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()

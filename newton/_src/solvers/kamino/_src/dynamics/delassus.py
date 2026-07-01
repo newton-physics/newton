@@ -1085,7 +1085,7 @@ class DelassusOperator:
         pre-computation, e.g. Cholesky factorization for direct solvers.
 
         Args:
-            reset_to_zero: If True, resets the Delassus matrix to zero.\n
+            reset_to_zero: If True, resets the Delassus matrix to zero.
                 This is useful for ensuring that the matrix is in a clean state before pre-computation.
         """
         # Ensure the Delassus matrix is allocated
@@ -1128,7 +1128,7 @@ class DelassusOperator:
 
     def solve_inplace(self, x: wp.array[wp.float32]):
         """
-        Solves the linear system D * x = v in-place.\n
+        Solves the linear system D * x = v in-place.
         This modifies the input array x to contain the solution assuming it is initialized as x=v.
 
         Args:
@@ -1633,7 +1633,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         Depending on the configured solver type, this may perform different pre-computation.
 
         Args:
-            reset_to_zero: If True, resets the Delassus matrix to zero.\n
+            reset_to_zero: If True, resets the Delassus matrix to zero.
                 This is useful for ensuring that the matrix is in a clean state before pre-computation.
         """
         # Ensure that `finalize()` was called
@@ -1691,7 +1691,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
 
     def solve_inplace(self, x: wp.array[wp.float32]):
         """
-        Solves the linear system D * x = v in-place.\n
+        Solves the linear system D * x = v in-place.
         This modifies the input array x to contain the solution assuming it is initialized as x=v.
 
         Args:

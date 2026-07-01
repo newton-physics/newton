@@ -239,7 +239,7 @@ class IntegratorMoreauJean(IntegratorBase):
 
         self._alpha: float = alpha if alpha is not None else 0.0
         """
-        Damping coefficient for angular velocity used to improve numerical stability of the integrator.\n
+        Damping coefficient for angular velocity used to improve numerical stability of the integrator.
         Defaults to `0.0`, corresponding to no damping being applied.
         """
 
@@ -275,7 +275,7 @@ class IntegratorMoreauJean(IntegratorBase):
                 If `None`, no joint limits are considered for the current time-step.
             contacts: The set of active contacts of the system at the current time-step.
                 If `None`, no contacts are considered for the current time-step.
-            detector: The collision detector to use for generating the set of active contacts at the current time-step.\n
+            detector: The collision detector to use for generating the set of active contacts at the current time-step.
                 If `None`, no collision detection is performed for the current time-step,
                 and active contacts must be provided via the `contacts` argument.
         """

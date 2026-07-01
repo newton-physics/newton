@@ -77,57 +77,57 @@ class AnimationJointReferenceData:
 
     num_actuated_joint_dofs: wp.array[wp.int32] | None = None
     """
-    Number of actuated joint DoFs per world.\n
+    Number of actuated joint DoFs per world.
     Shape of ``(num_worlds,)``.
     """
 
     actuated_joint_dofs_offset: wp.array[wp.int32] | None = None
     """
-    Offset indices for the actuated joint DoFs per world.\n
+    Offset indices for the actuated joint DoFs per world.
     Shape of ``(num_worlds,)``.
     """
 
     q_j_ref: wp.array2d[wp.float32] | None = None
     """
-    Sequence of reference joint actuator positions.\n
+    Sequence of reference joint actuator positions.
     Shape of ``(max_of_num_actuated_joint_coords, sequence_length)``.
     """
 
     dq_j_ref: wp.array2d[wp.float32] | None = None
     """
-    Sequence of reference joint actuator velocities.\n
+    Sequence of reference joint actuator velocities.
     Shape of ``(max_of_num_actuated_joint_dofs, sequence_length)``.
     """
 
     length: wp.array[wp.int32] | None = None
     """
-    Integer length of the animation sequence.\n
+    Integer length of the animation sequence.
     Shape of ``(num_worlds,)``.
     """
 
     decimation: wp.array[wp.int32] | None = None
     """
-    Integer decimation factor by which references are extracted from the animation sequence.\n
+    Integer decimation factor by which references are extracted from the animation sequence.
     Shape of ``(num_worlds,)``.
     """
 
     rate: wp.array[wp.int32] | None = None
     """
-    Integer rate by which to progress the active frame of the animation sequence at each step.\n
+    Integer rate by which to progress the active frame of the animation sequence at each step.
     Shape of ``(num_worlds,)``.
     """
 
     loop: wp.array[wp.int32] | None = None
     """
-    Integer flag to indicate if the animation should loop.\n
-    Shape of ``(num_worlds,)``.\n
-    If `1`, the animation will restart from the beginning after reaching the end.\n
+    Integer flag to indicate if the animation should loop.
+    Shape of ``(num_worlds,)``.
+    If `1`, the animation will restart from the beginning after reaching the end.
     If `0`, the animation will stop at the last frame.
     """
 
     frame: wp.array[wp.int32] | None = None
     """
-    Integer index indicating the active frame of the animation sequence.\n
+    Integer index indicating the active frame of the animation sequence.
     Shape of ``(num_worlds,)``.
     """
 

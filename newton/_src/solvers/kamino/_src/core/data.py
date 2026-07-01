@@ -47,7 +47,7 @@ class DataKaminoInfo:
 
     num_total_cts: wp.array[wp.int32] | None = None
     """
-    The total number of active constraints.\n
+    The total number of active constraints.
     Shape of ``(num_worlds,)``.
     """
 
@@ -57,19 +57,19 @@ class DataKaminoInfo:
 
     num_limits: wp.array[wp.int32] | None = None
     """
-    The number of active limits in each world.\n
+    The number of active limits in each world.
     Shape of ``(num_worlds,)``.
     """
 
     num_limit_cts: wp.array[wp.int32] | None = None
     """
-    The number of active limit constraints.\n
+    The number of active limit constraints.
     Shape of ``(num_worlds,)``.
     """
 
     limit_cts_group_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the limit constraints group within the constraints block of each world.\n
+    The index offset of the limit constraints group within the constraints block of each world.
     Shape of ``(num_worlds,)``.
     """
 
@@ -79,19 +79,19 @@ class DataKaminoInfo:
 
     num_contacts: wp.array[wp.int32] | None = None
     """
-    The number of active contacts in each world.\n
+    The number of active contacts in each world.
     Shape of ``(num_worlds,)``.
     """
 
     num_contact_cts: wp.array[wp.int32] | None = None
     """
-    The number of active contact constraints.\n
+    The number of active contact constraints.
     Shape of ``(num_worlds,)``.
     """
 
     contact_cts_group_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the contact constraints group within the constraints block of each world.\n
+    The index offset of the contact constraints group within the constraints block of each world.
     Shape of ``(num_worlds,)``.
     """
 

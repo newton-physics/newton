@@ -190,11 +190,11 @@ class CollisionDetector:
         Initialize the CollisionDetector.
 
         Args:
-            model: The model container holding the time-invariant data of the system being simulated.\n
-                If provided, the detector will be finalized using the provided model and config.\n
+            model: The model container holding the time-invariant data of the system being simulated.
+                If provided, the detector will be finalized using the provided model and config.
                 If `None`, the detector will be created empty without allocating data, and
-                can be finalized later by providing a model to the `finalize` method.\n
-            config: Config for the CollisionDetector.\n
+                can be finalized later by providing a model to the `finalize` method.
+            config: Config for the CollisionDetector.
                 If `None`, uses default config.
         """
         # Declare the device cache
@@ -269,11 +269,11 @@ class CollisionDetector:
         Allocates CollisionDetector data on the target device.
 
         Args:
-            model: The model container holding the time-invariant data of the system being simulated.\n
-                If provided, the detector will be finalized using the provided model and config.\n
+            model: The model container holding the time-invariant data of the system being simulated.
+                If provided, the detector will be finalized using the provided model and config.
                 If `None`, the detector will be created empty without allocating data, and
-                can be finalized later by providing a model to the `finalize` method.\n
-            config: Config for the CollisionDetector.\n
+                can be finalized later by providing a model to the `finalize` method.
+            config: Config for the CollisionDetector.
                 If `None`, uses default config.
         """
         # Override the model if specified explicitly

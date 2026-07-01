@@ -62,8 +62,8 @@ class GeometryDescriptor(Descriptor):
 
     body: int = -1
     """
-    Index of the body to which the geometry entity is attached.\n
-    Defaults to `-1`, indicating that the geometry has not yet been assigned to a body.\n
+    Index of the body to which the geometry entity is attached.
+    Defaults to `-1`, indicating that the geometry has not yet been assigned to a body.
     The value `-1` also indicates that the geometry, by default, is statically attached to the world.
     """
 
@@ -82,27 +82,27 @@ class GeometryDescriptor(Descriptor):
 
     material: str | int | None = None
     """
-    The material assigned to the collision geometry instance.\n
-    Can be specified either as a string name or an integer index.\n
+    The material assigned to the collision geometry instance.
+    Can be specified either as a string name or an integer index.
     Defaults to `None`, indicating the default material.
     """
 
     group: int = 1
     """
-    The collision group assigned to the collision geometry.\n
+    The collision group assigned to the collision geometry.
     Defaults to the default group with value `1`.
     """
 
     collides: int = 1
     """
-    The collision groups with which the collision geometry can collide.\n
+    The collision groups with which the collision geometry can collide.
     Defaults to enabling collisions with the default group with value `1`.
     """
 
     max_contacts: int = 0
     """
-    The maximum number of contacts to generate for the collision geometry.\n
-    This value provides a hint to the model builder when allocating memory for contacts.\n
+    The maximum number of contacts to generate for the collision geometry.
+    This value provides a hint to the model builder when allocating memory for contacts.
     Defaults to `0`, indicating no limit is imposed on the number of contacts generated for this geometry.
     """
 
@@ -134,25 +134,25 @@ class GeometryDescriptor(Descriptor):
 
     wid: int = -1
     """
-    Index of the world to which the body belongs.\n
+    Index of the world to which the body belongs.
     Defaults to `-1`, indicating that the body has not yet been added to a world.
     """
 
     gid: int = -1
     """
-    Index of the geometry w.r.t. its world.\n
+    Index of the geometry w.r.t. its world.
     Defaults to `-1`, indicating that the geometry has not yet been added to a world.
     """
 
     mid: int = -1
     """
-    The material index assigned to the collision geometry.\n
+    The material index assigned to the collision geometry.
     Defaults to `-1` indicating that the default material will be assigned.
     """
 
     flags: int = ShapeFlags.VISIBLE | ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES
     """
-    Shape flags of the geometry entity, used to specify additional properties of the geometry.\n
+    Shape flags of the geometry entity, used to specify additional properties of the geometry.
     Defaults to `ShapeFlags.VISIBLE | ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES`,
     indicating that the geometry is visible and can collide with shapes and particles.
     """
@@ -230,13 +230,13 @@ class GeometriesModel:
 
     world_minimum_contacts: list[int] | None = None
     """
-    List of the minimum number of contacts required for each world in the model (host-side).\n
+    List of the minimum number of contacts required for each world in the model (host-side).
     The sum of all elements in `world_minimum_contacts` should equal `model_minimum_contacts`.
     """
 
     label: list[str] | None = None
     """
-    A list containing the label of each geometry.\n
+    A list containing the label of each geometry.
     Length of ``num_geoms``.
     """
 
@@ -246,19 +246,19 @@ class GeometriesModel:
 
     wid: wp.array[wp.int32] | None = None
     """
-    World index of each geometry entity.\n
+    World index of each geometry entity.
     Shape of ``(num_geoms,)``.
     """
 
     gid: wp.array[wp.int32] | None = None
     """
-    Geometry index of each geometry entity w.r.t its world.\n
+    Geometry index of each geometry entity w.r.t its world.
     Shape of ``(num_geoms,)``.
     """
 
     bid: wp.array[wp.int32] | None = None
     """
-    Body index of each geometry entity.\n
+    Body index of each geometry entity.
     Shape of ``(num_geoms,)``.
     """
 
@@ -268,33 +268,33 @@ class GeometriesModel:
 
     type: wp.array[wp.int32] | None = None
     """
-    Shape index of each geometry entity.\n
+    Shape index of each geometry entity.
     Shape of ``(num_geoms,)``.
     """
 
     flags: wp.array[wp.int32] | None = None
     """
-    Shape flags of each geometry entity.\n
+    Shape flags of each geometry entity.
     Shape of ``(num_geoms,)``.
     """
 
     ptr: wp.array[wp.uint64] | None = None
     """
-    Pointer to the source data of the shape.\n
+    Pointer to the source data of the shape.
     For primitive shapes this is `0` indicating NULL, otherwise it points to
-    the shape data, which can correspond to a mesh, heightfield, or SDF.\n
+    the shape data, which can correspond to a mesh, heightfield, or SDF.
     Shape of ``(num_geoms,)``.
     """
 
     params: wp.array[wp.vec3f] | None = None
     """
-    Shape parameters of each geometry entity if they are shape primitives.\n
+    Shape parameters of each geometry entity if they are shape primitives.
     Shape of ``(num_geoms,)``.
     """
 
     offset: wp.array[wp.transformf] | None = None
     """
-    Offset poses of the geometry elements w.r.t. their corresponding bodies.\n
+    Offset poses of the geometry elements w.r.t. their corresponding bodies.
     Shape of ``(num_geoms,)``.
     """
 
@@ -304,42 +304,42 @@ class GeometriesModel:
 
     material: wp.array[wp.int32] | None = None
     """
-    Material index assigned to each collision geometry.\n
+    Material index assigned to each collision geometry.
     Shape of ``(num_geoms,)``.
     """
 
     group: wp.array[wp.int32] | None = None
     """
-    Collision group assigned to each collision geometry.\n
+    Collision group assigned to each collision geometry.
     Shape of ``(num_geoms,)``.
     """
 
     gap: wp.array[wp.float32] | None = None
     """
-    Additional detection threshold [m] for each collision geometry.\n
+    Additional detection threshold [m] for each collision geometry.
     Pairwise additive.  Used by both broadphase (AABB expansion) and
-    narrowphase (contact retention).\n
+    narrowphase (contact retention).
     Shape of ``(num_geoms,)``.
     """
 
     margin: wp.array[wp.float32] | None = None
     """
-    Surface offset [m] for each collision geometry.\n
-    Pairwise additive.  Determines resting separation between shapes.\n
+    Surface offset [m] for each collision geometry.
+    Pairwise additive.  Determines resting separation between shapes.
     Shape of ``(num_geoms,)``.
     """
 
     collidable_pairs: wp.array[wp.vec2i] | None = None
     """
     Geometry-pair indices that are explicitly considered for collision detection.
-    This array is used in broad-phase collision detection.\n
+    This array is used in broad-phase collision detection.
     Shape of ``(num_collidable_pairs,)``.
     """
 
     excluded_pairs: wp.array[wp.vec2i] | None = None
     """
-    Geometry-pair indices that are explicitly excluded from collision detection.\n
-    This array is used in broad-phase collision detection.\n
+    Geometry-pair indices that are explicitly excluded from collision detection.
+    This array is used in broad-phase collision detection.
     Shape of ``(num_excluded_geom_pairs,)``.
     """
 
@@ -376,7 +376,7 @@ class GeometriesData:
 
     Attributes:
         num_geoms: The total number of geometry entities in the model (host-side).
-        pose: The poses of the geometry entities in world coordinates.\n
+        pose: The poses of the geometry entities in world coordinates.
             Shape of ``(num_geoms,)``.
     """
 
@@ -385,7 +385,7 @@ class GeometriesData:
 
     pose: wp.array[wp.transformf] | None = None
     """
-    The poses of the geometry entities in world coordinates.\n
+    The poses of the geometry entities in world coordinates.
     Shape of ``(num_geoms,)``.
     """
 
@@ -409,15 +409,15 @@ def _update_geometries_state(
     coordinates from the poses of their associated bodies.
 
     Inputs:
-        geom_bid: Array of per-geom body indices.\n
+        geom_bid: Array of per-geom body indices.
             Shape of ``(num_geoms,)``.
-        geom_offset: Array of per-geom pose offsets w.r.t. their associated bodies.\n
+        geom_offset: Array of per-geom pose offsets w.r.t. their associated bodies.
             Shape of ``(num_geoms,)``.
-        body_pose: Array of per-body poses in world coordinates.\n
+        body_pose: Array of per-body poses in world coordinates.
             Shape of ``(num_bodies,)``.
 
     Outputs:
-        geom_pose: Array of per-geom poses in world coordinates.\n
+        geom_pose: Array of per-geom poses in world coordinates.
             Shape of ``(num_geoms,)``.
     """
     # Retrieve the geometry index from the thread grid

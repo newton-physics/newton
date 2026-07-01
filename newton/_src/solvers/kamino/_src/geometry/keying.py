@@ -142,7 +142,7 @@ def binary_search_find_pair(
     order, i.e. first by the first element, then by the second.
 
     Args:
-        num_pairs: Number of "active" pairs in the array.\n
+        num_pairs: Number of "active" pairs in the array.
             This is required because not all elements may be active.
         target: The target pair to search for.
         pairs: Sorted array of pairs to search within.

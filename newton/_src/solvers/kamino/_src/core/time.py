@@ -41,21 +41,21 @@ class TimeModel:
     A container to hold heterogeneous model time-step.
 
     Attributes:
-        dt: The discrete time-step size of each world.\n
+        dt: The discrete time-step size of each world.
             Shape of ``(num_worlds,)``.
-        inv_dt: The inverse of the discrete time-step size of each world.\n
+        inv_dt: The inverse of the discrete time-step size of each world.
             Shape of ``(num_worlds,)``.
     """
 
     dt: wp.array[wp.float32] | None = None
     """
-    The discrete time-step size of each world.\n
+    The discrete time-step size of each world.
     Shape of ``(num_worlds,)``.
     """
 
     inv_dt: wp.array[wp.float32] | None = None
     """
-    The inverse of the discrete time-step size of each world.\n
+    The inverse of the discrete time-step size of each world.
     Shape of ``(num_worlds,)``.
     """
 
@@ -110,21 +110,21 @@ class TimeData:
     A container to hold heterogeneous model time-keeping data.
 
     Attributes:
-        steps: The current number of simulation steps of each world.\n
+        steps: The current number of simulation steps of each world.
             Shape of ``(num_worlds,)``.
-        time: The current simulation time of each world.\n
+        time: The current simulation time of each world.
             Shape of ``(num_worlds,)``.
     """
 
     steps: wp.array[wp.int32] | None = None
     """
-    The current number of simulation steps of each world.\n
+    The current number of simulation steps of each world.
     Shape of ``(num_worlds,)``.
     """
 
     time: wp.array[wp.float32] | None = None
     """
-    The current simulation time of each world.\n
+    The current simulation time of each world.
     Shape of ``(num_worlds,)``.
     """
 

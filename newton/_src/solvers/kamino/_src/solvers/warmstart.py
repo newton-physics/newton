@@ -937,11 +937,11 @@ class WarmstarterContacts:
         Args:
             contacts: The contacts container whose allocations are used to initialize the warmstarter.
             method: The warm-starting method to use.
-            tolerance: The tolerance used for matching contact point positions.\n
-                Must be a floating-point value specified in meters, and within the range `[0, +inf)`.\n
+            tolerance: The tolerance used for matching contact point positions.
+                Must be a floating-point value specified in meters, and within the range `[0, +inf)`.
                 Setting this to `0.0` requires exact position matches, effectively disabling position-based matching.
-            scaling: The scaling factor applied to warm-started reactions and velocities.\n
-                Must be a floating-point value specified in the range `[0, 1.0)`.\n
+            scaling: The scaling factor applied to warm-started reactions and velocities.
+                Must be a floating-point value specified in the range `[0, 1.0)`.
                 Setting this to `0.0` effectively disables warm-starting.
         """
         # Store the specified warm-starting configurations

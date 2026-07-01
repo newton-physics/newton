@@ -54,10 +54,10 @@ class CollisionPipelinePrimitive:
         Initialize an instance of Kamino's optimized primitive collision detection pipeline.
 
         Args:
-            model: The model container holding the time-invariant data of the system being simulated.\n
-                If provided, the detector will be finalized using the provided model and settings.\n
+            model: The model container holding the time-invariant data of the system being simulated.
+                If provided, the detector will be finalized using the provided model and settings.
                 If `None`, the detector will be created empty without allocating data, and
-                can be finalized later by providing a model to the `finalize` method.\n
+                can be finalized later by providing a model to the `finalize` method.
             bvtype: Type of bounding volume to use in broad-phase.
             default_gap: Default detection gap [m] applied as a floor to per-geometry gaps.
         """
@@ -100,10 +100,10 @@ class CollisionPipelinePrimitive:
         Finalizes the collision detection pipeline by allocating all necessary data structures.
 
         Args:
-            model: The model container holding the time-invariant data of the system being simulated.\n
-                If provided, the detector will be finalized using the provided model and settings.\n
+            model: The model container holding the time-invariant data of the system being simulated.
+                If provided, the detector will be finalized using the provided model and settings.
                 If `None`, the detector will be created empty without allocating data, and
-                can be finalized later by providing a model to the `finalize` method.\n
+                can be finalized later by providing a model to the `finalize` method.
             bvtype: Type of bounding volume to use in broad-phase.
         """
         # Override the model if specified

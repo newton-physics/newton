@@ -645,7 +645,7 @@ class SolverKaminoImpl(SolverBase):
             state_out: The output next state after time integration.
             control: The input controls applied to the system.
             contacts: The set of active contacts.
-            detector: An optional collision detector to use for generating contacts at the current state.\n
+            detector: An optional collision detector to use for generating contacts at the current state.
                 If `None`, the `contacts` data will be used as the current set of active contacts.
             dt: A uniform time-step to apply uniformly to all worlds of the simulation.
         """

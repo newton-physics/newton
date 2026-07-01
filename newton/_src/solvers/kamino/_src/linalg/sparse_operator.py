@@ -62,31 +62,31 @@ class BlockSparseLinearOperators:
 
     precompute_op: Callable | None = None
     """
-    The operator function for precomputing any necessary data for the operators.\n
+    The operator function for precomputing any necessary data for the operators.
     Signature: ``precompute_op(A: BlockSparseLinearOperators)``.
     """
 
     Ax_op: Callable | None = None
     """
-    The operator function for performing sparse matrix-vector products `y = A @ x`.\n
+    The operator function for performing sparse matrix-vector products `y = A @ x`.
     Example signature: ``Ax_op(A: BlockSparseLinearMatrices, x: wp.array, y: wp.array, matrix_mask: wp.array[wp.bool])``.
     """
 
     ATy_op: Callable | None = None
     """
-    The operator function for performing sparse matrix-transpose-vector products `x = A^T @ y`.\n
+    The operator function for performing sparse matrix-transpose-vector products `x = A^T @ y`.
     Example signature: ``ATy_op(A: BlockSparseLinearMatrices, y: wp.array, x: wp.array, matrix_mask: wp.array[wp.bool])``.
     """
 
     gemv_op: Callable | None = None
     """
-    The operator function for performing generalized sparse matrix-vector products `y = alpha * A @ x + beta * y`.\n
+    The operator function for performing generalized sparse matrix-vector products `y = alpha * A @ x + beta * y`.
     Example signature: ``gemv_op(A: BlockSparseLinearMatrices, x: wp.array, y: wp.array, alpha: float, beta: float, matrix_mask: wp.array[wp.bool])``.
     """
 
     gemvt_op: Callable | None = None
     """
-    The operator function for performing generalized sparse matrix-transpose-vector products `x = alpha * A^T @ y + beta * x`.\n
+    The operator function for performing generalized sparse matrix-transpose-vector products `x = alpha * A^T @ y + beta * x`.
     Example signature: ``gemvt_op(A: BlockSparseLinearMatrices, y: wp.array, x: wp.array, alpha: float, beta: float, matrix_mask: wp.array[wp.bool])``.
     """
 

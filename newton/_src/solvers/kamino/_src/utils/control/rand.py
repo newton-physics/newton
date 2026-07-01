@@ -172,13 +172,13 @@ class RandomJointController:
         on-device data arrays if a model instance is provided.
 
         Args:
-            model: The model container describing the system to be simulated.\n
+            model: The model container describing the system to be simulated.
                 If `None`, a call to ``finalize()`` must be made later.
-            decimation: Control decimation for each world expressed as a multiple of simulation steps.\n
+            decimation: Control decimation for each world expressed as a multiple of simulation steps.
                 Defaults to `1` for all worlds if `None`.
-            scale: Scaling applied to randomly generated control inputs.\n
+            scale: Scaling applied to randomly generated control inputs.
                 Can be specified per-DoF as an array of shape `(sum_of_num_actuated_joint_dofs,)`
-                and dtype of `wp.float32`, or as a single float value applied uniformly across all DoFs.\n
+                and dtype of `wp.float32`, or as a single float value applied uniformly across all DoFs.
                 Defaults to `1.0` if `None`.
             seed: Seed for random number generation. If `None`, it will default to `0`.
         """
@@ -257,11 +257,11 @@ class RandomJointController:
 
         Args:
             model: The model container describing the system to be simulated.
-            decimation: Control decimation for each world expressed as a multiple of simulation steps.\n
+            decimation: Control decimation for each world expressed as a multiple of simulation steps.
                 Defaults to `1` for all worlds if `None`.
-            scale: Scaling applied to randomly generated control inputs.\n
+            scale: Scaling applied to randomly generated control inputs.
                 Can be specified per-DoF as an array of shape `(sum_of_num_actuated_joint_dofs,)`
-                and dtype of `wp.float32`, or as a single float value applied uniformly across all DoFs.\n
+                and dtype of `wp.float32`, or as a single float value applied uniformly across all DoFs.
                 Defaults to `1.0` if `None`.
             seed: Seed for random number generation. If `None`, it will default to `0`.
 

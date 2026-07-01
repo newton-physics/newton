@@ -1231,13 +1231,13 @@ class DenseSystemJacobiansData:
 
         self.J_cts_offsets: wp.array[wp.int32] | None = None
         """
-        The index offset of the constraint Jacobian matrix block of each world.\n
-        Shape of ``(num_worlds,)``.\n
+        The index offset of the constraint Jacobian matrix block of each world.
+        Shape of ``(num_worlds,)``.
         """
 
         self.J_cts_data: wp.array[wp.float32] | None = None
         """
-        A flat array containing the constraint Jacobian matrix data of all worlds.\n
+        A flat array containing the constraint Jacobian matrix data of all worlds.
         Shape of ``(sum(ncts_w * nbd_w),)``.
         """
 
@@ -1247,13 +1247,13 @@ class DenseSystemJacobiansData:
 
         self.J_dofs_offsets: wp.array[wp.int32] | None = None
         """
-        The index offset of the DoF Jacobian matrix block of each world.\n
-        Shape of ``(num_worlds,)``.\n
+        The index offset of the DoF Jacobian matrix block of each world.
+        Shape of ``(num_worlds,)``.
         """
 
         self.J_dofs_data: wp.array[wp.float32] | None = None
         """
-        A flat array containing the joint DoF Jacobian matrix data of all worlds.\n
+        A flat array containing the joint DoF Jacobian matrix data of all worlds.
         Shape of ``(sum(njad_w * nbd_w),)``.
         """
 
@@ -1275,7 +1275,7 @@ class DenseSystemJacobians:
         contacts: ContactsKamino | None = None,
     ):
         """
-        Creates a :class:`DenseSystemJacobians` container and allocates the Jacobian data if a model is provided.\n
+        Creates a :class:`DenseSystemJacobians` container and allocates the Jacobian data if a model is provided.
 
         The Jacobians are stored in dense format as flat arrays, and the matrix blocks of each world are stored
         contiguously with the corresponding index offsets. The Jacobian matrix blocks of each world are stored
@@ -1384,8 +1384,8 @@ class DenseSystemJacobians:
                 used to compute the limit constraint Jacobians if provided.
             contacts: The contacts container describing the active contacts in the system,
                 used to compute the contact constraint Jacobians if provided.
-            reset_to_zero: Whether to reset the Jacobian values to zero before building.\n
-                If false, the Jacobian values will be accumulated onto existing values.\n
+            reset_to_zero: Whether to reset the Jacobian values to zero before building.
+                If false, the Jacobian values will be accumulated onto existing values.
                 Defaults to `True`.
         """
         # Optionally reset the Jacobian array data to zero
@@ -1491,7 +1491,7 @@ class SparseSystemJacobians:
         contacts: ContactsKamino | None = None,
     ):
         """
-        Creates a :class:`SparseSystemJacobians` container and allocates the Jacobian data if a model is provided.\n
+        Creates a :class:`SparseSystemJacobians` container and allocates the Jacobian data if a model is provided.
 
         The Jacobians are stored in block-sparse format using the :class:`BlockSparseLinearOperators` class, and
         the non-zero block coordinates are stored as local offsets for each world, joint, limit, and contact.
@@ -1539,7 +1539,7 @@ class SparseSystemJacobians:
                 compute the non-zero block coordinates of the limit constraint Jacobian.
             contacts: The contacts container describing the active contacts in the system, used to
                 compute the non-zero block coordinates of the contact constraint Jacobian.
-            device: The device on which to allocate the Jacobian data.\n
+            device: The device on which to allocate the Jacobian data.
                 If `None`, the Jacobian data will be allocated on same device as the model.
         """
 
@@ -1739,8 +1739,8 @@ class SparseSystemJacobians:
                 be provided if the Jacobian also has limit constraints.
             contacts: Contacts data container for contact constraints. Needs to
                 be provided if the Jacobian also has contact constraints.
-            reset_to_zero: Whether to reset the Jacobian values to zero before building.\n
-                If false, the Jacobian values will be accumulated onto existing values.\n
+            reset_to_zero: Whether to reset the Jacobian values to zero before building.
+                If false, the Jacobian values will be accumulated onto existing values.
                 Defaults to `True`.
 
         """

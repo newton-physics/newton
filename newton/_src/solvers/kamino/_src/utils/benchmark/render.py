@@ -330,7 +330,7 @@ def render_solver_configs_table(
     Args:
         configs: A dictionary mapping configuration names to SolverKaminoImpl.Config objects.
         path: The file path to save the rendered table as a text file. If None, the table is not saved to a file.
-        groups: A list of groups to include in the table. If None, "sparse", "linear" and "padmm" are used.\n
+        groups: A list of groups to include in the table. If None, "sparse", "linear" and "padmm" are used.
             Supported groups include:
             - "cts": Constraint parameters (alpha, beta, gamma, delta, preconditioning)
             - "sparse": Sparse representation settings (sparse, sparse_jacobian)

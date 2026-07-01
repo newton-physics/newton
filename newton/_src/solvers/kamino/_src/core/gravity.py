@@ -155,21 +155,21 @@ class GravityModel:
     A container to hold the time-invariant gravity model data.
 
     Attributes:
-        g_dir_acc: The gravity direction and acceleration vector as ``[g_dir_x, g_dir_y, g_dir_z, g_accel]``.\n
+        g_dir_acc: The gravity direction and acceleration vector as ``[g_dir_x, g_dir_y, g_dir_z, g_accel]``.
             Shape of ``(num_worlds,)``.
-        vector: The gravity vector defined as ``[g_x, g_y, g_z, enabled]``.\n
+        vector: The gravity vector defined as ``[g_x, g_y, g_z, enabled]``.
             Shape of ``(num_worlds,)``.
     """
 
     g_dir_acc: wp.array[wp.vec4f] | None = None
     """
-    The gravity direction and acceleration vector.\n
+    The gravity direction and acceleration vector.
     Shape of ``(num_worlds,)``.
     """
 
     vector: wp.array[wp.vec4f] | None = None
     """
-    The gravity vector defined as ``[g_x, g_y, g_z, enabled]``.\n
+    The gravity vector defined as ``[g_x, g_y, g_z, enabled]``.
     Shape of ``(num_worlds,)``.
     """
 

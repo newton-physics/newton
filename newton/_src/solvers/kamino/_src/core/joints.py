@@ -196,20 +196,20 @@ class JointCorrectionMode(IntEnum):
 
     TWOPI = 0
     """
-    Rotational joint coordinates are computed to always lie within ``[-2*pi, 2*pi]``.\n
+    Rotational joint coordinates are computed to always lie within ``[-2*pi, 2*pi]``.
     This is the default correction mode for all joints with rotational DoFs.
     """
 
     CONTINUOUS = 1
     """
-    Rotational joint coordinates are continuously accumulated and thus unbounded.\n
+    Rotational joint coordinates are continuously accumulated and thus unbounded.
     This means that joint coordinates can increase/decrease indefinitely over time,
     but are limited to numerical precision limits (i.e. ``[JOINT_QMIN, JOINT_QMAX]``).
     """
 
     NONE = -1
     """
-    No joint coordinate correction is applied.\n
+    No joint coordinate correction is applied.
     Rotational joint coordinates are computed to lie within ``[-pi, pi]``.
     """
 
@@ -1050,13 +1050,13 @@ class JointDescriptor(Descriptor):
 
     bid_B: int = -1
     """
-    The Base body index of the joint (-1 for world, >=0 for bodies).\n
+    The Base body index of the joint (-1 for world, >=0 for bodies).
     Defaults to `-1`, indicating that the joint has not been assigned a base body.
     """
 
     bid_F: int = -1
     """
-    The Follower body index of the joint (must always be >=0 to index a body).\n
+    The Follower body index of the joint (must always be >=0 to index a body).
     Defaults to `-1`, indicating that the joint has not been assigned a follower body.
     """
 
@@ -1222,13 +1222,13 @@ class JointDescriptor(Descriptor):
 
     wid: int = -1
     """
-    Index of the world to which the joint belongs.\n
+    Index of the world to which the joint belongs.
     Defaults to `-1`, indicating that the joint has not yet been added to a world.
     """
 
     jid: int = -1
     """
-    Index of the joint w.r.t. its world.\n
+    Index of the joint w.r.t. its world.
     Defaults to `-1`, indicating that the joint has not yet been added to a world.
     """
 
@@ -1669,7 +1669,7 @@ class JointsModel:
 
     label: list[str] | None = None
     """
-    A list containing the label of each joint entity.\n
+    A list containing the label of each joint entity.
     Length of ``num_joints``.
     """
 
@@ -1679,13 +1679,13 @@ class JointsModel:
 
     wid: wp.array[wp.int32] | None = None
     """
-    Index each the world in which each joint is defined.\n
+    Index each the world in which each joint is defined.
     Shape of ``(num_joints,)``.
     """
 
     jid: wp.array[wp.int32] | None = None
     """
-    Index of each joint w.r.t the world.\n
+    Index of each joint w.r.t the world.
     Shape of ``(num_joints,)``.
     """
 
@@ -1695,51 +1695,51 @@ class JointsModel:
 
     dof_type: wp.array[wp.int32] | None = None
     """
-    Joint DoF type ID of each joint.\n
+    Joint DoF type ID of each joint.
     Shape of ``(num_joints,)``.
     """
 
     act_type: wp.array[wp.int32] | None = None
     """
-    Joint actuation type ID of each joint.\n
+    Joint actuation type ID of each joint.
     Shape of ``(num_joints,)``.
     """
 
     bid_B: wp.array[wp.int32] | None = None
     """
-    Base body index of each joint w.r.t the model.\n
-    Equals `-1` for world, `>=0` for bodies.\n
+    Base body index of each joint w.r.t the model.
+    Equals `-1` for world, `>=0` for bodies.
     Shape of ``(num_joints,)``.
     """
 
     bid_F: wp.array[wp.int32] | None = None
     """
-    Follower body index of each joint w.r.t the model.\n
-    Equals `-1` for world, `>=0` for bodies.\n
+    Follower body index of each joint w.r.t the model.
+    Equals `-1` for world, `>=0` for bodies.
     Shape of ``(num_joints,)``.
     """
 
     B_r_Bj: wp.array[wp.vec3f] | None = None
     """
-    Relative position of the joint, expressed in and w.r.t the base body coordinate frame.\n
+    Relative position of the joint, expressed in and w.r.t the base body coordinate frame.
     Shape of ``(num_joints,)``.
     """
 
     F_r_Fj: wp.array[wp.vec3f] | None = None
     """
-    Relative position of the joint, expressed in and w.r.t the follower body coordinate frame.\n
+    Relative position of the joint, expressed in and w.r.t the follower body coordinate frame.
     Shape of ``(num_joints,)``.
     """
 
     X_Bj: wp.array[wp.mat33f] | None = None
     """
-    Orientation of the joint frame on the base body, expressed in the base body coordinate frame.\n
+    Orientation of the joint frame on the base body, expressed in the base body coordinate frame.
     Shape of ``(num_joints,)``.
     """
 
     X_Fj: wp.array[wp.mat33f] | None = None
     """
-    Orientation of the joint frame on the follower body, expressed in the follower body coordinate frame.\n
+    Orientation of the joint frame on the follower body, expressed in the follower body coordinate frame.
     Shape of ``(num_joints,)``.
     """
 
@@ -1749,35 +1749,35 @@ class JointsModel:
 
     q_j_min: wp.array[wp.float32] | None = None
     """
-    Minimum (a.k.a. lower) joint DoF limits of each joint (as flat array).\n
+    Minimum (a.k.a. lower) joint DoF limits of each joint (as flat array).
 
     Limits are dimensioned according to the number of DoFs of each joint,
     as opposed to the number of coordinates in order to handle cases such
-    where joints have more coordinates than DoFs (e.g. spherical joints).\n
+    where joints have more coordinates than DoFs (e.g. spherical joints).
 
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     q_j_max: wp.array[wp.float32] | None = None
     """
-    Maximum (a.k.a. upper) joint DoF limits of each joint (as flat array).\n
+    Maximum (a.k.a. upper) joint DoF limits of each joint (as flat array).
 
     Limits are dimensioned according to the number of DoFs of each joint,
     as opposed to the number of coordinates in order to handle cases such
-    where joints have more coordinates than DoFs (e.g. spherical joints).\n
+    where joints have more coordinates than DoFs (e.g. spherical joints).
 
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     dq_j_max: wp.array[wp.float32] | None = None
     """
-    Maximum joint velocity limits of each joint (as flat array).\n
+    Maximum joint velocity limits of each joint (as flat array).
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     tau_j_max: wp.array[wp.float32] | None = None
     """
-    Maximum joint torque limits of each joint (as flat array).\n
+    Maximum joint torque limits of each joint (as flat array).
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
@@ -1787,25 +1787,25 @@ class JointsModel:
 
     a_j: wp.array[wp.float32] | None = None
     """
-    Internal inertia of each joint (as flat array), used for implicit integration of joint dynamics.\n
+    Internal inertia of each joint (as flat array), used for implicit integration of joint dynamics.
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     b_j: wp.array[wp.float32] | None = None
     """
-    Internal damping of each joint (as flat array) used for implicit integration of joint dynamics.\n
+    Internal damping of each joint (as flat array) used for implicit integration of joint dynamics.
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     k_p_j: wp.array[wp.float32] | None = None
     """
-    Implicit PD-control proportional gain of each joint (as flat array).\n
+    Implicit PD-control proportional gain of each joint (as flat array).
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     k_d_j: wp.array[wp.float32] | None = None
     """
-    Implicit PD-control derivative gain of each joint (as flat array).\n
+    Implicit PD-control derivative gain of each joint (as flat array).
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
@@ -1841,13 +1841,13 @@ class JointsModel:
 
     num_coords: wp.array[wp.int32] | None = None
     """
-    Number of coordinates of each joint.\n
+    Number of coordinates of each joint.
     Shape of ``(num_joints,)``.
     """
 
     num_dofs: wp.array[wp.int32] | None = None
     """
-    Number of DoFs of each joint.\n
+    Number of DoFs of each joint.
     Shape of ``(num_joints,)``.
     """
 
@@ -1855,19 +1855,19 @@ class JointsModel:
     # both dynamic and kinematic constraint counts
     num_cts: wp.array[wp.int32] | None = None
     """
-    Number of total constraints of each joint.\n
+    Number of total constraints of each joint.
     Shape of ``(num_joints,)``.
     """
 
     num_dynamic_cts: wp.array[wp.int32] | None = None
     """
-    Number of dynamic constraints of each joint.\n
+    Number of dynamic constraints of each joint.
     Shape of ``(num_joints,)``.
     """
 
     num_kinematic_cts: wp.array[wp.int32] | None = None
     """
-    Number of kinematic constraints of each joint.\n
+    Number of kinematic constraints of each joint.
     Shape of ``(num_joints,)``.
     """
 
@@ -2038,31 +2038,31 @@ class JointsData:
 
     p_j: wp.array[wp.transformf] | None = None
     """
-    Array of joint frame pose transforms in world coordinates.\n
+    Array of joint frame pose transforms in world coordinates.
     Shape of ``(num_joints,)``.
     """
 
     q_j: wp.array[wp.float32] | None = None
     """
-    Flat array of generalized coordinates of the joints.\n
+    Flat array of generalized coordinates of the joints.
     Shape of ``(sum_of_num_joint_coords,)``.
     """
 
     q_j_p: wp.array[wp.float32] | None = None
     """
-    Flat array of previous generalized coordinates of the joints.\n
+    Flat array of previous generalized coordinates of the joints.
     Shape of ``(sum_of_num_joint_coords,)``.
     """
 
     dq_j: wp.array[wp.float32] | None = None
     """
-    Flat array of generalized velocities of the joints.\n
+    Flat array of generalized velocities of the joints.
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     tau_j: wp.array[wp.float32] | None = None
     """
-    Flat array of generalized forces of the joints.\n
+    Flat array of generalized forces of the joints.
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
@@ -2118,7 +2118,7 @@ class JointsData:
     Internal effective inertia of each joint (as flat array),
     used for implicit integration of joint dynamics.
 
-    ``m_j := a_j + dt * (b_j + k_d_j) + dt^2 * k_p_j``,\n
+    ``m_j := a_j + dt * (b_j + k_d_j) + dt^2 * k_p_j``,
     where dt is the simulation time step.
 
     A non-zero minimum mass is enforced to avoid a
@@ -2132,7 +2132,7 @@ class JointsData:
     Internal effective inverse inertia of each joint (as flat
     array), used for implicit integration of joint dynamics.
 
-    ``inv_m_j := 1 / m_j``, computed element-wise,\n
+    ``inv_m_j := 1 / m_j``, computed element-wise,
     where ``m_j := a_j + dt * (b_j + k_d_j) + dt^2 * k_p_j``,
     and dt is the simulation time step.
 
@@ -2146,11 +2146,11 @@ class JointsData:
     """
     The velocity bias of the joint dynamic constraints (as flat array).
 
-    Each joint has local actuation and PD control dynamics:\n
+    Each joint has local actuation and PD control dynamics:
     ```
     m_j * dq_j^{+} = a_j * dq_j^{-} + dt * h_j
     ```
-    and it contributes to the dynamics of the system through the constraint equation:
+    and is contributes to the dynamics of the system through the constraint equation:
     ```
     dq_j^{+} = J_q_j * u^{+}
     ```
@@ -2167,7 +2167,7 @@ class JointsData:
     dq_j^{+} + m_j^{-1} * lambda_q_j = dq_b_j
     J_q_j * u^{+} + m_j^{-1} * lambda_q_j = dq_b_j
     ```
-    and thus the velocity bias term of the joint-space dynamics of each joint `j` is computed as:\n
+    and thus the velocity bias term of the joint-space dynamics of each joint `j` is computed as:
     ```
     tau_j_tot := dt * ( tau_j + tau_j_ff + k_p_j * (q_j_ref - q_j^{-} ) + k_d_j * dq_j_ref )
     h_j := a_j * dq_j^{-} + dt * tau_j_tot
@@ -2184,19 +2184,19 @@ class JointsData:
 
     q_j_ref: wp.array[wp.float32] | None = None
     """
-    Array of reference generalized joint coordinates for implicit PD control.\n
+    Array of reference generalized joint coordinates for implicit PD control.
     Shape of ``(sum_of_num_joint_coords,)``.
     """
 
     dq_j_ref: wp.array[wp.float32] | None = None
     """
-    Array of reference generalized joint velocities for implicit PD control.\n
+    Array of reference generalized joint velocities for implicit PD control.
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     tau_j_ref: wp.array[wp.float32] | None = None
     """
-    Array of reference feed-forward generalized joint forces for implicit PD control.\n
+    Array of reference feed-forward generalized joint forces for implicit PD control.
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
@@ -2207,39 +2207,39 @@ class JointsData:
     j_w_j: wp.array[wp.spatial_vectorf] | None = None
     """
     Total wrench applied by each joint, expressed
-    in and about the corresponding joint frame.\n
+    in and about the corresponding joint frame.
     Its direction follows the convention that
-    joints act on the follower by the base body.\n
+    joints act on the follower by the base body.
     Shape of ``(num_joints,)``.
     """
 
     j_w_a_j: wp.array[wp.spatial_vectorf] | None = None
     """
     Actuation wrench applied by each joint, expressed
-    in and about the corresponding joint frame.\n
+    in and about the corresponding joint frame.
     Its direction is defined by the convention that positive wrenches
     in the joint frame are those inducing a positive change in the
-    twist of the follower body relative to the base body.\n
+    twist of the follower body relative to the base body.
     Shape of ``(num_joints,)``.
     """
 
     j_w_c_j: wp.array[wp.spatial_vectorf] | None = None
     """
     Constraint wrench applied by each joint, expressed
-    in and about the corresponding joint frame.\n
+    in and about the corresponding joint frame.
     Its direction is defined by the convention that positive wrenches
     in the joint frame are those inducing a positive change in the
-    twist of the follower body relative to the base body.\n
+    twist of the follower body relative to the base body.
     Shape of ``(num_joints,)``.
     """
 
     j_w_l_j: wp.array[wp.spatial_vectorf] | None = None
     """
     Joint-limit wrench applied by each joint, expressed
-    in and about the corresponding joint frame.\n
+    in and about the corresponding joint frame.
     Its direction is defined by the convention that positive wrenches
     in the joint frame are those inducing a positive change in the
-    twist of the follower body relative to the base body.\n
+    twist of the follower body relative to the base body.
     Shape of ``(num_joints,)``.
     """
 

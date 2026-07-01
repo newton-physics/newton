@@ -97,21 +97,21 @@ class BoundingVolumesData:
     and Bounding Spheres (BS), and allocations are conditioned on the broad-phase algorithm used.
 
     Attributes:
-        aabb: The vertices of the Axis-Aligned Bounding Box (AABB) of each collision geometry.\n
+        aabb: The vertices of the Axis-Aligned Bounding Box (AABB) of each collision geometry.
             Shape of ``(sum_of_num_geoms,)``.
-        radius: The radius of the Bounding Sphere (BS) of each collision geometry.\n
+        radius: The radius of the Bounding Sphere (BS) of each collision geometry.
             Shape of ``(sum_of_num_geoms,)``.
     """
 
     aabb: wp.array[vec6f] | None = None
     """
-    The min/max extents of the Axis-Aligned Bounding Box (AABB) of each collision geometry.\n
+    The min/max extents of the Axis-Aligned Bounding Box (AABB) of each collision geometry.
     Shape of ``(sum_of_num_geoms,)``.
     """
 
     radius: wp.array[wp.float32] | None = None
     """
-    The radius of the Bounding Sphere (BS) of each collision geometry.\n
+    The radius of the Bounding Sphere (BS) of each collision geometry.
     Shape of ``(sum_of_num_geoms,)``.
     """
 
@@ -135,7 +135,7 @@ class CollisionCandidatesModel:
 
     model_num_pairs: wp.array[wp.int32] | None = None
     """
-    Total number of collisions pairs in the model.\n
+    Total number of collisions pairs in the model.
     Shape of ``(1,)``.
     """
 
@@ -147,13 +147,13 @@ class CollisionCandidatesModel:
 
     wid: wp.array[wp.int32] | None = None
     """
-    World index of each collision pair.\n
+    World index of each collision pair.
     Shape of ``(sum_of_num_candidate_pairs,)``.
     """
 
     geom_pair: wp.array[wp.vec2i] | None = None
     """
-    Geometry indices of each collision pair.\n
+    Geometry indices of each collision pair.
     Shape of ``(sum_of_num_candidate_pairs,)``.
     """
 
@@ -171,25 +171,25 @@ class CollisionCandidatesData:
 
     model_num_collisions: wp.array[wp.int32] | None = None
     """
-    Number of collisions detected across all worlds in the model.\n
+    Number of collisions detected across all worlds in the model.
     Shape of ``(1,)``.
     """
 
     world_num_collisions: wp.array[wp.int32] | None = None
     """
-    Number of collisions detected per world.\n
+    Number of collisions detected per world.
     Shape of ``(num_worlds,)``.
     """
 
     wid: wp.array[wp.int32] | None = None
     """
-    World index of each active collision pair.\n
+    World index of each active collision pair.
     Shape of ``(num_geom_pairs,)``.
     """
 
     geom_pair: wp.array[wp.vec2i] | None = None
     """
-    Geometry indices of each active collision pair.\n
+    Geometry indices of each active collision pair.
     Shape of ``(num_geom_pairs,)``.
     """
 

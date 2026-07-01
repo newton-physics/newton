@@ -81,8 +81,8 @@ def build_free_joint_test(
         builder: An optional existing ModelBuilderKamino to which the entities will be added.
         z_offset: A vertical offset to apply to the rigid body position.
         ground: Whether to include a ground plane in the world.
-        new_world: Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
         limits: Whether to enable limits on the joint degrees of freedom.
@@ -160,8 +160,8 @@ def build_unary_revolute_joint_test(
     Args:
         builder: An optional existing ModelBuilderKamino to which the entities will be added.
         z_offset: A vertical offset to apply to the rigid body position.
-        new_world: Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
         limits: Whether to enable limits on the joint degree of freedom.
@@ -253,8 +253,8 @@ def build_binary_revolute_joint_test(
     Args:
         builder: An optional existing ModelBuilderKamino to which the entities will be added.
         z_offset: A vertical offset to apply to the rigid body position.
-        new_world: Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
         limits: Whether to enable limits on the joint degree of freedom.
@@ -364,8 +364,8 @@ def build_unary_prismatic_joint_test(
         builder: An optional existing ModelBuilderKamino to which the entities will be added.
         z_offset: A vertical offset to apply to the rigid body position.
         ground: Whether to include a ground plane in the world.
-        new_world: Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
         limits: Whether to enable limits on the joint degree of freedom.
@@ -455,8 +455,8 @@ def build_binary_prismatic_joint_test(
         builder: An optional existing ModelBuilderKamino to which the entities will be added.
         z_offset: A vertical offset to apply to the rigid body position.
         ground: Whether to include a ground plane in the world.
-        new_world: Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
         limits: Whether to enable limits on the joint degree of freedom.
@@ -564,8 +564,8 @@ def build_unary_cylindrical_joint_test(
     Args:
         builder: An optional existing ModelBuilderKamino to which the entities will be added.
         z_offset: A vertical offset to apply to the rigid body position.
-        new_world: Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
         limits: Whether to enable limits on the joint degrees of freedom.
@@ -657,8 +657,8 @@ def build_binary_cylindrical_joint_test(
     Args:
         builder: An optional existing ModelBuilderKamino to which the entities will be added.
         z_offset: A vertical offset to apply to the rigid body position.
-        new_world: Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
         limits: Whether to enable limits on the joint degrees of freedom.
@@ -766,8 +766,8 @@ def build_unary_universal_joint_test(
         builder: An optional existing ModelBuilderKamino to which the entities will be added.
         z_offset: A vertical offset to apply to the rigid body position.
         ground: Whether to include a ground plane in the world.
-        new_world: Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
         limits: Whether to enable limits on the joint degrees of freedom.
@@ -851,8 +851,8 @@ def build_binary_universal_joint_test(
         builder: An optional existing ModelBuilderKamino to which the entities will be added.
         z_offset: A vertical offset to apply to the rigid body position.
         ground: Whether to include a ground plane in the world.
-        new_world: Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
         limits: Whether to enable limits on the joint degrees of freedom.
@@ -953,8 +953,8 @@ def build_unary_spherical_joint_test(
         builder: An optional existing ModelBuilderKamino to which the entities will be added.
         z_offset: A vertical offset to apply to the rigid body position.
         ground: Whether to include a ground plane in the world.
-        new_world: Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
         limits: Whether to enable limits on the joint degrees of freedom.
@@ -1038,8 +1038,8 @@ def build_binary_spherical_joint_test(
         builder: An optional existing ModelBuilderKamino to which the entities will be added.
         z_offset: A vertical offset to apply to the rigid body position.
         ground: Whether to include a ground plane in the world.
-        new_world: Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
         limits: Whether to enable limits on the joint degrees of freedom.
@@ -1141,8 +1141,8 @@ def build_unary_cartesian_joint_test(
     Args:
         builder: An optional existing ModelBuilderKamino to which the entities will be added.
         z_offset: A vertical offset to apply to the rigid body position.
-        new_world: Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
         limits: Whether to enable limits on the joint degrees of freedom.
@@ -1234,8 +1234,8 @@ def build_binary_cartesian_joint_test(
     Args:
         builder: An optional existing ModelBuilderKamino to which the entities will be added.
         z_offset: A vertical offset to apply to the rigid body position.
-        new_world: Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
         limits: Whether to enable limits on the joint degrees of freedom.
@@ -1587,9 +1587,9 @@ def make_single_shape_pair_builder(
         top_dims: Dimensions for the top shape. If None, defaults are used.
         top_xyz: Position (x, y, z) for the top shape. If None, defaults to (0, 0, 0).
         top_rpy: Orientation (roll, pitch, yaw) for the top shape. If None, defaults to (0, 0, 0).
-        distance: Mutual distance along the z-axis between the two shapes.\n
-            If zero, the shapes are exactly touching.\n
-            If positive, they are separated by that distance.\n
+        distance: Mutual distance along the z-axis between the two shapes.
+            If zero, the shapes are exactly touching.
+            If positive, they are separated by that distance.
             If negative, they are penetrating by that distance.
 
     Returns:

@@ -1027,8 +1027,8 @@ def compute_joints_data(
 
     Args:
         model: The model container holding the time-invariant data of the simulation.
-        q_j_p: An array of previous joint DoF coordinates used for coordinate correction.\n
-            Only used for revolute DoFs of the relevant joints to enforce angle continuity.\n
+        q_j_p: An array of previous joint DoF coordinates used for coordinate correction.
+            Only used for revolute DoFs of the relevant joints to enforce angle continuity.
             Shape of ``(sum_of_num_joint_coords,)``.
         data: The solver data container holding the internal time-varying state of the simulation.
     """
@@ -1097,15 +1097,15 @@ def extract_actuators_state_from_joints(
 
     Args:
         model: The model container holding the time-invariant data of the simulation.
-        joint_q: The full array of joint coordinates.\n
+        joint_q: The full array of joint coordinates.
             Shape of ``(sum_of_num_joint_coords,)``.
-        joint_u: The full array of joint velocities.\n
+        joint_u: The full array of joint velocities.
             Shape of ``(sum_of_num_joint_dofs,)``.
-        actuator_q: The output array to store the actuated joint coordinates.\n
+        actuator_q: The output array to store the actuated joint coordinates.
             Shape of ``(sum_of_num_actuated_joint_coords,)``.
-        actuator_u: The output array to store the actuated joint velocities.\n
+        actuator_u: The output array to store the actuated joint velocities.
             Shape of ``(sum_of_actuated_joint_dofs,)``.
-        world_mask: An array indicating which worlds are active (True) or skipped (False).\n
+        world_mask: An array indicating which worlds are active (True) or skipped (False).
             Shape of ``(num_worlds,)``.
     """
     wp.launch(
@@ -1146,15 +1146,15 @@ def extract_joints_state_from_actuators(
 
     Args:
         model: The model container holding the time-invariant data of the simulation.
-        joint_q: The full array of joint coordinates.\n
+        joint_q: The full array of joint coordinates.
             Shape of ``(sum_of_num_joint_coords,)``.
-        joint_u: The full array of joint velocities.\n
+        joint_u: The full array of joint velocities.
             Shape of ``(sum_of_num_joint_dofs,)``.
-        actuator_q: The output array to store the actuated joint coordinates.\n
+        actuator_q: The output array to store the actuated joint coordinates.
             Shape of ``(sum_of_num_actuated_joint_coords,)``.
-        actuator_u: The output array to store the actuated joint velocities.\n
+        actuator_u: The output array to store the actuated joint velocities.
             Shape of ``(sum_of_actuated_joint_dofs,)``.
-        world_mask: An array indicating which worlds are active (True) or skipped (False).\n
+        world_mask: An array indicating which worlds are active (True) or skipped (False).
             Shape of ``(num_worlds,)``.
     """
     wp.launch(

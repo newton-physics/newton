@@ -300,7 +300,7 @@ class SolutionMetricsData:
 
     r_ncp_primal_argmax: wp.array[wp.int32] | None = None
     """
-    The index of the constraint with the largest NCP primal residual.\n
+    The index of the constraint with the largest NCP primal residual.
     Shape of ``(num_worlds,)``.
     """
 
@@ -560,7 +560,7 @@ def compute_vector_difference_infnorm(
     y: wp.array[wp.float32],
 ) -> tuple[wp.float32, wp.int32]:
     """
-    Computes the infinity norm of the element-wise difference between vectors `x` and `y`.\n
+    Computes the infinity norm of the element-wise difference between vectors `x` and `y`.
     Both vectors are stored in flat arrays, with dimension `dim` and starting from the vector index offset `vio`.
 
     Args:

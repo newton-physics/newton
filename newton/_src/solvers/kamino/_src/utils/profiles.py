@@ -123,46 +123,46 @@ class PerformanceProfile:
     ) -> None:
         self._t_p_min: np.ndarray | None = None
         """
-        The per-problem best performance amongst all solvers\n
-        For every p in P : t_p_min = min{s in S : t_ps}\n
+        The per-problem best performance amongst all solvers
+        For every p in P : t_p_min = min{s in S : t_ps}
         Dimensions are: |P|
         """
 
         self._r_ps: np.ndarray | None = None
         """
-        The per-sample performance ratios\n
-        For every s in S and p in P : r_ps = t_ps / min{s in S : t_ps}\n
+        The per-sample performance ratios
+        For every s in S and p in P : r_ps = t_ps / min{s in S : t_ps}
         Dimensions are: |P| x |S|
         """
 
         self._rho_s: list[np.ndarray] = []
         """
-        The per-solver cumulative distributions\n
-        For every s in S : rho_s(tau) = (1/np) * size{p in P : r_ps <= tau}\n
+        The per-solver cumulative distributions
+        For every s in S : rho_s(tau) = (1/np) * size{p in P : r_ps <= tau}
         Dimensions are: |S| x |Rho|
         """
 
         self._r_min: float = np.inf
         """
-        The smallest performance ratio present in the data\n
+        The smallest performance ratio present in the data
         r in [r_min, r_max]
         """
 
         self._r_max: float = np.inf
         """
-        The largest performance ratio present in the data\n
+        The largest performance ratio present in the data
         r in [r_min, r_max]
         """
 
         self._tau_max: float = np.inf
         """
-        The largest performance ratio considered for generating the performance profile\n
+        The largest performance ratio considered for generating the performance profile
         tau in [1, tau_max]
         """
 
         self._valid: bool = False
         """
-        Flag to indicate if last call to 'compute' was valid\n
+        Flag to indicate if last call to 'compute' was valid
         This is also useful to check construction-time generation was successful.
         """
 

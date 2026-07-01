@@ -523,9 +523,9 @@ def unpack_constraint_solutions(
         lambdas: The array of constraint reactions (i.e. lagrange multipliers).
         v_plus: The array of post-event constraint velocities.
         data: The solver container holding time-varying data.
-        limits: The limits container holding the joint-limit data.\n
+        limits: The limits container holding the joint-limit data.
             If None, limits will be skipped.
-        contacts: The contacts container holding the contact data.\n
+        contacts: The contacts container holding the contact data.
             If None, contacts will be skipped.
     """
     # Unpack joint constraint multipliers if the model has joints

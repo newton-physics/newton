@@ -74,49 +74,49 @@ class ModelKaminoInfo:
 
     num_bodies: wp.array[wp.int32] | None = None
     """
-    The number of bodies in each world.\n
+    The number of bodies in each world.
     Shape of ``(num_worlds,)``.
     """
 
     num_joints: wp.array[wp.int32] | None = None
     """
-    The number of joints in each world.\n
+    The number of joints in each world.
     Shape of ``(num_worlds,)``.
     """
 
     num_passive_joints: wp.array[wp.int32] | None = None
     """
-    The number of passive joints in each world.\n
+    The number of passive joints in each world.
     Shape of ``(num_worlds,)``.
     """
 
     num_actuated_joints: wp.array[wp.int32] | None = None
     """
-    The number of actuated joints in each world.\n
+    The number of actuated joints in each world.
     Shape of ``(num_worlds,)``.
     """
 
     num_dynamic_joints: wp.array[wp.int32] | None = None
     """
-    The number of dynamic joints in each world.\n
+    The number of dynamic joints in each world.
     Shape of ``(num_worlds,)``.
     """
 
     num_geoms: wp.array[wp.int32] | None = None
     """
-    The number of geometries in each world.\n
+    The number of geometries in each world.
     Shape of ``(num_worlds,)``.
     """
 
     max_limits: wp.array[wp.int32] | None = None
     """
-    The maximum number of limits in each world.\n
+    The maximum number of limits in each world.
     Shape of ``(num_worlds,)``.
     """
 
     max_contacts: wp.array[wp.int32] | None = None
     """
-    The maximum number of contacts in each world.\n
+    The maximum number of contacts in each world.
     Shape of ``(num_worlds,)``.
     """
 
@@ -126,43 +126,43 @@ class ModelKaminoInfo:
 
     num_body_dofs: wp.array[wp.int32] | None = None
     """
-    The number of body DoFs of each world.\n
+    The number of body DoFs of each world.
     Shape of ``(num_worlds,)``.
     """
 
     num_joint_coords: wp.array[wp.int32] | None = None
     """
-    The number of joint coordinates of each world.\n
+    The number of joint coordinates of each world.
     Shape of ``(num_worlds,)``.
     """
 
     num_joint_dofs: wp.array[wp.int32] | None = None
     """
-    The number of joint DoFs of each world.\n
+    The number of joint DoFs of each world.
     Shape of ``(num_worlds,)``.
     """
 
     num_passive_joint_coords: wp.array[wp.int32] | None = None
     """
-    The number of passive joint coordinates of each world.\n
+    The number of passive joint coordinates of each world.
     Shape of ``(num_worlds,)``.
     """
 
     num_passive_joint_dofs: wp.array[wp.int32] | None = None
     """
-    The number of passive joint DoFs of each world.\n
+    The number of passive joint DoFs of each world.
     Shape of ``(num_worlds,)``.
     """
 
     num_actuated_joint_coords: wp.array[wp.int32] | None = None
     """
-    The number of actuated joint coordinates of each world.\n
+    The number of actuated joint coordinates of each world.
     Shape of ``(num_worlds,)``.
     """
 
     num_actuated_joint_dofs: wp.array[wp.int32] | None = None
     """
-    The number of actuated joint DoFs of each world.\n
+    The number of actuated joint DoFs of each world.
     Shape of ``(num_worlds,)``.
     """
 
@@ -174,37 +174,37 @@ class ModelKaminoInfo:
     # and kinematic joint constraint counts separately
     num_joint_cts: wp.array[wp.int32] | None = None
     """
-    The number of joint constraints of each world.\n
+    The number of joint constraints of each world.
     Shape of ``(num_worlds,)``.
     """
 
     num_joint_dynamic_cts: wp.array[wp.int32] | None = None
     """
-    The number of dynamic joint constraints of each world.\n
+    The number of dynamic joint constraints of each world.
     Shape of ``(num_worlds,)``.
     """
 
     num_joint_kinematic_cts: wp.array[wp.int32] | None = None
     """
-    The number of kinematic joint constraints of each world.\n
+    The number of kinematic joint constraints of each world.
     Shape of ``(num_worlds,)``.
     """
 
     max_limit_cts: wp.array[wp.int32] | None = None
     """
-    The maximum number of active limit constraints of each world.\n
+    The maximum number of active limit constraints of each world.
     Shape of ``(num_worlds,)``.
     """
 
     max_contact_cts: wp.array[wp.int32] | None = None
     """
-    The maximum number of active contact constraints of each world.\n
+    The maximum number of active contact constraints of each world.
     Shape of ``(num_worlds,)``.
     """
 
     max_total_cts: wp.array[wp.int32] | None = None
     """
-    The maximum total number of active constraints of each world.\n
+    The maximum total number of active constraints of each world.
     Shape of ``(num_worlds,)``.
     """
 
@@ -214,7 +214,7 @@ class ModelKaminoInfo:
 
     bodies_offset: wp.array[wp.int32] | None = None
     """
-    The body index offset of each world w.r.t the model.\n
+    The body index offset of each world w.r.t the model.
     Shape of ``(num_worlds + 1,)``.
     The last entry is the total bodies count, so that the per-world
     bodies count is encoded as ``bodies_offset[w+1] - bodies_offset[w]``.
@@ -222,31 +222,31 @@ class ModelKaminoInfo:
 
     joints_offset: wp.array[wp.int32] | None = None
     """
-    The joint index offset of each world w.r.t the model.\n
+    The joint index offset of each world w.r.t the model.
     Shape of ``(num_worlds,)``.
     """
 
     geoms_offset: wp.array[wp.int32] | None = None
     """
-    The geom index offset of each world w.r.t. the model.\n
+    The geom index offset of each world w.r.t. the model.
     Shape of ``(num_worlds,)``.
     """
 
     limits_offset: wp.array[wp.int32] | None = None
     """
-    The limit index offset of each world w.r.t the model.\n
+    The limit index offset of each world w.r.t the model.
     Shape of ``(num_worlds,)``.
     """
 
     contacts_offset: wp.array[wp.int32] | None = None
     """
-    The contact index offset of world w.r.t the model.\n
+    The contact index offset of world w.r.t the model.
     Shape of ``(num_worlds,)``.
     """
 
     unilaterals_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the unilaterals (limits + contacts) block of each world.\n
+    The index offset of the unilaterals (limits + contacts) block of each world.
     Shape of ``(num_worlds,)``.
     """
 
@@ -256,49 +256,49 @@ class ModelKaminoInfo:
 
     body_dofs_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the body DoF block of each world.\n
+    The index offset of the body DoF block of each world.
     Shape of ``(num_worlds,)``.
     """
 
     joint_coords_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the joint coordinates block of each world.\n
-    Used to index into arrays that contain flattened joint coordinate-sized data.\n
+    The index offset of the joint coordinates block of each world.
+    Used to index into arrays that contain flattened joint coordinate-sized data.
     Shape of ``(num_worlds,)``.
     """
 
     joint_dofs_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the joint DoF block of each world.\n
-    Used to index into arrays that contain flattened joint DoF-sized data.\n
+    The index offset of the joint DoF block of each world.
+    Used to index into arrays that contain flattened joint DoF-sized data.
     Shape of ``(num_worlds,)``.
     """
 
     joint_passive_coords_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the passive joint coordinates block of each world.\n
-    Used to index into arrays that contain flattened passive joint coordinate-sized data.\n
+    The index offset of the passive joint coordinates block of each world.
+    Used to index into arrays that contain flattened passive joint coordinate-sized data.
     Shape of ``(num_worlds,)``.
     """
 
     joint_passive_dofs_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the passive joint DoF block of each world.\n
-    Used to index into arrays that contain flattened passive joint DoF-sized data.\n
+    The index offset of the passive joint DoF block of each world.
+    Used to index into arrays that contain flattened passive joint DoF-sized data.
     Shape of ``(num_worlds,)``.
     """
 
     joint_actuated_coords_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the actuated joint coordinates block of each world.\n
-    Used to index into arrays that contain flattened actuated joint coordinate-sized data.\n
+    The index offset of the actuated joint coordinates block of each world.
+    Used to index into arrays that contain flattened actuated joint coordinate-sized data.
     Shape of ``(num_worlds,)``.
     """
 
     joint_actuated_dofs_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the actuated joint DoF block of each world.\n
-    Used to index into arrays that contain flattened actuated joint DoF-sized data.\n
+    The index offset of the actuated joint DoF block of each world.
+    Used to index into arrays that contain flattened actuated joint DoF-sized data.
     Shape of ``(num_worlds,)``.
     """
 
@@ -308,23 +308,23 @@ class ModelKaminoInfo:
 
     joint_cts_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the joint constraints block of each world.\n
+    The index offset of the joint constraints block of each world.
     Used to index into arrays that contain flattened and
-    concatenated dynamic and kinematic joint constraint data.\n
+    concatenated dynamic and kinematic joint constraint data.
     Shape of ``(num_worlds,)``.
     """
 
     joint_dynamic_cts_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the dynamic joint constraints block of each world.\n
-    Used to index into arrays that contain flattened dynamic joint constraint data.\n
+    The index offset of the dynamic joint constraints block of each world.
+    Used to index into arrays that contain flattened dynamic joint constraint data.
     Shape of ``(num_worlds,)``.
     """
 
     joint_kinematic_cts_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the kinematic joint constraints block of each world.\n
-    Used to index into arrays that contain flattened kinematic joint constraint data.\n
+    The index offset of the kinematic joint constraints block of each world.
+    Used to index into arrays that contain flattened kinematic joint constraint data.
     Shape of ``(num_worlds,)``.
     """
 
@@ -338,8 +338,8 @@ class ModelKaminoInfo:
     # TODO: We could then provide helper functions to get the start-end of each block
     total_cts_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the total constraints block of each world.\n
-    Used to index into constraint-space arrays, e.g. constraint residuals and reactions.\n
+    The index offset of the total constraints block of each world.
+    Used to index into constraint-space arrays, e.g. constraint residuals and reactions.
 
     This offset should be used together with:
     - joint_dynamic_cts_group_offset
@@ -368,15 +368,15 @@ class ModelKaminoInfo:
 
     joint_dynamic_cts_group_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the dynamic joint constraints group within the constraints block of each world.\n
-    Used to index into constraint-space arrays, e.g. constraint residuals and reactions.\n
+    The index offset of the dynamic joint constraints group within the constraints block of each world.
+    Used to index into constraint-space arrays, e.g. constraint residuals and reactions.
     Shape of ``(num_worlds,)``.
     """
 
     joint_kinematic_cts_group_offset: wp.array[wp.int32] | None = None
     """
-    The index offset of the kinematic joint constraints group within the constraints block of each world.\n
-    Used to index into constraint-space arrays, e.g. constraint residuals and reactions.\n
+    The index offset of the kinematic joint constraints group within the constraints block of each world.
+    Used to index into constraint-space arrays, e.g. constraint residuals and reactions.
     Shape of ``(num_worlds,)``.
     """
 
@@ -387,14 +387,14 @@ class ModelKaminoInfo:
     base_body_index: wp.array[wp.int32] | None = None
     """
     The index of the base body assigned in each world w.r.t the model.
-    If a base joint is also assigned, must be the follower body of that joint.\n
+    If a base joint is also assigned, must be the follower body of that joint.
     Shape of ``(num_worlds,)``.
     """
 
     base_joint_index: wp.array[wp.int32] | None = None
     """
     The index of the base joint assigned in each world w.r.t the model (-1 if not assigned).
-    If assigned, must be a unary, non-universal, joint.\n
+    If assigned, must be a unary, non-universal, joint.
     Shape of ``(num_worlds,)``.
     """
 
@@ -404,25 +404,25 @@ class ModelKaminoInfo:
 
     mass_min: wp.array[wp.float32] | None = None
     """
-    Smallest mass amongst all bodies in each world.\n
+    Smallest mass amongst all bodies in each world.
     Shape of ``(num_worlds,)``.
     """
 
     mass_max: wp.array[wp.float32] | None = None
     """
-    Largest mass amongst all bodies in each world.\n
+    Largest mass amongst all bodies in each world.
     Shape of ``(num_worlds,)``.
     """
 
     mass_total: wp.array[wp.float32] | None = None
     """
-    Total mass over all bodies in each world.\n
+    Total mass over all bodies in each world.
     Shape of ``(num_worlds,)``.
     """
 
     inertia_total: wp.array[wp.float32] | None = None
     """
-    Total diagonal inertia over all bodies in each world.\n
+    Total diagonal inertia over all bodies in each world.
     Shape of ``(num_worlds,)``.
     """
 
@@ -444,7 +444,7 @@ class ModelKamino:
 
     size: SizeKamino | None = None
     """
-    Host-side cache of the model summary sizes.\n
+    Host-side cache of the model summary sizes.
     This is used for memory allocations and kernel thread dimensions.
     """
 
@@ -468,13 +468,13 @@ class ModelKamino:
 
     materials: MaterialsModel | None = None
     """
-    The materials model container holding all material entities in the model.\n
+    The materials model container holding all material entities in the model.
     The materials data is currently defined globally to be shared by all worlds.
     """
 
     material_pairs: MaterialPairsModel | None = None
     """
-    The material pairs model container holding all material pairs in the model.\n
+    The material pairs model container holding all material pairs in the model.
     The material-pairs data is currently defined globally to be shared by all worlds.
     """
 

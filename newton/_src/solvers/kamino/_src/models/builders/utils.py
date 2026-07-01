@@ -53,14 +53,14 @@ def add_ground_plane(
 
     Args:
         builder: The model builder to which the ground plane should be added.
-        group: The collision group for the ground geometry.\n
+        group: The collision group for the ground geometry.
             Defaults to `1`.
-        collides: The collision mask for the ground geometry.\n
+        collides: The collision mask for the ground geometry.
             Defaults to `1`.
-        world_index: The index of the world in the builder where the ground geometry should be added.\n
-            If the value does not correspond to an existing world an error will be raised.\n
+        world_index: The index of the world in the builder where the ground geometry should be added.
+            If the value does not correspond to an existing world an error will be raised.
             Defaults to `0`.
-        z_offset: The vertical offset of the ground plane along the Z axis.\n
+        z_offset: The vertical offset of the ground plane along the Z axis.
             Defaults to `0.0`.
     Returns:
         The ID of the added ground geometry.
@@ -87,14 +87,14 @@ def add_ground_box(
 
     Args:
         builder: The model builder to which the ground box should be added.
-        group: The collision group for the ground geometry.\n
+        group: The collision group for the ground geometry.
             Defaults to `1`.
-        collides: The collision mask for the ground geometry.\n
+        collides: The collision mask for the ground geometry.
             Defaults to `1`.
-        world_index: The index of the world in the builder where the ground geometry should be added.\n
-            If the value does not correspond to an existing world an error will be raised.\n
+        world_index: The index of the world in the builder where the ground geometry should be added.
+            If the value does not correspond to an existing world an error will be raised.
             Defaults to `0`.
-        z_offset: The vertical offset of the ground box along the Z axis.\n
+        z_offset: The vertical offset of the ground box along the Z axis.
             Defaults to `0.0`.
 
     Returns:

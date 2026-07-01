@@ -55,17 +55,17 @@ def build_box_on_plane(
     Constructs a basic model of a free-floating 'box' body and a ground box geom.
 
     Args:
-        builder: An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
         z_offset: A vertical offset to apply to the initial position of the box.
         ground: Whether to add a static ground plane to the model.
-        new_world: Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index: The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is True, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
 
     Returns:
@@ -121,17 +121,17 @@ def build_box_pendulum(
     This version initializes the pendulum in a horizontal configuration.
 
     Args:
-        builder: An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
         z_offset: A vertical offset to apply to the initial position of the box.
         ground: Whether to add a static ground plane to the model.
-        new_world: Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index: The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is True, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
 
     Returns:
@@ -216,17 +216,17 @@ def build_box_pendulum_vertical(
     This version initializes the pendulum in a vertical configuration.
 
     Args:
-        builder: An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
         z_offset: A vertical offset to apply to the initial position of the box.
         ground: Whether to add a static ground plane to the model.
-        new_world: Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index: The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is True, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
 
     Returns:
@@ -306,17 +306,17 @@ def build_cartpole(
     Constructs a basic model of a cartpole mounted onto a rail.
 
     Args:
-        builder: An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
         z_offset: A vertical offset to apply to the initial position of the box.
         ground: Whether to add a static ground plane to the model.
-        new_world: Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index: The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is True, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
 
     Returns:
@@ -449,17 +449,17 @@ def build_boxes_hinged(
     Constructs a basic model of a two floating boxes connected via revolute joint.
 
     Args:
-        builder: An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
         z_offset: A vertical offset to apply to the initial position of the box.
         ground: Whether to add a static ground plane to the model.
-        new_world: Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index: The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is True, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
 
     Returns:
@@ -568,17 +568,17 @@ def build_boxes_nunchaku(
     This version initializes the nunchaku in a horizontal configuration.
 
     Args:
-        builder: An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
         z_offset: A vertical offset to apply to the initial position of the box.
         ground: Whether to add a static ground plane to the model.
-        new_world: Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index: The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is True, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
 
     Returns:
@@ -714,17 +714,17 @@ def build_boxes_nunchaku_vertical(
     This version initializes the nunchaku in a vertical configuration.
 
     Args:
-        builder: An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
         z_offset: A vertical offset to apply to the initial position of the box.
         ground: Whether to add a static ground plane to the model.
-        new_world: Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index: The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is True, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
 
     Returns:
@@ -864,17 +864,17 @@ def build_boxes_fourbar(
     Constructs a basic model of a four-bar linkage.
 
     Args:
-        builder: An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
         z_offset: A vertical offset to apply to the initial position of the box.
         ground: Whether to add a static ground plane to the model.
-        new_world: Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index: The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is True, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
 
     Returns:

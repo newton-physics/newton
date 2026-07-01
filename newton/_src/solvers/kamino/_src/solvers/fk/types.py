@@ -84,7 +84,7 @@ class ForwardKinematicsStatus:
 
     success: np.ndarray(dtype=np.int32)
     """
-    Solver success flag per world, as an integer array (0 = failure, 1 = success).\n
+    Solver success flag per world, as an integer array (0 = failure, 1 = success).
     Shape of `(num_worlds,)`.
 
     Note that in some cases the solver may fail to converge within the maximum number
@@ -96,7 +96,7 @@ class ForwardKinematicsStatus:
 
     iterations: np.ndarray(dtype=np.int32)
     """
-    Number of Gauss-Newton iterations executed per world.\n
+    Number of Gauss-Newton iterations executed per world.
     Shape of `(num_worlds,)`.
     """
 
