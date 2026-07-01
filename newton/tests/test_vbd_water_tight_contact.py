@@ -45,7 +45,8 @@ def _build_edge_over_post(device):
     builder.add_triangle(v0, v1, v2)
 
     builder.color()
-    model = builder.finalize(device=device, enable_water_tight_rigid_soft_contact=True)
+    builder.enable_rigid_mesh_sdfs()
+    model = builder.finalize(device=device)
     return model, (v0, v1, v2)
 
 
@@ -113,7 +114,8 @@ def _build_sphere_on_fixed_soft_triangle(device):
     builder.add_shape_sphere(body=body, radius=0.1)
 
     builder.color()
-    model = builder.finalize(device=device, enable_water_tight_rigid_soft_contact=True)
+    builder.enable_rigid_mesh_sdfs()
+    model = builder.finalize(device=device)
     return model, body
 
 
@@ -168,7 +170,8 @@ def _run_face_section2(device, shape_margin):
     p1 = builder.add_particle(wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0), 0.1, radius=0.0)
     p2 = builder.add_particle(wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0), 0.1, radius=0.0)
     builder.add_triangle(p0, p1, p2)
-    model = builder.finalize(device=device, enable_water_tight_rigid_soft_contact=True)
+    builder.enable_rigid_mesh_sdfs()
+    model = builder.finalize(device=device)
 
     smax = 8
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.1, soft_contact_max=smax)

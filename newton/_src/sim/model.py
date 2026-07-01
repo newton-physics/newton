@@ -1780,7 +1780,8 @@ class Model:
                 the collision pipeline is allocated (its soft-contact buffer must be sized for the extra
                 records), so it takes effect only on the first ``collide()``/``contacts()`` call that
                 creates the pipeline. Passing ``True`` once a pipeline sized without it is cached raises
-                ``ValueError``.
+                ``ValueError``. Participating mesh/convex shapes must also have volume SDFs built via
+                :meth:`ModelBuilder.enable_rigid_mesh_sdfs` before finalize, or pipeline construction raises.
         """
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline

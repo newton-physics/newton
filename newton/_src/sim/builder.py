@@ -1038,6 +1038,9 @@ class ModelBuilder:
         self.shape_sdf_padding: list[float | None] = []
         """Per-shape SDF generation margins [m] retained until :meth:`finalize <ModelBuilder.finalize>`.
         When ``None``, :attr:`shape_gap` is used for primitive texture SDF generation."""
+        self._enable_rigid_mesh_sdfs: bool = False
+        """Set by :meth:`enable_rigid_mesh_sdfs`; when True, :meth:`finalize` builds volume SDFs for
+        participating rigid ``MESH``/``CONVEX_MESH`` shapes that lack one."""
 
         # Mesh SDF storage (texture SDF arrays created at finalize)
 
@@ -9779,6 +9782,24 @@ class ModelBuilder:
             target_max_min_color_ratio=target_max_min_color_ratio,
         )
 
+    def enable_rigid_mesh_sdfs(self) -> None:
+        """Enable volume (texture) SDF construction for the builder's rigid mesh shapes.
+
+        Requests volume-SDF construction for rigid ``MESH`` / ``CONVEX_MESH`` shapes that collide
+        with particles and lack an SDF. The SDFs are built by :meth:`finalize <ModelBuilder.finalize>`
+        (they need the finalize device) in unscaled mesh space, so scale is applied at query time and
+        one SDF serves all scales of a shared :class:`~newton.Mesh`. They are general-purpose distance
+        fields — any SDF query can use them — but their primary consumer is the water-tight rigid-soft
+        edge/face contact passes.
+
+        Call before :meth:`finalize <ModelBuilder.finalize>` when constructing a
+        :class:`~newton.CollisionPipeline` with ``enable_water_tight_rigid_soft_contact=True``;
+        :meth:`finalize <ModelBuilder.finalize>` does not build these implicitly (mirroring
+        :meth:`color`). Texture SDFs are CUDA-only, so on CPU (or on any per-mesh failure) the shape
+        falls back to the legacy per-particle soft-contact path.
+        """
+        self._enable_rigid_mesh_sdfs = True
+
     def _validate_world_ordering(self):
         """Validate that world indices are monotonic, contiguous, and properly ordered.
 
@@ -10492,7 +10513,6 @@ class ModelBuilder:
         skip_validation_shapes: bool = False,
         skip_validation_structure: bool = False,
         skip_validation_joint_ordering: bool = True,
-        enable_water_tight_rigid_soft_contact: bool = False,
     ) -> Model:
         """
         Finalize the builder and create a concrete :class:`~newton.Model` for simulation.
@@ -10513,9 +10533,6 @@ class ModelBuilder:
                 array lengths, monotonicity). Default is False.
             skip_validation_joint_ordering: If True, skips validation of DFS topological joint ordering within
                 articulations. Default is True (opt-in) because this check has O(n log n) complexity.
-            enable_water_tight_rigid_soft_contact: If True, provisions volume SDFs for participating
-                MESH/CONVEX_MESH shapes that lack one so the soft edge/face contact passes can query them.
-                Default is False.
 
         Returns:
             A fully constructed Model object containing all simulation data on the specified device.
@@ -11102,12 +11119,12 @@ class ModelBuilder:
                                 compact_texture_sdf_subgrid_textures.append(None)
                                 compact_texture_sdf_subgrid_start_slots.append(None)
 
-            # Water-tight (B2): provision a volume SDF for participating MESH/CONVEX_MESH shapes
-            # that still lack one, so the soft EDGE/FACE passes can query them. Built in unscaled
-            # mesh space (scale_baked=False) and cached per source mesh; eval_shape_sdf applies the
-            # shape scale at query time. Texture SDFs are CUDA-only, so on CPU (or on any failure)
-            # the shape gracefully falls back to the legacy per-particle soft-contact path.
-            if enable_water_tight_rigid_soft_contact:
+            # Build volume SDFs for participating MESH/CONVEX_MESH shapes that still lack one, when
+            # requested via ModelBuilder.enable_rigid_mesh_sdfs(). Built in unscaled mesh space
+            # (scale_baked=False) and cached per source mesh; eval_shape_sdf applies the shape scale
+            # at query time. Texture SDFs are CUDA-only, so on CPU (or on any failure) the shape
+            # gracefully falls back to the legacy per-particle soft-contact path.
+            if self._enable_rigid_mesh_sdfs:
                 wt_sdf_cache = {}
                 for i in range(len(self.shape_type)):
                     if (
