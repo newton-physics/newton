@@ -28,7 +28,8 @@ class TestUSDDeformableCloth(unittest.TestCase):
             usd_path = Path(tmpdir) / "cloth.usda"
             stage = Usd.Stage.CreateNew(str(usd_path))
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            _add_cloth_mesh(stage, "/World/Cloth")
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
             stage.Save()
 
             builder = newton.ModelBuilder()
@@ -42,6 +43,8 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertEqual(ranges["edge"][1], builder.edge_count)
             self.assertGreater(builder.edge_count, 0)
             self.assertEqual(builder.particle_count, 4)
+            self.assertNotIn("/World/Cloth", result["path_shape_map"])
+            self.assertEqual(builder.shape_count, 0)
 
     def test_cloth_quad_mesh_is_triangulated(self):
         """A quad-faced cloth mesh is fan-triangulated on import (n-gons are supported)."""
