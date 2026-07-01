@@ -989,6 +989,7 @@ class Model:
             "joint_coord": Model.AttributeFrequency.JOINT_COORD,
             "joint_constraint": Model.AttributeFrequency.JOINT_CONSTRAINT,
             "articulation": Model.AttributeFrequency.ARTICULATION,
+            "equality_constraint": "mujoco:equality_constraint",
             "constraint_mimic": Model.AttributeFrequency.CONSTRAINT_MIMIC,
             "particle": Model.AttributeFrequency.PARTICLE,
             "edge": Model.AttributeFrequency.EDGE,
