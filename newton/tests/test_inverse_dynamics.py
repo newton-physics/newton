@@ -1730,6 +1730,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 qddot_arr = wp.array(qddot_observed.astype(np.float32), dtype=wp.float32, device=self.device)
                 newton.eval_inverse_dynamics_force(
                     model,
+                    state,
                     inverse_dynamics.mass_matrix,
                     qddot_arr,
                     zero_bias,
@@ -2012,7 +2013,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         gravity = wp.array(gravity_np, dtype=wp.float32, device=self.device)
         tau = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=self.device)
 
-        newton.eval_inverse_dynamics_force(model, H, qddot, coriolis, gravity, tau)
+        newton.eval_inverse_dynamics_force(model, model.state(), H, qddot, coriolis, gravity, tau)
 
         np.testing.assert_allclose(tau.numpy(), tau_expected, atol=1e-6)
 
@@ -2469,6 +2470,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                 qddot = wp.array(qddot_target, dtype=wp.float32, device=self.device)
                 newton.eval_inverse_dynamics_force(
                     model,
+                    state,
                     inverse_dynamics.mass_matrix,
                     qddot,
                     inverse_dynamics.coriolis_force,
@@ -2504,6 +2506,69 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
     def test_inverse_dynamics_force_with_gravity_and_velocity(self):
         """Manipulator equation with non-zero gravity and non-zero initial DOF velocities."""
         self._test_inverse_dynamics_force(non_zero_gravity=True, non_zero_initial_dof_velocities=True)
+
+    def test_inverse_dynamics_force_free_root_rotated_parent(self):
+        """FREE root with a rotated parent frame and non-zero ``qddot``.
+
+        The mass matrix is expressed in the joint parent frame while the bias
+        terms use the world-frame CoM-wrench convention, so ``H @ qddot`` for the
+        FREE root must be rotated to world before summing. This case exercises
+        that rotation (a rotated parent + non-zero ``qddot`` -- the base
+        ``_test_inverse_dynamics_force`` uses an identity root-parent rotation and
+        would not catch it). With zero gravity and zero velocity the bias terms
+        vanish, so ``tau`` is purely the world-frame ``M(q)*qddot`` wrench, which
+        for a free rigid body with COM at the joint origin is
+        ``(m * R * a_com_parent, R * I_local * alpha_parent)``.
+        """
+        m_mass = 2.0
+        I_local = np.diag([0.3, 0.5, 0.4]).astype(np.float64)
+        # 90 deg about X: parent +Y -> world +Z, parent +Z -> world -Y.
+        qx = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 2.0)
+        R = np.array(wp.quat_to_matrix(qx), dtype=np.float64).reshape(3, 3)
+
+        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+        link = builder.add_link(
+            mass=m_mass,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(*I_local.flatten().tolist()),
+        )
+        builder.add_articulation(
+            [
+                builder.add_joint_free(
+                    parent=-1,
+                    child=link,
+                    parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), qx),
+                    child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+                )
+            ]
+        )
+        model = builder.finalize(device=self.device)
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        inverse_dynamics, scratch = model.inverse_dynamics()
+
+        # Parent-frame accelerations (COM linear, angular). qd stays zero.
+        a_parent = np.array([0.5, -0.3, 0.7], dtype=np.float64)
+        alpha_parent = np.array([0.2, 0.4, -0.6], dtype=np.float64)
+        qddot_np = np.concatenate([a_parent, alpha_parent]).astype(np.float32)
+
+        newton.eval_inverse_dynamics(
+            model, state, newton.InverseDynamics.EvalType.MASS_MATRIX, inverse_dynamics, scratch
+        )
+        qddot = wp.array(qddot_np, dtype=wp.float32, device=self.device)
+        newton.eval_inverse_dynamics_force(
+            model,
+            state,
+            inverse_dynamics.mass_matrix,
+            qddot,
+            inverse_dynamics.coriolis_force,
+            inverse_dynamics.gravity_force,
+            inverse_dynamics.tau,
+        )
+
+        # World-frame wrench at the COM: force = m*R*a, torque = R*I_local*alpha.
+        expected = np.concatenate([m_mass * (R @ a_parent), R @ (I_local @ alpha_parent)]).astype(np.float32)
+        np.testing.assert_allclose(inverse_dynamics.tau.numpy(), expected, atol=1e-5, rtol=1e-5)
 
     def test_loop_closing_joint_does_not_contaminate_eval_inverse_dynamics_force(self):
         """A loop-closing joint appended after tree joints must not affect tau.
@@ -2626,6 +2691,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         qddot = wp.array(qddot_np, dtype=wp.float32, device=self.device)
         newton.eval_inverse_dynamics_force(
             model,
+            state,
             inverse_dynamics.mass_matrix,
             qddot,
             inverse_dynamics.coriolis_force,
@@ -2814,6 +2880,7 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
             with self.assertRaises(ValueError) as ctx:
                 newton.eval_inverse_dynamics_force(
                     model,
+                    state,
                     inverse_dynamics.mass_matrix,
                     wp.zeros(model.joint_dof_count, dtype=wp.float32, device=self.device),
                     inverse_dynamics.coriolis_force,
@@ -2883,7 +2950,7 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         qddot = wp.zeros(n, dtype=wp.float32, device=self.device)
         zero_bias = wp.zeros(n, dtype=wp.float32, device=self.device)
 
-        newton.eval_inverse_dynamics_force(model, H, qddot, zero_bias, zero_bias, tau)
+        newton.eval_inverse_dynamics_force(model, model.state(), H, qddot, zero_bias, zero_bias, tau)
 
         np.testing.assert_array_equal(tau.numpy(), sentinel)
 

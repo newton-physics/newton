@@ -1383,7 +1383,11 @@ def eval_articulation_inverse_dynamics_force_kernel(
     articulation_start: wp.array[int],
     articulation_end: wp.array[int],
     articulation_count: int,
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
     joint_qd_start: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
     H: wp.array3d[float],
     qddot: wp.array[float],
     coriolis_force: wp.array[float],
@@ -1393,12 +1397,20 @@ def eval_articulation_inverse_dynamics_force_kernel(
 ):
     """Compute the manipulator-equation joint force per articulation.
 
-    Evaluates ``tau = H @ qddot + coriolis_force + gravity_force``
-    per DOF, matching the standard manipulator-equation
-    ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)`` when the inputs hold the
-    values populated by :func:`eval_inverse_dynamics` into
+    Evaluates ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)`` per DOF, with the
+    ``M(q)*qddot`` term taken from ``H @ qddot`` and the bias terms from the
+    values :func:`eval_inverse_dynamics` populates into
     :attr:`InverseDynamics.coriolis_force` and
     :attr:`InverseDynamics.gravity_force`.
+
+    For a FREE/DISTANCE root the mass matrix ``H`` is expressed in the joint's
+    parent frame (it is conjugate to the parent-frame ``qddot``), so ``H @
+    qddot`` yields the root wrench in the parent frame. ``coriolis_force`` and
+    ``gravity_force`` are already rotated to world (see
+    :func:`convert_free_distance_joint_f_internal_to_public`), so the first six
+    ``H @ qddot`` components are rotated by the same parent-frame-in-world
+    rotation before the three terms are summed, keeping ``tau`` in the single
+    world-frame CoM-wrench convention used by :attr:`Control.joint_f`.
 
     Per-articulation DOF counts are recovered from ``joint_qd_start``, so a
     mix of fixed-root (1+ internal DOFs) and floating-root (6 root DOFs +
@@ -1415,15 +1427,40 @@ def eval_articulation_inverse_dynamics_force_kernel(
     dof_end = joint_qd_start[joint_end]
     dof_count = dof_end - dof_start
 
+    # Mass-matrix term M(q)*qddot, stored into tau as scratch.
     for i in range(dof_count):
         sum_val = float(0.0)
         for j in range(dof_count):
             sum_val += H[art_idx, i, j] * qddot[dof_start + j]
-        tau[dof_start + i] = sum_val + coriolis_force[dof_start + i] + gravity_force[dof_start + i]
+        tau[dof_start + i] = sum_val
+
+    # Rotate the FREE/DISTANCE root wrench from parent frame to world so it
+    # matches the world-frame bias terms. Uses the same parent-frame-in-world
+    # rotation q_p as convert_free_distance_joint_f_internal_to_public.
+    root_type = joint_type[joint_start]
+    if root_type == JointType.FREE or root_type == JointType.DISTANCE:
+        X_wpj = joint_X_p[joint_start]
+        parent = joint_parent[joint_start]
+        if parent >= 0:
+            X_wpj = body_q[parent] * X_wpj
+        q_p = wp.transform_get_rotation(X_wpj)
+        f_lin = wp.quat_rotate(q_p, wp.vec3(tau[dof_start + 0], tau[dof_start + 1], tau[dof_start + 2]))
+        f_ang = wp.quat_rotate(q_p, wp.vec3(tau[dof_start + 3], tau[dof_start + 4], tau[dof_start + 5]))
+        tau[dof_start + 0] = f_lin[0]
+        tau[dof_start + 1] = f_lin[1]
+        tau[dof_start + 2] = f_lin[2]
+        tau[dof_start + 3] = f_ang[0]
+        tau[dof_start + 4] = f_ang[1]
+        tau[dof_start + 5] = f_ang[2]
+
+    # Add the world-frame bias terms.
+    for i in range(dof_count):
+        tau[dof_start + i] = tau[dof_start + i] + coriolis_force[dof_start + i] + gravity_force[dof_start + i]
 
 
 def eval_inverse_dynamics_force(
     model: Model,
+    state: State,
     H: wp.array,
     qddot: wp.array,
     coriolis_force: wp.array,
@@ -1443,8 +1480,19 @@ def eval_inverse_dynamics_force(
     fixed-root and floating-root articulations across multiple worlds is
     handled uniformly.
 
+    For a FREE/DISTANCE root the mass matrix ``H`` is expressed in the joint's
+    parent frame while ``coriolis_force``/``gravity_force`` are in the
+    world-frame CoM-wrench convention of :attr:`Control.joint_f`; the root's
+    ``H @ qddot`` wrench is rotated to world (using ``state.body_q`` for the
+    parent-frame-in-world rotation) before the sum, so ``tau`` is entirely in
+    that world convention.
+
     Args:
         model: The model containing articulation definitions.
+        state: State providing ``body_q``, used to rotate the FREE/DISTANCE
+            root ``H @ qddot`` wrench into the world frame. Must be consistent
+            with the ``H`` and bias buffers (i.e. the state passed to
+            :func:`eval_inverse_dynamics`).
         H: Joint-space mass matrix ``M(q)`` [kg, kg·m, or kg·m^2, depending
             on the joint types of the row/column DOFs], shape
             ``(articulation_count, max_dofs_per_articulation,
@@ -1477,7 +1525,11 @@ def eval_inverse_dynamics_force(
             model.articulation_start,
             model.articulation_end,
             model.articulation_count,
+            model.joint_type,
+            model.joint_parent,
             model.joint_qd_start,
+            model.joint_X_p,
+            state.body_q,
             H,
             qddot,
             coriolis_force,

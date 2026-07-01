@@ -75,6 +75,7 @@ class _InverseDynamicsBenchmark:
         with wp.ScopedCapture() as cap_force:
             newton.eval_inverse_dynamics_force(
                 self.model,
+                self.state,
                 self.inverse_dynamics.mass_matrix,
                 self.qddot,
                 self.inverse_dynamics.coriolis_force,
