@@ -489,7 +489,8 @@ def test_mesh_sdf_provisioned_and_emits(test, device):
         cell_y=0.2,
         mass=0.1,
     )
-    model = builder.finalize(device=device, enable_water_tight_rigid_soft_contact=True)
+    builder.enable_rigid_mesh_sdfs()
+    model = builder.finalize(device=device)
     # B2: the participating mesh now carries a provisioned volume SDF.
     test.assertGreaterEqual(int(model._shape_sdf_index.numpy()[mesh_shape]), 0)
 
@@ -513,7 +514,8 @@ def test_optimize_against_mesh_texture_sdf(test, device):
     box_mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
     builder = newton.ModelBuilder()
     builder.add_shape_mesh(body=-1, mesh=box_mesh)
-    model = builder.finalize(device=device, enable_water_tight_rigid_soft_contact=True)
+    builder.enable_rigid_mesh_sdfs()
+    model = builder.finalize(device=device)
     sdf_idx = int(model._shape_sdf_index.numpy()[0])
     test.assertGreaterEqual(sdf_idx, 0)
     table = model._texture_sdf_data
@@ -576,8 +578,12 @@ for _name, _fn in (
     add_function_test(TestWaterTightSoftContact, _name, _fn, devices=get_cuda_test_devices())
 
 
-def test_unprovisioned_mesh_warns(test, device):
-    """A participating mesh without an SDF triggers a one-time warning when the flag is enabled."""
+def test_unprovisioned_mesh_raises(test, device):
+    """A participating mesh with no SDF makes CollisionPipeline raise when the flag is enabled.
+
+    Mirrors SolverVBD raising on an uncolored model: enable_rigid_mesh_sdfs() is a required build
+    step, and skipping it is an error rather than a silent degrade to the per-particle path.
+    """
     box_mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
     builder = newton.ModelBuilder()
     builder.add_shape_mesh(body=-1, mesh=box_mesh)
@@ -591,9 +597,9 @@ def test_unprovisioned_mesh_warns(test, device):
         cell_y=0.2,
         mass=0.1,
     )
-    # Finalize WITHOUT provisioning -> the mesh carries no SDF.
+    # enable_rigid_mesh_sdfs() intentionally NOT called -> the mesh carries no SDF.
     model = builder.finalize(device=device)
-    with test.assertWarns(UserWarning):
+    with test.assertRaises(ValueError):
         newton.CollisionPipeline(
             model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=True
         )
@@ -601,8 +607,8 @@ def test_unprovisioned_mesh_warns(test, device):
 
 add_function_test(
     TestWaterTightSoftContact,
-    "test_unprovisioned_mesh_warns",
-    test_unprovisioned_mesh_warns,
+    "test_unprovisioned_mesh_raises",
+    test_unprovisioned_mesh_raises,
     devices=devices,
 )
 
@@ -790,7 +796,8 @@ def _build_all_shapes_scene(device, rng):
         density=0.1,
         particle_radius=0.0,  # so the pass threshold is exactly `margin` (matches the brute-force check)
     )
-    return builder.finalize(device=device, enable_water_tight_rigid_soft_contact=True)
+    builder.enable_rigid_mesh_sdfs()
+    return builder.finalize(device=device)
 
 
 def test_end_to_end_no_false_pos_neg(test, device):
@@ -956,7 +963,8 @@ def test_face_cull_uses_max_vertex_reach(test, device):
     builder.add_triangle(b0, a0, c0)
 
     builder.color()
-    model = builder.finalize(device=device, enable_water_tight_rigid_soft_contact=True)
+    builder.enable_rigid_mesh_sdfs()
+    model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(
         model, broad_phase="nxn", soft_contact_margin=0.01, enable_water_tight_rigid_soft_contact=True
     )

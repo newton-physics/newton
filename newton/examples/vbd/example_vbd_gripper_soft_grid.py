@@ -134,7 +134,9 @@ class Example:
         self._add_soft_mesh(builder)
 
         builder.color()
-        self.model = builder.finalize(enable_water_tight_rigid_soft_contact=self.params["enable_water_tight"])
+        if self.params["enable_water_tight"]:
+            builder.enable_rigid_mesh_sdfs()
+        self.model = builder.finalize()
 
         self.model.soft_contact_ke = self.params["soft_contact_ke"]
         self.model.soft_contact_kd = self.params["soft_contact_kd"]

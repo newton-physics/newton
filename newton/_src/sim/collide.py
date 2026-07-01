@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import Literal
 
 import numpy as np
@@ -953,9 +952,9 @@ class CollisionPipeline:
         self.soft_contact_margin = soft_contact_margin
         self._soft_contact_max = soft_contact_max
 
-        # One-time warning: participating mesh/convex shapes with no provisioned SDF are skipped by
-        # the water-tight edge/face passes (the legacy per-particle path still covers them). This is
-        # host-side at construction, so it never runs inside a captured collide().
+        # The water-tight edge/face passes need a provisioned SDF for every participating mesh/convex
+        # shape. Validate host-side at construction (never inside a captured collide()) and fail loudly
+        # so a missing enable_rigid_mesh_sdfs() call cannot silently degrade to the per-particle path.
         if enable_water_tight_rigid_soft_contact and model.shape_count > 0 and model._shape_sdf_index is not None:
             _stype = model.shape_type.numpy()
             _sflags = model.shape_flags.numpy()
@@ -963,12 +962,10 @@ class CollisionPipeline:
             _is_mesh = np.isin(_stype, (int(GeoType.MESH), int(GeoType.CONVEX_MESH)))
             _collide_particles = (_sflags & int(ShapeFlags.COLLIDE_PARTICLES)) != 0
             if bool(np.any(_is_mesh & _collide_particles & (_sidx < 0))):
-                warnings.warn(
-                    "enable_water_tight_rigid_soft_contact: one or more participating mesh/convex shapes "
-                    "have no SDF and are skipped by the water-tight edge/face passes (the legacy "
-                    "per-particle path still covers them). Pass enable_water_tight_rigid_soft_contact=True "
-                    "to ModelBuilder.finalize (or configure_sdf) to provision their SDFs.",
-                    stacklevel=2,
+                raise ValueError(
+                    "enable_water_tight_rigid_soft_contact=True but one or more participating mesh/convex "
+                    "shapes have no SDF for the water-tight edge/face passes. Call "
+                    "ModelBuilder.enable_rigid_mesh_sdfs() before ModelBuilder.finalize() to build them."
                 )
 
         self.requires_grad = requires_grad

@@ -40,6 +40,7 @@
   - Add `--coupled-view` to coupled multiphysics examples and expose `SolverCoupled` entry view/state helpers for rendering individual sub-solver views.
 - Add `BODY_F`, `PARTICLE_F`, and `JOINT_F` to `StateFlags`.
 - Add `newton.usd.get_mesh()` support for USD stages, file paths, and URLs.
+- Add opt-in water-tight rigid-soft contact generation via `enable_water_tight_rigid_soft_contact` on `Model.collide` and `CollisionPipeline`, with the required rigid-mesh volume SDFs built by `ModelBuilder.enable_rigid_mesh_sdfs()` before `finalize()`. When enabled, soft-triangle edges and faces that cross a rigid shape's signed-distance field are detected by local SDF optimization and written into new edge/face ranges of `Contacts.soft_contact_*` (`soft_contact_primitive`, `soft_contact_kind`, `soft_contact_barycentric`), catching soft edge/face contacts the per-particle path misses. Default off reproduces the per-particle behavior.
 
 ### Changed
 
@@ -78,6 +79,8 @@
 - Deprecate the `indices` argument of `MeshAdjacency` in favor of `tri_indices`
 - Deprecate `MeshAdjacency.add_edge`; construct a `MeshAdjacency` with `edge_indices` (`[o0, o1, v0, v1]` rows) instead
 - Deprecate `SensorTiledCamera.utils.compute_pinhole_camera_rays()` in favor of `SensorTiledCamera.utils.compute_camera_rays_pinhole()`.
+- `SolverVBD` now applies each shape's `ShapeConfig.margin` (`model.shape_margin`) to particle-rigid (soft) contacts, widening the soft-contact detection shell and reducing penetration depth per shape; previously only the global `soft_contact_margin` and particle radius were used. Re-check VBD scenes that set per-shape margins. (#2994)
+- Deprecate `Contacts.soft_contact_particle` in favor of `Contacts.soft_contact_primitive`, which generalizes it to the soft feature id (a particle id in the particle range, a soft-triangle id in the edge/face ranges); the old name remains as a read-only alias
 
 ### Fixed
 
@@ -317,7 +320,6 @@
 - Add `HydroelasticSDF.Config.mc_edge_clamp_min` to expose the marching-cubes edge-interpolation clamp; default `0.02` matches the previous hard-coded value. Set to `0.0` to disable the clamp and recover faithful contact-surface dynamics for threading-style scenarios (#2702)
 - Add `deterministic` flag to `CollisionPipeline` and `NarrowPhase` for GPU-thread-scheduling-independent contact ordering via radix sort and deterministic fingerprint tiebreaking in contact reduction
 - Add `shape_pairs_max` override on `CollisionPipeline` to cap the SAP/NXN broad-phase candidate-pair buffer below the worst-case `N*(N-1)/2` per-world bound, avoiding multi-GB allocations on large sparse scenes (a too-small value triggers a runtime overflow warning)
-- Add opt-in water-tight rigid-soft contact generation via `enable_water_tight_rigid_soft_contact` on `Model.collide`, `CollisionPipeline`, and `ModelBuilder.finalize`. When enabled, soft-triangle edges and faces that cross a rigid shape's signed-distance field are detected by local SDF optimization and written into new edge/face ranges of `Contacts.soft_contact_*` (`soft_contact_primitive`, `soft_contact_kind`, `soft_contact_barycentric`), catching soft edge/face contacts the per-particle path misses. Default off reproduces the per-particle behavior.
 - Add fast parity-based SDF construction path for watertight meshes in `SDF.create_from_mesh`, using `wp.mesh_query_point_sign_parity` instead of winding numbers; selected via the new `sign_method` argument (`"auto"` — the default — picks parity when `Mesh.is_watertight` is true, or `"parity"` / `"winding"` to force either strategy)
 - Add `Viewer.log_image()` for displaying single or batched images in `ViewerGL`; other backends inherit a no-op. Also add `SensorTiledCamera.utils.to_rgba_from_color()`, `to_rgba_from_normal()`, `to_rgba_from_depth()`, and `to_rgba_from_shape_index()` (hash palette or caller-provided RGB lookup) adapters producing output consumable by `log_image()`.
 - Add on-disk caching of cooked texture-based SDFs via the new `cache_dir` argument on `SDF.create_from_mesh` and `Mesh.build_sdf`. Cached entries are content-addressed by mesh and build parameters, written atomically as a single uncompressed `.npz`, and versioned via `CACHE_FORMAT_VERSION` so format changes invalidate stale caches transparently
@@ -383,7 +385,6 @@
 - Deprecate and ignore `rigid_enable_dahl_friction` in `SolverVBD`; Dahl friction is now auto-detected from model attributes (`model.vbd.dahl_eps_max` / `model.vbd.dahl_tau`)
 - Deprecate the `MeshAdjacency.edges` dict accessor; use the `edge_indices` / `edge_tri_indices` arrays instead
 - Deprecate public `newton.utils.MeshAdjacency`; use `Model.soft_mesh_adjacency` (built by `ModelBuilder.finalize()`) for simulation adjacency data
-- Deprecate `Contacts.soft_contact_particle` in favor of `Contacts.soft_contact_primitive`, which generalizes it to the soft feature id (a particle id in the particle range, a soft-triangle id in the edge/face ranges); the old name remains as a read-only alias
 - Deprecate `newton-actuators` package dependency; all actuator functionality is now built into `newton.actuators`. The dependency is kept for backward compatibility and will be removed in a future release; migrate imports from `newton_actuators` to `newton.actuators`
 
 ### Fixed
