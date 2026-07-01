@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import warp as wp
 
 from ..core.joints import JointDoFType
@@ -47,12 +49,11 @@ wp.set_module_options({"enable_backward": False})
 
 
 def make_correct_joint_coords(dof_type: JointDoFType):
-    CoordsType = dof_type.coords_storage_type
-
+    @wp.func
     def _correct_joint_coords(
-        coords,  # CoordsType,
-        coords_ref,  # wp.array[wp.float32],
-    ):  # -> CoordsType
+        coords: Any,  # dof_type.coords_storage_type,
+        coords_ref: wp.array[wp.float32],
+    ) -> Any:  # dof_type.coords_storage_type
         if wp.static(
             dof_type == JointDoFType.CARTESIAN or dof_type == JointDoFType.FIXED or dof_type == JointDoFType.PRISMATIC
         ):
@@ -86,14 +87,7 @@ def make_correct_joint_coords(dof_type: JointDoFType):
 
         return coords
 
-    # Set type annotations manually (else CoordsType fails to resolve)
-    _correct_joint_coords.__annotations__ = {
-        "coords": CoordsType,
-        "coords_ref": wp.array[wp.float32],
-        "return": CoordsType,
-    }
-
-    return wp.func(_correct_joint_coords)
+    return _correct_joint_coords
 
 
 def make_compute_and_write_joint_coords(dof_type: JointDoFType):

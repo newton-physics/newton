@@ -439,15 +439,16 @@ def _make_merge_preconditioner_kernel(block_type: BlockDType):
     elif len(block_shape) == 1:
         block_shape = (1, block_shape[0])
 
+    @wp.kernel
     def merge_preconditioner_kernel(
         # Inputs:
-        num_nzb,  # wp.array[wp.int32],
-        nzb_start,  # wp.array[wp.int32],
-        nzb_coords,  # wp.array2d[wp.int32],
-        row_start,  # wp.array[wp.int32],
-        preconditioner,  # wp.array[wp.float32],
+        num_nzb: wp.array[wp.int32],
+        nzb_start: wp.array[wp.int32],
+        nzb_coords: wp.array2d[wp.int32],
+        row_start: wp.array[wp.int32],
+        preconditioner: wp.array[wp.float32],
         # Outputs:
-        nzb_values,  # wp.array[block_type.warp_type],
+        nzb_values: wp.array[Any],  # wp.array[block_type.warp_type]
     ):
         mat_id, block_idx = wp.tid()
 
@@ -476,17 +477,7 @@ def _make_merge_preconditioner_kernel(block_type: BlockDType):
 
         nzb_values[global_block_idx] = block
 
-    # Set type annotations manually (else block_type fails to resolve)
-    merge_preconditioner_kernel.__annotations__ = {
-        "num_nzb": wp.array[wp.int32],
-        "nzb_start": wp.array[wp.int32],
-        "nzb_coords": wp.array2d[wp.int32],
-        "row_start": wp.array[wp.int32],
-        "preconditioner": wp.array[wp.float32],
-        "nzb_values": wp.array[block_type.warp_type],
-    }
-
-    return wp.kernel(merge_preconditioner_kernel)
+    return merge_preconditioner_kernel
 
 
 @wp.kernel

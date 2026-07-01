@@ -594,13 +594,14 @@ class BlockSparseMatrices:
 
 @functools.cache
 def _make_masked_zero_kernel(block_type: BlockDType, index_dtype: IntType):
+    @wp.kernel
     def masked_zero_kernel(
         # Inputs
-        nzb_start,  # wp.array[index_dtype],
-        max_nzb,  # wp.array[index_dtype],
-        matrix_mask,  # wp.array[wp.bool],
+        nzb_start: wp.array[Any],  # wp.array[index_dtype],
+        max_nzb: wp.array[Any],  # wp.array[index_dtype],
+        matrix_mask: wp.array[wp.bool],
         # Outputs
-        nzb_values,  # wp.array[block_type.warp_type],
+        nzb_values: wp.array[Any],  # wp.array[block_type.warp_type],
     ):
         mat_id, nzb_id_loc = wp.tid()
         if not matrix_mask[mat_id] or nzb_id_loc >= max_nzb[mat_id]:
@@ -608,15 +609,7 @@ def _make_masked_zero_kernel(block_type: BlockDType, index_dtype: IntType):
         nzb_id = nzb_start[mat_id] + nzb_id_loc
         nzb_values[nzb_id] = block_type.warp_type(0.0)
 
-    # Set type annotation manually (else generics fail to resolve)
-    masked_zero_kernel.__annotations__ = {
-        "nzb_start": wp.array[index_dtype],
-        "max_nzb": wp.array[index_dtype],
-        "matrix_mask": wp.array[wp.bool],
-        "nzb_values": wp.array[block_type.warp_type],
-    }
-
-    return wp.kernel(masked_zero_kernel)
+    return masked_zero_kernel
 
 
 ###
