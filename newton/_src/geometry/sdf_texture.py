@@ -40,6 +40,36 @@ SLOT_LINEAR = 0xFFFFFFFE  # Subgrid demoted to coarse interpolation
 _SDF_SOURCE_MESH = 0
 _SDF_SOURCE_PRIMITIVE = 1
 
+_SUPPORTED_PRIMITIVE_SDF_TYPES = frozenset(
+    {
+        int(GeoType.SPHERE),
+        int(GeoType.BOX),
+        int(GeoType.CAPSULE),
+        int(GeoType.CYLINDER),
+        int(GeoType.ELLIPSOID),
+        int(GeoType.CONE),
+    }
+)
+
+
+def _validate_primitive_sdf_inputs(
+    shape_type: int,
+    shape_scale: Sequence[float],
+) -> tuple[int, tuple[float, float, float]]:
+    shape_type = int(shape_type)
+    if shape_type not in _SUPPORTED_PRIMITIVE_SDF_TYPES:
+        raise NotImplementedError(f"Texture SDF generation is not implemented for shape type: {shape_type}")
+    if len(shape_scale) != 3:
+        raise ValueError("shape_scale must contain exactly 3 components")
+
+    scale = tuple(float(v) for v in shape_scale)
+    if not np.all(np.isfinite(scale)):
+        raise ValueError("shape_scale components must be finite")
+    if any(v < 0.0 for v in scale):
+        raise ValueError("shape_scale components must be non-negative")
+    return shape_type, scale
+
+
 # ============================================================================
 # SDF texture-sampling paths
 # ============================================================================
@@ -1707,6 +1737,7 @@ def build_sparse_sdf_from_primitive(
     Returns:
         Dictionary with all sparse SDF data.
     """
+    shape_type, shape_scale = _validate_primitive_sdf_inputs(shape_type, shape_scale)
     return _build_sparse_sdf(
         _SDF_SOURCE_PRIMITIVE,
         None,
@@ -1951,8 +1982,7 @@ def create_texture_sdf_from_primitive(
         Tuple of ``(texture_sdf, coarse_texture, subgrid_texture)``.
         Caller must keep texture references alive to prevent GC.
     """
-    if len(shape_scale) != 3:
-        raise ValueError("shape_scale must contain exactly 3 components")
+    shape_type, shape_scale = _validate_primitive_sdf_inputs(shape_type, shape_scale)
 
     min_prim, max_prim = get_primitive_extents(shape_type, shape_scale)
     min_ext = np.asarray(min_prim, dtype=float) - margin
