@@ -381,13 +381,6 @@ class TestSchemaResolver(unittest.TestCase):
         time_steps_per_second = resolver.get_value(physics_scene_prim, PrimType.SCENE, "time_steps_per_second")
         self.assertEqual(time_steps_per_second, 100)
 
-        # An unusable higher-priority value must not hide a usable lower-priority value.
-        physics_scene_prim.GetAttribute("mjc:option:timestep").Set(0.0)
-        time_steps_per_second = resolver.get_value(
-            physics_scene_prim, PrimType.SCENE, "time_steps_per_second", default=1000
-        )
-        self.assertEqual(time_steps_per_second, 120)
-
     def test_gravity_enabled(self):
         """
         Test gravity_enabled priority.
@@ -1410,9 +1403,6 @@ class TestSchemaResolver(unittest.TestCase):
         collider_a.CreateAttribute("physxCollision:contactOffset", Sdf.ValueTypeNames.Float).Set(0.25)
         gap = resolver.get_value(collider_a, PrimType.SHAPE, "gap")
         self.assertAlmostEqual(gap, 0.07)
-        candidate, candidate_resolver = resolver.get_authored_candidate(collider_a, PrimType.SHAPE, "gap")
-        self.assertIsNone(candidate)
-        self.assertIsInstance(candidate_resolver, SchemaResolverPhysx)
 
         # PhysX both set -> getter returns 0.25 - 0.15 = 0.10; PhysX is first, so PhysX wins
         collider_a.CreateAttribute("physxCollision:restOffset", Sdf.ValueTypeNames.Float).Set(0.15)

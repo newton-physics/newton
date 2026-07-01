@@ -377,7 +377,7 @@ def parse_usd(
     # Validate solver-specific custom attributes are registered
     for resolver in schema_resolvers:
         resolver.validate_custom_attributes(builder)
-    has_mjc_resolver = any(resolver.name == "mjc" for resolver in schema_resolvers)
+    mjc_resolver = next((resolver for resolver in schema_resolvers if resolver.name == "mjc"), None)
     solreflimit_mode_key = "mujoco:solreflimit_mode"
 
     # mapping from prim path to body index in ModelBuilder
@@ -448,24 +448,50 @@ def parse_usd(
         return bool(prim and prim.IsValid() and usd.has_applied_api_schema(prim, schema_name))
 
     def _should_write_solreflimit_mode() -> bool:
-        return has_mjc_resolver and solreflimit_mode_key in builder.custom_attributes
+        return mjc_resolver is not None and solreflimit_mode_key in builder.custom_attributes
+
+    # Keep source tracking local until schema applicability and provenance are modeled globally (#3307).
+    def _get_mjc_joint_limit_default(prim: Usd.Prim, key: str) -> float | None:
+        if mjc_resolver is None or not _has_api_schema(prim, "MjcJointAPI"):
+            return None
+        spec = mjc_resolver.mapping.get(PrimType.JOINT, {}).get(key)
+        if spec is None or spec.default is None:
+            return None
+        if spec.usd_value_transformer is not None:
+            return spec.usd_value_transformer(spec.default)
+        return spec.default
 
     def _resolve_joint_limit_gain(
         prim: Usd.Prim, key: str, builder_default: float
     ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
         """Resolve a limit gain and report the semantics of its source."""
-        authored_value, authored_resolver = R.get_authored_candidate(prim, PrimType.JOINT, key)
-        if authored_resolver is not None:
-            source = "mjc_authored" if authored_resolver.name == "mjc" else "force"
-            if authored_value is not None:
-                return authored_value, source
-            if source == "mjc_authored":
-                mjc_default = R.get_mapping_default("mjc", PrimType.JOINT, key)
+        for resolver in R.resolvers:
+            spec = resolver.mapping.get(PrimType.JOINT, {}).get(key)
+            if spec is None:
+                continue
+
+            if resolver.name == "mjc":
+                raw_value = usd.get_attribute(prim, spec.name)
+                if raw_value is None:
+                    continue
+                R._collect_on_first_use(resolver, prim)
+                authored_value = (
+                    spec.usd_value_transformer(raw_value) if spec.usd_value_transformer is not None else raw_value
+                )
+                if authored_value is not None:
+                    return authored_value, "mjc_authored"
+                mjc_default = _get_mjc_joint_limit_default(prim, key)
                 if mjc_default is not None:
-                    return mjc_default, source
-            return builder_default, source
-        if has_mjc_resolver and _has_api_schema(prim, "MjcJointAPI"):
-            mjc_default = R.get_mapping_default("mjc", PrimType.JOINT, key)
+                    return mjc_default, "mjc_authored"
+                return builder_default, "mjc_authored"
+
+            authored_value = resolver.get_value(prim, PrimType.JOINT, key)
+            if authored_value is not None:
+                R._collect_on_first_use(resolver, prim)
+                return authored_value, "force"
+
+        if mjc_resolver is not None:
+            mjc_default = _get_mjc_joint_limit_default(prim, key)
             if mjc_default is not None:
                 return mjc_default, "mjc_default"
         return builder_default, "force"
