@@ -151,6 +151,7 @@
 - Add `ViewerRTX`, a real-time ray-traced viewer powered by NVIDIA OVRTX. (#1861)
 - Add edge overlay toggle (`renderer.draw_edges`) for wireframe visualization on top of solid geometry
 - Add `newton.utils.ColorSpace`, `color_srgb_to_linear()`, `color_linear_to_srgb()`, and `SensorTiledCamera.RenderConfig.output_color_space` for color-space boundaries. (#2411)
+- Add a `deterministic` constructor argument to `SolverXPBD`, `SolverSemiImplicit`, `SolverFeatherstone`, `SolverVBD`, and `SolverMuJoCo` to configure solver kernel modules for Warp's deterministic codegen
 - Add `cable_cross_slide_table` example demonstrating a cable-driven XY table
 - Add robotics tutorial notebook covering ModelBuilder, solvers, CUDA graphs, IK, and pick-and-place
 - Add rigid-soft contact example covering a rigid sphere dropping onto an XPBD tetrahedral soft grid
