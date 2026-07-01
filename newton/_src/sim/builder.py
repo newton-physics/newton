@@ -11585,6 +11585,26 @@ class ModelBuilder:
             m.soft_tet_start = wp.array(self.soft_tet_start, dtype=wp.int32)
             m.soft_tet_end = wp.array(self.soft_tet_end, dtype=wp.int32)
 
+            # Plain-list mirrors backing Model's *_index()/*_range() helpers (no device copies).
+            m._deformable_group_host = {
+                "cable": {
+                    "world": list(self.cable_world),
+                    "body": (list(self.cable_body_start), list(self.cable_body_end)),
+                    "joint": (list(self.cable_joint_start), list(self.cable_joint_end)),
+                },
+                "cloth": {
+                    "world": list(self.cloth_world),
+                    "particle": (list(self.cloth_particle_start), list(self.cloth_particle_end)),
+                    "tri": (list(self.cloth_tri_start), list(self.cloth_tri_end)),
+                    "edge": (list(self.cloth_edge_start), list(self.cloth_edge_end)),
+                },
+                "soft": {
+                    "world": list(self.soft_world),
+                    "particle": (list(self.soft_particle_start), list(self.soft_particle_end)),
+                    "tet": (list(self.soft_tet_start), list(self.soft_tet_end)),
+                },
+            }
+
             # ---------------------
             # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)
             # can live on it. The per-row ``equality_constraint_*`` arrays are materialized by the

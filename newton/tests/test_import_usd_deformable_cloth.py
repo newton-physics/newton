@@ -106,6 +106,13 @@ class TestUSDDeformableCloth(unittest.TestCase):
             # Each world's cloth owns a distinct 4-particle range, back to back.
             for w in range(3):
                 self.assertEqual(model.cloth_particle_range(w), (4 * w, 4 * w + 4))
+            # Replicated labels are duplicated across worlds, so lookup requires the world.
+            with self.assertRaisesRegex(ValueError, "pass world="):
+                model.cloth_index("/World/Cloth")
+            self.assertEqual(model.cloth_index("/World/Cloth", world=1), 1)
+            self.assertEqual(model.cloth_particle_range(model.cloth_index("/World/Cloth", world=2)), (8, 12))
+            with self.assertRaises(KeyError):
+                model.cloth_index("/World/Cloth", world=7)
 
     def test_heterogeneous_worlds_addressable(self):
         """Worlds holding different deformables each stay addressable with the right world tag."""
