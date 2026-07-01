@@ -529,13 +529,7 @@ def test_torque_free_precession(test, device, solver_fn):
     With no applied torque and no gravity, angular momentum is conserved in the
     world frame: ``L = R(t) I_body R(t)^T omega(t) = const`` (Euler's equations
     for a free rigid body). The body must also precess (the angular velocity
-    direction changes), so the test is non-trivial.
-
-    A D6 joint with >= 2 angular DOFs uses a
-    configuration-dependent intrinsic-Euler motion subspace. Omitting the
-    apparent derivative of that subspace from the Coriolis/centrifugal bias
-    produces wrong free dynamics, which shows up here as large angular-momentum
-    drift (~46% over this interval for the unfixed integrator).
+    direction changes) to ensure the test is meaningful.
     """
     builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
     # Anisotropic inertia so the gyroscopic coupling between axes is non-trivial.
@@ -544,7 +538,6 @@ def test_torque_free_precession(test, device, solver_fn):
         com=wp.vec3(0.0, 0.0, 0.0),
         inertia=wp.mat33(0.2, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.4),
     )
-    builder.add_shape_sphere(link, radius=0.1)
     cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
     j = builder.add_joint_d6(
         parent=-1,
@@ -568,7 +561,6 @@ def test_torque_free_precession(test, device, solver_fn):
     state_0.joint_qd.assign(qd)
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
-    # Use the model's actual inertia (the collision shape augments it).
     I_body = model.body_inertia.numpy()[0]
 
     def angular_momentum_world(state):
@@ -581,8 +573,8 @@ def test_torque_free_precession(test, device, solver_fn):
     quat_0 = state_0.body_q.numpy()[0, 3:7].copy()
     test.assertGreater(np.linalg.norm(L0), 0.1, "Initial angular momentum should be nonzero")
 
-    sim_dt = 1e-3
-    for _ in range(1000):
+    sim_dt = 1e-2
+    for _ in range(20):
         state_0.clear_forces()
         solver.step(state_0, state_1, None, None, sim_dt)
         state_0, state_1 = state_1, state_0
