@@ -856,7 +856,7 @@ def parse_usd(
                 side_lengths = scale * size
                 shape_id = builder.add_shape_box(
                     parent_body_id,
-                    xform,
+                    xform=xform,
                     hx=side_lengths[0] / 2,
                     hy=side_lengths[1] / 2,
                     hz=side_lengths[2] / 2,
@@ -871,8 +871,8 @@ def parse_usd(
                 radius = usd.get_float(prim, "radius", 1.0) * max(scale)
                 shape_id = builder.add_shape_sphere(
                     parent_body_id,
-                    xform,
-                    radius,
+                    xform=xform,
+                    radius=radius,
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     as_site=is_site,
@@ -902,9 +902,9 @@ def parse_usd(
                 xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
                 shape_id = builder.add_shape_capsule(
                     parent_body_id,
-                    xform,
-                    radius,
-                    half_height,
+                    xform=xform,
+                    radius=radius,
+                    half_height=half_height,
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     as_site=is_site,
@@ -918,9 +918,9 @@ def parse_usd(
                 xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
                 shape_id = builder.add_shape_cylinder(
                     parent_body_id,
-                    xform,
-                    radius,
-                    half_height,
+                    xform=xform,
+                    radius=radius,
+                    half_height=half_height,
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     as_site=is_site,
@@ -934,9 +934,9 @@ def parse_usd(
                 xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
                 shape_id = builder.add_shape_cone(
                     parent_body_id,
-                    xform,
-                    radius,
-                    half_height,
+                    xform=xform,
+                    radius=radius,
+                    half_height=half_height,
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     as_site=is_site,
@@ -948,7 +948,7 @@ def parse_usd(
                     for subset_path, subset_mesh in subset_meshes:
                         subset_shape_id = builder.add_shape_mesh(
                             parent_body_id,
-                            xform,
+                            xform=xform,
                             scale=scale,
                             mesh=subset_mesh,
                             cfg=visual_shape_cfg_for_prim,
@@ -968,7 +968,7 @@ def parse_usd(
                     mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
                     shape_id = builder.add_shape_mesh(
                         parent_body_id,
-                        xform,
+                        xform=xform,
                         scale=scale,
                         mesh=mesh,
                         cfg=visual_shape_cfg_for_prim,
@@ -3651,12 +3651,19 @@ def parse_usd(
                     )
 
     # add joints to floating bodies (bodies not connected as children to any joint)
-    if not (no_articulations and has_joints):
-        new_bodies = list(path_body_map.values())
+    new_bodies = list(path_body_map.values())
+    if no_articulations and has_joints:
+        # Preserve authored orphan-joint graphs while still articulating unrelated bodies (#3002).
+        connected_bodies = set(builder.joint_parent) | set(builder.joint_child)
+        bodies_to_articulate = [body_id for body_id in new_bodies if body_id not in connected_bodies]
+    else:
+        bodies_to_articulate = new_bodies
+
+    if bodies_to_articulate:
         if parent_body != -1:
             # When parent_body is specified, manually add joints to floating bodies with correct parent
             joint_children = set(builder.joint_child)
-            for body_id in new_bodies:
+            for body_id in bodies_to_articulate:
                 if body_id in joint_children:
                     continue  # Already has a joint
                 if builder.body_mass[body_id] <= 0:
@@ -3678,7 +3685,7 @@ def parse_usd(
                     articulation_label=None,
                 )
         else:
-            builder._add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
+            builder._add_base_joints_to_floating_bodies(bodies_to_articulate, floating=floating, base_joint=base_joint)
 
     # Parse MjcEquality constraints *before* collapsing fixed joints so that the
     # builder's collapse logic can remap body/joint indices and adjust anchors/relposes

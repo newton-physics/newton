@@ -699,7 +699,13 @@ class ClothSim:
             particle_radius=particle_radius,
         )
 
-        self.builder.add_shape_box(-1, wp.transform(wp.vec3(0, -2, 0), wp.quat_identity()), hx=2, hy=2, hz=2)
+        self.builder.add_shape_box(
+            -1,
+            xform=wp.transform(wp.vec3(0, -2, 0), wp.quat_identity()),
+            hx=2,
+            hy=2,
+            hz=2,
+        )
 
         self.renderer_scale_factor = 0.1
 

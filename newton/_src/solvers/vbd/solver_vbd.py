@@ -19,6 +19,7 @@ from ...sim import (
     ModelFlags,
     State,
 )
+from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..solver import SolverBase
 from ..xpbd.kernels import apply_joint_forces
 from .particle_vbd_kernels import (
@@ -201,9 +202,11 @@ class SolverVBD(SolverBase):
         BEND = 2
         TWIST = 3
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,
+        *,
         # Common parameters
         iterations: int = 10,
         friction_epsilon: float = 1e-2,
@@ -2283,6 +2286,7 @@ class SolverVBD(SolverBase):
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_body_vel,
                         contacts.soft_contact_normal,
+                        model.shape_margin,
                     ],
                     outputs=[
                         self.particle_forces,
@@ -2441,6 +2445,7 @@ class SolverVBD(SolverBase):
                         state_in.particle_q,
                         model.particle_radius,
                         model.shape_body,
+                        model.shape_margin,
                         body_q,
                         self.body_particle_contact_material_ke,
                         self.rigid_linear_beta,
@@ -2485,9 +2490,11 @@ class SolverVBD(SolverBase):
                         self.body_particle_contact_material_mu,
                         contacts.soft_contact_count,
                         contacts.soft_contact_particle,
+                        contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_body_vel,
                         contacts.soft_contact_normal,
+                        model.shape_margin,
                         self.body_particle_contact_buffer_pre_alloc,
                         self.body_particle_contact_counts,
                         self.body_particle_contact_indices,
@@ -2657,6 +2664,7 @@ class SolverVBD(SolverBase):
                         state_in.particle_q,
                         model.particle_radius,
                         model.shape_body,
+                        model.shape_margin,
                         state_in.body_q,
                         self.body_particle_contact_material_ke,
                         self.rigid_linear_beta,

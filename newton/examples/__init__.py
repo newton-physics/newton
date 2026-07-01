@@ -7,6 +7,7 @@ import gc
 import importlib
 import math
 import os
+import sys
 import time
 import warnings
 from collections import defaultdict
@@ -36,11 +37,14 @@ def get_asset(filename: str) -> str:
 def _enable_example_deprecation_warnings() -> None:
     """Show Newton deprecations during example runs.
 
-    Skipped when ``PYTHONWARNINGS`` is already set so that
-    ``test_examples.py`` (or a user) can escalate warnings to errors
-    without this filter overriding their policy.
+    Skipped when the interpreter already has an explicit warnings policy -- any
+    ``-W`` flag or ``PYTHONWARNINGS``, both surfaced via ``sys.warnoptions`` --
+    so that ``test_examples.py``, or a user running ``python -W error ...``, can
+    escalate warnings to errors without this "default" filter shadowing their
+    policy (it is installed after startup, so it would otherwise take
+    precedence).
     """
-    if "PYTHONWARNINGS" in os.environ or getattr(_enable_example_deprecation_warnings, "_installed", False):
+    if sys.warnoptions or getattr(_enable_example_deprecation_warnings, "_installed", False):
         return
 
     warnings.filterwarnings("default", category=DeprecationWarning, module=r"newton(\.|$)")
