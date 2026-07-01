@@ -97,6 +97,7 @@ class _ControlRecordingSolver(SolverBase, CouplingInterface):
         self.joint_f = []
         self.joint_target_q = []
         self.joint_target_qd = []
+        self.custom_gain = []
         self.instances.append(self)
 
     def step(self, state_in, state_out, control, contacts, dt):
@@ -108,6 +109,8 @@ class _ControlRecordingSolver(SolverBase, CouplingInterface):
         self.joint_target_qd.append(
             None if control is None or control.joint_target_qd is None else control.joint_target_qd.numpy().copy()
         )
+        gain = None if control is None else getattr(control, "gain", None)
+        self.custom_gain.append(None if gain is None else gain.numpy().copy())
         if state_in.body_q is not None and state_out.body_q is not None:
             wp.copy(state_out.body_q, state_in.body_q)
             wp.copy(state_out.body_qd, state_in.body_qd)
@@ -768,6 +771,85 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(solver_a.joint_target_q[0], np.array([11.0], dtype=np.float32))
         np.testing.assert_array_equal(solver_b.joint_target_q[0], np.array([13.0], dtype=np.float32))
 
+    def test_compacted_joint_targets_use_local_layout(self):
+        """Joint targets and their derived starts should use compact layout."""
+        builder = newton.ModelBuilder()
+        free_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        free_joint = builder.add_joint_free(child=free_body)
+        builder.add_articulation([free_joint])
+        first_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        first_joint = builder.add_joint_revolute(parent=-1, child=first_body, axis=(0.0, 0.0, 1.0))
+        second_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        second_joint = builder.add_joint_revolute(
+            parent=first_body,
+            child=second_body,
+            axis=(0.0, 1.0, 0.0),
+        )
+        builder.add_articulation([first_joint, second_joint])
+        model = builder.finalize(device="cpu")
+        model.joint_target_q.assign(np.arange(model.joint_dof_count, dtype=np.float32))
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="revolute",
+                    solver=SolverSemiImplicit,
+                    bodies=[first_body, second_body],
+                    joints=[first_joint, second_joint],
+                )
+            ],
+        )
+        view = coupled.view("revolute")
+
+        np.testing.assert_array_equal(view.joint_target_q_start.numpy(), [0, 1, 2])
+        np.testing.assert_array_equal(view.joint_target_q.numpy(), [6.0, 7.0])
+
+        model.joint_target_q.assign(10.0 + np.arange(model.joint_dof_count, dtype=np.float32))
+        model.joint_target_ke.assign(100.0 + np.arange(model.joint_dof_count, dtype=np.float32))
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+        np.testing.assert_array_equal(view.joint_target_q.numpy(), [16.0, 17.0])
+        np.testing.assert_array_equal(view.joint_target_ke.numpy(), [106.0, 107.0])
+
+    def test_custom_control_arrays_are_mapped_to_entries(self):
+        """Custom CONTROL attributes should follow their compact frequency map."""
+        _ControlRecordingSolver.instances.clear()
+        builder = newton.ModelBuilder()
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="gain",
+                frequency=newton.Model.AttributeFrequency.BODY,
+                assignment=newton.Model.AttributeAssignment.CONTROL,
+                dtype=wp.float32,
+            )
+        )
+        body_a = builder.add_body(
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3)),
+            custom_attributes={"gain": 1.0},
+        )
+        body_b = builder.add_body(
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3)),
+            custom_attributes={"gain": 2.0},
+        )
+        model = builder.finalize(device="cpu")
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="A", solver=_ControlRecordingSolver, bodies=[body_a]),
+                SolverCoupled.Entry(name="B", solver=_ControlRecordingSolver, bodies=[body_b]),
+            ],
+        )
+        control = model.control()
+        control.gain.assign(np.array([3.0, 7.0], dtype=np.float32))
+
+        coupled.step(model.state(), model.state(), control, contacts=None, dt=1.0 / 60.0)
+
+        solver_a, solver_b = _ControlRecordingSolver.instances
+        np.testing.assert_array_equal(solver_a.custom_gain[0], [3.0])
+        np.testing.assert_array_equal(solver_b.custom_gain[0], [7.0])
+
     def test_notify_model_changed_refreshes_view_inertial_masks(self):
         """Runtime parent inertial edits should refresh derived view masks."""
         coupled = SolverCoupled(
@@ -785,6 +867,36 @@ class TestSolverCoupledBasic(unittest.TestCase):
         view_b_inv_mass = coupled.view("B").body_inv_mass.numpy()
         np.testing.assert_allclose(view_a_inv_mass, [0.25])
         np.testing.assert_allclose(view_b_inv_mass, [0.125])
+
+    def test_notify_model_changed_refreshes_compacted_properties(self):
+        """Runtime parent property changes should reach compact model arrays."""
+        coupled = SolverCoupled(
+            model=self.model,
+            entries=[
+                SolverCoupled.Entry(name="A", solver=_StepCountingCopySolver, bodies=[0]),
+                SolverCoupled.Entry(name="B", solver=_StepCountingCopySolver, bodies=[1]),
+            ],
+        )
+        self.model.body_flags.assign(np.array([5, 9], dtype=np.int32))
+        self.model.shape_material_mu.assign(np.array([0.25, 0.75], dtype=np.float32))
+
+        coupled.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES | newton.ModelFlags.SHAPE_PROPERTIES)
+
+        np.testing.assert_array_equal(coupled.view("A").body_flags.numpy(), [5])
+        np.testing.assert_array_equal(coupled.view("B").body_flags.numpy(), [9])
+        np.testing.assert_allclose(coupled.view("A").shape_material_mu.numpy(), [0.25, 0.75])
+        np.testing.assert_allclose(coupled.view("B").shape_material_mu.numpy(), [0.25, 0.75])
+
+    def test_compact_shape_namespace_option_is_not_exposed(self):
+        """Coupled entries should use the shared global shape namespace."""
+        with self.assertRaises(TypeError):
+            SolverCoupled.Entry(
+                name="A",
+                solver=SolverSemiImplicit,
+                bodies=[0],
+                shapes=[0],
+                preserve_shape_ids=False,
+            )
 
     def test_entry_shapes_filter_shape_contact_pairs(self):
         """Entry shape masks should prune explicit contact pairs in each view."""
@@ -895,53 +1007,20 @@ class TestSolverCoupledBasic(unittest.TestCase):
                     bodies=[2],
                     particles=[0],
                     shapes=[2],
-                    preserve_shape_ids=False,
                 )
             ],
         )
         view = coupled.view("mixed")
 
         self.assertEqual(view.body_count, 1)
-        self.assertEqual(view.shape_count, 1)
+        self.assertEqual(view.shape_count, model.shape_count)
         np.testing.assert_allclose(view.body_mass.numpy(), model.body_mass.numpy()[2:3])
-        np.testing.assert_array_equal(view.shape_body.numpy(), [0])
-        self.assertEqual(view.body_shapes, {-1: [], 0: [0]})
+        np.testing.assert_array_equal(view.shape_body.numpy(), [-1, -1, 0])
+        self.assertEqual(view.body_shapes, {-1: [], 0: [2]})
 
         self.assertEqual(view.particle_count, model.particle_count)
         self.assertEqual(view.spring_count, model.spring_count)
         np.testing.assert_array_equal(view.spring_indices.numpy(), [0, 1])
-
-    def test_entry_can_compact_shape_ids_when_requested(self):
-        """Entry views should still support compact local shape ids by opt-out."""
-        coupled = SolverCoupled(
-            model=self.model,
-            entries=[
-                SolverCoupled.Entry(
-                    name="A",
-                    solver=SolverSemiImplicit,
-                    bodies=[0],
-                    shapes=[0],
-                    preserve_shape_ids=False,
-                ),
-                SolverCoupled.Entry(
-                    name="B",
-                    solver=SolverSemiImplicit,
-                    bodies=[1],
-                    shapes=[1],
-                    preserve_shape_ids=False,
-                ),
-            ],
-        )
-
-        view_a = coupled.view("A")
-        view_b = coupled.view("B")
-
-        self.assertEqual(view_a.shape_count, 1)
-        self.assertEqual(view_a.shape_flags.shape[0], 1)
-        np.testing.assert_array_equal(view_a.shape_body.numpy(), np.array([0], dtype=np.int32))
-        self.assertEqual(view_b.shape_count, 1)
-        self.assertEqual(view_b.shape_flags.shape[0], 1)
-        np.testing.assert_array_equal(view_b.shape_body.numpy(), np.array([0], dtype=np.int32))
 
     def test_preserved_global_shape_ids_remap_hidden_shapes_in_mixed_views(self):
         """Preserved shape ids should not leave hidden shapes attached to omitted bodies."""

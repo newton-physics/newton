@@ -25,19 +25,49 @@ if TYPE_CHECKING:
     from ...sim import Contacts, Control, Model, State
 
 
+@wp.func
+def _remap_reference(index: int, global_to_local: wp.array[int]) -> int:
+    if index < 0:
+        return index
+    if index >= global_to_local.shape[0]:
+        return -1
+    return global_to_local[index]
+
+
+@wp.kernel(enable_backward=False)
+def _remap_reference_kernel(src: wp.array[int], global_to_local: wp.array[int], dst: wp.array[int]):
+    index = wp.tid()
+    dst[index] = _remap_reference(src[index], global_to_local)
+
+
+@wp.kernel(enable_backward=False)
+def _clear_shape_collision_flags_kernel(
+    hidden_shape_indices: wp.array[int],
+    collision_mask: int,
+    shape_flags: wp.array[int],
+):
+    shape = hidden_shape_indices[wp.tid()]
+    shape_flags[shape] = shape_flags[shape] & ~collision_mask
+
+
+@wp.kernel(enable_backward=False)
+def _remap_shape_body_kernel(
+    source_shape_body: wp.array[int],
+    body_global_to_local: wp.array[int],
+    visible_shape_mask: wp.array[int],
+    shape_body: wp.array[int],
+):
+    shape = wp.tid()
+    body = source_shape_body[shape]
+    if visible_shape_mask[shape] == 0 or body < 0:
+        shape_body[shape] = -1
+    else:
+        shape_body[shape] = body_global_to_local[body]
+
+
 def _identity_index_map(count: int, device) -> wp.array:
     """Return a dense local-to-global identity map."""
     return wp.array(list(range(count)), dtype=int, device=device)
-
-
-def _inverse_index_map(local_to_global: wp.array, global_count: int, device) -> wp.array:
-    """Return a dense global-to-local map with -1 for hidden ids."""
-    mapping = [-1] * int(global_count)
-    for local_id, raw_global_id in enumerate(local_to_global.numpy()):
-        global_id = int(raw_global_id)
-        if 0 <= global_id < global_count:
-            mapping[global_id] = local_id
-    return wp.array(mapping, dtype=int, device=device)
 
 
 @dataclass(frozen=True)
@@ -147,6 +177,9 @@ class SolverEntry:
     body_dynamics_disabled_local_indices: wp.array
     particle_dynamics_disabled_indices: wp.array
     particle_dynamics_disabled_local_indices: wp.array
+    joint_dynamics_disabled_local_indices: wp.array
+    proxy_body_local_indices: wp.array
+    proxy_particle_local_indices: wp.array
     joint_q_indices: wp.array
     joint_qd_indices: wp.array
     shape_indices: wp.array
@@ -158,7 +191,8 @@ class SolverEntry:
     joint_coord_global_to_local: wp.array
     joint_dof_local_to_global: wp.array
     joint_dof_global_to_local: wp.array
-    preserve_shape_ids: bool
+    attribute_projections: dict[Model.AttributeFrequency | str, _CompactIndexProjection]
+    attribute_local_to_global: dict[Model.AttributeFrequency | str, wp.array]
     in_place: bool
     state_0: State | None = None
     state_1: State | None = None
@@ -200,9 +234,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         factory itself (e.g. ``lambda v: SolverVBD(model=v, iterations=10)``).
         Entry names must be unique. In-place stepping is only valid for solvers
         that explicitly support it. Shape ids remain in the parent model
-        namespace by default; set
-        ``preserve_shape_ids=False`` to expose a compact entry-local shape
-        namespace instead.
+        namespace so all entries can consume shared contact buffers.
 
         Args:
             name: Unique entry name used by coupling configuration.
@@ -215,8 +247,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 entry-local view overrides.
             substeps: Number of substeps to run per coupled step.
             in_place: Whether the sub-solver may step in-place.
-            preserve_shape_ids: Whether shape ids remain in the parent model
-                namespace instead of being compacted.
         """
 
         name: str
@@ -228,7 +258,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         configure_view: Callable[[ModelView], None] | None = None
         substeps: int = 1
         in_place: bool = False
-        preserve_shape_ids: bool = True
 
     def __init__(
         self,
@@ -240,6 +269,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         self._attribute_projections = self._build_attribute_projections()
         self._entry_configs = list(entries)
+        self._entry_configs_by_name = {entry.name: entry for entry in self._entry_configs}
         self._coupling = coupling
         self._entries: dict[str, SolverEntry] = {}
         self._solver_order: list[str] = []
@@ -277,6 +307,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 model._attribute_requires_empty_sentinel(name),
             )
             for name, frequency in model.attribute_frequency.items()
+            if not self._is_deprecated_namespace_alias(name)
         ]
         explicit_names = set(model.attribute_frequency)
         for name in model.__dict__:
@@ -295,6 +326,16 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 )
             )
         return tuple(projections)
+
+    def _is_deprecated_namespace_alias(self, full_name: str) -> bool:
+        """Return whether metadata names a warning-producing namespace alias."""
+        if ":" not in full_name:
+            return False
+        namespace_name, attribute_name = full_name.split(":", 1)
+        namespace = getattr(self.model, namespace_name, None)
+        if not isinstance(namespace, self.model.AttributeNamespace):
+            return False
+        return attribute_name in namespace._deprecated_aliases
 
     def _validate_entry_names(self) -> None:
         names: set[str] = set()
@@ -315,17 +356,19 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 owner[index] = entry_idx
         return owner
 
-    def _global_indices_to_local_array(self, indices: wp.array, global_to_local: wp.array) -> wp.array:
-        if indices.shape[0] == 0:
+    def _global_indices_to_local_array(
+        self,
+        indices: Sequence[int],
+        compact: _CompactIndexMaps | None,
+        frequency: Model.AttributeFrequency,
+    ) -> wp.array:
+        if not indices:
             return wp.zeros(0, dtype=int, device=self.model.device)
-
-        mapping = global_to_local.numpy()
-        local = []
-        for index in indices.numpy():
-            global_id = int(index)
-            local_id = int(mapping[global_id]) if 0 <= global_id < len(mapping) else -1
-            if local_id >= 0:
-                local.append(local_id)
+        if compact is None:
+            local = [int(index) for index in indices]
+        else:
+            mapping = compact.projections[frequency].global_to_local
+            local = [mapping[int(index)] for index in indices if mapping[int(index)] >= 0]
         return wp.array(local, dtype=int, device=self.model.device)
 
     def _build_entries(self) -> None:
@@ -350,25 +393,30 @@ class SolverCoupled(SolverBase, CouplingInterface):
             proxy_body_keep: set[int] = set()
             proxy_particle_keep: set[int] = set()
             proxy_joint_keep: set[int] = set()
+            body_dynamics_disabled: list[int] = []
+            particle_dynamics_disabled: list[int] = []
+            joint_dynamics_disabled: list[int] = []
             body_dynamics_disabled_indices = wp.zeros(0, dtype=int, device=device)
             particle_dynamics_disabled_indices = wp.zeros(0, dtype=int, device=device)
 
             if any_body_owner:
                 proxy_body_keep = self._entry_proxy_body_keep_indices(cfg.name)
-                to_zero = [i for i, owner in enumerate(self._body_owner) if owner != idx and i not in proxy_body_keep]
-                if to_zero:
-                    body_dynamics_disabled_indices = wp.array(to_zero, dtype=int, device=device)
+                body_dynamics_disabled = [
+                    i for i, owner in enumerate(self._body_owner) if owner != idx and i not in proxy_body_keep
+                ]
+                if body_dynamics_disabled:
+                    body_dynamics_disabled_indices = wp.array(body_dynamics_disabled, dtype=int, device=device)
                     view.disable_body_dynamics(body_dynamics_disabled_indices)
                 if proxy_body_keep:
                     view.mark_proxy_bodies(wp.array(sorted(proxy_body_keep), dtype=int, device=device))
 
             if any_particle_owner:
                 proxy_particle_keep = self._entry_proxy_particle_keep_indices(cfg.name)
-                to_zero = [
+                particle_dynamics_disabled = [
                     i for i, owner in enumerate(self._particle_owner) if owner != idx and i not in proxy_particle_keep
                 ]
-                if to_zero:
-                    particle_dynamics_disabled_indices = wp.array(to_zero, dtype=int, device=device)
+                if particle_dynamics_disabled:
+                    particle_dynamics_disabled_indices = wp.array(particle_dynamics_disabled, dtype=int, device=device)
                     view.zero_particle_mass(particle_dynamics_disabled_indices)
                     view.disable_particles(particle_dynamics_disabled_indices)
                 if proxy_particle_keep:
@@ -376,11 +424,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
             if any_joint_owner:
                 proxy_joint_keep = self._entry_proxy_joint_keep_indices(cfg.name)
-                to_disable = [
+                joint_dynamics_disabled = [
                     i for i, owner in enumerate(self._joint_owner) if owner != idx and i not in proxy_joint_keep
                 ]
-                if to_disable:
-                    view.disable_joints(wp.array(to_disable, dtype=int, device=device))
+                if joint_dynamics_disabled:
+                    view.disable_joints(wp.array(joint_dynamics_disabled, dtype=int, device=device))
 
             self._apply_entry_shape_visibility(view, cfg, proxy_body_keep)
             index_lists = self._compact_entry_view_if_needed(
@@ -396,13 +444,35 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
             index_maps = self._build_entry_index_maps(view, index_lists)
             body_dynamics_disabled_local_indices = self._global_indices_to_local_array(
-                body_dynamics_disabled_indices,
-                index_maps.body_global_to_local,
+                body_dynamics_disabled,
+                index_lists,
+                model.AttributeFrequency.BODY,
             )
             particle_dynamics_disabled_local_indices = self._global_indices_to_local_array(
-                particle_dynamics_disabled_indices,
-                index_maps.particle_global_to_local,
+                particle_dynamics_disabled,
+                index_lists,
+                model.AttributeFrequency.PARTICLE,
             )
+            joint_dynamics_disabled_local_indices = self._global_indices_to_local_array(
+                joint_dynamics_disabled,
+                index_lists,
+                model.AttributeFrequency.JOINT,
+            )
+            proxy_body_local_indices = self._global_indices_to_local_array(
+                sorted(proxy_body_keep),
+                index_lists,
+                model.AttributeFrequency.BODY,
+            )
+            proxy_particle_local_indices = self._global_indices_to_local_array(
+                sorted(proxy_particle_keep),
+                index_lists,
+                model.AttributeFrequency.PARTICLE,
+            )
+            attribute_projections = self._entry_attribute_projections(index_lists)
+            attribute_local_to_global = {
+                frequency: wp.array(projection.local_to_global, dtype=int, device=device)
+                for frequency, projection in attribute_projections.items()
+            }
 
             solver = cfg.solver(view)
             self._entries[cfg.name] = SolverEntry(
@@ -417,6 +487,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 body_dynamics_disabled_local_indices=body_dynamics_disabled_local_indices,
                 particle_dynamics_disabled_indices=particle_dynamics_disabled_indices,
                 particle_dynamics_disabled_local_indices=particle_dynamics_disabled_local_indices,
+                joint_dynamics_disabled_local_indices=joint_dynamics_disabled_local_indices,
+                proxy_body_local_indices=proxy_body_local_indices,
+                proxy_particle_local_indices=proxy_particle_local_indices,
                 joint_q_indices=joint_q_indices,
                 joint_qd_indices=joint_qd_indices,
                 shape_indices=shape_indices,
@@ -428,7 +501,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 joint_coord_global_to_local=index_maps.joint_coord_global_to_local,
                 joint_dof_local_to_global=index_maps.joint_dof_local_to_global,
                 joint_dof_global_to_local=index_maps.joint_dof_global_to_local,
-                preserve_shape_ids=bool(cfg.preserve_shape_ids),
+                attribute_projections=attribute_projections,
+                attribute_local_to_global=attribute_local_to_global,
                 in_place=bool(cfg.in_place),
             )
 
@@ -504,12 +578,16 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return
 
         collision_mask = int(ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES | ShapeFlags.HYDROELASTIC)
-        shape_flags = view.shape_flags.numpy().copy()
-        hidden = np.ones(model.shape_count, dtype=bool)
-        if visible:
-            hidden[np.fromiter(visible, dtype=np.int32)] = False
-        shape_flags[hidden] &= ~collision_mask
-        view.shape_flags = wp.array(shape_flags, dtype=wp.int32, device=model.device)
+        hidden = [shape for shape in range(model.shape_count) if shape not in visible]
+        shape_flags = view._cow_array("shape_flags")
+        if hidden:
+            wp.launch(
+                _clear_shape_collision_flags_kernel,
+                dim=len(hidden),
+                inputs=[wp.array(hidden, dtype=int, device=model.device), collision_mask],
+                outputs=[shape_flags],
+                device=model.device,
+            )
 
     def _filter_shape_contact_pairs(self, view: ModelView) -> None:
         """Filter explicit contact pairs against a solver view's shape mask."""
@@ -549,12 +627,24 @@ class SolverCoupled(SolverBase, CouplingInterface):
         visible_shapes = self._entry_visible_shapes(cfg, visible_bodies)
 
         shape_body = getattr(view, "shape_body", None)
-        if shape_body is not None:
-            shape_body_np = shape_body.numpy().copy()
-            for shape_id in range(len(shape_body_np)):
-                if shape_id not in visible_shapes:
-                    shape_body_np[shape_id] = -1
-            view.shape_body = wp.array(shape_body_np, dtype=wp.int32, device=model.device)
+        if model.shape_count and shape_body is not None:
+            remapped_shape_body = wp.empty_like(shape_body)
+            wp.launch(
+                _remap_shape_body_kernel,
+                dim=model.shape_count,
+                inputs=[
+                    shape_body,
+                    _identity_index_map(model.body_count, model.device),
+                    wp.array(
+                        [int(shape in visible_shapes) for shape in range(model.shape_count)],
+                        dtype=int,
+                        device=model.device,
+                    ),
+                ],
+                outputs=[remapped_shape_body],
+                device=model.device,
+            )
+            view.shape_body = remapped_shape_body
 
         body_global_to_local = {body_id: body_id for body_id in range(model.body_count)}
         view.body_shapes = self._global_shape_body_shapes(model.body_shapes, body_global_to_local, visible_shapes)
@@ -565,16 +655,27 @@ class SolverCoupled(SolverBase, CouplingInterface):
         model = self.model
         device = model.device
         if index_lists is None:
-            body_local_to_global = _identity_index_map(int(view.body_count), device)
-            particle_local_to_global = _identity_index_map(int(view.particle_count), device)
-            joint_coord_local_to_global = _identity_index_map(int(view.joint_coord_count), device)
-            joint_dof_local_to_global = _identity_index_map(int(view.joint_dof_count), device)
-            body_global_to_local = _inverse_index_map(body_local_to_global, model.body_count, device)
-            particle_global_to_local = _inverse_index_map(particle_local_to_global, model.particle_count, device)
-            joint_coord_global_to_local = _inverse_index_map(
-                joint_coord_local_to_global, model.joint_coord_count, device
-            )
-            joint_dof_global_to_local = _inverse_index_map(joint_dof_local_to_global, model.joint_dof_count, device)
+            expected_counts = {
+                "body_count": model.body_count,
+                "particle_count": model.particle_count,
+                "joint_coord_count": model.joint_coord_count,
+                "joint_dof_count": model.joint_dof_count,
+            }
+            for name, expected in expected_counts.items():
+                actual = int(getattr(view, name))
+                if actual != expected:
+                    raise ValueError(
+                        f"Non-compacted entry view must preserve {name}: expected {expected}, got {actual}"
+                    )
+
+            body_local_to_global = _identity_index_map(model.body_count, device)
+            particle_local_to_global = _identity_index_map(model.particle_count, device)
+            joint_coord_local_to_global = _identity_index_map(model.joint_coord_count, device)
+            joint_dof_local_to_global = _identity_index_map(model.joint_dof_count, device)
+            body_global_to_local = body_local_to_global
+            particle_global_to_local = particle_local_to_global
+            joint_coord_global_to_local = joint_coord_local_to_global
+            joint_dof_global_to_local = joint_dof_local_to_global
         else:
             frequency = model.AttributeFrequency
             body = index_lists.projections[frequency.BODY]
@@ -600,6 +701,26 @@ class SolverCoupled(SolverBase, CouplingInterface):
             joint_dof_local_to_global=joint_dof_local_to_global,
             joint_dof_global_to_local=joint_dof_global_to_local,
         )
+
+    def _entry_attribute_projections(
+        self,
+        compact: _CompactIndexMaps | None,
+    ) -> dict[Model.AttributeFrequency | str, _CompactIndexProjection]:
+        """Return the actual per-frequency projections exposed by an entry view."""
+        if compact is not None:
+            return self._compact_projections_by_frequency(
+                compact,
+                shape_order=range(self.model.shape_count),
+            )
+
+        projections = {}
+        for attribute in self._attribute_projections:
+            frequency = attribute.frequency
+            if frequency in projections:
+                continue
+            count = self.model._attribute_frequency_count(frequency)
+            projections[frequency] = _compact_index_projection(range(count), count)
+        return projections
 
     def _compact_entry_view_if_needed(
         self,
@@ -648,20 +769,17 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if compact is None:
             return None
 
-        self._apply_compact_entry_view(view, compact, preserve_shape_ids=bool(cfg.preserve_shape_ids))
+        self._apply_compact_entry_view(view, compact)
         return compact
 
     def _entry_visible_shapes(self, cfg: SolverCoupled.Entry, visible_bodies: set[int]) -> set[int]:
         model = self.model
         visible_shapes = {int(i) for i in cfg.shapes}
         include_default_static_shapes = not cfg.shapes
-        if model.shape_count and model.shape_body is not None and (visible_bodies or include_default_static_shapes):
-            shape_body = model.shape_body.numpy()
-            visible_shapes.update(
-                int(shape_id)
-                for shape_id, body_id in enumerate(shape_body)
-                if (include_default_static_shapes and int(body_id) < 0) or int(body_id) in visible_bodies
-            )
+        for body in visible_bodies:
+            visible_shapes.update(int(shape) for shape in model.body_shapes.get(int(body), ()))
+        if include_default_static_shapes:
+            visible_shapes.update(int(shape) for shape in model.body_shapes.get(-1, ()))
         return visible_shapes
 
     def _ordered_world_subset(
@@ -975,8 +1093,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self,
         view: ModelView,
         compact: _CompactIndexMaps,
-        *,
-        preserve_shape_ids: bool = False,
     ) -> None:
         """Install compact topology arrays on an entry view."""
         model = self.model
@@ -989,7 +1105,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         dof_order = compact.order(frequency.JOINT_DOF)
         joint_constraint_order = compact.order(frequency.JOINT_CONSTRAINT)
         visible_shape_order = compact.order(frequency.SHAPE)
-        shape_order = list(range(model.shape_count)) if preserve_shape_ids else visible_shape_order
+        shape_order = list(range(model.shape_count))
         articulation_order = compact.order(frequency.ARTICULATION)
         mimic_order = compact.order(frequency.CONSTRAINT_MIMIC)
         edge_order = compact.order(frequency.EDGE)
@@ -998,15 +1114,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
         spring_order = compact.order(frequency.SPRING)
 
         body_global_to_local = {global_id: local_id for local_id, global_id in enumerate(body_order)}
-        shape_global_to_local = {global_id: local_id for local_id, global_id in enumerate(shape_order)}
-
         view.body_count = len(body_order)
         view.particle_count = len(particle_order)
         view.joint_count = len(joint_order)
         view.joint_coord_count = len(coord_order)
         view.joint_dof_count = len(dof_order)
         view.joint_constraint_count = len(joint_constraint_order)
-        view.shape_count = model.shape_count if preserve_shape_ids else len(shape_order)
+        view.shape_count = model.shape_count
         view.articulation_count = len(articulation_order)
         view.constraint_mimic_count = len(mimic_order)
         view.spring_count = len(spring_order)
@@ -1045,37 +1159,31 @@ class SolverCoupled(SolverBase, CouplingInterface):
             device=device,
         )
 
-        shape_body = self._select_numpy_array(view, "shape_body", shape_order)
-        if shape_body is not None:
+        if model.shape_count and model.shape_body is not None:
             visible_shapes = set(visible_shape_order)
-            view.shape_body = wp.array(
-                [
-                    self._remap_shape_body(
-                        global_shape=shape,
-                        body=int(body),
-                        visible_shapes=visible_shapes,
-                        body_global_to_local=body_global_to_local,
-                        preserve_shape_ids=preserve_shape_ids,
-                    )
-                    for shape, body in zip(shape_order, shape_body, strict=True)
+            shape_body = wp.empty(model.shape_count, dtype=int, device=device)
+            wp.launch(
+                _remap_shape_body_kernel,
+                dim=model.shape_count,
+                inputs=[
+                    model.shape_body,
+                    wp.array(compact.projections[frequency.BODY].global_to_local, dtype=int, device=device),
+                    wp.array(
+                        [int(shape in visible_shapes) for shape in range(model.shape_count)],
+                        dtype=int,
+                        device=device,
+                    ),
                 ],
-                dtype=wp.int32,
+                outputs=[shape_body],
                 device=device,
             )
-        if preserve_shape_ids:
-            view.body_shapes = self._global_shape_body_shapes(
-                model.body_shapes,
-                body_global_to_local,
-                set(visible_shape_order),
-            )
-            view.shape_collision_filter_pairs = set(model.shape_collision_filter_pairs)
-        else:
-            view.body_shapes = self._compact_body_shapes(model.body_shapes, body_global_to_local, shape_global_to_local)
-            view.shape_collision_filter_pairs = self._compact_shape_pair_set(
-                model.shape_collision_filter_pairs,
-                shape_global_to_local,
-            )
-            self._compact_shape_contact_pairs(view, shape_global_to_local)
+            view.shape_body = shape_body
+        view.body_shapes = self._global_shape_body_shapes(
+            model.body_shapes,
+            body_global_to_local,
+            set(visible_shape_order),
+        )
+        view.shape_collision_filter_pairs = set(model.shape_collision_filter_pairs)
 
         articulation_starts = self._compact_articulation_starts(joint_order, articulation_order)
         view.articulation_start = wp.array(articulation_starts, dtype=wp.int32, device=device)
@@ -1086,14 +1194,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self._compact_color_groups(view, body_global_to_local)
 
         self._set_world_start_arrays(view)
-
-    def _select_numpy_array(self, view: ModelView, name: str, indices: Sequence[int]) -> np.ndarray | None:
-        value = self._raw_view_value(view, name)
-        if value is None or not isinstance(value, wp.array):
-            return None
-        if not indices:
-            return np.asarray([], dtype=value.numpy().dtype)
-        return value.numpy()[np.asarray(indices, dtype=np.int64)]
 
     def _compact_projections_by_frequency(
         self,
@@ -1124,17 +1224,22 @@ class SolverCoupled(SolverBase, CouplingInterface):
         projections_by_frequency: dict[Model.AttributeFrequency | str, _CompactIndexProjection],
         *,
         exclude: set[str],
+        include: Callable[[_AttributeProjection], bool] | None = None,
+        source_model: bool = False,
+        update_existing: bool = False,
     ) -> None:
         for attribute in self._attribute_projections:
             full_name = attribute.name
-            if full_name in exclude:
+            if full_name in exclude or (include is not None and not include(attribute)):
                 continue
             projection = projections_by_frequency.get(attribute.frequency)
             if projection is None:
                 continue
             source_count = len(projection.global_to_local)
             source_value_count = source_count * attribute.row_width
-            value = self._view_attribute_value(view, full_name)
+            value = (
+                self._model_attribute_value(full_name) if source_model else self._view_attribute_value(view, full_name)
+            )
             if value is None:
                 continue
             has_empty_sentinel = (
@@ -1150,7 +1255,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     )
                 continue
             indices = self._expanded_row_indices(projection.local_to_global, attribute.row_width)
-            selected = self._select_attribute_value(value, indices)
+            selected = self._select_attribute_value(value, indices, preserve_empty_sentinel=has_empty_sentinel)
             if selected is None:
                 raise ValueError(f"Cannot compact model attribute {full_name!r} with indices {indices!r}")
             if attribute.references is not None:
@@ -1165,7 +1270,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     reference_projection.global_to_local,
                     full_name,
                 )
-            self._set_view_attribute_value(view, full_name, selected)
+            if update_existing:
+                self._update_view_attribute_value(view, full_name, selected)
+            else:
+                self._set_view_attribute_value(view, full_name, selected)
 
     def _view_attribute_value(self, view: ModelView, full_name: str):
         if ":" not in full_name:
@@ -1186,6 +1294,25 @@ class SolverCoupled(SolverBase, CouplingInterface):
             namespace = _AttributeNamespaceView(parent_namespace)
             setattr(view, namespace_name, namespace)
         setattr(namespace, attr_name, value)
+
+    def _update_view_attribute_value(self, view: ModelView, full_name: str, value) -> None:
+        """Update a projected value in-place when a solver may alias its storage."""
+        overrides = object.__getattribute__(view, "_overrides")
+        if ":" not in full_name:
+            current = overrides.get(full_name)
+        else:
+            namespace_name, attr_name = full_name.split(":", 1)
+            namespace = overrides.get(namespace_name)
+            current = None if namespace is None else namespace.__dict__.get(attr_name)
+        if (
+            isinstance(current, wp.array)
+            and isinstance(value, wp.array)
+            and current.dtype == value.dtype
+            and current.shape == value.shape
+        ):
+            wp.copy(current, value)
+            return
+        self._set_view_attribute_value(view, full_name, value)
 
     @staticmethod
     def _is_indexed_compact_value(value, source_count: int) -> bool:
@@ -1212,19 +1339,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         return getattr(parent, name, None)
 
     @staticmethod
-    def _remap_shape_body(
-        *,
-        global_shape: int,
-        body: int,
-        visible_shapes: set[int],
-        body_global_to_local: dict[int, int],
-        preserve_shape_ids: bool,
-    ) -> int:
-        if preserve_shape_ids and int(global_shape) not in visible_shapes:
-            return -1
-        return -1 if body < 0 else body_global_to_local[body]
-
-    @staticmethod
     def _rebased_joint_starts(starts: np.ndarray, joint_order: Sequence[int]) -> list[int]:
         rebased: list[int] = []
         cursor = 0
@@ -1233,25 +1347,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             cursor += int(starts[joint + 1]) - int(starts[joint])
         rebased.append(cursor)
         return rebased
-
-    @staticmethod
-    def _compact_body_shapes(
-        body_shapes: dict[int, list[int]],
-        body_global_to_local: dict[int, int],
-        shape_global_to_local: dict[int, int],
-    ) -> dict[int, list[int]]:
-        compact: dict[int, list[int]] = {-1: []}
-        for global_body, local_body in body_global_to_local.items():
-            compact[local_body] = []
-            for shape in body_shapes.get(global_body, []):
-                local_shape = shape_global_to_local.get(int(shape))
-                if local_shape is not None:
-                    compact[local_body].append(local_shape)
-        for shape in body_shapes.get(-1, []):
-            local_shape = shape_global_to_local.get(int(shape))
-            if local_shape is not None:
-                compact[-1].append(local_shape)
-        return compact
 
     @staticmethod
     def _global_shape_body_shapes(
@@ -1273,35 +1368,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 if int(shape) in visible_shapes:
                     compact.setdefault(local_body, []).append(int(shape))
         return compact
-
-    @staticmethod
-    def _compact_shape_pair_set(
-        pairs: set[tuple[int, int]],
-        shape_global_to_local: dict[int, int],
-    ) -> set[tuple[int, int]]:
-        compact: set[tuple[int, int]] = set()
-        for shape_a, shape_b in pairs:
-            local_a = shape_global_to_local.get(int(shape_a))
-            local_b = shape_global_to_local.get(int(shape_b))
-            if local_a is None or local_b is None:
-                continue
-            compact.add((min(local_a, local_b), max(local_a, local_b)))
-        return compact
-
-    def _compact_shape_contact_pairs(self, view: ModelView, shape_global_to_local: dict[int, int]) -> None:
-        pairs = getattr(view, "shape_contact_pairs", None)
-        if pairs is None:
-            return
-        compact: list[tuple[int, int]] = []
-        for shape_a, shape_b in pairs.numpy():
-            local_a = shape_global_to_local.get(int(shape_a))
-            local_b = shape_global_to_local.get(int(shape_b))
-            if local_a is None or local_b is None:
-                continue
-            compact.append((local_a, local_b))
-        array = np.asarray(compact, dtype=np.int32).reshape((-1, 2))
-        view.shape_contact_pairs = wp.array(array, dtype=wp.vec2i, device=self.model.device)
-        view.shape_contact_pair_count = len(compact)
 
     def _compact_articulation_starts(
         self,
@@ -1414,6 +1480,29 @@ class SolverCoupled(SolverBase, CouplingInterface):
         return wp.array(starts, dtype=wp.int32, device=self.model.device)
 
     def _remap_compact_reference_value(self, value, global_to_local: Sequence[int], attribute_name: str):
+        if all(local == global_id for global_id, local in enumerate(global_to_local)):
+            return value
+
+        if isinstance(value, wp.array):
+            mapping = wp.array(global_to_local, dtype=int, device=self.model.device)
+            remapped = wp.empty_like(value)
+            scalar_dtype = getattr(value.dtype, "_wp_scalar_type_", value.dtype)
+            if scalar_dtype != wp.int32:
+                raise TypeError(
+                    f"Cannot compact reference attribute {attribute_name!r}: unsupported Warp array "
+                    f"dtype={value.dtype}, ndim={value.ndim}"
+                )
+            src = value.view(wp.int32).flatten()
+            dst = remapped.view(wp.int32).flatten()
+            wp.launch(
+                _remap_reference_kernel,
+                dim=src.shape[0],
+                inputs=[src, mapping],
+                outputs=[dst],
+                device=self.model.device,
+            )
+            return remapped
+
         def remap(index: int, row: int) -> int:
             if index < 0:
                 return index
@@ -1432,8 +1521,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     row_values[component] = remap(int(index), row)
             return result
 
-        if isinstance(value, wp.array):
-            return wp.array(remap_array(value.numpy()), dtype=value.dtype, device=self.model.device)
         if isinstance(value, np.ndarray):
             return remap_array(value)
         if isinstance(value, list):
@@ -1466,16 +1553,38 @@ class SolverCoupled(SolverBase, CouplingInterface):
             elif hasattr(self.model, f"{attribute.name}_start"):
                 setattr(view, f"{attribute.name}_start", self._world_start_array(world, count))
 
-    def _select_attribute_value(self, value, indices: Sequence[int]):
+    def _select_attribute_value(
+        self,
+        value,
+        indices: Sequence[int],
+        *,
+        preserve_empty_sentinel: bool = False,
+    ):
         if isinstance(value, wp.array):
-            host = value.numpy()
             if not indices:
-                selected = host[:0]
-            elif host.shape[0] <= max(indices):
+                if preserve_empty_sentinel:
+                    return wp.clone(value[:1])
+                shape = (0, *value.shape[1:])
+                return wp.empty(
+                    shape,
+                    dtype=value.dtype,
+                    device=value.device,
+                    requires_grad=value.requires_grad,
+                )
+            if value.shape[0] <= max(indices):
                 return None
-            else:
-                selected = host[np.asarray(indices, dtype=np.int64)]
-            return wp.array(selected, dtype=value.dtype, device=self.model.device)
+            if len(indices) == value.shape[0] and all(index == local for local, index in enumerate(indices)):
+                return wp.clone(value)
+            mapping = wp.array(indices, dtype=int, device=value.device)
+            shape = (len(indices), *value.shape[1:])
+            selected = wp.empty(
+                shape,
+                dtype=value.dtype,
+                device=value.device,
+                requires_grad=value.requires_grad,
+            )
+            wp.copy(selected, value[mapping])
+            return selected
         if isinstance(value, list):
             if not indices:
                 return []
@@ -1726,10 +1835,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         """
         if contacts is None:
             return None
-        entry = self._entries[name]
-        if not entry.preserve_shape_ids:
-            return None
-        return self._contacts_for_entry(entry, contacts)
+        return self._contacts_for_entry(self._entries[name], contacts)
 
     def entry_output_state_valid(self) -> bool:
         """Return whether entry output states reflect the last coupled step."""
@@ -1809,8 +1915,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if contacts is None:
             return
         for entry in self._entries.values():
-            if entry.preserve_shape_ids:
-                self._ensure_entry_contact_buffer(entry, contacts)
+            self._ensure_entry_contact_buffer(entry, contacts)
 
     def _sync_entry_reset_state(self, entry: SolverEntry) -> None:
         """Mirror a reset entry input state to persistent entry buffers."""
@@ -2134,7 +2239,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         return contacts
 
     def _contacts_for_entry(self, entry: SolverEntry, contacts: Contacts | None) -> Contacts | None:
-        if contacts is None or not entry.preserve_shape_ids:
+        if contacts is None:
             return contacts
         if contacts is self._entry_contact_buffers.get(entry.name):
             return contacts
@@ -2355,10 +2460,64 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
     def _refresh_model_view_overrides(self, flags: int) -> None:
         """Refresh parent-derived view overrides before solver notification."""
-        if not int(flags) & int(ModelFlags.BODY_INERTIAL_PROPERTIES):
-            return
+        flags = int(flags)
         for entry in self._entries.values():
-            self._refresh_body_inertial_view_overrides(entry)
+            self._project_compact_attributes(
+                entry.view,
+                entry.attribute_projections,
+                exclude=_DERIVED_PROJECTION_ATTRIBUTES | {"joint_target_pos", "joint_target_vel"},
+                include=lambda attribute: self._attribute_matches_model_flags(attribute, flags),
+                source_model=True,
+                update_existing=True,
+            )
+
+            if flags & int(ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+                self._refresh_body_inertial_view_overrides(entry)
+                entry.view.mark_proxy_bodies(entry.proxy_body_local_indices)
+
+            if flags & int(ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
+                entry.view.disable_joints(entry.joint_dynamics_disabled_local_indices)
+
+            if flags & int(ModelFlags.SHAPE_PROPERTIES):
+                cfg = self._entry_configs_by_name[entry.name]
+                self._apply_entry_shape_visibility(
+                    entry.view,
+                    cfg,
+                    self._entry_proxy_body_keep_indices(entry.name),
+                )
+                if self.model.shape_contact_pairs is not None:
+                    entry.view.shape_contact_pairs = wp.clone(self.model.shape_contact_pairs)
+                    entry.view.shape_contact_pair_count = int(self.model.shape_contact_pair_count)
+                self._customize_compact_view(entry.view)
+                self._filter_shape_contact_pairs(entry.view)
+
+    def _attribute_matches_model_flags(self, attribute: _AttributeProjection, flags: int) -> bool:
+        """Return whether a projected model attribute is covered by change flags."""
+        frequency = attribute.frequency
+        model_frequency = self.model.AttributeFrequency
+        if flags & int(ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+            if frequency == model_frequency.BODY:
+                return True
+        if flags & int(ModelFlags.JOINT_PROPERTIES):
+            if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD):
+                return True
+        if flags & int(ModelFlags.JOINT_DOF_PROPERTIES):
+            if frequency == model_frequency.JOINT_DOF or attribute.name == "joint_target_q":
+                return True
+        if flags & int(ModelFlags.SHAPE_PROPERTIES):
+            if frequency == model_frequency.SHAPE or "pair_" in attribute.name:
+                return True
+        if flags & int(ModelFlags.MODEL_PROPERTIES):
+            if frequency in (model_frequency.ONCE, model_frequency.WORLD):
+                return True
+        if flags & int(ModelFlags.CONSTRAINT_PROPERTIES):
+            if frequency == model_frequency.CONSTRAINT_MIMIC:
+                return True
+            if any(token in attribute.name for token in ("constraint", ":eq_", "mimic")):
+                return True
+        if flags & int(ModelFlags.TENDON_PROPERTIES) and "tendon" in attribute.name:
+            return True
+        return bool(flags & int(ModelFlags.ACTUATOR_PROPERTIES) and "actuator" in attribute.name)
 
     def _refresh_body_inertial_view_overrides(self, entry: SolverEntry) -> None:
         """Refresh base ownership masks derived from parent body inertia."""
@@ -2405,6 +2564,12 @@ def _entry_control(view: ModelView) -> Control:
         control.tet_activations = wp.clone(view.tet_activations, requires_grad=requires_grad)
     if int(view.muscle_count):
         control.muscle_activations = wp.clone(view.muscle_activations, requires_grad=requires_grad)
+    view._add_custom_attributes(
+        control,
+        view.parent.AttributeAssignment.CONTROL,
+        requires_grad=requires_grad,
+        clone_arrays=True,
+    )
     return control
 
 
@@ -2429,7 +2594,42 @@ def _copy_control_to_entry(src: Control | None, entry: SolverEntry) -> Control |
         _copy_control_float_array(src, dst, name, local_to_global, device)
     for name in ("tri_activations", "tet_activations", "muscle_activations"):
         _copy_control_prefix_float_array(src, dst, name)
+    model = entry.view.parent
+    for full_name, assignment in model.attribute_assignment.items():
+        if assignment != model.AttributeAssignment.CONTROL:
+            continue
+        frequency = model.attribute_frequency[full_name]
+        mapping = entry.attribute_local_to_global.get(frequency)
+        if mapping is None:
+            continue
+        _copy_mapped_control_attribute(src, dst, full_name, mapping)
     return dst
+
+
+def _nested_attribute_value(container, full_name: str):
+    if ":" not in full_name:
+        return getattr(container, full_name, None)
+    namespace_name, attribute_name = full_name.split(":", 1)
+    namespace = getattr(container, namespace_name, None)
+    return None if namespace is None else getattr(namespace, attribute_name, None)
+
+
+def _copy_mapped_control_attribute(
+    src_control: Control,
+    dst_control: Control,
+    full_name: str,
+    local_to_global: wp.array,
+) -> None:
+    src = _nested_attribute_value(src_control, full_name)
+    dst = _nested_attribute_value(dst_control, full_name)
+    if not isinstance(dst, wp.array):
+        return
+    if not isinstance(src, wp.array):
+        dst.zero_()
+        return
+    if dst.shape[0] == 0:
+        return
+    wp.copy(dst, src[local_to_global])
 
 
 def _copy_control_float_array(

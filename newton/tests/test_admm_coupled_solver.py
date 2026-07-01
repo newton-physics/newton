@@ -925,13 +925,11 @@ class TestAdmmModelJointInterface(unittest.TestCase):
                     name="parent",
                     solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                     bodies=[parent],
-                    preserve_shape_ids=False,
                 ),
                 SolverCoupled.Entry(
                     name="child",
                     solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
                     bodies=[child],
-                    preserve_shape_ids=False,
                 ),
             ],
             coupling=SolverCoupledADMM.Config(),
@@ -944,21 +942,28 @@ class TestAdmmModelJointInterface(unittest.TestCase):
         for name in ("parent", "child"):
             with self.subTest(name=name):
                 view = solver.view(name)
-                self.assertEqual(view.shape_count, 2)
+                self.assertEqual(view.shape_count, model.shape_count)
                 shape_body = view.shape_body.numpy()
                 body_flags = view.body_flags.numpy()
                 shape_flags = view.shape_flags.numpy()
                 proxy_shapes = [
                     shape_id
                     for shape_id, body_id in enumerate(shape_body)
-                    if int(body_flags[int(body_id)]) & proxy_flag
+                    if int(body_id) >= 0 and int(body_flags[int(body_id)]) & proxy_flag
                 ]
-                owned_shapes = [shape_id for shape_id in range(view.shape_count) if shape_id not in proxy_shapes]
+                owned_shapes = [
+                    shape_id
+                    for shape_id, body_id in enumerate(shape_body)
+                    if int(body_id) >= 0 and shape_id not in proxy_shapes
+                ]
+                hidden_shapes = [shape_id for shape_id, body_id in enumerate(shape_body) if int(body_id) < 0]
 
                 self.assertEqual(len(proxy_shapes), 1)
                 self.assertEqual(len(owned_shapes), 1)
+                self.assertEqual(len(hidden_shapes), 1)
                 self.assertEqual(int(shape_flags[proxy_shapes[0]]) & collision_mask, 0)
                 self.assertNotEqual(int(shape_flags[owned_shapes[0]]) & collision_mask, 0)
+                self.assertEqual(int(shape_flags[hidden_shapes[0]]) & collision_mask, 0)
 
     def test_rejects_cross_solver_joint_owned_by_subsolver(self):
         model, parent, child, joint = self._build_two_body_joint_scene("ball")

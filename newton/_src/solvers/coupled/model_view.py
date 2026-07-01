@@ -159,6 +159,11 @@ class ModelView:
         return object.__getattribute__(self, "_parent")
 
     @property
+    def joint_target_q_start(self) -> wp.array | None:
+        """View-local start indices for :attr:`~newton.Model.joint_target_q`."""
+        return self.joint_q_start if self.use_coord_layout_targets else self.joint_qd_start
+
+    @property
     def overrides(self) -> dict[str, object]:
         """Dictionary of attribute names that are overridden on this view."""
         return dict(object.__getattribute__(self, "_overrides"))

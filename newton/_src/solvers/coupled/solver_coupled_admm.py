@@ -98,6 +98,20 @@ if TYPE_CHECKING:
     from ...sim import Contacts, Control, Model, ModelBuilder, State
 
 
+@wp.kernel(enable_backward=False)
+def _disable_proxy_shape_collisions_kernel(
+    shape_body: wp.array[int],
+    body_flags: wp.array[int],
+    proxy_flag: int,
+    collision_mask: int,
+    shape_flags: wp.array[int],
+):
+    shape = wp.tid()
+    body = shape_body[shape]
+    if body >= 0 and body_flags[body] & proxy_flag:
+        shape_flags[shape] = shape_flags[shape] & ~collision_mask
+
+
 @dataclass
 class _AdmmBuffers:
     """Per-entry per-step working buffers used by ADMM iterations."""
@@ -982,19 +996,14 @@ class SolverCoupledADMM(SolverCoupled):
             return
 
         proxy_flag = int(BodyFlags.PROXY)
-        body_flags = view.body_flags.numpy()
-        shape_ids = [
-            shape_id
-            for shape_id, body_id in enumerate(view.shape_body.numpy())
-            if int(body_id) >= 0 and int(body_flags[int(body_id)]) & proxy_flag
-        ]
-        if not shape_ids:
-            return
-
         collision_mask = int(ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES | ShapeFlags.HYDROELASTIC)
-        shape_flags = view.shape_flags.numpy().copy()
-        shape_flags[np.asarray(shape_ids, dtype=np.int32)] &= ~collision_mask
-        view.shape_flags = wp.array(shape_flags, dtype=wp.int32, device=self.model.device)
+        wp.launch(
+            _disable_proxy_shape_collisions_kernel,
+            dim=view.shape_count,
+            inputs=[view.shape_body, view.body_flags, proxy_flag, collision_mask],
+            outputs=[view._cow_array("shape_flags")],
+            device=self.model.device,
+        )
 
     def _refresh_body_inertial_view_overrides(self, entry: SolverEntry) -> None:
         gamma = float(self._coupling.gamma)
