@@ -382,6 +382,55 @@ class TestInertia(unittest.TestCase):
         assert_np_equal(np.array(com), np.array(com_ref), tol=1e-6)
         assert_np_equal(np.array(I), np.array(I_ref), tol=1e-6)
 
+    def test_hollow_primitive_thickness_must_fit_inside_shape(self):
+        cases = [
+            (GeoType.SPHERE, (0.5, 0.0, 0.0), 0.5, "sphere radius"),
+            (GeoType.BOX, (0.5, 0.4, 0.3), 0.3, "box minimum half-extent"),
+            (GeoType.CAPSULE, (0.5, 0.2, 0.0), 0.2, "capsule half-height"),
+            (GeoType.CYLINDER, (0.5, 0.2, 0.0), 0.2, "cylinder half-height"),
+            (GeoType.CONE, (0.5, 0.2, 0.0), 0.2, "cone half-height"),
+            (GeoType.ELLIPSOID, (0.5, 0.4, 0.3), 0.3, "ellipsoid minimum semi-axis"),
+        ]
+
+        for geo_type, scale, thickness, label in cases:
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(ValueError, "thickness"):
+                    compute_inertia_shape(
+                        geo_type,
+                        scale,
+                        None,
+                        1000.0,
+                        is_solid=False,
+                        thickness=thickness,
+                    )
+
+    def test_hollow_primitive_thickness_must_be_positive(self):
+        for thickness in (0.0, -0.01):
+            with self.subTest(thickness=thickness):
+                with self.assertRaisesRegex(ValueError, "thickness must be > 0"):
+                    compute_inertia_shape(
+                        GeoType.SPHERE,
+                        (0.5, 0.0, 0.0),
+                        None,
+                        1000.0,
+                        is_solid=False,
+                        thickness=thickness,
+                    )
+
+    def test_hollow_primitive_valid_thickness_returns_positive_mass(self):
+        mass, com, inertia = compute_inertia_shape(
+            GeoType.SPHERE,
+            (0.5, 0.0, 0.0),
+            None,
+            1000.0,
+            is_solid=False,
+            thickness=0.05,
+        )
+
+        self.assertGreater(mass, 0.0)
+        assert_np_equal(np.array(com), np.zeros(3), tol=1e-6)
+        self.assertTrue(np.all(np.isfinite(np.array(inertia))))
+
     def test_hollow_cone_inertia(self):
         """Test hollow cone inertia via compute_inertia_shape against mesh subtraction.
 
