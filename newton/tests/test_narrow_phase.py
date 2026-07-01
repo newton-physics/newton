@@ -344,6 +344,24 @@ class _NarrowPhaseSetupMixin:
 class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
     """Test NarrowPhase collision detection API with various primitive pairs."""
 
+    def test_launch_without_shape_edge_range(self):
+        geom_list = [
+            {
+                "type": GeoType.BOX,
+                "transform": ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                "data": ([0.5, 0.5, 0.5], 0.0),
+            },
+            {
+                "type": GeoType.BOX,
+                "transform": ([0.5, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                "data": ([0.5, 0.5, 0.5], 0.0),
+            },
+        ]
+
+        count, *_ = self._run_narrow_phase(geom_list, [(0, 1)])
+
+        self.assertGreater(count, 0)
+
     def test_sphere_sphere_separated(self):
         """Test sphere-sphere collision when separated."""
         # Two spheres separated by distance 1.5

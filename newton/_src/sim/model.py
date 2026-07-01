@@ -301,7 +301,11 @@ class Model:
         self.shape_collision_radius: wp.array[wp.float32] | None = None
         """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
         self.shape_contact_pairs: wp.array[wp.vec2i] | None = None
-        """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int."""
+        """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int.
+
+        Static-static pairs are omitted. Kinematic-kinematic and static-kinematic pairs
+        are retained so consumers can opt into them during contact generation.
+        """
         self.shape_contact_pair_count: int = 0
         """Number of shape contact pairs."""
         self.shape_world: wp.array[wp.int32] | None = None
