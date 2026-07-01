@@ -251,9 +251,9 @@ class TestUSDDeformableCloth(unittest.TestCase):
 
     def test_cloth_material_maps_to_isotropic_membrane(self):
         """Surface material -> isotropic membrane: stretchStiffness -> tri_ke, bendStiffness -> edge
-        bending. tri_ka (area-preservation/Poisson) is left at the solver default since the proposal
-        has no such attribute. shearStiffness can't be represented independently: it warns but is
-        preserved in path_cloth_attrs."""
+        bending. tri_ka (area-preservation/Poisson) is 0 since the proposal has no such attribute
+        (the builder default would fabricate an unauthored area response). shearStiffness can't be
+        represented independently: it warns but is preserved in path_cloth_attrs."""
         from pxr import Usd, UsdPhysics
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -278,9 +278,9 @@ class TestUSDDeformableCloth(unittest.TestCase):
             _, cloth_map, _ = deformable_maps(builder)
             t0 = cloth_map["/World/Cloth"]["tri"][0]
             e0 = cloth_map["/World/Cloth"]["edge"][0]
-            # stretchStiffness -> tri_ke (mu); tri_ka left at the solver default (not fabricated).
+            # stretchStiffness -> tri_ke (mu); tri_ka (lambda) = 0, not the builder default.
             self.assertAlmostEqual(builder.tri_materials[t0][0], stretch, delta=stretch * 1e-3)  # tri_ke (mu)
-            self.assertEqual(builder.tri_materials[t0][1], builder.default_tri_ka)  # tri_ka (lambda) = default
+            self.assertEqual(builder.tri_materials[t0][1], 0.0)  # tri_ka (lambda): no proposal attribute
             self.assertAlmostEqual(builder.edge_bending_properties[e0][0], bend, delta=bend * 1e-3)
             # The unmapped shearStiffness survives for anisotropic solvers.
             self.assertAlmostEqual(result["path_cloth_attrs"]["/World/Cloth"]["material"]["shearStiffness"], shear)
@@ -308,6 +308,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
             _, cloth_map, _ = deformable_maps(builder)
             t0 = cloth_map["/World/Cloth"]["tri"][0]
             self.assertEqual(builder.tri_materials[t0][0], 0.0)  # tri_ke (stretch)
+            self.assertEqual(builder.tri_materials[t0][1], 0.0)  # tri_ka (area): no default leaks in
             self.assertEqual(result["path_cloth_attrs"]["/World/Cloth"]["material"]["stretchStiffness"], 0.0)
 
     def test_two_cloths_have_disjoint_ranges(self):

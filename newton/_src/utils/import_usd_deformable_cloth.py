@@ -125,9 +125,10 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         # This membrane is isotropic, so stretch and shear are not separable: both live in mu.
         # We therefore drive mu from stretchStiffness and drop shearStiffness (an anisotropic
         # membrane such as SolverStyle3D's tri_aniso_ke is needed to honor it). tri_ka encodes
-        # the Poisson ratio nu = tri_ka / (tri_ka + 2*tri_ke); given a target nu it would be
-        # tri_ka = 2*tri_ke*nu / (1 - nu), but the surface material authors no Poisson, so we
-        # leave tri_ka at the solver default rather than fabricate one.
+        # the Poisson ratio nu = tri_ka / (tri_ka + 2*tri_ke); the surface material authors no
+        # Poisson term, so tri_ka is set to 0 (nu = 0). Passing None instead would inject the
+        # builder's default area stiffness, giving even a zero-stiffness material an unauthored
+        # area-preservation response.
         #
         # The proposal authors moduli in force/area; Newton integrates the triangle energy over
         # area, so a modulus is scaled by the shell thickness when one is authored (membrane
@@ -140,7 +141,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         if thickness is not None:
             tri_ke = tri_ke * thickness if tri_ke is not None else None
             edge_ke = edge_ke * thickness**3 if edge_ke is not None else None
-        tri_ka = None  # see above: no proposal attribute -> solver default
+        tri_ka = 0.0  # see above: no proposal attribute -> no fabricated area term
         if "shearStiffness" in cloth_mat:
             warnings.warn(
                 f"{path}: shearStiffness is not applied -- SolverVBD / SolverSemiImplicit use an "
