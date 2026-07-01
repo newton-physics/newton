@@ -1725,8 +1725,8 @@ class ArticulationView:
         state: State,
         eval_type: InverseDynamics.EvalType,
         inverse_dynamics: InverseDynamics,
-        mask=None,
-    ):
+        mask: wp.array[bool] | None = None,
+    ) -> None:
         """Compute inverse-dynamics quantities for articulations in this view.
 
         Forwards to :func:`~newton.eval_inverse_dynamics` with an
