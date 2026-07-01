@@ -18,3 +18,4 @@ newton.solvers.experimental.coupled
 .. autoclass:: SolverCoupledADMM
 
 .. autoclass:: SolverCoupledProxy
+
