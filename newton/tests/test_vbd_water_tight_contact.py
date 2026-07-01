@@ -261,7 +261,9 @@ def test_edge_face_uses_shape_margin(test, device):
     total force is ke*0.05; with ``shape_margin = m`` for the contacted shape it is ke*(0.05+m).
     """
     m = 0.02
-    f0, _, ke, _, verts = _run_face_section2(device, wp.zeros(0, dtype=float, device=device))
+    # Both runs use a 1-entry per-shape array so only the margin *value* differs (not the
+    # array-shape contract). test_barycentric_force_distribution covers the empty-array guard.
+    f0, _, ke, _, verts = _run_face_section2(device, wp.array([0.0], dtype=float, device=device))
     fm, _, _, _, _ = _run_face_section2(device, wp.array([m], dtype=float, device=device))  # shape 0 margin
     verts = list(verts)
     np.testing.assert_allclose(f0[verts].sum(axis=0), [0.0, 0.0, 0.05 * ke], rtol=2e-4, atol=1e-4)

@@ -350,7 +350,8 @@ class Example:
         """The gripped triangle must be held in the air, not dropped to the ground."""
         q = self.state_0.particle_q.numpy()
         mean_z = float(q[list(self._mesh_particles), 2].mean())
-        assert mean_z > 0.3, f"soft triangle was dropped (mean z={mean_z:.3f}); water-tight grip failed"
+        if not mean_z > 0.3:
+            raise AssertionError(f"soft triangle was dropped (mean z={mean_z:.3f}); water-tight grip failed")
 
     @staticmethod
     def create_parser():

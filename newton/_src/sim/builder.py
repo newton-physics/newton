@@ -10512,6 +10512,9 @@ class ModelBuilder:
                 array lengths, monotonicity). Default is False.
             skip_validation_joint_ordering: If True, skips validation of DFS topological joint ordering within
                 articulations. Default is True (opt-in) because this check has O(n log n) complexity.
+            enable_water_tight_rigid_soft_contact: If True, provisions volume SDFs for participating
+                MESH/CONVEX_MESH shapes that lack one so the soft edge/face contact passes can query them.
+                Default is False.
 
         Returns:
             A fully constructed Model object containing all simulation data on the specified device.
