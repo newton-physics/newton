@@ -243,7 +243,6 @@
 - Import per-shape authored color from USD stages into `ModelBuilder.shape_color`
 - Add `TRIANGLE_PRISM` support-function type for heightfield triangles, extruding 1 m along the heightfield's local -Z so GJK/MPR naturally resolves shapes on the back side
 - Add `ViewerGL.log_scalar()` for live scalar time-series plots in the viewer
-- Add `newton.utils.OnnxRuntime`, a graph-capturable ONNX inference engine backed solely by Warp kernels (no `onnxruntime` or `torch` runtime dependency); used by `ControllerNeuralMLP` and `ControllerNeuralLSTM` to load `.onnx` policies. To migrate a TorchScript policy, run `torch.onnx.export(model, dummy_input, "policy.onnx", opset_version=17)` once and point the controllers at the resulting `.onnx` file. The `onnx` package is now an optional extra (`pip install newton[onnx]`); install it explicitly to use the ONNX runtime.
 - Add `Mesh.is_watertight` property (cached) that reports whether every geometric edge is shared by exactly two triangles
 - Add `HydroelasticSDF.Config.mc_edge_clamp_min` to expose the marching-cubes edge-interpolation clamp; default `0.02` matches the previous hard-coded value. Set to `0.0` to disable the clamp and recover faithful contact-surface dynamics for threading-style scenarios (#2702)
 - Add `deterministic` flag to `CollisionPipeline` and `NarrowPhase` for GPU-thread-scheduling-independent contact ordering via radix sort and deterministic fingerprint tiebreaking in contact reduction
