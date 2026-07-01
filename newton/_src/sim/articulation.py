@@ -1461,11 +1461,11 @@ def eval_articulation_inverse_dynamics_force_kernel(
 def eval_inverse_dynamics_force(
     model: Model,
     state: State,
-    H: wp.array,
-    qddot: wp.array,
-    coriolis_force: wp.array,
-    gravity_force: wp.array,
-    tau: wp.array,
+    H: wp.array3d[wp.float32],
+    qddot: wp.array[wp.float32],
+    coriolis_force: wp.array[wp.float32],
+    gravity_force: wp.array[wp.float32],
+    tau: wp.array[wp.float32],
 ) -> None:
     """Evaluate the manipulator-equation joint force ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)``.
 
