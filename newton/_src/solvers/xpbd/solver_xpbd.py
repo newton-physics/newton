@@ -7,6 +7,7 @@ from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelFlags, State
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..solver import SolverBase
+from . import kernels
 from .kernels import (
     accumulate_weighted_contact_impulse,
     apply_body_delta_velocities,
@@ -110,8 +111,18 @@ class SolverXPBD(SolverBase):
         rigid_contact_con_weighting: bool = True,
         angular_damping: float = 0.0,
         enable_restitution: bool = False,
+        deterministic: wp.DeterministicMode | None = None,
     ):
         super().__init__(model=model)
+        effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
+        self._set_module_options(
+            {
+                "deterministic": effective_deterministic,
+                "deterministic_max_records": 0,
+            },
+            module=kernels,
+        )
+
         self.iterations = iterations
 
         self.soft_body_relaxation = soft_body_relaxation
@@ -144,6 +155,7 @@ class SolverXPBD(SolverBase):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        self._apply_module_options()
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
 
@@ -262,6 +274,7 @@ class SolverXPBD(SolverBase):
 
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float) -> None:
+        self._apply_module_options()
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
@@ -805,6 +818,7 @@ class SolverXPBD(SolverBase):
             ValueError: If ``contacts.force`` is ``None`` (not requested), if no step has been run yet,
                 or if the contacts capacity does not match the one used in the last :meth:`step`.
         """
+        self._apply_module_options()
         if contacts.force is None:
             raise ValueError(
                 "contacts.force is not allocated. Call model.request_contact_attributes('force') "
