@@ -1457,6 +1457,14 @@ def eval_articulation_inverse_dynamics_force_kernel(
     for i in range(dof_count):
         tau[dof_start + i] = tau[dof_start + i] + coriolis_force[dof_start + i] + gravity_force[dof_start + i]
 
+    # Zero loop-closure DOF slots (gap between tree-joint end and next
+    # articulation start). Non-empty when loop-closing joints carry
+    # generalized coordinates; articulation_start has a sentinel entry so
+    # art_idx + 1 is always in bounds.
+    gap_end = joint_qd_start[articulation_start[art_idx + 1]]
+    for k in range(dof_end, gap_end):
+        tau[k] = float(0.0)
+
 
 def eval_inverse_dynamics_force(
     model: Model,
@@ -1517,7 +1525,6 @@ def eval_inverse_dynamics_force(
     if tau.shape != expected_shape:
         raise ValueError(f"tau has shape {tau.shape}, expected {expected_shape}.")
 
-    tau.zero_()
     wp.launch(
         kernel=eval_articulation_inverse_dynamics_force_kernel,
         dim=model.articulation_count,
