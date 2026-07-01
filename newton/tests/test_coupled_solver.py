@@ -660,6 +660,77 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         self.model = builder.finalize(device="cpu")
 
+    def test_configure_view_applies_after_compaction(self):
+        builder = newton.ModelBuilder(gravity=0.0)
+        cloth_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        soft_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        positions = (
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (1.0, 0.0, 1.0),
+            (0.0, 1.0, 1.0),
+            (0.0, 0.0, 2.0),
+        )
+        for position in positions:
+            builder.add_particle(pos=wp.vec3(*position), vel=wp.vec3(0.0), mass=1.0)
+
+        builder.add_triangle(i=0, j=1, k=2)
+        builder.add_triangle(i=3, j=2, k=1)
+        builder.add_edge(i=0, j=3, k=1, l=2)
+        builder.add_tetrahedron(i=4, j=5, k=6, l=7)
+        model = builder.finalize(device="cpu")
+        configured_body_counts = {}
+
+        def configure_soft_view(view: ModelView) -> None:
+            configured_body_counts[view.name] = view.body_count
+            view.tri_count = 0
+            view.edge_count = 0
+
+        def configure_cloth_view(view: ModelView) -> None:
+            configured_body_counts[view.name] = view.body_count
+            view.tet_count = 0
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="soft",
+                    solver=_StepCountingCopySolver,
+                    bodies=[soft_body],
+                    particles=[4, 5, 6, 7],
+                    configure_view=configure_soft_view,
+                ),
+                SolverCoupled.Entry(
+                    name="cloth",
+                    solver=_StepCountingCopySolver,
+                    bodies=[cloth_body],
+                    particles=[0, 1, 2, 3],
+                    configure_view=configure_cloth_view,
+                ),
+            ],
+        )
+
+        self.assertEqual(configured_body_counts, {"soft": 1, "cloth": 1})
+
+        soft_view = coupled.view("soft")
+        self.assertEqual(soft_view.tri_count, 0)
+        self.assertEqual(soft_view.edge_count, 0)
+        self.assertEqual(soft_view.tet_count, 1)
+        self.assertEqual(soft_view.tri_indices.shape[0], 0)
+        self.assertEqual(soft_view.edge_indices.shape[0], 0)
+        self.assertEqual(soft_view.tet_indices.shape[0], 1)
+
+        cloth_view = coupled.view("cloth")
+        self.assertEqual(cloth_view.tri_count, 2)
+        self.assertEqual(cloth_view.edge_count, 1)
+        self.assertEqual(cloth_view.tet_count, 0)
+        self.assertEqual(cloth_view.tri_indices.shape[0], 2)
+        self.assertEqual(cloth_view.edge_indices.shape[0], 1)
+        self.assertEqual(cloth_view.tet_indices.shape[0], 0)
+
     def test_entry_control_arrays_are_mapped_to_local_dofs(self):
         """Entry solvers should receive control arrays in their local DOF namespace."""
         _ControlRecordingSolver.instances.clear()

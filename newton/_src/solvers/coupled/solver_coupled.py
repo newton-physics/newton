@@ -211,7 +211,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
             particles: Global particle ids owned by this entry.
             joints: Global joint ids owned by this entry.
             shapes: Global shape ids owned by this entry.
-            configure_view: Optional callback for entry-local view overrides.
+            configure_view: Optional callback invoked after compaction for
+                entry-local view overrides.
             substeps: Number of substeps to run per coupled step.
             in_place: Whether the sub-solver may step in-place.
             preserve_shape_ids: Whether shape ids remain in the parent model
@@ -383,14 +384,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
             self._apply_entry_shape_visibility(view, cfg, proxy_body_keep)
             self._customize_view(cfg.name, view, body_indices)
-            if cfg.configure_view is not None:
-                cfg.configure_view(view)
             index_lists = self._compact_entry_view_if_needed(
                 view, cfg, proxy_body_keep, proxy_particle_keep, proxy_joint_keep
             )
             if index_lists is None:
                 visible_bodies = {int(i) for i in cfg.bodies} | {int(i) for i in proxy_body_keep}
                 self._apply_global_shape_metadata(view, cfg, visible_bodies)
+            if cfg.configure_view is not None:
+                cfg.configure_view(view)
             self._filter_shape_contact_pairs(view)
 
             index_maps = self._build_entry_index_maps(view, index_lists)
