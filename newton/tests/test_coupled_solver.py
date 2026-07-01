@@ -747,7 +747,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         joint = builder.add_joint_revolute(parent=parent, child=child, axis=(0.0, 0.0, 1.0))
         model = builder.finalize(device="cpu")
 
-        with self.assertWarnsRegex(UserWarning, r"entry 'child'.*joint.*outside.*full model layout"):
+        with self.assertLogs("newton._src.solvers.coupled.solver_coupled", level="INFO") as logs:
             coupled = SolverCoupled(
                 model=model,
                 entries=[
@@ -760,6 +760,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 ],
             )
 
+        self.assertRegex("\n".join(logs.output), r"entry 'child'.*joint.*outside.*full model layout")
         self.assertEqual(coupled.view("child").body_count, model.body_count)
 
     def test_entry_control_arrays_are_mapped_to_local_dofs(self):

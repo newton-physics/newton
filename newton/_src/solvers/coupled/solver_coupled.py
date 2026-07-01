@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-import warnings
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
@@ -24,6 +24,8 @@ from .model_view import ModelView, _AttributeNamespaceView
 
 if TYPE_CHECKING:
     from ...sim import Contacts, Control, Model, State
+
+logger = logging.getLogger(__name__)
 
 
 @wp.func
@@ -844,9 +846,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
     @staticmethod
     def _warn_compaction_fallback(cfg: SolverCoupled.Entry, reason: str) -> None:
-        warnings.warn(
+        logger.info(
             f"SolverCoupled entry {cfg.name!r} could not be compacted because {reason}; using the full model layout.",
-            stacklevel=5,
         )
 
     def _entry_visible_shapes(self, cfg: SolverCoupled.Entry, visible_bodies: set[int]) -> set[int]:
