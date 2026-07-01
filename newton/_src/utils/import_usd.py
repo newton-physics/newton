@@ -260,7 +260,7 @@ def parse_usd(
             * - ``"path_shape_scale"``
               - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
             * - ``"path_cable_map"``
-              - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` in :class:`~newton.ModelBuilder`. A single cable is imported unwrapped, so the caller wraps ``joint_indices`` with :meth:`~newton.ModelBuilder.add_articulation`. Curves welded into a rod graph by curve-to-curve attachments are instead returned pre-wrapped, so ``joint_indices`` is empty for those curves.
+              - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` in :class:`~newton.ModelBuilder`. Each cable is wrapped into its own articulation (``"<path>_articulation"``) so the model is finalize-ready; the caller does not wrap it. Curves welded into a rod graph return empty ``joint_indices``.
             * - ``"path_cloth_map"``
               - Mapping from prim path (str) of a surface deformable (cloth) to a dict of its ``particle`` / ``tri`` / ``edge`` ``(start, end)`` index ranges
             * - ``"path_soft_map"``
@@ -3694,11 +3694,10 @@ def parse_usd(
         else:
             builder._add_base_joints_to_floating_bodies(bodies_to_articulate, floating=floating, base_joint=base_joint)
 
-    # Build deformables (cables/cloth/volume) after rigid bodies, their collider-mass
-    # computation, and the floating-body base-joint pass above. Imported cables are left
-    # unwrapped and wrapped into an articulation by the caller, so their joints must be the
-    # last to enter any articulation; building them here keeps the caller's cable articulation
-    # monotonic in finalize() relative to importer-created (e.g. kinematic-anchor) articulations.
+    # Build deformables (cables/cloth/volume) after rigid bodies, their collider-mass computation,
+    # and the floating-body base-joint pass above. The importer wraps each cable into its own
+    # articulation, so building deformables last keeps those articulations after any
+    # importer-created ones (e.g. kinematic anchors), preserving ascending articulation order.
     # Volume deformables (TetMesh -> soft body). PhysicsVolumeDeformableSimAPI (or a
     # PhysicsDeformableBodyAPI) opts into the mass precedence; a bare TetMesh stays legacy.
     root_prim = stage.GetPrimAtPath(root_path)

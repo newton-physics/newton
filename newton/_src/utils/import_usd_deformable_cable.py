@@ -347,8 +347,8 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
 def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve_paths: set[str]) -> None:
     """Import single-curve cable deformables (linear ``GeomBasisCurves`` -> VBD rod via ``add_rod``).
 
-    Curves already welded into a rod graph (``consumed_cable_curve_paths``) are skipped. The cable
-    joints are left unwrapped for the caller to wrap before ``finalize()``. Results land in
+    Curves already welded into a rod graph (``consumed_cable_curve_paths``) are skipped. Each cable is
+    wrapped into its own articulation so the model is finalize-ready. Results land in
     ``path_cable_map`` / attrs / segments / point anchors.
     """
     from pxr import Usd, UsdGeom
@@ -578,10 +578,9 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                         cable_mat["bendStiffness"], radius, seg_len
                     )[1]
             label = path if len(vertex_counts) == 1 else f"{path}_curve{ci}"
-            # Imported cables are left unwrapped (wrap_in_articulation=False): the
-            # caller wraps the returned joints via add_articulation() before
-            # finalize(), so articulation topology (e.g. closing a loop with extra
-            # joints, or attaching the cable to other bodies) stays a caller choice.
+            # Wrap each cable into its own articulation so the model is finalize-ready (add_rod keeps
+            # a periodic cable's loop-closing joint out of the tree). Attachment joints to other
+            # bodies are loop-closing and stay outside the articulation regardless.
             bodies, joints = builder.add_rod(
                 positions=positions,
                 quaternions=quaternions,
@@ -591,7 +590,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 bend_stiffness=bend_stiffness,
                 closed=closed,
                 label=label,
-                wrap_in_articulation=False,
+                wrap_in_articulation=True,
                 body_frame_origin="com",
             )
             cable_bodies.extend(bodies)

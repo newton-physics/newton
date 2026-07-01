@@ -2937,7 +2937,7 @@ class ModelBuilder:
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
                 * - ``"path_cable_map"``
-                  - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` in :class:`~newton.ModelBuilder`. A single cable is imported unwrapped, so the caller wraps ``joint_indices`` with :meth:`~newton.ModelBuilder.add_articulation`. Curves welded into a rod graph by curve-to-curve attachments are instead returned pre-wrapped, so ``joint_indices`` is empty for those curves.
+                  - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` in :class:`~newton.ModelBuilder`. Each cable is wrapped into its own articulation (``"<path>_articulation"``) so the model is finalize-ready; the caller does not wrap it. Curves welded into a rod graph return empty ``joint_indices``.
                 * - ``"path_cloth_map"``
                   - Mapping from prim path (str) of a surface deformable (cloth) to a dict of its ``particle`` / ``tri`` / ``edge`` ``(start, end)`` index ranges
                 * - ``"path_soft_map"``

@@ -140,10 +140,10 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         """A cable attached to a jointless kinematic body must finalize().
 
         The importer gives a jointless kinematic/floating rigid body its own base-joint
-        articulation. That pass must run before the (caller-wrapped) cable so the cable's
-        articulation stays last in both id and joint index; otherwise finalize() rejects a
-        non-monotonic articulation_start. Regression for the StaticMeshAttach case where the
-        attachment targets a kinematic anchor that carries no USD joint.
+        articulation, then wraps the cable in its own. Both passes must emit joints in
+        increasing order so articulation_start stays monotonic; otherwise finalize() rejects
+        it. Regression for the StaticMeshAttach case where the attachment targets a kinematic
+        anchor that carries no USD joint.
         """
         from pxr import Usd, UsdGeom, UsdPhysics
 
@@ -154,8 +154,8 @@ class TestUSDDeformableAttachments(unittest.TestCase):
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             # Kinematic anchor with a collider (so it gets a computed mass > 0) but no USD joint:
             # the importer gives it a base-joint articulation, which must be created before the
-            # cable so the caller's cable articulation stays monotonic. A massless anchor would be
-            # skipped by the floating-body pass and would not reproduce the ordering conflict.
+            # cable's own articulation so articulation_start stays monotonic. A massless anchor
+            # would be skipped by the floating-body pass and would not reproduce the conflict.
             anchor = UsdGeom.Cube.Define(stage, "/World/Anchor")
             anchor.CreateSizeAttr(0.1)
             rigid_api = UsdPhysics.RigidBodyAPI.Apply(anchor.GetPrim())
@@ -177,8 +177,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             result = builder.add_usd(str(usd_path))
-            _bodies, joints = result["path_cable_map"]["/World/Cable"]
-            builder.add_articulation(joints, label="/World/Cable_articulation")
+            self.assertIn("/World/Cable_articulation", builder.articulation_label)
             self.assertIn("/World/AttachKinematic", result["path_attachment_map"])
 
             # The regression: a non-monotonic articulation_start raised here before the fix.

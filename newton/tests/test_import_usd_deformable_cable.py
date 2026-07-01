@@ -737,11 +737,10 @@ class TestUSDDeformableCable(unittest.TestCase):
             # Parse the cable into a prototype builder, then replicate across worlds.
             proto = newton.ModelBuilder()
             result = proto.add_usd(str(usd_path))
-            base_bodies, base_joints = result["path_cable_map"]["/World/Cable"]
+            base_bodies, _ = result["path_cable_map"]["/World/Cable"]
             self.assertEqual(base_bodies, list(range(proto.body_count)))  # cable is the whole prototype
-            # Imported cables are unwrapped; the caller wraps them into an articulation,
-            # which replicate() then copies per world.
-            proto.add_articulation(base_joints, label="/World/Cable_articulation")
+            # The importer wraps the cable into its own "<path>_articulation", which replicate() copies per world.
+            self.assertIn("/World/Cable_articulation", proto.articulation_label)
 
             num_envs = 3
             scene = newton.ModelBuilder()
@@ -756,8 +755,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             ranges = [list(range(e * nb, (e + 1) * nb)) for e in range(num_envs)]
             self.assertEqual(sorted(i for r in ranges for i in r), list(range(scene.body_count)))
 
-    def test_imported_cable_is_unwrapped_until_caller_wraps(self):
-        """add_usd imports cable joints unwrapped; wrapping into an articulation is the caller's job."""
+    def test_imported_cable_is_wrapped_in_an_articulation(self):
+        """add_usd wraps each cable into its own "<path>_articulation", so the model is finalize-ready
+        without the caller wrapping the joints."""
         from pxr import Usd, UsdPhysics
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -769,14 +769,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            _bodies, joints = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
-            # The importer does not impose an articulation; the cable joints are unwrapped.
-            self.assertEqual(len(builder.articulation_label), 0)
-
-            # The caller wraps the returned joints before finalize() (an unwrapped cable
-            # would otherwise fail finalize with orphan joints).
-            builder.add_articulation(joints, label="/World/Cable_articulation")
+            builder.add_usd(str(usd_path))
             self.assertIn("/World/Cable_articulation", builder.articulation_label)
+            builder.finalize()  # would raise on orphan cable joints if the cable were left unwrapped
 
     def test_periodic_cable_imports_closing_segment(self):
         """A periodic curve builds a body for the closing v[-1] -> v[0] segment."""
@@ -792,13 +787,12 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            # A closed cable is imported unwrapped, with a loop-closing joint the caller must keep
-            # outside any articulation; add_rod warns to flag that contract.
-            with self.assertWarnsRegex(UserWarning, "loop-closing joint"):
-                result = builder.add_usd(str(usd_path))
+            result = builder.add_usd(str(usd_path))
             bodies, joints = result["path_cable_map"]["/World/Cable"]
             self.assertEqual(len(bodies), 4, "expected one body per segment, incl. the closing segment")
             self.assertEqual(len(joints), 4, "expected 3 chain joints + 1 loop joint")
+            # The importer wraps the closed cable; add_rod keeps the loop-closing joint out of the tree.
+            self.assertIn("/World/Cable_articulation", builder.articulation_label)
 
     def test_path_cable_map_remapped_after_collapse(self):
         """path_cable_map indices still point at cable bodies after fixed-joint collapse."""
@@ -1341,8 +1335,7 @@ class TestUSDDeformableCableAsset(unittest.TestCase):
 
         with wp.ScopedDevice(device):
             builder = newton.ModelBuilder()
-            _bodies, joints = builder.add_usd(_stage_from_usda(_CABLE_ASSET_USDA))["path_cable_map"]["/World/Cable"]
-            builder.add_articulation(joints)  # imported cables are unwrapped; the caller wraps them.
+            builder.add_usd(_stage_from_usda(_CABLE_ASSET_USDA))  # cables are wrapped by the importer
             builder.color()  # SolverVBD requires a coloring before finalize.
             model = builder.finalize()
 
