@@ -1859,13 +1859,18 @@ class TestMassMatrix(TestInverseDynamicsBase):
 class TestManipulatorEquation(TestInverseDynamicsBase):
     """Manipulator-equation tests covering combined inverse-dynamics outputs."""
 
-    def test_eval_inverse_dynamics_finite_on_degenerate_joint_types(self):
-        """Finite-only guard for DISTANCE and CABLE joint types.
+    def test_eval_inverse_dynamics_finite_on_distance_joint(self):
+        """Finite-only guard for the DISTANCE joint type.
 
-        These paths are either unsupported by the inverse-dynamics pipeline
-        (CABLE is not reconstructed by ``eval_fk``; DISTANCE is treated as
-        FREE). Correctness is not asserted, but a NaN regression on their
-        outputs would currently go uncaught.
+        DISTANCE is supported by the inverse-dynamics pipeline (treated as
+        FREE), so its outputs are defined. Correctness is not asserted here, but
+        a NaN regression on the outputs would go uncaught otherwise.
+
+        CABLE is intentionally excluded: it is not implemented by
+        ``jcalc_motion`` / ``jcalc_motion_subspace`` and is not reconstructed by
+        ``eval_fk``, so the pipeline reads unreconstructed state for it and the
+        outputs are undefined (observed as intermittently non-finite). Asserting
+        finiteness there would test undefined behavior rather than a contract.
 
         Multi-angular-DOF D6 joints are fully supported and are covered by
         analytical assertions in :meth:`test_inverse_dynamics_force_baseline`
@@ -1873,60 +1878,61 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         """
         identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
-        def _build_single_link(add_joint_fn):
-            b = newton.ModelBuilder()
-            link = b.add_link(
-                xform=identity_xform,
-                mass=1.0,
-                inertia=self.I_UNIT,
-                com=wp.vec3(0.0, 0.0, 0.0),
-            )
-            j = add_joint_fn(b, link)
-            b.add_articulation([j])
-            return b.finalize(device=self.device)
+        b = newton.ModelBuilder()
+        link = b.add_link(
+            xform=identity_xform,
+            mass=1.0,
+            inertia=self.I_UNIT,
+            com=wp.vec3(0.0, 0.0, 0.0),
+        )
+        j = b.add_joint_distance(
+            parent=-1,
+            child=link,
+            parent_xform=identity_xform,
+            child_xform=identity_xform,
+        )
+        b.add_articulation([j])
+        model = b.finalize(device=self.device)
 
-        cases = [
-            (
-                "distance",
-                lambda b, link: b.add_joint_distance(
-                    parent=-1,
-                    child=link,
-                    parent_xform=identity_xform,
-                    child_xform=identity_xform,
-                ),
-            ),
-            (
-                "cable",
-                lambda b, link: b.add_joint_cable(
-                    parent=-1,
-                    child=link,
-                    parent_xform=identity_xform,
-                    child_xform=identity_xform,
-                ),
-            ),
-        ]
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        # Non-zero velocities so Coriolis paths are exercised.
+        if model.joint_dof_count > 0:
+            joint_qd = np.ones(model.joint_dof_count, dtype=np.float32) * 0.5
+            state.joint_qd.assign(joint_qd)
 
-        for name, add_joint_fn in cases:
-            with self.subTest(joint_type=name):
-                model = _build_single_link(add_joint_fn)
-                state = model.state()
-                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-                # Non-zero velocities so Coriolis paths are exercised.
-                if model.joint_dof_count > 0:
-                    joint_qd = np.ones(model.joint_dof_count, dtype=np.float32) * 0.5
-                    state.joint_qd.assign(joint_qd)
+        inverse_dynamics = model.inverse_dynamics()
+        newton.eval_inverse_dynamics(
+            model,
+            state,
+            newton.InverseDynamics.EvalType.ALL,
+            inverse_dynamics,
+        )
 
-                inverse_dynamics = model.inverse_dynamics()
-                newton.eval_inverse_dynamics(
-                    model,
-                    state,
-                    newton.InverseDynamics.EvalType.ALL,
-                    inverse_dynamics,
-                )
+        self.assertTrue(np.all(np.isfinite(inverse_dynamics.mass_matrix.numpy())))
+        self.assertTrue(np.all(np.isfinite(inverse_dynamics.gravity_force.numpy())))
+        self.assertTrue(np.all(np.isfinite(inverse_dynamics.coriolis_force.numpy())))
 
-                self.assertTrue(np.all(np.isfinite(inverse_dynamics.mass_matrix.numpy())))
-                self.assertTrue(np.all(np.isfinite(inverse_dynamics.gravity_force.numpy())))
-                self.assertTrue(np.all(np.isfinite(inverse_dynamics.coriolis_force.numpy())))
+    def test_inverse_dynamics_container_rejects_cable_joint(self):
+        """CABLE joints are unsupported; ``Model.inverse_dynamics()`` must reject them.
+
+        Inverse dynamics has no motion-subspace implementation for CABLE
+        (``jcalc_motion`` / ``jcalc_motion_subspace``) and ``eval_fk`` does not
+        reconstruct it, so its outputs are undefined. The container factory
+        raises a clear ``ValueError`` up front rather than letting the
+        graph-capturable :func:`~newton.eval_inverse_dynamics` emit undefined
+        (intermittently non-finite) results.
+        """
+        identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+        b = newton.ModelBuilder()
+        link = b.add_link(xform=identity_xform, mass=1.0, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
+        j = b.add_joint_cable(parent=-1, child=link, parent_xform=identity_xform, child_xform=identity_xform)
+        b.add_articulation([j])
+        model = b.finalize(device=self.device)
+
+        with self.assertRaises(ValueError) as ctx:
+            model.inverse_dynamics()
+        self.assertIn("CABLE", str(ctx.exception))
 
     def test_eval_inverse_dynamics_force_hand_crafted_inputs(self):
         """White-box test of ``eval_inverse_dynamics_force`` with hand-chosen inputs.
