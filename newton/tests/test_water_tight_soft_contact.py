@@ -927,6 +927,49 @@ add_function_test(
 )
 
 
+def test_face_cull_uses_max_vertex_reach(test, device):
+    """Regression (B6): the FACE cull reach must be the max centroid-to-vertex distance, not circumradius.
+
+    A deliberately non-equilateral triangle whose near vertex is also the one *farthest* from the
+    centroid, so circumradius (~0.124) is smaller than the true reach (~0.163). The near vertex sits
+    inside the sphere's contact margin (phi ~= 0.005 < 0.01), so a real FACE contact exists -- but the
+    centroid SDF (~0.168) exceeds ``margin + circumradius`` (~0.134), so the old circumradius cull
+    dropped the whole triangle. The correct reach keeps it (``margin + reach`` ~= 0.173 > 0.168).
+    A sphere gives an unambiguous radial SDF, so the culled point is genuinely within margin.
+    """
+    builder = newton.ModelBuilder()
+    builder.add_shape_sphere(body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), radius=0.1)
+    # Near vertex b0 (just outside the sphere along +x) is farthest from the centroid; the a0/c0
+    # cluster sits far out along +x, making the triangle strongly non-equilateral.
+    b0 = builder.add_particle(wp.vec3(0.105, 0.0, 0.0), wp.vec3(0.0), 0.0, radius=0.0)
+    a0 = builder.add_particle(wp.vec3(0.35, 0.03, 0.0), wp.vec3(0.0), 0.0, radius=0.0)
+    c0 = builder.add_particle(wp.vec3(0.35, -0.03, 0.0), wp.vec3(0.0), 0.0, radius=0.0)
+    builder.add_triangle(b0, a0, c0)
+
+    builder.color()
+    model = builder.finalize(device=device, enable_water_tight_rigid_soft_contact=True)
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.01, enable_water_tight_rigid_soft_contact=True
+    )
+    contacts = pipeline.contacts()
+    state = model.state()
+
+    pipeline.collide(state, contacts)
+    counts = contacts.soft_contact_count.numpy()
+    # counts = [particle, edge, face]. The FACE pass must emit the contact circumradius used to drop.
+    test.assertGreater(
+        int(counts[2]), 0, "FACE contact wrongly culled: the cull reach must be the max centroid-to-vertex distance"
+    )
+
+
+add_function_test(
+    TestWaterTightSoftContact,
+    "test_face_cull_uses_max_vertex_reach",
+    test_face_cull_uses_max_vertex_reach,
+    devices=devices,
+)
+
+
 if __name__ == "__main__":
     wp.clear_kernel_cache()
     unittest.main(verbosity=2)
