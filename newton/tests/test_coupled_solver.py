@@ -740,6 +740,28 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertEqual(cloth_view.edge_indices.shape[0], 1)
         self.assertEqual(cloth_view.tet_indices.shape[0], 0)
 
+    def test_compaction_fallback_reports_reason(self):
+        builder = newton.ModelBuilder()
+        parent = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        child = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_revolute(parent=parent, child=child, axis=(0.0, 0.0, 1.0))
+        model = builder.finalize(device="cpu")
+
+        with self.assertWarnsRegex(UserWarning, r"entry 'child'.*joint.*outside.*full model layout"):
+            coupled = SolverCoupled(
+                model=model,
+                entries=[
+                    SolverCoupled.Entry(
+                        name="child",
+                        solver=SolverSemiImplicit,
+                        bodies=[child],
+                        joints=[joint],
+                    )
+                ],
+            )
+
+        self.assertEqual(coupled.view("child").body_count, model.body_count)
+
     def test_entry_control_arrays_are_mapped_to_local_dofs(self):
         """Entry solvers should receive control arrays in their local DOF namespace."""
         _ControlRecordingSolver.instances.clear()

@@ -70,9 +70,9 @@ def _rigid_solver_entry_args(
     mujoco_kwargs: dict[str, object] | None = None,
 ):
     if rigid_solver == "kamino":
-        return "kamino", SolverKamino, {"config": _make_kamino_config()}, None
+        return "kamino", SolverKamino, {"config": _make_kamino_config()}
     if rigid_solver == "mujoco":
-        return "mjc", SolverMuJoCo, dict(mujoco_kwargs or {}), None
+        return "mjc", SolverMuJoCo, dict(mujoco_kwargs or {})
     raise ValueError(f"Unsupported rigid solver '{rigid_solver}'")
 
 
@@ -198,7 +198,7 @@ class Example:
         self.model.soft_contact_ke = 0.0
         self.model.soft_contact_kd = 0.0
 
-        rigid_name, rigid_solver, rigid_kwargs, rigid_configure_view = _rigid_solver_entry_args(
+        rigid_name, rigid_solver, rigid_kwargs = _rigid_solver_entry_args(
             self.rigid_solver,
             mujoco_kwargs={"use_mujoco_contacts": False, "njmax": 32},
         )
@@ -210,7 +210,6 @@ class Example:
                     solver=lambda v: rigid_solver(model=v, **rigid_kwargs),
                     bodies=[self.ball_body, self.pendulum_body],
                     joints=[self.ball_joint, self.pendulum_joint],
-                    configure_view=rigid_configure_view,
                 ),
                 SolverCoupled.Entry(
                     name="vbd",

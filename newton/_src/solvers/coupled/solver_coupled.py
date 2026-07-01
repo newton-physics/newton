@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
@@ -63,6 +64,47 @@ def _remap_shape_body_kernel(
         shape_body[shape] = -1
     else:
         shape_body[shape] = body_global_to_local[body]
+
+
+@wp.kernel(enable_backward=False)
+def _mark_visible_shape_contact_pairs_kernel(
+    pairs: wp.array[wp.vec2i],
+    pair_count: int,
+    shape_count: int,
+    shape_flags: wp.array[int],
+    filter_flags: bool,
+    collision_mask: int,
+    visible: wp.array[int],
+):
+    pair_index = wp.tid()
+    if pair_index >= pair_count:
+        return
+    pair = pairs[pair_index]
+    shape_a = pair[0]
+    shape_b = pair[1]
+    if shape_a < 0 or shape_b < 0 or shape_a >= shape_count or shape_b >= shape_count:
+        return
+    if filter_flags and (shape_flags[shape_a] & collision_mask == 0 or shape_flags[shape_b] & collision_mask == 0):
+        return
+    visible[pair_index] = 1
+
+
+@wp.kernel(enable_backward=False)
+def _compact_visible_shape_contact_pairs_kernel(
+    pairs: wp.array[wp.vec2i],
+    pair_count: int,
+    visible: wp.array[int],
+    offsets: wp.array[int],
+    filtered_pairs: wp.array[wp.vec2i],
+    filtered_count: wp.array[int],
+):
+    pair_index = wp.tid()
+    if pair_index >= pair_count:
+        return
+    if visible[pair_index] != 0:
+        filtered_pairs[offsets[pair_index]] = pairs[pair_index]
+    if pair_index == pair_count - 1:
+        filtered_count[0] = offsets[pair_index] + visible[pair_index]
 
 
 def _identity_index_map(count: int, device) -> wp.array:
@@ -595,26 +637,46 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if pairs is None:
             return
 
+        pair_count = min(int(getattr(view, "shape_contact_pair_count", pairs.shape[0])), pairs.shape[0])
+        if pair_count == 0:
+            view.shape_contact_pairs = wp.zeros(0, dtype=wp.vec2i, device=self.model.device)
+            view.shape_contact_pair_count = 0
+            return
+
         shape_count = int(getattr(view, "shape_count", self.model.shape_count))
         flags = getattr(view, "shape_flags", None)
-        flags_np = flags.numpy() if flags is not None else None
-        collide_mask = int(ShapeFlags.COLLIDE_SHAPES)
+        if flags is None:
+            flags = wp.empty(0, dtype=int, device=self.model.device)
+        visible = wp.zeros(pair_count, dtype=int, device=self.model.device)
+        offsets = wp.empty_like(visible)
+        wp.launch(
+            _mark_visible_shape_contact_pairs_kernel,
+            dim=pair_count,
+            inputs=[
+                pairs,
+                pair_count,
+                shape_count,
+                flags,
+                flags.shape[0] > 0,
+                int(ShapeFlags.COLLIDE_SHAPES),
+            ],
+            outputs=[visible],
+            device=self.model.device,
+        )
+        wp.utils.array_scan(visible, offsets, inclusive=False)
 
-        keep: list[tuple[int, int]] = []
-        for pair in pairs.numpy():
-            shape_a = int(pair[0])
-            shape_b = int(pair[1])
-            if shape_a < 0 or shape_b < 0 or shape_a >= shape_count or shape_b >= shape_count:
-                continue
-            if flags_np is not None and ((int(flags_np[shape_a]) & collide_mask) == 0):
-                continue
-            if flags_np is not None and ((int(flags_np[shape_b]) & collide_mask) == 0):
-                continue
-            keep.append((shape_a, shape_b))
-
-        filtered = np.asarray(keep, dtype=np.int32).reshape((-1, 2))
-        view.shape_contact_pairs = wp.array(filtered, dtype=wp.vec2i, device=self.model.device)
-        view.shape_contact_pair_count = len(keep)
+        filtered_pairs = wp.empty(pair_count, dtype=wp.vec2i, device=self.model.device)
+        filtered_count = wp.zeros(1, dtype=int, device=self.model.device)
+        wp.launch(
+            _compact_visible_shape_contact_pairs_kernel,
+            dim=pair_count,
+            inputs=[pairs, pair_count, visible, offsets],
+            outputs=[filtered_pairs, filtered_count],
+            device=self.model.device,
+        )
+        count = int(filtered_count.numpy()[0])
+        view.shape_contact_pairs = filtered_pairs[:count]
+        view.shape_contact_pair_count = count
 
     def _apply_global_shape_metadata(
         self,
@@ -759,18 +821,33 @@ class SolverCoupled(SolverBase, CouplingInterface):
             "shapes",
             allow_global=True,
         )
-        if body_order is None or joint_order is None or shape_order is None:
+        if body_order is None:
+            self._warn_compaction_fallback(cfg, "the selected bodies do not have a homogeneous world layout")
+            return None
+        if joint_order is None:
+            self._warn_compaction_fallback(cfg, "the selected joints do not have a homogeneous world layout")
+            return None
+        if shape_order is None:
+            self._warn_compaction_fallback(cfg, "the selected shapes do not have a homogeneous world layout")
             return None
 
         # Particle connectivity remains globally indexed for now. Keeping its
         # projection as identity does not prevent independent rigid compaction.
         particle_order = list(range(model.particle_count)) if visible_particles else []
-        compact = self._compact_index_lists(view, body_order, joint_order, shape_order, particle_order)
+        compact, failure_reason = self._compact_index_lists(view, body_order, joint_order, shape_order, particle_order)
         if compact is None:
+            self._warn_compaction_fallback(cfg, failure_reason or "the selected topology is not closed")
             return None
 
         self._apply_compact_entry_view(view, compact)
         return compact
+
+    @staticmethod
+    def _warn_compaction_fallback(cfg: SolverCoupled.Entry, reason: str) -> None:
+        warnings.warn(
+            f"SolverCoupled entry {cfg.name!r} could not be compacted because {reason}; using the full model layout.",
+            stacklevel=5,
+        )
 
     def _entry_visible_shapes(self, cfg: SolverCoupled.Entry, visible_bodies: set[int]) -> set[int]:
         model = self.model
@@ -854,7 +931,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         joint_order: list[int],
         shape_order: list[int],
         particle_order: list[int],
-    ) -> _CompactIndexMaps | None:
+    ) -> tuple[_CompactIndexMaps | None, str | None]:
         model = self.model
         body_set = set(body_order)
         joint_set = set(joint_order)
@@ -866,21 +943,24 @@ class SolverCoupled(SolverBase, CouplingInterface):
             parent = int(joint_parent[joint])
             child = int(joint_child[joint])
             if child not in body_set or (parent >= 0 and parent not in body_set):
-                return None
+                return (
+                    None,
+                    f"joint {joint} references bodies outside the entry selection (parent={parent}, child={child})",
+                )
 
         shape_body = model.shape_body.numpy() if model.shape_count and model.shape_body is not None else []
         for shape in shape_order:
             body = int(shape_body[shape]) if len(shape_body) else -1
             if body >= 0 and body not in body_set:
-                return None
+                return None, f"shape {shape} is attached to body {body}, which is outside the entry selection"
 
         articulation_order = self._compact_articulation_order(view, joint_order, joint_set)
         if articulation_order is None:
-            return None
+            return None, "the selected joints do not contain complete enabled articulations"
 
         mimic_order = self._compact_mimic_constraint_order(joint_global_to_local)
         if mimic_order is None:
-            return None
+            return None, "the selected mimic constraints do not have a homogeneous world layout"
 
         joint_q_start = model.joint_q_start.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
@@ -910,7 +990,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         }
         custom_frequency_orders = self._compact_custom_frequency_orders(built_in_frequency_orders)
         if custom_frequency_orders is None:
-            return None
+            return None, "a selected custom-frequency domain does not have a homogeneous world layout"
 
         frequency_orders = {
             frequency: (order, model._attribute_frequency_count(frequency))
@@ -920,11 +1000,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
             (frequency, (order, int(model.custom_frequency_counts[frequency])))
             for frequency, order in custom_frequency_orders.items()
         )
-        return _CompactIndexMaps(
-            {
-                frequency: _compact_index_projection(order, source_count)
-                for frequency, (order, source_count) in frequency_orders.items()
-            }
+        return (
+            _CompactIndexMaps(
+                {
+                    frequency: _compact_index_projection(order, source_count)
+                    for frequency, (order, source_count) in frequency_orders.items()
+                }
+            ),
+            None,
         )
 
     def _compact_articulation_order(

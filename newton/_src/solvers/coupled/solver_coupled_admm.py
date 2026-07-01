@@ -112,6 +112,16 @@ def _disable_proxy_shape_collisions_kernel(
         shape_flags[shape] = shape_flags[shape] & ~collision_mask
 
 
+@wp.kernel(enable_backward=False)
+def _compute_body_inertia_scalar_kernel(
+    body_inertia: wp.array[wp.mat33],
+    body_inertia_scalar: wp.array[float],
+):
+    body = wp.tid()
+    inertia = body_inertia[body]
+    body_inertia_scalar[body] = wp.max((inertia[0, 0] + inertia[1, 1] + inertia[2, 2]) / 3.0, 0.0)
+
+
 @dataclass
 class _AdmmBuffers:
     """Per-entry per-step working buffers used by ADMM iterations."""
@@ -1842,12 +1852,18 @@ class SolverCoupledADMM(SolverCoupled):
     def _setup_admm_effective_mass_buffers(self, entry: SolverEntry, buf: _AdmmBuffers) -> None:
         device = self.model.device
         if self.model.body_mass is not None:
-            buf.body_effective_mass = wp.array(self.model.body_mass.numpy().copy(), dtype=float, device=device)
+            buf.body_effective_mass = wp.clone(self.model.body_mass, requires_grad=False)
             if self.model.body_inertia is not None:
-                body_inertia = self.model.body_inertia.numpy()
-                buf.body_effective_inertia_scalar = wp.array(
-                    [self._inertia_scalar(wp.mat33(np.asarray(inertia, dtype=np.float32))) for inertia in body_inertia],
-                    dtype=float,
+                buf.body_effective_inertia_scalar = wp.empty(
+                    self.model.body_inertia.shape[0],
+                    dtype=wp.float32,
+                    device=device,
+                )
+                wp.launch(
+                    _compute_body_inertia_scalar_kernel,
+                    dim=self.model.body_inertia.shape[0],
+                    inputs=[self.model.body_inertia],
+                    outputs=[buf.body_effective_inertia_scalar],
                     device=device,
                 )
             (
@@ -1863,7 +1879,7 @@ class SolverCoupledADMM(SolverCoupled):
             buf.body_effective_inertia_local = wp.empty(entry.body_indices.shape[0], dtype=wp.mat33, device=device)
             self._populate_admm_body_effective_mass_buffer(entry, buf, raise_on_unsupported=False)
         if self.model.particle_mass is not None:
-            buf.particle_effective_mass = wp.array(self.model.particle_mass.numpy().copy(), dtype=float, device=device)
+            buf.particle_effective_mass = wp.clone(self.model.particle_mass, requires_grad=False)
             (
                 buf.particle_endpoint_kind,
                 buf.particle_endpoint_index,
@@ -1885,15 +1901,12 @@ class SolverCoupledADMM(SolverCoupled):
                 continue
             wp.copy(buf.body_effective_mass, self.model.body_mass)
             if buf.body_effective_inertia_scalar is not None and self.model.body_inertia is not None:
-                body_inertia = self.model.body_inertia.numpy()
-                buf.body_effective_inertia_scalar.assign(
-                    np.asarray(
-                        [
-                            self._inertia_scalar(wp.mat33(np.asarray(inertia, dtype=np.float32)))
-                            for inertia in body_inertia
-                        ],
-                        dtype=np.float32,
-                    )
+                wp.launch(
+                    _compute_body_inertia_scalar_kernel,
+                    dim=self.model.body_inertia.shape[0],
+                    inputs=[self.model.body_inertia],
+                    outputs=[buf.body_effective_inertia_scalar],
+                    device=self.model.device,
                 )
             self._populate_admm_body_effective_mass_buffer(entry, buf, raise_on_unsupported=False)
 
