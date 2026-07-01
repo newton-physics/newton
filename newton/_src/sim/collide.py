@@ -1070,7 +1070,6 @@ class CollisionPipeline:
         contacts: Contacts,
         *,
         soft_contact_margin: float | None = None,
-        enable_water_tight_rigid_soft_contact: bool | None = None,
     ):
         """Run the collision pipeline using NarrowPhase.
 
@@ -1414,15 +1413,11 @@ class CollisionPipeline:
                 device=self.device,
             )
 
-        # Water-tight EDGE/FACE passes (opt-in): add the soft edge/face contacts the per-particle
-        # path cannot detect. Run after the legacy launch on the same stream so the passes read the
-        # final particle (then edge) counts as their packing offsets.
-        enable_wt = (
-            self.enable_water_tight_rigid_soft_contact
-            if enable_water_tight_rigid_soft_contact is None
-            else enable_water_tight_rigid_soft_contact
-        )
-        if enable_wt and state.particle_q and model.soft_mesh_adjacency is not None:
+        # Water-tight EDGE/FACE passes (opt-in, set at construction): add the soft edge/face contacts
+        # the per-particle path cannot detect. Run after the legacy launch on the same stream so the
+        # passes read the final particle (then edge) counts as their packing offsets. The flag is
+        # fixed at construction because soft_contact_max headroom for these records is sized there.
+        if self.enable_water_tight_rigid_soft_contact and state.particle_q and model.soft_mesh_adjacency is not None:
             launch_soft_ef_contacts(
                 model=model,
                 state=state,

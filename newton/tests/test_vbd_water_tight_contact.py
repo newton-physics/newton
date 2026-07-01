@@ -66,7 +66,7 @@ def test_edge_face_pushes_vertices_out(test, device):
     state_in = model.state()
     state_out = model.state()
 
-    pipeline.collide(state_in, contacts, enable_water_tight_rigid_soft_contact=True)
+    pipeline.collide(state_in, contacts)
 
     counts = contacts.soft_contact_count.numpy()
     # Precondition: legacy particle pass found nothing; the edge/face passes did.
@@ -133,7 +133,7 @@ def test_edge_face_reacts_on_rigid_body(test, device):
     state_in = model.state()
     state_out = model.state()
 
-    pipeline.collide(state_in, contacts, enable_water_tight_rigid_soft_contact=True)
+    pipeline.collide(state_in, contacts)
     counts = contacts.soft_contact_count.numpy()
     test.assertEqual(int(counts[0]), 0, "triangle vertices should be outside the legacy particle margin")
     test.assertGreater(int(counts[1]) + int(counts[2]), 0, "a soft edge/face contact must be detected")
@@ -143,7 +143,7 @@ def test_edge_face_reacts_on_rigid_body(test, device):
     z_before = float(state_in.body_q.numpy()[body, 2])
 
     for _ in range(60):
-        pipeline.collide(state_in, contacts, enable_water_tight_rigid_soft_contact=True)
+        pipeline.collide(state_in, contacts)
         solver.step(state_in, state_out, None, contacts, dt)
         state_in, state_out = state_out, state_in
 
@@ -277,14 +277,15 @@ def test_flag_off_is_inert(test, device):
     is untouched, so flag-off behavior is unchanged.
     """
     model, _verts = _build_edge_over_post(device)
+    # Flag OFF at construction: the buffer has no edge/face headroom and the passes never run.
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=True
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=False
     )
     contacts = pipeline.contacts()
     state_in = model.state()
     state_out = model.state()
 
-    pipeline.collide(state_in, contacts, enable_water_tight_rigid_soft_contact=False)
+    pipeline.collide(state_in, contacts)
     counts = contacts.soft_contact_count.numpy()
     test.assertEqual(int(counts[0]) + int(counts[1]) + int(counts[2]), 0, "flag off => no soft contacts")
 

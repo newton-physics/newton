@@ -1776,21 +1776,30 @@ class Model:
             enable_water_tight_rigid_soft_contact: When ``True``, additionally run the triangle-driven
                 soft EDGE/FACE passes that detect soft edge / face vs rigid contacts the per-particle
                 SDF path misses, written into the E/F ranges of ``Contacts.soft_contact_*``. Default
-                ``False`` reproduces the per-particle behaviour bit-for-bit. When this call allocates
-                the pipeline (no override and none cached), the soft-contact buffer is sized for the
-                extra records.
+                ``False`` reproduces the per-particle behaviour bit-for-bit. This flag is applied when
+                the collision pipeline is allocated (its soft-contact buffer must be sized for the extra
+                records), so it takes effect only on the first ``collide()``/``contacts()`` call that
+                creates the pipeline. Passing ``True`` once a pipeline sized without it is cached raises
+                ``ValueError``.
         """
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
         if self._collision_pipeline is None:
             self._init_collision_pipeline(enable_water_tight_rigid_soft_contact=enable_water_tight_rigid_soft_contact)
+        elif (
+            enable_water_tight_rigid_soft_contact and not self._collision_pipeline.enable_water_tight_rigid_soft_contact
+        ):
+            raise ValueError(
+                "enable_water_tight_rigid_soft_contact=True requires a collision pipeline initialized with "
+                "the flag so its soft-contact buffer is sized for the edge/face passes, but the cached "
+                "pipeline was built with it disabled. Pass a fresh collision_pipeline=, or enable the flag "
+                "on the first collide()/contacts() call that allocates the pipeline."
+            )
 
         if contacts is None:
             contacts = self._collision_pipeline.contacts()
 
-        self._collision_pipeline.collide(
-            state, contacts, enable_water_tight_rigid_soft_contact=enable_water_tight_rigid_soft_contact
-        )
+        self._collision_pipeline.collide(state, contacts)
         return contacts
 
     def request_state_attributes(self, *attributes: str) -> None:
