@@ -225,6 +225,73 @@ def test_particle_particle_friction_with_relative_motion(test, device):
     )
 
 
+def test_xpbd_particle_particle_contact_nan_guard(test, device):
+    builder = newton.ModelBuilder(up_axis="Y")
+
+    particle_radius = 0.5
+    builder.add_particles(
+        pos=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],
+        vel=[wp.vec3(0.0), wp.vec3(0.0)],
+        mass=[1.0, 1.0],
+        radius=[particle_radius, particle_radius],
+    )
+
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, 0.0))
+    model.particle_mu = 1.0
+    model.particle_cohesion = 0.0
+
+    solver = newton.solvers.SolverXPBD(model=model, iterations=1)
+    state0 = model.state()
+    state1 = model.state()
+    contacts = model.contacts()
+
+    solver.step(state0, state1, model.control(), contacts, 1.0 / 60.0)
+
+    test.assertTrue(
+        np.all(np.isfinite(state1.particle_q.numpy())),
+        msg="Exact-overlap particle contact must not write non-finite particle positions.",
+    )
+    test.assertTrue(
+        np.all(np.isfinite(state1.particle_qd.numpy())),
+        msg="Exact-overlap particle contact must not write non-finite particle velocities.",
+    )
+
+
+def test_xpbd_particle_particle_zero_tangent_cohesion_nan_guard(test, device):
+    builder = newton.ModelBuilder(up_axis="Y")
+
+    particle_radius = 0.5
+    separation = 2.0 * particle_radius + 0.05
+    builder.add_particles(
+        pos=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(separation, 0.0, 0.0)],
+        vel=[wp.vec3(0.0), wp.vec3(0.0)],
+        mass=[1.0, 1.0],
+        radius=[particle_radius, particle_radius],
+    )
+
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, 0.0))
+    model.particle_mu = 1.0
+    model.particle_cohesion = 0.1
+
+    solver = newton.solvers.SolverXPBD(model=model, iterations=1)
+    state0 = model.state()
+    state1 = model.state()
+    contacts = model.contacts()
+
+    solver.step(state0, state1, model.control(), contacts, 1.0 / 60.0)
+
+    test.assertTrue(
+        np.all(np.isfinite(state1.particle_q.numpy())),
+        msg="Zero-tangent cohesive particle contact must not write non-finite particle positions.",
+    )
+    test.assertTrue(
+        np.all(np.isfinite(state1.particle_qd.numpy())),
+        msg="Zero-tangent cohesive particle contact must not write non-finite particle velocities.",
+    )
+
+
 def test_particle_shape_restitution_correct_particle(test, device):
     """
     Regression test for the bug where apply_particle_shape_restitution wrote
@@ -1424,6 +1491,22 @@ add_function_test(
     TestSolverXPBD,
     "test_particle_particle_friction_with_relative_motion",
     test_particle_particle_friction_with_relative_motion,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_particle_particle_contact_nan_guard",
+    test_xpbd_particle_particle_contact_nan_guard,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_particle_particle_zero_tangent_cohesion_nan_guard",
+    test_xpbd_particle_particle_zero_tangent_cohesion_nan_guard,
     devices=devices,
     check_output=False,
 )
