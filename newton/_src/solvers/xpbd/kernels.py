@@ -276,7 +276,7 @@ def solve_particle_particle_contacts(
             w2 = particle_invmass[index]
             denom = w1 + w2
 
-            if err <= k_cohesion and denom > 0.0 and d > 1.0e-8:
+            if err <= k_cohesion and denom > 0.0 and d > 0.0:
                 n = n / d
                 vrel = v - particle_v[index]
 
@@ -288,11 +288,8 @@ def solve_particle_particle_contacts(
                 vn = wp.dot(n, vrel)
                 vt = vrel - n * vn
 
-                vt_len = wp.length(vt)
-                lambda_f = wp.max(k_mu * lambda_n, -vt_len * dt)
-                delta_f = wp.vec3(0.0)
-                if vt_len > 1.0e-8:
-                    delta_f = (vt / vt_len) * lambda_f
+                lambda_f = wp.max(k_mu * lambda_n, -wp.length(vt) * dt)
+                delta_f = wp.normalize(vt) * lambda_f
                 delta += (delta_f - delta_n) / denom
 
     wp.atomic_add(deltas, i, delta * w1 * relaxation)

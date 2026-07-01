@@ -258,11 +258,11 @@ def test_xpbd_particle_particle_contact_nan_guard(test, device):
     )
 
 
-def test_xpbd_particle_particle_zero_tangent_cohesion_nan_guard(test, device):
+def test_xpbd_particle_particle_tiny_separation_contact_remains_active(test, device):
     builder = newton.ModelBuilder(up_axis="Y")
 
     particle_radius = 0.5
-    separation = 2.0 * particle_radius + 0.05
+    separation = 5.0e-9
     builder.add_particles(
         pos=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(separation, 0.0, 0.0)],
         vel=[wp.vec3(0.0), wp.vec3(0.0)],
@@ -273,7 +273,7 @@ def test_xpbd_particle_particle_zero_tangent_cohesion_nan_guard(test, device):
     model = builder.finalize(device=device)
     model.set_gravity((0.0, 0.0, 0.0))
     model.particle_mu = 1.0
-    model.particle_cohesion = 0.1
+    model.particle_cohesion = 0.0
 
     solver = newton.solvers.SolverXPBD(model=model, iterations=1)
     state0 = model.state()
@@ -282,13 +282,21 @@ def test_xpbd_particle_particle_zero_tangent_cohesion_nan_guard(test, device):
 
     solver.step(state0, state1, model.control(), contacts, 1.0 / 60.0)
 
+    particle_q = state1.particle_q.numpy()
+    final_separation = float(np.linalg.norm(particle_q[1] - particle_q[0]))
+
     test.assertTrue(
-        np.all(np.isfinite(state1.particle_q.numpy())),
-        msg="Zero-tangent cohesive particle contact must not write non-finite particle positions.",
+        np.all(np.isfinite(particle_q)),
+        msg="Tiny nonzero-separation particle contact must not write non-finite particle positions.",
     )
     test.assertTrue(
         np.all(np.isfinite(state1.particle_qd.numpy())),
-        msg="Zero-tangent cohesive particle contact must not write non-finite particle velocities.",
+        msg="Tiny nonzero-separation particle contact must not write non-finite particle velocities.",
+    )
+    test.assertGreater(
+        final_separation,
+        0.1,
+        msg="Tiny but nonzero particle separation has a valid normal and should keep the contact active.",
     )
 
 
@@ -1505,8 +1513,8 @@ add_function_test(
 
 add_function_test(
     TestSolverXPBD,
-    "test_xpbd_particle_particle_zero_tangent_cohesion_nan_guard",
-    test_xpbd_particle_particle_zero_tangent_cohesion_nan_guard,
+    "test_xpbd_particle_particle_tiny_separation_contact_remains_active",
+    test_xpbd_particle_particle_tiny_separation_contact_remains_active,
     devices=devices,
     check_output=False,
 )
