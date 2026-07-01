@@ -751,8 +751,8 @@ Both functions require ``state.body_q`` to be consistent with
 ``state.joint_q``: callers must invoke :func:`newton.eval_fk` (or
 otherwise update ``state.body_q``) first.
 
-The inverse dynamics container :class:`~newton.InverseDynamics` is allocated using :meth:`newton.Model.inverse_dynamics`. 
-This allocates both :class:`~newton.InverseDynamics` and a complementary container of scratch buffers stored in :class:`~newton.InverseDynamicsScratchBuffer`.
+The inverse dynamics container :class:`~newton.InverseDynamics` is allocated using :meth:`newton.Model.inverse_dynamics`.
+It holds the public output buffers and owns the internal RNEA/Jacobian scratch privately, so callers manage only the one object.
 
 .. code-block:: python
 
@@ -760,12 +760,12 @@ This allocates both :class:`~newton.InverseDynamics` and a complementary contain
     # eval_inverse_dynamics)
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-    # allocate output container + scratch buffers, both sized to the model
-    inverse_dynamics, scratch = model.inverse_dynamics()
+    # allocate the output container, sized to the model
+    inverse_dynamics = model.inverse_dynamics()
 
     # populate M(q), g(q), and C(q, q_dot)*q_dot in one call
     newton.eval_inverse_dynamics(
-        model, state, newton.InverseDynamics.EvalType.ALL, inverse_dynamics, scratch,
+        model, state, newton.InverseDynamics.EvalType.ALL, inverse_dynamics,
     )
     M = inverse_dynamics.mass_matrix     # (articulation_count, max_dofs, max_dofs)
     g = inverse_dynamics.gravity_force   # (joint_dof_count,)
@@ -774,7 +774,7 @@ This allocates both :class:`~newton.InverseDynamics` and a complementary contain
     # combine into tau = M*qddot + C*qdot + g for a user-supplied qddot
     qddot = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
     newton.eval_inverse_dynamics_force(
-        model, M, qddot, c, g, inverse_dynamics.tau,
+        model, state, M, qddot, c, g, inverse_dynamics.tau,
     )
 
 Combine flags with bitwise-or to compute only what you need. For
@@ -797,14 +797,14 @@ own ``mask=`` argument.
     # only compute M(q), g(q), and C*q_dot for articulations labelled "arm"
     view = newton.selection.ArticulationView(model, pattern="arm")
     view.eval_inverse_dynamics(
-        state, newton.InverseDynamics.EvalType.ALL, inverse_dynamics, scratch,
+        state, newton.InverseDynamics.EvalType.ALL, inverse_dynamics,
     )
 
     # optionally narrow further with a per-world submask (shape [world_count])
     per_world_mask = wp.array([True], dtype=bool, device=model.device)
     view.eval_inverse_dynamics(
         state, newton.InverseDynamics.EvalType.ALL,
-        inverse_dynamics, scratch, mask=per_world_mask,
+        inverse_dynamics, mask=per_world_mask,
     )
 
 

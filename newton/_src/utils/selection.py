@@ -14,7 +14,6 @@ from warp.types import is_array
 from ..sim import (
     Control,
     InverseDynamics,
-    InverseDynamicsScratchBuffer,
     JointType,
     Model,
     State,
@@ -1726,7 +1725,6 @@ class ArticulationView:
         state: State,
         eval_type: InverseDynamics.EvalType,
         inverse_dynamics: InverseDynamics,
-        scratch: InverseDynamicsScratchBuffer,
         mask=None,
     ):
         """Compute inverse-dynamics quantities for articulations in this view.
@@ -1745,8 +1743,7 @@ class ArticulationView:
                 already reflect ``state.joint_q``.
             eval_type: Bitmask selecting which quantities to compute.
             inverse_dynamics: Output container whose buffers are
-                written in place.
-            scratch: Pre-allocated scratch buffers reused across calls.
+                written in place; also holds the internal scratch.
             mask: Optional mask of articulations in this
                 ArticulationView (all by default). Either 1-D
                 ``[world_count]`` selecting whole worlds or 2-D
@@ -1754,7 +1751,7 @@ class ArticulationView:
                 articulations per world.
         """
         articulation_mask = self.get_model_articulation_mask(mask=mask)
-        eval_inverse_dynamics(self.model, state, eval_type, inverse_dynamics, scratch, mask=articulation_mask)
+        eval_inverse_dynamics(self.model, state, eval_type, inverse_dynamics, mask=articulation_mask)
 
     # ========================================================================================
     # Actuator parameter access

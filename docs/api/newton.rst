@@ -36,7 +36,6 @@ newton
    GeoType
    Heightfield
    InverseDynamics
-   InverseDynamicsScratchBuffer
    JointTargetMode
    JointType
    Mesh

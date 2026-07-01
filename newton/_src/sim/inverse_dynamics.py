@@ -29,7 +29,7 @@ def _compute_body_q_com_kernel(
     body_q_com[i] = body_q[i] * wp.transform(body_com[i], wp.quat_identity())
 
 
-class InverseDynamicsScratchBuffer:
+class _InverseDynamicsScratchBuffer:
     """Internal scratch buffers reused across calls to :func:`eval_inverse_dynamics`.
 
     Holds the RNEA per-body and per-DOF arrays, the mass-matrix Jacobian
@@ -128,6 +128,9 @@ class InverseDynamics:
         articulation_count: int,
         joint_dof_count: int,
         max_dofs_per_articulation: int,
+        body_count: int,
+        max_joints_per_articulation: int,
+        world_count: int,
         device: Devicelike | None = None,
     ):
         """Allocate output buffers for inverse dynamics.
@@ -141,9 +144,9 @@ class InverseDynamics:
         The ``gravity_force`` and ``coriolis_force`` buffers share the flat
         joint-space layout that :attr:`~newton.Model.joint_qd` uses.
 
-        Internal scratch lives on a separate
-        :class:`InverseDynamicsScratchBuffer`, which is passed alongside
-        :class:`InverseDynamics` into :func:`eval_inverse_dynamics`.
+        Internal RNEA/Jacobian scratch is allocated once and held privately on
+        this instance; callers do not manage it. Prefer
+        :meth:`Model.inverse_dynamics` over calling this constructor directly.
 
         Args:
             articulation_count: Number of articulations (matches
@@ -153,6 +156,13 @@ class InverseDynamics:
             max_dofs_per_articulation: Per-articulation DOF count (inclusive of
                 floating-base root DOFs, if any). Matches
                 :attr:`Model.max_dofs_per_articulation`.
+            body_count: Total number of rigid bodies (matches
+                :attr:`Model.body_count`); sizes the internal RNEA scratch.
+            max_joints_per_articulation: Maximum joints in any articulation
+                (matches :attr:`Model.max_joints_per_articulation`); sizes the
+                internal Jacobian scratch.
+            world_count: Number of simulation worlds (matches
+                :attr:`Model.world_count`); sizes the internal zero-gravity input.
             device: Warp device on which the buffers are allocated.
         """
         ac = articulation_count
@@ -176,11 +186,23 @@ class InverseDynamics:
         :func:`~newton.eval_inverse_dynamics` does not write this buffer; it remains zero until
         :func:`~newton.eval_inverse_dynamics_force` is called."""
 
+        # Internal RNEA/Jacobian scratch, reused across eval_inverse_dynamics
+        # calls. Private implementation detail; not part of the public API.
+        self._scratch = _InverseDynamicsScratchBuffer(
+            body_count=body_count,
+            articulation_count=articulation_count,
+            joint_dof_count=joint_dof_count,
+            max_dofs_per_articulation=max_dofs_per_articulation,
+            max_joints_per_articulation=max_joints_per_articulation,
+            world_count=world_count,
+            device=device,
+        )
+
 
 def _rnea_compensation_pass(
     model: Model,
     state: State,
-    scratch: InverseDynamicsScratchBuffer,
+    scratch: _InverseDynamicsScratchBuffer,
     joint_qd: wp.array[wp.float32],
     gravity: wp.array[wp.vec3],
     tau_out: wp.array[wp.float32],
@@ -379,7 +401,7 @@ def _compute_gravity_force(
     model: Model,
     state: State,
     inverse_dynamics: InverseDynamics,
-    scratch: InverseDynamicsScratchBuffer,
+    scratch: _InverseDynamicsScratchBuffer,
     mask: wp.array[bool] | None = None,
 ) -> None:
     """Compute the gravity force ``g(q) = ∂U/∂q`` into
@@ -407,7 +429,7 @@ def _compute_coriolis_force(
     model: Model,
     state: State,
     inverse_dynamics: InverseDynamics,
-    scratch: InverseDynamicsScratchBuffer,
+    scratch: _InverseDynamicsScratchBuffer,
     mask: wp.array[bool] | None = None,
 ) -> None:
     """Compute the Coriolis force ``C(q, q_dot)*q_dot`` into
@@ -435,7 +457,6 @@ def eval_inverse_dynamics(
     state: State,
     eval_type: InverseDynamics.EvalType,
     inverse_dynamics: InverseDynamics,
-    scratch: InverseDynamicsScratchBuffer,
     mask: wp.array[bool] | None = None,
 ) -> None:
     """Compute inverse dynamics quantities for an articulation.
@@ -470,8 +491,8 @@ def eval_inverse_dynamics(
         state: State providing the current generalized coordinates and velocities.
             ``state.body_q`` must already reflect ``state.joint_q``.
         eval_type: Bitmask selecting which quantities to compute.
-        inverse_dynamics: Output container whose buffers are written in place.
-        scratch: Pre-allocated scratch buffers reused across calls.
+        inverse_dynamics: Output container whose buffers are written in place;
+            also holds the internal scratch reused across calls.
         mask: Optional ``wp.array[bool]`` of shape
             ``(articulation_count,)`` selecting which articulations to
             compute. Entries belonging to unselected articulations are
@@ -484,6 +505,8 @@ def eval_inverse_dynamics(
             f"eval_type {eval_type!r} does not include any recognized flag "
             f"(MASS_MATRIX, GRAVITY_FORCE, CORIOLIS_FORCE)."
         )
+
+    scratch = inverse_dynamics._scratch
 
     if eval_type & InverseDynamics.EvalType.MASS_MATRIX:
         expected_shape = (model.articulation_count, model.max_dofs_per_articulation, model.max_dofs_per_articulation)

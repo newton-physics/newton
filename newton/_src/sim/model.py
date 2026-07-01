@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
-    from .inverse_dynamics import InverseDynamics, InverseDynamicsScratchBuffer
+    from .inverse_dynamics import InverseDynamics
 
 
 _HAS_HEIGHTFIELDS_DEPRECATION_MSG = (
@@ -1674,37 +1674,29 @@ class Model:
         )
         return c
 
-    def inverse_dynamics(self) -> tuple[InverseDynamics, InverseDynamicsScratchBuffer]:
-        """Create an inverse-dynamics container and matching scratch buffer.
+    def inverse_dynamics(self) -> InverseDynamics:
+        """Create an inverse-dynamics container sized for this model's topology.
 
-        Both objects are sized for this model's topology. The container holds
-        the public output buffers (mass matrix, compensation forces, and
-        :attr:`~newton.InverseDynamics.tau`); the scratch buffer holds the
-        internal RNEA, Jacobian, and constant-zero arrays reused across calls
-        to :func:`~newton.eval_inverse_dynamics`.
+        The container holds the public output buffers (mass matrix,
+        compensation forces, and :attr:`~newton.InverseDynamics.tau`) and owns
+        the internal RNEA/Jacobian scratch privately, so callers only manage the
+        one object.
 
         Returns:
-            ``(inverse_dynamics, scratch)`` — pass both to
+            An :class:`~newton.InverseDynamics` to pass to
             :func:`~newton.eval_inverse_dynamics`.
         """
-        from .inverse_dynamics import InverseDynamics, InverseDynamicsScratchBuffer  # noqa: PLC0415
+        from .inverse_dynamics import InverseDynamics  # noqa: PLC0415
 
-        inverse_dynamics = InverseDynamics(
+        return InverseDynamics(
             articulation_count=self.articulation_count,
             joint_dof_count=self.joint_dof_count,
             max_dofs_per_articulation=self.max_dofs_per_articulation,
-            device=self.device,
-        )
-        scratch = InverseDynamicsScratchBuffer(
             body_count=self.body_count,
-            articulation_count=self.articulation_count,
-            joint_dof_count=self.joint_dof_count,
-            max_dofs_per_articulation=self.max_dofs_per_articulation,
             max_joints_per_articulation=self.max_joints_per_articulation,
             world_count=self.world_count,
             device=self.device,
         )
-        return inverse_dynamics, scratch
 
     def set_gravity(
         self,
