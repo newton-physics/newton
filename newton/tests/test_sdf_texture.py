@@ -1095,6 +1095,38 @@ def _generate_sphere_query_points(radius: float = 0.5, num_points: int = 3000, s
     return directions * (radius + radial_offsets)
 
 
+def test_hydroelastic_sphere_texture_sdf_matches_analytic_distance(test, device):
+    """Hydroelastic primitive spheres should build texture SDFs analytically."""
+    radius = 0.5
+    builder = newton.ModelBuilder(gravity=0.0)
+    body = builder.add_body()
+    cfg = newton.ModelBuilder.ShapeConfig(is_hydroelastic=True, sdf_max_resolution=64, sdf_texture_format="float32")
+    shape = builder.add_shape_sphere(body, radius=radius, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    sdf_idx = int(model._shape_sdf_index.numpy()[shape])
+    test.assertGreaterEqual(sdf_idx, 0)
+
+    query_np = _generate_sphere_query_points(radius=radius, num_points=2000, seed=123)
+    expected = np.linalg.norm(query_np, axis=1) - radius
+    query_points = wp.array(query_np, dtype=wp.vec3, device=device)
+    tex_results = wp.zeros(len(query_np), dtype=float, device=device)
+    wp.launch(
+        _sample_texture_sdf_from_array_kernel,
+        dim=len(query_np),
+        inputs=[model._texture_sdf_data, sdf_idx, query_points, tex_results],
+        device=device,
+    )
+
+    diff = np.abs(tex_results.numpy() - expected)
+    test.assertLess(float(diff.mean()), 5e-4, f"mean analytic sphere distance error: {diff.mean():.4e}")
+    test.assertLess(
+        float(np.percentile(diff, 95)),
+        1e-3,
+        f"p95 analytic sphere distance error: {np.percentile(diff, 95):.4e}",
+    )
+
+
 def test_texture_sdf_vs_ground_truth_distance(test, device):
     """Compare texture SDF distance against BVH ground truth in the contact zone.
 
@@ -1396,6 +1428,12 @@ add_function_test(TestTextureSDF, "test_uint16_vs_nanovdb_distance", test_uint16
 add_function_test(TestTextureSDF, "test_uint16_vs_nanovdb_gradient", test_uint16_vs_nanovdb_gradient, devices=devices)
 add_function_test(
     TestTextureSDF, "test_uint16_vs_float32_texture_accuracy", test_uint16_vs_float32_texture_accuracy, devices=devices
+)
+add_function_test(
+    TestTextureSDF,
+    "test_hydroelastic_sphere_texture_sdf_matches_analytic_distance",
+    test_hydroelastic_sphere_texture_sdf_matches_analytic_distance,
+    devices=devices,
 )
 add_function_test(
     TestTextureSDF, "test_build_sdf_texture_format_parameter", test_build_sdf_texture_format_parameter, devices=devices
