@@ -19,6 +19,8 @@ class _LogShapesProbe(ViewerNull):
         self.last_colors = None
         self.last_materials = None
         self.mesh_culling = []
+        self.mesh_indices = []
+        self.mesh_point_counts = []
 
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         self.last_colors = colors
@@ -39,6 +41,8 @@ class _LogShapesProbe(ViewerNull):
         metallic=None,
     ):
         self.mesh_culling.append(backface_culling)
+        self.mesh_indices.append(indices.numpy())
+        self.mesh_point_counts.append(len(points))
 
 
 class TestLogShapesBroadcast(unittest.TestCase):
@@ -135,7 +139,7 @@ class TestLogShapesBroadcast(unittest.TestCase):
             np.tile([0.3, 0.8, 0.9], (num_instances, 1)).astype(np.float32),
         )
 
-    def test_backface_culling_is_forwarded_and_cached_separately(self):
+    def test_double_sided_box_uses_explicit_reversed_winding(self):
         viewer = _LogShapesProbe()
         xforms = wp.array([wp.transform_identity()], dtype=wp.transform)
 
@@ -148,7 +152,12 @@ class TestLogShapesBroadcast(unittest.TestCase):
             backface_culling=False,
         )
 
-        self.assertEqual(viewer.mesh_culling, [True, False])
+        self.assertEqual(viewer.mesh_culling, [True, True])
+        self.assertEqual(viewer.mesh_point_counts, [24, 48])
+
+        front_indices = viewer.mesh_indices[1][:36].reshape(-1, 3)
+        back_indices = viewer.mesh_indices[1][36:].reshape(-1, 3) - 24
+        assert_np_equal(back_indices, front_indices[:, [0, 2, 1]])
 
 
 if __name__ == "__main__":

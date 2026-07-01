@@ -35,6 +35,25 @@ _DEFAULT_LAYER_ID = "__default__"
 _LAYER_CONFIG_FIELDS = frozenset(("layer_id", "visible", "xform"))
 
 
+def _make_double_sided_render_mesh(mesh: newton.Mesh) -> newton.Mesh:
+    """Duplicate a render mesh with reversed winding and normals."""
+    vertex_count = mesh.vertices.shape[0]
+    normals = None if mesh.normals is None else np.vstack((mesh.normals, -mesh.normals))
+    uvs = None if mesh.uvs is None else np.vstack((mesh.uvs, mesh.uvs))
+    return newton.Mesh(
+        vertices=np.vstack((mesh.vertices, mesh.vertices)),
+        indices=np.concatenate(
+            (
+                mesh.indices,
+                mesh.indices.reshape(-1, 3)[:, [0, 2, 1]].reshape(-1) + vertex_count,
+            )
+        ),
+        normals=normals,
+        uvs=uvs,
+        compute_inertia=False,
+    )
+
+
 class Layer:
     """Container holding per-model viewer state for one layer.
 
@@ -1450,6 +1469,10 @@ class ViewerBase(ABC):
             else:
                 ext = tuple(geo_scale[:3])
             mesh = newton.Mesh.create_box(ext[0], ext[1], ext[2], duplicate_vertices=True, compute_inertia=False)
+            if not backface_culling:
+                # Explicit winding is reliable on headless GL drivers that mishandle disabled face culling.
+                mesh = _make_double_sided_render_mesh(mesh)
+                backface_culling = True
 
         elif geo_type == newton.GeoType.ELLIPSOID:
             # geo_scale contains (rx, ry, rz) semi-axes
