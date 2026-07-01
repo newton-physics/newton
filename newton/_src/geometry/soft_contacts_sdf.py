@@ -58,18 +58,6 @@ def _is_analytic(geo: wp.int32):
 
 
 @wp.func
-def circumradius(a: wp.vec3, b: wp.vec3, c: wp.vec3):
-    """Triangle circumradius (cull reach for the centroid test). 0 for a degenerate tri."""
-    ab = wp.length(b - a)
-    bc = wp.length(c - b)
-    ca = wp.length(a - c)
-    cross2 = wp.length(wp.cross(b - a, c - a))  # 2 * area
-    if cross2 < 1.0e-12:
-        return 0.5 * wp.max(ab, wp.max(bc, ca))
-    return (ab * bc * ca) / (2.0 * cross2)
-
-
-@wp.func
 def eval_shape_sdf(
     geo: wp.int32,
     scale: wp.vec3,
@@ -331,7 +319,11 @@ def create_soft_face_contacts(
 
     centroid = (a + b + c) / 3.0
     phi_c, _grad_c = eval_shape_sdf(geo, scale, centroid, sdf_idx, texture_sdf_table)
-    if phi_c > threshold + circumradius(a, b, c):
+    # Conservative cull: the SDF is ~1-Lipschitz, so the triangle's minimum is >= phi_c minus the
+    # farthest centroid-to-point distance, which is always a vertex. circumradius can be smaller than
+    # that for non-equilateral triangles (e.g. 3-4-5: R=2.5 vs 2.85) and would drop valid contacts.
+    reach = wp.max(wp.length(a - centroid), wp.max(wp.length(b - centroid), wp.length(c - centroid)))
+    if phi_c > threshold + reach:
         return
 
     bary, x, phi, grad = optimize_face_sdf(
