@@ -49,10 +49,9 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     under the ``mujoco`` namespace after :meth:`~newton.ModelBuilder.finalize`.
 
     Idempotent: re-registration with the same spec is a no-op. Called from
-    :meth:`SolverMuJoCo.register_custom_attributes`, and — for the duration of the
-    ``Model.equality_constraint_*`` deprecation window (removal in a future release) — lazily from
-    :meth:`ModelBuilder.__init__`, so the namespaced fields exist even for builders that never
-    register ``SolverMuJoCo``.
+    :meth:`ModelBuilder.__init__` so the namespaced equality fields exist independently of
+    :meth:`SolverMuJoCo.register_custom_attributes`, which also calls it when registering the
+    other MuJoCo custom attributes.
     """
     ca = type(builder).CustomAttribute
     eq_freq = "mujoco:equality_constraint"
