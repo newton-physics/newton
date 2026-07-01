@@ -7,7 +7,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.solvers import SolverImplicitMPM
+from newton.solvers import SolverImplicitMPM, SolverXPBD
+from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledProxy
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -278,61 +279,52 @@ def test_cg_rheology_whole_step_graph_capture(test, device):
             test.assertTrue(np.all(np.isfinite(state_1.particle_q.numpy())))
 
 
-def test_deformable_mesh_collider_mass(test, device):
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+def test_proxy_particle_gravity_is_not_coupling_feedback(test, device):
+    gravity = -9.81
+    dt = 1.0 / 60.0
+
+    builder = newton.ModelBuilder(gravity=gravity)
     SolverImplicitMPM.register_custom_attributes(builder)
-
-    collider_particle_ids = [
-        builder.add_particle(wp.vec3(-0.5, 0.0, -0.5), wp.vec3(0.0), mass=2.0),
-        builder.add_particle(wp.vec3(0.5, 0.0, -0.5), wp.vec3(0.0), mass=3.0),
-        builder.add_particle(wp.vec3(0.0, 0.0, 0.5), wp.vec3(0.0), mass=4.0),
-    ]
-    builder.add_particle(wp.vec3(0.0, 0.5, 0.0), wp.vec3(0.0), mass=1.0)
+    builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.03)
+    builder.add_particle(pos=(1.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.03)
     model = builder.finalize(device=device)
+    model.mpm.yield_pressure.fill_(1.0e5)
 
-    points = wp.array(
-        [wp.vec3(-0.5, 0.0, -0.5), wp.vec3(0.5, 0.0, -0.5), wp.vec3(0.0, 0.0, 0.5)],
-        dtype=wp.vec3,
-        device=device,
+    config = SolverImplicitMPM.Config()
+    config.voxel_size = 0.2
+    config.grid_type = "fixed"
+    config.grid_padding = 2
+    config.warmstart_mode = "none"
+    config.transfer_scheme = "pic"
+    config.max_iterations = 1
+
+    solver = SolverCoupledProxy(
+        model=model,
+        entries=[
+            SolverCoupled.Entry(
+                name="xpbd",
+                solver=lambda view: SolverXPBD(model=view, iterations=1),
+                particles=[0],
+            ),
+            SolverCoupled.Entry(
+                name="mpm",
+                solver=lambda view: SolverImplicitMPM(model=view, config=config),
+                particles=[1],
+                in_place=True,
+            ),
+        ],
+        coupling=SolverCoupledProxy.Config(
+            proxies=[SolverCoupledProxy.Proxy(source="xpbd", destination="mpm", particles=[0])]
+        ),
     )
-    indices = wp.array([0, 1, 2], dtype=int, device=device)
-    velocities = wp.zeros(3, dtype=wp.vec3, device=device)
-    mesh = wp.Mesh(points=points, indices=indices, velocities=velocities)
 
-    options = SolverImplicitMPM.Config()
-    options.grid_type = "dense"
-    solver = SolverImplicitMPM(model, options)
-    solver.setup_collider(collider_meshes=[mesh], collider_particle_ids=[collider_particle_ids])
-
-    test.assertTrue(solver._mpm_model.has_compliant_colliders)
-    test.assertEqual(solver._mpm_model.collider.collider_particle_ids.shape[0], len(collider_particle_ids))
-    test.assertEqual(solver._mpm_model.deformable_collider_vertex_ranges, [(0, 0, 3)])
-    test.assertAlmostEqual(float(solver._mpm_model.min_collider_mass), 2.0)
-
-
-def test_proxy_particles_excluded_from_material_transfer(test, device):
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
-    SolverImplicitMPM.register_custom_attributes(builder)
-    builder.add_particle(wp.vec3(0.0), wp.vec3(0.0), mass=1.0)
-    builder.add_particle(wp.vec3(0.2, 0.2, 0.2), wp.vec3(0.0), mass=1.0)
-    builder.add_particle(wp.vec3(1.0, 1.0, 1.0), wp.vec3(0.0), mass=1.0)
-    model = builder.finalize(device=device)
-
-    flags = model.particle_flags.numpy()
-    flags[2] = flags[2] | int(newton.ParticleFlags.PROXY)
-    model.particle_flags.assign(flags)
-
-    options = SolverImplicitMPM.Config()
-    options.grid_type = "dense"
-    solver = SolverImplicitMPM(model, options)
-
-    transfer_flags = solver._mpm_model.particle_flags.numpy()
-    material_flags = solver._mpm_model.material_particle_flags.numpy()
-    test.assertTrue(transfer_flags[0] & int(newton.ParticleFlags.ACTIVE))
-    test.assertTrue(transfer_flags[1] & int(newton.ParticleFlags.ACTIVE))
-    test.assertTrue(transfer_flags[2] & int(newton.ParticleFlags.ACTIVE))
-    test.assertFalse(material_flags[2] & int(newton.ParticleFlags.ACTIVE))
-    test.assertTrue(model.particle_flags.numpy()[2] & int(newton.ParticleFlags.ACTIVE))
+    state_0 = model.state()
+    state_1 = model.state()
+    for step in range(1, 3):
+        solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
+        expected_velocity = np.array([0.0, 0.0, step * gravity * dt])
+        np.testing.assert_allclose(state_1.particle_qd.numpy()[0], expected_velocity, atol=1.0e-4)
+        state_0, state_1 = state_1, state_0
 
 
 devices = get_test_devices()
@@ -364,8 +356,8 @@ add_function_test(
 
 add_function_test(
     TestImplicitMPM,
-    "test_deformable_mesh_collider_mass",
-    test_deformable_mesh_collider_mass,
+    "test_proxy_particle_gravity_is_not_coupling_feedback",
+    test_proxy_particle_gravity_is_not_coupling_feedback,
     devices=devices,
     check_output=False,
 )
