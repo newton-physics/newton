@@ -425,13 +425,37 @@ class ModelBuilder:
                 raise ValueError(
                     f"Unknown sdf_texture_format {self.sdf_texture_format!r}. Expected one of {list(_valid_tex_fmts)}."
                 )
+            if self.density < 0.0:
+                raise ValueError(f"density must be >= 0 (got {self.density}).")
+
+            if self.sdf_target_voxel_size is not None and self.sdf_target_voxel_size <= 0.0:
+                raise ValueError(f"sdf_target_voxel_size must be > 0 (got {self.sdf_target_voxel_size}).")
+
+            if self.sdf_padding is not None and self.sdf_padding < 0.0:
+                raise ValueError(f"sdf_padding must be >= 0 (got {self.sdf_padding}).")
+
+            if not isinstance(self.sdf_narrow_band_range, tuple) or len(self.sdf_narrow_band_range) != 2:
+                raise ValueError(
+                    "sdf_narrow_band_range must be a tuple of two distances (inner, outer) with inner < 0 < outer."
+                )
+            inner, outer = self.sdf_narrow_band_range
+            if not inner < 0.0 < outer:
+                raise ValueError(
+                    f"sdf_narrow_band_range must satisfy inner < 0 < outer (got {self.sdf_narrow_band_range})."
+                )
+
             if self.sdf_max_resolution is not None and self.sdf_target_voxel_size is not None:
                 raise ValueError("Set only one of sdf_max_resolution or sdf_target_voxel_size, not both.")
-            if self.sdf_max_resolution is not None and self.sdf_max_resolution % 8 != 0:
-                raise ValueError(
-                    f"sdf_max_resolution must be divisible by 8 (got {self.sdf_max_resolution}). "
-                    "This is required because SDF volumes are allocated in 8x8x8 tiles."
-                )
+            if self.sdf_max_resolution is not None:
+                if self.sdf_max_resolution <= 0:
+                    raise ValueError(f"sdf_max_resolution must be > 0 (got {self.sdf_max_resolution}).")
+                if self.sdf_max_resolution >= (1 << 16):
+                    raise ValueError(f"sdf_max_resolution must be less than {1 << 16}.")
+                if self.sdf_max_resolution % 8 != 0:
+                    raise ValueError(
+                        f"sdf_max_resolution must be divisible by 8 (got {self.sdf_max_resolution}). "
+                        "This is required because SDF volumes are allocated in 8x8x8 tiles."
+                    )
             hydroelastic_supported = shape_type not in (GeoType.PLANE, GeoType.HFIELD)
             hydroelastic_requires_configured_sdf = shape_type in (
                 GeoType.SPHERE,

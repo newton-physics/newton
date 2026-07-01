@@ -821,6 +821,53 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn("999", error_msg)
 
 
+class TestShapeConfigValidation(unittest.TestCase):
+    def test_shape_config_rejects_negative_density(self):
+        cfg = newton.ModelBuilder.ShapeConfig(density=-1.0)
+
+        with self.assertRaisesRegex(ValueError, "density must be >= 0"):
+            cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_target_voxel_size(self):
+        for target_voxel_size in (0.0, -0.01):
+            with self.subTest(target_voxel_size=target_voxel_size):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_target_voxel_size=target_voxel_size)
+
+                with self.assertRaisesRegex(ValueError, "sdf_target_voxel_size must be > 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_padding(self):
+        cfg = newton.ModelBuilder.ShapeConfig(sdf_padding=-0.1)
+
+        with self.assertRaisesRegex(ValueError, "sdf_padding must be >= 0"):
+            cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_narrow_band_range(self):
+        cases = [
+            (0.1, 0.2),
+            (-0.1, -0.01),
+            (0.1, -0.1),
+            (-0.1,),
+        ]
+
+        for narrow_band_range in cases:
+            with self.subTest(narrow_band_range=narrow_band_range):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_narrow_band_range=narrow_band_range)
+
+                with self.assertRaisesRegex(ValueError, "sdf_narrow_band_range"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_rejects_invalid_sdf_max_resolution(self):
+        cases = [0, -8, 10, 1 << 16]
+
+        for max_resolution in cases:
+            with self.subTest(max_resolution=max_resolution):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_max_resolution=max_resolution)
+
+                with self.assertRaisesRegex(ValueError, "sdf_max_resolution"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+
 class TestModelJoints(unittest.TestCase):
     def test_joint_target_q_qd_shape_with_free_and_ball_joints(self):
         """``joint_target_q`` follows ``joint_q`` (coord) under
