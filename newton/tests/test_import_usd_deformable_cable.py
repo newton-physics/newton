@@ -112,7 +112,6 @@ class TestUSDDeformableCable(unittest.TestCase):
 
     def test_zero_stiffness_attachment_is_not_welded(self):
         """A stiffness=0 curve-to-curve attachment must not weld the cables or move geometry."""
-        from pxr import Usd
 
         with tempfile.TemporaryDirectory() as tmpdir:
             usd_path = self._author_attached_cable_pair(tmpdir, gap=10.0, stiffness=0.0)
@@ -133,7 +132,6 @@ class TestUSDDeformableCable(unittest.TestCase):
 
     def test_finite_stiffness_attachment_is_not_welded(self):
         """A finite-stiffness curve-to-curve attachment is preserved, not welded."""
-        from pxr import Usd
 
         with tempfile.TemporaryDirectory() as tmpdir:
             usd_path = self._author_attached_cable_pair(tmpdir, gap=0.0, stiffness=1.0e4)
@@ -148,7 +146,6 @@ class TestUSDDeformableCable(unittest.TestCase):
 
     def test_non_coincident_hard_attachment_is_not_welded(self):
         """A hard attachment whose sites are apart must not snap the cables together."""
-        from pxr import Usd
 
         with tempfile.TemporaryDirectory() as tmpdir:
             usd_path = self._author_attached_cable_pair(tmpdir, gap=10.0)
@@ -164,7 +161,6 @@ class TestUSDDeformableCable(unittest.TestCase):
 
     def test_coincident_hard_attachment_still_welds(self):
         """A hard, coincident junction keeps welding into one rod graph."""
-        from pxr import Usd
 
         with tempfile.TemporaryDirectory() as tmpdir:
             usd_path = self._author_attached_cable_pair(tmpdir, gap=0.0)
@@ -439,7 +435,6 @@ class TestUSDDeformableCable(unittest.TestCase):
     def test_skipped_curve_masses_validated_against_authored_points(self):
         """physics:masses is per authored point: a full-length array is applied to the
         imported curve even when another curve in the prim is skipped."""
-        from pxr import Usd
 
         with tempfile.TemporaryDirectory() as tmpdir:
             usd_path = self._author_two_curve_prim_with_masses(tmpdir, [4, 2], [1.0] * 6)
@@ -455,7 +450,6 @@ class TestUSDDeformableCable(unittest.TestCase):
 
     def test_skipped_first_curve_masses_use_absolute_offsets(self):
         """A skipped FIRST curve must not shift the imported curve's slice of physics:masses."""
-        from pxr import Usd
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # The imported curve's points are authored at offsets 2..5.
@@ -474,7 +468,6 @@ class TestUSDDeformableCable(unittest.TestCase):
     def test_short_curve_masses_array_warns_without_crash(self):
         """A masses array matching only the imported point count is rejected with a warning
         (it cannot be indexed by authored offset), not an IndexError."""
-        from pxr import Usd
 
         with tempfile.TemporaryDirectory() as tmpdir:
             usd_path = self._author_two_curve_prim_with_masses(tmpdir, [2, 4], [1.0] * 4)

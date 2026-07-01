@@ -65,9 +65,51 @@ Material attributes are read from the canonical ``physics:`` namespace (per the 
 Vendor namespaces (``omniphysics:``, ``physxDeformableBody:``) are an opt-in fallback, declared by
 a schema resolver (e.g. ``SchemaResolverPhysx``) and consulted only for deformable attributes.
 
-**Mass distribution** follows the proposal's precedence: per-point ``physics:masses`` on the
+Supported subset
+~~~~~~~~~~~~~~~~
+
+The initial, experimental contract is deliberately narrow. What imports:
+
+* Valid, enabled, **dynamic** cable, cloth, and volume simulation prims using the canonical
+  AOUSD deformable APIs, with one bound simulation material per deformable.
+* The **current** authored simulation points/topology as the Newton construction state.
+* Point attachments only where their authored semantics are representable without changing
+  geometry (hard cable-to-xform lowering; hard, coincident curve-to-curve junctions as topology).
+* Prim-path lookup of every imported group on the finalized model (see below).
+
+Inputs outside the subset warn and skip the affected object (or record it as unsupported in the
+returned attrs) rather than silently becoming a different physical model: disabled
+(``physics:bodyEnabled = false``) and kinematic (``physics:kinematicEnabled = true``) deformables
+are skipped, and compliant or non-coincident curve junctions are preserved but not imported.
+
+Limitations
+~~~~~~~~~~~
+
+Known gaps of the experimental importer, tracked as follow-ups:
+
+* **Rest state** -- authored rest geometry (``restShapePoints`` and friends) is not used for
+  constitutive response or density-derived mass weighting; elements are built from the current
+  points, so a saved deformed pose resumes relaxed at that pose.
+* **Compliant attachments** -- finite attachment stiffness/damping are not represented; supported
+  attachments lower to hard constraints, others are preserved in ``path_attachment_attrs``.
+* **Body state** -- ``startsAsleep`` and ``simulationOwner`` are not consumed; kinematic
+  deformables are skipped rather than represented.
+* **Per-element material subsets** -- ``GeomSubset`` material bindings are flattened to one
+  material per simulation prim.
+* **Collision/graphics embeddings** -- separate collision or graphics geometry under a deformable
+  body is not imported or driven; the simulation representation is the supported output.
+* **Cable frames and stiffness** -- absent per-point normals fall back to auto-orientation, and
+  one scalar stiffness (from the mean segment length) applies per curve/graph, so strongly
+  nonuniform segments do not get per-joint gains.
+* **Cloth thickness fallback** -- without an authored thickness, a volumetric material density
+  cannot be converted to Newton's areal density and is used as-is.
+
+**Mass distribution** follows the proposal's precedence order: per-point ``physics:masses`` on the
 simulation geometry override ``PhysicsDeformableBodyAPI`` ``mass`` (a target total), which overrides
-the body/material density; per-element volume/area weighting is delegated to the builder.
+the body/material density. Density- and total-derived weighting uses the builder's approximation
+over the **current** imported geometry (segment lengths, triangle areas, tet volumes); the proposal
+weights by rest-shape element volumes, but authored rest state is not imported yet (see the
+limitations below), so a deformed saved pose redistributes mass accordingly.
 
 Each imported deformable is a first-class group looked up by prim path. :class:`~newton.ModelBuilder`
 and the finalized :class:`~newton.Model` carry, per family, a label list, a world index, and
@@ -77,7 +119,10 @@ particle/triangle/edge ranges, and volume (soft) particle/tet ranges. Resolve a 
 and read its range with the matching ``*_range`` helper (e.g. :meth:`~newton.Model.cloth_particle_range`).
 These ranges survive :meth:`~newton.ModelBuilder.finalize`, :meth:`~newton.ModelBuilder.replicate`
 (each world's copy is tagged with its world index), and ``collapse_fixed_joints`` (cable ranges ride
-the body/joint reindexing).
+the body/joint reindexing). After replication a label is duplicated across worlds, so the lookup
+takes an explicit ``world`` (and raises without one rather than guessing). This metadata is the
+low-level indexing substrate: label-pattern selection, per-world grouping, and batched state access
+will arrive through ``newton.selection``, mirroring :class:`~newton.selection.ArticulationView`.
 
 A ``PhysicsAttachment`` prim ties two sites together. Each side has a target relationship
 (``src0``, ``src1``) pointing at the prim it attaches to, a site ``type`` (``type0``, ``type1``)
@@ -95,13 +140,17 @@ this lowering; supported attachments are imported as hard point constraints. Att
 surface or volume deformable sites are warned and preserved in ``path_attachment_attrs`` until Newton
 has a general deformable-site attachment constraint.
 
-A ``point``->``point`` ``PhysicsAttachment`` whose ``src0`` and ``src1`` are **both** imported curve
-deformables is treated as graph topology rather than a runtime constraint: the two referenced control
-points are the same junction node. Curves transitively joined this way form one component, built with
-a single :meth:`~newton.ModelBuilder.add_rod_graph` call (one capsule body per segment, junction
-nodes shared). These junction attachments are consumed by the graph build, so they do not appear in
-``path_attachment_map`` / ``path_attachment_attrs``; curve-to-xform attachments on the same curves are
-still lowered as above.
+A **hard** (unauthored or infinite stiffness, zero damping) ``point``->``point``
+``PhysicsAttachment`` whose ``src0`` and ``src1`` are **both** imported curve deformables and whose
+sites are coincident is treated as graph topology rather than a runtime constraint: the two
+referenced control points are the same junction node. Curves transitively joined this way form one
+component, built with a single :meth:`~newton.ModelBuilder.add_rod_graph` call (one capsule body per
+segment, junction nodes shared). These junction attachments are consumed by the graph build, so they
+do not appear in ``path_attachment_map`` / ``path_attachment_attrs``. A compliant (finite
+stiffness/damping) or non-coincident curve-to-curve attachment is **not** welded -- it warns and is
+preserved as unsupported in ``path_attachment_attrs`` so the authored geometry and constraint intent
+are never silently rewritten. Curve-to-xform attachments on the same curves are still lowered as
+above.
 
 Each imported cable is wrapped into its own articulation (labelled ``"<path>_articulation"``), so the
 model is ready for :meth:`~newton.ModelBuilder.finalize` without the caller wrapping anything. Welded
@@ -116,9 +165,8 @@ articulation.
     model = builder.finalize()  # cables are already wrapped and finalize-ready
     # Look up an imported cable by prim path:
     body_start, body_end = model.cable_body_range(model.cable_index("/World/Cable"))
-    model = builder.finalize()
 
-The same return dict also carries ``path_cable_attrs``, ``path_cloth_attrs`` and ``path_soft_attrs``,
+The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``, ``path_cloth_attrs`` and ``path_soft_attrs``,
 mapping each prim path to its as-authored, solver-neutral attributes. The cable and cloth maps expose the
 parsed ``material`` moduli and the ``resolved_density``; the volume map exposes the ``resolved_density``
 (a volume material's ``youngsModulus`` / ``poissonsRatio`` are parsed and applied to the built soft body,
