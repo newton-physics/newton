@@ -513,6 +513,89 @@ If you run the examples from a source checkout with uv, use
     </td>
   </tr>
   <tr>
+    <td colspan="3"><h3>SPH Examples</h3></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sph/example_sph_fluid_block.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sph_fluid_block.jpg" alt="SPH Fluid Block">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sph/example_sph_dam_break.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sph_dam_break.jpg" alt="SPH Dam Break">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sph/example_sph_moving_boundary.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sph_moving_boundary.jpg" alt="SPH Moving Boundary">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples sph_fluid_block</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples sph_dam_break</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples sph_moving_boundary</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sph/example_sph_mesh_collider.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sph_mesh_collider.jpg" alt="SPH Mesh Collider">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sph/example_sph_twoway_coupling.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sph_twoway_coupling.jpg" alt="SPH Two-Way Coupling">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sph/example_sph_articulated_coupling.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sph_articulated_coupling.jpg" alt="SPH Articulated Coupling">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples sph_mesh_collider</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples sph_twoway_coupling</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples sph_articulated_coupling</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sph/example_sph_paddle_wheel.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sph_paddle_wheel.jpg" alt="SPH Paddle Wheel">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sph/example_sph_hydraulic_turbine.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sph_hydraulic_turbine.jpg" alt="SPH Hydraulic Turbine">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples sph_paddle_wheel</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples sph_hydraulic_turbine</code>
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
     <td colspan="3"><h3>Sensor Examples</h3></td>
   </tr>
   <tr>

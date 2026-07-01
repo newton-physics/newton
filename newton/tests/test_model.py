@@ -222,6 +222,40 @@ class TestModelBuilderDeprecations(unittest.TestCase):
 
 
 class TestModelBuilderBvhConstructor(unittest.TestCase):
+    def test_invisible_shape_world_transforms_are_initialized(self):
+        builder = ModelBuilder()
+        builder.add_shape_box(
+            body=-1,
+            xform=wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_identity()),
+            cfg=ModelBuilder.ShapeConfig(is_visible=False),
+        )
+
+        model = builder.finalize(device="cpu")
+
+        self.assertEqual(model.bvh_shape_count_enabled, 0)
+        np.testing.assert_allclose(
+            model.bvh_shape_world_transforms.numpy(),
+            model.shape_transform.numpy(),
+            rtol=0.0,
+            atol=0.0,
+        )
+
+    def test_shape_bvh_rebuild_clears_disabled_shapes(self):
+        builder = ModelBuilder()
+        builder.add_shape_box(body=-1)
+        model = builder.finalize(device="cpu")
+        self.assertIsNotNone(model.bvh_shapes)
+        self.assertIsNotNone(model.bvh_shapes_group_roots)
+
+        shape_flags = model.shape_flags.numpy()
+        shape_flags &= ~int(newton.ShapeFlags.VISIBLE)
+        model.shape_flags.assign(shape_flags)
+        model.bvh_build_shapes(model.state())
+
+        self.assertEqual(model.bvh_shape_count_enabled, 0)
+        self.assertIsNone(model.bvh_shapes)
+        self.assertIsNone(model.bvh_shapes_group_roots)
+
     def test_model_builder_forwards_bvh_constructors(self):
         builder = ModelBuilder()
         builder.default_bvh_cfg.mesh_constructor = "cubql"

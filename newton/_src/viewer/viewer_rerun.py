@@ -650,6 +650,7 @@ class ViewerRerun(ViewerBase):
         geo_is_solid: bool,
         geo_src: newton.Mesh | newton.Heightfield | None = None,
         hidden: bool = False,
+        backface_culling: bool = True,
     ):
         """Log a geometry primitive, with plane expansion for infinite planes.
 
@@ -661,6 +662,7 @@ class ViewerRerun(ViewerBase):
             geo_is_solid: Whether mesh geometry is treated as solid.
             geo_src: Optional source geometry for mesh-backed types.
             hidden: Whether the resulting geometry is hidden.
+            backface_culling: Whether to cull back-facing mesh triangles.
         """
         # Generate vertices/indices for supported primitive types
         if geo_type == newton.GeoType.PLANE:
@@ -681,9 +683,26 @@ class ViewerRerun(ViewerBase):
             normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
             uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
             indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
-            self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
+            self.log_mesh(
+                name,
+                points,
+                indices,
+                normals,
+                uvs,
+                hidden=hidden,
+                backface_culling=backface_culling,
+            )
         else:
-            super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src, hidden)
+            super().log_geo(
+                name,
+                geo_type,
+                geo_scale,
+                geo_thickness,
+                geo_is_solid,
+                geo_src,
+                hidden,
+                backface_culling,
+            )
 
     @override
     def log_points(

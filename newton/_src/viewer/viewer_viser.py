@@ -667,6 +667,7 @@ class ViewerViser(ViewerBase):
             "uvs": uvs_np,
             "texture": texture_image,
             "trimesh": trimesh_mesh,
+            "backface_culling": backface_culling,
         }
 
         # Remove existing mesh if present
@@ -840,6 +841,7 @@ class ViewerViser(ViewerBase):
         base_uvs = mesh_data.get("uvs")
         texture_image = self._prepare_texture(mesh_data.get("texture"))
         trimesh_mesh = mesh_data.get("trimesh")
+        backface_culling = bool(mesh_data.get("backface_culling", True))
 
         if hidden:
             # Remove existing instances if present
@@ -888,9 +890,10 @@ class ViewerViser(ViewerBase):
             handle = self._scene_handles[name]
             prev_count = self._instances[name]["count"]
             prev_use_trimesh = self._instances[name].get("use_trimesh", False)
+            prev_mesh = self._instances[name].get("mesh")
 
             # If instance count changed, we need to recreate the mesh
-            if prev_count != num_instances or prev_use_trimesh != use_trimesh:
+            if prev_count != num_instances or prev_use_trimesh != use_trimesh or prev_mesh != mesh:
                 try:
                     handle.remove()
                 except Exception:
@@ -947,6 +950,7 @@ class ViewerViser(ViewerBase):
                 batched_scales=batched_scales,
                 batched_colors=batched_colors,
                 lod="off",
+                side="front" if backface_culling else "double",
             )
 
         self._scene_handles[name] = handle
@@ -1204,6 +1208,7 @@ class ViewerViser(ViewerBase):
         geo_is_solid: bool,
         geo_src: newton.Mesh | newton.Heightfield | None = None,
         hidden: bool = False,
+        backface_culling: bool = True,
     ):
         """Log a geometry primitive, with plane expansion for infinite planes.
 
@@ -1215,6 +1220,7 @@ class ViewerViser(ViewerBase):
             geo_is_solid: Whether mesh geometry is treated as solid.
             geo_src: Optional source geometry for mesh-backed types.
             hidden: Whether the resulting geometry is hidden.
+            backface_culling: Whether to cull back-facing mesh triangles.
         """
         name = self._qualify(name)
 
@@ -1236,7 +1242,16 @@ class ViewerViser(ViewerBase):
                 "length": float(length),
             }
         else:
-            super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src, hidden)
+            super().log_geo(
+                name,
+                geo_type,
+                geo_scale,
+                geo_thickness,
+                geo_is_solid,
+                geo_src,
+                hidden,
+                backface_culling,
+            )
 
     @override
     def log_points(

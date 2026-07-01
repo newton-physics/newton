@@ -35,6 +35,25 @@ _DEFAULT_LAYER_ID = "__default__"
 _LAYER_CONFIG_FIELDS = frozenset(("layer_id", "visible", "xform"))
 
 
+def _make_double_sided_render_mesh(mesh: newton.Mesh) -> newton.Mesh:
+    """Duplicate a render mesh with reversed winding and normals."""
+    vertex_count = mesh.vertices.shape[0]
+    normals = None if mesh.normals is None else np.vstack((mesh.normals, -mesh.normals))
+    uvs = None if mesh.uvs is None else np.vstack((mesh.uvs, mesh.uvs))
+    return newton.Mesh(
+        vertices=np.vstack((mesh.vertices, mesh.vertices)),
+        indices=np.concatenate(
+            (
+                mesh.indices,
+                mesh.indices.reshape(-1, 3)[:, [0, 2, 1]].reshape(-1) + vertex_count,
+            )
+        ),
+        normals=normals,
+        uvs=uvs,
+        compute_inertia=False,
+    )
+
+
 class Layer:
     """Container holding per-model viewer state for one layer.
 
@@ -1231,6 +1250,7 @@ class ViewerBase(ABC):
         geo_is_solid: bool = True,
         geo_src: newton.Mesh | newton.Heightfield | None = None,
         hidden: bool = False,
+        backface_culling: bool = True,
     ):
         """
         Convenience helper to create/cache a mesh of a given geometry and
@@ -1252,6 +1272,7 @@ class ViewerBase(ABC):
             geo_src: Source geometry to use only when ``geo_type`` is
                 :attr:`newton.GeoType.MESH`.
             hidden: If True, the shape will not be rendered
+            backface_culling: Whether to cull back-facing mesh triangles.
         """
 
         # normalize geo_scale to a list for hashing + mesh creation
@@ -1274,6 +1295,7 @@ class ViewerBase(ABC):
             float(geo_thickness),
             bool(geo_is_solid),
             geo_src=geo_src,
+            backface_culling=backface_culling,
         )
 
         # prepare instance properties
@@ -1323,6 +1345,7 @@ class ViewerBase(ABC):
         geo_is_solid: bool,
         geo_src: newton.Mesh | newton.Heightfield | None = None,
         hidden: bool = False,
+        backface_culling: bool = True,
     ):
         """
         Create a primitive mesh and upload it via :meth:`log_mesh`.
@@ -1340,6 +1363,7 @@ class ViewerBase(ABC):
                 :class:`newton.Heightfield` data when required
                 by ``geo_type``.
             hidden: Whether the created mesh should be hidden.
+            backface_culling: Whether to cull back-facing mesh triangles.
         """
         # Route user-supplied object names through the active layer.
         name = self._qualify(name)
@@ -1373,7 +1397,7 @@ class ViewerBase(ABC):
             )
             points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
             indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
-            self.log_mesh(name, points, indices, hidden=hidden)
+            self.log_mesh(name, points, indices, hidden=hidden, backface_culling=backface_culling)
             return
 
         # GEO_MESH handled by provided source geometry
@@ -1412,6 +1436,7 @@ class ViewerBase(ABC):
                 uvs,
                 hidden=hidden,
                 texture=texture,
+                backface_culling=backface_culling,
             )
             return
 
@@ -1444,6 +1469,10 @@ class ViewerBase(ABC):
             else:
                 ext = tuple(geo_scale[:3])
             mesh = newton.Mesh.create_box(ext[0], ext[1], ext[2], duplicate_vertices=True, compute_inertia=False)
+            if not backface_culling:
+                # Explicit winding is reliable on headless GL drivers that mishandle disabled face culling.
+                mesh = _make_double_sided_render_mesh(mesh)
+                backface_culling = True
 
         elif geo_type == newton.GeoType.ELLIPSOID:
             # geo_scale contains (rx, ry, rz) semi-axes
@@ -1460,7 +1489,16 @@ class ViewerBase(ABC):
         uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
         indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
 
-        self.log_mesh(name, points, indices, normals, uvs, hidden=hidden, texture=None)
+        self.log_mesh(
+            name,
+            points,
+            indices,
+            normals,
+            uvs,
+            hidden=hidden,
+            texture=None,
+            backface_culling=backface_culling,
+        )
 
     def log_gizmo(
         self,
@@ -1905,9 +1943,26 @@ class ViewerBase(ABC):
 
     # returns a unique (non-stable) identifier for a geometry configuration
     def _hash_geometry(
-        self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None, mirror: bool = False
+        self,
+        geo_type: int,
+        geo_scale,
+        thickness: float,
+        is_solid: bool,
+        geo_src=None,
+        mirror: bool = False,
+        backface_culling: bool = True,
     ) -> int:
-        return hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
+        return hash(
+            (
+                int(geo_type),
+                geo_src,
+                *geo_scale,
+                float(thickness),
+                bool(is_solid),
+                bool(mirror),
+                bool(backface_culling),
+            )
+        )
 
     def _hash_shape(self, geo_hash, shape_static, shape_flags) -> int:
         return hash((geo_hash, shape_static, shape_flags))
@@ -1941,6 +1996,7 @@ class ViewerBase(ABC):
         is_solid: bool,
         geo_src=None,
         mirror: bool = False,
+        backface_culling: bool = True,
     ) -> str:
         """Ensure a geometry mesh exists and return its mesh path.
 
@@ -1967,6 +2023,7 @@ class ViewerBase(ABC):
             bool(is_solid),
             geo_src,
             bool(mirror),
+            bool(backface_culling),
         )
 
         if geo_hash in self._geometry_cache:
@@ -1991,7 +2048,14 @@ class ViewerBase(ABC):
         mesh_path = self._qualify(f"/geometry/{base_name}_{len(self._geometry_cache)}")
 
         if mirror and geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) and geo_src is not None:
-            self._log_mesh_winding_flipped(mesh_path, geo_src, thickness, is_solid, hidden=True)
+            self._log_mesh_winding_flipped(
+                mesh_path,
+                geo_src,
+                thickness,
+                is_solid,
+                hidden=True,
+                backface_culling=backface_culling,
+            )
         else:
             self.log_geo(
                 mesh_path,
@@ -2003,12 +2067,19 @@ class ViewerBase(ABC):
                 if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
                 else None,
                 hidden=True,
+                backface_culling=backface_culling,
             )
         self._geometry_cache[geo_hash] = mesh_path
         return mesh_path
 
     def _log_mesh_winding_flipped(
-        self, name: str, src: newton.Mesh, thickness: float, is_solid: bool, hidden: bool
+        self,
+        name: str,
+        src: newton.Mesh,
+        thickness: float,
+        is_solid: bool,
+        hidden: bool,
+        backface_culling: bool = True,
     ) -> None:
         """Upload a winding-flipped copy of ``src`` for use with mirrored (det<0) instances.
 
@@ -2043,6 +2114,7 @@ class ViewerBase(ABC):
             uvs_wp,
             hidden=hidden,
             texture=getattr(src, "texture", None),
+            backface_culling=backface_culling,
         )
 
     # creates meshes and instances for each shape in the Model
