@@ -69,10 +69,15 @@ a schema resolver (e.g. ``SchemaResolverPhysx``) and consulted only for deformab
 simulation geometry override ``PhysicsDeformableBodyAPI`` ``mass`` (a target total), which overrides
 the body/material density; per-element volume/area weighting is delegated to the builder.
 
-Each imported deformable is addressable through the :meth:`~newton.ModelBuilder.add_usd` return dict:
-``path_cable_map`` (prim path -> ``(body_indices, joint_indices)``), ``path_cloth_map`` and
-``path_soft_map`` (prim path -> ``particle`` / element ``(start, end)`` index ranges). The cable map
-is remapped if ``collapse_fixed_joints`` reindexes bodies.
+Each imported deformable is a first-class group looked up by prim path. :class:`~newton.ModelBuilder`
+and the finalized :class:`~newton.Model` carry, per family, a label list, a world index, and
+``[start, end)`` index ranges into the per-element arrays: cable body/joint ranges, cloth
+particle/triangle/edge ranges, and volume (soft) particle/tet ranges. Resolve a group with
+:meth:`~newton.Model.cable_index` / :meth:`~newton.Model.cloth_index` / :meth:`~newton.Model.soft_index`
+and read its range with the matching ``*_range`` helper (e.g. :meth:`~newton.Model.cloth_particle_range`).
+These ranges survive :meth:`~newton.ModelBuilder.finalize`, :meth:`~newton.ModelBuilder.replicate`
+(each world's copy is tagged with its world index), and ``collapse_fixed_joints`` (cable ranges ride
+the body/joint reindexing).
 
 A ``PhysicsAttachment`` prim ties two sites together. Each side has a target relationship
 (``src0``, ``src1``) pointing at the prim it attaches to, a site ``type`` (``type0``, ``type1``)
@@ -98,23 +103,19 @@ nodes shared). These junction attachments are consumed by the graph build, so th
 ``path_attachment_map`` / ``path_attachment_attrs``; curve-to-xform attachments on the same curves are
 still lowered as above.
 
-Imported single cables are **unwrapped**: their cable joints are not placed in an articulation, so the
-caller wraps the returned ``joint_indices`` with :meth:`~newton.ModelBuilder.add_articulation` before
-:meth:`~newton.ModelBuilder.finalize` (which otherwise reports the joints as orphaned). This keeps
-articulation topology -- closing a loop with extra joints, attaching the cable to other bodies -- a
-caller decision rather than something the importer imposes. Welded **rod graphs** are the exception:
-their junction spanning tree is intrinsic topology, so the importer wraps each component in its own
-articulation and exposes empty ``joint_indices`` for those curves (callers using the
-``if joints: add_articulation(joints)`` pattern skip them).
+Each imported cable is wrapped into its own articulation (labelled ``"<path>_articulation"``), so the
+model is ready for :meth:`~newton.ModelBuilder.finalize` without the caller wrapping anything. Welded
+**rod graphs** wrap each connected component into one articulation (its junction spanning tree is
+intrinsic topology); the component's individual curves each keep a body range but share that one
+articulation. Attachment joints that tie a cable to other bodies are loop-closing and stay outside the
+articulation.
 
 .. code-block:: python
 
-    result = builder.add_usd("cables.usda")
-    # Wrap each single cable's joints in its own articulation before finalize. Welded rod
-    # graphs come back pre-wrapped with empty joint lists, so the guard skips them.
-    for _bodies, joints in result["path_cable_map"].values():
-        if joints:
-            builder.add_articulation(joints)
+    builder.add_usd("cables.usda")
+    model = builder.finalize()  # cables are already wrapped and finalize-ready
+    # Look up an imported cable by prim path:
+    body_start, body_end = model.cable_body_range(model.cable_index("/World/Cable"))
     model = builder.finalize()
 
 The same return dict also carries ``path_cable_attrs``, ``path_cloth_attrs`` and ``path_soft_attrs``,

@@ -332,7 +332,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             if key_bodies:
                 # Edges are assembled curve-by-curve, so each curve's graph bodies are contiguous.
                 # A welded curve owns no individual tree joints (they live in the shared graph
-                # articulation, addressable via articulation_label), so its joint range is empty.
+                # articulation, found via articulation_label), so its joint range is empty.
                 builder._record_cable_group(
                     key, (key_bodies[0], key_bodies[-1] + 1), (builder.joint_count, builder.joint_count)
                 )

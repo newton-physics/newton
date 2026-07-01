@@ -693,10 +693,10 @@ class Model:
         self.max_dofs_per_articulation: int = 0
         """Maximum number of degrees of freedom in any articulation (used for Jacobian/mass matrix computation)."""
 
-        # Deformable groups: each imported cable/cloth/volume is an addressable, world-tagged group
-        # with [start, end) index ranges into the corresponding per-element arrays. Ranges are stored
-        # as separate start/end arrays (not a CSR sentinel) so a group's range stays exact even when
-        # non-group elements are interleaved. Use the *_index()/*_range() helpers to resolve by path.
+        # Deformable groups: each imported cable/cloth/volume is a world-tagged group with a
+        # [start, end) index range into the corresponding per-element arrays, looked up by prim path.
+        # Ranges are stored as separate start/end arrays (not a CSR sentinel) so a group's range stays
+        # exact even when non-group elements are interleaved. Use the *_index()/*_range() helpers.
         self.cable_count: int = 0
         """Number of cable (curve-deformable) groups."""
         self.cable_label: list[str] = []

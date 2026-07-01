@@ -11,7 +11,11 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests._usd_deformable_test_utils import _apply_deformable_body_api, _bind_deformable_material
+from newton.tests._usd_deformable_test_utils import (
+    _apply_deformable_body_api,
+    _bind_deformable_material,
+    deformable_maps,
+)
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_selected_cuda_test_devices
 
 
@@ -82,33 +86,12 @@ class TestUSDDeformableVolume(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            ranges = result["path_soft_map"]["/World/Soft"]
+            builder.add_usd(str(usd_path))
+            _, _, soft_map = deformable_maps(builder)
+            ranges = soft_map["/World/Soft"]
             self.assertEqual(ranges["particle"], (0, 4))  # 4 tet vertices
             self.assertEqual(ranges["tet"], (0, 1))  # 1 tetrahedron
             self.assertEqual(builder.particle_count, 4)
-
-    def test_soft_registry_matches_map(self):
-        """The builder soft-group registry records the same ranges as path_soft_map."""
-        from pxr import Usd, UsdGeom, UsdPhysics
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            usd_path = Path(tmpdir) / "tet.usda"
-            stage = Usd.Stage.CreateNew(str(usd_path))
-            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            tet = UsdGeom.TetMesh.Define(stage, "/World/Soft")
-            tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
-            tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
-            stage.Save()
-
-            builder = newton.ModelBuilder()
-            ranges = builder.add_usd(str(usd_path))["path_soft_map"]["/World/Soft"]
-
-            self.assertEqual(builder.soft_label, ["/World/Soft"])
-            self.assertEqual(builder.soft_world, [builder.current_world])
-            self.assertEqual((builder.soft_particle_start[0], builder.soft_particle_end[0]), ranges["particle"])
-            self.assertEqual((builder.soft_tet_start[0], builder.soft_tet_end[0]), ranges["tet"])
 
     def test_soft_addressable_by_path_after_finalize(self):
         """After finalize(), a soft volume resolves by prim path to its particle/tet ranges."""
@@ -125,7 +108,9 @@ class TestUSDDeformableVolume(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            ranges = builder.add_usd(str(usd_path))["path_soft_map"]["/World/Soft"]
+            builder.add_usd(str(usd_path))
+            _, _, soft_map = deformable_maps(builder)
+            ranges = soft_map["/World/Soft"]
             model = builder.finalize()
 
             self.assertEqual(model.soft_count, 1)
@@ -152,14 +137,15 @@ class TestUSDDeformableVolume(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            p0, p1 = result["path_soft_map"]["/World/Soft"]["particle"]
+            builder.add_usd(str(usd_path))
+            _, _, soft_map = deformable_maps(builder)
+            p0, p1 = soft_map["/World/Soft"]["particle"]
             pq = np.array([list(builder.particle_q[i]) for i in range(p0, p1)])
             # Original X {0, 1, 0, 0} mirrors to {0, -1, 0, 0}.
             np.testing.assert_allclose(sorted(pq[:, 0]), [-1.0, 0.0, 0.0, 0.0], atol=1e-4)
 
             # The imported tet keeps a positive signed rest volume (winding repaired for the reflection).
-            t0, _t1 = result["path_soft_map"]["/World/Soft"]["tet"]
+            t0, _t1 = soft_map["/World/Soft"]["tet"]
             i, j, k, m = builder.tet_indices[t0]
 
             def pos(n):
@@ -205,9 +191,10 @@ class TestUSDDeformableVolume(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            ra = result["path_soft_map"]["/World/SoftA"]["particle"]
-            rb = result["path_soft_map"]["/World/SoftB"]["particle"]
+            builder.add_usd(str(usd_path))
+            _, _, soft_map = deformable_maps(builder)
+            ra = soft_map["/World/SoftA"]["particle"]
+            rb = soft_map["/World/SoftB"]["particle"]
             self.assertEqual(ra, (0, 4))
             self.assertEqual(rb, (4, 8))
             self.assertEqual(builder.particle_count, 8)
@@ -360,8 +347,8 @@ class TestUSDDeformableVolume(unittest.TestCase):
             _author_unit_tet(stage, "/World/Body/Graphics")  # no sim API -> graphics/collision
 
         with self.assertWarnsRegex(UserWarning, "graphics/collision geometry"):
-            builder, result = self._build_soft(author)
-        soft = result["path_soft_map"]
+            builder, _result = self._build_soft(author)
+        _, _, soft = deformable_maps(builder)
         self.assertIn("/World/Body/Sim", soft)
         self.assertNotIn("/World/Body/Graphics", soft)  # skipped, not simulated
         # The whole simulated system is exactly the body's authored 12 kg (no extra graphics mass).
@@ -379,8 +366,8 @@ class TestUSDDeformableVolume(unittest.TestCase):
             _author_tet_cube(stage, "/World/Body/SimB")
 
         with self.assertWarnsRegex(UserWarning, "skipping additional simulation mesh"):
-            builder, result = self._build_soft(author)
-        soft = result["path_soft_map"]
+            builder, _result = self._build_soft(author)
+        _, _, soft = deformable_maps(builder)
         self.assertIn("/World/Body/SimA", soft)
         self.assertNotIn("/World/Body/SimB", soft)  # extra sim mesh skipped
         self.assertAlmostEqual(sum(builder.particle_mass), 12.0, places=4)
@@ -396,9 +383,10 @@ class TestUSDDeformableVolume(unittest.TestCase):
             UsdGeom.PointBased(tet.GetPrim()).CreateVelocitiesAttr([(1.0, 2.0, 3.0)] * 4)
 
         with self.assertWarnsRegex(UserWarning, "velocities are not imported"):
-            builder, result = self._build_soft(author)
+            builder, _result = self._build_soft(author)
+        _, _, soft_map = deformable_maps(builder)
         # Imported at rest (velocities dropped), no crash.
-        p0, p1 = result["path_soft_map"]["/World/Soft"]["particle"]
+        p0, p1 = soft_map["/World/Soft"]["particle"]
         for i in range(p0, p1):
             np.testing.assert_allclose(np.array(builder.particle_qd[i]), [0.0, 0.0, 0.0], atol=1e-6)
 

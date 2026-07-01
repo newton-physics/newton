@@ -12,7 +12,12 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests._usd_deformable_test_utils import _add_cable_curve, _add_cloth_mesh, _bind_deformable_material
+from newton.tests._usd_deformable_test_utils import (
+    _add_cable_curve,
+    _add_cloth_mesh,
+    _bind_deformable_material,
+    deformable_maps,
+)
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_selected_cuda_test_devices
 
 
@@ -34,8 +39,9 @@ class TestUSDDeformableCloth(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             result = builder.add_usd(str(usd_path))
+            _, cloth_map, _ = deformable_maps(builder)
 
-            ranges = result["path_cloth_map"]["/World/Cloth"]
+            ranges = cloth_map["/World/Cloth"]
             self.assertEqual(ranges["particle"], (0, 4))  # 4 quad vertices
             self.assertEqual(ranges["tri"], (0, 2))  # 2 triangles
             # Bending edges cover the cloth's full edge range starting at 0.
@@ -45,27 +51,6 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertEqual(builder.particle_count, 4)
             self.assertNotIn("/World/Cloth", result["path_shape_map"])
             self.assertEqual(builder.shape_count, 0)
-
-    def test_cloth_registry_matches_map(self):
-        """The builder cloth-group registry records the same ranges as path_cloth_map."""
-        from pxr import Usd, UsdPhysics
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            usd_path = Path(tmpdir) / "cloth.usda"
-            stage = Usd.Stage.CreateNew(str(usd_path))
-            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            mesh = _add_cloth_mesh(stage, "/World/Cloth")
-            UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
-            stage.Save()
-
-            builder = newton.ModelBuilder()
-            ranges = builder.add_usd(str(usd_path))["path_cloth_map"]["/World/Cloth"]
-
-            self.assertEqual(builder.cloth_label, ["/World/Cloth"])
-            self.assertEqual(builder.cloth_world, [builder.current_world])
-            self.assertEqual((builder.cloth_particle_start[0], builder.cloth_particle_end[0]), ranges["particle"])
-            self.assertEqual((builder.cloth_tri_start[0], builder.cloth_tri_end[0]), ranges["tri"])
-            self.assertEqual((builder.cloth_edge_start[0], builder.cloth_edge_end[0]), ranges["edge"])
 
     def test_two_cloths_addressable_by_path_after_finalize(self):
         """Two cloths in one world resolve by prim path to distinct ranges on the Model."""
@@ -80,13 +65,14 @@ class TestUSDDeformableCloth(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
+            builder.add_usd(str(usd_path))
+            _, cloth_map, _ = deformable_maps(builder)
             model = builder.finalize()
 
             self.assertEqual(model.cloth_count, 2)
             for path in ("/World/ClothA", "/World/ClothB"):
                 index = model.cloth_index(path)
-                map_ranges = result["path_cloth_map"][path]
+                map_ranges = cloth_map[path]
                 self.assertEqual(model.cloth_particle_range(index), map_ranges["particle"])
                 self.assertEqual(model.cloth_tri_range(index), map_ranges["tri"])
                 self.assertEqual(model.cloth_edge_range(index), map_ranges["edge"])
@@ -170,8 +156,9 @@ class TestUSDDeformableCloth(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            ranges = result["path_cloth_map"]["/World/Cloth"]
+            builder.add_usd(str(usd_path))
+            _, cloth_map, _ = deformable_maps(builder)
+            ranges = cloth_map["/World/Cloth"]
             self.assertEqual(ranges["particle"], (0, 4))  # 4 quad vertices stay 1:1 with particles
             self.assertEqual(ranges["tri"], (0, 2))  # quad fan-triangulates to 2 triangles
             self.assertEqual(builder.particle_count, 4)
@@ -212,8 +199,9 @@ class TestUSDDeformableCloth(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            self.assertEqual(result["path_cloth_map"], {})
+            builder.add_usd(str(usd_path))
+            _, cloth_map, _ = deformable_maps(builder)
+            self.assertEqual(cloth_map, {})
             self.assertEqual(builder.particle_count, 0)
 
     def test_cloth_material_maps_to_isotropic_membrane(self):
@@ -242,8 +230,9 @@ class TestUSDDeformableCloth(unittest.TestCase):
             builder = newton.ModelBuilder()
             with self.assertWarnsRegex(UserWarning, "shearStiffness is not applied"):
                 result = builder.add_usd(str(usd_path))
-            t0 = result["path_cloth_map"]["/World/Cloth"]["tri"][0]
-            e0 = result["path_cloth_map"]["/World/Cloth"]["edge"][0]
+            _, cloth_map, _ = deformable_maps(builder)
+            t0 = cloth_map["/World/Cloth"]["tri"][0]
+            e0 = cloth_map["/World/Cloth"]["edge"][0]
             # stretchStiffness -> tri_ke (mu); tri_ka left at the solver default (not fabricated).
             self.assertAlmostEqual(builder.tri_materials[t0][0], stretch, delta=stretch * 1e-3)  # tri_ke (mu)
             self.assertEqual(builder.tri_materials[t0][1], builder.default_tri_ka)  # tri_ka (lambda) = default
@@ -271,7 +260,8 @@ class TestUSDDeformableCloth(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             result = builder.add_usd(str(usd_path))
-            t0 = result["path_cloth_map"]["/World/Cloth"]["tri"][0]
+            _, cloth_map, _ = deformable_maps(builder)
+            t0 = cloth_map["/World/Cloth"]["tri"][0]
             self.assertEqual(builder.tri_materials[t0][0], 0.0)  # tri_ke (stretch)
             self.assertEqual(result["path_cloth_attrs"]["/World/Cloth"]["material"]["stretchStiffness"], 0.0)
 
@@ -288,9 +278,10 @@ class TestUSDDeformableCloth(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            a = result["path_cloth_map"]["/World/ClothA"]
-            b = result["path_cloth_map"]["/World/ClothB"]
+            builder.add_usd(str(usd_path))
+            _, cloth_map, _ = deformable_maps(builder)
+            a = cloth_map["/World/ClothA"]
+            b = cloth_map["/World/ClothB"]
             self.assertEqual(a["particle"], (0, 4))
             self.assertEqual(b["particle"], (4, 8))
             self.assertEqual(a["tri"], (0, 2))
@@ -462,8 +453,9 @@ class TestUSDDeformableCloth(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            p0, p1 = result["path_cloth_map"]["/World/Cloth"]["particle"]
+            builder.add_usd(str(usd_path))
+            _, cloth_map, _ = deformable_maps(builder)
+            p0, p1 = cloth_map["/World/Cloth"]["particle"]
             for i in range(p0, p1):
                 self.assertAlmostEqual(builder.particle_radius[i], 0.5 * thickness, places=6)
             # Distinct from the generic builder default it used to inherit.

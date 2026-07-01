@@ -1226,10 +1226,10 @@ class ModelBuilder:
         self.articulation_world: list[int] = []
         """World indices accumulated for :attr:`Model.articulation_world`."""
 
-        # Deformable group registries: prim-path-labelled, world-tagged index ranges that make each
-        # imported cable/cloth/volume a first-class addressable group (mirrors articulation_start/end/
-        # label/world). Ranges are [start, end) into the corresponding builder arrays; finalize()
-        # turns them into the Model CSR arrays, and replicate()/add_builder() carry them per world.
+        # Deformable group registries: prim-path-labelled, world-tagged index ranges for each
+        # imported cable/cloth/volume (mirrors articulation_start/end/label/world). Ranges are
+        # [start, end) into the corresponding builder arrays; finalize() copies them onto the Model,
+        # and replicate()/add_builder() carry them per world so each group stays indexable by path.
         self.cable_label: list[str] = []
         """Prim-path labels of imported cable groups."""
         self.cable_world: list[int] = []
@@ -3009,6 +3009,13 @@ class ModelBuilder:
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
 
         Returns:
+            Imported deformables (cable/cloth/volume) can be looked up by prim path through the
+            group metadata on :class:`~newton.ModelBuilder` and the finalized
+            :class:`~newton.Model` (e.g. :attr:`~newton.Model.cable_label`,
+            :meth:`~newton.Model.cloth_index`, :meth:`~newton.Model.soft_particle_range`), whose
+            index ranges survive :meth:`finalize` and :meth:`replicate`. The as-authored,
+            solver-neutral attributes remain in the ``path_*_attrs`` entries below.
+
             The returned mapping has the following entries:
 
             .. list-table::
@@ -3028,12 +3035,6 @@ class ModelBuilder:
                   - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
-                * - ``"path_cable_map"``
-                  - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` in :class:`~newton.ModelBuilder`. Each cable is wrapped into its own articulation (``"<path>_articulation"``) so the model is finalize-ready; the caller does not wrap it. Curves welded into a rod graph return empty ``joint_indices``.
-                * - ``"path_cloth_map"``
-                  - Mapping from prim path (str) of a surface deformable (cloth) to a dict of its ``particle`` / ``tri`` / ``edge`` ``(start, end)`` index ranges
-                * - ``"path_soft_map"``
-                  - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to a dict of its ``particle`` / ``tet`` ``(start, end)`` index ranges
                 * - ``"path_cable_attrs"``
                   - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the VBD build ignores (e.g. shear / twist)
                 * - ``"path_cloth_attrs"``
@@ -3041,7 +3042,7 @@ class ModelBuilder:
                 * - ``"path_soft_attrs"``
                   - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to its as-authored, solver-neutral attributes (``resolved_density``)
                 * - ``"path_attachment_map"``
-                  - Mapping from prim path (str) of a supported ``PhysicsAttachment`` prim to the created joint indices. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology (see ``path_cable_map``) and are absent from this mapping.
+                  - Mapping from prim path (str) of a supported ``PhysicsAttachment`` prim to the created joint indices. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology and are absent from this mapping.
                 * - ``"path_attachment_attrs"``
                   - Mapping from prim path (str) of a ``PhysicsAttachment`` prim to its parsed, solver-neutral attributes and any unsupported reason. Junctions consumed as rod-graph topology are absent here as well.
                 * - ``"mass_unit"``

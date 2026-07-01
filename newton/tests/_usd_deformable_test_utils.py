@@ -138,3 +138,36 @@ def _apply_deformable_body_api(prim, *, mass=None, density=None):
         prim.CreateAttribute("physics:mass", Sdf.ValueTypeNames.Float).Set(mass)
     if density is not None:
         prim.CreateAttribute("physics:density", Sdf.ValueTypeNames.Float).Set(density)
+
+
+def deformable_maps(builder):
+    """Reconstruct per-prim deformable index maps from a builder's group registry.
+
+    ``add_usd()`` no longer returns ``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` —
+    index ranges live on the builder/Model group registries. Tests rebuild the old dict shape here
+    from those registries (cable body/joint ranges are contiguous, so ``range`` matches the original
+    index lists) to keep per-prim range assertions concise. Returns ``(cable, cloth, soft)``.
+    """
+    cable = {
+        builder.cable_label[i]: (
+            list(range(builder.cable_body_start[i], builder.cable_body_end[i])),
+            list(range(builder.cable_joint_start[i], builder.cable_joint_end[i])),
+        )
+        for i in range(len(builder.cable_label))
+    }
+    cloth = {
+        builder.cloth_label[i]: {
+            "particle": (builder.cloth_particle_start[i], builder.cloth_particle_end[i]),
+            "tri": (builder.cloth_tri_start[i], builder.cloth_tri_end[i]),
+            "edge": (builder.cloth_edge_start[i], builder.cloth_edge_end[i]),
+        }
+        for i in range(len(builder.cloth_label))
+    }
+    soft = {
+        builder.soft_label[i]: {
+            "particle": (builder.soft_particle_start[i], builder.soft_particle_end[i]),
+            "tet": (builder.soft_tet_start[i], builder.soft_tet_end[i]),
+        }
+        for i in range(len(builder.soft_label))
+    }
+    return cable, cloth, soft

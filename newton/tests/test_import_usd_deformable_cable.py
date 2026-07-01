@@ -18,6 +18,7 @@ from newton.tests._usd_deformable_test_utils import (
     _add_physics_attachment,
     _apply_deformable_body_api,
     _bind_deformable_material,
+    deformable_maps,
 )
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_selected_cuda_test_devices
 from newton.usd import SchemaResolverPhysx
@@ -41,32 +42,13 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
 
-            self.assertIn("/World/Cable", result["path_cable_map"])
-            bodies, joints = result["path_cable_map"]["/World/Cable"]
+            self.assertIn("/World/Cable", cable_map)
+            bodies, joints = cable_map["/World/Cable"]
             self.assertEqual(len(bodies), 3, "expected one capsule body per segment")
             self.assertEqual(len(joints), 2, "expected num_segments - 1 cable joints for an open chain")
-
-    def test_cable_registry_matches_map(self):
-        """The builder cable-group registry records the same body/joint ranges as path_cable_map."""
-        from pxr import Usd, UsdPhysics
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            usd_path = Path(tmpdir) / "cable.usda"
-            stage = Usd.Stage.CreateNew(str(usd_path))
-            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
-            _add_cable_curve(stage, "/World/Cable", pts)
-            stage.Save()
-
-            builder = newton.ModelBuilder()
-            bodies, joints = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
-
-            self.assertEqual(builder.cable_label, ["/World/Cable"])
-            self.assertEqual(builder.cable_world, [builder.current_world])
-            self.assertEqual((builder.cable_body_start[0], builder.cable_body_end[0]), (bodies[0], bodies[-1] + 1))
-            self.assertEqual((builder.cable_joint_start[0], builder.cable_joint_end[0]), (joints[0], joints[-1] + 1))
 
     def test_cable_addressable_by_path_after_finalize(self):
         """After finalize(), a cable resolves by prim path to its body/joint ranges on the Model."""
@@ -81,7 +63,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            bodies, joints = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            bodies, joints = cable_map["/World/Cable"]
             model = builder.finalize()
 
             self.assertEqual(model.cable_count, 1)
@@ -112,9 +96,10 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
 
-            self.assertEqual(result["path_cable_map"], {})
+            self.assertEqual(cable_map, {})
             self.assertEqual(builder.body_count, 0)
 
     def test_cable_material_maps_to_rod_stiffness(self):
@@ -140,8 +125,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            bodies, joints = result["path_cable_map"]["/World/Cable"]
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            bodies, joints = cable_map["/World/Cable"]
             self.assertEqual(len(bodies), 3)
 
             # radius = thickness / 2; stretch/bend converted with A/L, I/L.
@@ -184,8 +170,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder = newton.ModelBuilder()
             # restShapePoints only normalizes stiffness (it does not set an initial strain state), so it warns.
             with self.assertWarnsRegex(UserWarning, "restShapePoints only sets the rest length"):
-                result = builder.add_usd(str(usd_path))
-            _, joints = result["path_cable_map"]["/World/Cable"]
+                builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            _, joints = cable_map["/World/Cable"]
             r = 0.5 * thickness
             area = math.pi * r * r
             expected = stretch_mod * area / 0.1  # rest length 0.1, not the 0.2 deformed segments
@@ -214,7 +201,8 @@ class TestUSDDeformableCable(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             result = builder.add_usd(str(usd_path))
-            _bodies, joints = result["path_cable_map"]["/World/Cable"]
+            cable_map, _, _ = deformable_maps(builder)
+            _bodies, joints = cable_map["/World/Cable"]
             # Stretch DOF target_ke is the authored 0.0, not add_rod's 1.0e5 default.
             dof0 = builder.joint_qd_start[joints[0]]
             self.assertEqual(builder.joint_target_ke[dof0], 0.0)
@@ -237,8 +225,9 @@ class TestUSDDeformableCable(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             with self.assertWarnsRegex(UserWarning, "non-linear"):
-                result = builder.add_usd(str(usd_path))
-            self.assertEqual(result["path_cable_map"], {})
+                builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            self.assertEqual(cable_map, {})
             self.assertEqual(builder.body_count, 0)
 
     def test_cable_material_without_family_api_is_ignored(self):
@@ -262,9 +251,10 @@ class TestUSDDeformableCable(unittest.TestCase):
             # The family-less material is ignored, so the cable falls back to the default radius and warns.
             with self.assertWarnsRegex(UserWarning, "no cable thickness"):
                 result = builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
             # Without the family API the material is ignored: no attrs, default rod stiffness.
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"], {})
-            _bodies, joints = result["path_cable_map"]["/World/Cable"]
+            _bodies, joints = cable_map["/World/Cable"]
             dof0 = builder.joint_qd_start[joints[0]]
             self.assertEqual(builder.joint_target_ke[dof0], 1.0e5)  # add_rod default stretch stiffness
 
@@ -360,9 +350,10 @@ class TestUSDDeformableCable(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             with self.assertWarnsRegex(UserWarning, "duplicate consecutive points"):
-                result = builder.add_usd(str(usd_path))
+                builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
             # The valid curve still imports (4 points -> 3 bodies); the degenerate one is skipped.
-            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            bodies, _ = cable_map["/World/Cable"]
             self.assertEqual(len(bodies), 3)
 
     def test_vendor_namespace_material_needs_resolver(self):
@@ -441,8 +432,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            cmap = result["path_cable_map"]
+            builder.add_usd(str(usd_path))
+            cmap, _, _ = deformable_maps(builder)
 
             bodies_a, joints_a = cmap["/World/CableA"]
             bodies_b, joints_b = cmap["/World/CableB"]
@@ -467,8 +458,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            bodies, _ = cable_map["/World/Cable"]
 
             # The importer builds rods with body_frame_origin="com", so body i origin sits
             # at the midpoint of segment i (between authored points[i] and points[i + 1]).
@@ -533,9 +525,10 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            bodies_a, _ = result["path_cable_map"]["/World/CableA"]
-            bodies_b, _ = result["path_cable_map"]["/World/CableB"]
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            bodies_a, _ = cable_map["/World/CableA"]
+            bodies_b, _ = cable_map["/World/CableB"]
 
             mass_a = builder.body_mass[bodies_a[0]]
             mass_b = builder.body_mass[bodies_b[0]]
@@ -559,7 +552,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            bodies, _ = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            bodies, _ = cable_map["/World/Cable"]
             cylinder = rho * math.pi * r * r * seg_len
             capsule = cylinder + rho * (4.0 / 3.0) * math.pi * r**3
             for b in bodies:
@@ -582,7 +577,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            bodies, _ = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            bodies, _ = cable_map["/World/Cable"]
             self.assertEqual(len(bodies), 2)
             self.assertAlmostEqual(builder.body_mass[bodies[1]] / builder.body_mass[bodies[0]], 2.0, places=3)
 
@@ -605,8 +602,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            bodies, _ = cable_map["/World/Cable"]
 
             for body in bodies:
                 t = builder.body_q[body]
@@ -635,7 +633,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            bodies, _ = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            bodies, _ = cable_map["/World/Cable"]
             for body in bodies:
                 t = builder.body_q[body]
                 q = wp.quat(float(t[3]), float(t[4]), float(t[5]), float(t[6]))
@@ -669,8 +669,9 @@ class TestUSDDeformableCable(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             with self.assertWarnsRegex(UserWarning, "restShapePoints only sets the rest length"):
-                result = builder.add_usd(str(usd_path))
-            _bodies, joints = result["path_cable_map"]["/World/Cable"]
+                builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            _bodies, joints = cable_map["/World/Cable"]
             r = 0.5 * thickness
             rest_len = seg_len * math.sqrt(1.0 + k * k)
             expected_ke = E * math.pi * r * r / rest_len
@@ -711,9 +712,10 @@ class TestUSDDeformableCable(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             with self.assertWarnsRegex(UserWarning, "not per-point"):
-                result = builder.add_usd(str(usd_path))
+                builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
             # The cable still imports (normals ignored, default segment orientation used).
-            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            bodies, _ = cable_map["/World/Cable"]
             self.assertEqual(len(bodies), 3)
 
     def test_cable_primvars_normals_take_precedence(self):
@@ -738,8 +740,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            bodies, _ = cable_map["/World/Cable"]
             for body in bodies:
                 t = builder.body_q[body]
                 q = wp.quat(float(t[3]), float(t[4]), float(t[5]), float(t[6]))
@@ -766,9 +769,10 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
             # Two instance proxies import; the prototype master (/__Prototype_*) is not.
-            self.assertEqual(set(result["path_cable_map"]), {"/World/A/Cable", "/World/B/Cable"})
+            self.assertEqual(set(cable_map), {"/World/A/Cable", "/World/B/Cable"})
 
     def test_cable_replication_independent_per_world(self):
         """Replicating a cable across worlds yields independent, contiguous per-world segments (T5)."""
@@ -785,8 +789,9 @@ class TestUSDDeformableCable(unittest.TestCase):
 
             # Parse the cable into a prototype builder, then replicate across worlds.
             proto = newton.ModelBuilder()
-            result = proto.add_usd(str(usd_path))
-            base_bodies, _ = result["path_cable_map"]["/World/Cable"]
+            proto.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(proto)
+            base_bodies, _ = cable_map["/World/Cable"]
             self.assertEqual(base_bodies, list(range(proto.body_count)))  # cable is the whole prototype
             # The importer wraps the cable into its own "<path>_articulation", which replicate() copies per world.
             self.assertIn("/World/Cable_articulation", proto.articulation_label)
@@ -836,15 +841,16 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            bodies, joints = result["path_cable_map"]["/World/Cable"]
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            bodies, joints = cable_map["/World/Cable"]
             self.assertEqual(len(bodies), 4, "expected one body per segment, incl. the closing segment")
             self.assertEqual(len(joints), 4, "expected 3 chain joints + 1 loop joint")
             # The importer wraps the closed cable; add_rod keeps the loop-closing joint out of the tree.
             self.assertIn("/World/Cable_articulation", builder.articulation_label)
 
-    def test_path_cable_map_remapped_after_collapse(self):
-        """path_cable_map indices still point at cable bodies after fixed-joint collapse."""
+    def test_cable_group_remapped_after_collapse(self):
+        """Cable group body indices still point at cable bodies after fixed-joint collapse."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -867,8 +873,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder = newton.ModelBuilder()
             # The two rigid bodies' fixed joint has no articulation root, so the importer warns.
             with self.assertWarnsRegex(UserWarning, "No articulation was found"):
-                result = builder.add_usd(str(usd_path), collapse_fixed_joints=True)
-            bodies, _ = result["path_cable_map"]["/World/Cable"]
+                builder.add_usd(str(usd_path), collapse_fixed_joints=True)
+            cable_map, _, _ = deformable_maps(builder)
+            bodies, _ = cable_map["/World/Cable"]
             self.assertTrue(all(0 <= b < builder.body_count for b in bodies), "cable body index out of range")
             self.assertTrue(
                 all("/World/Cable" in builder.body_label[b] for b in bodies),
@@ -896,8 +903,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            bodies, _ = cable_map["/World/Cable"]
             xs = [float(np.array(builder.body_q[b][:3])[0]) for b in bodies]
             # Body i origin sits at segment i's midpoint; midpoints 0.05/0.15/0.25 mirror to negative X.
             np.testing.assert_allclose(xs, [-0.05, -0.15, -0.25], atol=1e-5)
@@ -936,15 +944,16 @@ class TestUSDDeformableCable(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             result = builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
 
             # Both curves import as one welded component; the junction is consumed as topology.
-            self.assertIn("/World/Trunk", result["path_cable_map"])
-            self.assertIn("/World/Branch", result["path_cable_map"])
+            self.assertIn("/World/Trunk", cable_map)
+            self.assertIn("/World/Branch", cable_map)
             self.assertNotIn("/World/Junction", result["path_attachment_map"])
             self.assertNotIn("/World/Junction", result["path_attachment_attrs"])
 
-            trunk_bodies, trunk_joints = result["path_cable_map"]["/World/Trunk"]
-            branch_bodies, _ = result["path_cable_map"]["/World/Branch"]
+            trunk_bodies, trunk_joints = cable_map["/World/Trunk"]
+            branch_bodies, _ = cable_map["/World/Branch"]
             self.assertEqual(len(trunk_bodies), 3, "trunk has 3 segments")
             self.assertEqual(len(branch_bodies), 2, "branch has 2 segments")
             # Graph cables are returned pre-wrapped, so the caller does no articulation work.
@@ -984,9 +993,10 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder = newton.ModelBuilder()
             with self.assertWarnsRegex(UserWarning, "zero-length segment"):
                 result = builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
             # The import did not abort; the valid trunk imported as a single (unwrapped) cable.
-            self.assertIn("/World/Trunk", result["path_cable_map"])
-            _bodies, joints = result["path_cable_map"]["/World/Trunk"]
+            self.assertIn("/World/Trunk", cable_map)
+            _bodies, joints = cable_map["/World/Trunk"]
             self.assertNotEqual(joints, [], "the skipped component leaves the trunk as a single cable")
             self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])
 
@@ -1091,11 +1101,12 @@ class TestUSDDeformableCable(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             result = builder.add_usd(str(usd_path), ignore_paths=["/World/Junction"])
+            cable_map, _, _ = deformable_maps(builder)
 
             # Both curves still import, but as independent single cables (not a welded graph):
             # single cables expose their cable joints for the caller to wrap, so joints are non-empty.
-            trunk_bodies, trunk_joints = result["path_cable_map"]["/World/Trunk"]
-            _branch_bodies, branch_joints = result["path_cable_map"]["/World/Branch"]
+            trunk_bodies, trunk_joints = cable_map["/World/Trunk"]
+            _branch_bodies, branch_joints = cable_map["/World/Branch"]
             self.assertEqual(len(trunk_bodies), 3)
             self.assertNotEqual(trunk_joints, [], "an ignored junction must leave the cable unwelded")
             self.assertNotEqual(branch_joints, [], "an ignored junction must leave the cable unwelded")
@@ -1132,10 +1143,11 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder = newton.ModelBuilder()
             with self.assertWarnsRegex(UserWarning, "out of range"):
                 result = builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
 
             # The malformed junction does not weld: both curves import independently.
-            _trunk_bodies, trunk_joints = result["path_cable_map"]["/World/Trunk"]
-            self.assertIn("/World/Branch", result["path_cable_map"])
+            _trunk_bodies, trunk_joints = cable_map["/World/Trunk"]
+            self.assertIn("/World/Branch", cable_map)
             self.assertNotEqual(trunk_joints, [])
             self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])
 
@@ -1167,8 +1179,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder = newton.ModelBuilder()
             with self.assertWarnsRegex(UserWarning, "differ in length"):
                 result = builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
 
-            _trunk_bodies, trunk_joints = result["path_cable_map"]["/World/Trunk"]
+            _trunk_bodies, trunk_joints = cable_map["/World/Trunk"]
             self.assertNotEqual(trunk_joints, [])
             self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])
 
@@ -1227,8 +1240,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            bodies, _ = cable_map["/World/Cable"]
             self.assertAlmostEqual(sum(builder.body_mass[b] for b in bodies), 2.5, places=4)
 
     def test_cable_default_radius_scales_with_stage_units(self):
@@ -1283,8 +1297,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            bodies, _ = cable_map["/World/Cable"]
             seg_masses = [builder.body_mass[b] for b in bodies]
             # Lumping (endpoints contribute their full mass to their one segment, interior points
             # split): seg0 = m0 + m1/2, seg1 = m1/2 + m2/2, seg2 = m2/2 + m3.
@@ -1313,7 +1328,9 @@ class TestUSDDeformableCable(unittest.TestCase):
                     curves.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(masses)
                 stage.Save()
                 builder = newton.ModelBuilder()
-                bodies, _ = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
+                builder.add_usd(str(usd_path))
+                cable_map, _, _ = deformable_maps(builder)
+                bodies, _ = cable_map["/World/Cable"]
                 return sum(builder.body_mass[b] for b in bodies)
 
         baseline = total_cable_mass()
@@ -1376,8 +1393,9 @@ class TestUSDDeformableCableAsset(unittest.TestCase):
     def test_asset_parses_to_cable(self):
         """The authored .usda cable asset imports into rod bodies + cable joints (device-free)."""
         builder = newton.ModelBuilder()
-        result = builder.add_usd(_stage_from_usda(_CABLE_ASSET_USDA))
-        bodies, joints = result["path_cable_map"]["/World/Cable"]
+        builder.add_usd(_stage_from_usda(_CABLE_ASSET_USDA))
+        cable_map, _, _ = deformable_maps(builder)
+        bodies, joints = cable_map["/World/Cable"]
         # 6 points -> 5 segments -> 5 bodies, 4 cable joints (open chain).
         self.assertEqual(len(bodies), 5)
         self.assertEqual(len(joints), 4)

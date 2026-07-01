@@ -17,6 +17,7 @@ from newton.tests._usd_deformable_test_utils import (
     _add_element_collision_filter,
     _add_physics_attachment,
     _bind_deformable_material,
+    deformable_maps,
 )
 from newton.tests.unittest_utils import USD_AVAILABLE
 
@@ -50,8 +51,9 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             result = builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
 
-            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            bodies, _ = cable_map["/World/Cable"]
             joints = result["path_attachment_map"]["/World/AttachMid"]
             self.assertEqual(len(joints), 1)
             j = joints[0]
@@ -90,8 +92,9 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             result = builder.add_usd(str(usd_path), xform=wp.transform(wp.vec3(10.0, 0.0, 0.0), wp.quat_identity()))
+            cable_map, _, _ = deformable_maps(builder)
 
-            bodies, _ = result["path_cable_map"]["/World/Cable"]
+            bodies, _ = cable_map["/World/Cable"]
             j = result["path_attachment_map"]["/World/AttachMid"][0]
             self.assertEqual(builder.joint_parent[j], -1)
             # The cable body and its world anchor both translate by xform's +10 in x.
@@ -125,9 +128,10 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             result = builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
 
             rigid_body = result["path_body_map"]["/World/Rigid"]
-            cable_bodies, _ = result["path_cable_map"]["/World/Cable"]
+            cable_bodies, _ = cable_map["/World/Cable"]
             joints = result["path_attachment_map"]["/World/AttachPoint"]
             self.assertEqual(len(joints), 2)
             self.assertEqual({builder.joint_child[j] for j in joints}, {cable_bodies[0], cable_bodies[1]})
@@ -209,7 +213,8 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             result = builder.add_usd(str(usd_path))
-            seg_bodies, _ = result["path_cable_map"]["/World/Cable"]
+            cable_map, _, _ = deformable_maps(builder)
+            seg_bodies, _ = cable_map["/World/Cable"]
             seg_shapes = [builder.body_shapes[b][0] for b in seg_bodies]
             box_shape = builder.body_shapes[result["path_body_map"]["/World/Box"]][0]
             pairs = {tuple(sorted(p)) for p in builder.shape_collision_filter_pairs}
@@ -240,8 +245,9 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         return builder, result, pairs
 
     @staticmethod
-    def _cable_seg_shapes(builder, result, path):
-        bodies, _ = result["path_cable_map"][path]
+    def _cable_seg_shapes(builder, path):
+        cable_map, _, _ = deformable_maps(builder)
+        bodies, _ = cable_map[path]
         return [builder.body_shapes[b][0] for b in bodies]
 
     def test_element_collision_filter_paired_groups(self):
@@ -249,11 +255,11 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         not the full Cartesian product of the two index arrays."""
         with tempfile.TemporaryDirectory() as tmpdir:
             # counts [1, 1] / [1, 1] pairs (A0 with B2) and (A1 with B0) only.
-            builder, result, pairs = self._two_cable_filter_stage(
+            builder, _result, pairs = self._two_cable_filter_stage(
                 tmpdir, indices0=[0, 1], counts0=[1, 1], indices1=[2, 0], counts1=[1, 1]
             )
-            a = self._cable_seg_shapes(builder, result, "/World/CableA")
-            b = self._cable_seg_shapes(builder, result, "/World/CableB")
+            a = self._cable_seg_shapes(builder, "/World/CableA")
+            b = self._cable_seg_shapes(builder, "/World/CableB")
             self.assertIn(tuple(sorted((a[0], b[2]))), pairs)
             self.assertIn(tuple(sorted((a[1], b[0]))), pairs)
             # The cross-product pairs that a non-paired reading would add must be absent.
@@ -264,11 +270,11 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         """A groupElemCount of 0 selects all elements of that source for the paired group."""
         with tempfile.TemporaryDirectory() as tmpdir:
             # src0 group is count-0 (all of CableA) paired with CableB segments {0, 1}.
-            builder, result, pairs = self._two_cable_filter_stage(
+            builder, _result, pairs = self._two_cable_filter_stage(
                 tmpdir, indices0=[], counts0=[0], indices1=[0, 1], counts1=[2]
             )
-            a = self._cable_seg_shapes(builder, result, "/World/CableA")
-            b = self._cable_seg_shapes(builder, result, "/World/CableB")
+            a = self._cable_seg_shapes(builder, "/World/CableA")
+            b = self._cable_seg_shapes(builder, "/World/CableB")
             for sa in a:  # all of CableA filtered against B0 and B1
                 self.assertIn(tuple(sorted((sa, b[0]))), pairs)
                 self.assertIn(tuple(sorted((sa, b[1]))), pairs)
@@ -278,9 +284,9 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         """A single group on one side (e.g. empty counts) broadcasts against every group of the other."""
         with tempfile.TemporaryDirectory() as tmpdir:
             # src0 has no counts -> one implicit all-elements group; src1 has two single-element groups.
-            builder, result, pairs = self._two_cable_filter_stage(tmpdir, indices0=[], indices1=[0, 1], counts1=[1, 1])
-            a = self._cable_seg_shapes(builder, result, "/World/CableA")
-            b = self._cable_seg_shapes(builder, result, "/World/CableB")
+            builder, _result, pairs = self._two_cable_filter_stage(tmpdir, indices0=[], indices1=[0, 1], counts1=[1, 1])
+            a = self._cable_seg_shapes(builder, "/World/CableA")
+            b = self._cable_seg_shapes(builder, "/World/CableB")
             for sa in a:
                 self.assertIn(tuple(sorted((sa, b[0]))), pairs)
                 self.assertIn(tuple(sorted((sa, b[1]))), pairs)
@@ -290,12 +296,12 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         """groupElemCounts whose sum exceeds the index array warns and applies no filter pairs."""
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertWarnsRegex(UserWarning, "sum exceeds"):
-                builder, result, pairs = self._two_cable_filter_stage(
+                builder, _result, pairs = self._two_cable_filter_stage(
                     tmpdir, indices0=[0], counts0=[2], indices1=[0], counts1=[1]
                 )
             # No cross-source pair is added (intra-cable adjacency filters from add_rod still exist).
-            a = self._cable_seg_shapes(builder, result, "/World/CableA")
-            b = self._cable_seg_shapes(builder, result, "/World/CableB")
+            a = self._cable_seg_shapes(builder, "/World/CableA")
+            b = self._cable_seg_shapes(builder, "/World/CableB")
             cross = {tuple(sorted((sa, sb))) for sa in a for sb in b}
             self.assertTrue(cross.isdisjoint(pairs), "a malformed counts array must add no cross-source filter pairs")
 
@@ -323,7 +329,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             result = builder.add_usd(str(usd_path))
-            seg0 = self._cable_seg_shapes(builder, result, "/World/Cable")[0]
+            seg0 = self._cable_seg_shapes(builder, "/World/Cable")[0]
             collider_shape = result["path_shape_map"]["/World/Rigid/Collider"]
             pairs = {tuple(sorted(p)) for p in builder.shape_collision_filter_pairs}
             self.assertIn(tuple(sorted((seg0, collider_shape))), pairs)
@@ -350,7 +356,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             result = builder.add_usd(str(usd_path))
-            seg0 = self._cable_seg_shapes(builder, result, "/World/Cable")[0]
+            seg0 = self._cable_seg_shapes(builder, "/World/Cable")[0]
             ground_shape = result["path_shape_map"]["/World/Ground"]
             pairs = {tuple(sorted(p)) for p in builder.shape_collision_filter_pairs}
             self.assertIn(tuple(sorted((seg0, ground_shape))), pairs)
