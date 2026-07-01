@@ -384,24 +384,29 @@ def test_backward_compat_bit_for_bit(test, device):
         mass=0.1,
     )
     model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=True
-    )
-    contacts = pipeline.contacts()
     state = model.state()
 
-    pipeline.collide(state, contacts, enable_water_tight_rigid_soft_contact=False)
-    counts_off = contacts.soft_contact_count.numpy().copy()
+    # The flag is fixed at construction, so off vs on are two separately-sized pipelines.
+    pipeline_off = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=False
+    )
+    contacts_off = pipeline_off.contacts()
+    pipeline_off.collide(state, contacts_off)
+    counts_off = contacts_off.soft_contact_count.numpy().copy()
     c0 = int(counts_off[0])
     test.assertGreater(c0, 0)
     test.assertEqual(int(counts_off[1]), 0)
     test.assertEqual(int(counts_off[2]), 0)
-    prim_off, shape_off, pos_off, nrm_off = _sorted_particle_records(contacts, c0)
+    prim_off, shape_off, pos_off, nrm_off = _sorted_particle_records(contacts_off, c0)
 
-    pipeline.collide(state, contacts, enable_water_tight_rigid_soft_contact=True)
-    counts_on = contacts.soft_contact_count.numpy()
+    pipeline_on = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=True
+    )
+    contacts_on = pipeline_on.contacts()
+    pipeline_on.collide(state, contacts_on)
+    counts_on = contacts_on.soft_contact_count.numpy()
     test.assertEqual(int(counts_on[0]), c0)  # legacy particle count unchanged
-    prim_on, shape_on, pos_on, nrm_on = _sorted_particle_records(contacts, c0)
+    prim_on, shape_on, pos_on, nrm_on = _sorted_particle_records(contacts_on, c0)
 
     # Bit-identical particle range (same legacy kernel, same inputs).
     test.assertTrue(np.array_equal(prim_on, prim_off))
@@ -431,19 +436,23 @@ def test_water_tight_catches_what_particles_miss(test, device):
         mass=0.1,
     )
     model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=True
-    )
-    contacts = pipeline.contacts()
     state = model.state()
 
-    # Per-particle path alone: every corner is outside margin -> no soft contact.
-    pipeline.collide(state, contacts, enable_water_tight_rigid_soft_contact=False)
-    test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 0)
+    # Per-particle path alone (flag off at construction): every corner is outside margin -> no contact.
+    pipeline_off = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=False
+    )
+    contacts_off = pipeline_off.contacts()
+    pipeline_off.collide(state, contacts_off)
+    test.assertEqual(int(contacts_off.soft_contact_count.numpy()[0]), 0)
 
-    # Water-tight path: the edge/face passes detect the crossing the particles miss.
-    pipeline.collide(state, contacts, enable_water_tight_rigid_soft_contact=True)
-    counts = contacts.soft_contact_count.numpy()
+    # Water-tight path (flag on): the edge/face passes detect the crossing the particles miss.
+    pipeline_on = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=True
+    )
+    contacts_on = pipeline_on.contacts()
+    pipeline_on.collide(state, contacts_on)
+    counts = contacts_on.soft_contact_count.numpy()
     test.assertEqual(int(counts[0]), 0)  # still no per-particle contact
     test.assertGreater(int(counts[1]) + int(counts[2]), 0)  # caught by edge/face
 
@@ -489,7 +498,7 @@ def test_mesh_sdf_provisioned_and_emits(test, device):
     )
     contacts = pipeline.contacts()
     state = model.state()
-    pipeline.collide(state, contacts, enable_water_tight_rigid_soft_contact=True)
+    pipeline.collide(state, contacts)
     counts = contacts.soft_contact_count.numpy()
     # The mesh's volume SDF feeds the edge/face passes -> records emitted.
     test.assertGreater(int(counts[1]) + int(counts[2]), 0)
@@ -907,13 +916,13 @@ def test_graph_capture_stable(test, device):
     state = model.state()
 
     # Warm up so all kernels are compiled before capture.
-    pipeline.collide(state, contacts, enable_water_tight_rigid_soft_contact=True)
+    pipeline.collide(state, contacts)
     counts0 = contacts.soft_contact_count.numpy().copy()
     test.assertGreater(int(counts0[1]) + int(counts0[2]), 0)
 
     # Capture the flag-on collide and replay it; counts must be stable across replays.
     with wp.ScopedCapture(device) as capture:
-        pipeline.collide(state, contacts, enable_water_tight_rigid_soft_contact=True)
+        pipeline.collide(state, contacts)
     for _ in range(3):
         wp.capture_launch(capture.graph)
         test.assertTrue(np.array_equal(contacts.soft_contact_count.numpy(), counts0))
