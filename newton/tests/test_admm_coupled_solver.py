@@ -906,6 +906,60 @@ class TestAdmmModelJointInterface(unittest.TestCase):
 
         self.assertLess(final_gap, 0.5 * initial_gap)
 
+    def test_joint_proxy_shape_collisions_disabled_after_shape_compaction(self):
+        builder = newton.ModelBuilder(gravity=0.0)
+        unrelated = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(body=unrelated, radius=0.05)
+        parent = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(body=parent, radius=0.05)
+        child = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(body=child, radius=0.05)
+        builder.add_joint_ball(parent=parent, child=child, collision_filter_parent=False)
+        builder.color()
+        model = builder.finalize(device="cpu")
+
+        solver = SolverCoupledADMM(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="parent",
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
+                    bodies=[parent],
+                    preserve_shape_ids=False,
+                ),
+                SolverCoupled.Entry(
+                    name="child",
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
+                    bodies=[child],
+                    preserve_shape_ids=False,
+                ),
+            ],
+            coupling=SolverCoupledADMM.Config(),
+        )
+
+        collision_mask = int(
+            newton.ShapeFlags.COLLIDE_SHAPES | newton.ShapeFlags.COLLIDE_PARTICLES | newton.ShapeFlags.HYDROELASTIC
+        )
+        proxy_flag = int(newton.BodyFlags.PROXY)
+        for name in ("parent", "child"):
+            with self.subTest(name=name):
+                view = solver.view(name)
+                self.assertEqual(view.shape_count, 2)
+                shape_body = view.shape_body.numpy()
+                body_flags = view.body_flags.numpy()
+                shape_flags = view.shape_flags.numpy()
+                proxy_shapes = [
+                    shape_id
+                    for shape_id, body_id in enumerate(shape_body)
+                    if int(body_flags[int(body_id)]) & proxy_flag
+                ]
+                owned_shapes = [shape_id for shape_id in range(view.shape_count) if shape_id not in proxy_shapes]
+
+                self.assertEqual(len(proxy_shapes), 1)
+                self.assertEqual(len(owned_shapes), 1)
+                self.assertEqual(int(shape_flags[proxy_shapes[0]]) & collision_mask, 0)
+                self.assertNotEqual(int(shape_flags[owned_shapes[0]]) & collision_mask, 0)
+
     def test_rejects_cross_solver_joint_owned_by_subsolver(self):
         model, parent, child, joint = self._build_two_body_joint_scene("ball")
         with self.assertRaisesRegex(ValueError, "must not be owned"):

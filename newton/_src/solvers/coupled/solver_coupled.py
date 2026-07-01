@@ -383,13 +383,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     view.disable_joints(wp.array(to_disable, dtype=int, device=device))
 
             self._apply_entry_shape_visibility(view, cfg, proxy_body_keep)
-            self._customize_view(cfg.name, view, body_indices)
             index_lists = self._compact_entry_view_if_needed(
                 view, cfg, proxy_body_keep, proxy_particle_keep, proxy_joint_keep
             )
             if index_lists is None:
                 visible_bodies = {int(i) for i in cfg.bodies} | {int(i) for i in proxy_body_keep}
                 self._apply_global_shape_metadata(view, cfg, visible_bodies)
+            self._customize_compact_view(view)
             if cfg.configure_view is not None:
                 cfg.configure_view(view)
             self._filter_shape_contact_pairs(view)
@@ -476,9 +476,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         del name
         return set()
 
-    def _customize_view(self, name: str, view: ModelView, body_indices: wp.array) -> None:
-        """Hook for subclasses that still need construction-time view edits."""
-        del name, view, body_indices
+    def _customize_compact_view(self, view: ModelView) -> None:
+        """Apply subclass-specific edits after entry compaction."""
+        del view
 
     def _apply_entry_shape_visibility(
         self,

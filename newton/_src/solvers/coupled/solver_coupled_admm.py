@@ -13,7 +13,7 @@ import numpy as np
 import warp as wp
 
 from ...geometry.flags import ShapeFlags
-from ...sim import JointType, ModelFlags, StateFlags
+from ...sim import BodyFlags, JointType, ModelFlags, StateFlags
 from .admm_contact_stream import (
     AdmmContactStream,
     AdmmContactType,
@@ -973,20 +973,20 @@ class SolverCoupledADMM(SolverCoupled):
         """Maximum collision-detected ADMM contact count observed so far."""
         return self._sum_active_count("active_count_max")
 
-    def _customize_view(self, name: str, view: ModelView, body_indices: wp.array) -> None:
-        """Apply ADMM view customizations before sub-solver construction."""
-        self._disable_admm_joint_proxy_shape_collisions(name, view)
-        del body_indices
+    def _customize_compact_view(self, view: ModelView) -> None:
+        """Apply ADMM customizations to the compact entry view."""
+        self._disable_admm_joint_proxy_shape_collisions(view)
 
-    def _disable_admm_joint_proxy_shape_collisions(self, name: str, view: ModelView) -> None:
-        proxy_bodies = self._admm_joint_proxy_body_keep.get(name)
-        if not proxy_bodies or self.model.shape_count == 0 or self.model.shape_body is None:
-            return
-        if self.model.shape_flags is None:
+    def _disable_admm_joint_proxy_shape_collisions(self, view: ModelView) -> None:
+        if view.shape_count == 0 or view.shape_body is None or view.shape_flags is None or view.body_flags is None:
             return
 
+        proxy_flag = int(BodyFlags.PROXY)
+        body_flags = view.body_flags.numpy()
         shape_ids = [
-            shape_id for shape_id, body_id in enumerate(self.model.shape_body.numpy()) if int(body_id) in proxy_bodies
+            shape_id
+            for shape_id, body_id in enumerate(view.shape_body.numpy())
+            if int(body_id) >= 0 and int(body_flags[int(body_id)]) & proxy_flag
         ]
         if not shape_ids:
             return

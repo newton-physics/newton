@@ -683,6 +683,11 @@ class TestSolverCoupledBasic(unittest.TestCase):
         builder.add_tetrahedron(i=4, j=5, k=6, l=7)
         model = builder.finalize(device="cpu")
         configured_body_counts = {}
+        internal_body_counts = {}
+
+        class _RecordingCoupledSolver(SolverCoupled):
+            def _customize_compact_view(self, view: ModelView) -> None:
+                internal_body_counts[view.name] = view.body_count
 
         def configure_soft_view(view: ModelView) -> None:
             configured_body_counts[view.name] = view.body_count
@@ -693,7 +698,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
             configured_body_counts[view.name] = view.body_count
             view.tet_count = 0
 
-        coupled = SolverCoupled(
+        coupled = _RecordingCoupledSolver(
             model=model,
             entries=[
                 SolverCoupled.Entry(
@@ -713,6 +718,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
             ],
         )
 
+        self.assertEqual(internal_body_counts, {"soft": 1, "cloth": 1})
         self.assertEqual(configured_body_counts, {"soft": 1, "cloth": 1})
 
         soft_view = coupled.view("soft")
