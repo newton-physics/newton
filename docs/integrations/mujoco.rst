@@ -321,6 +321,28 @@ builder call. Construct them through the MuJoCo
 ``mujoco:equality_constraint_*`` keys, then read or update finalized
 fields via ``model.mujoco.equality_constraint_*``.
 
+For example, add a connect constraint between two body indices in the
+active world as follows. Fields that do not apply to connect constraints
+retain their registered defaults.
+
+.. code-block:: python
+
+   import newton
+   import warp as wp
+
+   builder.add_custom_values(
+       **{
+           "mujoco:equality_constraint_type": int(
+               newton.solvers.SolverMuJoCo.EqType.CONNECT
+           ),
+           "mujoco:equality_constraint_body1": body1,
+           "mujoco:equality_constraint_body2": body2,
+           "mujoco:equality_constraint_anchor": wp.vec3(0.0, 0.0, 0.0),
+           "mujoco:equality_constraint_enabled": True,
+           "mujoco:equality_constraint_world": builder.current_world,
+       }
+   )
+
 .. _mujoco-loop-closures:
 
 Loop closures
