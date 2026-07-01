@@ -1214,6 +1214,11 @@ _TETMESH_SCHEMA_ATTRS = frozenset(
         "visibility",
         "xformOpOrder",
         "proxyPrim",
+        # Standard UsdGeom.PointBased attributes (velocities, accelerations, normals): importing them
+        # is deferred to a follow-up, so skip them here rather than capturing them as custom data.
+        "velocities",
+        "accelerations",
+        "normals",
     }
 )
 

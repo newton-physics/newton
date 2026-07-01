@@ -21,6 +21,7 @@ from .import_usd_deformable_utils import (
     _DeformableImportContext,
     _is_ignored_path,
     _resolve_deformable_density,
+    _warn_dropped_velocities,
     _warn_geometry_authored_material_attrs,
     _warn_unsupported_rest_fields,
     _world_matrix_reflects,
@@ -91,6 +92,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             ("restShapePoints", "restBendAngles", "restAdjTriPairs", "restBendAnglesDefault"),
             deformable_read,
         )
+        _warn_dropped_velocities(prim, path)
         _warn_geometry_authored_material_attrs(prim, path, "PhysicsSurfaceDeformableMaterialAPI", deformable_read)
 
         # add_cloth_mesh creates one particle per mesh vertex and takes only a uniform scale, so bake

@@ -180,6 +180,19 @@ def _warn_unsupported_rest_fields(prim: Usd.Prim, path: str, names: Sequence[str
             return
 
 
+def _warn_dropped_velocities(prim: Usd.Prim, path: str) -> None:
+    """Warn if the geometry authors velocities; deformable dynamic state is not imported yet, so the
+    body starts at rest rather than being silently reset."""
+    from pxr import UsdGeom
+
+    vel = UsdGeom.PointBased(prim).GetVelocitiesAttr()
+    if vel and vel.HasAuthoredValue():
+        warnings.warn(
+            f"{path}: authored velocities are not imported; the deformable starts at rest.",
+            stacklevel=2,
+        )
+
+
 def _warn_geometry_authored_material_attrs(prim: Usd.Prim, path: str, material_api: str, read_attr: Callable) -> None:
     """Warn for deformable material moduli authored on the geometry instead of the bound material.
 

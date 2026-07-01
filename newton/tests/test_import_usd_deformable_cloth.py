@@ -320,6 +320,22 @@ class TestUSDDeformableCloth(unittest.TestCase):
             with self.assertWarnsRegex(UserWarning, "restBendAngles.*not yet supported"):
                 builder.add_usd(str(usd_path))
 
+    def test_cloth_velocities_warn(self):
+        """Authored cloth velocities are dropped with a warning rather than silently zeroed."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cloth_vel.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            UsdGeom.PointBased(mesh.GetPrim()).CreateVelocitiesAttr([(1.0, 2.0, 3.0)] * 4)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "velocities are not imported"):
+                builder.add_usd(str(usd_path))
+
     def test_cloth_non_uniform_scale_bakes_into_vertices(self):
         """A non-uniform xformOp:scale on a cloth mesh is baked into the particle positions."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics

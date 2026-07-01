@@ -338,6 +338,23 @@ class TestUSDDeformableVolume(unittest.TestCase):
         self.assertNotIn("/World/Body/SimB", soft)  # extra sim mesh skipped
         self.assertAlmostEqual(sum(builder.particle_mass), 12.0, places=4)
 
+    def test_volume_velocities_warn_and_do_not_crash(self):
+        """Authored velocities are dropped with a warning (not silently), and must not crash the
+        custom-attribute frequency inference on a single-tet mesh (vertex_count == tri_count)."""
+        from pxr import UsdGeom
+
+        def author(stage):
+            tet = _author_unit_tet(stage, "/World/Soft")
+            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+            UsdGeom.PointBased(tet.GetPrim()).CreateVelocitiesAttr([(1.0, 2.0, 3.0)] * 4)
+
+        with self.assertWarnsRegex(UserWarning, "velocities are not imported"):
+            builder, result = self._build_soft(author)
+        # Imported at rest (velocities dropped), no crash.
+        p0, p1 = result["path_soft_map"]["/World/Soft"]["particle"]
+        for i in range(p0, p1):
+            np.testing.assert_allclose(np.array(builder.particle_qd[i]), [0.0, 0.0, 0.0], atol=1e-6)
+
     def test_volume_sim_api_enables_per_point_masses(self):
         """A TetMesh marked PhysicsVolumeDeformableSimAPI honors physics:masses."""
         from pxr import Sdf

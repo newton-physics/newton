@@ -21,6 +21,7 @@ from .import_usd_deformable_utils import (
     _DeformableImportContext,
     _is_ignored_path,
     _resolve_deformable_density,
+    _warn_dropped_velocities,
     _warn_geometry_authored_material_attrs,
     _warn_unsupported_rest_fields,
     _world_matrix_reflects,
@@ -92,6 +93,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             sim_mesh_for_body[body_root_path] = path
         if is_volume_deformable:
             _warn_unsupported_rest_fields(prim, path, ("restShapePoints",), deformable_read)
+            _warn_dropped_velocities(prim, path)
             _warn_geometry_authored_material_attrs(prim, path, "PhysicsVolumeDeformableMaterialAPI", deformable_read)
 
         if collect_schema_attrs:

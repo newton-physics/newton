@@ -623,6 +623,23 @@ class TestUSDDeformableCable(unittest.TestCase):
             dof0 = builder.joint_qd_start[joints[0]]
             self.assertAlmostEqual(builder.joint_target_ke[dof0], expected_ke, delta=expected_ke * 1e-3)
 
+    def test_cable_velocities_warn(self):
+        """Authored cable velocities are dropped with a warning rather than silently."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable_vel.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            UsdGeom.PointBased(curves.GetPrim()).CreateVelocitiesAttr([(1.0, 2.0, 3.0)] * len(pts))
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "velocities are not imported"):
+                builder.add_usd(str(usd_path))
+
     def test_cable_non_per_point_normals_ignored(self):
         """Cable normals with non-per-point interpolation are warned and ignored, not misapplied."""
         from pxr import Usd, UsdGeom, UsdPhysics

@@ -24,6 +24,7 @@ from .import_usd_deformable_utils import (
     _is_ignored_path,
     _resolve_deformable_density,
     _validate_attachment_index_pairs,
+    _warn_dropped_velocities,
     _warn_geometry_authored_material_attrs,
     _warn_unsupported_rest_fields,
 )
@@ -412,6 +413,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             )
             rest_shape_points = None
         _warn_unsupported_rest_fields(prim, path, ("restNormals",), deformable_read)
+        _warn_dropped_velocities(prim, path)
         _warn_geometry_authored_material_attrs(prim, path, "PhysicsCurvesDeformableMaterialAPI", deformable_read)
 
         world_mat = get_prim_world_mat(prim, None, incoming_world_xform)
