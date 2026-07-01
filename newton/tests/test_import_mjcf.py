@@ -8087,6 +8087,41 @@ class TestContypeConaffinityZero(unittest.TestCase):
         solver = SolverMuJoCo(model)
         self.assertEqual(solver.mj_model.npair, 2)
 
+    def test_explicit_pair_hierarchical_labels_without_visuals(self):
+        """Pair-referenced geoms match their hierarchical Newton labels."""
+        mjcf = """<mujoco model="hierarchical_pair">
+            <default><geom contype="0" conaffinity="0"/></default>
+            <worldbody>
+                <body name="body1">
+                    <geom name="geom1" type="sphere" size="0.1"/>
+                </body>
+                <body name="body2">
+                    <geom name="geom2" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair
+                    geom1="hierarchical_pair/worldbody/body1/geom1"
+                    geom2="hierarchical_pair/worldbody/body2/geom2"
+                />
+            </contact>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+
+        self.assertEqual(
+            builder.shape_label,
+            [
+                "hierarchical_pair/worldbody/body1/geom1",
+                "hierarchical_pair/worldbody/body2/geom2",
+            ],
+        )
+        self.assertEqual(builder.shape_collision_group, [0, 0])
+
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model)
+        self.assertEqual(solver.mj_model.npair, 1)
+
 
 class TestMjcfPlaneInfinite(unittest.TestCase):
     """Verify MJCF plane geoms are imported as infinite planes."""

@@ -1340,7 +1340,11 @@ def parse_mjcf(
             collides_with_anything = not (int(contype) == 0 and int(conaffinity) == 0)
 
             # Explicit pairs override contact masks, so their geoms must survive visual filtering.
-            if geom_name in explicit_pair_geom_names:
+            geom_label = f"{label_prefix}/{geom_name}" if label_prefix else geom_name
+            is_explicit_pair_geom = any(
+                geom_label == name or geom_label.endswith(f"/{name}") for name in explicit_pair_geom_names
+            )
+            if is_explicit_pair_geom:
                 required_colliders.append(geom)
             elif geom_class is not None:
                 neither_visual_nor_collider = True
