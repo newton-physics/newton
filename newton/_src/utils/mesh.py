@@ -773,7 +773,7 @@ def _fill_adjacent_tris(
 
 @wp.kernel
 def _count_num_adjacent_springs(spring_indices: wp.array[wp.int32], num_vertex_adjacent_springs: wp.array[wp.int32]):
-    num_springs = spring_indices.shape[0] / 2
+    num_springs = spring_indices.shape[0] // 2
     for spring_id in range(num_springs):
         v0 = spring_indices[spring_id * 2]
         v1 = spring_indices[spring_id * 2 + 1]
@@ -789,7 +789,7 @@ def _fill_adjacent_springs(
     vertex_adjacent_springs_fill_count: wp.array[wp.int32],
     vertex_adjacent_springs: wp.array[wp.int32],
 ):
-    num_springs = spring_indices.shape[0] / 2
+    num_springs = spring_indices.shape[0] // 2
     for spring_id in range(num_springs):
         v0 = spring_indices[spring_id * 2]
         v1 = spring_indices[spring_id * 2 + 1]
