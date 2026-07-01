@@ -301,10 +301,9 @@ class TestUSDDeformableVolume(unittest.TestCase):
         builder, _ = self._build_soft(author)
         self.assertAlmostEqual(sum(builder.particle_mass[:4]), 7.0, places=4)
 
-    def test_non_sim_tetmesh_under_body_excluded_from_mass_precedence(self):
-        """A body's total mass goes only to its sim-API mesh; a sibling non-sim (graphics/collision)
-        TetMesh under the same body root stays density-derived rather than also being charged the
-        full body mass (which would double a 12 kg body to 24 kg)."""
+    def test_non_sim_tetmesh_under_body_is_skipped(self):
+        """A non-sim (graphics/collision) TetMesh under a deformable body is skipped, not simulated as
+        an independent soft body, so the body's authored total mass (12 kg) is not exceeded."""
         from pxr import UsdGeom
 
         def author(stage):
@@ -313,25 +312,17 @@ class TestUSDDeformableVolume(unittest.TestCase):
             _author_tet_cube(stage, "/World/Body/Sim")  # carries PhysicsVolumeDeformableSimAPI
             _author_unit_tet(stage, "/World/Body/Graphics")  # no sim API -> graphics/collision
 
-        builder, result = self._build_soft(author)
+        with self.assertWarnsRegex(UserWarning, "graphics/collision geometry"):
+            builder, result = self._build_soft(author)
         soft = result["path_soft_map"]
         self.assertIn("/World/Body/Sim", soft)
-        self.assertIn("/World/Body/Graphics", soft)  # still imported (legacy: all TetMeshes import)
-        sp0, sp1 = soft["/World/Body/Sim"]["particle"]
-        gp0, gp1 = soft["/World/Body/Graphics"]["particle"]
-        sim_mass = sum(builder.particle_mass[sp0:sp1])
-        gfx_mass = sum(builder.particle_mass[gp0:gp1])
-        # The 12 kg body total lands on the sim mesh only ...
-        self.assertAlmostEqual(sim_mass, 12.0, places=4)
-        # ... and the graphics mesh is not also charged it (no double-count to 24 kg).
-        self.assertGreater(gfx_mass, 0.0)
-        self.assertNotAlmostEqual(gfx_mass, 12.0, places=4)
-        self.assertNotAlmostEqual(sim_mass + gfx_mass, 24.0, places=3)
+        self.assertNotIn("/World/Body/Graphics", soft)  # skipped, not simulated
+        # The whole simulated system is exactly the body's authored 12 kg (no extra graphics mass).
+        self.assertAlmostEqual(sum(builder.particle_mass), 12.0, places=4)
 
-    def test_multiple_sim_meshes_under_one_body_apply_mass_once(self):
-        """Two sim meshes sharing one body root with an authored body mass: the body total is applied
-        once (to the first sim mesh) and a warning flags the ambiguous multi-mesh body, instead of
-        charging each mesh the full mass."""
+    def test_multiple_sim_meshes_under_one_body_skips_extras(self):
+        """A deformable body designates one simulation mesh: a second sim mesh under the same body
+        root is malformed and skipped (with a warning), so the authored 12 kg is not exceeded."""
         from pxr import UsdGeom
 
         def author(stage):
@@ -340,13 +331,12 @@ class TestUSDDeformableVolume(unittest.TestCase):
             _author_tet_cube(stage, "/World/Body/SimA")
             _author_tet_cube(stage, "/World/Body/SimB")
 
-        with self.assertWarnsRegex(UserWarning, "multiple simulation meshes"):
+        with self.assertWarnsRegex(UserWarning, "skipping additional simulation mesh"):
             builder, result = self._build_soft(author)
         soft = result["path_soft_map"]
-        a0, a1 = soft["/World/Body/SimA"]["particle"]
-        b0, b1 = soft["/World/Body/SimB"]["particle"]
-        self.assertAlmostEqual(sum(builder.particle_mass[a0:a1]), 12.0, places=4)
-        self.assertNotAlmostEqual(sum(builder.particle_mass[b0:b1]), 12.0, places=4)
+        self.assertIn("/World/Body/SimA", soft)
+        self.assertNotIn("/World/Body/SimB", soft)  # extra sim mesh skipped
+        self.assertAlmostEqual(sum(builder.particle_mass), 12.0, places=4)
 
     def test_volume_sim_api_enables_per_point_masses(self):
         """A TetMesh marked PhysicsVolumeDeformableSimAPI honors physics:masses."""

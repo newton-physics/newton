@@ -235,15 +235,11 @@ def _set_body_mass(builder: ModelBuilder, b: int, m: float) -> None:
     builder.body_inv_inertia[b] = wp.inverse(builder.body_inertia[b]) if m > 0.0 else wp.mat33(0.0)
 
 
-def _apply_particle_masses(
-    builder: ModelBuilder, prim: Usd.Prim, p0: int, p1: int, read_attr: Callable, *, apply_body_mass: bool = True
-) -> None:
+def _apply_particle_masses(builder: ModelBuilder, prim: Usd.Prim, p0: int, p1: int, read_attr: Callable) -> None:
     """Apply the deformable mass override to particles ``[p0, p1)``.
 
     Per-point ``physics:masses`` (highest precedence) are written directly; otherwise a
     ``PhysicsDeformableBodyAPI`` body-mass total rescales the (density-derived) particle masses.
-    ``apply_body_mass=False`` skips that rescale (per-point masses still apply) when a sibling
-    simulation mesh already consumed the body total.
     """
     from ..usd import utils as usd  # noqa: PLC0415
 
@@ -262,8 +258,6 @@ def _apply_particle_masses(
             for i in range(n):
                 builder.particle_mass[p0 + i] = point_masses[i]
             return
-    if not apply_body_mass:
-        return
     body_mass, _ = usd._get_deformable_body_overrides(prim, read_attr)
     if body_mass is not None:
         current = float(sum(builder.particle_mass[p0:p1]))

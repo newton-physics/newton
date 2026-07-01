@@ -53,8 +53,9 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
 
     if not (root_prim and root_prim.IsValid()):
         return
-    # Body roots whose body-total mass was already applied, so sibling sim meshes don't each take it.
-    body_mass_applied: dict[str, str] = {}
+    # The one simulation mesh imported per deformable body root, so graphics/collision TetMeshes and
+    # any extra simulation meshes under the same body are skipped rather than simulated as extra mass.
+    sim_mesh_for_body: dict[str, str] = {}
     for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
         if not prim.IsA(UsdGeom.TetMesh):
             continue
@@ -66,9 +67,29 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         if _is_ignored_path(path, ignore_paths):
             continue
 
-        # Mass precedence is for the simulation mesh only; a graphics/collision TetMesh under the
-        # same body still imports as a legacy soft body but must not also be charged the body mass.
         is_volume_deformable = usd.has_applied_api_schema(prim, "PhysicsVolumeDeformableSimAPI")
+        # Inside a PhysicsDeformableBodyAPI hierarchy only the single simulation mesh is simulated:
+        # a non-simulation TetMesh is graphics/collision geometry and a second simulation mesh is
+        # malformed, so both are skipped (else they add mass beyond the body's authored total). A bare
+        # TetMesh with no deformable-body ancestor still imports as a legacy soft body.
+        body_root = usd._find_deformable_body_prim(prim)
+        if body_root is not None:
+            body_root_path = str(body_root.GetPath())
+            if not is_volume_deformable:
+                warnings.warn(
+                    f"{path}: non-simulation TetMesh under deformable body {body_root_path}; "
+                    f"treated as graphics/collision geometry (not simulated).",
+                    stacklevel=2,
+                )
+                continue
+            if body_root_path in sim_mesh_for_body:
+                warnings.warn(
+                    f"{path}: deformable body {body_root_path} already has simulation mesh "
+                    f"{sim_mesh_for_body[body_root_path]}; skipping additional simulation mesh.",
+                    stacklevel=2,
+                )
+                continue
+            sim_mesh_for_body[body_root_path] = path
         if is_volume_deformable:
             _warn_unsupported_rest_fields(prim, path, ("restShapePoints",), deformable_read)
             _warn_geometry_authored_material_attrs(prim, path, "PhysicsVolumeDeformableMaterialAPI", deformable_read)
@@ -124,25 +145,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         soft_p0, soft_t0 = builder.particle_count, builder.tet_count
         builder.add_soft_mesh(**add_soft_mesh_kwargs)
         if is_volume_deformable:
-            # Apply an authored body-total mass once per body root; warn if sim meshes share one.
-            apply_body_mass = True
-            body_mass, _ = usd._get_deformable_body_overrides(prim, deformable_read)
-            if body_mass is not None:
-                body_root = usd._find_deformable_body_prim(prim)
-                body_root_path = str(body_root.GetPath()) if body_root else path
-                prior = body_mass_applied.get(body_root_path)
-                if prior is not None:
-                    warnings.warn(
-                        f"{path}: deformable body {body_root_path} has multiple simulation meshes; "
-                        f"body mass already applied to {prior}, leaving {path} density-derived.",
-                        stacklevel=2,
-                    )
-                    apply_body_mass = False
-                else:
-                    body_mass_applied[body_root_path] = path
-            _apply_particle_masses(
-                builder, prim, soft_p0, builder.particle_count, deformable_read, apply_body_mass=apply_body_mass
-            )
+            _apply_particle_masses(builder, prim, soft_p0, builder.particle_count, deformable_read)
         path_soft_map[path] = {
             "particle": (soft_p0, builder.particle_count),
             "tet": (soft_t0, builder.tet_count),
