@@ -150,6 +150,8 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         resolved_cloth_density = vol_density if vol_density is not None else builder.default_shape_cfg.density
         # The areal value is builder-specific; keep it local to add_cloth_mesh.
         density = resolved_cloth_density * thickness if thickness is not None else resolved_cloth_density
+        # Collision radius from the shell's physical half-thickness rather than the generic default.
+        particle_radius = 0.5 * thickness if thickness is not None else None
 
         p0, t0, e0 = builder.particle_count, builder.tri_count, builder.edge_count
         builder.add_cloth_mesh(
@@ -163,6 +165,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             tri_ke=tri_ke,
             tri_ka=tri_ka,
             edge_ke=edge_ke,
+            particle_radius=particle_radius,
             label=path,
         )
         _apply_particle_masses(builder, prim, p0, builder.particle_count, deformable_read)

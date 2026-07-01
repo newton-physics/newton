@@ -339,6 +339,28 @@ class TestUSDDeformableCloth(unittest.TestCase):
             with self.assertWarnsRegex(UserWarning, "velocities are not imported"):
                 builder.add_usd(str(usd_path))
 
+    def test_cloth_particle_radius_from_thickness(self):
+        """The cloth particle collision radius is half the authored surface thickness (the proposal's
+        physical thickness), rather than the builder's generic default particle radius."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cloth_thick.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            thickness = 0.02
+            _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", thickness=thickness)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            p0, p1 = result["path_cloth_map"]["/World/Cloth"]["particle"]
+            for i in range(p0, p1):
+                self.assertAlmostEqual(builder.particle_radius[i], 0.5 * thickness, places=6)
+            # Distinct from the generic builder default it used to inherit.
+            self.assertNotAlmostEqual(builder.particle_radius[p0], builder.default_particle_radius, places=6)
+
     def test_cloth_non_uniform_scale_bakes_into_vertices(self):
         """A non-uniform xformOp:scale on a cloth mesh is baked into the particle positions."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
