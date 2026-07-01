@@ -78,8 +78,8 @@ def transform_spatial_inertia(t: wp.transform, I: wp.spatial_matrix):
     Section 8.2.3 (pg. 290).
 
     Args:
-        t (wp.transform): The rigid-body transform (destination ← source).
-        I (wp.spatial_matrix): The spatial inertia tensor in the source frame.
+        t: The rigid-body transform (destination ← source).
+        I: The spatial inertia tensor in the source frame.
 
     Returns:
         wp.spatial_matrix: The spatial inertia tensor expressed in the destination frame.
@@ -2277,12 +2277,12 @@ def eval_fk_with_velocity_conversion(
     the public COM-referenced :attr:`State.body_qd` output.
 
     Args:
-        model (Model): The model to evaluate.
-        joint_q (array): Generalized joint position coordinates, shape [joint_coord_count], float
-        joint_qd (array): Generalized joint velocity coordinates, shape [joint_dof_count], float
-        state (State): The state to update.
-        mask (array): The mask to use to enable / disable FK for an articulation. If None then treat all as enabled, shape [articulation_count], bool
-        indices (array): Integer indices of articulations to update. If None, updates all articulations.
+        model: The model to evaluate.
+        joint_q: Generalized joint position coordinates, shape [joint_coord_count], float
+        joint_qd: Generalized joint velocity coordinates, shape [joint_dof_count], float
+        state: The state to update.
+        mask: The mask to use to enable / disable FK for an articulation. If None then treat all as enabled, shape [articulation_count], bool
+        indices: Integer indices of articulations to update. If None, updates all articulations.
                         Cannot be used together with mask parameter.
     """
     # Validate inputs

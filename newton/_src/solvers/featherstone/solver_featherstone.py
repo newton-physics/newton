@@ -6,6 +6,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
+from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
     eval_particle_body_contact_forces,
@@ -128,9 +129,11 @@ class SolverFeatherstone(SolverBase):
 
     """
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,
+        *,
         angular_damping: float = 0.05,
         update_mass_matrix_interval: int = 1,
         friction_smoothing: float = 1.0,

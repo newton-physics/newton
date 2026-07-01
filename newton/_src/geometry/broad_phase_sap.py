@@ -22,6 +22,7 @@ from .broad_phase_common import (
     binary_search,
     check_aabb_overlap,
     is_pair_excluded,
+    is_shape_pair_immovable_filtered,
     precompute_world_map,
     test_world_and_group_pair,
     write_pair,
@@ -250,9 +251,15 @@ def _process_single_sap_pair(
     max_candidate_pair: int,
     filter_pairs: wp.array[wp.vec2i],  # Sorted excluded pairs (empty if none)
     num_filter_pairs: int,
+    shape_body: wp.array[int],
+    body_flags: wp.array[int],
+    include_static_kinematic_pairs: bool,
 ):
     shape1 = pair[0]
     shape2 = pair[1]
+
+    if is_shape_pair_immovable_filtered(shape1, shape2, shape_body, body_flags, include_static_kinematic_pairs):
+        return
 
     # Skip explicitly excluded pairs (e.g. shape_collision_filter_pairs)
     if num_filter_pairs > 0 and is_pair_excluded(pair, filter_pairs, num_filter_pairs):
@@ -299,6 +306,9 @@ def _sap_broadphase_kernel(
     num_regular_worlds: int,  # Number of regular world segments (excluding dedicated -1 segment)
     filter_pairs: wp.array[wp.vec2i],  # Sorted excluded pairs (empty if none)
     num_filter_pairs: int,
+    shape_body: wp.array[int],
+    body_flags: wp.array[int],
+    include_static_kinematic_pairs: bool,
     # Output arrays
     candidate_pair: wp.array[wp.vec2i],
     candidate_pair_count: wp.array[int],  # Size one array
@@ -389,6 +399,9 @@ def _sap_broadphase_kernel(
                 max_candidate_pair,
                 filter_pairs,
                 num_filter_pairs,
+                shape_body,
+                body_flags,
+                include_static_kinematic_pairs,
             )
 
         workid += nsweep_in
@@ -522,6 +535,10 @@ class BroadPhaseSAP:
         filter_pairs: wp.array[wp.vec2i] | None = None,  # Sorted excluded pairs
         num_filter_pairs: int | None = None,
         skip_count_zero: bool = False,  # Skip candidate_pair_count.zero_() if already zeroed by the caller
+        *,
+        shape_body: wp.array[int] | None = None,
+        body_flags: wp.array[int] | None = None,
+        include_static_kinematic_pairs: bool = True,
     ) -> None:
         """Launch the sweep and prune broad phase collision detection with per-world segmented sort.
 
@@ -543,10 +560,18 @@ class BroadPhaseSAP:
             candidate_pair: Output array to store overlapping shape pairs
             candidate_pair_count: Output array to store number of overlapping pairs found
             device: Device to launch on. If None, uses the device of the input arrays.
+            filter_pairs: Optional sorted shape pairs to exclude.
+            num_filter_pairs: Number of valid entries in ``filter_pairs``. If None, uses ``filter_pairs.shape[0]``.
             skip_count_zero: If True, skip the internal ``candidate_pair_count.zero_()``.
                 The caller guarantees ``candidate_pair_count[0] == 0`` on entry (e.g. when
                 the counter was zeroed by a preceding fused kernel).  Defaults to False so
                 the launch remains self-contained.
+            shape_body: Optional array mapping each shape to its body index. Negative body indices are static shapes.
+                Omitting this array disables immovable-pair filtering for expert callers.
+            body_flags: Optional body flag array used to identify kinematic bodies. An empty array is valid for
+                an all-static model when ``shape_body`` is provided.
+            include_static_kinematic_pairs: Whether to include pairs where both shapes are immovable. Set to
+                ``False`` to filter static-static, static-kinematic, and kinematic-kinematic pairs.
 
         The method will populate candidate_pair with the indices of shape pairs whose AABBs overlap
         (with optional margin expansion), whose collision groups allow interaction, and whose worlds are
@@ -568,6 +593,10 @@ class BroadPhaseSAP:
         # If no gaps provided, pass empty array (kernel will use 0.0 gaps)
         if shape_gap is None:
             shape_gap = wp.empty(0, dtype=wp.float32, device=device)
+        if shape_body is None:
+            shape_body = wp.empty(0, dtype=wp.int32, device=device)
+        if body_flags is None:
+            body_flags = wp.empty(0, dtype=wp.int32, device=device)
 
         # Exclusion filter: empty array and 0 when not provided or empty
         if filter_pairs is None or filter_pairs.shape[0] == 0:
@@ -666,6 +695,9 @@ class BroadPhaseSAP:
                 self.num_regular_worlds,
                 filter_pairs_arr,
                 n_filter,
+                shape_body,
+                body_flags,
+                include_static_kinematic_pairs,
             ],
             outputs=[
                 candidate_pair,
