@@ -693,6 +693,59 @@ class Model:
         self.max_dofs_per_articulation: int = 0
         """Maximum number of degrees of freedom in any articulation (used for Jacobian/mass matrix computation)."""
 
+        # Deformable groups: each imported cable/cloth/volume is an addressable, world-tagged group
+        # with [start, end) index ranges into the corresponding per-element arrays. Ranges are stored
+        # as separate start/end arrays (not a CSR sentinel) so a group's range stays exact even when
+        # non-group elements are interleaved. Use the *_index()/*_range() helpers to resolve by path.
+        self.cable_count: int = 0
+        """Number of cable (curve-deformable) groups."""
+        self.cable_label: list[str] = []
+        """Prim-path label of each cable group, shape [cable_count], str."""
+        self.cable_world: wp.array[wp.int32] | None = None
+        """World index of each cable group, shape [cable_count], int. -1 for global."""
+        self.cable_body_start: wp.array[wp.int32] | None = None
+        """Inclusive body-range start of each cable group, shape [cable_count], int."""
+        self.cable_body_end: wp.array[wp.int32] | None = None
+        """Exclusive body-range end of each cable group, shape [cable_count], int."""
+        self.cable_joint_start: wp.array[wp.int32] | None = None
+        """Inclusive joint-range start of each cable group, shape [cable_count], int."""
+        self.cable_joint_end: wp.array[wp.int32] | None = None
+        """Exclusive joint-range end of each cable group, shape [cable_count], int."""
+
+        self.cloth_count: int = 0
+        """Number of cloth (surface-deformable) groups."""
+        self.cloth_label: list[str] = []
+        """Prim-path label of each cloth group, shape [cloth_count], str."""
+        self.cloth_world: wp.array[wp.int32] | None = None
+        """World index of each cloth group, shape [cloth_count], int. -1 for global."""
+        self.cloth_particle_start: wp.array[wp.int32] | None = None
+        """Inclusive particle-range start of each cloth group, shape [cloth_count], int."""
+        self.cloth_particle_end: wp.array[wp.int32] | None = None
+        """Exclusive particle-range end of each cloth group, shape [cloth_count], int."""
+        self.cloth_tri_start: wp.array[wp.int32] | None = None
+        """Inclusive triangle-range start of each cloth group, shape [cloth_count], int."""
+        self.cloth_tri_end: wp.array[wp.int32] | None = None
+        """Exclusive triangle-range end of each cloth group, shape [cloth_count], int."""
+        self.cloth_edge_start: wp.array[wp.int32] | None = None
+        """Inclusive edge-range start of each cloth group, shape [cloth_count], int."""
+        self.cloth_edge_end: wp.array[wp.int32] | None = None
+        """Exclusive edge-range end of each cloth group, shape [cloth_count], int."""
+
+        self.soft_count: int = 0
+        """Number of soft (volume-deformable) groups."""
+        self.soft_label: list[str] = []
+        """Prim-path label of each soft group, shape [soft_count], str."""
+        self.soft_world: wp.array[wp.int32] | None = None
+        """World index of each soft group, shape [soft_count], int. -1 for global."""
+        self.soft_particle_start: wp.array[wp.int32] | None = None
+        """Inclusive particle-range start of each soft group, shape [soft_count], int."""
+        self.soft_particle_end: wp.array[wp.int32] | None = None
+        """Exclusive particle-range end of each soft group, shape [soft_count], int."""
+        self.soft_tet_start: wp.array[wp.int32] | None = None
+        """Inclusive tetrahedron-range start of each soft group, shape [soft_count], int."""
+        self.soft_tet_end: wp.array[wp.int32] | None = None
+        """Exclusive tetrahedron-range end of each soft group, shape [soft_count], int."""
+
         self.soft_contact_ke: float = 1.0e3
         """Stiffness of soft contacts [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_kd: float = 10.0
@@ -881,6 +934,57 @@ class Model:
 
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
+
+    @staticmethod
+    def _deformable_group_index(labels: list[str], label: str, family: str) -> int:
+        try:
+            return labels.index(label)
+        except ValueError:
+            raise KeyError(f"No {family} group with label '{label}'.") from None
+
+    @staticmethod
+    def _deformable_group_range(start: wp.array, end: wp.array, index: int) -> tuple[int, int]:
+        return int(start.numpy()[index]), int(end.numpy()[index])
+
+    def cable_index(self, label: str) -> int:
+        """Return the index of the cable group with the given prim-path label."""
+        return self._deformable_group_index(self.cable_label, label, "cable")
+
+    def cable_body_range(self, index: int) -> tuple[int, int]:
+        """Return the ``[start, end)`` body range of the cable group at ``index``."""
+        return self._deformable_group_range(self.cable_body_start, self.cable_body_end, index)
+
+    def cable_joint_range(self, index: int) -> tuple[int, int]:
+        """Return the ``[start, end)`` joint range of the cable group at ``index``."""
+        return self._deformable_group_range(self.cable_joint_start, self.cable_joint_end, index)
+
+    def cloth_index(self, label: str) -> int:
+        """Return the index of the cloth group with the given prim-path label."""
+        return self._deformable_group_index(self.cloth_label, label, "cloth")
+
+    def cloth_particle_range(self, index: int) -> tuple[int, int]:
+        """Return the ``[start, end)`` particle range of the cloth group at ``index``."""
+        return self._deformable_group_range(self.cloth_particle_start, self.cloth_particle_end, index)
+
+    def cloth_tri_range(self, index: int) -> tuple[int, int]:
+        """Return the ``[start, end)`` triangle range of the cloth group at ``index``."""
+        return self._deformable_group_range(self.cloth_tri_start, self.cloth_tri_end, index)
+
+    def cloth_edge_range(self, index: int) -> tuple[int, int]:
+        """Return the ``[start, end)`` edge range of the cloth group at ``index``."""
+        return self._deformable_group_range(self.cloth_edge_start, self.cloth_edge_end, index)
+
+    def soft_index(self, label: str) -> int:
+        """Return the index of the soft (volume) group with the given prim-path label."""
+        return self._deformable_group_index(self.soft_label, label, "soft")
+
+    def soft_particle_range(self, index: int) -> tuple[int, int]:
+        """Return the ``[start, end)`` particle range of the soft group at ``index``."""
+        return self._deformable_group_range(self.soft_particle_start, self.soft_particle_end, index)
+
+    def soft_tet_range(self, index: int) -> tuple[int, int]:
+        """Return the ``[start, end)`` tetrahedron range of the soft group at ``index``."""
+        return self._deformable_group_range(self.soft_tet_start, self.soft_tet_end, index)
 
     # Deprecated equality-constraint arrays (removal in a future release).
     # The legacy top-level ``Model.equality_constraint_*`` arrays are now read-only forwards to

@@ -68,6 +68,35 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertEqual((builder.cable_body_start[0], builder.cable_body_end[0]), (bodies[0], bodies[-1] + 1))
             self.assertEqual((builder.cable_joint_start[0], builder.cable_joint_end[0]), (joints[0], joints[-1] + 1))
 
+    def test_cable_addressable_by_path_after_finalize(self):
+        """After finalize(), a cable resolves by prim path to its body/joint ranges on the Model."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cable.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            _add_cable_curve(stage, "/World/Cable", pts)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            bodies, joints = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
+            model = builder.finalize()
+
+            self.assertEqual(model.cable_count, 1)
+            self.assertEqual(model.cable_label, ["/World/Cable"])
+            index = model.cable_index("/World/Cable")
+            self.assertEqual(model.cable_body_range(index), (bodies[0], bodies[-1] + 1))
+            self.assertEqual(model.cable_joint_range(index), (joints[0], joints[-1] + 1))
+            self.assertEqual(int(model.cable_world.numpy()[index]), -1)  # no begin_world -> global
+            # The resolved range addresses real model bodies.
+            b0, b1 = model.cable_body_range(index)
+            self.assertLessEqual(b1, model.body_count)
+            self.assertEqual(b1 - b0, 3)  # one capsule body per segment
+            with self.assertRaises(KeyError):
+                model.cable_index("/World/DoesNotExist")
+
     def test_plain_curve_without_api_is_not_a_cable(self):
         """A BasisCurves without the curve-deformable API must not produce a cable."""
         from pxr import Usd, UsdGeom, UsdPhysics

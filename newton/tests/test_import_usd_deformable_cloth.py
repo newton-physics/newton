@@ -67,6 +67,36 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertEqual((builder.cloth_tri_start[0], builder.cloth_tri_end[0]), ranges["tri"])
             self.assertEqual((builder.cloth_edge_start[0], builder.cloth_edge_end[0]), ranges["edge"])
 
+    def test_two_cloths_addressable_by_path_after_finalize(self):
+        """Two cloths in one world resolve by prim path to distinct ranges on the Model."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "two_cloth.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            _add_cloth_mesh(stage, "/World/ClothA")
+            _add_cloth_mesh(stage, "/World/ClothB")
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            model = builder.finalize()
+
+            self.assertEqual(model.cloth_count, 2)
+            for path in ("/World/ClothA", "/World/ClothB"):
+                index = model.cloth_index(path)
+                map_ranges = result["path_cloth_map"][path]
+                self.assertEqual(model.cloth_particle_range(index), map_ranges["particle"])
+                self.assertEqual(model.cloth_tri_range(index), map_ranges["tri"])
+                self.assertEqual(model.cloth_edge_range(index), map_ranges["edge"])
+
+            # The two cloths occupy disjoint, back-to-back particle ranges.
+            a = model.cloth_particle_range(model.cloth_index("/World/ClothA"))
+            b = model.cloth_particle_range(model.cloth_index("/World/ClothB"))
+            self.assertEqual(a, (0, 4))
+            self.assertEqual(b, (4, 8))
+
     def test_cloth_quad_mesh_is_triangulated(self):
         """A quad-faced cloth mesh is fan-triangulated on import (n-gons are supported)."""
         from pxr import Usd, UsdGeom, UsdPhysics

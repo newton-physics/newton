@@ -11502,6 +11502,35 @@ class ModelBuilder:
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
 
+            # Deformable groups (cable/cloth/volume): copy the builder's per-group [start, end)
+            # ranges, labels, and world tags onto the Model so each imported deformable stays
+            # addressable by prim path after finalization (see Model.cable_index/cable_body_range).
+            m.cable_count = len(self.cable_label)
+            m.cable_label = list(self.cable_label)
+            m.cable_world = wp.array(self.cable_world, dtype=wp.int32)
+            m.cable_body_start = wp.array(self.cable_body_start, dtype=wp.int32)
+            m.cable_body_end = wp.array(self.cable_body_end, dtype=wp.int32)
+            m.cable_joint_start = wp.array(self.cable_joint_start, dtype=wp.int32)
+            m.cable_joint_end = wp.array(self.cable_joint_end, dtype=wp.int32)
+
+            m.cloth_count = len(self.cloth_label)
+            m.cloth_label = list(self.cloth_label)
+            m.cloth_world = wp.array(self.cloth_world, dtype=wp.int32)
+            m.cloth_particle_start = wp.array(self.cloth_particle_start, dtype=wp.int32)
+            m.cloth_particle_end = wp.array(self.cloth_particle_end, dtype=wp.int32)
+            m.cloth_tri_start = wp.array(self.cloth_tri_start, dtype=wp.int32)
+            m.cloth_tri_end = wp.array(self.cloth_tri_end, dtype=wp.int32)
+            m.cloth_edge_start = wp.array(self.cloth_edge_start, dtype=wp.int32)
+            m.cloth_edge_end = wp.array(self.cloth_edge_end, dtype=wp.int32)
+
+            m.soft_count = len(self.soft_label)
+            m.soft_label = list(self.soft_label)
+            m.soft_world = wp.array(self.soft_world, dtype=wp.int32)
+            m.soft_particle_start = wp.array(self.soft_particle_start, dtype=wp.int32)
+            m.soft_particle_end = wp.array(self.soft_particle_end, dtype=wp.int32)
+            m.soft_tet_start = wp.array(self.soft_tet_start, dtype=wp.int32)
+            m.soft_tet_end = wp.array(self.soft_tet_end, dtype=wp.int32)
+
             # ---------------------
             # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)
             # can live on it. The per-row ``equality_constraint_*`` arrays are materialized by the

@@ -110,6 +110,31 @@ class TestUSDDeformableVolume(unittest.TestCase):
             self.assertEqual((builder.soft_particle_start[0], builder.soft_particle_end[0]), ranges["particle"])
             self.assertEqual((builder.soft_tet_start[0], builder.soft_tet_end[0]), ranges["tet"])
 
+    def test_soft_addressable_by_path_after_finalize(self):
+        """After finalize(), a soft volume resolves by prim path to its particle/tet ranges."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "tet.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            tet = UsdGeom.TetMesh.Define(stage, "/World/Soft")
+            tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
+            tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            ranges = builder.add_usd(str(usd_path))["path_soft_map"]["/World/Soft"]
+            model = builder.finalize()
+
+            self.assertEqual(model.soft_count, 1)
+            self.assertEqual(model.soft_label, ["/World/Soft"])
+            index = model.soft_index("/World/Soft")
+            self.assertEqual(model.soft_particle_range(index), ranges["particle"])
+            self.assertEqual(model.soft_tet_range(index), ranges["tet"])
+            self.assertEqual(int(model.soft_world.numpy()[index]), -1)  # no begin_world -> global
+
     def test_volume_negative_scale_mirrors_and_reorients_tets(self):
         """A reflective xformOp:scale mirrors the soft-body particles and reorients each tet to keep a
         positive rest volume; a rotation+scale decomposition would drop the reflection."""
