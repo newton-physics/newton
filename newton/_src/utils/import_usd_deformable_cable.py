@@ -329,6 +329,13 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                 "graph_component": cid,
             }
             key_bodies = per_prim_bodies.get(key, [])
+            if key_bodies:
+                # Edges are assembled curve-by-curve, so each curve's graph bodies are contiguous.
+                # A welded curve owns no individual tree joints (they live in the shared graph
+                # articulation, addressable via articulation_label), so its joint range is empty.
+                builder._record_cable_group(
+                    key, (key_bodies[0], key_bodies[-1] + 1), (builder.joint_count, builder.joint_count)
+                )
             _apply_cable_masses(builder, rec.prim, key_bodies, [(0, n, key_bodies)], rec.closed, deformable_read)
             consumed_curves.add(key)
         if verbose:
@@ -621,6 +628,12 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         if cable_bodies:
             _apply_cable_masses(builder, prim, cable_bodies, cable_point_runs, closed, deformable_read)
             path_cable_map[path] = (cable_bodies, cable_joints)
+            # Bodies/joints for a cable prim are built back-to-back, so the index lists are contiguous.
+            body_range = (cable_bodies[0], cable_bodies[-1] + 1)
+            joint_range = (
+                (cable_joints[0], cable_joints[-1] + 1) if cable_joints else (builder.joint_count, builder.joint_count)
+            )
+            builder._record_cable_group(path, body_range, joint_range)
             path_cable_point_anchors[path] = cable_point_anchors
             path_cable_segments[path] = cable_segments
             path_cable_attrs[path] = {

@@ -173,6 +173,12 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             "tri": (t0, builder.tri_count),
             "edge": (e0, builder.edge_count),
         }
+        builder._record_cloth_group(
+            path,
+            (p0, builder.particle_count),
+            (t0, builder.tri_count),
+            (e0, builder.edge_count),
+        )
         path_cloth_attrs[path] = {
             "material": dict(cloth_mat),
             "resolved_density": resolved_cloth_density,

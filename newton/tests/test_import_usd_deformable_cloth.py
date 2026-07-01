@@ -46,6 +46,27 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertNotIn("/World/Cloth", result["path_shape_map"])
             self.assertEqual(builder.shape_count, 0)
 
+    def test_cloth_registry_matches_map(self):
+        """The builder cloth-group registry records the same ranges as path_cloth_map."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cloth.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            ranges = builder.add_usd(str(usd_path))["path_cloth_map"]["/World/Cloth"]
+
+            self.assertEqual(builder.cloth_label, ["/World/Cloth"])
+            self.assertEqual(builder.cloth_world, [builder.current_world])
+            self.assertEqual((builder.cloth_particle_start[0], builder.cloth_particle_end[0]), ranges["particle"])
+            self.assertEqual((builder.cloth_tri_start[0], builder.cloth_tri_end[0]), ranges["tri"])
+            self.assertEqual((builder.cloth_edge_start[0], builder.cloth_edge_end[0]), ranges["edge"])
+
     def test_cloth_quad_mesh_is_triangulated(self):
         """A quad-faced cloth mesh is fan-triangulated on import (n-gons are supported)."""
         from pxr import Usd, UsdGeom, UsdPhysics

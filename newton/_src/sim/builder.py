@@ -1226,6 +1226,53 @@ class ModelBuilder:
         self.articulation_world: list[int] = []
         """World indices accumulated for :attr:`Model.articulation_world`."""
 
+        # Deformable group registries: prim-path-labelled, world-tagged index ranges that make each
+        # imported cable/cloth/volume a first-class addressable group (mirrors articulation_start/end/
+        # label/world). Ranges are [start, end) into the corresponding builder arrays; finalize()
+        # turns them into the Model CSR arrays, and replicate()/add_builder() carry them per world.
+        self.cable_label: list[str] = []
+        """Prim-path labels of imported cable groups."""
+        self.cable_world: list[int] = []
+        """World index of each cable group."""
+        self.cable_body_start: list[int] = []
+        """Inclusive body-range start of each cable group."""
+        self.cable_body_end: list[int] = []
+        """Exclusive body-range end of each cable group."""
+        self.cable_joint_start: list[int] = []
+        """Inclusive joint-range start of each cable group."""
+        self.cable_joint_end: list[int] = []
+        """Exclusive joint-range end of each cable group."""
+
+        self.cloth_label: list[str] = []
+        """Prim-path labels of imported cloth groups."""
+        self.cloth_world: list[int] = []
+        """World index of each cloth group."""
+        self.cloth_particle_start: list[int] = []
+        """Inclusive particle-range start of each cloth group."""
+        self.cloth_particle_end: list[int] = []
+        """Exclusive particle-range end of each cloth group."""
+        self.cloth_tri_start: list[int] = []
+        """Inclusive triangle-range start of each cloth group."""
+        self.cloth_tri_end: list[int] = []
+        """Exclusive triangle-range end of each cloth group."""
+        self.cloth_edge_start: list[int] = []
+        """Inclusive edge-range start of each cloth group."""
+        self.cloth_edge_end: list[int] = []
+        """Exclusive edge-range end of each cloth group."""
+
+        self.soft_label: list[str] = []
+        """Prim-path labels of imported soft (volume) groups."""
+        self.soft_world: list[int] = []
+        """World index of each soft group."""
+        self.soft_particle_start: list[int] = []
+        """Inclusive particle-range start of each soft group."""
+        self.soft_particle_end: list[int] = []
+        """Exclusive particle-range end of each soft group."""
+        self.soft_tet_start: list[int] = []
+        """Inclusive tetrahedron-range start of each soft group."""
+        self.soft_tet_end: list[int] = []
+        """Exclusive tetrahedron-range end of each soft group."""
+
         self.joint_dof_count: int = 0
         """Total joint DoF count propagated to :attr:`Model.joint_dof_count`."""
         self.joint_coord_count: int = 0
@@ -2609,6 +2656,51 @@ class ModelBuilder:
                 custom_attrs=custom_attributes,
                 expected_frequency=Model.AttributeFrequency.ARTICULATION,
             )
+
+    def _record_cable_group(
+        self,
+        label: str,
+        body_range: tuple[int, int],
+        joint_range: tuple[int, int],
+    ) -> None:
+        """Register an imported cable as an addressable, world-tagged group (see cable_label)."""
+        self.cable_label.append(label)
+        self.cable_world.append(self.current_world)
+        self.cable_body_start.append(body_range[0])
+        self.cable_body_end.append(body_range[1])
+        self.cable_joint_start.append(joint_range[0])
+        self.cable_joint_end.append(joint_range[1])
+
+    def _record_cloth_group(
+        self,
+        label: str,
+        particle_range: tuple[int, int],
+        tri_range: tuple[int, int],
+        edge_range: tuple[int, int],
+    ) -> None:
+        """Register an imported cloth as an addressable, world-tagged group (see cloth_label)."""
+        self.cloth_label.append(label)
+        self.cloth_world.append(self.current_world)
+        self.cloth_particle_start.append(particle_range[0])
+        self.cloth_particle_end.append(particle_range[1])
+        self.cloth_tri_start.append(tri_range[0])
+        self.cloth_tri_end.append(tri_range[1])
+        self.cloth_edge_start.append(edge_range[0])
+        self.cloth_edge_end.append(edge_range[1])
+
+    def _record_soft_group(
+        self,
+        label: str,
+        particle_range: tuple[int, int],
+        tet_range: tuple[int, int],
+    ) -> None:
+        """Register an imported soft volume as an addressable, world-tagged group (see soft_label)."""
+        self.soft_label.append(label)
+        self.soft_world.append(self.current_world)
+        self.soft_particle_start.append(particle_range[0])
+        self.soft_particle_end.append(particle_range[1])
+        self.soft_tet_start.append(tet_range[0])
+        self.soft_tet_end.append(tet_range[1])
 
     # region importers
     def add_urdf(

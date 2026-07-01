@@ -88,6 +88,28 @@ class TestUSDDeformableVolume(unittest.TestCase):
             self.assertEqual(ranges["tet"], (0, 1))  # 1 tetrahedron
             self.assertEqual(builder.particle_count, 4)
 
+    def test_soft_registry_matches_map(self):
+        """The builder soft-group registry records the same ranges as path_soft_map."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "tet.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            tet = UsdGeom.TetMesh.Define(stage, "/World/Soft")
+            tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
+            tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            ranges = builder.add_usd(str(usd_path))["path_soft_map"]["/World/Soft"]
+
+            self.assertEqual(builder.soft_label, ["/World/Soft"])
+            self.assertEqual(builder.soft_world, [builder.current_world])
+            self.assertEqual((builder.soft_particle_start[0], builder.soft_particle_end[0]), ranges["particle"])
+            self.assertEqual((builder.soft_tet_start[0], builder.soft_tet_end[0]), ranges["tet"])
+
     def test_volume_negative_scale_mirrors_and_reorients_tets(self):
         """A reflective xformOp:scale mirrors the soft-body particles and reorients each tet to keep a
         positive rest volume; a rotation+scale decomposition would drop the reflection."""

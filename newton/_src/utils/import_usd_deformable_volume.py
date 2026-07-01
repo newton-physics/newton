@@ -151,6 +151,11 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             "particle": (soft_p0, builder.particle_count),
             "tet": (soft_t0, builder.tet_count),
         }
+        builder._record_soft_group(
+            path,
+            (soft_p0, builder.particle_count),
+            (soft_t0, builder.tet_count),
+        )
         path_soft_attrs[path] = {
             # The density actually used: the resolved override if present, else the
             # TetMesh's own material density.
