@@ -13,7 +13,10 @@ from newton import GeoType
 from newton._src.geometry import create_mesh_terrain
 from newton._src.geometry.flags import ParticleFlags, ShapeFlags
 from newton._src.geometry.kernels import create_soft_contacts, mesh_sdf
-from newton._src.sim.collide import _compute_per_world_shape_pairs_max, _estimate_rigid_contact_max
+from newton._src.sim.collide import (
+    _compute_per_world_shape_pairs_max,
+    _estimate_rigid_contact_max,
+)
 from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
@@ -662,11 +665,13 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
     soft_contact_body_vel = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_normal = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_tids = wp.empty(1, dtype=wp.int32, device=device)
+    soft_rigid_contact_pairs = wp.array([wp.vec2i(0, 0)], dtype=wp.vec2i, device=device)
 
     wp.launch(
         create_soft_contacts,
         dim=1,
         inputs=[
+            soft_rigid_contact_pairs,
             points,
             wp.array([0.05], dtype=wp.float32, device=device),
             wp.array([int(ParticleFlags.ACTIVE)], dtype=wp.int32, device=device),
@@ -680,7 +685,6 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
             wp.array([-1], dtype=wp.int32, device=device),
             0.0,
             wp.array([0.0], dtype=wp.float32, device=device),
-            1,
             1,
             wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),
             wp.array([0], dtype=wp.int32, device=device),
@@ -1125,7 +1129,150 @@ for bp_name in ("explicit", "nxn", "sap"):
 
 
 class TestParticleShapeContacts(unittest.TestCase):
-    pass
+    def _assert_pairs_valid(self, model, pipeline):
+        # Pairs are a world-compatible superset over all particles/shapes; ACTIVE / COLLIDE_PARTICLES
+        # are filtered dynamically in create_soft_contacts, so only world compatibility is asserted.
+        pw = model.particle_world.numpy()
+        sw = model.shape_world.numpy()
+        for p, s in pipeline.soft_rigid_contact_pairs.numpy():
+            self.assertTrue(pw[p] == sw[s] or pw[p] < 0 or sw[s] < 0, f"cross-world pair ({p}, {s})")
+
+    def test_soft_rigid_pairs_multi_world_isolated(self):
+        sub = newton.ModelBuilder()
+        sub.add_shape_sphere(body=-1, radius=1.0)
+        sub.add_particle(pos=wp.vec3(0.0, 0.0, 0.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+        builder = newton.ModelBuilder()
+        builder.add_world(sub)
+        builder.add_world(sub)
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+
+        # Two worlds, each one active particle x one particle-colliding shape; no cross-world pairs.
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 2)
+        self._assert_pairs_valid(model, pipeline)
+
+    def test_soft_contacts_respect_active_and_collide_flags(self):
+        # Pairs are a world-compatible superset (flags are not baked in); create_soft_contacts applies
+        # ACTIVE / COLLIDE_PARTICLES dynamically, so only the active particle x the particle-colliding
+        # shape actually produces a contact.
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()  # collides with particles (default)
+        builder.add_shape_sphere(body=-1, radius=1.0, cfg=newton.ModelBuilder.ShapeConfig(has_particle_collision=False))
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)  # active
+        builder.add_particle(pos=wp.vec3(0.1, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0, flags=0)  # inactive
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        contacts = pipeline.contacts()
+
+        # 2 particles x 2 shapes, all in the global world -> 4 candidate pairs regardless of flags.
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 4)
+        self._assert_pairs_valid(model, pipeline)
+
+        pipeline.collide(model.state(), contacts)
+        # Only (active particle, particle-colliding ground) survives the dynamic flag checks.
+        self.assertEqual(contacts.soft_contact_count.numpy()[0], 1)
+
+    def test_soft_contacts_track_runtime_flag_changes(self):
+        # Regression: pairs are precomputed once, so a particle activated *after* the pipeline is built
+        # must still produce a contact (flags are filtered dynamically, not baked into the pair list).
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0, flags=0)  # inactive
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        contacts = pipeline.contacts()
+
+        # The candidate pair is cached even though the particle is inactive at construction.
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 1)
+        pipeline.collide(model.state(), contacts)
+        self.assertEqual(contacts.soft_contact_count.numpy()[0], 0)
+
+        # Activate the particle at runtime -> the contact appears without rebuilding the pipeline.
+        flags = model.particle_flags.numpy()
+        flags[0] = int(ParticleFlags.ACTIVE)
+        model.particle_flags.assign(flags)
+        pipeline.collide(model.state(), contacts)
+        self.assertEqual(contacts.soft_contact_count.numpy()[0], 1)
+
+    def test_soft_contact_capacity_defaults_to_pair_count(self):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_cloth_grid(
+            pos=wp.vec3(-0.5, -0.5, 0.05),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.2,
+            cell_y=0.2,
+            mass=0.1,
+        )
+        model = builder.finalize(device="cpu")
+
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        contacts = pipeline.contacts()
+
+        self.assertEqual(pipeline.soft_contact_max, pipeline.soft_rigid_contact_pair_count)
+        self.assertEqual(contacts.soft_contact_max, pipeline.soft_rigid_contact_pair_count)
+
+    def test_soft_contact_explicit_capacity_is_respected(self):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+        model = builder.finalize(device="cpu")
+
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_max=1)
+
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 1)
+        self.assertEqual(pipeline.soft_contact_max, 1)
+
+    def test_soft_contact_explicit_capacity_overflow_still_counts_candidates(self):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+        builder.add_particle(pos=wp.vec3(0.1, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+        model = builder.finalize(device="cpu")
+
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_max=1)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 2)
+        self.assertEqual(contacts.soft_contact_max, 1)
+        self.assertEqual(contacts.soft_contact_count.numpy()[0], 2)
+
+    def test_soft_contacts_skip_cross_world_shape_particle_pairs(self):
+        particle_builder = newton.ModelBuilder()
+        particle_builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+
+        shape_builder = newton.ModelBuilder()
+        shape_builder.add_shape_sphere(body=-1, radius=1.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_world(particle_builder)
+        builder.add_world(shape_builder)
+        model = builder.finalize(device="cpu")
+
+        contacts = model.collide(model.state())
+
+        self.assertEqual(model._collision_pipeline.soft_rigid_contact_pair_count, 0)
+        self.assertEqual(contacts.soft_contact_count.numpy()[0], 0)
+
+    def test_global_shape_contacts_particles_in_all_worlds(self):
+        particle_builder = newton.ModelBuilder()
+        particle_builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.05), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        builder.add_world(particle_builder)
+        builder.add_world(particle_builder)
+        model = builder.finalize(device="cpu")
+
+        contacts = model.contacts()
+        model.collide(model.state(), contacts)
+
+        self.assertEqual(model._collision_pipeline.soft_rigid_contact_pair_count, 2)
+        self.assertEqual(contacts.soft_contact_count.numpy()[0], 2)
 
 
 class TestContactEstimator(unittest.TestCase):
