@@ -390,6 +390,43 @@ class TestModelMesh(unittest.TestCase):
         shape_source_ptr = model.shape_source_ptr.numpy()
         self.assertEqual(shape_source_ptr[0], shape_source_ptr[1])
 
+    def test_finalize_does_not_deduplicate_different_mesh_layouts(self):
+        vertices_a = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        indices_a = np.array([0, 1, 2, 0, 2, 3], dtype=np.int32)
+
+        # Reinterpret one triangle as an additional vertex. The unframed byte
+        # streams are identical even though the resulting meshes are different.
+        vertices_b = np.concatenate((vertices_a, indices_a[:3].view(np.float32).reshape(1, 3)))
+        indices_b = indices_a[3:]
+        self.assertEqual(vertices_a.tobytes() + indices_a.tobytes(), vertices_b.tobytes() + indices_b.tobytes())
+
+        mesh_a = newton.Mesh(vertices_a, indices_a, compute_inertia=False)
+        mesh_b = newton.Mesh(vertices_b, indices_b, compute_inertia=False)
+        self.assertNotEqual(hash(mesh_a), hash(mesh_b))
+
+        builder = ModelBuilder()
+        builder.add_shape_mesh(body=-1, mesh=mesh_a)
+        builder.add_shape_mesh(body=-1, mesh=mesh_b)
+
+        with (
+            mock.patch.object(mesh_a, "finalize", wraps=mesh_a.finalize) as finalize_a,
+            mock.patch.object(mesh_b, "finalize", wraps=mesh_b.finalize) as finalize_b,
+        ):
+            model = builder.finalize(device="cpu")
+
+        finalize_a.assert_called_once()
+        finalize_b.assert_called_once()
+        shape_source_ptr = model.shape_source_ptr.numpy()
+        self.assertNotEqual(shape_source_ptr[0], shape_source_ptr[1])
+
     def test_add_triangles(self):
         rng = np.random.default_rng(123)
 

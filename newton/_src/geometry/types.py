@@ -1504,9 +1504,6 @@ class Mesh:
         """
         if self._cached_hash is None:
             digest = hashlib.sha256()
-            digest.update(self._vertices.tobytes())
-            digest.update(self._indices.tobytes())
-            digest.update(bytes([bool(self.is_solid)]))
             material = np.array(
                 [
                     np.nan if self._roughness is None else float(self._roughness),
@@ -1514,7 +1511,17 @@ class Mesh:
                 ],
                 dtype=np.float64,
             )
-            digest.update(material.tobytes())
+            for name, values in ((b"vertices", self._vertices), (b"indices", self._indices), (b"material", material)):
+                dtype = values.dtype.str.encode("ascii")
+                digest.update(len(name).to_bytes(1, "big"))
+                digest.update(name)
+                digest.update(len(dtype).to_bytes(1, "big"))
+                digest.update(dtype)
+                digest.update(values.ndim.to_bytes(1, "big"))
+                for dimension in values.shape:
+                    digest.update(int(dimension).to_bytes(8, "big"))
+                digest.update(values.tobytes())
+            digest.update(bytes([bool(self.is_solid)]))
             self._cached_hash = int.from_bytes(digest.digest()[:8], "big") ^ hash(self._compute_texture_hash())
         return self._cached_hash
 
