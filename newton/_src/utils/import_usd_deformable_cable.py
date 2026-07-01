@@ -20,6 +20,7 @@ from .import_usd_deformable_utils import (
     _apply_cable_masses,
     _cable_segment_quaternions,
     _CurveDeformableRecord,
+    _deformable_body_skip_reason,
     _DeformableImportContext,
     _is_ignored_path,
     _resolve_deformable_density,
@@ -81,6 +82,9 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             continue
         path = str(prim.GetPath())
         if _is_ignored_path(path, ignore_paths):
+            continue
+        # Disabled/kinematic curves must not be welded into a graph; the per-curve pass warns.
+        if _deformable_body_skip_reason(prim, deformable_read) is not None:
             continue
         curves = UsdGeom.BasisCurves(prim)
         if curves.GetTypeAttr().Get() != UsdGeom.Tokens.linear:
@@ -390,6 +394,10 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         # TraverseInstanceProxies (above) covers instance proxies; prototype masters never appear
         # under a scene-root traversal, so no prototype filter is needed.
         if _is_ignored_path(path, ignore_paths):
+            continue
+        skip_reason = _deformable_body_skip_reason(prim, deformable_read)
+        if skip_reason is not None:
+            warnings.warn(f"{path}: {skip_reason}; skipping cable import.", stacklevel=2)
             continue
 
         curves = UsdGeom.BasisCurves(prim)

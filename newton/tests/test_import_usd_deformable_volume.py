@@ -120,6 +120,26 @@ class TestUSDDeformableVolume(unittest.TestCase):
             self.assertEqual(model.soft_tet_range(index), ranges["tet"])
             self.assertEqual(int(model.soft_world.numpy()[index]), -1)  # no begin_world -> global
 
+    def test_kinematic_volume_is_skipped(self):
+        """physics:kinematicEnabled=true skips the volume (no kinematic deformable support)."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "kinematic_tet.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            tet = _author_unit_tet(stage, "/World/Soft")
+            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+            tet.GetPrim().CreateAttribute("physics:kinematicEnabled", Sdf.ValueTypeNames.Bool).Set(True)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "kinematic deformables are not supported"):
+                builder.add_usd(str(usd_path))
+            self.assertEqual(builder.soft_label, [])
+            self.assertEqual(builder.particle_count, 0)
+
     def test_volume_negative_scale_mirrors_and_reorients_tets(self):
         """A reflective xformOp:scale mirrors the soft-body particles and reorients each tet to keep a
         positive rest volume; a rotation+scale decomposition would drop the reflection."""

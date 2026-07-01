@@ -147,6 +147,44 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertEqual(int(model.cloth_world.numpy()[model.cloth_index("/World/Cloth")]), 0)
             self.assertEqual(int(model.cable_world.numpy()[model.cable_index("/World/Cable")]), 1)
 
+    def test_disabled_cloth_body_is_skipped(self):
+        """physics:bodyEnabled=false on the governing deformable body skips the cloth."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "disabled_cloth.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            body = UsdGeom.Xform.Define(stage, "/World/Body")
+            body.GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+            body.GetPrim().CreateAttribute("physics:bodyEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+            _add_cloth_mesh(stage, "/World/Body/Cloth")
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "bodyEnabled is false"):
+                builder.add_usd(str(usd_path))
+            self.assertEqual(builder.cloth_label, [])
+            self.assertEqual(builder.particle_count, 0)
+
+    def test_kinematic_cloth_is_skipped(self):
+        """physics:kinematicEnabled=true skips the cloth (no kinematic deformable support)."""
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "kinematic_cloth.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            mesh.GetPrim().CreateAttribute("physics:kinematicEnabled", Sdf.ValueTypeNames.Bool).Set(True)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "kinematic deformables are not supported"):
+                builder.add_usd(str(usd_path))
+            self.assertEqual(builder.cloth_label, [])
+            self.assertEqual(builder.particle_count, 0)
+
     def test_cloth_quad_mesh_is_triangulated(self):
         """A quad-faced cloth mesh is fan-triangulated on import (n-gons are supported)."""
         from pxr import Usd, UsdGeom, UsdPhysics

@@ -217,6 +217,29 @@ def _warn_geometry_authored_material_attrs(prim: Usd.Prim, path: str, material_a
             )
 
 
+def _deformable_body_skip_reason(prim: Usd.Prim, read_attr: Callable) -> str | None:
+    """Return why a deformable simulation prim must not import as a dynamic object, or None.
+
+    ``physics:bodyEnabled = false`` disables the body outright and
+    ``physics:kinematicEnabled = true`` requests a kinematic body, which Newton's deformables
+    cannot represent yet; importing either as a dynamic object would silently change the
+    authored physical model, so the caller warns and skips the prim.
+    ``startsAsleep`` / ``simulationOwner`` are deferred (see the importer limitations doc).
+    The flags are read from the governing ``PhysicsDeformableBodyAPI`` prim when one exists,
+    else from the simulation prim itself.
+    """
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    body_prim = usd._find_deformable_body_prim(prim) or prim
+    enabled = read_attr(body_prim, "bodyEnabled")
+    if enabled is not None and not bool(enabled):
+        return "physics:bodyEnabled is false"
+    kinematic = read_attr(body_prim, "kinematicEnabled")
+    if kinematic is not None and bool(kinematic):
+        return "physics:kinematicEnabled is true (kinematic deformables are not supported)"
+    return None
+
+
 def _builder_body_xform(builder: ModelBuilder, body_id: int) -> wp.transform:
     """Return body ``body_id``'s current world transform from the builder's ``body_q``."""
     body_q = builder.body_q[body_id]

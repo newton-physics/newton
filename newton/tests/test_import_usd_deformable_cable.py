@@ -81,6 +81,25 @@ class TestUSDDeformableCable(unittest.TestCase):
             with self.assertRaises(KeyError):
                 model.cable_index("/World/DoesNotExist")
 
+    def test_disabled_cable_body_is_skipped(self):
+        """physics:bodyEnabled=false skips the cable instead of importing it dynamically."""
+        from pxr import Sdf, Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "disabled_cable.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            curves.GetPrim().CreateAttribute("physics:bodyEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+            stage.Save()
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "bodyEnabled is false"):
+                builder.add_usd(str(usd_path))
+            self.assertEqual(builder.cable_label, [])
+            self.assertEqual(builder.body_count, 0)
+
     def test_plain_curve_without_api_is_not_a_cable(self):
         """A BasisCurves without the curve-deformable API must not produce a cable."""
         from pxr import Usd, UsdGeom, UsdPhysics

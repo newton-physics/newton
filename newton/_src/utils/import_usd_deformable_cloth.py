@@ -18,6 +18,7 @@ import warp as wp
 
 from .import_usd_deformable_utils import (
     _apply_particle_masses,
+    _deformable_body_skip_reason,
     _DeformableImportContext,
     _is_ignored_path,
     _resolve_deformable_density,
@@ -62,6 +63,10 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         # TraverseInstanceProxies (above) covers instance proxies; prototype masters never appear
         # under a scene-root traversal, so no prototype filter is needed.
         if _is_ignored_path(path, ignore_paths):
+            continue
+        skip_reason = _deformable_body_skip_reason(prim, deformable_read)
+        if skip_reason is not None:
+            warnings.warn(f"{path}: {skip_reason}; skipping cloth import.", stacklevel=2)
             continue
 
         mesh = UsdGeom.Mesh(prim)
