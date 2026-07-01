@@ -4278,11 +4278,9 @@ def parse_usd(
             # actuators with default dyntype/gaintype/biastype/gear, so non-default
             # values for those force the actuator to stay CTRL_DIRECT.
             #
-            # Authored ctrlrange/forcerange are not gating: the solver re-attaches both
-            # to the rebuilt actuator (see joint_target_ranges in _init_actuators), so
-            # they map to actuator_ctrlrange/actuator_forcerange just like native MJCF.
-            # The joint-level effort limit (jnt_actfrcrange) is left to the joint's own
-            # forceLimit/actuatorfrcrange, not the actuator's forcerange.
+            # ctrlrange/forcerange don't gate: the rebuild re-attaches them
+            # (see joint_target_ranges in _init_actuators). Effort limit
+            # (jnt_actfrcrange) comes from the joint, not the actuator.
             if (
                 int(_row("mujoco:actuator_biastype", row)) != biastype_affine
                 or int(_row("mujoco:actuator_dyntype", row)) != dyntype_none

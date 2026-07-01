@@ -5264,9 +5264,8 @@ class SolverMuJoCo(SolverBase):
         # This is needed for CTRL_DIRECT actuators targeting joints within combined Newton joints.
         mjc_joint_names: list[str] = []
 
-        # Authored ctrl/force ranges to re-attach to rebuilt JOINT_TARGET actuators
-        # (the rebuild drops them otherwise; issues #2928, #3234). Keyed by
-        # (dof, is_position) so a joint's position and velocity sub-actuators can carry
+        # Saved ctrl/force ranges. The rebuild drops them, so re-attach after.
+        # Key = (dof, is_position): position and velocity sub-actuators can have
         # different ranges.
         joint_target_ranges: dict[tuple[int, bool], dict[str, Any]] = {}
         if mujoco_attrs is not None and hasattr(mujoco_attrs, "actuator_trnid"):

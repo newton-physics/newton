@@ -1882,11 +1882,6 @@ class TestMenagerieUSD_UR5e(TestMenagerieUSD):
     usd_asset_folder = "universal_robots_ur5e"
     usd_scene_file = "usd_structured/ur5e.usda"
 
-    # UR5e USD MjcActuator rows match the position-shortcut pattern, so they're
-    # imported as JOINT_TARGET (see parse_usd's MjcActuator post-process).
-    # _init_actuators now re-attaches the authored per-actuator forcerange (and
-    # ctrlrange) when rebuilding these actuators, matching native MJCF's clipping
-    # path (issues #2928, #3234), so step-response dynamics are enabled again.
     num_steps = 20
     fk_enabled = True
     backfill_model = True

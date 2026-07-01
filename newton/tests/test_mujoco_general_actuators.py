@@ -208,7 +208,6 @@ class TestMuJoCoActuators(unittest.TestCase):
         self.assertEqual(builder.joint_target_mode[dof], int(JointTargetMode.POSITION))
         self.assertEqual(builder.joint_target_ke[dof], 12.0)
         self.assertEqual(builder.joint_target_kd[dof], 0.0)
-        # forceRange maps to the actuator's forcerange, not the joint effort limit (matches MJCF).
         self.assertEqual(builder.joint_effort_limit[dof], builder.default_joint_cfg.effort_limit)
 
         model = builder.finalize()
