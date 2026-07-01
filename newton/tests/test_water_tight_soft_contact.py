@@ -507,7 +507,7 @@ def test_optimize_against_mesh_texture_sdf(test, device):
     model = builder.finalize(device=device, enable_water_tight_rigid_soft_contact=True)
     sdf_idx = int(model._shape_sdf_index.numpy()[0])
     test.assertGreaterEqual(sdf_idx, 0)
-    table = model.texture_sdf_data
+    table = model._texture_sdf_data
     scale = wp.vec3(*(float(s) for s in model.shape_scale.numpy()[0]))
     half = np.array([0.5, 0.5, 0.5])
     tol = 3.0e-2  # texture SDF grid resolution (default 64^3 over a unit box) + optimizer tail
