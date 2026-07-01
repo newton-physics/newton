@@ -380,9 +380,8 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         path = str(prim.GetPath())
         if path in consumed_cable_curve_paths:
             continue  # already built as part of a welded rod graph
-        # Per-instance proxies are imported via TraverseInstanceProxies above; USD does
-        # not surface prototype masters under a scene-root traversal, so no prototype
-        # filter is needed (a non-rendered template is authored as a class/inactive prim).
+        # TraverseInstanceProxies (above) covers instance proxies; prototype masters never appear
+        # under a scene-root traversal, so no prototype filter is needed.
         if _is_ignored_path(path, ignore_paths):
             continue
 
@@ -413,9 +412,6 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             )
             rest_shape_points = None
         if rest_shape_points is not None:
-            # Rest points only normalize per-segment stiffness (rest length in E*A/L, E*I/L); the
-            # cable is still built at the current points, so a rest shape that differs from the
-            # current geometry does not set initial strain or a rest bend configuration.
             warnings.warn(
                 f"{path}: restShapePoints only sets the rest length for stiffness; the cable is built at "
                 f"the current points, so it does not establish an initial strain / rest bend state.",
@@ -570,9 +566,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 rest_seg_lengths = [float(wp.length(rest_pts[i + 1] - rest_pts[i])) for i in range(num_seg)]
                 if min(rest_seg_lengths, default=0.0) > 1.0e-8:
                     seg_len = sum(rest_seg_lengths) / max(1, num_seg)
-            # Convert each authored modulus through the shared cable utility (stretch = E*A/L,
-            # bend = E*I/L); the moduli are independent and either may be absent -> None ->
-            # builder default. The util returns both from one modulus, so take the matching one.
+            # Convert each authored modulus (see above); either may be absent -> None -> builder default.
             stretch_stiffness = bend_stiffness = None
             if seg_len > 0.0:
                 if "stretchStiffness" in cable_mat:

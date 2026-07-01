@@ -59,9 +59,8 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             continue
 
         path = str(prim.GetPath())
-        # Per-instance proxies are imported via TraverseInstanceProxies above; USD does
-        # not surface prototype masters under a scene-root traversal, so no prototype
-        # filter is needed (a non-rendered template is authored as a class/inactive prim).
+        # TraverseInstanceProxies (above) covers instance proxies; prototype masters never appear
+        # under a scene-root traversal, so no prototype filter is needed.
         if _is_ignored_path(path, ignore_paths):
             continue
 
