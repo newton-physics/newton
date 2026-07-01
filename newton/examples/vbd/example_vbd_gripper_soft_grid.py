@@ -346,7 +346,8 @@ class Example:
         """The gripped grid must be held in the air, not dropped to the ground."""
         q = self.state_0.particle_q.numpy()
         mean_z = float(q[self._mesh_particles, 2].mean())
-        assert mean_z > 0.3, f"soft grid was dropped (mean z={mean_z:.3f}); water-tight edge grip failed"
+        if not mean_z > 0.3:
+            raise AssertionError(f"soft grid was dropped (mean z={mean_z:.3f}); water-tight edge grip failed")
 
     @staticmethod
     def create_parser():
