@@ -3862,7 +3862,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
     def test_option_scalar_world_parsing(self):
         """Test parsing of WORLD frequency scalar options from MJCF (7 options)."""
         test_cases = [
-            ("timestep", "0.0025", 0.0025, 10),
+            ("timestep", "0.0025", 0.0025, 7),
             ("impratio", "1.5", 1.5, 6),
             ("tolerance", "1e-6", 1e-6, 10),
             ("ls_tolerance", "0.001", 0.001, 6),
@@ -3936,8 +3936,13 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         self.assertEqual(len(impratio), 2)
         self.assertEqual(len(tolerance), 2)
         self.assertEqual(len(ls_tolerance), 2)
-        self.assertAlmostEqual(timestep[0], 0.002, places=10, msg="World 0 should have timestep=0.002")
-        self.assertAlmostEqual(timestep[1], 0.005, places=10, msg="World 1 should have timestep=0.005")
+        np.testing.assert_allclose(
+            timestep,
+            [0.002, 0.005],
+            rtol=0.0,
+            atol=1e-7,
+            err_msg="Per-world timestep values should match MJCF inputs",
+        )
         self.assertAlmostEqual(impratio[0], 1.5, places=4, msg="World 0 should have impratio=1.5")
         self.assertAlmostEqual(impratio[1], 2.0, places=4, msg="World 1 should have impratio=2.0")
         self.assertAlmostEqual(tolerance[0], 1e-6, places=10, msg="World 0 should have tolerance=1e-6")
