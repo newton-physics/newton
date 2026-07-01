@@ -11115,12 +11115,22 @@ class ModelBuilder:
                     ):
                         continue
                     src = self.shape_source[i]
-                    src_key = id(src)
+                    sdf_padding_i = self.shape_sdf_padding[i]
+                    wt_margin = sdf_padding_i if sdf_padding_i is not None else self.shape_gap[i]
+                    # Mirror the rigid SDF cache key: shapes sharing one Mesh get distinct SDFs when any
+                    # baked generation parameter differs (margin/narrow-band/resolution/voxel/format).
+                    # scale stays out (scale_baked=False applies it at query time; the rigid path bakes it).
+                    src_key = (
+                        id(src),
+                        wt_margin,
+                        tuple(self.shape_sdf_narrow_band_range[i]),
+                        self.shape_sdf_target_voxel_size[i],
+                        self.shape_sdf_max_resolution[i],
+                        self.shape_sdf_texture_format[i],
+                    )
                     if src_key in wt_sdf_cache:
                         shape_sdf_index[i] = wt_sdf_cache[src_key]
                         continue
-                    sdf_padding_i = self.shape_sdf_padding[i]
-                    wt_margin = sdf_padding_i if sdf_padding_i is not None else self.shape_gap[i]
                     try:
                         wt_wp_mesh = wp.Mesh(
                             points=wp.array(
