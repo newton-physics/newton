@@ -60,6 +60,12 @@ class StateFlags(IntEnum):
     control which parts of the simulation state are reset, and with
     :meth:`~newton.solvers.experimental.coupled.CouplingInterface.coupling_notify_input_state_update`
     to describe which public state inputs a coupler updated.
+
+    .. experimental::
+
+        The interpretation of these flags by
+        :class:`~newton.solvers.experimental.coupled.CouplingInterface` may
+        change without prior notice.
     """
 
     NONE = 0
@@ -118,6 +124,12 @@ class BodyFlags(IntEnum):
     :attr:`PROXY` on view-local ``body_flags`` overrides. :attr:`ALL` is a
     convenience filter mask for APIs such as :func:`newton.eval_fk` and is not
     a valid stored body state.
+
+    .. experimental::
+
+        :attr:`PROXY` and its inclusion in :attr:`ALL` are part of the
+        experimental coupled-solver contract and may change without prior
+        notice.
     """
 
     DYNAMIC = 1 << 0

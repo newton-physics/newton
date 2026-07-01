@@ -6,11 +6,7 @@
 Coupled Solvers
 ===============
 
-.. warning::
-
-   Coupled solvers are experimental. The public API currently lives under
-   :mod:`newton.solvers.experimental.coupled`, and both the API shape and the
-   numerical defaults may change while the feature is refined.
+.. experimental::
 
 Newton's coupled-solver framework lets one simulation step be split across
 multiple solver backends while those backends still exchange forces, poses, and

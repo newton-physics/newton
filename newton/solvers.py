@@ -460,7 +460,10 @@ from ._src.solvers import coupled as _coupled
 from ._src.solvers.flags import SolverNotifyFlags
 
 experimental = ModuleType(f"{__name__}.experimental")
-experimental.__doc__ = "Experimental solver namespaces."
+experimental.__doc__ = """Experimental solver namespaces.
+
+.. experimental::
+"""
 experimental.__all__ = ["coupled"]
 experimental.__path__ = []
 experimental.coupled = _coupled

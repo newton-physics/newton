@@ -6,6 +6,8 @@ newton.solvers.experimental
 
 Experimental solver namespaces.
 
+.. experimental::
+
 .. py:module:: newton.solvers.experimental
 .. currentmodule:: newton.solvers.experimental
 

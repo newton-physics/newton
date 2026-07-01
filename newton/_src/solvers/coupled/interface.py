@@ -107,6 +107,8 @@ __all__ = ["CouplingInterface"]
 class CouplingInterface:
     """Marker mixin for solvers that participate in coupled simulations.
 
+    .. experimental::
+
     Inheriting buys into the coupling contract:
 
     - Override hook methods on the solver class to provide custom behavior.

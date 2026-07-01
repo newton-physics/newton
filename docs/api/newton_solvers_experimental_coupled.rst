@@ -4,6 +4,10 @@
 newton.solvers.experimental.coupled
 ===================================
 
+Experimental coupled-solver framework.
+
+.. experimental::
+
 .. py:module:: newton.solvers.experimental.coupled
 .. currentmodule:: newton.solvers.experimental.coupled
 
