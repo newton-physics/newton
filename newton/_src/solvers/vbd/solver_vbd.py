@@ -1465,7 +1465,9 @@ class SolverVBD(SolverBase):
         used by the previous refresh; do not run collision into the contacts
         buffer between refreshes. Passing newly collided contacts while update is
         disabled can mismatch stale per-body contact lists with current contact
-        rows.
+        rows. For the same reason, do not change a body's solvability (mass or
+        kinematic flag) while update is disabled: the per-body lists depend on
+        effective inverse mass and are not rebuilt until the next refresh.
 
         Joint AVBD maintenance (C0 snapshot, lambda decay)
         runs every step regardless of this flag via step_joint_C0_lambda().
@@ -1819,6 +1821,7 @@ class SolverVBD(SolverBase):
                             contacts.rigid_contact_shape0,
                             contacts.rigid_contact_shape1,
                             model.shape_body,
+                            self.body_inv_mass_effective,
                             self.body_body_contact_buffer_pre_alloc,
                         ],
                         outputs=[
@@ -2090,6 +2093,7 @@ class SolverVBD(SolverBase):
                         contacts.soft_contact_count,
                         contacts.soft_contact_shape,
                         model.shape_body,
+                        self.body_inv_mass_effective,
                         self.body_particle_contact_buffer_pre_alloc,
                     ],
                     outputs=[
