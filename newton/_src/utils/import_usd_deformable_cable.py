@@ -11,6 +11,7 @@ curves. Driven by :func:`.import_usd.parse_usd` via a
 
 from __future__ import annotations
 
+import math
 import warnings
 from dataclasses import replace
 
@@ -35,10 +36,13 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
     """Weld curve deformables joined by curve-to-curve ``PhysicsAttachment`` prims into
     rod graphs via :meth:`ModelBuilder.add_rod_graph`.
 
-    A ``point``->``point`` attachment whose ``src0``/``src1`` are both imported curve
-    deformables is topology, not a runtime constraint: the two referenced control points are
-    the same junction node. Curves transitively joined this way form one graph component, built
-    with a single ``add_rod_graph`` call (one capsule body per segment, junction nodes shared).
+    A hard (unauthored / infinite stiffness) ``point``->``point`` attachment whose
+    ``src0``/``src1`` are both imported curve deformables and whose sites are coincident is
+    topology, not a runtime constraint: the two referenced control points are the same junction
+    node. Curves transitively joined this way form one graph component, built with a single
+    ``add_rod_graph`` call (one capsule body per segment, junction nodes shared). Compliant or
+    non-coincident curve-to-curve attachments are NOT welded; they warn here and are preserved
+    as unsupported in ``path_attachment_attrs`` by the attachment post-pass.
     Returns the curve prim paths and the junction attachment prim paths consumed here so the
     per-curve cable pass and the attachment post-pass skip them. Single curves and
     curve-to-xform attachments are left to those passes.
@@ -150,6 +154,36 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             idx0, len(curve_recs[src0].positions), idx1, len(curve_recs[src1].positions), str(prim.GetPath())
         ):
             continue  # malformed junction: leave both curves to the per-curve pass
+        # Welding replaces the attachment constraint with shared topology, which is only
+        # equivalent for a hard (unauthored / infinite stiffness, zero damping) attachment
+        # whose sites already occupy the same point. A compliant or non-coincident junction
+        # is left to the attachment post-pass, which preserves it in path_attachment_attrs
+        # as unsupported instead of silently snapping the geometry together.
+        stiffness_val = deformable_read(prim, "stiffness")
+        damping_val = deformable_read(prim, "damping")
+        hard = (stiffness_val is None or math.isinf(float(stiffness_val))) and (
+            damping_val is None or float(damping_val) == 0.0
+        )
+        if not hard:
+            warnings.warn(
+                f"{prim.GetPath()}: curve-to-curve attachment authors finite stiffness/damping; "
+                f"not welded (compliant deformable attachments are not imported yet).",
+                stacklevel=2,
+            )
+            continue
+        # A tenth of the thinner cable's radius: welding then moves geometry by well under the
+        # junction bodies' own overlap, so the weld is equivalent to the authored constraint.
+        coincidence_tol = 0.1 * min(curve_recs[src0].radius, curve_recs[src1].radius)
+        if any(
+            float(wp.length(curve_recs[src0].positions[a] - curve_recs[src1].positions[b])) > coincidence_tol
+            for a, b in zip(idx0, idx1, strict=True)
+        ):
+            warnings.warn(
+                f"{prim.GetPath()}: curve-to-curve attachment sites are not coincident; not welded "
+                f"(welding would move the authored geometry).",
+                stacklevel=2,
+            )
+            continue
         union(src0, src1)
         for a, b in zip(idx0, idx1, strict=True):
             welds.append((src0, a, src1, b))

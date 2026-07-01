@@ -81,6 +81,107 @@ class TestUSDDeformableCable(unittest.TestCase):
             with self.assertRaises(KeyError):
                 model.cable_index("/World/DoesNotExist")
 
+    @staticmethod
+    def _author_attached_cable_pair(tmpdir, *, gap, stiffness=None, damping=None):
+        """Two 4-point cables separated by ``gap`` in y with a point->point attachment
+        (P0 of B onto P0 of A); returns the stage path."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        usd_path = Path(tmpdir) / "attached_pair.usda"
+        stage = Usd.Stage.CreateNew(str(usd_path))
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+        pts_a = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        pts_b = [(0.0, gap, 1.0), (0.1, gap, 1.0), (0.2, gap, 1.0), (0.3, gap, 1.0)]
+        _add_cable_curve(stage, "/World/CableA", pts_a)
+        _add_cable_curve(stage, "/World/CableB", pts_b)
+        _add_physics_attachment(
+            stage,
+            "/World/Junction",
+            src0="/World/CableA",
+            src1="/World/CableB",
+            type0="point",
+            type1="point",
+            indices0=[0],
+            indices1=[0],
+            stiffness=stiffness,
+            damping=damping,
+        )
+        stage.Save()
+        return usd_path
+
+    def test_zero_stiffness_attachment_is_not_welded(self):
+        """A stiffness=0 curve-to-curve attachment must not weld the cables or move geometry."""
+        from pxr import Usd
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = self._author_attached_cable_pair(tmpdir, gap=10.0, stiffness=0.0)
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "finite stiffness/damping; \\S*\\s*not welded"):
+                result = builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            # Two independent cables in their own articulations; CableB stays at y=10.
+            self.assertEqual(len(cable_map), 2)
+            self.assertEqual(len(builder.articulation_label), 2)
+            bodies_b, _ = cable_map["/World/CableB"]
+            self.assertAlmostEqual(float(builder.body_q[bodies_b[0]][1]), 10.0, places=4)
+            # The attachment is preserved as unsupported, not silently consumed.
+            attrs = result["path_attachment_attrs"]["/World/Junction"]
+            self.assertEqual(attrs["stiffness"], 0.0)
+            self.assertIn("unsupported_reason", attrs)
+
+    def test_finite_stiffness_attachment_is_not_welded(self):
+        """A finite-stiffness curve-to-curve attachment is preserved, not welded."""
+        from pxr import Usd
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = self._author_attached_cable_pair(tmpdir, gap=0.0, stiffness=1.0e4)
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "finite stiffness/damping"):
+                result = builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            self.assertEqual(len(cable_map), 2)
+            self.assertEqual(len(builder.articulation_label), 2)
+            self.assertIn("unsupported_reason", result["path_attachment_attrs"]["/World/Junction"])
+
+    def test_non_coincident_hard_attachment_is_not_welded(self):
+        """A hard attachment whose sites are apart must not snap the cables together."""
+        from pxr import Usd
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = self._author_attached_cable_pair(tmpdir, gap=10.0)
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "not coincident"):
+                result = builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            self.assertEqual(len(cable_map), 2)
+            bodies_b, _ = cable_map["/World/CableB"]
+            self.assertAlmostEqual(float(builder.body_q[bodies_b[0]][1]), 10.0, places=4)
+            self.assertIn("unsupported_reason", result["path_attachment_attrs"]["/World/Junction"])
+
+    def test_coincident_hard_attachment_still_welds(self):
+        """A hard, coincident junction keeps welding into one rod graph."""
+        from pxr import Usd
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = self._author_attached_cable_pair(tmpdir, gap=0.0)
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            # One welded component: both curves report the same graph_component and share
+            # one articulation; the junction attachment is consumed as topology.
+            self.assertEqual(len(builder.articulation_label), 1)
+            self.assertEqual(
+                result["path_cable_attrs"]["/World/CableA"]["graph_component"],
+                result["path_cable_attrs"]["/World/CableB"]["graph_component"],
+            )
+            self.assertNotIn("/World/Junction", result["path_attachment_attrs"])
+            self.assertEqual(len(cable_map), 2)
+
     def test_disabled_cable_body_is_skipped(self):
         """physics:bodyEnabled=false skips the cable instead of importing it dynamically."""
         from pxr import Sdf, Usd, UsdPhysics
@@ -1075,7 +1176,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
             UsdPhysics.Scene.Define(stage, "/PhysicsScene")
             trunk_pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
-            branch_pts = [(0.1, 0.0, 1.0), (0.1, 0.05, 1.0), (0.1, 0.1, 1.0), (0.1, 0.15, 1.0)]
+            # Branch points 0 and 1 both sit within the weld coincidence tolerance of trunk
+            # point 1, so both weld onto that node and the branch edge (0, 1) collapses.
+            branch_pts = [(0.1, 0.0, 1.0), (0.1, 0.0005, 1.0), (0.1, 0.1, 1.0), (0.1, 0.15, 1.0)]
             _add_cable_curve(stage, "/World/Trunk", trunk_pts)
             branch = _add_cable_curve(stage, "/World/Branch", branch_pts)
             branch.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([1.0, 1.0, 1.0, 1.0])
@@ -1397,7 +1500,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                 return sum(builder.body_mass[b] for b in bodies)
 
         baseline = total_cable_mass()
-        with self.assertWarnsRegex(UserWarning, r"!= 4 curve points"):
+        with self.assertWarnsRegex(UserWarning, r"!= 4 authored curve points"):
             mismatched = total_cable_mass(masses=[1.0, 2.0, 3.0])  # length 3 != 4 points
         self.assertAlmostEqual(mismatched, baseline, places=6)
 
