@@ -338,7 +338,7 @@ class KeySorter:
         """Returns the sorted-to-unsorted index map array."""
         return self._sorted_to_unsorted_map
 
-    def sort(self, num_active_keys: wp.array[wp.int32], keys: wp.array[wp.int32]):
+    def sort(self, num_active_keys: wp.array[wp.int32], keys: wp.array[wp.uint64]):
         """
         Sorts the provided keys using radix sort.
 

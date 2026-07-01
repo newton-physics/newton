@@ -135,9 +135,9 @@ class GravityDescriptor(Descriptor):
         return self._direction
 
     @direction.setter
-    def direction(self, dir: wp.vec3f):
+    def direction(self, direction: wp.vec3f):
         """Sets the normalized direction vector of gravity."""
-        self._direction = wp.normalize(dir)
+        self._direction = wp.normalize(direction)
 
     def dir_accel(self) -> wp.vec4f:
         """Returns the gravity direction and acceleration as compactly as a :class:`wp.vec4f`."""

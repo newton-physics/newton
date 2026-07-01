@@ -32,7 +32,7 @@ DEFAULT_MATRIX_SYMMETRY_EPS = 1e-10
 """A global constant to configure the tolerance on matrix symmetry checks."""
 
 MAXLOG_FP64 = 709.782
-"""Maximum log value for wp.float64 to avoid overflow in exp()."""
+"""Maximum log value for float64 to avoid overflow in exp()."""
 
 ###
 # Types

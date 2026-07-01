@@ -14,7 +14,7 @@ kernels **per block**. For a workload with ``B`` blocks this scales linearly
 in ``B * max_bfs_iters``. At small problem sizes (e.g. ``n = 256``, ``B = 8``)
 the resulting hundreds of launches dominate wall time over the actual compute.
 
-The CUDA/wp.float32 fast path runs each graph block inside one tiled Warp
+The CUDA/float32 fast path runs each graph block inside one tiled Warp
 kernel, using shared memory for the per-vertex RCM state and an in-kernel BFS
 loop. Larger or non-CUDA cases fall back to the staged batched path, which
 amortizes launch overhead by making each RCM stage a single launch that covers

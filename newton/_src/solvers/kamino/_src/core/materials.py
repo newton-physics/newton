@@ -146,7 +146,7 @@ class MaterialDescriptor(Descriptor):
 
     dynamic_friction: float = DEFAULT_FRICTION
     """
-    The coefficient of dynamic friction, according to the isotropicCoulomb friction model.
+    The coefficient of dynamic friction, according to the isotropic Coulomb friction model.
     Defaults to the global default of ``0.7``.
     """
 
@@ -362,7 +362,7 @@ def material_min(
     value2: wp.float32,
 ) -> wp.float32:
     """
-    Computes the maximinimum of two material property values.
+    Computes the minimum of two material property values.
 
     Args:
         value1: The first material property value.

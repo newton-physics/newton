@@ -31,7 +31,7 @@ from newton._src.solvers.kamino.tests.utils.extract import (
 
 
 def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[np.ndarray]:
-    """Compute the solver metrics with numpy, using wp.float64."""
+    """Compute the solver metrics with numpy, using float64."""
     output = {}
     output["r_v_plus"] = []
     output["s"] = []
@@ -580,7 +580,7 @@ class TestSolverMetrics(unittest.TestCase):
     def test_05_validate_metrics_boxes_hinged(self):
         """
         Compares metrics from `SolutionMetrics` with metrics computed by a
-        reference routine using wp.float64 numpy arrays, on a perturbed PADMM solution.
+        reference routine using float64 numpy arrays, on a perturbed PADMM solution.
         """
         # Create the test problem
         test = TestSetup(

@@ -114,10 +114,13 @@ class JointActuationType(IntEnum):
         Converts a `JointActuationType` to the corresponding `JointTargetMode`.
 
         Args:
-            type: The joint actuation type to convert.
+            act_type: The joint actuation type to convert.
 
         Returns:
-            The corresponding Newton joint target mode, or None if not applicable.
+            The corresponding Newton joint target mode.
+
+        Raises:
+            ValueError: if the joint actuation type is not supported.
         """
         _MAP_TO_NEWTON: dict[JointActuationType, JointTargetMode | None] = {
             JointActuationType.PASSIVE: JointTargetMode.NONE,
@@ -140,10 +143,13 @@ class JointActuationType(IntEnum):
         Converts a `JointTargetMode` to the corresponding `JointActuationType`.
 
         Args:
-            mode: The Newton joint target mode to convert.
+            target_mode: The Newton joint target mode to convert.
 
         Returns:
-            The corresponding joint actuation type, or None if not applicable.
+            The corresponding joint actuation type.
+
+        Raises:
+            ValueError: if the Newton joint target mode is not supported.
         """
         _MAP_FROM_NEWTON: dict[JointTargetMode, JointActuationType] = {
             JointTargetMode.NONE: JointActuationType.PASSIVE,
@@ -677,7 +683,7 @@ class JointDoFType(IntEnum):
             raise ValueError(f"Unknown joint DoF type: {self.value}")
 
     @staticmethod
-    def to_newton(dof_type: JointDoFType) -> JointType | None:
+    def to_newton(dof_type: JointDoFType) -> JointType:
         """
         Converts a `JointDoFType` to the corresponding `JointType`.
 
@@ -685,7 +691,10 @@ class JointDoFType(IntEnum):
             dof_type: The joint DoF type to convert.
 
         Returns:
-            The corresponding Newton joint type, or None if unsupported.
+            The corresponding Newton joint type.
+
+        Raises:
+            ValueError: if the joint dof type is not supported.
         """
         _MAP_TO_NEWTON: dict[JointDoFType, JointType] = {
             # All trivially supported DoF types map directly
@@ -720,9 +729,17 @@ class JointDoFType(IntEnum):
 
         Args:
             type: The Newton joint type to convert.
+            q_count: The Newton coordinates count for this joint.
+            qd_count: The Newton dofs count for this joint.
+            dof_dim: The Newton dof dimension (linear/angular dof counts) for this joint.
+            limit_lower: The lower position limits from Newton for this joint (in dof space).
+            limit_upper: The upper position limits from Newton for this joint (in dof space).
 
         Returns:
             The corresponding joint DoF type.
+
+        Raises:
+            ValueError: if the Newton joint type is not supported.
         """
         # First try directly mapping the trivially supported types
         _MAP_TO_KAMINO: dict[JointType, JointDoFType | None] = {
@@ -830,7 +847,12 @@ class JointDoFType(IntEnum):
             This is the warp-compatible equivalent to `from_newton()`.
 
         Args:
-            type: The Newton joint type to convert, see `JointType`.
+            joint_type: The Newton joint type to convert, see `JointType`.
+            q_count: The Newton coordinates count for this joint.
+            qd_count: The Newton dofs count for this joint.
+            dof_dim: The Newton dof dimension (linear/angular dof counts) for this joint.
+            limit_lower: The lower position limits from Newton for this joint (in dof space).
+            limit_upper: The upper position limits from Newton for this joint (in dof space).
 
         Returns:
             The corresponding joint DoF type, or -1 if the joint type is not

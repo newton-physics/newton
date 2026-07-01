@@ -522,7 +522,7 @@ class ModelKamino:
 
         Args:
             unilateral_cts: Whether to include unilateral constraints (limits and contacts) in the model data.
-                Defaults to ``True``.
+                Defaults to ``False``.
             joint_wrenches: Whether to include joint wrenches in the model data. Defaults to ``False``.
             requires_grad: Whether the model data should require gradients. Defaults to ``False``.
             device: The device to create the model data on. If not specified, the model's device is used.

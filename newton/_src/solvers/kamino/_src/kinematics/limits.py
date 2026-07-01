@@ -732,7 +732,7 @@ class LimitsKamino:
     @property
     def reaction(self) -> wp.array[wp.float32]:
         """
-        Returns constraint velocity per joint-limit.
+        Returns constraint reaction per joint-limit.
         Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
