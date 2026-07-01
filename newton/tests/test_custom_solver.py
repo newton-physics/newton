@@ -97,7 +97,8 @@ class TestCustomSolver(unittest.TestCase):
         solver = DummySolver(model)
         flags = newton.ModelFlags.BODY_PROPERTIES | DummySolver.MODEL_ATTRIBUTE_CHANGED
 
-        # IntEnum combinations become plain ints, preserving extension bits.
+        # IntEnum combinations with unknown bits become plain ints, which is
+        # what lets downstream solvers define their own extension flags.
         self.assertIs(type(flags), int)
 
         solver.notify_model_changed(flags)
@@ -113,7 +114,8 @@ class TestCustomSolver(unittest.TestCase):
         solver = DummySolver(model)
         flags = newton.StateFlags.BODY_Q | DummySolver.STATE_ATTRIBUTE_RESET
 
-        # Keep the established IntEnum behavior for custom solver flags.
+        # Keep this assertion explicit so a future enum implementation cannot
+        # accidentally reject extension bits by coercing them back to StateFlags.
         self.assertIs(type(flags), int)
 
         solver.reset(state, flags=flags)
