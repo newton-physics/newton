@@ -336,7 +336,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                 builder._record_cable_group(
                     key, (key_bodies[0], key_bodies[-1] + 1), (builder.joint_count, builder.joint_count)
                 )
-            _apply_cable_masses(builder, rec.prim, key_bodies, [(0, n, key_bodies)], rec.closed, deformable_read)
+            _apply_cable_masses(builder, rec.prim, key_bodies, [(0, n, key_bodies)], rec.closed, deformable_read, n)
             consumed_curves.add(key)
         if verbose:
             print(f"Added cable graph {cid} with {len(body_ids)} segments across {len(comp_paths)} curves.")
@@ -626,7 +626,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             flat_segment_index += curve_segment_count
 
         if cable_bodies:
-            _apply_cable_masses(builder, prim, cable_bodies, cable_point_runs, closed, deformable_read)
+            _apply_cable_masses(builder, prim, cable_bodies, cable_point_runs, closed, deformable_read, len(points))
             path_cable_map[path] = (cable_bodies, cable_joints)
             # Bodies/joints for a cable prim are built back-to-back, so the index lists are contiguous.
             body_range = (cable_bodies[0], cable_bodies[-1] + 1)

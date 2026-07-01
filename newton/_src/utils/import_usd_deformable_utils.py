@@ -287,6 +287,7 @@ def _apply_cable_masses(
     point_runs: Sequence[tuple[int, int, Sequence[int]]],
     closed: bool,
     read_attr: Callable,
+    authored_point_count: int,
 ) -> None:
     """Distribute the deformable mass override over a rigid cable's segment bodies.
 
@@ -313,13 +314,15 @@ def _apply_cable_masses(
     """
     from ..usd import utils as usd  # noqa: PLC0415
 
-    num_points = sum(n for _, n, _ in point_runs)
     point_masses = usd._get_deformable_point_masses(prim, read_attr)
     body_mass, _ = usd._get_deformable_body_overrides(prim, read_attr)
-    if point_masses is not None and len(point_masses) != num_points:
+    # physics:masses is authored per point of the prim's full points array, so validate against
+    # the authored count, not the imported one: each run indexes it by its absolute point offset,
+    # and a skipped curve leaves its entries unused (a shorter array would be indexed out of range).
+    if point_masses is not None and len(point_masses) != authored_point_count:
         warnings.warn(
-            f"{prim.GetPath()}: physics:masses length {len(point_masses)} != {num_points} curve points; "
-            f"ignoring per-point masses.",
+            f"{prim.GetPath()}: physics:masses length {len(point_masses)} != {authored_point_count} "
+            f"authored curve points; ignoring per-point masses.",
             stacklevel=2,
         )
         point_masses = None

@@ -294,32 +294,76 @@ class TestUSDDeformableCable(unittest.TestCase):
             attrs = result["path_cable_attrs"]["/World/Cable"]
             self.assertEqual(attrs["resolved_density"], builder.default_shape_cfg.density)
 
-    def test_skipped_curve_excluded_from_cable_mass_count(self):
-        """Points from a skipped (too-short) curve are excluded from the per-point mass-count check."""
+    @staticmethod
+    def _author_two_curve_prim_with_masses(tmpdir, vertex_counts, masses):
+        """Author a two-curve BasisCurves prim (one 2-point curve the importer skips, one
+        4-point curve) with a physics:masses array; returns the stage path."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
+        usd_path = Path(tmpdir) / "multi_curve.usda"
+        stage = Usd.Stage.CreateNew(str(usd_path))
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+        curves = UsdGeom.BasisCurves.Define(stage, "/World/Cable")
+        curves.CreateTypeAttr().Set(UsdGeom.Tokens.linear)
+        short = [(0.0, 1.0, 1.0), (0.1, 1.0, 1.0)]
+        long = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        pts = long + short if vertex_counts == [4, 2] else short + long
+        curves.CreatePointsAttr(pts)
+        curves.CreateCurveVertexCountsAttr(vertex_counts)
+        curves.GetPrim().AddAppliedSchema("PhysicsCurvesDeformableSimAPI")
+        curves.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(masses)
+        stage.Save()
+        return usd_path
+
+    def test_skipped_curve_masses_validated_against_authored_points(self):
+        """physics:masses is per authored point: a full-length array is applied to the
+        imported curve even when another curve in the prim is skipped."""
+        from pxr import Usd
+
         with tempfile.TemporaryDirectory() as tmpdir:
-            usd_path = Path(tmpdir) / "multi_curve.usda"
-            stage = Usd.Stage.CreateNew(str(usd_path))
-            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            curves = UsdGeom.BasisCurves.Define(stage, "/World/Cable")
-            curves.CreateTypeAttr().Set(UsdGeom.Tokens.linear)
-            # A valid 4-point curve plus a 2-point curve that the importer skips.
-            curves.CreatePointsAttr(
-                [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0), (0.0, 1.0, 1.0), (0.1, 1.0, 1.0)]
-            )
-            curves.CreateCurveVertexCountsAttr([4, 2])
-            curves.GetPrim().AddAppliedSchema("PhysicsCurvesDeformableSimAPI")
-            # Masses authored for all 6 points; only 4 are imported, so the count check
-            # validates against 4 (not 6) and rejects the array instead of applying
-            # mass from the skipped curve's points.
-            curves.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([1.0] * 6)
-            stage.Save()
+            usd_path = self._author_two_curve_prim_with_masses(tmpdir, [4, 2], [1.0] * 6)
 
             builder = newton.ModelBuilder()
-            with self.assertWarnsRegex(UserWarning, r"!= 4 curve points"):
+            with self.assertWarnsRegex(UserWarning, "skipping that curve"):
                 builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            bodies, _ = cable_map["/World/Cable"]
+            # Unit point masses lump onto the 3 segments as endpoint 1+1/2, interior 1/2+1/2.
+            masses = [builder.body_mass[b] for b in bodies]
+            np.testing.assert_allclose(masses, [1.5, 1.0, 1.5], atol=1e-6)
+
+    def test_skipped_first_curve_masses_use_absolute_offsets(self):
+        """A skipped FIRST curve must not shift the imported curve's slice of physics:masses."""
+        from pxr import Usd
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # The imported curve's points are authored at offsets 2..5.
+            usd_path = self._author_two_curve_prim_with_masses(tmpdir, [2, 4], [9.0, 9.0, 1.0, 2.0, 2.0, 1.0])
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "skipping that curve"):
+                builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            bodies, _ = cable_map["/World/Cable"]
+            # pm = [1, 2, 2, 1] -> segments [1 + 2/2, 2/2 + 2/2, 2/2 + 1] = [2, 2, 2];
+            # the 9.0 entries belong to the skipped curve and must not leak in.
+            masses = [builder.body_mass[b] for b in bodies]
+            np.testing.assert_allclose(masses, [2.0, 2.0, 2.0], atol=1e-6)
+
+    def test_short_curve_masses_array_warns_without_crash(self):
+        """A masses array matching only the imported point count is rejected with a warning
+        (it cannot be indexed by authored offset), not an IndexError."""
+        from pxr import Usd
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = self._author_two_curve_prim_with_masses(tmpdir, [2, 4], [1.0] * 4)
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, r"!= 6 authored curve points"):
+                builder.add_usd(str(usd_path))
+            cable_map, _, _ = deformable_maps(builder)
+            self.assertEqual(len(cable_map["/World/Cable"][0]), 3)
 
     def test_duplicate_consecutive_points_skips_curve(self):
         """A curve with a zero-length segment is warned and skipped, not aborting the import."""
