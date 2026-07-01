@@ -2055,7 +2055,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
     @staticmethod
     def _input_state_copy_flags(src: State, dst: State) -> StateFlags | int:
         """Return state-array flags that ``_copy_state`` will update."""
-        flags = StateFlags.NONE
+        flags = int(StateFlags.NONE)
         if src.body_q is not None and dst.body_q is not None:
             flags |= StateFlags.BODY_Q
             if src.body_qd is not None and dst.body_qd is not None:
@@ -2083,8 +2083,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
         iteration_restart: bool = False,
     ) -> None:
         """Notify custom solvers after coupler-produced input state updates."""
-        flags = StateFlags(flags)
-        if flags == StateFlags.NONE and not iteration_restart:
+        flags = int(flags)
+        if flags == int(StateFlags.NONE) and not iteration_restart:
             return
         _require_supports_coupling(entry.solver)
         entry.solver.coupling_notify_input_state_update(

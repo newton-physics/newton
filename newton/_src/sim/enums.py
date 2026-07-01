@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from enum import IntEnum, IntFlag
+from enum import IntEnum
 
 
 class ModelFlags(IntEnum):
@@ -53,7 +53,7 @@ class ModelFlags(IntEnum):
     """Indicates all property updates."""
 
 
-class StateFlags(IntFlag):
+class StateFlags(IntEnum):
     """Flags indicating which state attributes were updated or should be reset.
 
     These flags are used with :meth:`~newton.solvers.SolverBase.reset` to

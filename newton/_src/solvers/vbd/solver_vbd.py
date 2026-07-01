@@ -798,7 +798,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         dt: float = 0.0,
     ) -> None:
         """Convert input body pose updates into VBD-compatible history updates."""
-        flags = StateFlags(flags)
+        flags = int(flags)
 
         if (
             not (flags & StateFlags.BODY_Q)

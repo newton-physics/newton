@@ -1101,7 +1101,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     ) -> None:
         """Synchronize deformable collider meshes after particle input-state updates."""
         del dt
-        flags = StateFlags(flags)
+        flags = int(flags)
         update_points = bool(flags & StateFlags.PARTICLE_Q)
         update_velocities = bool(flags & StateFlags.PARTICLE_QD)
         if not (update_points or update_velocities) or not self._mpm_model.deformable_collider_vertex_ranges:

@@ -3566,7 +3566,7 @@ class SolverCoupledADMM(SolverCoupled):
         dt: float,
     ) -> None:
         device = self.model.device
-        flags = StateFlags.NONE
+        flags = int(StateFlags.NONE)
         if buf.body_qd_n is not None and buf.body_proximal_mass is not None and buf.body_proximal_inertia is not None:
             wp.launch(
                 velocity_proximal_shift_body_lumped_kernel,
@@ -3624,7 +3624,7 @@ class SolverCoupledADMM(SolverCoupled):
     ) -> None:
         gamma = float(self._coupling.gamma)
         apply_proximal = gamma > 0.0
-        flags = StateFlags.NONE
+        flags = int(StateFlags.NONE)
 
         if buf.body_q_n is not None:
             wp.copy(entry.state_0.body_q, buf.body_q_n)
