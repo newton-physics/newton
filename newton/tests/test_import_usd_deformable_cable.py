@@ -874,6 +874,11 @@ class TestUSDDeformableCable(unittest.TestCase):
                 all("/World/Cable" in builder.body_label[b] for b in bodies),
                 "remapped cable indices point at non-cable bodies",
             )
+            # The Model-level cable group range rides the same collapse remap.
+            model = builder.finalize()
+            b0, b1 = model.cable_body_range(model.cable_index("/World/Cable"))
+            self.assertEqual((b0, b1), (min(bodies), max(bodies) + 1))
+            self.assertTrue(all("/World/Cable" in model.body_label[b] for b in range(b0, b1)))
 
     def test_cable_negative_scale_mirrors_positions(self):
         """A reflective xformOp:scale mirrors cable body positions (parity preserved); a

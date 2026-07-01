@@ -3651,6 +3651,29 @@ class ModelBuilder:
             articulation_groups = [self.current_world] * builder.articulation_count
             self.articulation_world.extend(articulation_groups)
 
+        # Deformable groups: shift each group's ranges by this builder's start offsets and tag each
+        # copy with the current world (labels ride the label_attrs handling below). Mirrors the
+        # articulation_start/end offset + articulation_world tagging above.
+        self.cable_body_start.extend([s + start_body_idx for s in builder.cable_body_start])
+        self.cable_body_end.extend([e + start_body_idx for e in builder.cable_body_end])
+        self.cable_joint_start.extend([s + start_joint_idx for s in builder.cable_joint_start])
+        self.cable_joint_end.extend([e + start_joint_idx for e in builder.cable_joint_end])
+        self.cable_world.extend([self.current_world] * len(builder.cable_label))
+
+        self.cloth_particle_start.extend([s + start_particle_idx for s in builder.cloth_particle_start])
+        self.cloth_particle_end.extend([e + start_particle_idx for e in builder.cloth_particle_end])
+        self.cloth_tri_start.extend([s + start_triangle_idx for s in builder.cloth_tri_start])
+        self.cloth_tri_end.extend([e + start_triangle_idx for e in builder.cloth_tri_end])
+        self.cloth_edge_start.extend([s + start_edge_idx for s in builder.cloth_edge_start])
+        self.cloth_edge_end.extend([e + start_edge_idx for e in builder.cloth_edge_end])
+        self.cloth_world.extend([self.current_world] * len(builder.cloth_label))
+
+        self.soft_particle_start.extend([s + start_particle_idx for s in builder.soft_particle_start])
+        self.soft_particle_end.extend([e + start_particle_idx for e in builder.soft_particle_end])
+        self.soft_tet_start.extend([s + start_tetrahedron_idx for s in builder.soft_tet_start])
+        self.soft_tet_end.extend([e + start_tetrahedron_idx for e in builder.soft_tet_end])
+        self.soft_world.extend([self.current_world] * len(builder.soft_label))
+
         # For mimic constraints
         if len(builder.constraint_mimic_joint0) > 0:
             constraint_worlds = [self.current_world] * len(builder.constraint_mimic_joint0)
@@ -3674,7 +3697,15 @@ class ModelBuilder:
                 self.constraint_mimic_label.extend(builder.constraint_mimic_label)
 
         # Handle label attributes specially to support label_prefix
-        label_attrs = ["articulation_label", "body_label", "joint_label", "shape_label"]
+        label_attrs = [
+            "articulation_label",
+            "body_label",
+            "joint_label",
+            "shape_label",
+            "cable_label",
+            "cloth_label",
+            "soft_label",
+        ]
         for attr in label_attrs:
             src = getattr(builder, attr)
             dst = getattr(self, attr)
@@ -5721,6 +5752,28 @@ class ModelBuilder:
         self.articulation_end = new_articulation_end
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
+
+        # Remap cable group ranges onto the reindexed bodies/joints. Cable bodies are linked by cable
+        # joints (never fixed), so they are not collapsed and their ranges stay contiguous; only their
+        # indices shift as other bodies/joints are dropped. Cloth/volume ranges address particles and
+        # triangles/tets/edges, which fixed-joint collapse never touches, so they are left untouched.
+        def _remap_body_id(body_id: int) -> int:
+            if body_id in body_remap:
+                return body_remap[body_id]
+            if body_id in body_merged_parent:
+                parent = body_merged_parent[body_id]
+                return body_remap.get(parent, parent)
+            return body_id
+
+        for i in range(len(self.cable_label)):
+            if self.cable_body_end[i] > self.cable_body_start[i]:
+                new_start = _remap_body_id(self.cable_body_start[i])
+                self.cable_body_start[i] = new_start
+                self.cable_body_end[i] = _remap_body_id(self.cable_body_end[i] - 1) + 1
+            # A welded-graph curve owns no tree joints (empty range); leave it empty.
+            if self.cable_joint_end[i] > self.cable_joint_start[i]:
+                self.cable_joint_start[i] = joint_remap.get(self.cable_joint_start[i], self.cable_joint_start[i])
+                self.cable_joint_end[i] = joint_remap.get(self.cable_joint_end[i] - 1, self.cable_joint_end[i] - 1) + 1
 
         def remap_articulation_reference(value: Any) -> Any:
             if isinstance(value, bool):

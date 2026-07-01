@@ -12,7 +12,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests._usd_deformable_test_utils import _add_cloth_mesh, _bind_deformable_material
+from newton.tests._usd_deformable_test_utils import _add_cable_curve, _add_cloth_mesh, _bind_deformable_material
 from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_selected_cuda_test_devices
 
 
@@ -96,6 +96,63 @@ class TestUSDDeformableCloth(unittest.TestCase):
             b = model.cloth_particle_range(model.cloth_index("/World/ClothB"))
             self.assertEqual(a, (0, 4))
             self.assertEqual(b, (4, 8))
+
+    def test_replicate_preserves_cloth_addressability(self):
+        """replicate() copies each cloth group per world with offset ranges and world tags."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            usd_path = Path(tmpdir) / "cloth.usda"
+            stage = Usd.Stage.CreateNew(str(usd_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            _add_cloth_mesh(stage, "/World/Cloth")
+            stage.Save()
+
+            sub = newton.ModelBuilder()
+            sub.add_usd(str(usd_path))
+            scene = newton.ModelBuilder()
+            scene.replicate(sub, 3)
+            model = scene.finalize()
+
+            self.assertEqual(model.cloth_count, 3)
+            self.assertEqual(model.cloth_label, ["/World/Cloth"] * 3)
+            self.assertEqual(list(model.cloth_world.numpy()), [0, 1, 2])
+            # Each world's cloth owns a distinct 4-particle range, back to back.
+            for w in range(3):
+                self.assertEqual(model.cloth_particle_range(w), (4 * w, 4 * w + 4))
+
+    def test_heterogeneous_worlds_addressable(self):
+        """Worlds holding different deformables each stay addressable with the right world tag."""
+        from pxr import Usd, UsdPhysics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cloth_path = Path(tmpdir) / "cloth.usda"
+            stage = Usd.Stage.CreateNew(str(cloth_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            _add_cloth_mesh(stage, "/World/Cloth")
+            stage.Save()
+
+            cable_path = Path(tmpdir) / "cable.usda"
+            stage = Usd.Stage.CreateNew(str(cable_path))
+            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+            _add_cable_curve(
+                stage, "/World/Cable", [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+            )
+            stage.Save()
+
+            cloth_sub = newton.ModelBuilder()
+            cloth_sub.add_usd(str(cloth_path))
+            cable_sub = newton.ModelBuilder()
+            cable_sub.add_usd(str(cable_path))
+            scene = newton.ModelBuilder()
+            scene.add_world(cloth_sub)  # world 0: cloth only
+            scene.add_world(cable_sub)  # world 1: cable only
+            model = scene.finalize()
+
+            self.assertEqual(model.cloth_count, 1)
+            self.assertEqual(model.cable_count, 1)
+            self.assertEqual(int(model.cloth_world.numpy()[model.cloth_index("/World/Cloth")]), 0)
+            self.assertEqual(int(model.cable_world.numpy()[model.cable_index("/World/Cable")]), 1)
 
     def test_cloth_quad_mesh_is_triangulated(self):
         """A quad-faced cloth mesh is fan-triangulated on import (n-gons are supported)."""
