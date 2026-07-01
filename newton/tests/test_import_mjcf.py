@@ -4462,7 +4462,13 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         self.assertEqual(converted_model.constraint_mimic_count, 1)
         np.testing.assert_array_equal(
             converted_model.mujoco.equality_constraint_type.numpy(),
-            np.array([int(newton.EqType.CONNECT), int(newton.EqType.WELD), int(newton.EqType.JOINT)]),
+            np.array(
+                [
+                    int(newton.solvers.SolverMuJoCo.EqType.CONNECT),
+                    int(newton.solvers.SolverMuJoCo.EqType.WELD),
+                    int(newton.solvers.SolverMuJoCo.EqType.JOINT),
+                ]
+            ),
         )
         np.testing.assert_array_equal(
             converted_model.mujoco.equality_constraint_target_kind.numpy(),

@@ -34,8 +34,9 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
-from ..sim.enums import EqType, JointTargetMode
+from ..sim.enums import JointTargetMode
 from ..sim.model import Model
+from ..solvers.mujoco.enums import EqType
 from ..solvers.mujoco.equality import _add_equality_constraint
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,

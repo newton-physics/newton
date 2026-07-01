@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from enum import IntEnum
+import warnings
+from enum import EnumMeta, IntEnum
 
 
 class ModelFlags(IntEnum):
@@ -191,23 +192,38 @@ class JointType(IntEnum):
         return cts_count
 
 
-# (temporary) equality constraint types
-class EqType(IntEnum):
-    """
-    Enumeration of equality constraint types between bodies or joints.
+class _DeprecatedEqTypeMeta(EnumMeta):
+    def __getattribute__(cls, name: str):
+        value = super().__getattribute__(name)
+        if not name.startswith("_"):
+            member_map = super().__getattribute__("_member_map_")
+            if name in member_map:
+                _warn_eq_type_deprecated()
+        return value
 
-    Note:
-        This is a temporary solution and the interface may change in the future.
+    def __call__(cls, *args, **kwargs):
+        _warn_eq_type_deprecated()
+        return super().__call__(*args, **kwargs)
+
+
+def _warn_eq_type_deprecated() -> None:
+    warnings.warn(
+        "newton.EqType is deprecated in Newton 1.4; use newton.solvers.SolverMuJoCo.EqType instead.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
+class EqType(IntEnum, metaclass=_DeprecatedEqTypeMeta):
+    """Deprecated alias for :class:`~newton.solvers.SolverMuJoCo.EqType`.
+
+    .. deprecated:: 1.4
+        Use :class:`~newton.solvers.SolverMuJoCo.EqType` instead.
     """
 
     CONNECT = 0
-    """Constrains two bodies at a point (like a ball joint)."""
-
     WELD = 1
-    """Welds two bodies together (like a fixed joint)."""
-
     JOINT = 2
-    """Constrains the position or angle of one joint to be a quartic polynomial of another joint (like a prismatic or revolute joint)."""
 
 
 class JointTargetMode(IntEnum):

@@ -282,6 +282,10 @@ actuators — see ``SolverMuJoCo._init_actuators``.
 Equality constraints
 --------------------
 
+Use :class:`~newton.solvers.SolverMuJoCo.EqType` for MuJoCo equality
+constraint types. The top-level :class:`newton.EqType` alias is deprecated
+in Newton 1.4.
+
 Each row's ``data[...]`` reference below points into MuJoCo's
 `equality.data <https://mujoco.readthedocs.io/en/stable/XMLreference.html#equality>`_
 array; slot layout depends on the constraint type.
@@ -293,14 +297,14 @@ array; slot layout depends on the constraint type.
    * - Newton type
      - MuJoCo equivalent
      - Notes
-   * - :attr:`~newton.EqType.CONNECT`
+   * - :attr:`~newton.solvers.SolverMuJoCo.EqType.CONNECT`
      - ``mjEQ_CONNECT``
      - Anchor forwarded in ``data[0:3]``.
-   * - :attr:`~newton.EqType.WELD`
+   * - :attr:`~newton.solvers.SolverMuJoCo.EqType.WELD`
      - ``mjEQ_WELD``
      - Anchor forwarded in ``data[0:3]``, relative pose in ``data[3:10]``,
        torque scale in ``data[10]``.
-   * - :attr:`~newton.EqType.JOINT`
+   * - :attr:`~newton.solvers.SolverMuJoCo.EqType.JOINT`
      - ``mjEQ_JOINT``
      - Polynomial coefficients forwarded in ``data[0:5]``.
    * - Mimic
