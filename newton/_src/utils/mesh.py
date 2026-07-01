@@ -871,6 +871,8 @@ def _as_cpu_int_array2d(data, width: int) -> wp.array:
     if isinstance(data, wp.array):
         if data.ndim == 2:
             return data.to("cpu")
+        if data.dtype == wp.int32 and data.is_contiguous:
+            return data.reshape((-1, width)).to("cpu")
         return wp.array(data.numpy().reshape(-1, width), dtype=wp.int32, device="cpu")
 
     return wp.array(_numpy_int_rows(data, width), dtype=wp.int32, device="cpu")
@@ -881,6 +883,8 @@ def _as_cpu_int_array1d(data) -> wp.array:
     if isinstance(data, wp.array):
         if data.ndim == 1:
             return data.to("cpu")
+        if data.dtype == wp.int32 and data.is_contiguous:
+            return data.flatten().to("cpu")
         return wp.array(data.numpy().reshape(-1), dtype=wp.int32, device="cpu")
 
     return wp.array(_numpy_int_array(data).reshape(-1), dtype=wp.int32, device="cpu")
