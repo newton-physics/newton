@@ -992,6 +992,13 @@ class TestGravCompForce(TestInverseDynamicsBase):
         rotation about world X. The parent frame's Y-axis points along
         world +Z, so the buggy parent-frame output would be (0, -m*g, 0)
         while the correct world-frame output is (0, 0, -m*g).
+
+        This test covers only the RNEA bias term (``GRAVITY_FORCE``). The
+        companion mass-matrix contribution -- that the ``M(q)*qddot`` wrench
+        surfaced by :func:`~newton.eval_inverse_dynamics_force` obeys the same
+        world-frame contract for a rotated-parent FREE root under a known
+        ``qddot`` (gravity disabled) -- is covered by
+        :meth:`test_inverse_dynamics_force_free_root_rotated_parent`.
         """
         m = 2.0
         g_mag = 10.0
@@ -2758,49 +2765,6 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         self.assertTrue(np.all(np.isfinite(c)))
         self.assertGreater(float(np.max(np.abs(g))), 1e-6)
         self.assertGreater(float(np.max(np.abs(c))), 1e-6)
-
-    def test_eval_inverse_dynamics_raises_on_mass_matrix_shape_mismatch(self):
-        """``eval_inverse_dynamics`` raises ``ValueError`` when the
-        ``MASS_MATRIX`` flag is set but the supplied ``mass_matrix`` buffer's
-        shape disagrees with
-        ``(articulation_count, max_dofs_per_articulation, max_dofs_per_articulation)``.
-        """
-        builder = self._build_two_link_articulation(
-            gravity=wp.vec3(0.0, 0.0, 0.0),
-            floating_base=False,
-            joint_type="revolute",
-            joint_axis=wp.vec3(0.0, 0.0, 1.0),
-            link_coms=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],
-            link_masses=[1.0, 1.0],
-            joint_frames=[
-                wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
-                wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
-            ],
-            link_inertias=[self.I_UNIT, self.I_UNIT],
-        )
-        model = builder.finalize(device=self.device)
-        state = model.state()
-        inverse_dynamics = model.inverse_dynamics()
-
-        # Replace mass_matrix with a wrong-shaped buffer (extra DOF on each
-        # axis) so the shape check inside eval_inverse_dynamics must fire.
-        wrong_shape = (
-            model.articulation_count,
-            model.max_dofs_per_articulation + 1,
-            model.max_dofs_per_articulation + 1,
-        )
-        inverse_dynamics.mass_matrix = wp.zeros(wrong_shape, dtype=wp.float32, device=self.device)
-
-        with self.assertRaises(ValueError) as ctx:
-            newton.eval_inverse_dynamics(
-                model,
-                state,
-                newton.InverseDynamics.EvalType.MASS_MATRIX,
-                inverse_dynamics,
-            )
-        msg = str(ctx.exception)
-        self.assertIn("mass_matrix", msg)
-        self.assertIn(str(wrong_shape), msg)
 
     def test_eval_inverse_dynamics_raises_on_buffer_shape_mismatch(self):
         """``eval_inverse_dynamics`` and ``eval_inverse_dynamics_force`` raise
