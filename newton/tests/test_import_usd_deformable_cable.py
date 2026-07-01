@@ -133,7 +133,10 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            _, joints = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
+            # restShapePoints only normalizes stiffness (it does not set an initial strain state), so it warns.
+            with self.assertWarnsRegex(UserWarning, "restShapePoints only sets the rest length"):
+                result = builder.add_usd(str(usd_path))
+            _, joints = result["path_cable_map"]["/World/Cable"]
             r = 0.5 * thickness
             area = math.pi * r * r
             expected = stretch_mod * area / 0.1  # rest length 0.1, not the 0.2 deformed segments
@@ -616,7 +619,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            _bodies, joints = builder.add_usd(str(usd_path))["path_cable_map"]["/World/Cable"]
+            with self.assertWarnsRegex(UserWarning, "restShapePoints only sets the rest length"):
+                result = builder.add_usd(str(usd_path))
+            _bodies, joints = result["path_cable_map"]["/World/Cable"]
             r = 0.5 * thickness
             rest_len = seg_len * math.sqrt(1.0 + k * k)
             expected_ke = E * math.pi * r * r / rest_len

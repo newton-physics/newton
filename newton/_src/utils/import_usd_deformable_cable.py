@@ -412,6 +412,15 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 stacklevel=2,
             )
             rest_shape_points = None
+        if rest_shape_points is not None:
+            # Rest points only normalize per-segment stiffness (rest length in E*A/L, E*I/L); the
+            # cable is still built at the current points, so a rest shape that differs from the
+            # current geometry does not set initial strain or a rest bend configuration.
+            warnings.warn(
+                f"{path}: restShapePoints only sets the rest length for stiffness; the cable is built at "
+                f"the current points, so it does not establish an initial strain / rest bend state.",
+                stacklevel=2,
+            )
         _warn_unsupported_rest_fields(prim, path, ("restNormals",), deformable_read)
         _warn_dropped_velocities(prim, path)
         _warn_geometry_authored_material_attrs(prim, path, "PhysicsCurvesDeformableMaterialAPI", deformable_read)
