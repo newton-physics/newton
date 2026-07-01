@@ -411,9 +411,11 @@ class TestMuJoCoActuators(unittest.TestCase):
                     np.testing.assert_allclose(mj_model.actuator_biasprm[mj_idx, 2], -kd, atol=1e-5)
 
     def test_joint_target_distinct_position_velocity_ranges(self):
-        """A joint driven by both a position and a velocity actuator (merged into
-        POSITION_VELOCITY) must keep each sub-actuator's own ctrl/force range in the
-        compiled mj_model, even when they differ (issues #2928, #3234)."""
+        """Position + velocity actuators on one joint keep separate ctrl/force ranges.
+
+        The two are merged into a single POSITION_VELOCITY joint target, then rebuilt
+        as two mj_model actuators; each must carry its own authored range.
+        """
         mjcf = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="dual_actuator">
     <option gravity="0 0 0"/>
@@ -465,9 +467,10 @@ class TestMuJoCoActuators(unittest.TestCase):
         self.assertTrue(seen_velocity, "no velocity sub-actuator found")
 
     def test_ball_joint_target_ranges_applied_to_all_axes(self):
-        """A ball-joint position actuator is rebuilt as three per-axis MuJoCo actuators.
-        The single authored ctrl/force range must be applied to every axis, not dropped
-        (the ball path mirrors the hinge/slide range plumbing)."""
+        """A ball-joint position actuator expands to one mj_model actuator per axis.
+
+        The single authored ctrl/force range must apply to every per-axis actuator.
+        """
         mjcf = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="ball">
     <option gravity="0 0 0"/>
