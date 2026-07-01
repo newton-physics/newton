@@ -1319,15 +1319,11 @@ class TestMenagerieUSD(TestMenagerieBase):
         "actuator_lengthrange",
     }
 
-    # Per-joint fields the USD parser doesn't populate to match native MJCF
-    # compilation, but which step-response dynamics depends on. Empirically
-    # pinned down on ShadowHand: without these, qfrc_constraint diverges at
-    # step 1+ (joint-limit solref + actfrc).
-    #
-    # Per-actuator clipping fields (actuator_ctrlrange/ctrllimited/forcerange/
-    # forcelimited) no longer need backfilling: SolverMuJoCo now re-attaches the
-    # authored ctrl/force ranges when rebuilding JOINT_TARGET actuators from USD
-    # MjcActuator rows (issues #2928, #3234).
+    # Per-joint fields the USD parser doesn't populate to match native MJCF, but
+    # which step-response dynamics depend on (joint-limit solref + actfrc range).
+    # Without them, qfrc_constraint diverges from step 1 onward.
+    # Actuator ctrl/force ranges are not listed: the solver re-attaches them when
+    # rebuilding JOINT_TARGET actuators, so no backfill is needed.
     usd_joint_backfill_fields: ClassVar[list[str]] = [
         "jnt_solref",
         "jnt_actfrclimited",
