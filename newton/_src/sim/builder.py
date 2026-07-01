@@ -49,6 +49,7 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
+from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.mesh import MeshAdjacency
 from .enums import (
     BodyFlags,
@@ -190,15 +191,6 @@ class ModelBuilder:
         "preserve the existing start-node body frame, or body_frame_origin='com' to opt into "
         "COM-centered capsule body frames."
     )
-    _BODY_ARMATURE_ARG_DEPRECATION_MESSAGE = (
-        "ModelBuilder.add_link(..., armature=...) and ModelBuilder.add_body(..., armature=...) "
-        "are deprecated and will be removed in a future release. "
-        "Add any isotropic artificial inertia directly to 'inertia' instead."
-    )
-    _DEFAULT_BODY_ARMATURE_DEPRECATION_MESSAGE = (
-        "ModelBuilder.default_body_armature is deprecated and will be removed in a future release. "
-        "Add any isotropic artificial inertia directly to 'inertia' instead."
-    )
 
     @staticmethod
     def _shape_palette_color(index: int) -> tuple[float, float, float]:
@@ -210,6 +202,22 @@ class ModelBuilder:
         if color is None:
             return None
         return (float(color[0]), float(color[1]), float(color[2]))
+
+    @staticmethod
+    def _external_warning_stacklevel() -> int:
+        frame = inspect.currentframe()
+        if frame is None:
+            return 2
+
+        frame = frame.f_back
+        stacklevel = 1
+        try:
+            while frame is not None and frame.f_code.co_filename == __file__:
+                frame = frame.f_back
+                stacklevel += 1
+            return stacklevel
+        finally:
+            del frame
 
     @classmethod
     def _resolve_rod_body_frame_origin(
@@ -250,29 +258,51 @@ class ModelBuilder:
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
 
     @dataclass
+    class BvhConfig:
+        """Default BVH construction settings used during model finalization."""
+
+        mesh_constructor: str | None = None
+        """Warp mesh BVH constructor backend. If ``None``, Warp's default is used."""
+
+        gaussian_constructor: str | None = None
+        """Warp Gaussian BVH constructor backend. If ``None``, Warp's default is used."""
+
+        shape_constructor: str | None = None
+        """Warp model shape BVH constructor backend. If ``None``, Warp's default is used."""
+
+    @dataclass(kw_only=True)
     class ShapeConfig:
         """
-        Represents the properties of a collision shape used in simulation.
+        Represents per-shape collision, material, mass, and SDF settings.
+
+        These fields are general model data, and not every field is respected
+        or needed by every solver. Solvers and contact backends may use,
+        combine, or ignore individual fields according to their formulation;
+        see solver-specific documentation for behavior.
         """
 
         density: float = 1000.0
         """The density of the shape material."""
         ke: float = 2.5e3
-        """The contact elastic stiffness [N/m]. Used by SemiImplicit, Featherstone, MuJoCo, VBD."""
+        """The normal contact stiffness [N/m]."""
         kd: float = 100.0
-        """The contact damping coefficient [N·s/m]. Used by SemiImplicit, Featherstone, MuJoCo, VBD."""
+        """The normal contact damping coefficient [N·s/m]."""
         kf: float = 1000.0
-        """The friction damping coefficient. Used by SemiImplicit, Featherstone."""
+        """The tangential friction response gain [N·s/m]."""
         ka: float = 0.0
-        """The contact adhesion distance. Used by SemiImplicit, Featherstone."""
+        """The contact adhesion distance [m]."""
         mu: float = 1.0
-        """The coefficient of friction. Used by all solvers."""
+        """The coefficient of friction."""
         restitution: float = 0.0
-        """The coefficient of restitution. Used by XPBD. To take effect, enable restitution in solver constructor via ``enable_restitution=True``."""
+        """The coefficient of restitution.
+
+        :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True``
+        on the solver constructor for this field to take effect.
+        """
         mu_torsional: float = 0.005
-        """The coefficient of torsional friction (resistance to spinning at contact point). Used by XPBD, MuJoCo."""
+        """The coefficient of torsional friction (resistance to spinning at contact point)."""
         mu_rolling: float = 0.0001
-        """The coefficient of rolling friction (resistance to rolling motion). Used by XPBD, MuJoCo."""
+        """The coefficient of rolling friction (resistance to rolling motion)."""
         margin: float = 0.0
         """Outward offset from the shape's surface [m] for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,
@@ -318,11 +348,20 @@ class ModelBuilder:
             This flag will be automatically set to False for planes and heightfields in :meth:`ModelBuilder.add_shape`.
         """
         kh: float = 1.0e10
-        """Contact stiffness coefficient for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when is_hydroelastic is True.
+        """Hydroelastic contact stiffness coefficient [N/m^3].
 
         .. note::
-            For MuJoCo, stiffness values will internally be scaled by masses.
-            Users should choose kh to match their desired force-to-penetration ratio.
+            The default linear pressure law is
+            ``pressure = -kh * signed_depth``. Effective contact force scales
+            with contact area, so ``kh`` sets a pressure-to-penetration ratio,
+            not a direct force-to-penetration ratio. Solvers and contact
+            backends may scale or otherwise interpret this coefficient
+            according to their formulation.
+
+            For :class:`~newton.solvers.SolverMuJoCo`, stiffness values are
+            internally scaled by masses when Newton-generated contacts are
+            passed through the MuJoCo contact path. Tune ``kh`` with that
+            scaling in mind.
         """
         sdf_padding: float | None = None
         """SDF AABB padding [m] for primitive texture SDFs. Falls back to
@@ -353,7 +392,7 @@ class ModelBuilder:
                     SDF generation and clears any previous max_resolution setting.
                 is_hydroelastic: Whether to use SDF-based hydroelastic contacts. Both shapes
                     in a pair must have this enabled.
-                kh: Contact stiffness coefficient for hydroelastic collisions.
+                kh: Hydroelastic contact stiffness coefficient.
                 texture_format: Subgrid texture storage format. ``"uint16"``
                     (default) uses 16-bit normalized textures. ``"float32"``
                     uses full-precision. ``"uint8"`` uses 8-bit textures.
@@ -472,8 +511,10 @@ class ModelBuilder:
         Describes a joint axis (a single degree of freedom) that can have limits and be driven towards a target.
         """
 
+        @deprecate_nonkeyword_arguments
         def __init__(
             self,
+            *,
             axis: AxisType | Vec3 = Axis.X,
             limit_lower: float = -MAXVAL,
             limit_upper: float = MAXVAL,
@@ -839,6 +880,9 @@ class ModelBuilder:
         """Number of worlds accumulated for :attr:`Model.world_count`."""
 
         # region defaults
+        self.default_bvh_cfg = ModelBuilder.BvhConfig()
+        """Default BVH construction configuration used during model finalization."""
+
         self.default_shape_cfg = ModelBuilder.ShapeConfig()
         """Default shape configuration used when shape-creation methods are called with ``cfg=None``.
         Update this object before adding shapes to set default contact/material properties."""
@@ -888,7 +932,6 @@ class ModelBuilder:
         self.default_tet_density = 1.0
         """Default density [kg/m^3] for tetrahedral soft bodies."""
 
-        self._default_body_armature = 0.0
         # endregion
 
         # region compiler settings (similar to MuJoCo)
@@ -962,7 +1005,7 @@ class ModelBuilder:
         self.shape_material_kd: list[float] = []
         """Contact damping values accumulated for :attr:`Model.shape_material_kd`."""
         self.shape_material_kf: list[float] = []
-        """Friction stiffness values accumulated for :attr:`Model.shape_material_kf`."""
+        """Tangential friction response gains accumulated for :attr:`Model.shape_material_kf`."""
         self.shape_material_ka: list[float] = []
         """Adhesion distances [m] accumulated for :attr:`Model.shape_material_ka`."""
         self.shape_material_mu: list[float] = []
@@ -3869,57 +3912,11 @@ class ModelBuilder:
 
         return wp.mat33(*value)
 
-    @staticmethod
-    def _external_warning_stacklevel() -> int:
-        frame = inspect.currentframe()
-        if frame is None:
-            return 2
-
-        frame = frame.f_back
-        stacklevel = 1
-        try:
-            while frame is not None and frame.f_code.co_filename == __file__:
-                frame = frame.f_back
-                stacklevel += 1
-            return stacklevel
-        finally:
-            del frame
-
-    @classmethod
-    def _warn_body_armature_arg_deprecated(cls) -> None:
-        warnings.warn(
-            cls._BODY_ARMATURE_ARG_DEPRECATION_MESSAGE,
-            DeprecationWarning,
-            stacklevel=cls._external_warning_stacklevel(),
-        )
-
-    @classmethod
-    def _warn_default_body_armature_deprecated(cls) -> None:
-        warnings.warn(
-            cls._DEFAULT_BODY_ARMATURE_DEPRECATION_MESSAGE,
-            DeprecationWarning,
-            stacklevel=cls._external_warning_stacklevel(),
-        )
-
-    @property
-    def default_body_armature(self) -> float:
-        """Deprecated default body armature.
-
-        .. deprecated:: 1.1
-            Add any isotropic artificial inertia directly to ``inertia`` instead.
-        """
-        self._warn_default_body_armature_deprecated()
-        return self._default_body_armature
-
-    @default_body_armature.setter
-    def default_body_armature(self, value: float) -> None:
-        self._warn_default_body_armature_deprecated()
-        self._default_body_armature = value
-
+    @deprecate_nonkeyword_arguments
     def add_link(
         self,
+        *,
         xform: Transform | None = None,
-        armature: float | None = None,
         com: Vec3 | None = None,
         inertia: Mat33 | None = None,
         mass: float = 0.0,
@@ -3936,15 +3933,8 @@ class ModelBuilder:
 
         After calling this method and one of the joint methods, ensure that an articulation is created using :meth:`add_articulation`.
 
-        .. deprecated:: 1.1
-            The ``armature`` parameter is deprecated. Add any isotropic artificial
-            inertia directly to ``inertia`` instead.
-
         Args:
             xform: The location of the body in the world frame.
-            armature: Deprecated. Artificial inertia added to the body. If ``None``,
-                the deprecated default value from :attr:`default_body_armature` is used.
-                Add any isotropic artificial inertia directly to ``inertia`` instead.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
@@ -3960,8 +3950,6 @@ class ModelBuilder:
             The index of the body in the model.
 
         """
-        if armature is not None and armature != 0.0:
-            self._warn_body_armature_arg_deprecated()
         if xform is None:
             xform = wp.transform()
         else:
@@ -3978,9 +3966,6 @@ class ModelBuilder:
         body_id = len(self.body_mass)
 
         # body data
-        if armature is None:
-            armature = self._default_body_armature
-        inertia = inertia + wp.mat33(np.eye(3, dtype=np.float32)) * armature
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
         self.body_com.append(com)
@@ -4013,10 +3998,11 @@ class ModelBuilder:
 
         return body_id
 
+    @deprecate_nonkeyword_arguments
     def add_body(
         self,
+        *,
         xform: Transform | None = None,
-        armature: float | None = None,
         com: Vec3 | None = None,
         inertia: Mat33 | None = None,
         mass: float = 0.0,
@@ -4037,15 +4023,8 @@ class ModelBuilder:
         For creating articulations with multiple linked bodies, use :meth:`add_link`,
         the appropriate joint methods, and :meth:`add_articulation` directly.
 
-        .. deprecated:: 1.1
-            The ``armature`` parameter is deprecated. Add any isotropic artificial
-            inertia directly to ``inertia`` instead.
-
         Args:
             xform: The location of the body in the world frame.
-            armature: Deprecated. Artificial inertia added to the body. If ``None``,
-                the deprecated default value from :attr:`default_body_armature` is used.
-                Add any isotropic artificial inertia directly to ``inertia`` instead.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
@@ -4063,7 +4042,6 @@ class ModelBuilder:
         """
         body_id = self.add_link(
             xform=xform,
-            armature=armature,
             com=com,
             inertia=inertia,
             mass=mass,
@@ -4087,11 +4065,13 @@ class ModelBuilder:
 
     # region joints
 
+    @deprecate_nonkeyword_arguments
     def add_joint(
         self,
         joint_type: JointType,
         parent: int,
         child: int,
+        *,
         linear_axes: list[JointDofConfig] | None = None,
         angular_axes: list[JointDofConfig] | None = None,
         label: str | None = None,
@@ -4295,10 +4275,12 @@ class ModelBuilder:
 
         return joint_index
 
+    @deprecate_nonkeyword_arguments
     def add_joint_revolute(
         self,
         parent: int,
         child: int,
+        *,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         axis: AxisType | Vec3 | JointDofConfig | None = None,
@@ -4391,10 +4373,12 @@ class ModelBuilder:
             **kwargs,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_joint_prismatic(
         self,
         parent: int,
         child: int,
+        *,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         axis: AxisType | Vec3 | JointDofConfig = Axis.X,
@@ -4485,10 +4469,12 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_joint_ball(
         self,
         parent: int,
         child: int,
+        *,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         armature: float | None = None,
@@ -4558,10 +4544,12 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_joint_fixed(
         self,
         parent: int,
         child: int,
+        *,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         label: str | None = None,
@@ -4604,9 +4592,11 @@ class ModelBuilder:
 
         return joint_index
 
+    @deprecate_nonkeyword_arguments
     def add_joint_free(
         self,
         child: int,
+        *,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         parent: int = -1,
@@ -4660,10 +4650,12 @@ class ModelBuilder:
         self.joint_q[q_start : q_start + 7] = list(self.body_q[child])
         return joint_id
 
+    @deprecate_nonkeyword_arguments
     def add_joint_distance(
         self,
         parent: int,
         child: int,
+        *,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         min_distance: float = -1.0,
@@ -4719,10 +4711,12 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_joint_d6(
         self,
         parent: int,
         child: int,
+        *,
         linear_axes: Sequence[JointDofConfig] | None = None,
         angular_axes: Sequence[JointDofConfig] | None = None,
         label: str | None = None,
@@ -4772,10 +4766,12 @@ class ModelBuilder:
             **kwargs,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_joint_cable(
         self,
         parent: int,
         child: int,
+        *,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         stretch_stiffness: float | None = None,
@@ -5742,10 +5738,11 @@ class ModelBuilder:
         self.joint_constraint_count = len(self.joint_cts)
 
         # Remap equality constraint body/joint indices and transform anchors for merged bodies.
-        # Each ``*_values`` is the dense ``list`` backing the string-frequency CustomAttribute;
-        # the ``mujoco:equality_constraint`` ``add_custom_values`` path populates all twelve in
-        # lockstep so indexed access is safe for every ``i`` in
-        # ``range(self._equality_constraint_count)``.
+        # Each ``*_values`` is the ``list`` backing the string-frequency CustomAttribute. These
+        # lists are sparse: ``add_custom_values`` only populates the fields that were supplied,
+        # so an omitted optional field can be ``None``, shorter than the row count, or absent
+        # entirely. Reads go through ``_at`` (default fallback), and writes pad the list to the
+        # row index before assignment.
         body1_attr = self._eq_attr("equality_constraint_body1")
         body2_attr = self._eq_attr("equality_constraint_body2")
         type_attr = self._eq_attr("equality_constraint_type")
@@ -5757,8 +5754,12 @@ class ModelBuilder:
         body1_values = body1_attr.values or []
         body2_values = body2_attr.values or []
         type_values = type_attr.values or []
-        anchor_values = anchor_attr.values or []
-        relpose_values = relpose_attr.values or []
+        if anchor_attr.values is None:
+            anchor_attr.values = []
+        anchor_values = anchor_attr.values
+        if relpose_attr.values is None:
+            relpose_attr.values = []
+        relpose_values = relpose_attr.values
         joint1_values = joint1_attr.values or []
         joint2_values = joint2_attr.values or []
         if enabled_attr.values is None:
@@ -5787,15 +5788,23 @@ class ModelBuilder:
                 merge_xform = body_merged_transform[old_body1]
                 if constraint_type == EqType.CONNECT:
                     anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
+                    while len(anchor_values) <= i:
+                        anchor_values.append(None)
                     anchor_values[i] = wp.transform_point(merge_xform, anchor)
                 if constraint_type == EqType.WELD:
                     relpose = _at(relpose_values, i, relpose_attr.default)
+                    while len(relpose_values) <= i:
+                        relpose_values.append(None)
                     relpose_values[i] = merge_xform * relpose
 
             if body2_was_merged and constraint_type == EqType.WELD:
                 merge_xform = body_merged_transform[old_body2]
                 anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
                 relpose = _at(relpose_values, i, relpose_attr.default)
+                while len(anchor_values) <= i:
+                    anchor_values.append(None)
+                while len(relpose_values) <= i:
+                    relpose_values.append(None)
                 anchor_values[i] = wp.transform_point(merge_xform, anchor)
                 relpose_values[i] = relpose * wp.transform_inverse(merge_xform)
 
@@ -6029,20 +6038,10 @@ class ModelBuilder:
                     "Mesh-backed shapes do not use cfg.sdf_* for SDF generation. "
                     "Build and attach an SDF on the mesh via mesh.build_sdf()."
                 )
-            if type == GeoType.CONVEX_MESH and cfg.is_hydroelastic:
-                # finalize() only consumes mesh-attached SDFs for GeoType.MESH;
-                # a hydroelastic CONVEX_MESH would fall into the primitive
-                # branch where _create_primitive_mesh returns None, leaving an
-                # invalid shape_sdf_index entry. Reject up front.
-                raise ValueError(
-                    "Hydroelastic is not supported on GeoType.CONVEX_MESH. "
-                    "Use add_shape_mesh() with a watertight Mesh whose mesh.sdf "
-                    "was built via Mesh.build_sdf()."
-                )
             if cfg.is_hydroelastic and (src is None or getattr(src, "sdf", None) is None):
                 raise ValueError(
                     "Hydroelastic mesh-backed shapes require mesh.sdf. "
-                    "Call mesh.build_sdf() before add_shape_mesh(..., cfg=...)."
+                    "Call mesh.build_sdf() before adding a mesh-backed hydroelastic shape."
                 )
         if scale is None:
             scale = (1.0, 1.0, 1.0)
@@ -6185,9 +6184,11 @@ class ModelBuilder:
 
         return shape
 
+    @deprecate_nonkeyword_arguments
     def add_shape_plane(
         self,
         plane: Vec4 | None = (0.0, 0.0, 1.0, 0.0),
+        *,
         xform: Transform | None = None,
         width: float = 10.0,
         length: float = 10.0,
@@ -6250,8 +6251,10 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_ground_plane(
         self,
+        *,
         height: float = 0.0,
         cfg: ShapeConfig | None = None,
         color: Vec3 | None = _DEFAULT_GROUND_PLANE_COLOR,
@@ -6277,9 +6280,11 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_sphere(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         radius: float = 1.0,
         cfg: ShapeConfig | None = None,
@@ -6321,9 +6326,11 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_ellipsoid(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         rx: float = 1.0,
         ry: float = 0.75,
@@ -6395,9 +6402,11 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_box(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         hx: float = 0.5,
         hy: float = 0.5,
@@ -6445,9 +6454,11 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_capsule(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
@@ -6498,9 +6509,11 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_cylinder(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
@@ -6551,9 +6564,11 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_cone(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         radius: float = 1.0,
         half_height: float = 0.5,
@@ -6605,9 +6620,11 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_mesh(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         mesh: Mesh | None = None,
         scale: Vec3 | None = None,
@@ -6646,9 +6663,11 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_convex_hull(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         mesh: Mesh | None = None,
         scale: Vec3 | None = None,
@@ -6687,8 +6706,10 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_heightfield(
         self,
+        *,
         xform: Transform | None = None,
         heightfield: Heightfield | None = None,
         scale: Vec3 | None = None,
@@ -6733,9 +6754,11 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_shape_gaussian(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         gaussian: Gaussian | None = None,
         scale: Vec3 | None = None,
@@ -6820,9 +6843,11 @@ class ModelBuilder:
             color=color,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_site(
         self,
         body: int,
+        *,
         xform: Transform | None = None,
         type: int = GeoType.SPHERE,
         scale: Vec3 = (0.01, 0.01, 0.01),
@@ -7195,9 +7220,11 @@ class ModelBuilder:
 
         return remeshed_shapes
 
+    @deprecate_nonkeyword_arguments
     def add_rod(
         self,
         positions: list[Vec3],
+        *,
         quaternions: list[Quat] | None = None,
         radius: float = 0.1,
         cfg: ShapeConfig | None = None,
@@ -7398,10 +7425,12 @@ class ModelBuilder:
 
         return link_bodies, link_joints
 
+    @deprecate_nonkeyword_arguments
     def add_rod_graph(
         self,
         node_positions: list[Vec3],
         edges: list[tuple[int, int]],
+        *,
         radius: float = 0.1,
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
@@ -7930,11 +7959,13 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.SPRING,
             )
 
+    @deprecate_nonkeyword_arguments
     def add_triangle(
         self,
         i: int,
         j: int,
         k: int,
+        *,
         tri_ke: float | None = None,
         tri_ka: float | None = None,
         tri_kd: float | None = None,
@@ -8013,11 +8044,13 @@ class ModelBuilder:
                 )
             return area
 
+    @deprecate_nonkeyword_arguments
     def add_triangles(
         self,
         i: list[int] | np.ndarray,
         j: list[int] | np.ndarray,
         k: list[int] | np.ndarray,
+        *,
         tri_ke: list[float] | None = None,
         tri_ka: list[float] | None = None,
         tri_kd: list[float] | None = None,
@@ -8193,12 +8226,14 @@ class ModelBuilder:
 
         return volume
 
+    @deprecate_nonkeyword_arguments
     def add_edge(
         self,
         i: int,
         j: int,
         k: int,
         l: int,
+        *,
         rest: float | None = None,
         edge_ke: float | None = None,
         edge_kd: float | None = None,
@@ -8264,12 +8299,14 @@ class ModelBuilder:
 
         return edge_index
 
+    @deprecate_nonkeyword_arguments
     def add_edges(
         self,
         i: list[int],
         j: list[int],
         k: list[int],
         l: list[int],
+        *,
         rest: list[float] | None = None,
         edge_ke: list[float] | None = None,
         edge_kd: list[float] | None = None,
@@ -8361,8 +8398,10 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.EDGE,
             )
 
+    @deprecate_nonkeyword_arguments
     def add_cloth_grid(
         self,
+        *,
         pos: Vec3,
         rot: Quat,
         vel: Vec3,
@@ -8486,8 +8525,10 @@ class ModelBuilder:
                 self.particle_mass[start_vertex + vertex_id] = particle_mass
                 vertex_id = vertex_id + 1
 
+    @deprecate_nonkeyword_arguments
     def add_cloth_mesh(
         self,
+        *,
         pos: Vec3,
         rot: Quat,
         scale: float,
@@ -8593,11 +8634,11 @@ class ModelBuilder:
             inds[:, 0],
             inds[:, 1],
             inds[:, 2],
-            [tri_ke] * num_tris,
-            [tri_ka] * num_tris,
-            [tri_kd] * num_tris,
-            [tri_drag] * num_tris,
-            [tri_lift] * num_tris,
+            tri_ke=[tri_ke] * num_tris,
+            tri_ka=[tri_ka] * num_tris,
+            tri_kd=[tri_kd] * num_tris,
+            tri_drag=[tri_drag] * num_tris,
+            tri_lift=[tri_lift] * num_tris,
             custom_attributes=custom_attributes_triangles,
         )
         for t in range(num_tris):
@@ -8641,8 +8682,10 @@ class ModelBuilder:
             for i, j in spring_indices:
                 self.add_spring(i, j, spring_ke, spring_kd, control=0.0, custom_attributes=custom_attributes_springs)
 
+    @deprecate_nonkeyword_arguments
     def add_particle_grid(
         self,
+        *,
         pos: Vec3,
         rot: Quat,
         vel: Vec3,
@@ -8743,8 +8786,10 @@ class ModelBuilder:
             custom_attributes=broadcast_custom_attrs,
         )
 
+    @deprecate_nonkeyword_arguments
     def add_soft_grid(
         self,
+        *,
         pos: Vec3,
         rot: Quat,
         vel: Vec3,
@@ -8896,7 +8941,16 @@ class ModelBuilder:
         # add surface triangles
         start_tri = len(self.tri_indices)
         for _k, v in faces.items():
-            self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+            self.add_triangle(
+                v[0],
+                v[1],
+                v[2],
+                tri_ke=tri_ke,
+                tri_ka=tri_ka,
+                tri_kd=tri_kd,
+                tri_drag=tri_drag,
+                tri_lift=tri_lift,
+            )
         end_tri = len(self.tri_indices)
 
         if add_surface_mesh_edges:
@@ -8910,10 +8964,12 @@ class ModelBuilder:
                 if len(edge_indices) > 0:
                     # Add edges with specified stiffness/damping (for collision)
                     for o1, o2, v1, v2 in edge_indices:
-                        self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
+                        self.add_edge(o1, o2, v1, v2, rest=None, edge_ke=edge_ke, edge_kd=edge_kd)
 
+    @deprecate_nonkeyword_arguments
     def add_soft_mesh(
         self,
+        *,
         pos: Vec3,
         rot: Quat,
         scale: float,
@@ -9115,11 +9171,11 @@ class ModelBuilder:
                 start_vertex + int(tri[0]),
                 start_vertex + int(tri[1]),
                 start_vertex + int(tri[2]),
-                tri_ke,
-                tri_ka,
-                tri_kd,
-                tri_drag,
-                tri_lift,
+                tri_ke=tri_ke,
+                tri_ka=tri_ka,
+                tri_kd=tri_kd,
+                tri_drag=tri_drag,
+                tri_lift=tri_lift,
                 custom_attributes=tr_custom,
             )
         end_tri = len(self.tri_indices)
@@ -9135,7 +9191,7 @@ class ModelBuilder:
                 if len(edge_indices) > 0:
                     # Add edges with specified stiffness/damping (for collision)
                     for o1, o2, v1, v2 in edge_indices:
-                        self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
+                        self.add_edge(o1, o2, v1, v2, rest=None, edge_ke=edge_ke, edge_kd=edge_kd)
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
@@ -9522,7 +9578,7 @@ class ModelBuilder:
             return self.add_joint_free(child, label=label)
         else:
             # FIXED joint (floating=False or floating=None with parent body)
-            return self.add_joint_fixed(parent, child, parent_xform, child_xform, label=label)
+            return self.add_joint_fixed(parent, child, parent_xform=parent_xform, child_xform=child_xform, label=label)
 
     def _add_base_joints_to_floating_bodies(
         self,
@@ -10519,12 +10575,57 @@ class ModelBuilder:
             m.shape_flags = wp.array(self.shape_flags, dtype=wp.int32)
             m.body_shapes = self.body_shapes
 
+            def _shape_requests_planar_sdf(shape_idx: int) -> bool:
+                """Whether a shape needs texture SDF data for planar-faced contact."""
+                if not (self.shape_flags[shape_idx] & ShapeFlags.COLLIDE_SHAPES):
+                    return False
+                stype = self.shape_type[shape_idx]
+                if stype in (GeoType.MESH, GeoType.CONVEX_MESH):
+                    src = self.shape_source[shape_idx]
+                    return src is not None and (
+                        getattr(src, "sdf", None) is not None
+                        or self.shape_sdf_max_resolution[shape_idx] is not None
+                        or self.shape_sdf_target_voxel_size[shape_idx] is not None
+                    )
+                return stype == GeoType.BOX and (
+                    self.shape_sdf_max_resolution[shape_idx] is not None
+                    or self.shape_sdf_target_voxel_size[shape_idx] is not None
+                    or bool(self.shape_flags[shape_idx] & ShapeFlags.HYDROELASTIC)
+                )
+
+            generated_shape_sources = list(self.shape_source)
+            generated_sdf_edge_meshes = []
+            unit_box_edge_mesh = None
+            for shape_idx, shape_type in enumerate(self.shape_type):
+                if shape_type == GeoType.BOX and _shape_requests_planar_sdf(shape_idx):
+                    if unit_box_edge_mesh is None:
+                        # The edge mesh is intentionally unscaled; per-shape box
+                        # half-extents are still applied through shape_scale.
+                        unit_box_edge_mesh = Mesh.create_box(
+                            1.0,
+                            1.0,
+                            1.0,
+                            duplicate_vertices=False,
+                            compute_normals=False,
+                            compute_uvs=False,
+                            compute_inertia=False,
+                        )
+                        unit_box_edge_mesh._build_collision_edges(
+                            lower_angle_threshold_rad=1.0e-6,
+                            upper_angle_threshold_rad=math.pi,
+                            enable_box_absorption=False,
+                            half_normal=0.0,
+                            half_lateral=0.0,
+                        )
+                        generated_sdf_edge_meshes.append(unit_box_edge_mesh)
+                    generated_shape_sources[shape_idx] = unit_box_edge_mesh
+
             # build list of ids for geometry sources (meshes, sdfs, heightfields)
             geo_sources = []
             finalized_geos = {}  # do not duplicate geometry
             gaussians = []
             heightfield_meshes = []
-            for geo in self.shape_source:
+            for geo in generated_shape_sources:
                 geo_hash = hash(geo)  # avoid repeated hash computations
                 if isinstance(geo, Heightfield):
                     if geo_hash not in finalized_geos:
@@ -10538,17 +10639,25 @@ class ModelBuilder:
                             ground_z=geo.min_z,
                             compute_inertia=False,
                         )
-                        finalized_geos[geo_hash] = hf_geo.finalize(device=device)
+                        finalized_geos[geo_hash] = hf_geo.finalize(
+                            device=device,
+                            bvh_constructor=self.default_bvh_cfg.mesh_constructor,
+                        )
                         # keep mesh alive for the model's lifetime
                         heightfield_meshes.append(hf_geo.mesh)
                     geo_sources.append(finalized_geos[geo_hash])
                 elif geo:
                     if geo_hash not in finalized_geos:
                         if isinstance(geo, Mesh):
-                            finalized_geos[geo_hash] = geo.finalize(device=device)
+                            finalized_geos[geo_hash] = geo.finalize(
+                                device=device,
+                                bvh_constructor=self.default_bvh_cfg.mesh_constructor,
+                            )
                         elif isinstance(geo, Gaussian):
                             finalized_geos[geo_hash] = len(gaussians)
-                            gaussians.append(geo.finalize(device=device))
+                            gaussians.append(
+                                geo.finalize(device=device, bvh_constructor=self.default_bvh_cfg.gaussian_constructor)
+                            )
                         else:
                             finalized_geos[geo_hash] = geo.finalize()
                     geo_sources.append(finalized_geos[geo_hash])
@@ -10558,6 +10667,7 @@ class ModelBuilder:
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
             m.heightfield_meshes = heightfield_meshes
+            m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
             m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
@@ -10765,7 +10875,7 @@ class ModelBuilder:
             is_gpu = current_device.is_cuda
 
             has_mesh_sdf = any(
-                stype == GeoType.MESH
+                stype in (GeoType.MESH, GeoType.CONVEX_MESH)
                 and ssrc is not None
                 and sflags & ShapeFlags.COLLIDE_SHAPES
                 and getattr(ssrc, "sdf", None) is not None
@@ -10774,14 +10884,14 @@ class ModelBuilder:
             # Catch meshes whose SDF is still deferred (built during finalize) so
             # the CPU-runs-into-build_sdf path also raises here, not deeper down.
             has_deferred_mesh_sdf = any(
-                stype == GeoType.MESH
+                stype in (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.BOX)
                 and ssrc is not None
                 and sflags & ShapeFlags.COLLIDE_SHAPES
-                and getattr(ssrc, "sdf", None) is None
+                and (stype == GeoType.BOX or getattr(ssrc, "sdf", None) is None)
                 and (smax is not None or svox is not None)
                 for stype, ssrc, sflags, smax, svox in zip(
                     self.shape_type,
-                    self.shape_source,
+                    generated_shape_sources,
                     self.shape_flags,
                     self.shape_sdf_max_resolution,
                     self.shape_sdf_target_voxel_size,
@@ -10846,7 +10956,7 @@ class ModelBuilder:
                 cache_key = None
                 mesh_sdf = None
 
-                if shape_type == GeoType.MESH and has_shape_collision and shape_src is not None:
+                if shape_type in (GeoType.MESH, GeoType.CONVEX_MESH) and has_shape_collision and shape_src is not None:
                     mesh_sdf = getattr(shape_src, "sdf", None)
                     # Build on a Mesh clone so shapes sharing one Mesh at different
                     # scale/margin/resolution end up with distinct SDFs.
@@ -10880,7 +10990,13 @@ class ModelBuilder:
                             deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
                         cache_key = ("mesh_sdf", id(mesh_sdf))
-                elif is_hydroelastic and has_shape_collision:
+                elif has_shape_collision and (
+                    is_hydroelastic
+                    or (
+                        shape_type == GeoType.BOX
+                        and (sdf_max_resolution is not None or sdf_target_voxel_size is not None)
+                    )
+                ):
                     effective_max_resolution = sdf_max_resolution
                     if sdf_target_voxel_size is None and effective_max_resolution is None:
                         effective_max_resolution = 64
@@ -11031,11 +11147,11 @@ class ModelBuilder:
 
             for i in range(len(self.shape_type)):
                 if (
-                    self.shape_type[i] == GeoType.MESH
-                    and self.shape_source[i] is not None
+                    self.shape_type[i] in (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.BOX)
+                    and generated_shape_sources[i] is not None
                     and (self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES)
                 ):
-                    mesh = self.shape_source[i]
+                    mesh = generated_shape_sources[i]
                     deferred_edges = deferred_collision_edges.get(i)
                     if deferred_edges is not None:
                         mesh_key = ("deferred", id(deferred_edges))
@@ -11442,7 +11558,7 @@ class ModelBuilder:
             # Add custom attributes onto the model (with lazy evaluation)
             # Early return if no custom attributes exist to avoid overhead
             if not self.custom_attributes:
-                m.bvh_build_shapes(m)
+                m.bvh_build_shapes(m, bvh_constructor=self.default_bvh_cfg.shape_constructor)
                 m.bvh_build_particles(m)
                 return m
 
@@ -11549,7 +11665,7 @@ class ModelBuilder:
                 result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
                 m.add_attribute(custom_attr.name, result, freq_key, custom_attr.assignment, custom_attr.namespace)
 
-            m.bvh_build_shapes(m)
+            m.bvh_build_shapes(m, bvh_constructor=self.default_bvh_cfg.shape_constructor)
             m.bvh_build_particles(m)
             return m
 
@@ -11618,21 +11734,23 @@ class ModelBuilder:
         """
         filters: set[tuple[int, int]] = model.shape_collision_filter_pairs
         contact_pairs: list[tuple[int, int]] = []
+        shape_world = self.shape_world
+        shape_collision_group = self.shape_collision_group
 
         # Keep only colliding shapes (those with COLLIDE_SHAPES flag) and sort by world for optimization
         colliding_indices = [i for i, flag in enumerate(self.shape_flags) if flag & ShapeFlags.COLLIDE_SHAPES]
-        sorted_indices = sorted(colliding_indices, key=lambda i: self.shape_world[i])
+        sorted_indices = sorted(colliding_indices, key=shape_world.__getitem__)
 
         # Iterate over all pairs of colliding shapes
         for i1 in range(len(sorted_indices)):
             s1 = sorted_indices[i1]
-            world1 = self.shape_world[s1]
-            collision_group1 = self.shape_collision_group[s1]
+            world1 = shape_world[s1]
+            collision_group1 = shape_collision_group[s1]
 
             for i2 in range(i1 + 1, len(sorted_indices)):
                 s2 = sorted_indices[i2]
-                world2 = self.shape_world[s2]
-                collision_group2 = self.shape_collision_group[s2]
+                world2 = shape_world[s2]
+                collision_group2 = shape_collision_group[s2]
 
                 # Early break optimization: if both shapes are in non-global worlds and different worlds,
                 # they can never collide. Since shapes are sorted by world, all remaining shapes will also
@@ -11640,7 +11758,6 @@ class ModelBuilder:
                 if world1 != -1 and world2 != -1 and world1 != world2:
                     break
 
-                # Apply the exact same filtering logic as test_world_and_group_pair kernel
                 if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
                     continue
 
@@ -11653,5 +11770,10 @@ class ModelBuilder:
                 if (shape_a, shape_b) not in filters:
                     contact_pairs.append((shape_a, shape_b))
 
-        model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
+        model.shape_contact_pairs = wp.array(
+            np.array(contact_pairs, dtype=np.int32).reshape((-1, 2)), dtype=wp.vec2i, device=model.device
+        )
         model.shape_contact_pair_count = len(contact_pairs)
+
+
+ModelBuilder.ShapeConfig.__init__ = deprecate_nonkeyword_arguments(ModelBuilder.ShapeConfig.__init__)

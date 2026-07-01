@@ -2159,6 +2159,9 @@ class JointsData:
     ``m_j := a_j + dt * (b_j + k_d_j) + dt^2 * k_p_j``,\n
     where dt is the simulation time step.
 
+    A non-zero minimum mass is enforced to avoid a\n
+    division-by-zero failure.
+
     Shape of ``(sum(e_j),)`` and type :class:`float`,\n
     where ``e_j`` is the number of dynamic constraints of joint ``j``.
     """
@@ -2172,8 +2175,8 @@ class JointsData:
     where ``m_j := a_j + dt * (b_j + k_d_j) + dt^2 * k_p_j``,
     and dt is the simulation time step.
 
-    Note that all ``inv_m_j>0``, otherwise the DoF would not be
-    part of the dynamic constraints.
+    Note that all ``inv_m_j>0`` due to a minimum non-zero mass\n
+    being enforced.
 
     Shape of ``(sum(e_j),)`` and type :class:`float`,
     where ``e_j`` is the number of dynamic constraints of joint ``j``.
@@ -2187,7 +2190,7 @@ class JointsData:
     ```
     m_j * dq_j^{+} = a_j * dq_j^{-} + dt * h_j
     ```
-    and is contributes to the dynamice of the system through the constraint equation:\n
+    and it contributes to the dynamics of the system through the constraint equation:\n
     ```
     dq_j^{+} = J_q_j * u^{+}
     ```
@@ -2206,8 +2209,8 @@ class JointsData:
     ```
     and thus the velocity bias term of the joint-space dynamics of each joint `j` is computed as:\n
     ```
-    tau_j := dt * ( tau_j_ff + k_p_j * (q_j_ref - q_j^{-} ) + k_d_j * dq_j_ref )
-    h_j := a_j * dq_j^{-} + dt * tau_j
+    tau_j_tot := dt * ( tau_j + tau_j_ff + k_p_j * (q_j_ref - q_j^{-} ) + k_d_j * dq_j_ref )
+    h_j := a_j * dq_j^{-} + dt * tau_j_tot
     dq_b_j := inv_m_j * h_j
     ```
     where dt is the simulation time step.

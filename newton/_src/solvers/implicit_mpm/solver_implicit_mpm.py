@@ -16,6 +16,7 @@ import newton
 
 from ...core.types import override
 from ...sim import ModelFlags
+from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
 from .rasterized_collisions import (
@@ -908,10 +909,12 @@ class SolverImplicitMPM(SolverBase):
             )
         )
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: newton.Model,
         config: Config,
+        *,
         temporary_store: fem.TemporaryStore | None = None,
         verbose: bool | None = None,
         enable_timers: bool = False,
