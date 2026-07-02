@@ -6124,7 +6124,6 @@ class SolverMuJoCo(SolverBase):
             body.ipos = body_ipos
             self.mj_model.body_ipos[body_id] = body_ipos
             self.mj_model.body_sameframe[body_id] = mujoco.mjtSameFrame.mjSAMEFRAME_NONE
-            self.mj_model.body_simple[body_id] = 0
         self.mj_data = mujoco.MjData(self.mj_model)
         mujoco.mj_setConst(self.mj_model, self.mj_data)
 
