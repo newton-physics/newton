@@ -723,6 +723,18 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="geom_group",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:group",
+                mjcf_attribute_name="group",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="geom_priority",
                 frequency=AttributeFrequency.SHAPE,
                 assignment=AttributeAssignment.MODEL,
@@ -1953,6 +1965,17 @@ class SolverMuJoCo(SolverBase):
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=int(SolverMuJoCo.CtrlSource.CTRL_DIRECT),
+                namespace="mujoco",
+            )
+        )
+        # Actuator kind (position/velocity/general), classified once at import.
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="ctrl_type",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=int(SolverMuJoCo.CtrlType.GENERAL),
                 namespace="mujoco",
             )
         )
@@ -4733,6 +4756,7 @@ class SolverMuJoCo(SolverBase):
             return attr.numpy()
 
         shape_condim = get_custom_attribute("condim")
+        shape_geom_group = get_custom_attribute("geom_group")
         shape_priority = get_custom_attribute("geom_priority")
         shape_geom_solimp = get_custom_attribute("geom_solimp")
         shape_geom_solmix = get_custom_attribute("geom_solmix")
@@ -5208,6 +5232,8 @@ class SolverMuJoCo(SolverBase):
 
                 if shape_condim is not None:
                     geom_params["condim"] = shape_condim[shape]
+                if shape_geom_group is not None:
+                    geom_params["group"] = shape_geom_group[shape]
                 if shape_priority is not None:
                     geom_params["priority"] = shape_priority[shape]
                 if shape_geom_solimp is not None:
@@ -5252,6 +5278,78 @@ class SolverMuJoCo(SolverBase):
 
         # This is needed for CTRL_DIRECT actuators targeting joints within combined Newton joints.
         mjc_joint_names: list[str] = []
+
+        # Saved ctrl/force ranges. The rebuild drops them, so re-attach after.
+        # Key = (dof, is_position): position and velocity sub-actuators can have
+        # different ranges.
+        joint_target_ranges: dict[tuple[int, bool], dict[str, Any]] = {}
+        if mujoco_attrs is not None and hasattr(mujoco_attrs, "actuator_trnid"):
+            jt_count = model.custom_frequency_counts.get("mujoco:actuator", 0)
+            jt_trnid = get_custom_attribute("actuator_trnid")
+            jt_ctrl_source = get_custom_attribute("ctrl_source")
+            jt_trntype = get_custom_attribute("actuator_trntype")
+            jt_world = get_custom_attribute("actuator_world")
+            jt_ctrl_type = get_custom_attribute("ctrl_type")
+            jt_has_ctrlrange = get_custom_attribute("actuator_has_ctrlrange")
+            jt_ctrlrange = get_custom_attribute("actuator_ctrlrange")
+            jt_ctrllimited = get_custom_attribute("actuator_ctrllimited")
+            jt_has_forcerange = get_custom_attribute("actuator_has_forcerange")
+            jt_forcerange = get_custom_attribute("actuator_forcerange")
+            jt_forcelimited = get_custom_attribute("actuator_forcelimited")
+
+            # Which sub-actuator a row feeds (as is_position): position->position only,
+            # velocity->velocity only, unknown->both.
+            BOTH_KINDS = (True, False)
+            kinds_by_ctrl_type = {
+                int(SolverMuJoCo.CtrlType.POSITION): (True,),
+                int(SolverMuJoCo.CtrlType.VELOCITY): (False,),
+            }
+
+            def classify_joint_target_kinds(row: int) -> tuple[bool, ...]:
+                if jt_ctrl_type is None:
+                    return BOTH_KINDS
+                return kinds_by_ctrl_type.get(int(jt_ctrl_type[row]), BOTH_KINDS)
+
+            for row in range(jt_count):
+                if jt_ctrl_source is None or int(jt_ctrl_source[row]) != int(SolverMuJoCo.CtrlSource.JOINT_TARGET):
+                    continue
+                if jt_trntype is not None and int(jt_trntype[row]) != int(SolverMuJoCo.TrnType.JOINT):
+                    continue
+                if jt_world is not None:
+                    w = int(jt_world[row])
+                    if w != first_world and w != -1:
+                        continue
+                if jt_trnid is None:
+                    continue
+                dof = int(jt_trnid[row, 0])
+                if dof < 0:
+                    continue
+                info = {
+                    "has_ctrlrange": bool(jt_has_ctrlrange[row]) if jt_has_ctrlrange is not None else False,
+                    "ctrlrange": tuple(jt_ctrlrange[row]) if jt_ctrlrange is not None else None,
+                    "ctrllimited": int(jt_ctrllimited[row]) if jt_ctrllimited is not None else None,
+                    "has_forcerange": bool(jt_has_forcerange[row]) if jt_has_forcerange is not None else False,
+                    "forcerange": tuple(jt_forcerange[row]) if jt_forcerange is not None else None,
+                    "forcelimited": int(jt_forcelimited[row]) if jt_forcelimited is not None else None,
+                }
+                for is_position in classify_joint_target_kinds(row):
+                    joint_target_ranges[(dof, is_position)] = info
+
+        def joint_target_actuator_kwargs(base: dict[str, Any], dof: int, is_position: bool) -> dict[str, Any]:
+            """Merge the matching row's authored ctrl/force ranges onto a sub-actuator's kwargs."""
+            kwargs = dict(base)
+            info = joint_target_ranges.get((dof, is_position))
+            if info is None:
+                return kwargs
+            if info["ctrllimited"] is not None:
+                kwargs["ctrllimited"] = info["ctrllimited"]
+            if info["has_ctrlrange"] and info["ctrlrange"] is not None:
+                kwargs["ctrlrange"] = info["ctrlrange"]
+            if info["forcelimited"] is not None:
+                kwargs["forcelimited"] = info["forcelimited"]
+            if info["has_forcerange"] and info["forcerange"] is not None:
+                kwargs["forcerange"] = info["forcerange"]
+            return kwargs
 
         # need to keep track of current dof and joint counts to make the indexing above correct
         num_dofs = 0
@@ -5413,7 +5511,9 @@ class SolverMuJoCo(SolverBase):
                         if mode == JointTargetMode.POSITION:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=name, **args)
+                            # A ball joint's authored range lives on a single source row
+                            # (keyed by the joint base DOF); apply it to every axis actuator.
+                            spec.add_actuator(target=name, **joint_target_actuator_kwargs(args, qd_start, True))
                             axis_to_actuator[ai, 0] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
@@ -5424,7 +5524,7 @@ class SolverMuJoCo(SolverBase):
                         elif mode == JointTargetMode.POSITION_VELOCITY:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=name, **args)
+                            spec.add_actuator(target=name, **joint_target_actuator_kwargs(args, qd_start, True))
                             axis_to_actuator[ai, 0] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
@@ -5436,7 +5536,7 @@ class SolverMuJoCo(SolverBase):
                         if mode in (JointTargetMode.VELOCITY, JointTargetMode.POSITION_VELOCITY):
                             args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=name, **args)
+                            spec.add_actuator(target=name, **joint_target_actuator_kwargs(args, qd_start, False))
                             axis_to_actuator[ai, 1] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(-(template_dof + 2))  # negative = velocity
@@ -5540,7 +5640,7 @@ class SolverMuJoCo(SolverBase):
                         if mode == JointTargetMode.POSITION:
                             actuator_args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             actuator_args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=axname, **actuator_args)
+                            spec.add_actuator(target=axname, **joint_target_actuator_kwargs(actuator_args, ai, True))
                             axis_to_actuator[ai, 0] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
@@ -5551,7 +5651,7 @@ class SolverMuJoCo(SolverBase):
                         elif mode == JointTargetMode.POSITION_VELOCITY:
                             actuator_args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             actuator_args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=axname, **actuator_args)
+                            spec.add_actuator(target=axname, **joint_target_actuator_kwargs(actuator_args, ai, True))
                             axis_to_actuator[ai, 0] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
@@ -5563,7 +5663,7 @@ class SolverMuJoCo(SolverBase):
                         if mode in (JointTargetMode.VELOCITY, JointTargetMode.POSITION_VELOCITY):
                             actuator_args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             actuator_args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=axname, **actuator_args)
+                            spec.add_actuator(target=axname, **joint_target_actuator_kwargs(actuator_args, ai, False))
                             axis_to_actuator[ai, 1] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(-(template_dof + 2))  # negative = velocity
@@ -5652,7 +5752,7 @@ class SolverMuJoCo(SolverBase):
                         if mode == JointTargetMode.POSITION:
                             actuator_args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             actuator_args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=axname, **actuator_args)
+                            spec.add_actuator(target=axname, **joint_target_actuator_kwargs(actuator_args, ai, True))
                             axis_to_actuator[ai, 0] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
@@ -5663,7 +5763,7 @@ class SolverMuJoCo(SolverBase):
                         elif mode == JointTargetMode.POSITION_VELOCITY:
                             actuator_args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             actuator_args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=axname, **actuator_args)
+                            spec.add_actuator(target=axname, **joint_target_actuator_kwargs(actuator_args, ai, True))
                             axis_to_actuator[ai, 0] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
@@ -5675,7 +5775,7 @@ class SolverMuJoCo(SolverBase):
                         if mode in (JointTargetMode.VELOCITY, JointTargetMode.POSITION_VELOCITY):
                             actuator_args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             actuator_args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=axname, **actuator_args)
+                            spec.add_actuator(target=axname, **joint_target_actuator_kwargs(actuator_args, ai, False))
                             axis_to_actuator[ai, 1] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(-(template_dof + 2))  # negative = velocity
