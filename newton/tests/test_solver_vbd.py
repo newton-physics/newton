@@ -1316,7 +1316,6 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
         contact_material_kd = wp.array([20.0, 0.0, 20.0, 0.0], dtype=float, device=device)
         contact_material_mu = wp.zeros(4, dtype=float, device=device)
 
-        shape_material_mu = wp.zeros(1, dtype=float, device=device)
         shape_body = wp.array([-1], dtype=int, device=device)
         body_q = wp.zeros(0, dtype=wp.transform, device=device)
         body_q_prev = wp.zeros(0, dtype=wp.transform, device=device)
@@ -1348,9 +1347,6 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
                 contact_material_ke,
                 contact_material_kd,
                 contact_material_mu,
-                shape_material_mu,
-                shape_material_mu,  # shape_material_ke (section 2 inactive here: edge/face counts are 0)
-                shape_material_mu,  # shape_material_kd (section 2 inactive here)
                 shape_body,
                 body_q,
                 body_q_prev,
@@ -1364,9 +1360,6 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
                 # water-tight edge/face params (unused here: edge/face counts are 0)
                 wp.zeros((1, 3), dtype=wp.int32, device=device),
                 wp.zeros(4, dtype=wp.vec3, device=device),
-                0.0,
-                0.0,
-                0.0,
             ],
             outputs=[forces, hessians],
             device=device,

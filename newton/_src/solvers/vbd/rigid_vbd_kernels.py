@@ -918,9 +918,6 @@ def _eval_soft_ef_contact(
     contact_ke: float,
     contact_kd: float,
     contact_mu: float,
-    shape_material_ke: wp.array[float],
-    shape_material_kd: wp.array[float],
-    shape_material_mu: wp.array[float],
     friction_epsilon: float,
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
@@ -991,24 +988,15 @@ def _eval_soft_ef_contact(
 
         relative_translation = dx - bv * dt
 
-        # Mix the global soft-contact material with the contacted shape's material so per-shape
-        # tuning (grippy fingers, low-friction table) applies to edge/face contacts too:
-        # ke/kd arithmetic mean, mu geometric mean (same rule as the particle-vs-surface path).
-        mixed_ke, mixed_kd, mixed_mu = _average_contact_material(
-            contact_ke,
-            contact_kd,
-            contact_mu,
-            shape_material_ke[shape_index],
-            shape_material_kd[shape_index],
-            shape_material_mu[shape_index],
-        )
+        # contact_ke/kd/mu are the per-contact AVBD values (ramped penalty + pre-mixed material,
+        # cached by init_body_particle_contacts) -- the same source the particle path uses.
         force, hessian = _compute_body_particle_contact_force(
             penetration_depth,
             n,
             relative_translation,
-            mixed_ke,
-            mixed_kd,
-            mixed_mu,
+            contact_ke,
+            contact_kd,
+            contact_mu,
             friction_epsilon,
             dt,
         )
@@ -2640,7 +2628,9 @@ def init_body_particle_contacts(
     ramping (k_start >= 0) or at ``avg_ke`` when fixed-k (k_start < 0).
     """
     i = wp.tid()
-    if i >= body_particle_contact_count[0]:
+    # Process every soft contact -- particle range [0, c0) plus the water-tight edge/face ranges --
+    # so edge/face records get the same pre-mixed material and seeded penalty as particle contacts.
+    if i >= body_particle_contact_count[0] + body_particle_contact_count[1] + body_particle_contact_count[2]:
         return
 
     shape_idx = body_particle_contact_shape[i]
@@ -3290,14 +3280,12 @@ def accumulate_body_soft_ef_contacts(
     body_inv_mass: wp.array[float],
     body_colors: wp.array[int],
     shape_body: wp.array[int],
-    # Contact material: global soft-contact scalars mixed per contact with the shape's material
+    # Per-contact AVBD material (ramped penalty + pre-mixed material), the same source the
+    # particle-vs-surface path uses; indexed by the soft-contact slot.
     friction_epsilon: float,
-    soft_contact_ke: float,
-    soft_contact_kd: float,
-    soft_contact_mu: float,
-    shape_material_ke: wp.array[float],
-    shape_material_kd: wp.array[float],
-    shape_material_mu: wp.array[float],
+    body_particle_contact_penalty_k: wp.array[float],
+    body_particle_contact_material_kd: wp.array[float],
+    body_particle_contact_material_mu: wp.array[float],
     # Soft contact data (one thread per buffer slot)
     soft_contact_count: wp.array[int],
     soft_contact_max: int,
@@ -3354,12 +3342,9 @@ def accumulate_body_soft_ef_contacts(
         particle_q,
         particle_q_prev,
         particle_radius,
-        soft_contact_ke,
-        soft_contact_kd,
-        soft_contact_mu,
-        shape_material_ke,
-        shape_material_kd,
-        shape_material_mu,
+        body_particle_contact_penalty_k[t_id],
+        body_particle_contact_material_kd[t_id],
+        body_particle_contact_material_mu[t_id],
         friction_epsilon,
         shape_body,
         body_q,
@@ -4198,6 +4183,8 @@ def update_duals_body_particle_contacts(
     body_particle_contact_shape: wp.array[int],
     body_particle_contact_body_pos: wp.array[wp.vec3],
     body_particle_contact_normal: wp.array[wp.vec3],
+    tri_indices: wp.array2d[wp.int32],
+    soft_contact_barycentric: wp.array[wp.vec3],
     particle_q: wp.array[wp.vec3],
     particle_radius: wp.array[float],
     shape_body: wp.array[int],
@@ -4210,14 +4197,16 @@ def update_duals_body_particle_contacts(
     """
     Update AVBD penalty parameters for body-particle soft contacts (per-iteration).
 
-    Ramps each contact's penalty by beta * penetration, clamped to the
-    per-contact material stiffness ceiling.
+    Ramps each contact's penalty by beta * penetration, clamped to the per-contact material
+    stiffness ceiling. Covers all soft contacts: the particle range [0, c0) uses the particle
+    position; the water-tight edge/face ranges use the barycentric point on the soft triangle.
     """
     idx = wp.tid()
-    if idx >= body_particle_contact_count[0]:
+    c0 = body_particle_contact_count[0]
+    if idx >= c0 + body_particle_contact_count[1] + body_particle_contact_count[2]:
         return
 
-    particle_idx = body_particle_contact_particle[idx]
+    prim = body_particle_contact_particle[idx]  # particle id in [0, c0); soft-triangle id in edge/face
     shape_idx = body_particle_contact_shape[idx]
     body_idx = shape_body[shape_idx] if shape_idx >= 0 else -1
 
@@ -4228,12 +4217,23 @@ def update_duals_body_particle_contacts(
         X_wb = body_q[body_idx]
 
     cp_world = wp.transform_point(X_wb, body_particle_contact_body_pos[idx])
-    particle_pos = particle_q[particle_idx]
-    radius = particle_radius[particle_idx]
     margin = shape_margin[shape_idx] if shape_idx >= 0 and shape_margin.shape[0] > 0 else 0.0
     n = body_particle_contact_normal[idx]
 
-    penetration = -(wp.dot(n, particle_pos - cp_world) - radius - margin)
+    # Contact point + radius: the particle for the [0, c0) range; the barycentric point on the soft
+    # triangle (max corner radius) for the edge/face ranges -- matching _eval_soft_ef_contact.
+    if idx < c0:
+        contact_pos = particle_q[prim]
+        radius = particle_radius[prim]
+    else:
+        bary = soft_contact_barycentric[idx]
+        v0 = tri_indices[prim, 0]
+        v1 = tri_indices[prim, 1]
+        v2 = tri_indices[prim, 2]
+        contact_pos = bary[0] * particle_q[v0] + bary[1] * particle_q[v1] + bary[2] * particle_q[v2]
+        radius = wp.max(particle_radius[v0], wp.max(particle_radius[v1], particle_radius[v2]))
+
+    penetration = -(wp.dot(n, contact_pos - cp_world) - radius - margin)
     penetration = wp.max(0.0, penetration)
 
     k = body_particle_contact_penalty_k[idx]

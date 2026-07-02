@@ -17,6 +17,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.vbd.particle_vbd_kernels import accumulate_particle_body_contact_force_and_hessian
+from newton._src.solvers.vbd.rigid_vbd_kernels import init_body_particle_contacts
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -160,10 +161,11 @@ def _set_slot(arr, idx, value):
 
 
 def _run_face_section2(device, shape_margin):
-    """Build a single soft-FACE contact and launch the particle-side kernel once with the given
+    """Build a single soft-FACE contact, seed the shared AVBD per-contact material via
+    ``init_body_particle_contacts``, then launch the particle-side kernel once with the given
     ``shape_margin`` array. The geometry gives a 0.05 penetration along +z; returns
-    ``(forces, hessians, ke, bary, (p0, p1, p2))``. All vertices share color 0 so one launch
-    processes the whole triangle."""
+    ``(forces, hessians, ke, bary, (p0, p1, p2))`` where ``ke`` is the mixed effective stiffness
+    section 2 reads. All vertices share color 0 so one launch processes the whole triangle."""
     builder = newton.ModelBuilder()
     builder.add_shape_box(body=-1, xform=wp.transform(wp.vec3(0.0), wp.quat_identity()), hx=1.0, hy=1.0, hz=1.0)
     p0 = builder.add_particle(wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0), 0.1, radius=0.0)
@@ -197,7 +199,32 @@ def _run_face_section2(device, shape_margin):
     body_com = wp.zeros(1, dtype=wp.vec3, device=device)
     forces = wp.zeros(model.particle_count, dtype=wp.vec3, device=device)
     hessians = wp.zeros(model.particle_count, dtype=wp.mat33, device=device)
-    unused = wp.zeros(smax, dtype=float, device=device)  # AVBD params (section 1 never runs, c0 == 0)
+
+    # The edge/face path shares the AVBD per-contact machinery with the particle-vs-surface path:
+    # init_body_particle_contacts pre-mixes the global soft material with the contacted shape's
+    # material and seeds the penalty. Fixed-k (k_start < 0) seeds it at the mixed ke, reproducing
+    # the fully-ramped stiffness section 2 reads at run time in a single launch.
+    penalty_k = wp.zeros(smax, dtype=float, device=device)
+    material_ke = wp.zeros(smax, dtype=float, device=device)
+    material_kd = wp.zeros(smax, dtype=float, device=device)
+    material_mu = wp.zeros(smax, dtype=float, device=device)
+    wp.launch(
+        init_body_particle_contacts,
+        dim=smax,
+        inputs=[
+            contacts.soft_contact_count,
+            contacts.soft_contact_shape,
+            model.soft_contact_ke,
+            model.soft_contact_kd,
+            model.soft_contact_mu,
+            model.shape_material_ke,
+            model.shape_material_kd,
+            model.shape_material_mu,
+            -1.0,  # k_start < 0 -> fixed-k: penalty seeded at the mixed ke (no ramp)
+        ],
+        outputs=[penalty_k, material_kd, material_mu, material_ke],
+        device=device,
+    )
 
     wp.launch(
         accumulate_particle_body_contact_force_and_hessian,
@@ -213,13 +240,10 @@ def _run_face_section2(device, shape_margin):
             contacts.soft_contact_primitive,
             contacts.soft_contact_count,
             smax,
-            unused,  # body_particle_contact_penalty_k
-            unused,  # body_particle_contact_material_ke
-            unused,  # body_particle_contact_material_kd
-            unused,  # body_particle_contact_material_mu
-            model.shape_material_mu,
-            model.shape_material_ke,
-            model.shape_material_kd,
+            penalty_k,
+            material_ke,
+            material_kd,
+            material_mu,
             model.shape_body,
             body_q,
             body_q,
@@ -232,16 +256,14 @@ def _run_face_section2(device, shape_margin):
             shape_margin,
             model.tri_indices,
             contacts.soft_contact_barycentric,
-            model.soft_contact_ke,
-            model.soft_contact_kd,
-            model.soft_contact_mu,
         ],
         outputs=[forces, hessians],
         device=device,
     )
-    # Section 2 mixes the global soft material with the contacted shape's material (ke arithmetic
-    # mean); return that mixed ke so callers assert against the effective stiffness.
-    mixed_ke = 0.5 * (float(model.soft_contact_ke) + float(model.shape_material_ke.numpy()[0]))
+    # Section 2 reads the same per-contact AVBD stiffness the particle path uses; with fixed-k init
+    # that equals the mixed ke (arithmetic mean of the global soft ke and the shape's ke). Return it
+    # so callers assert against the effective stiffness.
+    mixed_ke = float(penalty_k.numpy()[0])
     return forces.numpy(), hessians.numpy(), mixed_ke, bary, (p0, p1, p2)
 
 
