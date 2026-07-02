@@ -334,7 +334,13 @@ VBD uses proxy contact preparation, body-proxy harvesting, and input-state
 notifications. The notification hook keeps private previous-body state aligned
 when proxy poses are synchronized or ADMM iterations restart. The harvest path
 reduces final rigid-rigid and body-particle contact forces onto proxy bodies
-instead of relying on aggregate momentum differences.
+instead of relying on aggregate momentum differences. VBD also supports proxy
+joints: :class:`~newton.solvers.experimental.coupled.SolverCoupledProxy` keeps
+configured fixed, prismatic, or revolute joints (or their ``proxy_joints``
+aliases) enabled in the destination view so their constraints continue to act
+between proxy bodies. For one-DoF drives, the coupler remaps source targets to
+destination-local indices and copies ``joint_target_q`` and ``joint_target_qd``
+before each destination solve.
 
 Implicit MPM supports proxy body and proxy particle rewind/harvest hooks.
 Transfer-active proxy particles can participate in P2G/G2P momentum transfer
@@ -350,13 +356,7 @@ against immovable particles.
 
 MuJoCo provides GPU effective-mass hooks from MuJoCo Warp data so proxy virtual
 inertia and ADMM endpoint weights can use articulated mass estimates rather than
-raw body mass. MuJoCo currently marks proxy impulse harvesting as unsupported
-because the hook set does not expose a MuJoCo contact-only feedback path.
-
-SemiImplicit preserves externally injected and coupled particle forces by
-accumulating particle contact forces into the existing ``particle_f`` buffer.
-Kamino accepts ``ModelView`` instances in solver construction and marks proxy
-impulse harvesting as unsupported until it exposes a contact-only feedback path.
+raw body mass.
 
 Current Limitations
 -------------------

@@ -663,6 +663,13 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         self.model = builder.finalize(device="cpu")
 
+    def test_rejects_solver_without_coupling_interface_during_construction(self):
+        with self.assertRaisesRegex(TypeError, "cannot participate in a coupled simulation"):
+            SolverCoupled(
+                model=self.model,
+                entries=[SolverCoupled.Entry(name="unsupported", solver=SolverBase, bodies=[0])],
+            )
+
     def test_configure_view_applies_after_compaction(self):
         builder = newton.ModelBuilder(gravity=0.0)
         cloth_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -1586,6 +1593,37 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
             np.array([[0.0, 0.0, -7.5], [0.0, 0.0, -5.0], [0.0, 0.0, -2.5]], dtype=np.float32),
             atol=1.0e-6,
         )
+
+
+class TestSolverVBDCouplingHooks(unittest.TestCase):
+    """VBD-specific coupling hook behavior."""
+
+    def test_external_rigid_solver_harvests_particle_soft_contacts(self):
+        builder = newton.ModelBuilder(gravity=0.0)
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(body=body, radius=0.1)
+        builder.add_particle(pos=(0.15, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.1)
+        builder.color()
+        model = builder.finalize(device="cpu")
+        solver = SolverVBD(model=model, iterations=1, integrate_with_external_rigid_solver=True)
+
+        state_in = model.state()
+        state_out = model.state()
+        contacts = model.collide(state_in)
+        self.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
+        solver.step(state_in, state_out, control=None, contacts=contacts, dt=1.0 / 60.0)
+
+        out_particle_f = wp.zeros(model.particle_count, dtype=wp.vec3, device=model.device)
+        solver.coupling_harvest_proxy_particle_forces(
+            wp.array([0], dtype=int, device=model.device),
+            out_particle_f,
+            particle_qd_before=state_in.particle_qd,
+            state=state_in,
+            state_out=state_out,
+            contacts=contacts,
+            dt=1.0 / 60.0,
+        )
+        self.assertTrue(np.all(np.isfinite(out_particle_f.numpy())))
 
 
 class TestSolverCoupledProxyJoints(unittest.TestCase):

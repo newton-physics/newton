@@ -519,6 +519,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             }
 
             solver = cfg.solver(view)
+            _require_supports_coupling(solver)
             self._entries[cfg.name] = SolverEntry(
                 name=cfg.name,
                 solver=solver,
