@@ -97,7 +97,7 @@ add_function_test(
 
 
 # ---------------------------------------------------------------------------
-# T2: SDF optimizers (Macklin 2020) validated against a brute-force grid min.
+# SDF optimizers (Macklin 2020) validated against a brute-force grid min.
 # The brute-force reference samples phi on a fine grid and takes the argmin,
 # so these isolate "does the optimizer find the minimum of phi".
 # ---------------------------------------------------------------------------
@@ -292,7 +292,7 @@ def test_optimize_face_sdf_sphere(test, device):
 
 
 # ---------------------------------------------------------------------------
-# T3: edge + face pass kernels (record emission).
+# Edge + face pass kernels (record emission).
 # ---------------------------------------------------------------------------
 
 
@@ -313,7 +313,7 @@ def test_edge_face_passes_box(test, device):
         mass=0.1,
     )
     model = builder.finalize(device=device)
-    # Large buffer: flag-aware sizing lands in T4; this isolates the kernels.
+    # Large fixed buffer to isolate the kernels; the flag-aware default sizing is covered separately.
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.1, soft_contact_max=4096)
     contacts = pipeline.contacts()
     state = model.state()
@@ -359,7 +359,7 @@ def test_edge_face_passes_box(test, device):
 
 
 # ---------------------------------------------------------------------------
-# T4: dispatch flag — backward-compat (bit-for-bit) and water-tight regression.
+# Dispatch flag — backward-compat (bit-for-bit) and water-tight regression.
 # ---------------------------------------------------------------------------
 
 
@@ -478,7 +478,7 @@ for _name, _fn in (
 
 
 # ---------------------------------------------------------------------------
-# T5: mesh volume-SDF provisioning at finalize (B2). Texture SDFs are CUDA-only.
+# Mesh volume-SDF provisioning at finalize. Texture SDFs are CUDA-only.
 # ---------------------------------------------------------------------------
 
 
@@ -499,7 +499,7 @@ def test_mesh_sdf_provisioned_and_emits(test, device):
     )
     builder.enable_rigid_mesh_sdfs()
     model = builder.finalize(device=device)
-    # B2: the participating mesh now carries a provisioned volume SDF.
+    # The participating mesh now carries a provisioned volume SDF.
     test.assertGreaterEqual(int(model._shape_sdf_index.numpy()[mesh_shape]), 0)
 
     pipeline = newton.CollisionPipeline(
@@ -961,7 +961,7 @@ add_function_test(
 
 
 def test_face_cull_uses_max_vertex_reach(test, device):
-    """Regression (B6): the FACE cull reach must be the max centroid-to-vertex distance, not circumradius.
+    """Regression: the FACE cull reach must be the max centroid-to-vertex distance, not circumradius.
 
     A deliberately non-equilateral triangle whose near vertex is also the one *farthest* from the
     centroid, so circumradius (~0.124) is smaller than the true reach (~0.163). The near vertex sits

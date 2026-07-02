@@ -294,7 +294,7 @@ def create_soft_face_contacts(
     geo = shape_type[shape_index]
     sdf_idx = shape_sdf_index[shape_index]
     if (not _is_analytic(geo)) and sdf_idx < 0:
-        return  # mesh without a provisioned SDF -> legacy V-path covers it (host warns once, T5)
+        return  # mesh without a provisioned SDF -> the legacy per-particle path still covers it (the pipeline already warned once about this at construction)
 
     v0 = tri_indices[t, 0]
     v1 = tri_indices[t, 1]
