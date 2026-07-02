@@ -5448,7 +5448,13 @@ class ModelBuilder:
                     body_data[last_dynamic_body]["mass"] += m
                     total_mass = m + source_m
                     if total_mass > 0.0:
-                        body_data[last_dynamic_body]["com"] = (m * com + source_m * source_com) / total_mass
+                        merged_com = (m * com + source_m * source_com) / total_mass
+                        qd = body_data[last_dynamic_body]["qd"]
+                        angular_velocity = wp.spatial_bottom(qd)
+                        com_offset = wp.transform_vector(body_data[last_dynamic_body]["q"], merged_com - source_com)
+                        linear_velocity = wp.spatial_top(qd) + wp.cross(angular_velocity, com_offset)
+                        body_data[last_dynamic_body]["qd"] = wp.spatial_vector(*linear_velocity, *angular_velocity)
+                        body_data[last_dynamic_body]["com"] = merged_com
                     # else: both bodies massless; keep parent COM (avoids 0/0).
                     # indicate to recompute inverse mass, inertia for this body
                     body_data[last_dynamic_body]["inv_mass"] = None
