@@ -4596,6 +4596,43 @@ def Xform "Articulation" (
         self.assertTrue(np.any(geom_priority == 1))
         self.assertTrue(np.any(geom_priority == 0))
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_geom_group_parsing_and_conversion(self):
+        """Test USD geom groups are imported and converted to MuJoCo."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    def Sphere "Collision" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.1
+        int mjc:group = 3
+    }
+}
+"""
+        )
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        np.testing.assert_array_equal(model.mujoco.geom_group.numpy(), [3])
+        np.testing.assert_array_equal(solver.mj_model.geom_group, [3])
+        np.testing.assert_array_equal(solver.mjw_model.geom_group.numpy(), [3])
+
 
 class TestImportSampleAssetsParsing(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")

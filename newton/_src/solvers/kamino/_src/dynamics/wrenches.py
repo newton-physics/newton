@@ -41,6 +41,7 @@ def _compute_joint_dof_body_wrenches_dense(
     # Inputs:
     model_info_bodies_offset: wp.array[int32],
     model_info_joint_dofs_offset: wp.array[int32],
+    model_joints_num_dynamic_cts: wp.array[int32],
     model_joints_dofs_offset: wp.array[int32],
     model_joints_wid: wp.array[int32],
     model_joints_bid_B: wp.array[int32],
@@ -53,6 +54,10 @@ def _compute_joint_dof_body_wrenches_dense(
 ):
     # Retrieve the thread index as the joint index
     jid = wp.tid()
+
+    # If the joint dynamics are modeled, `tau_j` will be included there
+    if model_joints_num_dynamic_cts[jid] > 0:
+        return
 
     # Retrieve the world index of the joint
     wid = model_joints_wid[jid]
@@ -106,9 +111,9 @@ def _compute_joint_dof_body_wrenches_dense(
 @wp.kernel
 def _compute_joint_dof_body_wrenches_sparse(
     # Inputs:
+    model_joints_num_dynamic_cts: wp.array[int32],
     model_joints_num_dofs: wp.array[int32],
     model_joints_dofs_offset: wp.array[int32],
-    model_joints_wid: wp.array[int32],
     model_joints_bid_B: wp.array[int32],
     model_joints_bid_F: wp.array[int32],
     data_joints_tau_j: wp.array[float32],
@@ -119,6 +124,10 @@ def _compute_joint_dof_body_wrenches_sparse(
 ):
     # Retrieve the thread index as the joint index
     jid = wp.tid()
+
+    # If the joint dynamics are modeled, `tau_j` will be included there
+    if model_joints_num_dynamic_cts[jid] > 0:
+        return
 
     # Retrieve the body indices of the joint
     # NOTE: these indices are w.r.t the model
@@ -526,6 +535,7 @@ def compute_joint_dof_body_wrenches_dense(
             # Inputs:
             model.info.bodies_offset,
             model.info.joint_dofs_offset,
+            model.joints.num_dynamic_cts,
             model.joints.dofs_offset,
             model.joints.wid,
             model.joints.bid_B,
@@ -562,9 +572,9 @@ def compute_joint_dof_body_wrenches_sparse(
         dim=model.size.sum_of_num_joints,
         inputs=[
             # Inputs:
+            model.joints.num_dynamic_cts,
             model.joints.num_dofs,
             model.joints.dofs_offset,
-            model.joints.wid,
             model.joints.bid_B,
             model.joints.bid_F,
             data.joints.tau_j,
