@@ -7369,11 +7369,13 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             builder.add_shape_box(body=tip, hx=0.1, hy=0.1, hz=0.1)
             builder.add_articulation([j0, j1, j2])
 
-            connect_joint = builder.add_joint_ball(
-                parent=root,
-                child=mid,
-                enabled=bool(connect_enabled[world]),
-            )
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*undefined semantics.*", category=UserWarning)
+                connect_joint = builder.add_joint_ball(
+                    parent=root,
+                    child=mid,
+                    enabled=bool(connect_enabled[world]),
+                )
             _add_equality_constraint(
                 builder,
                 constraint_type=newton.EqType.CONNECT,
@@ -7389,11 +7391,13 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                     "mujoco:equality_constraint_objtype": MJC_OBJ_BODY,
                 },
             )
-            weld_joint = builder.add_joint_fixed(
-                parent=mid,
-                child=tip,
-                enabled=bool(weld_enabled[world]),
-            )
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*undefined semantics.*", category=UserWarning)
+                weld_joint = builder.add_joint_fixed(
+                    parent=mid,
+                    child=tip,
+                    enabled=bool(weld_enabled[world]),
+                )
             _add_equality_constraint(
                 builder,
                 constraint_type=newton.EqType.WELD,

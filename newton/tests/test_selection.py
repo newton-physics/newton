@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -122,7 +123,9 @@ class TestSelection(unittest.TestCase):
 
         j_root = builder.add_joint_free(parent=-1, child=root, label="root_joint")
         j_tip = builder.add_joint_revolute(parent=root, child=tip, axis=wp.vec3(0.0, 0.0, 1.0), label="tip_joint")
-        j_tip_duplicate = builder.add_joint_fixed(parent=root, child=tip, label="tip_duplicate_joint")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            j_tip_duplicate = builder.add_joint_fixed(parent=root, child=tip, label="tip_duplicate_joint")
         builder.add_articulation([j_root, j_tip, j_tip_duplicate], label="robot")
         model = builder.finalize()
 

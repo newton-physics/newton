@@ -221,6 +221,25 @@ class TestModelBuilderDeprecations(unittest.TestCase):
             newton.use_coord_layout_targets = prev_flag
 
 
+class TestParallelJointWarning(unittest.TestCase):
+    """Warn on parallel joints between the same pair of bodies."""
+
+    def test_free_parallel_warns(self):
+        builder = ModelBuilder()
+        body = builder.add_body(mass=1.0, label="Sun")
+
+        with self.assertWarnsRegex(UserWarning, r"Sun.*FREE.*inconsistent"):
+            builder.add_joint_revolute(parent=-1, child=body)
+
+    def test_non_free_parallel_warns_undefined(self):
+        builder = ModelBuilder()
+        link = builder.add_link(mass=1.0)
+        builder.add_joint_revolute(parent=-1, child=link)
+
+        with self.assertWarnsRegex(UserWarning, "undefined"):
+            builder.add_joint_prismatic(parent=-1, child=link)
+
+
 class TestModelBuilderBvhConstructor(unittest.TestCase):
     def test_model_builder_forwards_bvh_constructors(self):
         builder = ModelBuilder()
@@ -1833,10 +1852,10 @@ class TestModelJoints(unittest.TestCase):
         """Test programmatic creation of mimic constraints."""
         builder = newton.ModelBuilder()
 
-        # Create two joints
-        b0 = builder.add_body()
-        b1 = builder.add_body()
-        b2 = builder.add_body()
+        # Create three links without implicit FREE joints.
+        b0 = builder.add_link()
+        b1 = builder.add_link()
+        b2 = builder.add_link()
 
         j1 = builder.add_joint_revolute(
             parent=-1,
@@ -1856,6 +1875,9 @@ class TestModelJoints(unittest.TestCase):
             axis=(0, 0, 1),
             label="j3",
         )
+        builder.add_articulation([j1])
+        builder.add_articulation([j2])
+        builder.add_articulation([j3])
 
         # Add mimic constraints
         _c1 = builder.add_constraint_mimic(
@@ -1897,11 +1919,11 @@ class TestModelJoints(unittest.TestCase):
     def test_add_base_joint_fixed_to_parent(self):
         """Test that add_base_joint with parent creates fixed joint."""
         builder = ModelBuilder()
-        parent_body = builder.add_body(xform=wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
+        parent_body = builder.add_link(xform=wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
         parent_joint = builder.add_joint_fixed(parent=-1, child=parent_body)
         builder.add_articulation([parent_joint])  # Register parent body into an articulation
 
-        child_body = builder.add_body(xform=wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
+        child_body = builder.add_link(xform=wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
         joint_id = builder._add_base_joint(child_body, parent=parent_body, floating=False)
 
         self.assertEqual(builder.joint_type[joint_id], newton.JointType.FIXED)
@@ -2490,7 +2512,7 @@ class TestModelValidation(unittest.TestCase):
     def test_control_clear(self):
         """Test that Control.clear() works without errors."""
         builder = newton.ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_link()
         joint = builder.add_joint_free(child=body)
         builder.add_articulation([joint])
 
