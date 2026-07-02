@@ -2324,7 +2324,7 @@ def update_geom_properties_kernel(
 
     # check if this is a mesh geom and apply mesh transformation
     if geom_type[geom_idx] == GEOM_TYPE_MESH:
-        mesh_id = geom_dataid[world, geom_idx]
+        mesh_id = geom_dataid[world % geom_dataid.shape[0], geom_idx]
         mesh_p = mesh_pos[mesh_id]
         mesh_q = mesh_quat[mesh_id]
         mesh_tf = wp.transform(mesh_p, quat_wxyz_to_xyzw(mesh_q))

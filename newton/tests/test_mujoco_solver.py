@@ -5922,6 +5922,7 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # Create MuJoCo solver
         solver = newton.solvers.SolverMuJoCo(model)
+        self.assertEqual(solver.mjw_model.geom_dataid.shape[0], 1)
 
         # Verify that mesh_pos is non-zero (mesh center should be at 0.5, 0.5, 0.5)
         mesh_pos = solver.mjw_model.mesh_pos.numpy()
