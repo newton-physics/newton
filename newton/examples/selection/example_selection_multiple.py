@@ -111,6 +111,7 @@ class Example:
 
         # finalize model
         self.model = scene.finalize()
+        self.model.shape_gap.zero_()
 
         self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, nconmax=70)
 

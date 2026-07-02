@@ -79,7 +79,6 @@ def write_contact(
     pos_in: wp.vec3,
     frame_in: wp.mat33,
     margin_in: float,
-    gap_in: float,
     condim_in: int,
     friction_in: vec5,
     solref_in: wp.vec2f,
@@ -110,7 +109,7 @@ def write_contact(
     contact_frame_out[cid] = frame_in
     contact_geom_out[cid] = geoms_in
     contact_worldid_out[cid] = worldid_in
-    contact_includemargin_out[cid] = margin_in - gap_in
+    contact_includemargin_out[cid] = margin_in
     contact_dim_out[cid] = condim_in
     contact_friction_out[cid] = friction_in
     contact_solref_out[cid] = solref_in
@@ -390,7 +389,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
         if body_a < 0:
             worldid = body_b // bodies_per_world
 
-        margin, gap, condim, friction, solref, solreffriction, solimp, mix = contact_params(
+        margin, _gap, condim, friction, solref, solreffriction, solimp, mix = contact_params(
             geom_condim,
             geom_priority,
             geom_solmix,
@@ -479,7 +478,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
             pos_in=pos,
             frame_in=frame,
             margin_in=margin,
-            gap_in=gap,
             condim_in=condim,
             friction_in=friction,
             solref_in=solref,
@@ -2246,6 +2244,7 @@ def update_geom_properties_kernel(
     shape_mjc_solref: wp.array[wp.vec2f],
     shape_mjc_solref_mode: wp.array[wp.int32],
     shape_margin: wp.array[float],
+    shape_gap: wp.array[float],
     zero_margin: int,
     # outputs
     geom_friction: wp.array2d[wp.vec3f],
@@ -2267,9 +2266,10 @@ def update_geom_properties_kernel(
     this internally based on the geometry, and Newton's shape_collision_radius
     is not compatible with MuJoCo's bounding sphere calculation.
 
-    Note: geom_gap is always set to 0 because Newton does not use MuJoCo's
-    gap concept.  geom_margin is zeroed when MuJoCo handles collisions
-    because mujoco_warp's NATIVECCD broadphase rejects non-zero margins at
+    Note: geom_gap is forwarded from shape_gap (MuJoCo 3.9 semantics:
+    gap widens the detection envelope without affecting force generation).
+    geom_margin is zeroed when MuJoCo handles collisions because
+    mujoco_warp's NATIVECCD broadphase still rejects non-zero margins at
     put_model() time (#2106).  When Newton provides contacts, margins are
     restored from shape_margin so that ``convert_newton_contacts_to_mjwarp_kernel``
     can compute correct ``includemargin`` thresholds via ``contact_params``.
@@ -2308,7 +2308,7 @@ def update_geom_properties_kernel(
     if shape_geom_solmix:
         geom_solmix[world, geom_idx] = shape_geom_solmix[shape_idx]
 
-    geom_gap[world, geom_idx] = 0.0
+    geom_gap[world, geom_idx] = shape_gap[shape_idx]
     if zero_margin:
         geom_margin[world, geom_idx] = 0.0
     else:
@@ -2324,7 +2324,7 @@ def update_geom_properties_kernel(
 
     # check if this is a mesh geom and apply mesh transformation
     if geom_type[geom_idx] == GEOM_TYPE_MESH:
-        mesh_id = geom_dataid[world, geom_idx]
+        mesh_id = geom_dataid[world % geom_dataid.shape[0], geom_idx]
         mesh_p = mesh_pos[mesh_id]
         mesh_q = mesh_quat[mesh_id]
         mesh_tf = wp.transform(mesh_p, quat_wxyz_to_xyzw(mesh_q))

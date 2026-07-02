@@ -2391,17 +2391,18 @@ class SolverMuJoCo(SolverBase):
             authored_margin = float(pair_margin[i]) if pair_margin is not None else 0.0
             authored_gap = float(pair_gap[i]) if pair_gap is not None else 0.0
             if self._zero_margins_for_native_ccd:
-                # Zeroed in the spec for NATIVECCD/MULTICCD compatibility (#2106).
-                # When use_mujoco_contacts=False, real values are written back
-                # at runtime via notify_model_changed -> _update_pair_properties().
+                # NATIVECCD/MULTICCD reject non-zero margin at put_model (#2106);
+                # gap is unrestricted under MuJoCo 3.9, so forward it.
                 pair_kwargs["margin"] = 0.0
-                pair_kwargs["gap"] = 0.0
-                if self._use_mujoco_contacts and (authored_margin > 0.0 or authored_gap > 0.0):
+                if pair_gap is not None:
+                    pair_kwargs["gap"] = authored_gap
+                if self._use_mujoco_contacts and authored_margin > 0.0:
                     warnings.warn(
-                        f"Pair ({geom_name1}, {geom_name2}): authored margin={authored_margin}, "
-                        f"gap={authored_gap} zeroed for NATIVECCD/MULTICCD compatibility (#2106). "
-                        f"To honor these values, switch to Newton's collision pipeline by "
-                        f"constructing the solver with use_mujoco_contacts=False and feeding "
+                        f"Pair ({geom_name1}, {geom_name2}): authored margin="
+                        f"{authored_margin} zeroed for NATIVECCD/MULTICCD "
+                        f"compatibility (#2106). To honor this value, switch "
+                        f"to Newton's collision pipeline by constructing the "
+                        f"solver with use_mujoco_contacts=False and feeding "
                         f"Newton-generated contacts into step().",
                         stacklevel=2,
                     )
@@ -3188,7 +3189,7 @@ class SolverMuJoCo(SolverBase):
         disable_contacts: bool = False,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
-        ls_parallel: bool | None = None,  # Deprecated: being removed from mujoco_warp
+        ls_parallel: bool | None = None,  # Deprecated: ignored since mujoco_warp 3.9.1
         use_mujoco_contacts: bool = True,
         include_sites: bool = True,
         skip_visual_only_geoms: bool = True,
@@ -3227,16 +3228,15 @@ class SolverMuJoCo(SolverBase):
             disable_contacts: If True, disable contact computation in MuJoCo.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
-            ls_parallel: Deprecated. Parallel line search is being removed from ``mujoco_warp``; passing this option emits a ``DeprecationWarning``.
+            ls_parallel: Deprecated and ignored. Parallel line search was removed from ``mujoco_warp`` in 3.9.1; passing this option emits a ``DeprecationWarning`` and has no effect.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
             include_sites: If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
         """
         if ls_parallel is not None:
             warnings.warn(
-                "ls_parallel is deprecated. Parallel line search is being removed "
-                "from mujoco_warp; this argument will stop having an effect in a "
-                "future release.",
+                "ls_parallel is deprecated and no longer has any effect: parallel "
+                "line search was removed from mujoco_warp in 3.9.1.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -3474,7 +3474,6 @@ class SolverMuJoCo(SolverBase):
                 solver=solver,
                 integrator=integrator,
                 target_filename=save_to_mjcf,
-                ls_parallel=ls_parallel,
                 include_sites=include_sites,
                 skip_visual_only_geoms=skip_visual_only_geoms,
             )
@@ -4465,7 +4464,6 @@ class SolverMuJoCo(SolverBase):
         target_filename: str | None = None,
         skip_visual_only_geoms: bool = True,
         include_sites: bool = True,
-        ls_parallel: bool | None = None,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
@@ -4506,7 +4504,6 @@ class SolverMuJoCo(SolverBase):
             target_filename: Optional path to save generated MJCF file.
             skip_visual_only_geoms: If True, skip geoms that are visual-only.
             include_sites: If True, include sites in the model.
-            ls_parallel: Deprecated. If not None, sets ``mjw_model.opt.ls_parallel``.
 
         Returns:
             tuple[MjWarpModel, MjWarpData, MjModel, MjData]: Model and data objects for
@@ -4743,6 +4740,7 @@ class SolverMuJoCo(SolverBase):
         shape_mu_torsional = model.shape_material_mu_torsional.numpy()
         shape_mu_rolling = model.shape_material_mu_rolling.numpy()
         shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
 
         # retrieve MuJoCo-specific attributes
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -5240,8 +5238,7 @@ class SolverMuJoCo(SolverBase):
                     geom_params["solimp"] = shape_geom_solimp[shape]
                 if shape_geom_solmix is not None:
                     geom_params["solmix"] = shape_geom_solmix[shape]
-                # Newton does not use the MuJoCo `gap` concept, always zero.
-                geom_params["gap"] = 0.0
+                geom_params["gap"] = float(shape_gap[shape])
                 authored_margin = float(shape_margin[shape])
                 if self._zero_margins_for_native_ccd:
                     # Zeroed in the spec for NATIVECCD/MULTICCD compatibility (#2106).
@@ -6406,10 +6403,6 @@ class SolverMuJoCo(SolverBase):
                         mjc_tendon_to_newton_tendon_np[w, mjc_tendon] = w * tendons_per_world + template_tendon
                 self.mjc_tendon_to_newton_tendon = wp.array(mjc_tendon_to_newton_tendon_np, dtype=wp.int32)
 
-            # set mjwarp-only settings (ls_parallel is deprecated; only set when explicitly requested)
-            if ls_parallel is not None:
-                self.mjw_model.opt.ls_parallel = ls_parallel
-
             if separate_worlds:
                 nworld = model.world_count
             else:
@@ -6561,6 +6554,7 @@ class SolverMuJoCo(SolverBase):
             "actuator_gear",
             "actuator_cranklength",
             "actuator_acc0",
+            "actuator_lengthrange",
             "pair_solref",
             "pair_solreffriction",
             "pair_solimp",
@@ -6625,6 +6619,8 @@ class SolverMuJoCo(SolverBase):
             if field in model_fields_to_expand:
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array))
+
+        mj_model.stat.meaninertia = tile(mj_model.stat.meaninertia)
 
         for field in mj_model.opt.__dataclass_fields__:
             if field in opt_fields_to_expand:
@@ -7424,6 +7420,7 @@ class SolverMuJoCo(SolverBase):
                 shape_mjc_solref,
                 shape_mjc_solref_mode,
                 self.model.shape_margin,
+                self.model.shape_gap,
                 int(self._use_mujoco_contacts and self._zero_margins_for_native_ccd),
             ],
             outputs=[
@@ -7637,12 +7634,15 @@ class SolverMuJoCo(SolverBase):
         pair_solref = getattr(mujoco_attrs, "pair_solref", None)
         pair_solreffriction = getattr(mujoco_attrs, "pair_solreffriction", None)
         pair_solimp = getattr(mujoco_attrs, "pair_solimp", None)
-        # Restore pair margin/gap at runtime when Newton is handling contacts.
-        # Spec-level values only carry template-world data (MuJoCo replicates the
-        # template pair across worlds), so the kernel applies per-world variance.
-        # When MuJoCo handles contacts, keep margins at zero for NATIVECCD compat (#2106).
-        pair_margin = None if self._use_mujoco_contacts else getattr(mujoco_attrs, "pair_margin", None)
-        pair_gap = None if self._use_mujoco_contacts else getattr(mujoco_attrs, "pair_gap", None)
+        # Restore pair margin/gap at runtime: the spec carries only template-world
+        # values, so per-world variance must be reapplied. margin is suppressed only
+        # under NATIVECCD/MULTICCD (#2106); gap is always forwarded (MuJoCo 3.9).
+        pair_margin = (
+            None
+            if (self._use_mujoco_contacts and self._zero_margins_for_native_ccd)
+            else getattr(mujoco_attrs, "pair_margin", None)
+        )
+        pair_gap = getattr(mujoco_attrs, "pair_gap", None)
         pair_friction = getattr(mujoco_attrs, "pair_friction", None)
 
         # Only launch kernel if at least one attribute is defined

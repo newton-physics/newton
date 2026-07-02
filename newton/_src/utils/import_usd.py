@@ -100,6 +100,7 @@ def parse_usd(
     force_position_velocity_actuation: bool = False,
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
+    legacy_margin_gap: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
 
@@ -229,6 +230,10 @@ def parse_usd(
             :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
             damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+        legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
+            where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
+            Use for USD files authored against MuJoCo <= 3.8. Defaults to
+            False (identity translation matching MuJoCo 3.9 semantics).
 
     Returns:
         The returned mapping has the following entries:
@@ -2856,6 +2861,21 @@ def parse_usd(
                 )
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
+                if legacy_margin_gap:
+                    # Legacy pre-3.9 import: newton_margin = mjc_margin - mjc_gap.
+                    # Only prims that author mjc:margin need the subtraction.
+                    mjc_margin = usd.get_attribute(prim, "mjc:margin")
+                    if mjc_margin is not None:
+                        mjc_gap = usd.get_attribute(prim, "mjc:gap")
+                        mjc_gap = 0.0 if mjc_gap is None else float(mjc_gap)
+                        newton_margin = float(mjc_margin) - mjc_gap
+                        if newton_margin < 0.0:
+                            warnings.warn(
+                                f"Prim '{prim.GetPath()}': legacy translation yields "
+                                f"negative margin (mjc_margin={mjc_margin}, mjc_gap={mjc_gap}).",
+                                stacklevel=2,
+                            )
+                        margin_val = newton_margin
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
                 material_props = _get_material_props_cached(prim)
