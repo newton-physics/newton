@@ -12176,7 +12176,7 @@ class ModelBuilder:
         # per-pair membership test inside the candidate loop.
         candidate_pairs = np.asarray(contact_pairs, dtype=np.int32).reshape((-1, 2))
         if candidate_pairs.shape[0] > 0:
-            filtered = model._shape_collision_filter_mask(candidate_pairs)  # pyright: ignore[reportPrivateUsage]
+            filtered = model.shape_collision_filter_mask(candidate_pairs)
             candidate_pairs = candidate_pairs[~filtered]
 
         model.shape_contact_pairs = wp.array(candidate_pairs, dtype=wp.vec2i, device=model.device)

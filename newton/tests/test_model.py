@@ -1057,7 +1057,7 @@ class TestModelMesh(unittest.TestCase):
         self.assertFalse(internal_filters.is_materialized)
 
         candidates = np.array([[1, 2], [2, 1], [ground, 1], [ground, 2], [3, 4]], dtype=np.int32)
-        mask = model._shape_collision_filter_mask(candidates)  # pyright: ignore[reportPrivateUsage]
+        mask = model.shape_collision_filter_mask(candidates)
         self.assertEqual(mask.tolist(), [True, True, True, False, True])
 
         self.assertEqual(set(pair_list), set(model.shape_collision_filter_pairs))
@@ -1066,7 +1066,7 @@ class TestModelMesh(unittest.TestCase):
         with self.assertWarns(DeprecationWarning):
             model.shape_collision_filter_pairs.add((ground, 2))
         self.assertTrue(model.shape_collision_filter_contains(ground, 2))
-        mask = model._shape_collision_filter_mask(candidates)  # pyright: ignore[reportPrivateUsage]
+        mask = model.shape_collision_filter_mask(candidates)
         self.assertEqual(mask.tolist(), [True, True, True, True, True])
         self.assertEqual(len(model.shape_collision_filter_pairs_for_broad_phase()), 6)
 

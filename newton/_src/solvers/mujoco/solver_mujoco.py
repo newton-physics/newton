@@ -4324,7 +4324,7 @@ class SolverMuJoCo(SolverBase):
         cgroup = shape_collision_group_np[selected_shapes]
         # edges representing colliding shape pairs
         candidate_pairs = np.stack((selected_shapes[shape_a], selected_shapes[shape_b]), axis=1)
-        filtered = model._shape_collision_filter_mask(candidate_pairs)  # pyright: ignore[reportPrivateUsage]
+        filtered = model.shape_collision_filter_mask(candidate_pairs)
         group_a, group_b = cgroup[shape_a], cgroup[shape_b]
         edge_mask = ~filtered & ((group_a == group_b) | (group_a == -1) | (group_b == -1))
         graph_edges = np.stack((shape_a[edge_mask], shape_b[edge_mask]), axis=1).astype(np.int32)

@@ -1151,14 +1151,18 @@ class Model:
             return np.empty((0, 2), dtype=np.int32)
         return np.asarray(sorted(filters), dtype=np.int32).reshape((-1, 2))
 
-    def _shape_collision_filter_mask(self, pairs: np.ndarray) -> np.ndarray:
+    def shape_collision_filter_mask(self, pairs: np.ndarray) -> np.ndarray:
         """Return a boolean mask of which shape pairs are collision-filtered.
+
+        Bulk counterpart to :meth:`shape_collision_filter_contains`: one
+        vectorized query against the canonical filter-pair array instead of a
+        Python-level membership test per pair.
 
         Args:
             pairs: Shape index pairs in any order, shape [pair_count, 2].
 
         Returns:
-            Boolean mask, shape [pair_count].
+            Boolean mask of filtered pairs, shape [pair_count].
         """
         pairs = np.asarray(pairs, dtype=np.int64).reshape((-1, 2))
         if pairs.shape[0] == 0:
